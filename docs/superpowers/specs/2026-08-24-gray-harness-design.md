@@ -225,11 +225,15 @@ Priorities informed by hermes-agent analysis (see `docs/hermes-recon.md`,
 `docs/hermes-steal-agy.md`). Steal the kernels, never the plumbing.
 
 ### v0 carries these recon-born details (kept deliberately small)
-- **Tiny system prompt, pi-style:** base template ~350–450 tokens total
-  (pi's measured baseline). Identity is 1–2 lines (DSH's default is ONE:
-  "You are an AI agent powered by DeepSeek Harness."). Each tool contributes
-  a one-line `prompt_snippet` + optional conditional guideline; no tiers, no
-  persona essays, nothing hardcoded about coding beyond the tool list.
+- **System prompt = identity line + Muse Code conventions:**
+  `"You are gray, a minimal agent running on the user's machine."` followed by
+  the Muse Code engineering-conventions block verbatim
+  (source: github.com/vstaln/muse-code-system-prompt — Meta Muse Spark
+  co-training conventions; Cline measured 2.7x fewer tokens and ~2x faster
+  task completion with them). Then one-line tool snippets (`prompt_snippet`
+  per tool) and `{cwd}`. Total ~700–800 tokens — slightly over pi's baseline,
+  deliberately bought for measured agent discipline. Memory/skills sections
+  get appended later, never baked in.
 - **In-place truncation, pi-style:** tool outputs capped at 2000 lines / 50KB,
   head+tail kept with a size annotation; grep match lines capped at 500 chars.
   (Hermes/DSH-style disk spillover is phase 2 if ever needed — see below.)
