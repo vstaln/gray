@@ -158,15 +158,6 @@ impl Component for Text {
     }
 }
 
-/// Vertical gap of empty lines (pi-tui Spacer).
-pub struct Spacer(pub usize);
-
-impl Component for Spacer {
-    fn render(&self, _width: usize) -> Vec<String> {
-        vec![String::new(); self.0]
-    }
-}
-
 /// Horizontal rule filling the width (pi-tui DynamicBorder).
 #[derive(Default)]
 pub struct Border;
@@ -301,11 +292,9 @@ mod tests {
     fn container_concatenates_children() {
         let mut c = Container::new();
         c.push(Box::new(Text::new("hi", 1)));
-        c.push(Box::new(Spacer(2)));
         c.push(Box::new(Border));
         let lines = c.render(20);
-        assert_eq!(lines.len(), 4); // 1 text + 2 spacer + 1 border
+        assert_eq!(lines.len(), 2); // 1 text + 1 border
         assert_eq!(lines[0], " hi");
-        assert!(lines[1].is_empty() && lines[2].is_empty());
     }
 }

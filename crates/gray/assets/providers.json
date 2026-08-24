@@ -27,8 +27,7 @@
     "id": "deepseek-v4-flash-vision-exp",
     "name": "DeepSeek V4 Flash Vision Exp"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "fireworks-ai": {
   "name": "Fireworks AI",
@@ -152,8 +151,7 @@
     "id": "tencent/hy-mt2-7b",
     "name": "Hy-MT2-7B"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "302ai": {
   "name": "302.AI",
@@ -241,6 +239,28 @@
    }
   ]
  },
+ "agentrouter": {
+  "name": "AgentRouter",
+  "base_url": "https://agentrouter.org/v1",
+  "env_key": [
+   "AGENTROUTER_API_KEY"
+  ],
+  "featured": false,
+  "models": [
+   {
+    "id": "claude-opus-4-8",
+    "name": "Claude Opus 4.8"
+   },
+   {
+    "id": "gpt-5.6-sol",
+    "name": "GPT-5.6 Sol"
+   },
+   {
+    "id": "claude-opus-5",
+    "name": "Claude Opus 5"
+   }
+  ]
+ },
  "ai-router": {
   "name": "AI-ROUTER",
   "base_url": "https://api.ai-router.dev/v1",
@@ -314,6 +334,10 @@
   "featured": false,
   "models": [
    {
+    "id": "deepseek-v4-flash-0731-284b",
+    "name": "DeepSeek V4 Flash 0731"
+   },
+   {
     "id": "gemma4-26b",
     "name": "Gemma 4 26B A4B IT"
    },
@@ -330,12 +354,8 @@
     "name": "Mistral Small 4"
    },
    {
-    "id": "kimi-k2.7-code-1100b",
-    "name": "Kimi K2.7 Code"
-   },
-   {
-    "id": "minimax-m2.5-230b",
-    "name": "MiniMax-M2.5"
+    "id": "qwen3.8-27b",
+    "name": "Qwen3.8 27B"
    }
   ]
  },
@@ -543,38 +563,6 @@
    }
   ]
  },
- "alicode": {
-  "name": "Alicode",
-  "base_url": "https://coding.dashscope.aliyuncs.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "alicode-intl": {
-  "name": "Alicode Intl",
-  "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "alims-intl": {
-  "name": "Alims Intl",
-  "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "alitp-intl": {
-  "name": "Alitp Intl",
-  "base_url": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "ambient": {
   "name": "Ambient",
   "base_url": "https://api.ambient.xyz/v1",
@@ -657,14 +645,6 @@
    }
   ]
  },
- "api-airforce": {
-  "name": "Api Airforce",
-  "base_url": "https://api.airforce/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "arcee": {
   "name": "Arcee",
   "base_url": "https://api.arcee.ai/api/v1",
@@ -698,14 +678,6 @@
     "name": "GLM-5.2"
    }
   ]
- },
- "assemblyai": {
-  "name": "Assemblyai",
-  "base_url": "https://api.assemblyai.com/v1/audio/transcriptions",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "atomic-chat": {
   "name": "Atomic Chat",
@@ -771,14 +743,6 @@
    }
   ]
  },
- "baidu": {
-  "name": "Baidu",
-  "base_url": "https://qianfan.baidubce.com/v2",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "bailing": {
   "name": "Bailing",
   "base_url": "https://api.tbox.cn/api/llm/v1/chat/completions",
@@ -831,14 +795,6 @@
    }
   ]
  },
- "bazaarlink": {
-  "name": "Bazaarlink",
-  "base_url": "https://bazaarlink.ai/api/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "berget": {
   "name": "Berget.AI",
   "base_url": "https://api.berget.ai/v1",
@@ -873,14 +829,6 @@
    }
   ]
  },
- "blackbox": {
-  "name": "Blackbox",
-  "base_url": "https://api.blackbox.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "blueclaw": {
   "name": "Blue Claw",
   "base_url": "https://openai.blueclaw.network/v1",
@@ -898,30 +846,6 @@
     "name": "Qwen3.6 35B A3B FP8"
    }
   ]
- },
- "bluesminds": {
-  "name": "Bluesminds",
-  "base_url": "https://api.bluesminds.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "byteplus": {
-  "name": "Byteplus",
-  "base_url": "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "cerebras": {
-  "name": "Cerebras",
-  "base_url": "https://api.cerebras.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "chutes": {
   "name": "Chutes",
@@ -955,8 +879,7 @@
     "id": "deepseek-ai/DeepSeek-V4-Flash-0731-TEE",
     "name": "DeepSeek V4 Flash 0731 TEE"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "clarifai": {
   "name": "Clarifai",
@@ -1010,14 +933,6 @@
    }
   ]
  },
- "cline": {
-  "name": "Cline",
-  "base_url": "https://api.cline.bot/api/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "cline-pass": {
   "name": "ClinePass",
   "base_url": "https://api.cline.bot/api/v1",
@@ -1052,14 +967,6 @@
    }
   ]
  },
- "clinepass": {
-  "name": "Clinepass",
-  "base_url": "https://api.cline.bot/api/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "cloudferro-sherlock": {
   "name": "CloudFerro Sherlock",
   "base_url": "https://api-sherlock.cloudferro.com/openai/v1/",
@@ -1089,14 +996,6 @@
     "name": "Llama 3.3 70B Instruct"
    }
   ]
- },
- "cloudflare-ai": {
-  "name": "Cloudflare Ai",
-  "base_url": "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "cloudflare-workers-ai": {
   "name": "Cloudflare Workers AI",
@@ -1132,30 +1031,6 @@
     "name": "Llama 3.2 3B Instruct"
    }
   ]
- },
- "codebuddy-cn": {
-  "name": "Codebuddy Cn",
-  "base_url": "https://copilot.tencent.com/v2",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "codebuddy-intl": {
-  "name": "Codebuddy Intl",
-  "base_url": "https://www.codebuddy.ai/v2",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "cohere": {
-  "name": "Cohere",
-  "base_url": "https://api.cohere.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "coralbricks": {
   "name": "CoralBricks",
@@ -1383,14 +1258,6 @@
     "name": "GLM-5.2"
    }
   ]
- },
- "deepgram": {
-  "name": "Deepgram",
-  "base_url": "https://api.deepgram.com/v1/listen",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "digitalocean": {
   "name": "DigitalOcean",
@@ -1658,22 +1525,6 @@
    }
   ]
  },
- "featherless": {
-  "name": "Featherless",
-  "base_url": "https://api.featherless.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "fireworks": {
-  "name": "Fireworks",
-  "base_url": "https://api.fireworks.ai/inference/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "freemodel": {
   "name": "FreeModel",
   "base_url": "https://cc.freemodel.dev/v1",
@@ -1772,30 +1623,6 @@
    }
   ]
  },
- "github": {
-  "name": "Github",
-  "base_url": "https://api.githubcopilot.com",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "gitlab": {
-  "name": "Gitlab",
-  "base_url": "https://gitlab.com/api/v4",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "glm-cn": {
-  "name": "Glm Cn",
-  "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "gmicloud": {
   "name": "GMI Cloud",
   "base_url": "https://api.gmi-serving.com/v1",
@@ -1863,14 +1690,6 @@
     "name": "GLM-5.2 Ponytail Lite"
    }
   ]
- },
- "groq": {
-  "name": "Groq",
-  "base_url": "https://api.groq.com/openai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "helicone": {
   "name": "Helicone",
@@ -2025,22 +1844,6 @@
     "name": "Llama-3.3-70B-Instruct"
    }
   ]
- },
- "hyperbolic": {
-  "name": "Hyperbolic",
-  "base_url": "https://api.hyperbolic.xyz/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "iflow": {
-  "name": "Iflow",
-  "base_url": "https://apis.iflow.cn/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "iflowcn": {
   "name": "iFlow",
@@ -2427,30 +2230,6 @@
    }
   ]
  },
- "kilo-gateway": {
-  "name": "Kilo Gateway",
-  "base_url": "https://api.kilo.ai/api/gateway",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "kilocode": {
-  "name": "Kilocode",
-  "base_url": "https://api.kilo.ai/api/openrouter",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "kimchi": {
-  "name": "Kimchi",
-  "base_url": "https://llm.kimchi.dev/openai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "kimi-for-coding": {
   "name": "Kimi For Coding",
   "base_url": "https://api.kimi.com/coding/v1",
@@ -2564,14 +2343,6 @@
     "name": "Llama-4-Maverick-17B-128E-Instruct-FP8"
    }
   ]
- },
- "llm7": {
-  "name": "Llm7",
-  "base_url": "https://api.llm7.io/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "llmgateway": {
   "name": "DevPass (LLM Gateway)",
@@ -2819,14 +2590,6 @@
    }
   ]
  },
- "mimo-free": {
-  "name": "Mimo Free",
-  "base_url": "https://api.xiaomimimo.com/api/free-ai/openai",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": true
- },
  "minimax": {
   "name": "MiniMax (minimax.io)",
   "base_url": "https://api.minimax.io/anthropic/v1",
@@ -2963,14 +2726,6 @@
    }
   ]
  },
- "mistral": {
-  "name": "Mistral",
-  "base_url": "https://api.mistral.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "mixlayer": {
   "name": "Mixlayer",
   "base_url": "https://models.mixlayer.ai/v1",
@@ -3000,14 +2755,6 @@
     "name": "Qwen3.5 122B A10B"
    }
   ]
- },
- "mmf": {
-  "name": "Mmf",
-  "base_url": "https://api.xiaomimimo.com/api/free-ai/openai",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": true
  },
  "moark": {
   "name": "Moark",
@@ -3235,8 +2982,7 @@
     "id": "morph-v3-fast",
     "name": "Morph v3 Fast"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "nano-gpt": {
   "name": "NanoGPT",
@@ -3271,14 +3017,6 @@
     "name": "Auto model"
    }
   ]
- },
- "nanobanana": {
-  "name": "Nanobanana",
-  "base_url": "https://api.nanobananaapi.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "nearai": {
   "name": "NEAR AI Cloud",
@@ -3346,8 +3084,7 @@
     "id": "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1",
     "name": "Llama-3.1-Nemotron-Ultra-253B-v1"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "neon": {
   "name": "Neon",
@@ -3502,8 +3239,7 @@
     "id": "nvidia/nemotron-3-content-safety",
     "name": "nemotron-3-content-safety"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "ofox": {
   "name": "Ofox",
@@ -3573,45 +3309,37 @@
    }
   ]
  },
- "openai": {
-  "name": "Openai",
-  "base_url": "https://api.openai.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "opencode": {
   "name": "OpenCode Zen",
   "base_url": "https://opencode.ai/zen/v1",
   "env_key": [
    "OPENCODE_API_KEY"
   ],
-  "featured": true,
+  "featured": false,
   "models": [
    {
-    "id": "laguna-s-2.1-free",
-    "name": "DeepSeek V4 Flash (free)"
+    "id": "gemini-3-pro",
+    "name": "Gemini 3 Pro"
    },
    {
-    "id": "nemotron-3-ultra-free",
-    "name": "Nemotron 3 Ultra (free)"
+    "id": "claude-opus-4-7",
+    "name": "Claude Opus 4.7"
+   },
+   {
+    "id": "glm-4.6",
+    "name": "GLM-4.6"
+   },
+   {
+    "id": "ling-3.0-flash-free",
+    "name": "Ling-3.0-flash Free"
+   },
+   {
+    "id": "laguna-s-2.1-free",
+    "name": "Laguna S 2.1 Free"
    },
    {
     "id": "nemotron-3.5-lightning-free",
-    "name": "Nemotron 3.5 Lightning (free)"
-   },
-   {
-    "id": "laguna-s-2.1-free",
-    "name": "Laguna S 2.1 (free)"
-   },
-   {
-    "id": "hy3-free",
-    "name": "HY3 (free)"
-   },
-   {
-    "id": "claude-sonnet-5",
-    "name": "Claude Sonnet 5"
+    "name": "Nemotron 3.5 Lightning Free"
    }
   ],
   "no_auth": true
@@ -3648,8 +3376,41 @@
     "id": "grok-4.5",
     "name": "Grok 4.5"
    }
+  ]
+ },
+ "opper": {
+  "name": "Opper",
+  "base_url": "https://api.opper.ai/v3/compat",
+  "env_key": [
+   "OPPER_API_KEY"
   ],
-  "no_auth": false
+  "featured": false,
+  "models": [
+   {
+    "id": "vertexai/gemini-3.7-flash-eu",
+    "name": "Gemini 3.7 Flash (EU)"
+   },
+   {
+    "id": "vertexai/gemini-3.7-flash",
+    "name": "Gemini 3.7 Flash"
+   },
+   {
+    "id": "meta/muse-spark-1.2",
+    "name": "Muse Spark 1.2"
+   },
+   {
+    "id": "anthropic/claude-opus-4-7",
+    "name": "Claude Opus 4.7"
+   },
+   {
+    "id": "anthropic/claude-opus-4-8",
+    "name": "Claude Opus 4.8"
+   },
+   {
+    "id": "anthropic/claude-sonnet-5",
+    "name": "Claude Sonnet 5"
+   }
+  ]
  },
  "orcarouter": {
   "name": "OrcaRouter",
@@ -3718,14 +3479,6 @@
     "name": "Mistral-Small-3.2-24B-Instruct-2506"
    }
   ]
- },
- "perplexity": {
-  "name": "Perplexity",
-  "base_url": "https://api.perplexity.ai",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "perplexity-agent": {
   "name": "Perplexity Agent",
@@ -3849,8 +3602,7 @@
     "id": "poolside/laguna-xs-2.1",
     "name": "Laguna XS 2.1"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "privatemode-ai": {
   "name": "Privatemode AI",
@@ -3954,14 +3706,6 @@
     "name": "Qwen-Turbo"
    }
   ]
- },
- "qoder": {
-  "name": "Qoder",
-  "base_url": "https://api3.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "regolo-ai": {
   "name": "Regolo AI",
@@ -4121,14 +3865,6 @@
    }
   ]
  },
- "sambanova": {
-  "name": "Sambanova",
-  "base_url": "https://api.sambanova.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "sarvam": {
   "name": "Sarvam AI",
   "base_url": "https://api.sarvam.ai/v1",
@@ -4273,8 +4009,7 @@
     "id": "moonshotai/Kimi-K2.5",
     "name": "moonshotai/Kimi-K2.5"
    }
-  ],
-  "no_auth": false
+  ]
  },
  "siliconflow-cn": {
   "name": "SiliconFlow (China)",
@@ -4581,14 +4316,6 @@
    }
   ]
  },
- "tencent": {
-  "name": "Tencent",
-  "base_url": "https://api.hunyuan.cloud.tencent.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "tencent-coding-plan": {
   "name": "Tencent Coding Plan (China)",
   "base_url": "https://api.lkeap.cloud.tencent.com/coding/v3",
@@ -4775,22 +4502,6 @@
    }
   ]
  },
- "together": {
-  "name": "Together",
-  "base_url": "https://api.together.xyz/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "tokenrouter": {
-  "name": "Tokenrouter",
-  "base_url": "https://api.tokenrouter.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "trustedrouter": {
   "name": "TrustedRouter",
   "base_url": "https://api.trustedrouter.com/v1",
@@ -4953,30 +4664,6 @@
    }
   ]
  },
- "venice": {
-  "name": "Venice",
-  "base_url": "https://api.venice.ai/api/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "vercel-ai-gateway": {
-  "name": "Vercel Ai Gateway",
-  "base_url": "https://ai-gateway.vercel.sh/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
- "vertex-partner": {
-  "name": "Vertex Partner",
-  "base_url": "https://aiplatform.googleapis.com",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "vivgrid": {
   "name": "Vivgrid",
   "base_url": "https://api.vivgrid.com/v1",
@@ -5010,14 +4697,6 @@
     "name": "DeepSeek-V3.2"
    }
   ]
- },
- "volcengine-ark": {
-  "name": "Volcengine Ark",
-  "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "vultr": {
   "name": "Vultr",
@@ -5117,14 +4796,6 @@
    }
   ]
  },
- "xai": {
-  "name": "Xai",
-  "base_url": "https://api.x.ai/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "xiaomi": {
   "name": "Xiaomi",
   "base_url": "https://api.xiaomimimo.com/v1",
@@ -5158,14 +4829,6 @@
     "name": "MiMo-V2.5-Pro"
    }
   ]
- },
- "xiaomi-mimo": {
-  "name": "Xiaomi Mimo",
-  "base_url": "https://api.xiaomimimo.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "xiaomi-token-plan-ams": {
   "name": "Xiaomi Token Plan (Europe)",
@@ -5269,14 +4932,6 @@
    }
   ]
  },
- "xiaomi-tokenplan": {
-  "name": "Xiaomi Tokenplan",
-  "base_url": "https://token-plan-sgp.xiaomimimo.com/v1",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
- },
  "xpersona": {
   "name": "Xpersona",
   "base_url": "https://www.xpersona.co/v1",
@@ -5374,14 +5029,6 @@
     "name": "GLM-5.2 Highspeed"
    }
   ]
- },
- "zed": {
-  "name": "Zed",
-  "base_url": "https://cloud.zed.dev/completions",
-  "env_key": null,
-  "featured": false,
-  "models": [],
-  "no_auth": false
  },
  "zeldoc": {
   "name": "Zeldoc",
@@ -5512,5 +5159,21 @@
     "name": "GLM-5.2"
    }
   ]
+ },
+ "mimo-free": {
+  "name": "Mimo Free",
+  "base_url": "https://api.xiaomimimo.com/api/free-ai/openai",
+  "env_key": null,
+  "featured": false,
+  "models": [],
+  "no_auth": true
+ },
+ "mmf": {
+  "name": "Mmf",
+  "base_url": "https://api.xiaomimimo.com/api/free-ai/openai",
+  "env_key": null,
+  "featured": false,
+  "models": [],
+  "no_auth": true
  }
 }
