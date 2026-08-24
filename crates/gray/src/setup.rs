@@ -291,22 +291,19 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
 pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "deepseek-r1"];
 
 /// Braille dot-matrix gray logo.
-pub const SETUP_LOGO_LINES: [&str; 10] = [
-    "⠀⠀⠀⢠⣶⣶⣶⣖⠒⠒⠒⠒⠒⠒⣲⣶⣶⣶⡄",
-    "⠀⠀⢠⡟⢹⡿⣄⠉⠙⣳⣦⣴⣞⠋⠉⣠⢿⡏⢻⡄",
-    "⠀⣰⠏⠀⣸⣧⡿⣾⠛⠉⠀⠀⠉⠛⣷⢿⣼⣇⠀⠹⣆",
-    "⣴⣿⣶⣿⣭⣷⣤⣽⣦⣤⣤⣤⣤⣴⣯⣤⣾⣭⣿⣶⣿⣦",
-    "⠘⣿⣦⣄⠀⢿⠀⠀⠘⣧⠀⠀⣼⠃⠀⠀⡿⠀⣠⣴⣿⠃",
-    "⠀⠈⢷⡉⠳⣾⡇⠀⠀⠈⢷⡾⠁⠀⠀⢸⣷⠞⢉⡾⠁",
-    "⠀⠀⠈⢷⡄⠘⡿⢶⣄⢠⡞⢳⡄⣠⡶⢿⠃⢠⡾⠁",
-    "⠀⠀⠀⠀⢻⡄⣿⠀⢨⡿⣦⣴⢿⡅⠀⣿⢠⡟",
-    "⠀⠀⠀⠀⠀⠹⣿⣴⣿⠾⠋⠙⠷⣿⣦⣿⠏",
-    "⠀⠀⠀⠀⠀⠀⠙⠿⠷⠶⠶⠶⠶⠾⠿⠋",
+pub const SETUP_LOGO_LINES: [&str; 7] = [
+    "⠀⠀⠀⠀⣠⣶⣿⣿⣿⣿⣷⣦⡀",
+    "⠀⠀⠀⣾⣿⡟⠁⠀⠀⠀⠙⠿⠛⠀⠀⣤⣤⣀⣤⣤⠀⢀⣠⣤⣤⣤⣄⠀⠀⢠⣤⣄⠀⠀⠀⣠⣤⡤",
+    "⠀⠀⢸⣿⣿⠀⠀⠀⢰⣶⣶⣶⣶⡆⠀⣿⣿⡿⠛⠋⠀⠻⠿⠋⠉⢻⣿⣷⠀⠈⢿⣿⡆⠀⢠⣿⣿⠁",
+    "⠀⠀⠘⣿⣿⡄⠀⠀⠈⠉⠉⣻⣿⡇⠀⣿⣿⡇⠀⠀⢀⣤⣶⣾⠿⢿⣿⣿⠀⠀⠘⣿⣿⣀⣾⣿⠃",
+    "⠀⠀⠀⠘⢿⣿⣶⣤⣤⣤⣾⣿⠟⠀⠀⣿⣿⡇⠀⠀⢸⣿⣿⣀⣀⣼⣿⣿⠀⠀⠀⠸⣿⣿⣿⠏",
+    "⠀⠀⠀⠀⠀⠈⠙⠛⠛⠛⠉⠁⠀⠀⠀⠛⠛⠃⠀⠀⠀⠙⠛⠛⠛⠉⠛⠛⠀⠀⠀⠀⣹⣿⡟",
+    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⠟",
 ];
 
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
-    crate::tui::erase_shell_line();
+    crate::tui::clear_screen();
     println!();
     for line in SETUP_LOGO_LINES {
         println!("  \x1b[2m{line}\x1b[0m");
@@ -582,7 +579,7 @@ mod tests {
 
     #[test]
     fn setup_logo_lines_are_defined_and_non_empty() {
-        assert_eq!(SETUP_LOGO_LINES.len(), 10);
+        assert_eq!(SETUP_LOGO_LINES.len(), 7);
         for line in SETUP_LOGO_LINES {
             assert!(!line.is_empty());
         }
