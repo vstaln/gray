@@ -12,7 +12,6 @@ use gray_session::{
     default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore, SessionSummary,
 };
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
 
 use crate::setup::read_line;
@@ -22,6 +21,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("new", "start a fresh conversation"),
     ("model", "switch or pick a model"),
     ("provider", "configure provider (API key, accounts, free tier)"),
+    ("key", "add or update a provider API key (input hidden)"),
     ("sys", "view, edit, or restore the system prompt"),
     ("help", "print the command list"),
     ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
@@ -57,9 +57,10 @@ fn apply_edit(buf: &str, op: PromptEdit) -> String {
     b
 }
 
-/// True while an agent turn is in flight; controls what Ctrl-C means.
-static TURN_ACTIVE: AtomicBool = AtomicBool::new(false);
-static TURN_TOKEN: StdMutex<Option<tokio_util::sync::CancellationToken>> = StdMutex::new(None);
+/// True while an agent turn is in flight: `Some(token)` cancels on first
+/// Ctrl-C (token consumed), a second press — or any press at the prompt —
+/// exits. Single mutex = no TOCTOU between flag and token.
+static TURN_STATE: StdMutex<Option<tokio_util::sync::CancellationToken>> = StdMutex::new(None);
 
 /// Installs the single global Ctrl-C policy:
 /// - during a turn: cancel the turn (first press), the turn handler reports it
@@ -69,10 +70,9 @@ async fn spawn_ctrl_c_policy() {
         if tokio::signal::ctrl_c().await.is_err() {
             return;
         }
-        if TURN_ACTIVE.load(Ordering::SeqCst) {
-            if let Some(t) = TURN_TOKEN.lock().ok().and_then(|mut g| g.take()) {
-                t.cancel();
-            }
+        let token = TURN_STATE.lock().ok().and_then(|mut g| g.take());
+        if let Some(t) = token {
+            t.cancel(); // first press mid-turn: cancel, stay alive
         } else {
             let _ = crossterm::terminal::disable_raw_mode();
             let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
@@ -142,6 +142,8 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Open the provider selection menu (`/provider`).
     Provider,
+    /// Add/update an API key in the CLI (`/key [provider]`), opencode-style.
+    Key(Option<String>),
     /// Start a fresh conversation (`/new`).
     New,
     /// Print the command list (`/help`).
@@ -184,6 +186,14 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::New
     } else if trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
         ReplCommand::Provider
+    } else if trimmed == "/key" || trimmed == "/keys" {
+        ReplCommand::Key(None)
+    } else if let Some(rest) = trimmed
+        .strip_prefix("/key ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        ReplCommand::Key(Some(rest.to_string()))
     } else if trimmed == "/help" {
         ReplCommand::Help
     } else if let Some(rest) = trimmed.strip_prefix("/model") {
@@ -294,9 +304,23 @@ async fn handle_model(
             return;
         }
         config.model = Some(id.clone());
+        // If the model id belongs to a known provider, move base_url with it
+        // so cross-provider switches don't post to the old endpoint.
+        let provider = load_catalog()
+            .ok()
+            .and_then(|c| {
+                c.values()
+                    .find(|p| p.models.iter().any(|m| m.id == id))
+                    .cloned()
+            });
+        if let Some(p) = provider {
+            config.base_url = p.base_url.clone();
+        }
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);
             saved.model = Some(id.clone());
+            saved.base_url = Some(config.base_url.clone());
+            saved.api_key = config.api_key.clone();
             let _ = crate::setup::save_saved_config_at(&path, &saved);
         }
         println!("model set to {id} (saved)");
@@ -500,8 +524,12 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
                 }
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                     KeyCode::Enter => {
-                        // pi-style: complete, then submit immediately (executes the command)
-                        if let Some((name, _)) = matches.get(sel) {
+                        // pi-style: complete, then submit immediately. A bare
+                        // "/" stays literal — completing it would fire /new
+                        // and wipe the conversation by accident.
+                        if buf.chars().count() > 1
+                            && let Some((name, _)) = matches.get(sel)
+                        {
                             buf = format!("/{name} ");
                         }
                         return Ok(Some(buf));
@@ -547,6 +575,43 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
 /// Clips to at most `max` chars.
 fn clip_str(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
+}
+
+/// Appends whatever messages reached memory this turn (success, cancel, or
+/// error) to the session store, so the JSONL transcript never diverges from
+/// in-memory history.
+async fn persist_turn_messages(
+    session_state: &mut Option<SessionState>,
+    agent: &Agent,
+    config: &Config,
+    cwd: &Path,
+    initial_count: usize,
+) {
+    if session_state.is_none()
+        && let Some(root) = default_root()
+    {
+        let store = JsonlSessionStore::new(root);
+        let session_id = SessionId::generate();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let meta = SessionMeta::new(
+            session_id.clone(),
+            timestamp,
+            cwd.to_path_buf(),
+            config.model.clone().unwrap_or_else(|| "unset".into()),
+        );
+        store.create(meta).await;
+        *session_state = Some(SessionState { store, session_id });
+    }
+    if let Some(state) = session_state
+        && agent.messages().len() > initial_count
+    {
+        for msg in &agent.messages()[initial_count..] {
+            let _ = state.store.append(&state.session_id, msg).await;
+        }
+    }
 }
 
 /// Runs Gray in interactive REPL mode.
@@ -667,6 +732,17 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 }
                 continue;
             }
+            ReplCommand::Key(pid) => {
+                match crate::setup::run_key_setup(config, pid) {
+                    Ok(true) => {
+                        unconfigured = false;
+                        reload_agent(&mut agent, config, &cwd).await;
+                    }
+                    Ok(false) => {}
+                    Err(e) => println!("key error: {e}"),
+                }
+                continue;
+            }
             ReplCommand::Unknown(_) => {
                 println!("unknown command");
                 continue;
@@ -698,8 +774,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 }
                 let agent = agent.as_mut().expect("agent built above");
                 let cancel = tokio_util::sync::CancellationToken::new();
-                *TURN_TOKEN.lock().expect("token lock") = Some(cancel.clone());
-                TURN_ACTIVE.store(true, Ordering::SeqCst);
+                *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
                 let ctx = ToolContext {
                     cwd: cwd.clone(),
                     cancel: cancel.clone(),
@@ -714,8 +789,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                         _ = cancel.cancelled() => Err(CoreError::Cancelled),
                     }
                 };
-                TURN_ACTIVE.store(false, Ordering::SeqCst);
-                *TURN_TOKEN.lock().expect("token lock") = None;
+                TURN_STATE.lock().expect("turn state lock").take();
 
                 match run_result {
                     Ok(events) => {
@@ -727,37 +801,14 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                         }
                         std::io::stdout().flush()?;
 
-                        if session_state.is_none()
-                            && let Some(root) = default_root()
-                        {
-                            let store = JsonlSessionStore::new(root);
-                            let session_id = SessionId::generate();
-                            let timestamp = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0);
-                            let meta = SessionMeta::new(
-                                session_id.clone(),
-                                timestamp,
-                                cwd.to_path_buf(),
-                                config.model.clone().unwrap_or_else(|| "unset".into()),
-                            );
-                            store.create(meta).await;
-                            session_state = Some(SessionState { store, session_id });
-                        }
-
-                        if let Some(state) = &session_state
-                            && agent.messages().len() > initial_count
-                        {
-                            for msg in &agent.messages()[initial_count..] {
-                                let _ = state.store.append(&state.session_id, msg).await;
-                            }
-                        }
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
                     }
                     Err(CoreError::Cancelled) => {
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
                         println!("(interrupted)");
                     }
                     Err(e) => {
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
                         eprintln!("agent error: {e}");
                     }
                 }
@@ -802,6 +853,19 @@ mod tests {
         assert_eq!(parse_command(""), ReplCommand::Empty);
         assert_eq!(parse_command("   "), ReplCommand::Empty);
         assert_eq!(parse_command("\t\n"), ReplCommand::Empty);
+    }
+
+    #[test]
+    fn parse_command_identifies_key() {
+        assert_eq!(parse_command("/key"), ReplCommand::Key(None));
+        assert_eq!(parse_command("/keys"), ReplCommand::Key(None));
+        assert_eq!(
+            parse_command("/key openrouter"),
+            ReplCommand::Key(Some("openrouter".into()))
+        );
+        assert_eq!(parse_command("/key  deepseek "), ReplCommand::Key(Some("deepseek".into())));
+        // near-misses stay unknown
+        assert_eq!(parse_command("/keyboard"), ReplCommand::Unknown("/keyboard".into()));
     }
 
     #[test]
