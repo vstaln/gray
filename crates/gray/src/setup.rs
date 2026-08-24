@@ -298,8 +298,8 @@ pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "de
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!();
-    println!("  Welcome to gray");
-    println!("  \x1b[2mgray by alignment\x1b[0m");
+    println!("  Welcome to gray by alignment");
+    println!("  \x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m");
     println!();
     let options = vec![
         ("Start free", String::new()),
