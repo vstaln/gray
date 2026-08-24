@@ -94,6 +94,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn make_cli() -> Cli {
+        isolate_home();
         Cli {
             model: None,
             base_url: None,
@@ -137,6 +138,18 @@ mod tests {
         assert_eq!(config.model.as_deref(), Some("env/gray-model"));
         assert_eq!(config.base_url, "https://env.custom.com/v1");
         assert_eq!(config.api_key.as_deref(), Some("gray-key-456"));
+    }
+
+    /// Points $GRAY_HOME at an empty temp dir so an ambient ~/.gray/config.json
+    /// (e.g. a real free-tier setup on this machine) can't leak into assertions.
+    fn isolate_home() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("gray-test-home-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            // SAFETY: single write before tests resolve config; readers only get a valid dir.
+            unsafe { std::env::set_var("GRAY_HOME", &dir) };
+        });
     }
 
     #[test]
