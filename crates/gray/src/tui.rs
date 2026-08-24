@@ -158,16 +158,13 @@ impl Component for Spacer {
     }
 }
 
-/// Labeled horizontal rule filling the width: `── label ────` (pi-tui DynamicBorder).
+/// Horizontal rule filling the width (pi-tui DynamicBorder).
 #[derive(Default)]
-pub struct Border(pub String);
-
+pub struct Border;
 
 impl Component for Border {
     fn render(&self, width: usize) -> Vec<String> {
-        let prefix = format!("\u{2500}\u{2500} {} ", self.0);
-        let used = visible_width(&prefix);
-        vec![format!("{prefix}{}", "\u{2500}".repeat(width.saturating_sub(used)))]
+        vec!["\u{2500}".repeat(width.max(1))]
     }
 }
 
@@ -284,11 +281,11 @@ mod tests {
 
     #[test]
     fn border_fills_exact_width() {
-        let b = Border("model".into());
+        let b = Border;
         let lines = b.render(30);
         assert_eq!(lines.len(), 1);
         assert_eq!(visible_width(&lines[0]), 30);
-        assert!(lines[0].starts_with("\u{2500}\u{2500} model "));
+        assert_eq!(lines[0], "─".repeat(30));
     }
 
     #[test]
@@ -296,7 +293,7 @@ mod tests {
         let mut c = Container::new();
         c.push(Box::new(Text::new("hi", 1)));
         c.push(Box::new(Spacer(2)));
-        c.push(Box::new(Border::default()));
+        c.push(Box::new(Border));
         let lines = c.render(20);
         assert_eq!(lines.len(), 4); // 1 text + 2 spacer + 1 border
         assert_eq!(lines[0], " hi");

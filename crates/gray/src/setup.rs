@@ -140,7 +140,11 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 /// Interactive live-filter list picker. Renders inline (no alternate screen),
 /// redraws on every keystroke. Returns the selected index, or `None` on Esc /
 /// Ctrl+C. Restores cooked mode before returning on every path.
-fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<Option<usize>> {
+fn select_from_list(
+    title: &str,
+    items: &[(String, String)],
+    filterable: bool,
+) -> anyhow::Result<Option<usize>> {
     use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     const ROWS: usize = 12;
@@ -155,6 +159,10 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
     let mut frame = InlineFrame::default();
 
     crossterm::terminal::enable_raw_mode()?;
+    // Hide the cursor: its block glyph parked at column 0 reads as a stray
+    // box-drawing artifact on the bottom border (pi's TUI hides it too).
+    let _ = write!(stdout, "\x1b[?25l");
+    stdout.flush()?;
     let result = (|| -> anyhow::Result<Option<usize>> {
         loop {
             let filtered = filtered_indices(items, &filter);
@@ -167,20 +175,22 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
             // (FirstTimeSetupComponent.update()), so a resize mid-menu redraws
             // borders and wrapping at the new size.
             let tw = crate::term_width();
-            let counter = format!(
-                "({}/{})",
-                if filtered.is_empty() { 0 } else { sel + 1 },
-                filtered.len()
-            );
-            // Budget leaves room for padding plus `<title> `, one space, counter.
-            let filter_budget = tw
-                .saturating_sub(6 + title.chars().count() + counter.chars().count());
+            let header = if filter.is_empty() {
+                title.to_string()
+            } else {
+                let counter = format!(
+                    "({}/{})",
+                    if filtered.is_empty() { 0 } else { sel + 1 },
+                    filtered.len()
+                );
+                // Budget leaves room for padding plus `<title> `, one space, counter.
+                let filter_budget = tw
+                    .saturating_sub(6 + title.chars().count() + counter.chars().count());
+                format!("{title}> {} \x1b[2m{counter}\x1b[0m", clip(&filter, filter_budget))
+            };
             let mut c = Container::new();
-            c.push(Box::new(Border::default()));
-            c.push(Box::new(Text::new(
-                format!("{title}> {} \x1b[2m{counter}\x1b[0m", clip(&filter, filter_budget)),
-                1,
-            )));
+            c.push(Box::new(Border));
+            c.push(Box::new(Text::new(header, 1)));
             if filtered.is_empty() {
                 c.push(Box::new(Text::new("no matches", 1)));
             } else {
@@ -201,7 +211,7 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
                     )));
                 }
             }
-            c.push(Box::new(Border::default()));
+            c.push(Box::new(Border));
             frame.draw(&mut stdout, &c, tw)?;
 
             match read()? {
@@ -215,11 +225,11 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
                     }
                 }
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
-                    KeyCode::Char(c) => {
+                    KeyCode::Char(c) if filterable => {
                         filter.push(c);
                         sel = 0;
                     }
-                    KeyCode::Backspace => {
+                    KeyCode::Backspace if filterable => {
                         filter.pop();
                         sel = 0;
                     }
@@ -235,6 +245,8 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
         }
     })();
     crossterm::terminal::disable_raw_mode()?;
+    let _ = write!(stdout, "\x1b[?25h");
+    stdout.flush()?;
 
     // Erase the picker UI so the transcript shows only the outcome.
     frame.erase(&mut stdout)?;
@@ -248,7 +260,7 @@ pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<String> {
         .iter()
         .map(|(id, p)| (id.clone(), p.name.clone()))
         .collect();
-    match select_from_list("provider", &items)? {
+    match select_from_list("provider", &items, true)? {
         Some(i) => Ok(items[i].0.clone()),
         None => anyhow::bail!("provider selection aborted"),
     }
@@ -296,7 +308,7 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
         .into_iter()
         .map(|(a, b)| (a.to_string(), b))
         .collect();
-    let choice = match select_from_list("Get started", &items)? {
+    let choice = match select_from_list("Get started", &items, false)? {
         Some(i) => route_onboarding(i),
         None => OnboardingChoice::Skip,
     };
@@ -325,7 +337,7 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
                 ("codex".to_string(), "sign in with your ChatGPT account".to_string()),
                 ("anthropic".to_string(), "(coming soon)".to_string()),
             ];
-            let pick = match select_from_list("account", &accounts)? {
+            let pick = match select_from_list("account", &accounts, false)? {
                 Some(i) => i,
                 None => return Ok(false),
             };
@@ -427,7 +439,7 @@ pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
             .iter()
             .map(|m| (m.id.clone(), m.name.clone()))
             .collect();
-        match select_from_list("model", &items)? {
+        match select_from_list("model", &items, true)? {
             Some(i) => items[i].0.clone(),
             None => items[0].0.clone(), // Esc keeps the default model
         }
