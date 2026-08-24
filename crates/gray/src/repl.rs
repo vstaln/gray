@@ -15,6 +15,45 @@ use std::sync::Mutex as StdMutex;
 
 use crate::setup::read_line;
 
+/// Static slash-command table driving both `/help` and the autocomplete panel.
+pub(crate) const COMMANDS: &[(&str, &str)] = &[
+    ("model", "switch or pick a model"),
+    ("setup", "re-run provider configuration"),
+    ("sys", "view, edit, or restore the system prompt"),
+    ("help", "print the command list"),
+    ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
+];
+
+/// Commands whose name starts with `filter` (the text after '/'), table order.
+fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
+    let f = filter.to_lowercase();
+    COMMANDS
+        .iter()
+        .filter(|(n, _)| n.starts_with(&f))
+        .copied()
+        .collect()
+}
+
+/// Pure prompt-buffer edit op (unit-tested without a tty).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PromptEdit {
+    Insert(char),
+    Backspace,
+    Clear,
+}
+
+fn apply_edit(buf: &str, op: PromptEdit) -> String {
+    let mut b = buf.to_string();
+    match op {
+        PromptEdit::Insert(c) => b.push(c),
+        PromptEdit::Backspace => {
+            b.pop();
+        }
+        PromptEdit::Clear => b.clear(),
+    }
+    b
+}
+
 /// True while an agent turn is in flight; controls what Ctrl-C means.
 static TURN_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TURN_TOKEN: StdMutex<Option<tokio_util::sync::CancellationToken>> = StdMutex::new(None);
@@ -318,6 +357,160 @@ async fn handle_model(
     reload_agent(agent, config, cwd).await;
 }
 
+/// Repaints the prompt frame in place. Invariant: cursor rests on the input
+/// line between draws (first call: caller paints the initial frame ending there).
+/// `prev_panel` is the previous panel row count so we can jump back to frame top.
+/// The last line clears to end-of-screen (\x1b[J) so a shrinking panel leaves no residue.
+fn draw_prompt_frame(
+    out: &mut impl Write,
+    buf: &str,
+    panel: &[String],
+    cols: usize,
+    prev_panel: usize,
+) -> anyhow::Result<()> {
+    let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols));
+    // ponytail: cursor column = char count, not display width — wide glyphs drift; unicode-width if that matters.
+    let budget = cols.saturating_sub(6);
+    let chars: Vec<char> = buf.chars().collect();
+    let shown: String = if chars.len() > budget {
+        chars[chars.len() - budget..].iter().collect()
+    } else {
+        buf.to_string()
+    };
+
+    write!(out, "\x1b[{}A", prev_panel + 1)?; // up to top rule
+    write!(out, "\r\x1b[2K{rule}")?;
+    for row in panel {
+        write!(out, "\r\n\x1b[2K{row}")?;
+    }
+    write!(out, "\r\n\x1b[2K\u{203a} {shown}")?;
+    write!(out, "\r\n\x1b[2K{rule}\x1b[J")?;
+    write!(out, "\r\x1b[{}A\x1b[{}G", panel.len() + 1, shown.chars().count() + 3)?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Keeps the highlighted row visible within a `visible`-row window.
+fn scroll_start(sel: usize, visible: usize) -> usize {
+    if sel < visible { 0 } else { sel.saturating_sub(visible - 1) }
+}
+
+/// Raw-mode prompt editor: 3-line frame (top rule / '› ' buffer / bottom rule)
+/// plus a pi-style slash-command completion panel when the buffer starts with '/'.
+/// Returns the submitted line, or None on Ctrl-C / Ctrl-D-on-empty (exit request).
+fn read_prompt_line() -> anyhow::Result<Option<String>> {
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+
+    const PANEL_ROWS: usize = 5;
+    let mut stdout = std::io::stdout();
+    let mut buf = String::new();
+    let mut sel = 0usize; // highlighted row within visible matches
+    let mut prev_panel = 0usize;
+    let mut cols = crate::term_width();
+
+    crossterm::terminal::enable_raw_mode()?;
+    let result = (|| -> anyhow::Result<Option<String>> {
+        loop {
+            // Panel is live while the buffer is "/..." with no whitespace yet.
+            let active = buf.starts_with('/') && !buf[1..].contains(char::is_whitespace);
+            let matches = if active { completion_matches(&buf[1..]) } else { Vec::new() };
+            if sel >= matches.len() {
+                sel = matches.len().saturating_sub(1);
+            }
+
+            let mut panel: Vec<String> = Vec::new();
+            if !matches.is_empty() {
+                let width = cols.saturating_sub(4);
+                let start = scroll_start(sel, PANEL_ROWS);
+                for (i, (name, desc)) in matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
+                    let body = format!("  /{name} \u{2014} {}", clip_str(desc, width));
+                    panel.push(if i == sel {
+                        format!("\x1b[7m{body}\x1b[0m")
+                    } else {
+                        body
+                    });
+                }
+            }
+            let panel: Vec<String> = panel
+                .into_iter()
+                .map(|l| clip_str(&l, cols))
+                .collect();
+
+            draw_prompt_frame(&mut stdout, &buf, &panel, cols, prev_panel)?;
+            prev_panel = panel.len();
+
+            match read()? {
+                Event::Resize(new_cols, _) => {
+                    cols = new_cols as usize; // repaint below redraws at new width
+                }
+                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })
+                    if modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    return Ok(None)
+                }
+                Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, .. })
+                    if modifiers.contains(KeyModifiers::CONTROL) && buf.is_empty() =>
+                {
+                    return Ok(None) // EOF parity with the old cooked-mode Ctrl-D
+                }
+                Event::Key(KeyEvent { code, modifiers, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    match code {
+                        KeyCode::Char('p') => sel = sel.saturating_sub(1),
+                        KeyCode::Char('n') => sel = (sel + 1).min(matches.len().saturating_sub(1)),
+                        _ => {}
+                    }
+                }
+                Event::Key(KeyEvent { code, .. }) => match code {
+                    KeyCode::Enter => {
+                        if matches.is_empty() {
+                            return Ok(Some(buf));
+                        } else if matches.len() == 1 {
+                            return Ok(Some(format!("/{} ", matches[0].0)));
+                        }
+                        buf = format!("/{} ", matches[sel].0); // complete, keep editing args
+                    }
+                    KeyCode::Tab => {
+                        if let Some((name, _)) = matches.get(sel) {
+                            buf = format!("/{name} ");
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        buf = apply_edit(&buf, PromptEdit::Insert(c));
+                        sel = 0;
+                    }
+                    KeyCode::Backspace => {
+                        buf = apply_edit(&buf, PromptEdit::Backspace);
+                        sel = 0;
+                    }
+                    KeyCode::Esc => {
+                        buf = apply_edit(&buf, PromptEdit::Clear);
+                        sel = 0;
+                    }
+                    KeyCode::Up => sel = sel.saturating_sub(1),
+                    KeyCode::Down => sel = (sel + 1).min(matches.len().saturating_sub(1)),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    })();
+    crossterm::terminal::disable_raw_mode()?;
+    result.map(|opt| opt.map(|mut line| {
+        // strip the trailing space added by command completion ("/model " -> "/model")
+        if line.starts_with('/') {
+            while line.ends_with(' ') {
+                line.pop();
+            }
+        }
+        line.trim_end().to_string()
+    }))
+}
+
+/// Clips to at most `max` chars.
+fn clip_str(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -342,42 +535,38 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let mut agent: Option<Agent> = None;
     let mut session_state: Option<SessionState> = None;
 
-    loop {
-        println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
-        println!();
-        print!("\x1b[2m{}\x1b[0m", crate::plain_rule());
-        print!("\x1b[2A\r");
-        std::io::stdout().flush()?;
+    // Interactive terminals get the raw-mode frame; piped input falls back
+    // to plain cooked reads (scripts, tests).
+    let interactive = std::io::stdin().is_terminal();
+    use std::io::IsTerminal;
 
-        let read_res = tokio::select! {
-            res = tokio::task::spawn_blocking(|| {
-                let mut line = String::new();
-                match std::io::stdin().read_line(&mut line) {
-                    Ok(0) => Ok(None),
-                    Ok(_) => Ok(Some(line)),
-                    Err(e) => Err(e),
+    loop {
+        let line = if interactive {
+            let cols = crate::term_width();
+            let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols));
+            println!("{rule}");
+            print!("\u{203a} ");
+            std::io::stdout().flush()?;
+
+            let line = match read_prompt_line()? {
+                Some(l) => l,
+                None => {
+                    println!("\r\x1b[1B\x1b[2K"); // drop below the frame, clear bottom rule
+                    break;
                 }
-            }) => {
-                match res {
-                    Ok(Ok(opt)) => opt,
-                    Ok(Err(e)) => return Err(anyhow::anyhow!("failed to read stdin: {e}")),
-                    Err(e) => return Err(anyhow::anyhow!("stdin reader task failed: {e}")),
-                }
-            }
-            _ = tokio::signal::ctrl_c() => {
-                println!();
+            };
+            println!("\r\x1b[1B\x1b[2K\r\n"); // close the frame; output starts on a fresh line
+            line
+        } else {
+            print!("\u{203a} ");
+            std::io::stdout().flush()?;
+            let mut buf = String::new();
+            if std::io::stdin().read_line(&mut buf)? == 0 {
                 break;
             }
+            buf.trim().to_string()
         };
 
-        let Some(line) = read_res else {
-            // EOF (Ctrl-D)
-            println!();
-            println!();
-            break;
-        };
-
-        println!();
         match parse_command(&line) {
             ReplCommand::Empty => continue,
             ReplCommand::Quit => break,
@@ -391,10 +580,9 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
             }
             ReplCommand::Help => {
                 println!("{}", crate::rule("commands"));
-                println!("  /model [provider/id]  switch or pick a model");
-                println!("  /setup                re-run provider configuration");
-                println!("  /sys [show|reset]     view, edit, or restore the system prompt");
-                println!("  /quit                 exit (Ctrl-C exits at the prompt, cancels mid-turn)");
+                for (name, desc) in COMMANDS {
+                    println!("  /{name:<6} {desc}");
+                }
                 continue;
             }
             ReplCommand::Setup => {

@@ -28,4 +28,5 @@ futures = "0.3"
 clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 log = "0.4"
+crossterm = "0.28"
 

@@ -43,17 +43,11 @@ pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
     }
 }
 
-/// Terminal width, queried live via `stty` on every call so resizes are picked up; falls back to 80.
+/// Terminal width, queried live via crossterm on every call so resizes are picked up; falls back to 80.
 pub fn term_width() -> usize {
-    std::process::Command::new("stty")
-        .arg("size")
-        .stdin(std::process::Stdio::inherit())
-        .output()
+    crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
         .ok()
-        .and_then(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            s.split_whitespace().nth(1)?.parse::<usize>().ok()
-        })
         .filter(|&w| w >= 20)
         .unwrap_or(80)
 }
