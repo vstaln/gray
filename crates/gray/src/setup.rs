@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, rule};
+use crate::{config::Config, rule, tui::print_wrapped};
 
 /// Provider entry from the vendored catalog.
 #[derive(Debug, Clone, Deserialize)]
@@ -151,7 +151,8 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
     let mut stdout = std::io::stdout();
     let mut filter = String::new();
     let mut sel = 0usize;
-    let mut drawn = 0usize;
+    use crate::tui::{Border, Container, InlineFrame, Text};
+    let mut frame = InlineFrame::default();
 
     crossterm::terminal::enable_raw_mode()?;
     let result = (|| -> anyhow::Result<Option<usize>> {
@@ -162,61 +163,46 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
             }
             let selected = filtered.get(sel).copied();
 
-            // Fresh width at EVERY paint; the rules frame the menu inside the
-            // repaintable block, so a resize mid-menu redraws them at new size.
+            // Fresh width at EVERY paint; rebuild the whole container pi-style
+            // (FirstTimeSetupComponent.update()), so a resize mid-menu redraws
+            // borders and wrapping at the new size.
             let tw = crate::term_width();
-            let width = tw.saturating_sub(6);
             let counter = format!(
                 "({}/{})",
                 if filtered.is_empty() { 0 } else { sel + 1 },
                 filtered.len()
             );
-            // Budget leaves room for `<title> `, one space, and the counter.
-            let filter_budget =
-                width.saturating_sub(3 + title.chars().count() + counter.chars().count());
-            let mut lines = vec![
-                rule(""),
+            // Budget leaves room for padding plus `<title> `, one space, counter.
+            let filter_budget = tw
+                .saturating_sub(6 + title.chars().count() + counter.chars().count());
+            let mut c = Container::new();
+            c.push(Box::new(Border::default()));
+            c.push(Box::new(Text::new(
                 format!("{title}> {} \x1b[2m{counter}\x1b[0m", clip(&filter, filter_budget)),
-            ];
+                1,
+            )));
             if filtered.is_empty() {
-                lines.push("  no matches".to_string());
+                c.push(Box::new(Text::new("no matches", 1)));
             } else {
                 let start = scroll_start(sel, rows);
                 for &i in &filtered[start..(start + rows).min(filtered.len())] {
-                    let body = clip(
-                        &format!(
-                            "  {}  {}",
-                            clip(&items[i].0, 32),
-                            clip(&items[i].1, width.saturating_sub(34))
-                        ),
-                        tw,
+                    let body = format!(
+                        "{}  {}",
+                        clip(&items[i].0, 32),
+                        clip(&items[i].1, tw.saturating_sub(40))
                     );
-                    lines.push(if Some(i) == selected {
-                        format!("\x1b[7m{body}\x1b[0m")
-                    } else {
-                        body
-                    });
+                    c.push(Box::new(Text::new(
+                        if Some(i) == selected {
+                            format!("\x1b[7m{body}\x1b[0m")
+                        } else {
+                            body
+                        },
+                        1,
+                    )));
                 }
             }
-            lines.push(rule(""));
-
-            // Redraw: jump back over the previous frame, clear each line as written.
-            if drawn > 0 {
-                write!(stdout, "\x1b[{drawn}A")?;
-            }
-            let last = lines.len() - 1;
-            for (i, l) in lines.iter().enumerate() {
-                if i == last {
-                    // No trailing newline: emitting one on the pane's bottom row
-                    // scrolls the screen and every later repaint drifts a row.
-                    write!(stdout, "\r\x1b[2K{l}")?;
-                } else {
-                    write!(stdout, "\r\x1b[2K{l}\r\n")?;
-                }
-            }
-            write!(stdout, "\r")?;
-            drawn = last;
-            stdout.flush()?;
+            c.push(Box::new(Border::default()));
+            frame.draw(&mut stdout, &c, tw)?;
 
             match read()? {
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
@@ -251,10 +237,7 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
     crossterm::terminal::disable_raw_mode()?;
 
     // Erase the picker UI so the transcript shows only the outcome.
-    if drawn > 0 {
-        write!(stdout, "\x1b[{drawn}A\r\x1b[J")?;
-        stdout.flush()?;
-    }
+    frame.erase(&mut stdout)?;
     result
 }
 
@@ -298,8 +281,8 @@ pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "de
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!();
-    println!("  Welcome to gray by alignment");
-    println!("  \x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m");
+    print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
+    print_wrapped("\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m", 2);
     println!();
     let options = vec![
         ("Start free", String::new()),
