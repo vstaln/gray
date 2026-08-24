@@ -499,12 +499,15 @@ name = "gray"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "clap",
+ "futures",
  "gray-core",
  "gray-provider",
  "gray-session",
  "gray-tools",
+ "reqwest",
  "rust-embed",
  "serde",
  "serde_json",

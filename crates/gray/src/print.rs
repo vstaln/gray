@@ -5,15 +5,13 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{Agent, ToolContext};
+use gray_core::agent::ToolContext;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-use gray_provider::OpenAiProvider;
 use gray_session::{JsonlSessionStore, SessionId, SessionMeta, SessionStore};
-use gray_tools::Registry;
 
+use crate::build_agent;
 use crate::config::Config;
-use crate::format_system_prompt;
 
 /// Renders a single AgentEvent to a writer according to CLI display conventions.
 pub fn render_event<W: Write>(w: &mut W, event: &AgentEvent) -> std::io::Result<()> {
@@ -51,18 +49,7 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         cancel,
     };
 
-    let provider = OpenAiProvider::builder(&config.api_key, &config.model)
-        .base_url(&config.base_url)
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
-
-    let registry = Registry::builtin();
-    let tool_defs = registry.defs();
-
-    let system_prompt = format_system_prompt(&cwd);
-    let mut agent = Agent::new(Box::new(provider), Box::new(registry))
-        .with_system(system_prompt)
-        .with_tools(tool_defs);
+    let mut agent = build_agent(config, &cwd)?;
 
     let user_msg = Message::user(prompt);
     let events = agent
