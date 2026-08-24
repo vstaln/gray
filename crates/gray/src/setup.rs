@@ -144,6 +144,10 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
     use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     const ROWS: usize = 12;
+    // Keep the whole frame inside short panes: banner/welcome occupy ~8 rows
+    // above us and one rule row sits below; never let printing scroll the pane.
+    let term_rows = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
+    let rows = ROWS.min(term_rows.saturating_sub(11)).max(3);
     let mut stdout = std::io::stdout();
     let mut filter = String::new();
     let mut sel = 0usize;
@@ -177,8 +181,8 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
             if filtered.is_empty() {
                 lines.push("  no matches".to_string());
             } else {
-                let start = scroll_start(sel, ROWS);
-                for &i in &filtered[start..(start + ROWS).min(filtered.len())] {
+                let start = scroll_start(sel, rows);
+                for &i in &filtered[start..(start + rows).min(filtered.len())] {
                     let body = clip(
                         &format!(
                             "  {}  {}",
@@ -200,11 +204,18 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
             if drawn > 0 {
                 write!(stdout, "\x1b[{drawn}A")?;
             }
-            for l in &lines {
-                write!(stdout, "\r\x1b[2K{l}\r\n")?;
+            let last = lines.len() - 1;
+            for (i, l) in lines.iter().enumerate() {
+                if i == last {
+                    // No trailing newline: emitting one on the pane's bottom row
+                    // scrolls the screen and every later repaint drifts a row.
+                    write!(stdout, "\r\x1b[2K{l}")?;
+                } else {
+                    write!(stdout, "\r\x1b[2K{l}\r\n")?;
+                }
             }
             write!(stdout, "\r")?;
-            drawn = lines.len();
+            drawn = last;
             stdout.flush()?;
 
             match read()? {
