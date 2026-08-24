@@ -5,6 +5,7 @@ pub mod oauth;
 pub mod print;
 pub mod setup;
 pub mod repl;
+pub mod tui;
 
 use std::path::{Path, PathBuf};
 use clap::Parser;
