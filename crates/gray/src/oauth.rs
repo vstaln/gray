@@ -4,6 +4,7 @@
 //! listener on loopback port 56121, secure permissioned auth storage (`~/.gray/auth.json`),
 //! and token refresh. Hand-rolled SHA-256 and base64url encoding to avoid external crypto deps.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -17,10 +18,20 @@ pub const XAI_ISSUER: &str = "https://auth.x.ai";
 pub const XAI_API_BASE: &str = "https://api.x.ai/v1";
 pub const XAI_DEFAULT_MODEL: &str = "grok-4";
 
+pub const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
+const CODEX_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
+const OPENAI_SCOPE: &str = "openid profile email offline_access";
+pub const CODEX_API_BASE: &str = "https://api.openai.com/v1";
+pub const CODEX_DEFAULT_MODEL: &str = "gpt-5.3-codex";
+const CODEX_PORT: u16 = 1455;
+const CODEX_CALLBACK_PATH: &str = "/auth/callback";
+const CODEX_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
+
 const DISCOVERY_URL: &str = "https://auth.x.ai/.well-known/openid-configuration";
 const AUTHORIZE_FALLBACK: &str = "https://auth.x.ai/oauth2/authorize";
 const TOKEN_FALLBACK: &str = "https://auth.x.ai/oauth2/token";
-const SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
+const XAI_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 const LOOPBACK_PORT: u16 = 56121;
 const CALLBACK_PATH: &str = "/callback";
 const REDIRECT_URI: &str = "http://127.0.0.1:56121/callback";
@@ -412,7 +423,22 @@ fn auth_path() -> anyhow::Result<PathBuf> {
     Ok(crate::setup::gray_home()?.join("auth.json"))
 }
 
+fn load_store(path: &Path) -> BTreeMap<String, StoredAuth> {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    if let Ok(single) = serde_json::from_str::<StoredAuth>(&body) {
+        let mut map = BTreeMap::new();
+        map.insert(single.provider.clone(), single);
+        return map;
+    }
+    serde_json::from_str::<BTreeMap<String, StoredAuth>>(&body).unwrap_or_default()
+}
+
 pub fn save_auth_at(path: &Path, auth: &StoredAuth) -> anyhow::Result<()> {
+    let mut store = load_store(path);
+    store.insert(auth.provider.clone(), auth.clone());
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -428,7 +454,7 @@ pub fn save_auth_at(path: &Path, auth: &StoredAuth) -> anyhow::Result<()> {
         file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
 
-    let json = serde_json::to_string_pretty(auth)?;
+    let json = serde_json::to_string_pretty(&store)?;
     file.write_all(json.as_bytes())?;
     file.flush()?;
     Ok(())
@@ -439,19 +465,11 @@ pub fn save_auth(auth: &StoredAuth) -> anyhow::Result<()> {
 }
 
 pub fn load_auth_at(path: &Path, provider: &str) -> anyhow::Result<StoredAuth> {
-    let body = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            anyhow::bail!("not signed in to {provider}");
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    let auth: StoredAuth = serde_json::from_str(&body)?;
-    if auth.provider != provider {
-        anyhow::bail!("not signed in to {provider}");
-    }
-    Ok(auth)
+    let store = load_store(path);
+    store
+        .get(provider)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("not signed in to {provider}"))
 }
 
 pub fn load_auth(provider: &str) -> anyhow::Result<StoredAuth> {
@@ -471,15 +489,21 @@ struct TokenResponse {
     id_token: Option<String>,
 }
 
-async fn exchange_code(token_url: &str, code: &str, verifier: &str) -> anyhow::Result<TokenResponse> {
+async fn exchange_code(
+    token_url: &str,
+    client_id: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<TokenResponse> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
     let params = [
         ("grant_type", "authorization_code"),
-        ("client_id", XAI_CLIENT_ID),
         ("code", code),
-        ("redirect_uri", REDIRECT_URI),
+        ("redirect_uri", redirect_uri),
+        ("client_id", client_id),
         ("code_verifier", verifier),
     ];
     let resp = client
@@ -492,7 +516,7 @@ async fn exchange_code(token_url: &str, code: &str, verifier: &str) -> anyhow::R
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("xAI token exchange failed ({status}): {body}");
+        anyhow::bail!("token exchange failed ({status}): {body}");
     }
 
     let tokens: TokenResponse = resp.json().await?;
@@ -500,17 +524,26 @@ async fn exchange_code(token_url: &str, code: &str, verifier: &str) -> anyhow::R
 }
 
 async fn refresh_with(provider: &str, refresh_token: &str) -> anyhow::Result<StoredAuth> {
-    let endpoints = discover_endpoints().await?;
+    let (token_url, client_id, has_scope) = if provider == "codex" {
+        (CODEX_TOKEN_URL.to_string(), CODEX_CLIENT_ID, true)
+    } else {
+        let endpoints = discover_endpoints().await?;
+        (endpoints.token_url, XAI_CLIENT_ID, false)
+    };
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .build()?;
-    let params = [
+    let mut params = vec![
         ("grant_type", "refresh_token"),
-        ("client_id", XAI_CLIENT_ID),
         ("refresh_token", refresh_token),
+        ("client_id", client_id),
     ];
+    if has_scope {
+        params.push(("scope", OPENAI_SCOPE));
+    }
     let resp = client
-        .post(&endpoints.token_url)
+        .post(&token_url)
         .header("Accept", "application/json")
         .form(&params)
         .send()
@@ -519,7 +552,7 @@ async fn refresh_with(provider: &str, refresh_token: &str) -> anyhow::Result<Sto
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("xAI token refresh failed ({status}): {body}");
+        anyhow::bail!("{provider} token refresh failed ({status}): {body}");
     }
 
     let tokens: TokenResponse = resp.json().await?;
@@ -555,6 +588,29 @@ fn percent_encode_uri(s: &str) -> String {
     out
 }
 
+pub fn build_oauth_url(
+    authorize_url: &str,
+    client_id: &str,
+    redirect_uri: &str,
+    scope: &str,
+    code_challenge: &str,
+    state: &str,
+    extras: &[(&str, &str)],
+) -> String {
+    let encoded_redirect = percent_encode_uri(redirect_uri);
+    let encoded_scope = scope.replace(' ', "%20");
+    let mut url = format!(
+        "{authorize_url}?response_type=code&client_id={client_id}&redirect_uri={encoded_redirect}&scope={encoded_scope}&code_challenge={code_challenge}&code_challenge_method=S256&state={state}"
+    );
+    for &(k, v) in extras {
+        url.push('&');
+        url.push_str(k);
+        url.push('=');
+        url.push_str(&percent_encode_uri(v));
+    }
+    url
+}
+
 pub fn build_auth_url(
     authorize_url: &str,
     client_id: &str,
@@ -564,10 +620,18 @@ pub fn build_auth_url(
     state: &str,
     nonce: &str,
 ) -> String {
-    let encoded_redirect = percent_encode_uri(redirect_uri);
-    let encoded_scope = scope.replace(' ', "%20");
-    format!(
-        "{authorize_url}?response_type=code&client_id={client_id}&redirect_uri={encoded_redirect}&scope={encoded_scope}&code_challenge={code_challenge}&code_challenge_method=S256&state={state}&nonce={nonce}&plan=generic&referrer=cli-proxy-api"
+    build_oauth_url(
+        authorize_url,
+        client_id,
+        redirect_uri,
+        scope,
+        code_challenge,
+        state,
+        &[
+            ("nonce", nonce),
+            ("plan", "generic"),
+            ("referrer", "cli-proxy-api"),
+        ],
     )
 }
 
@@ -580,34 +644,14 @@ fn unix_now() -> i64 {
 
 // ---- Public API ------------------------------------------------------------
 
-/// Runs interactive xAI OAuth browser sign-in flow.
-pub async fn run_xai_signin() -> anyhow::Result<StoredAuth> {
-    let endpoints = discover_endpoints().await?;
-    let listener = TcpListener::bind(("127.0.0.1", LOOPBACK_PORT)).map_err(|e| {
+async fn await_callback_head(port: u16, callback_path: &str) -> anyhow::Result<String> {
+    let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| {
         if e.kind() == std::io::ErrorKind::AddrInUse {
-            anyhow::anyhow!("port 56121 busy — close whatever uses it and retry")
+            anyhow::anyhow!("port {port} busy — close whatever uses it and retry")
         } else {
             e.into()
         }
     })?;
-
-    let verifier = generate_code_verifier();
-    let challenge = generate_code_challenge(&verifier);
-    let state = generate_state();
-    let nonce = generate_state();
-    let auth_url = build_auth_url(
-        &endpoints.authorize_url,
-        XAI_CLIENT_ID,
-        REDIRECT_URI,
-        SCOPE,
-        &challenge,
-        &state,
-        &nonce,
-    );
-
-    println!("\nSign in with your x.ai account.");
-    println!("Open this URL in your browser:\n{auth_url}\n");
-    println!("(waiting up to 5 minutes…)");
 
     listener.set_nonblocking(true)?;
     let start = Instant::now();
@@ -654,7 +698,7 @@ pub async fn run_xai_signin() -> anyhow::Result<StoredAuth> {
         .next()
         .map(|line| {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            parts.len() >= 2 && parts[1].starts_with(CALLBACK_PATH)
+            parts.len() >= 2 && parts[1].starts_with(callback_path)
         })
         .unwrap_or(false);
 
@@ -672,7 +716,18 @@ pub async fn run_xai_signin() -> anyhow::Result<StoredAuth> {
     let _ = stream.flush();
     drop(stream);
 
-    let params = parse_callback_line(&head)?;
+    Ok(head)
+}
+
+async fn finish_signin(
+    head: &str,
+    state: &str,
+    verifier: &str,
+    provider: &str,
+    client_id: &str,
+    token_url: &str,
+) -> anyhow::Result<StoredAuth> {
+    let params = parse_callback_line(head)?;
     if let Some(err) = params.error {
         let desc = params.error_description.unwrap_or(err);
         anyhow::bail!("{desc}");
@@ -680,14 +735,19 @@ pub async fn run_xai_signin() -> anyhow::Result<StoredAuth> {
     let code = params
         .code
         .ok_or_else(|| anyhow::anyhow!("No authorization code received"))?;
-    if params.state.as_deref() != Some(&state) {
+    if params.state.as_deref() != Some(state) {
         anyhow::bail!("Invalid state parameter");
     }
 
-    let tokens = exchange_code(&endpoints.token_url, &code, &verifier).await?;
+    let redirect_uri = if provider == "codex" {
+        CODEX_REDIRECT_URI
+    } else {
+        REDIRECT_URI
+    };
+    let tokens = exchange_code(token_url, client_id, &code, verifier, redirect_uri).await?;
     let email = tokens.id_token.as_deref().and_then(decode_id_token_email);
     let stored = StoredAuth {
-        provider: "xai".to_string(),
+        provider: provider.to_string(),
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token.unwrap_or_default(),
         expires_at: unix_now() + tokens.expires_in.unwrap_or(3600),
@@ -701,6 +761,74 @@ pub async fn run_xai_signin() -> anyhow::Result<StoredAuth> {
         println!("Signed in.");
     }
     Ok(stored)
+}
+
+/// Runs interactive xAI OAuth browser sign-in flow.
+pub async fn run_xai_signin() -> anyhow::Result<StoredAuth> {
+    let endpoints = discover_endpoints().await?;
+    let verifier = generate_code_verifier();
+    let challenge = generate_code_challenge(&verifier);
+    let state = generate_state();
+    let nonce = generate_state();
+    let auth_url = build_auth_url(
+        &endpoints.authorize_url,
+        XAI_CLIENT_ID,
+        REDIRECT_URI,
+        XAI_SCOPE,
+        &challenge,
+        &state,
+        &nonce,
+    );
+
+    println!("\nSign in with your x.ai account.");
+    println!("Open this URL in your browser:\n{auth_url}\n");
+    println!("(waiting up to 5 minutes…)");
+
+    let head = await_callback_head(LOOPBACK_PORT, CALLBACK_PATH).await?;
+    finish_signin(
+        &head,
+        &state,
+        &verifier,
+        "xai",
+        XAI_CLIENT_ID,
+        &endpoints.token_url,
+    )
+    .await
+}
+
+/// Runs interactive Codex OAuth browser sign-in flow.
+pub async fn run_codex_signin() -> anyhow::Result<StoredAuth> {
+    let verifier = generate_code_verifier();
+    let challenge = generate_code_challenge(&verifier);
+    let state = generate_state();
+    let auth_url = build_oauth_url(
+        CODEX_AUTHORIZE_URL,
+        CODEX_CLIENT_ID,
+        CODEX_REDIRECT_URI,
+        OPENAI_SCOPE,
+        &challenge,
+        &state,
+        &[
+            ("id_token_add_organizations", "true"),
+            ("codex_cli_simplified_flow", "true"),
+            ("originator", "codex_cli_rs"),
+        ],
+    );
+
+    println!("\nSign in with your ChatGPT account.");
+    println!("Open this URL in your browser:\n{auth_url}\n");
+    println!("(waiting up to 5 minutes…)");
+
+    let head = await_callback_head(CODEX_PORT, CODEX_CALLBACK_PATH).await?;
+    finish_signin(
+        &head,
+        &state,
+        &verifier,
+        "codex",
+        CODEX_CLIENT_ID,
+        CODEX_TOKEN_URL,
+    )
+    .await
 }
 
 /// Refreshes saved OAuth credentials for the given provider.
@@ -730,9 +858,19 @@ pub async fn apply_saved_oauth(config: &mut crate::config::Config) {
         return;
     };
     let saved = crate::setup::load_saved_config_at(&path);
+    let provider = if saved
+        .base_url
+        .as_deref()
+        .map(|u| u.contains("api.openai.com"))
+        .unwrap_or(false)
+    {
+        "codex"
+    } else {
+        "xai"
+    };
     if saved.auth_mode.as_deref() == Some("oauth")
         && config.api_key.is_none()
-        && let Ok(token) = ensure_access_token("xai").await
+        && let Ok(token) = ensure_access_token(provider).await
     {
         config.api_key = Some(token);
     }
@@ -859,7 +997,7 @@ mod tests {
             AUTHORIZE_FALLBACK,
             XAI_CLIENT_ID,
             REDIRECT_URI,
-            SCOPE,
+            XAI_SCOPE,
             "challenge123",
             "state123",
             "nonce123",
@@ -867,6 +1005,91 @@ mod tests {
         assert!(url.contains("scope=openid%20profile%20email%20offline_access%20grok-cli:access%20api:access"));
         assert!(url.contains("&code_challenge_method=S256"));
         assert!(url.contains("response_type=code"));
+    }
+
+    #[test]
+    fn codex_auth_url_order_and_encoding() {
+        assert_eq!(
+            build_oauth_url(
+                CODEX_AUTHORIZE_URL,
+                CODEX_CLIENT_ID,
+                CODEX_REDIRECT_URI,
+                OPENAI_SCOPE,
+                "challenge123",
+                "state123",
+                &[
+                    ("id_token_add_organizations", "true"),
+                    ("codex_cli_simplified_flow", "true"),
+                    ("originator", "codex_cli_rs"),
+                ],
+            ),
+            "https://auth.openai.com/oauth/authorize?response_type=code&client_id=app_EMoamEEZ73f0CkXaXp7hrann&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid%20profile%20email%20offline_access&code_challenge=challenge123&code_challenge_method=S256&state=state123&id_token_add_organizations=true&codex_cli_simplified_flow=true&originator=codex_cli_rs"
+        );
+    }
+
+    #[test]
+    fn xai_auth_url_unchanged_by_refactor() {
+        let url = build_auth_url(
+            AUTHORIZE_FALLBACK,
+            XAI_CLIENT_ID,
+            REDIRECT_URI,
+            XAI_SCOPE,
+            "challenge123",
+            "state123",
+            "nonce123",
+        );
+        assert!(url.contains("scope=openid%20profile%20email%20offline_access%20grok-cli:access%20api:access"));
+        assert!(url.ends_with("&nonce=nonce123&plan=generic&referrer=cli-proxy-api"));
+    }
+
+    #[test]
+    fn callback_parses_codex_path() {
+        let p = parse_callback_line("GET /auth/callback?code=abc&state=xyz HTTP/1.1").unwrap();
+        assert_eq!(p.code.as_deref(), Some("abc"));
+        assert_eq!(p.state.as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn auth_json_multi_provider_round_trip() {
+        let dir = std::env::temp_dir().join(format!("gray-oauth-multi-test-{}", Uuid::new_v4()));
+        let path = dir.join("auth.json");
+
+        let auth_xai = StoredAuth {
+            provider: "xai".to_string(),
+            access_token: "xai_access".to_string(),
+            refresh_token: "xai_refresh".to_string(),
+            expires_at: 1000,
+            email: Some("user@x.ai".to_string()),
+        };
+        let auth_codex = StoredAuth {
+            provider: "codex".to_string(),
+            access_token: "codex_access".to_string(),
+            refresh_token: "codex_refresh".to_string(),
+            expires_at: 2000,
+            email: Some("user@openai.com".to_string()),
+        };
+
+        save_auth_at(&path, &auth_xai).unwrap();
+        save_auth_at(&path, &auth_codex).unwrap();
+
+        let loaded_xai = load_auth_at(&path, "xai").unwrap();
+        assert_eq!(loaded_xai.access_token, "xai_access");
+        assert_eq!(loaded_xai.email.as_deref(), Some("user@x.ai"));
+
+        let loaded_codex = load_auth_at(&path, "codex").unwrap();
+        assert_eq!(loaded_codex.access_token, "codex_access");
+        assert_eq!(loaded_codex.email.as_deref(), Some("user@openai.com"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::metadata(&path).unwrap().permissions();
+            assert_eq!(perms.mode() & 0o777, 0o600);
+        }
+
+        assert!(load_auth_at(&path, "unknown").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
