@@ -2,14 +2,14 @@
 
 pub mod config;
 pub mod print;
-pub mod web;
+pub mod repl;
 
 use std::path::Path;
 use clap::Parser;
 
 pub use config::Config;
 pub use print::run_print_mode;
-pub use web::run_web_mode;
+pub use repl::{run_repl_mode, ReplCommand, parse_command};
 
 use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;
@@ -76,10 +76,6 @@ pub struct Cli {
     /// Print mode: execute prompt directly and print output
     #[arg(short = 'p', long = "print")]
     pub print: Option<String>,
-
-    /// Port to listen on (for web mode)
-    #[arg(long)]
-    pub port: Option<u16>,
 
     /// API key for authentication (overrides GRAY_API_KEY and OPENAI_API_KEY)
     #[arg(long)]

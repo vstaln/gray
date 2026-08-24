@@ -5,9 +5,6 @@ use crate::Cli;
 /// Default API base URL pointing to OpenRouter.
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
-/// Default port for the web interface.
-pub const DEFAULT_PORT: u16 = 7654;
-
 /// Resolved application configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -17,8 +14,6 @@ pub struct Config {
     pub base_url: String,
     /// API key for authentication.
     pub api_key: String,
-    /// HTTP server port.
-    pub port: u16,
 }
 
 impl Config {
@@ -84,22 +79,10 @@ impl Config {
                 )
             })?;
 
-        let port = match cli.port {
-            Some(p) => p,
-            None => match env("GRAY_PORT") {
-                Some(p_str) if !p_str.trim().is_empty() => p_str
-                    .trim()
-                    .parse::<u16>()
-                    .map_err(|e| anyhow::anyhow!("invalid GRAY_PORT value '{p_str}': {e}"))?,
-                _ => DEFAULT_PORT,
-            },
-        };
-
         Ok(Self {
             model,
             base_url,
             api_key,
-            port,
         })
     }
 }
@@ -114,7 +97,6 @@ mod tests {
             model: None,
             base_url: None,
             print: None,
-            port: None,
             api_key: None,
         }
     }
@@ -125,14 +107,11 @@ mod tests {
         cli.model = Some("custom/flag-model".to_string());
         cli.base_url = Some("https://flag.example.com/v1".to_string());
         cli.api_key = Some("flag-key-123".to_string());
-        cli.port = Some(9999);
-
         let mut env_map = HashMap::new();
         env_map.insert("GRAY_MODEL", "env/model");
         env_map.insert("GRAY_BASE_URL", "https://env.example.com/v1");
         env_map.insert("GRAY_API_KEY", "gray-env-key");
         env_map.insert("OPENAI_API_KEY", "openai-env-key");
-        env_map.insert("GRAY_PORT", "8888");
 
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
@@ -140,7 +119,6 @@ mod tests {
         assert_eq!(config.model, "custom/flag-model");
         assert_eq!(config.base_url, "https://flag.example.com/v1");
         assert_eq!(config.api_key, "flag-key-123");
-        assert_eq!(config.port, 9999);
     }
 
     #[test]
@@ -151,15 +129,12 @@ mod tests {
         env_map.insert("GRAY_MODEL", "env/gray-model");
         env_map.insert("GRAY_BASE_URL", "https://env.custom.com/v1");
         env_map.insert("GRAY_API_KEY", "gray-key-456");
-        env_map.insert("GRAY_PORT", "5555");
-
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
 
         assert_eq!(config.model, "env/gray-model");
         assert_eq!(config.base_url, "https://env.custom.com/v1");
         assert_eq!(config.api_key, "gray-key-456");
-        assert_eq!(config.port, 5555);
     }
 
     #[test]
@@ -176,7 +151,6 @@ mod tests {
         assert_eq!(config.model, "provider/model-default-test");
         assert_eq!(config.base_url, DEFAULT_BASE_URL);
         assert_eq!(config.api_key, "key-xyz");
-        assert_eq!(config.port, DEFAULT_PORT);
     }
 
     #[test]
@@ -240,23 +214,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn invalid_port_env_fails() {
-        let cli = make_cli();
-
-        let mut env_map = HashMap::new();
-        env_map.insert("GRAY_MODEL", "model-name");
-        env_map.insert("GRAY_API_KEY", "key");
-        env_map.insert("GRAY_PORT", "invalid-port-number");
-
-        let err = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
-            .expect_err("should fail when GRAY_PORT is invalid");
-
-        assert!(
-            err.to_string().contains("invalid GRAY_PORT value"),
-            "unexpected error message: {err}"
-        );
-    }
 
     #[test]
     fn empty_whitespace_strings_treated_as_unset() {
