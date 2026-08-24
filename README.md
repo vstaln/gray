@@ -2,13 +2,15 @@
 
 <img src="docs/img/grayai.png" width="140" alt="gray logo"/>
 
-# ⬡ gray
+# gray
 
 **A minimal coding agent that runs tools, edits code, and works with any model provider.**
 
 `Rust` · `OpenAI-compatible` · `JSONL sessions` · `zero runtime deps beyond the toolchain`
 
 </div>
+
+<img src="docs/img/inspo-ui.jpg" width="100%" alt=""/>
 
 ---
 
@@ -21,10 +23,6 @@
   ⠀⠀⠀⠙⣎⡇⣨⢻⣴⢻⡁⡟⡼⠁⠀⠀⠀⠀⠀⠀⠀⠀⠉⠉⠉⠉⠀⠀⠀⠉⠉⠀⠀⠀⠈⠉⠉⠁⠉⠉⠀⣀⣀⣿⡿⠁
   ⠀⠀⠀⠀⠘⣷⣟⣁⣀⣙⣷⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠛⠟⠛⠁
 ```
-
-<div align="center"><i>read · bash · edit · write — streamed token by token into your terminal</i></div>
-
----
 
 ## Quick start
 
@@ -89,23 +87,12 @@ crates/
 | `GRAY_MODEL`, `GRAY_BASE_URL` | defaults before `~/.gray/config.json` is consulted |
 | `GRAY_LOG` | log level: `error`…`trace` (default `info`) |
 
-## Vibe board
-
-<div align="center">
-<table>
-<tr>
-<td><img src="docs/img/inspo-terminal.jpg" width="260"/></td>
-<td><img src="docs/img/inspo-dark.jpg" width="260"/></td>
-<td><img src="docs/img/inspo-ui.jpg" width="260"/></td>
-</tr>
-</table>
-<i>aesthetic north stars — dark terminals, monospace everywhere, orange accents</i>
-</div>
+<img src="docs/img/inspo-terminal.jpg" width="480" alt=""/>
 
 ---
 
 <div align="center">
 
-<sub>built by <a href="https://github.com/alignment">alignment</a> · MIT OR Apache-2.0</sub>
+<sub>MIT © 2026 vstaln</sub>
 
 </div>

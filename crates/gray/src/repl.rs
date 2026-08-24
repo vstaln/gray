@@ -638,7 +638,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
         crate::tui::print_logo();
         print!("\r\n");
         print!(
-            "\r\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m\r\n",
+            "\r\x1b[1mgray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m\r\n",
             env!("CARGO_PKG_VERSION")
         );
     }
@@ -687,7 +687,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 Some(l) => l,
                 None => {
                     // Ctrl-C / Ctrl-D at the prompt: exit visibly, not like a crash.
-                    println!("\x1b[2m\u{2b21} bye\x1b[0m");
+                    println!("\x1b[2mbye\x1b[0m");
                     break;
                 }
             };
