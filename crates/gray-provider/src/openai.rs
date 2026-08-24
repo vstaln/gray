@@ -390,11 +390,15 @@ async fn send_request_with_retries(
     initial_backoff: Duration,
 ) -> Result<reqwest::Response, ProviderError> {
     for attempt in 1..=MAX_ATTEMPTS {
-        let req = client
-            .post(url.clone())
-            .header("Authorization", format!("Bearer {api_key}"))
-            .header("Content-Type", "application/json")
-            .json(body);
+        // Empty key means keyless upstream: send no auth header at all.
+        let base = if api_key.is_empty() {
+            client.post(url.clone())
+        } else {
+            client
+                .post(url.clone())
+                .header("Authorization", format!("Bearer {api_key}"))
+        };
+        let req = base.header("Content-Type", "application/json").json(body);
 
         let res_result = req.send().await;
         let err = match res_result {

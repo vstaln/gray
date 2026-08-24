@@ -272,7 +272,7 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
 pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "deepseek-r1"];
 
 /// fx-style first-run screen. Returns true when the user finished configuration.
-pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
+pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!();
     println!("  Welcome to gray");
     println!("  \x1b[2mgray by alignment · fast · minimal · built to run 24/7\x1b[0m");
@@ -282,7 +282,7 @@ pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     let options = vec![
         ("Start free — no sign-up", "chat in seconds via OpenCode Zen".to_string()),
         ("Add an API key", "pick from 200+ providers".to_string()),
-        ("Sign in with account", "(coming soon)".to_string()),
+        ("Sign in with account", "xAI / Grok · more coming soon".to_string()),
         ("Use a local model", "Ollama / llama.cpp / vLLM".to_string()),
         ("Skip for now", String::new()),
     ];
@@ -301,20 +301,52 @@ pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
             let path = saved_config_path()?;
             save_saved_config_at(&path, &SavedConfig {
                 base_url: Some("https://opencode.ai/zen/v1".into()),
-                api_key: Some("not-needed".into()),
-                model: Some("deepseek-v4-flash-free".into()),
+                api_key: None,
+                model: Some("laguna-s-2.1-free".into()),
                 auth_mode: Some("none".into()),
             })?;
             config.base_url = "https://opencode.ai/zen/v1".into();
             config.api_key = Some("not-needed".into());
-            config.model = Some("deepseek-v4-flash-free".into());
+            config.model = Some("laguna-s-2.1-free".into());
             println!("saved — you're on the free tier. /model to switch anytime.");
             return Ok(true);
         }
         OnboardingChoice::ApiKey => run_setup(config)?,
         OnboardingChoice::OAuth => {
-            println!("(OAuth sign-in lands in a future release — API keys work today)");
-            return Ok(false);
+            // Account sub-menu: xAI is the only live flow; the rest are placeholders.
+            let accounts = vec![
+                ("xai / grok".to_string(), "sign in with your x.ai account".to_string()),
+                ("anthropic".to_string(), "(coming soon)".to_string()),
+                ("codex".to_string(), "(coming soon)".to_string()),
+            ];
+            let pick = match select_from_list("account", &accounts)? {
+                Some(i) => i,
+                None => return Ok(false),
+            };
+            if pick != 0 {
+                println!("{} — (coming soon)", accounts[pick].0);
+                return Ok(false);
+            }
+            match crate::oauth::run_xai_signin().await {
+                Ok(auth) => {
+                    save_saved_config_at(&saved_config_path()?, &SavedConfig {
+                        base_url: Some(crate::oauth::XAI_API_BASE.into()),
+                        // The access token lives in ~/.gray/auth.json (0600); it is
+                        // pulled into the session at startup by apply_saved_oauth.
+                        api_key: None,
+                        model: Some(crate::oauth::XAI_DEFAULT_MODEL.into()),
+                        auth_mode: Some("oauth".into()),
+                    })?;
+                    config.base_url = crate::oauth::XAI_API_BASE.into();
+                    config.model = Some(crate::oauth::XAI_DEFAULT_MODEL.into());
+                    config.api_key = Some(auth.access_token);
+                    println!("xAI / Grok ready — saved to {}.", saved_config_path()?.display());
+                }
+                Err(e) => {
+                    println!("sign-in failed: {e}");
+                    return Ok(false);
+                }
+            }
         }
         OnboardingChoice::Local => {
             println!("{}", rule("local model"));
@@ -326,7 +358,7 @@ pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
             let path = saved_config_path()?;
             save_saved_config_at(&path, &SavedConfig {
                 base_url: Some(base.clone()),
-                api_key: Some("not-needed".into()),
+                api_key: None,
                 model: Some(model.clone()),
                 auth_mode: Some("none".into()),
             })?;

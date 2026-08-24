@@ -99,6 +99,7 @@ mod tests {
             base_url: None,
             print: None,
             api_key: None,
+            continue_last: false,
         }
     }
 
