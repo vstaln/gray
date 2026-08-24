@@ -10,6 +10,7 @@ use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_session::{default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore};
 
+use crate::setup::read_line;
 use crate::{build_agent, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
 
@@ -71,6 +72,8 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Run the interactive provider/key/model setup wizard (`/setup`).
     Setup,
+    /// Open the model picker (`/model`) or set directly (`/model provider/id`).
+    Model(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Regular user prompt to feed to the agent.
@@ -106,6 +109,9 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Reset)
     } else if trimmed == "/setup" {
         ReplCommand::Setup
+    } else if let Some(rest) = trimmed.strip_prefix("/model") {
+        let arg = rest.trim();
+        ReplCommand::Model((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed.starts_with('/') {
         ReplCommand::Unknown(trimmed.to_string())
     } else {
@@ -192,6 +198,96 @@ async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
     *agent = Some(rebuilt);
 }
 
+/// Handles `/model`: interactive picker (no arg) or direct set (`/model provider/id`).
+/// Switching updates the live agent and persists to ~/.gray/config.json.
+async fn handle_model(
+    config: &mut Config,
+    cwd: &Path,
+    direct: Option<String>,
+    agent: &mut Option<Agent>,
+) {
+    use crate::setup::load_catalog;
+    let catalog = match load_catalog() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("catalog error: {e}");
+            return;
+        }
+    };
+
+    // Resolve target model id: either the direct argument or a picker round.
+    let new_model = match direct {
+        Some(id) => id,
+        None => {
+            if config.model.is_none() || config.api_key.is_none() {
+                crate::setup::run_setup(config).ok();
+                config.model.clone().unwrap_or_default()
+            } else {
+                let current = config.model.clone().unwrap_or_default();
+                // featured providers' flagship models, catalog order (newest first)
+                let ours: Vec<_> = catalog
+                    .values()
+                    .filter(|p| p.featured)
+                    .flat_map(|p| p.models.iter().map(move |m| (p, m)))
+                    .take(8)
+                    .collect();
+                println!("models{}:", if ours.is_empty() { " (none matched — type any id)" } else { "" });
+                for (i, (_, m)) in ours.iter().enumerate() {
+                    let mark = if m.id == current { " ✓" } else { "" };
+                    println!("  {}. {}{}", i + 1, m.id, mark);
+                }
+                println!("  [a] all providers · [enter] keep {}", current);
+                let input = match read_line("model: ") {
+                    Ok(l) => l,
+                    Err(e) => {
+                        println!("{e}");
+                        return;
+                    }
+                };
+                if input.is_empty() {
+                    return; // keep current
+                }
+                if input.eq_ignore_ascii_case("a") {
+                    // delegate to the setup picker's provider stage by re-running it
+                    crate::setup::run_setup(config).ok();
+                    config.model.clone().unwrap_or_default()
+                } else if let Ok(n) = input.parse::<usize>() {
+                    if let Some((_, m)) = ours.get(n - 1) {
+                        m.id.clone()
+                    } else {
+                        println!("no such row");
+                        return;
+                    }
+                } else {
+                    input // free text: any id the endpoint accepts
+                }
+            }
+        }
+    };
+
+    if Some(&new_model) == config.model.as_ref() {
+        println!("already on {new_model}");
+        return;
+    }
+    config.model = Some(new_model.clone());
+    // persist
+    let path = match crate::setup::saved_config_path() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    let mut saved = crate::setup::load_saved_config_at(&path);
+    saved.model = Some(new_model.clone());
+    if let Err(e) = crate::setup::save_saved_config_at(&path, &saved) {
+        println!("switched for this session, but could not save: {e}");
+    } else {
+        println!("model set to {new_model} (saved)");
+    }
+    reload_agent(agent, config, cwd).await;
+}
+
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
@@ -251,6 +347,10 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
             ReplCommand::Quit => break,
             ReplCommand::Sys(action) => {
                 handle_sys(config, &cwd, action, &mut agent).await;
+                continue;
+            }
+            ReplCommand::Model(direct) => {
+                handle_model(config, &cwd, direct, &mut agent).await;
                 continue;
             }
             ReplCommand::Setup => {
