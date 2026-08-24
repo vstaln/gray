@@ -2,7 +2,7 @@
 name = "gray"
 version.workspace = true
 edition.workspace = true
-description = "⬡ gray — a minimal coding agent that runs tools, edits code, and works with any model provider"
+description = "gray — a minimal, modular agent harness in Rust."
 license.workspace = true
 
 [lib]

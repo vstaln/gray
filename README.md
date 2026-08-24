@@ -31,7 +31,7 @@
 ```bash
 cargo build --release -p gray
 
-# interactive REPL (pi-style: nothing forced at boot)
+# interactive REPL: nothing forced at boot
 ./target/release/gray
 
 # one-shot print mode for scripts and pipes
@@ -62,7 +62,7 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/sys` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/help`, `/quit` | you know these |
 
-Slash commands autocomplete pi-style: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing.
+Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing.
 
 ## Shape
 
