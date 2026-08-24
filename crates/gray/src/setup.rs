@@ -275,8 +275,7 @@ pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "de
 pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!();
     println!("  Welcome to gray");
-    println!("  \x1b[2mgray by alignment — a minimal agent harness that runs tools,");
-    println!("  edits code, and works with any model provider.\x1b[0m");
+    println!("  \x1b[2mgray by alignment · fast · minimal · built to run 24/7\x1b[0m");
     println!();
     println!("  Get started");
 
