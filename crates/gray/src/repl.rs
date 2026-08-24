@@ -411,7 +411,7 @@ fn scroll_start(sel: usize, visible: usize) -> usize {
 /// plus a pi-style slash-command completion panel when the buffer starts with '/'.
 /// Returns the submitted line, or None on Ctrl-C / Ctrl-D-on-empty (exit request).
 fn read_prompt_line() -> anyhow::Result<Option<String>> {
-    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     const PANEL_ROWS: usize = 5;
     let mut stdout = std::io::stdout();
@@ -455,24 +455,24 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
                 Event::Resize(new_cols, _) => {
                     cols = new_cols as usize; // repaint below redraws at new width
                 }
-                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })
+                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
                     if modifiers.contains(KeyModifiers::CONTROL) =>
                 {
                     return Ok(None)
                 }
-                Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, .. })
+                Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. })
                     if modifiers.contains(KeyModifiers::CONTROL) && buf.is_empty() =>
                 {
                     return Ok(None) // EOF parity with the old cooked-mode Ctrl-D
                 }
-                Event::Key(KeyEvent { code, modifiers, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
                     match code {
                         KeyCode::Char('p') => sel = sel.saturating_sub(1),
                         KeyCode::Char('n') => sel = (sel + 1).min(matches.len().saturating_sub(1)),
                         _ => {}
                     }
                 }
-                Event::Key(KeyEvent { code, .. }) => match code {
+                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                     KeyCode::Enter => {
                         if matches.is_empty() {
                             return Ok(Some(buf));
