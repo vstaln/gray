@@ -1,5 +1,7 @@
 //! Configuration resolution for the Gray agent harness.
 
+use std::path::PathBuf;
+
 use crate::Cli;
 
 /// Default API base URL pointing to OpenRouter.
@@ -27,6 +29,12 @@ impl Config {
     where
         F: FnMut(&str) -> Option<String>,
     {
+        // Saved file (~/.gray/config.json) fills anything the user didn't
+        // provide via flag or environment. Flags > env > saved file.
+        let saved = crate::setup::load_saved_config_at(
+            &crate::setup::saved_config_path().unwrap_or_else(|_| PathBuf::from("/dev/null")),
+        );
+
         let model = cli
             .model
             .as_deref()
@@ -37,7 +45,8 @@ impl Config {
                 env("GRAY_MODEL")
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-            });  // optional: REPL starts without a model; validated on first use
+            })
+            .or(saved.model); // optional: REPL starts without a model; validated on first use
 
         let base_url = cli
             .base_url
@@ -50,6 +59,7 @@ impl Config {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
             })
+            .or(saved.base_url)
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
 
         let api_key = cli
@@ -67,7 +77,8 @@ impl Config {
                 env("OPENAI_API_KEY")
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-            });  // optional: validated on first use
+            })
+            .or(saved.api_key); // optional: validated on first use
 
         Ok(Self {
             model,

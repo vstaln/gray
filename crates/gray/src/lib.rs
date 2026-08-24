@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod print;
+pub mod setup;
 pub mod repl;
 
 use std::path::{Path, PathBuf};
