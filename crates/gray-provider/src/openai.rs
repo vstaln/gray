@@ -19,6 +19,9 @@ pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Maximum retry attempts for transient errors.
 const MAX_ATTEMPTS: usize = 3;
 
+/// Upper bound for wire-controlled tool-call indices (hostile-server guard).
+const MAX_TOOL_CALL_INDEX: usize = 4096;
+
 /// An OpenAI-compatible LLM provider implementing the `Provider` trait.
 #[derive(Debug, Clone)]
 pub struct OpenAiProvider {
@@ -607,6 +610,12 @@ fn stream_unfold_step(
 
                                             if let Some(tool_calls) = choice.delta.tool_calls {
                                                 for tc in tool_calls {
+                                                    // ponytail: cap wire-controlled indices so a broken/
+                                                    // hostile server can't balloon memory; raise if real
+                                                    // turns ever need more concurrent tool calls.
+                                                    if tc.index >= MAX_TOOL_CALL_INDEX {
+                                                        continue;
+                                                    }
                                                     let entry = accumulated_tools
                                                         .entry(tc.index)
                                                         .or_insert_with(|| {
@@ -627,16 +636,11 @@ fn stream_unfold_step(
                                             }
 
                                             if let Some(reason_str) = choice.finish_reason {
+                                                // Defer MessageComplete until [DONE]/stream
+                                                // end: OpenRouter & co. send usage in a final
+                                                // chunk AFTER finish_reason; emitting here would
+                                                // drop it and report 0 tokens every turn.
                                                 last_finish_reason = map_finish_reason(&reason_str);
-                                                completed = true;
-                                                if let Err(err) = emit_tool_calls_and_completion(
-                                                    &mut accumulated_tools,
-                                                    last_finish_reason,
-                                                    last_usage,
-                                                    &mut pending_events,
-                                                ) {
-                                                    return Some((Err(err), StreamState::Done));
-                                                }
                                             }
                                         }
                                     }

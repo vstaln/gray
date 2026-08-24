@@ -655,68 +655,67 @@ async fn await_callback_head(port: u16, callback_path: &str) -> anyhow::Result<S
 
     listener.set_nonblocking(true)?;
     let start = Instant::now();
-    let (mut stream, _) = loop {
-        match listener.accept() {
-            Ok(conn) => break conn,
+    // Loop until a request actually targets callback_path: browsers open
+    // speculative connections (favicon/prefetch) that must not consume the
+    // handshake. Everything else gets a 404 and we keep listening.
+    loop {
+        let (mut stream, _) = match listener.accept() {
+            Ok(conn) => conn,
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if start.elapsed() >= AUTH_TIMEOUT {
                     anyhow::bail!("Authentication timeout (5 minutes)");
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
             }
             Err(e) => return Err(e.into()),
-        }
-    };
+        };
+        stream.set_nonblocking(false)?;
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
-    stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-
-    let mut buf = [0u8; 1024];
-    let mut raw = Vec::new();
-    while raw.len() < 8192 {
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                raw.extend_from_slice(&buf[..n]);
-                if raw.windows(4).any(|w| w == b"\r\n\r\n") || raw.windows(2).any(|w| w == b"\n\n") {
-                    break;
+        let mut buf = [0u8; 1024];
+        let mut raw = Vec::new();
+        while raw.len() < 8192 {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    raw.extend_from_slice(&buf[..n]);
+                    if raw.windows(4).any(|w| w == b"\r\n\r\n")
+                        || raw.windows(2).any(|w| w == b"\n\n")
+                    {
+                        break;
+                    }
                 }
+                Err(_) => break,
             }
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                break
-            }
-            Err(e) => return Err(e.into()),
+        }
+        let head = String::from_utf8_lossy(&raw).into_owned();
+
+        let is_callback = head
+            .lines()
+            .next()
+            .map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                parts.len() >= 2 && parts[1].starts_with(callback_path)
+            })
+            .unwrap_or(false);
+
+        if is_callback {
+            let body = "<!DOCTYPE html><html><body>&#10003; Signed in — you can close this tab and return to your terminal.</body></html>";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            return Ok(head);
+        }
+        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot found");
+        let _ = stream.flush();
+        if start.elapsed() >= AUTH_TIMEOUT {
+            anyhow::bail!("Authentication timeout (5 minutes)");
         }
     }
-    let head = String::from_utf8_lossy(&raw).into_owned();
-
-    let is_callback = head
-        .lines()
-        .next()
-        .map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            parts.len() >= 2 && parts[1].starts_with(callback_path)
-        })
-        .unwrap_or(false);
-
-    if is_callback {
-        let body = "<!DOCTYPE html><html><body>&#10003; Signed in — you can close this tab and return to your terminal.</body></html>";
-        let resp = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        let _ = stream.write_all(resp.as_bytes());
-    } else {
-        let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot found";
-        let _ = stream.write_all(resp.as_bytes());
-    }
-    let _ = stream.flush();
-    drop(stream);
-
-    Ok(head)
 }
 
 async fn finish_signin(
