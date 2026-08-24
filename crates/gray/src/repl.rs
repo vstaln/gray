@@ -336,7 +336,6 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     if unconfigured {
         println!("\x1b[2mno provider configured yet — send a message and I'll walk you through it (or /setup)\x1b[0m");
     }
-    println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
 
     // The agent is built lazily so the REPL opens even with no model/key configured;
     // we surface a friendly hint on first use instead of refusing to start.
@@ -344,7 +343,11 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let mut session_state: Option<SessionState> = None;
 
     loop {
+        println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
         print!("› ");
+        println!();
+        print!("\x1b[2m{}\x1b[0m", crate::plain_rule());
+        print!("\x1b[1A\r\x1b[2C");
         std::io::stdout().flush()?;
 
         let read_res = tokio::select! {
@@ -370,11 +373,12 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
 
         let Some(line) = read_res else {
             // EOF (Ctrl-D)
+            println!();
+            println!();
             break;
         };
 
-        // bottom frame of the input box
-        println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
+        println!();
         match parse_command(&line) {
             ReplCommand::Empty => continue,
             ReplCommand::Quit => break,
@@ -450,30 +454,30 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
                         }
                         std::io::stdout().flush()?;
 
-                        if session_state.is_none() {
-                            if let Some(root) = default_root() {
-                                let store = JsonlSessionStore::new(root);
-                                let session_id = SessionId::generate();
-                                let timestamp = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as u64)
-                                    .unwrap_or(0);
-                                let meta = SessionMeta::new(
-                                    session_id.clone(),
-                                    timestamp,
-                                    cwd.to_path_buf(),
-                                    config.model.clone().unwrap_or_else(|| "unset".into()),
-                                );
-                                store.create(meta).await;
-                                session_state = Some(SessionState { store, session_id });
-                            }
+                        if session_state.is_none()
+                            && let Some(root) = default_root()
+                        {
+                            let store = JsonlSessionStore::new(root);
+                            let session_id = SessionId::generate();
+                            let timestamp = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+                            let meta = SessionMeta::new(
+                                session_id.clone(),
+                                timestamp,
+                                cwd.to_path_buf(),
+                                config.model.clone().unwrap_or_else(|| "unset".into()),
+                            );
+                            store.create(meta).await;
+                            session_state = Some(SessionState { store, session_id });
                         }
 
-                        if let Some(state) = &session_state {
-                            if agent.messages().len() > initial_count {
-                                for msg in &agent.messages()[initial_count..] {
-                                    let _ = state.store.append(&state.session_id, msg).await;
-                                }
+                        if let Some(state) = &session_state
+                            && agent.messages().len() > initial_count
+                        {
+                            for msg in &agent.messages()[initial_count..] {
+                                let _ = state.store.append(&state.session_id, msg).await;
                             }
                         }
                     }
