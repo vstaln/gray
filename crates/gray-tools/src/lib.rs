@@ -1,0 +1,387 @@
+//! gray-tools: the `Tool` trait, four builtin file/shell tools, and the
+//! tool registry behind the `ToolExecutor` seam.
+//!
+//! Truncation policy (applied to every tool output): results are capped at
+//! 2000 lines / 50 KiB, keeping head + tail with a `[truncated ...]`
+//! annotation; error outputs are additionally hard-capped at 2 KiB.
+
+pub mod bash;
+pub mod edit;
+pub mod read;
+pub mod write;
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::future::BoxFuture;
+use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
+use gray_core::message::ToolDef;
+use serde_json::Value;
+
+pub use bash::BashTool;
+pub use edit::EditTool;
+pub use read::ReadTool;
+pub use write::WriteTool;
+
+/// Maximum number of lines kept in a successful tool output.
+pub const MAX_LINES: usize = 2000;
+/// Maximum size in bytes of a successful tool output.
+pub const MAX_BYTES: usize = 50 * 1024;
+/// Hard cap for error outputs (applied after the general truncation).
+pub const MAX_ERROR_BYTES: usize = 2048;
+
+/// A single agent-callable tool.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    /// Static definition surfaced to the model (name, description, schema).
+    fn def(&self) -> ToolDef;
+
+    /// Whether this tool may run in parallel with others in the same turn.
+    /// Args allow context-sensitive decisions (e.g. read-only operations).
+    fn is_concurrency_safe(&self, args: &Value) -> bool {
+        let _ = args;
+        true
+    }
+
+    /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput;
+}
+
+/// Ordered collection of tools with name lookup, wired into the agent loop
+/// via [`ToolExecutor`].
+#[derive(Default)]
+pub struct Registry {
+    tools: Vec<Arc<dyn Tool>>,
+}
+
+impl Registry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A registry preloaded with the four v0 builtins: bash, read, write, edit.
+    pub fn builtin() -> Self {
+        let mut reg = Self::new();
+        reg.register(Box::new(BashTool));
+        reg.register(Box::new(ReadTool));
+        reg.register(Box::new(WriteTool));
+        reg.register(Box::new(EditTool));
+        reg
+    }
+
+    pub fn register(&mut self, tool: Box<dyn Tool>) {
+        self.tools.push(Arc::from(tool));
+    }
+
+    /// Tool definitions in registration order (for the chat request).
+    pub fn defs(&self) -> Vec<ToolDef> {
+        self.tools.iter().map(|t| t.def()).collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
+        self.tools
+            .iter()
+            .find(|t| t.def().name == name)
+            .map(|t| t.as_ref())
+    }
+
+    /// Clones an owned handle so execution futures can be `'static`.
+    fn lookup(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.iter().find(|t| t.def().name == name).cloned()
+    }
+
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for Registry {
+    fn execute(
+        &self,
+        ctx: &ToolContext,
+        name: &str,
+        args: Value,
+    ) -> BoxFuture<'static, ToolOutput> {
+        let tool = self.lookup(name);
+        let ctx = ctx.clone();
+        let name = name.to_string();
+        Box::pin(async move {
+            match tool {
+                Some(tool) => tool.execute(&ctx, args).await,
+                None => ToolOutput::error(format!("unknown tool: {name}")),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Truncation
+// ---------------------------------------------------------------------------
+
+/// Truncates a successful output: 2000-line / 50 KiB cap, head + tail kept,
+/// with a `[truncated N lines / M bytes]` annotation in the middle.
+pub(crate) fn truncate_output(text: &str) -> String {
+    let mut notes: Vec<String> = Vec::new();
+
+    // Line cap: keep first half + last half of the allowed budget.
+    let total_lines = text.lines().count();
+    let body = if total_lines > MAX_LINES {
+        let dropped = total_lines - MAX_LINES;
+        notes.push(format!("{dropped} lines"));
+        let keep = MAX_LINES / 2;
+        let all: Vec<&str> = text.lines().collect();
+        let mut parts = all[..keep].to_vec();
+        parts.extend_from_slice(&all[all.len() - keep..]);
+        parts.join("\n")
+    } else if text.ends_with('\n') {
+        // `lines()` drops the trailing newline; preserve it verbatim.
+        text.to_string()
+    } else {
+        text.to_string()
+    };
+
+    // Byte cap on what remains (head + tail around the annotation).
+    if body.len() > MAX_BYTES {
+        let dropped_bytes = body.len() - MAX_BYTES;
+        notes.push(format!("{dropped_bytes} bytes"));
+        let half = MAX_BYTES / 2;
+        let head_end = floor_char_boundary(&body, half);
+        let tail_start = ceil_char_boundary(&body, body.len() - half);
+        format!(
+            "{}\n{}\n{}",
+            &body[..head_end],
+            annotation(&notes),
+            &body[tail_start..]
+        )
+    } else if notes.is_empty() {
+        body
+    } else {
+        // Line-truncated but within byte budget: insert the annotation in
+        // the middle without touching the rest of the content.
+        let lines: Vec<&str> = body.lines().collect();
+        let mid = lines.len() / 2;
+        let mut out = lines[..mid].join("\n");
+        out.push('\n');
+        out.push_str(&annotation(&notes));
+        out.push('\n');
+        out.push_str(&lines[mid..].join("\n"));
+        if body.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    }
+}
+
+/// Error outputs: general truncation, then a hard 2 KiB head cap.
+pub(crate) fn truncate_error(text: &str) -> String {
+    let truncated = truncate_output(text);
+    if truncated.len() > MAX_ERROR_BYTES {
+        let cut = floor_char_boundary(&truncated, MAX_ERROR_BYTES);
+        format!("{}\n[error truncated to 2KiB]", &truncated[..cut])
+    } else {
+        truncated
+    }
+}
+
+/// Wraps raw stdout-like text into a successful [`ToolOutput`].
+pub(crate) fn finish(raw: String) -> ToolOutput {
+    ToolOutput::ok(truncate_output(&raw))
+}
+
+/// Wraps raw failure text into an error [`ToolOutput`] (capped at 2 KiB).
+pub(crate) fn fail(raw: String) -> ToolOutput {
+    ToolOutput::error(truncate_error(&raw))
+}
+
+fn annotation(notes: &[String]) -> String {
+    format!("[truncated {}]", notes.join(" / "))
+}
+
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn ceil_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
+    i
+}
+
+// ---------------------------------------------------------------------------
+// Arg validation helpers (schemas are declared in each tool's `def`)
+// ---------------------------------------------------------------------------
+
+/// Required string argument.
+pub(crate) fn get_str(args: &Value, key: &str) -> Result<String, ToolOutput> {
+    match args.get(key) {
+        Some(Value::String(s)) => Ok(s.clone()),
+        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
+        None => Err(fail(format!("missing required argument '{key}'"))),
+    }
+}
+
+/// Optional unsigned integer argument (`null`/absent -> `None`).
+pub(crate) fn get_opt_u64(
+    args: &Value,
+    key: &str,
+) -> Result<Option<u64>, ToolOutput> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| {
+                fail(format!("invalid argument '{key}': expected non-negative integer"))
+            }),
+        Some(_) => Err(fail(format!("invalid argument '{key}': expected integer"))),
+    }
+}
+
+/// Optional boolean argument (`null`/absent -> `None`).
+pub(crate) fn get_opt_bool(
+    args: &Value,
+    key: &str,
+) -> Result<Option<bool>, ToolOutput> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(fail(format!("invalid argument '{key}': expected boolean"))),
+    }
+}
+
+/// Resolves a user-supplied path against the execution cwd; absolute paths
+/// are used verbatim.
+pub(crate) fn resolve_path(cwd: &std::path::Path, p: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(p);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passthrough_under_limits() {
+        let text = "hello\nworld\n";
+        assert_eq!(truncate_output(text), "hello\nworld\n");
+    }
+
+    #[test]
+    fn truncates_long_output_head_tail_with_line_annotation() {
+        let text: String = (0..3000).map(|i| format!("line{i}\n")).collect();
+        let out = truncate_output(&text);
+        assert!(out.contains("[truncated 1000 lines]"));
+        assert!(out.contains("line0"));
+        assert!(out.contains("line2999"));
+        assert!(!out.contains("line1999\n")); // middle dropped
+        let kept_lines = out.lines().count();
+        // head half + tail half + annotation
+        assert!(kept_lines <= MAX_LINES / 2 * 2 + 3);
+    }
+
+    #[test]
+    fn truncates_large_output_with_byte_annotation() {
+        let chunk = "x".repeat(10 * 1024);
+        let text = chunk.repeat(8); // 80 KiB
+        let out = truncate_output(&text);
+        assert!(out.len() < MAX_BYTES + 256);
+        assert!(out.contains("[truncated "));
+        assert!(out.contains("bytes]"));
+        // head + tail preserved
+        assert!(out.starts_with('x'));
+        assert!(out.ends_with('x'));
+    }
+
+    #[test]
+    fn truncates_both_lines_and_bytes_with_combined_annotation() {
+        let line = "y".repeat(200);
+        let text: String = (0..3000).map(|i| format!("{line}{i}\n")).collect(); // ~600KB, 3000 lines
+        let out = truncate_output(&text);
+        assert!(out.contains("lines / "));
+        assert!(out.contains("bytes]"));
+        assert!(out.len() <= MAX_BYTES + 256);
+    }
+
+    #[test]
+    fn error_output_hard_capped_at_2kib() {
+        let big = "e".repeat(100_000);
+        let out = truncate_error(&big);
+        assert!(out.len() < MAX_ERROR_BYTES + 64);
+        assert!(out.contains("[error truncated to 2KiB]"));
+        assert!(out.starts_with('e'));
+    }
+
+    #[test]
+    fn short_error_passes_through() {
+        assert_eq!(truncate_error("boom"), "boom");
+    }
+
+    #[test]
+    fn char_boundary_helpers_are_safe() {
+        let s = "aé日x"; // multibyte chars
+        let cut = floor_char_boundary(s, 3);
+        assert!(s.is_char_boundary(cut));
+        let start = ceil_char_boundary(s, 1);
+        assert!(s.is_char_boundary(start));
+        assert_eq!(floor_char_boundary(s, 100), s.len());
+        assert_eq!(ceil_char_boundary(s, 100), s.len());
+    }
+
+    #[tokio::test]
+    async fn registry_unknown_tool_is_error() {
+        use gray_core::agent::ToolContext;
+        let reg = Registry::builtin();
+        let ctx = ToolContext::default();
+        let out = reg.execute(&ctx, "nope", serde_json::json!({})).await;
+        assert!(out.is_error);
+        assert!(out.content.contains("unknown tool: nope"));
+    }
+
+    #[tokio::test]
+    async fn registry_dispatches_by_name() {
+        use gray_core::agent::ToolContext;
+        let dir = tempfile::tempdir().unwrap();
+        let reg = Registry::builtin();
+        assert_eq!(reg.len(), 4);
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+            cancel: Default::default(),
+        };
+        let out = reg
+            .execute(
+                &ctx,
+                "write",
+                serde_json::json!({"path": "a.txt", "content": "hi"}),
+            )
+            .await;
+        assert!(!out.is_error, "dispatch failed: {}", out.content);
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "hi");
+        assert_eq!(
+            reg.defs().iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+            vec!["bash", "read", "write", "edit"]
+        );
+        assert!(reg.get("read").is_some());
+        assert!(reg.get("nope").is_none());
+    }
+}
