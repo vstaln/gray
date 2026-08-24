@@ -125,6 +125,83 @@ pub(crate) fn read_line(prompt: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_string())
 }
 
+/// Reads a secret with masked input (echoes `*` per char, like opencode's
+/// password prompt). Enter confirms, Esc/Ctrl-C returns an error.
+pub(crate) fn read_secret(prompt: &str) -> anyhow::Result<String> {
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use std::io::Write as _;
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    crossterm::terminal::enable_raw_mode()?;
+    let result = (|| -> anyhow::Result<String> {
+        let mut buf = String::new();
+        loop {
+            if let Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) = read()? {
+                match code {
+                    KeyCode::Enter => break,
+                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                        anyhow::bail!("cancelled");
+                    }
+                    KeyCode::Esc => anyhow::bail!("cancelled"),
+                    KeyCode::Backspace => {
+                        if buf.pop().is_some() {
+                            print!("\x08 \x08");
+                            std::io::stdout().flush()?;
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        buf.push(c);
+                        print!("*");
+                        std::io::stdout().flush()?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(buf)
+    })();
+    let _ = crossterm::terminal::disable_raw_mode();
+    println!();
+    result
+}
+
+/// Per-provider API-key store (`~/.gray/auth.json`, mode 0600), mirroring
+/// opencode's credential file: `{ "<provider-id>": "<key>", ... }`.
+fn auth_store_path() -> anyhow::Result<PathBuf> {
+    Ok(gray_home()?.join("auth.json"))
+}
+
+/// All stored keys keyed by provider id; missing file yields an empty map.
+pub(crate) fn load_auth_keys() -> BTreeMap<String, String> {
+    std::fs::read_to_string(auth_store_path().unwrap_or_else(|_| PathBuf::from("/dev/null")))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Upserts `key` under provider id `pid` (read-modify-write, 0600).
+pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    let path = auth_store_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut keys = load_auth_keys();
+    keys.insert(pid.to_string(), key.to_string());
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    f.write_all(serde_json::to_string_pretty(&keys)?.as_bytes())?;
+    Ok(())
+}
+
 /// Case-insensitive substring match over id and name; empty filter matches all.
 /// Pure so the picker's core logic is testable without a tty.
 fn matches_filter(filter: &str, primary: &str, secondary: &str) -> bool {
@@ -314,15 +391,16 @@ pub fn run_api_key_setup(config: &mut Config) -> anyhow::Result<bool> {
     println!("{}", rule("credentials"));
     let hint = env_hint(provider);
     let env_key = config.api_key.clone().unwrap_or_default();
-    let key_in = match read_line(&format!(
+    let key_in = match read_secret(&format!(
         "{} API key ({}): ",
         provider.name,
-        if hint == "API_KEY" { "stored locally" } else { &hint }
+        if hint == "API_KEY" { "input hidden" } else { &hint }
     )) {
         Ok(k) => k,
         Err(_) => return Ok(false),
     };
     let api_key = if key_in.is_empty() { env_key } else { key_in };
+    let _ = save_auth_key(&pid, &api_key);
 
     println!("{}", rule("model"));
     let model = if provider.models.is_empty() {
@@ -361,6 +439,61 @@ pub fn run_api_key_setup(config: &mut Config) -> anyhow::Result<bool> {
 
     println!();
     println!("saved — edit {} anytime, or /sys for the system prompt.", path.display());
+    Ok(true)
+}
+
+/// `/key [provider-id]`: masked key entry for a catalog provider. Stores the
+/// key per-provider in `~/.gray/auth.json` (opencode-style) and activates it
+/// (base_url + api_key) without touching the chosen model. Returns Ok(true)
+/// if a key was configured.
+pub fn run_key_setup(config: &mut Config, pid: Option<String>) -> anyhow::Result<bool> {
+    let catalog = load_catalog()?;
+    let pid = match pid {
+        Some(p) if catalog.contains_key(&p) => p,
+        Some(p) => {
+            println!("unknown provider '{p}' — use /key with no argument to pick from the list");
+            return Ok(false);
+        }
+        None => match select_from_catalog(&catalog)? {
+            Some(id) => id,
+            None => return Ok(false),
+        },
+    };
+    let provider = &catalog[&pid];
+    let existing = load_auth_keys()
+        .get(&pid)
+        .cloned()
+        .or_else(|| config.api_key.clone())
+        .unwrap_or_default();
+    let hint = env_hint(provider);
+    let status = if existing.is_empty() {
+        if hint == "API_KEY" { "input hidden" } else { &hint }
+    } else {
+        "stored — Enter keeps it"
+    };
+    let key_in = match read_secret(&format!("{} API key ({}): ", provider.name, status)) {
+        Ok(k) => k,
+        Err(_) => return Ok(false),
+    };
+    let key = if key_in.is_empty() { existing } else { key_in };
+    if key.is_empty() {
+        println!("no key entered");
+        return Ok(false);
+    }
+    save_auth_key(&pid, &key)?;
+    config.base_url = provider.base_url.clone();
+    config.api_key = Some(key);
+    let path = saved_config_path()?;
+    let mut saved = load_saved_config_at(&path);
+    saved.base_url = Some(config.base_url.clone());
+    saved.api_key = config.api_key.clone();
+    saved.auth_mode = Some("api_key".into());
+    save_saved_config_at(&path, &saved)?;
+    println!(
+        "{} ready — key stored in {}",
+        provider.name,
+        auth_store_path()?.display()
+    );
     Ok(true)
 }
 
@@ -521,6 +654,31 @@ mod tests {
         let or = cat.get("openrouter").expect("openrouter present");
         assert!(or.base_url.starts_with("https://"));
         assert!(!or.models.is_empty(), "openrouter should suggest models");
+    }
+
+    #[test]
+    fn auth_store_upserts_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!("gray-auth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: test-only GRAY_HOME, set once before any auth-store call here.
+        unsafe { std::env::set_var("GRAY_HOME", &dir) };
+
+        assert!(load_auth_keys().is_empty());
+        save_auth_key("openrouter", "sk-or-1").unwrap();
+        save_auth_key("deepseek", "sk-ds").unwrap();
+        save_auth_key("openrouter", "sk-or-2").unwrap(); // upsert, not duplicate
+
+        let keys = load_auth_keys();
+        assert_eq!(keys.get("openrouter").map(String::as_str), Some("sk-or-2"));
+        assert_eq!(keys.get("deepseek").map(String::as_str), Some("sk-ds"));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("auth.json")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
