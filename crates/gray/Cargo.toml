@@ -1,0 +1,21 @@
+[package]
+name = "gray"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "gray"
+path = "src/main.rs"
+
+[dependencies]
+gray-core = { workspace = true }
+gray-provider = { workspace = true }
+gray-tools = { workspace = true }
+gray-session = { workspace = true }
+anyhow = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+rust-embed = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
