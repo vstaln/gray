@@ -527,7 +527,11 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
 
     let mut unconfigured = config.model.is_none() || config.api_key.is_none();
     if unconfigured {
-        println!("\x1b[2mno provider configured yet — send a message and I'll walk you through it (or /setup)\x1b[0m");
+        let ready = crate::setup::run_onboarding(config)?;
+        if !ready {
+            println!("\x1b[2mrunning without a provider — send a message to set one up (or /setup)\x1b[0m");
+        }
+        println!();
     }
 
     // The agent is built lazily so the REPL opens even with no model/key configured;
