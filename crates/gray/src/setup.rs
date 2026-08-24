@@ -251,8 +251,9 @@ pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnboardingChoice {
     ApiKey,
-    Local,
     OAuth,
+    Free,
+    Local,
     Skip,
 }
 
@@ -261,7 +262,8 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
     match i {
         0 => OnboardingChoice::ApiKey,
         1 => OnboardingChoice::OAuth,
-        2 => OnboardingChoice::Local,
+        2 => OnboardingChoice::Free,
+        3 => OnboardingChoice::Local,
         _ => OnboardingChoice::Skip,
     }
 }
@@ -279,9 +281,10 @@ pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!("  Get started");
 
     let options = vec![
+        ("Start free — no sign-up", "chat in seconds via OpenCode Zen".to_string()),
         ("Add an API key", "pick from 200+ providers".to_string()),
         ("Sign in with account", "(coming soon)".to_string()),
-        ("Use a free or local model", "no sign-up needed".to_string()),
+        ("Use a local model", "Ollama / llama.cpp / vLLM".to_string()),
         ("Skip for now", String::new()),
     ];
     let items: Vec<(String, String)> = options
@@ -294,6 +297,21 @@ pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     };
 
     match choice {
+        OnboardingChoice::Free => {
+            // Zero-friction path: keyless OpenCode Zen free tier.
+            let path = saved_config_path()?;
+            save_saved_config_at(&path, &SavedConfig {
+                base_url: Some("https://opencode.ai/zen/v1".into()),
+                api_key: Some("not-needed".into()),
+                model: Some("deepseek-v4-flash-free".into()),
+                auth_mode: Some("none".into()),
+            })?;
+            config.base_url = "https://opencode.ai/zen/v1".into();
+            config.api_key = Some("not-needed".into());
+            config.model = Some("deepseek-v4-flash-free".into());
+            println!("saved — you're on the free tier. /model to switch anytime.");
+            return Ok(true);
+        }
         OnboardingChoice::ApiKey => run_setup(config)?,
         OnboardingChoice::OAuth => {
             println!("(OAuth sign-in lands in a future release — API keys work today)");
@@ -399,10 +417,11 @@ mod tests {
     #[test]
     fn route_onboarding_maps_indices() {
         use super::route_onboarding as r;
-        assert_eq!(r(0), super::OnboardingChoice::ApiKey);
-        assert_eq!(r(1), super::OnboardingChoice::OAuth);
-        assert_eq!(r(2), super::OnboardingChoice::Local);
-        assert_eq!(r(3), super::OnboardingChoice::Skip);
+        assert_eq!(r(0), super::OnboardingChoice::Free);
+        assert_eq!(r(1), super::OnboardingChoice::ApiKey);
+        assert_eq!(r(2), super::OnboardingChoice::OAuth);
+        assert_eq!(r(3), super::OnboardingChoice::Local);
+        assert_eq!(r(4), super::OnboardingChoice::Skip);
     }
 
     #[test]
