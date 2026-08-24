@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/img/grayai.png" width="140" alt="gray logo"/>
+# ⬡
 
-# gray
+**gray**
 
 **A minimal coding agent that runs tools, edits code, and works with any model provider.**
 
