@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{config::Config, rule, tui::print_wrapped};
@@ -287,9 +288,6 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
     }
 }
 
-/// Default model suggestions for keyless/local setups.
-pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "deepseek-r1"];
-
 /// Braille dot-matrix gray logo.
 pub const SETUP_LOGO_LINES: [&str; 7] = [
     "⠀⠀⠀⠀⣠⣶⣿⣿⣿⣿⣷⣦⡀",
@@ -334,18 +332,24 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
 
     match choice {
         OnboardingChoice::Free => {
-            // Zero-friction path: keyless OpenCode Zen free tier.
+            // Zero-friction path: first keyless catalog provider that ships models.
+            let (_, p) = load_catalog()?
+                .iter()
+                .find(|(_, p)| p.no_auth && !p.models.is_empty())
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .with_context(|| "no keyless provider with models in bundled catalog")?;
+            let model = p.models[0].id.clone();
             let path = saved_config_path()?;
             save_saved_config_at(&path, &SavedConfig {
-                base_url: Some("https://opencode.ai/zen/v1".into()),
+                base_url: Some(p.base_url.clone()),
                 api_key: None,
-                model: Some("laguna-s-2.1-free".into()),
+                model: Some(model.clone()),
                 auth_mode: Some("none".into()),
             })?;
-            config.base_url = "https://opencode.ai/zen/v1".into();
+            config.base_url = p.base_url.clone();
             config.api_key = None;
-            config.model = Some("laguna-s-2.1-free".into());
-            println!("saved — you're on the free tier. /model to switch anytime.");
+            config.model = Some(model);
+            println!("saved — you're on the free tier ({}). /model to switch anytime.", p.name);
             return Ok(true);
         }
         OnboardingChoice::ApiKey => run_setup(config)?,
@@ -403,9 +407,17 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
             println!("{}", rule("local model"));
             let base = read_line("base url [http://localhost:11434/v1]: ")?;
             let base = if base.is_empty() { "http://localhost:11434/v1".to_string() } else { base };
-            let suggested = LOCAL_MODEL_SUGGESTIONS[0];
-            let model_in = read_line(&format!("model [{suggested}]: "))?;
-            let model = if model_in.is_empty() { suggested.to_string() } else { model_in };
+            // Suggest a current model from the bundled lmstudio entry, not a stale hardcode.
+            let suggested = load_catalog().ok()
+                .and_then(|c| c.get("lmstudio").map(|p| p.models[0].id.clone()))
+                .unwrap_or_default();
+            let model_in = if suggested.is_empty() {
+                read_line("model id: ")?
+            } else {
+                read_line(&format!("model [{suggested}]: "))?
+            };
+            anyhow::ensure!(!model_in.is_empty(), "no model given");
+            let model = model_in;
             let path = saved_config_path()?;
             save_saved_config_at(&path, &SavedConfig {
                 base_url: Some(base.clone()),
