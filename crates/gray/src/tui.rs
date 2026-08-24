@@ -121,12 +121,11 @@ pub fn print_wrapped(text: &str, pad: usize) {
     }
 }
 
-/// Erases the shell's echoed command line (`~ ❯ gray`) from the terminal.
-/// Assumes the shell echoed the command on the previous line.
-pub fn erase_shell_line() {
+/// Clears the terminal; tty-only.
+pub fn clear_screen() {
     use std::io::IsTerminal;
     if std::io::stdout().is_terminal() && crossterm::terminal::size().is_ok() {
-        print!("\x1b[1A\x1b[2K");
+        print!("\x1b[2J\x1b[1;1H");
         let _ = std::io::stdout().flush();
     }
 }

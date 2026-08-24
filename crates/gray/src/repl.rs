@@ -525,6 +525,7 @@ fn clip_str(s: &str, max: usize) -> String {
 
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Result<()> {
+    crate::tui::clear_screen();
     let cwd = std::env::current_dir()?;
 
     // pi-style boot: no forced wizard. A dim hint appears when unconfigured,
@@ -539,7 +540,6 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
         }
         println!();
     } else {
-        crate::tui::erase_shell_line();
         // fx-style welcome: one line, no art.
         println!(
             "\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m",
