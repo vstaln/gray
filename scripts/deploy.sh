@@ -19,9 +19,10 @@ SSH() { ssh -i "$KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$HOS
 SCP() { scp -i "$KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$@"; }
 
 echo "→ deploying $BASE to ${HOST}..."
+UNIQ="$$-$(date +%s)"
 SCP "$TARBALL" "$HOST:/tmp/$BASE"
-SCP "${REPO_ROOT}/dist/install.sh" "$HOST:/tmp/gray-install.sh"
+SCP "${REPO_ROOT}/dist/install.sh" "$HOST:/tmp/gray-install-$UNIQ.sh"
 SSH "sudo install -m 644 /tmp/$BASE /var/www/gray/dl/$BASE \
-     && sudo install -m 755 /tmp/gray-install.sh /var/www/gray/install.sh \
-     && rm -f /tmp/$BASE /tmp/gray-install.sh"
+     && sudo install -m 755 /tmp/gray-install-$UNIQ.sh /var/www/gray/install.sh \
+     && rm -f /tmp/$BASE /tmp/gray-install-$UNIQ.sh"
 echo "✓ live: https://gray.alignment.id/dl/$BASE"
