@@ -369,10 +369,13 @@ async fn handle_model(
     reload_agent(agent, config, cwd).await;
 }
 
-/// Repaints the prompt frame in place. Invariant: cursor rests on the input
-/// line between draws (first call: caller paints the initial frame ending there).
-/// `prev_panel` is the previous panel row count so we can jump back to frame top.
-/// The last line clears to end-of-screen (\x1b[J) so a shrinking panel leaves no residue.
+/// Repaints the prompt frame in place with ABSOLUTE cursor addressing:
+/// [top rule / panel… / '› ' input / bottom rule], input row pinned one above
+/// the terminal's bottom row — pi-style editor anchoring. The panel grows
+/// upward without ever moving the input line; stale frame rows are cleared.
+/// No scroll, no cumulative drift: every draw recomputes from `terminal::size()`.
+/// `prev_panel` is the previous draw's panel row count, so shrinking the panel
+/// clears its leftover rows instead of leaving ghosts between rule and input.
 fn draw_prompt_frame(
     out: &mut impl Write,
     buf: &str,
@@ -380,6 +383,13 @@ fn draw_prompt_frame(
     cols: usize,
     prev_panel: usize,
 ) -> anyhow::Result<()> {
+    let (_, rows) = crossterm::terminal::size()?;
+    let rows = rows as usize;
+    // All CUP rows below are 1-based. Input sits on the second-to-last screen row.
+    let input_cup = rows.saturating_sub(1).max(2);
+    let rule_cup = input_cup - panel.len().min(input_cup - 2) - 1; // panel grows upward, flush above input
+    let prev_rule_cup = input_cup - prev_panel.min(input_cup - 2) - 1;
+    let clear_from = rule_cup.min(prev_rule_cup); // cover both old and new frame tops
     let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols));
     // ponytail: cursor column = char count, not display width — wide glyphs drift; unicode-width if that matters.
     let budget = cols.saturating_sub(6);
@@ -390,14 +400,15 @@ fn draw_prompt_frame(
         buf.to_string()
     };
 
-    write!(out, "\x1b[{}A", prev_panel + 1)?; // up to top rule
-    write!(out, "\r\x1b[2K{rule}")?;
-    for row in panel {
-        write!(out, "\r\n\x1b[2K{row}")?;
+    write!(out, "\x1b[{clear_from};1H\x1b[J")?;
+    write!(out, "\x1b[{rule_cup};1H{rule}")?;
+    for (j, row) in panel.iter().enumerate() {
+        write!(out, "\x1b[{};1H{row}", rule_cup + 1 + j)?;
     }
-    write!(out, "\r\n\x1b[2K\u{203a} {shown}")?;
-    write!(out, "\r\n\x1b[2K{rule}\x1b[J")?;
-    write!(out, "\r\x1b[{}A\x1b[{}G", panel.len() + 1, shown.chars().count() + 3)?;
+    write!(out, "\x1b[{input_cup};1H\u{203a} {shown}")?;
+    write!(out, "\x1b[{rows};1H{rule}")?;
+    // park the cursor on the input line, after the typed text
+    write!(out, "\x1b[{input_cup};{}G", shown.chars().count() + 3)?;
     out.flush()?;
     Ok(())
 }
@@ -407,17 +418,29 @@ fn scroll_start(sel: usize, visible: usize) -> usize {
     if sel < visible { 0 } else { sel.saturating_sub(visible - 1) }
 }
 
+/// Max completion rows shown above the input line (shared by draw + erase).
+const PANEL_ROWS: usize = 5;
+
+/// Erases the whole prompt-frame zone and parks the cursor at its top, so the
+/// submitted line's output starts on a clean screen with no frame residue.
+fn erase_frame(out: &mut impl Write) -> anyhow::Result<()> {
+    let (_, rows) = crossterm::terminal::size()?;
+    let top = (rows as usize).saturating_sub(1).saturating_sub(PANEL_ROWS + 1).max(1);
+    write!(out, "\x1b[{top};1H\x1b[J\x1b[{top};1H")?;
+    out.flush()?;
+    Ok(())
+}
+
 /// Raw-mode prompt editor: 3-line frame (top rule / '› ' buffer / bottom rule)
 /// plus a pi-style slash-command completion panel when the buffer starts with '/'.
 /// Returns the submitted line, or None on Ctrl-C / Ctrl-D-on-empty (exit request).
 fn read_prompt_line() -> anyhow::Result<Option<String>> {
     use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-    const PANEL_ROWS: usize = 5;
     let mut stdout = std::io::stdout();
     let mut buf = String::new();
     let mut sel = 0usize; // highlighted row within visible matches
-    let mut prev_panel = 0usize;
+    let mut prev_panel = 0usize; // last draw's panel height, for ghost-row cleanup
     let mut cols = crate::term_width();
 
     crossterm::terminal::enable_raw_mode()?;
@@ -453,7 +476,7 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
 
             match read()? {
                 Event::Resize(new_cols, _) => {
-                    cols = new_cols as usize; // repaint below redraws at new width
+                    cols = new_cols as usize; // next draw repaints at the new size
                 }
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
                     if modifiers.contains(KeyModifiers::CONTROL) =>
@@ -507,6 +530,7 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
         }
     })();
     crossterm::terminal::disable_raw_mode()?;
+    erase_frame(&mut stdout)?;
     result.map(|opt| opt.map(|mut line| {
         // strip the trailing space added by command completion ("/model " -> "/model")
         if line.starts_with('/') {
@@ -587,20 +611,12 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
 
     loop {
         let line = if interactive {
-            let cols = crate::term_width();
-            let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols));
-            println!("{rule}");
-            print!("\u{203a} ");
-            std::io::stdout().flush()?;
-
             let line = match read_prompt_line()? {
                 Some(l) => l,
-                None => {
-                    println!("\r\x1b[1B\x1b[2K"); // drop below the frame, clear bottom rule
-                    break;
-                }
+                None => break,
             };
-            println!("\r\x1b[1B\x1b[2K\r\n"); // close the frame; output starts on a fresh line
+            // echo the submitted line into the transcript (frame was erased)
+            println!("\x1b[2m\u{203a} {line}\x1b[0m");
             line
         } else {
             print!("\u{203a} ");
