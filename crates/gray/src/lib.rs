@@ -43,13 +43,36 @@ pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
     }
 }
 
-/// Renders an fx-style labeled rule: `── label ──────────────` (fixed 76-col width).
+/// Terminal width, queried once via `stty` at first use; falls back to 80.
+pub fn term_width() -> usize {
+    static W: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *W.get_or_init(|| {
+        std::process::Command::new("stty")
+            .arg("size")
+            .stdin(std::process::Stdio::inherit())
+            .output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                s.split_whitespace().nth(1)?.parse::<usize>().ok()
+            })
+            .filter(|&w| w >= 20)
+            .unwrap_or(80)
+    })
+}
+
+/// Renders an fx-style labeled rule filling the terminal width:
+/// `── label ────────────────────────────`
 pub fn rule(label: &str) -> String {
-    const WIDTH: usize = 76;
     let prefix = format!("\u{2500}\u{2500} {label} ");
     let used = prefix.chars().count();
-    let fill = WIDTH.saturating_sub(used);
+    let fill = term_width().saturating_sub(used);
     format!("{prefix}{}", "\u{2500}".repeat(fill))
+}
+
+/// Full-width unlabeled rule.
+pub fn plain_rule() -> String {
+    "\u{2500}".repeat(term_width())
 }
 
 pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
@@ -119,10 +142,10 @@ mod tests {
     }
 
     #[test]
-    fn rule_embeds_label_and_fills_width() {
-        let r = rule("tool \u{b7} bash");
-        assert!(r.starts_with("\u{2500}\u{2500} tool \u{b7} bash "));
-        assert_eq!(r.chars().count(), 76);
+    fn rule_embeds_label_and_is_wide() {
+        let r = rule("tool");
+        assert!(r.starts_with("\u{2500}\u{2500} tool "));
+        assert!(r.chars().count() >= crate::term_width() - 1);
         assert!(r.ends_with('\u{2500}'));
     }
 

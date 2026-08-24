@@ -336,7 +336,7 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     if unconfigured {
         println!("\x1b[2mno provider configured yet — send a message and I'll walk you through it (or /setup)\x1b[0m");
     }
-    println!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(76));
+    println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
 
     // The agent is built lazily so the REPL opens even with no model/key configured;
     // we surface a friendly hint on first use instead of refusing to start.
