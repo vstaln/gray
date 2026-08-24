@@ -288,21 +288,10 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
     }
 }
 
-/// Logo width in chars: fits the terminal with margins, capped so it stays tasteful.
-fn logo_width() -> usize {
-    crossterm::terminal::size()
-        .map(|(c, _)| (c as usize).saturating_sub(6))
-        .unwrap_or(40)
-        .clamp(16, 56)
-}
-
-/// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     crate::tui::clear_screen();
     println!();
-    for line in crate::tui::logo_lines(logo_width()) {
-        println!("  \x1b[2m{line}\x1b[0m");
-    }
+    crate::tui::print_logo();
     println!();
     print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
     print_wrapped(

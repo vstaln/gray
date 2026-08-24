@@ -564,7 +564,8 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
         }
         println!();
     } else {
-        // fx-style welcome: one line, no art.
+        crate::tui::print_logo();
+        println!();
         println!(
             "\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m",
             env!("CARGO_PKG_VERSION")

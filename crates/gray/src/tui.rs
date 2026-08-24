@@ -121,6 +121,17 @@ pub fn print_wrapped(text: &str, pad: usize) {
     }
 }
 
+/// Prints the gray logo (icon + wordmark) dim, sized to the terminal.
+pub fn print_logo() {
+    let width = crossterm::terminal::size()
+        .map(|(c, _)| (c as usize).saturating_sub(6))
+        .unwrap_or(40)
+        .clamp(16, 56);
+    for line in logo_lines(width) {
+        println!("  \x1b[2m{line}\x1b[0m");
+    }
+}
+
 /// Clears the terminal; tty-only.
 pub fn clear_screen() {
     use std::io::IsTerminal;
