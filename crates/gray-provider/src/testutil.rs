@@ -2,11 +2,6 @@
 
 use serde_json::{json, Value};
 
-/// Formats an SSE data event with a raw payload string.
-pub fn sse_data(data: &str) -> String {
-    format!("data: {data}\n\n")
-}
-
 /// Returns the standard OpenAI stream termination chunk (`data: [DONE]\n\n`).
 pub fn sse_done() -> String {
     "data: [DONE]\n\n".to_string()

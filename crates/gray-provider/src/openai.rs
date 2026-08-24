@@ -63,12 +63,6 @@ impl OpenAiProviderBuilder {
         self
     }
 
-    /// Sets a custom `reqwest::Client` (alias for `http`).
-    pub fn http_client(mut self, http: reqwest::Client) -> Self {
-        self.http = Some(http);
-        self
-    }
-
     /// Sets the initial backoff duration used for retrying rate limits and stream errors.
     pub fn initial_backoff(mut self, backoff: Duration) -> Self {
         self.initial_backoff = Some(backoff);
@@ -121,11 +115,6 @@ impl OpenAiProvider {
     /// Returns the configured model name.
     pub fn model(&self) -> &str {
         &self.model
-    }
-
-    /// Returns the underlying HTTP client.
-    pub fn http_client(&self) -> &reqwest::Client {
-        &self.http
     }
 }
 

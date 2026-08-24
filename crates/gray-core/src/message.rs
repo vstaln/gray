@@ -72,13 +72,6 @@ impl ContentBlock {
         }
     }
 
-    /// Extracts the text content if this block is a text variant.
-    pub fn as_text(&self) -> Option<&str> {
-        match self {
-            Self::Text { text } => Some(text),
-            _ => None,
-        }
-    }
 }
 
 /// A conversation turn message.
