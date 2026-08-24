@@ -64,7 +64,7 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
 
     // Persist session to JSONL store
     let store = JsonlSessionStore::default();
-    save_session(&store, &config.model, &cwd, agent.messages()).await?;
+    save_session(&store, config.model.as_deref().unwrap_or("unset"), &cwd, agent.messages()).await?;
 
     Ok(())
 }
