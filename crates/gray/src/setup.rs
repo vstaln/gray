@@ -106,68 +106,151 @@ pub(crate) fn read_line(prompt: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_string())
 }
 
-/// Renders one page of the filtered provider list; returns the visible slice
-/// and its starting offset within `filtered`.
-fn render_page(filtered: &[&String], catalog: &Catalog, page: usize, filter: &str) -> (usize, usize) {
-    const PER_PAGE: usize = 12;
-    let start = page * PER_PAGE;
-    let end = (start + PER_PAGE).min(filtered.len());
-    println!();
-    for (i, pid) in filtered[start..end].iter().enumerate() {
-        let p = &catalog[*pid];
-        let star = if p.featured { "*" } else { " " };
-        println!("  {:>2}. {}{}", i + 1, star, p.name);
-    }
-    println!();
-    println!(
-        "  showing {}–{} of {} (filter: \"{}\") — number to choose, text to filter",
-        start + 1,
-        end,
-        filtered.len(),
-        if filter.is_empty() { "all" } else { filter }
-    );
-    (start, end)
+/// Case-insensitive substring match over id and name; empty filter matches all.
+/// Pure so the picker's core logic is testable without a tty.
+fn matches_filter(filter: &str, primary: &str, secondary: &str) -> bool {
+    let f = filter.to_lowercase();
+    f.is_empty() || primary.to_lowercase().contains(&f) || secondary.to_lowercase().contains(&f)
 }
 
-/// Runs the interactive provider/key/model picker, mutating `config` in place
-/// and persisting the result.
+/// Indices of `items` matching `filter`, in original order.
+fn filtered_indices(items: &[(String, String)], filter: &str) -> Vec<usize> {
+    (0..items.len())
+        .filter(|&i| matches_filter(filter, &items[i].0, &items[i].1))
+        .collect()
+}
+
+/// First visible row index for a window of `max_rows` with `sel` kept in view.
+pub(crate) fn scroll_start(sel: usize, max_rows: usize) -> usize {
+    sel.saturating_sub(max_rows - 1)
+}
+
+/// Clips to at most `max` chars.
+/// ponytail: char count, not unicode display width — wide glyphs may overflow; swap in unicode-width if that matters.
+pub(crate) fn clip(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// Interactive live-filter list picker. Renders inline (no alternate screen),
+/// redraws on every keystroke. Returns the selected index, or `None` on Esc /
+/// Ctrl+C. Restores cooked mode before returning on every path.
+fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<Option<usize>> {
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+
+    const ROWS: usize = 12;
+    let mut stdout = std::io::stdout();
+    let mut filter = String::new();
+    let mut sel = 0usize;
+    let mut drawn = 0usize;
+
+    crossterm::terminal::enable_raw_mode()?;
+    let result = (|| -> anyhow::Result<Option<usize>> {
+        loop {
+            let filtered = filtered_indices(items, &filter);
+            if sel >= filtered.len() {
+                sel = filtered.len().saturating_sub(1);
+            }
+            let selected = filtered.get(sel).copied();
+
+            // Build rows plain, clip parts to terminal width, then add ANSI.
+            let width = crate::term_width().saturating_sub(6);
+            let mut lines = vec![format!(
+                "{title}> {} \x1b[2m({}/{})\x1b[0m",
+                filter,
+                if filtered.is_empty() { 0 } else { sel + 1 },
+                filtered.len()
+            )];
+            if filtered.is_empty() {
+                lines.push("  no matches".to_string());
+            } else {
+                let start = scroll_start(sel, ROWS);
+                for &i in &filtered[start..(start + ROWS).min(filtered.len())] {
+                    let body = format!(
+                        "  {}  {}",
+                        clip(&items[i].0, 32),
+                        clip(&items[i].1, width.saturating_sub(34))
+                    );
+                    lines.push(if Some(i) == selected {
+                        format!("\x1b[7m{body}\x1b[0m")
+                    } else {
+                        body
+                    });
+                }
+            }
+
+            // Redraw: jump back over the previous frame, clear each line as written.
+            if drawn > 0 {
+                write!(stdout, "\x1b[{drawn}A")?;
+            }
+            for l in &lines {
+                write!(stdout, "\r\x1b[2K{l}\r\n")?;
+            }
+            write!(stdout, "\r")?;
+            drawn = lines.len();
+            stdout.flush()?;
+
+            match read()? {
+                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })
+                    if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+                Event::Key(KeyEvent { code, modifiers, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    match code {
+                        KeyCode::Char('p') => sel = sel.saturating_sub(1),
+                        KeyCode::Char('n') => sel = (sel + 1).min(filtered.len().saturating_sub(1)),
+                        _ => {}
+                    }
+                }
+                Event::Key(KeyEvent { code, .. }) => match code {
+                    KeyCode::Char(c) => {
+                        filter.push(c);
+                        sel = 0;
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        sel = 0;
+                    }
+                    KeyCode::Up => sel = sel.saturating_sub(1),
+                    KeyCode::Down => sel = (sel + 1).min(filtered.len().saturating_sub(1)),
+                    KeyCode::Enter => return Ok(selected),
+                    KeyCode::Esc => return Ok(None),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    })();
+    crossterm::terminal::disable_raw_mode()?;
+
+    // Erase the picker UI so the transcript shows only the outcome.
+    if drawn > 0 {
+        write!(stdout, "\x1b[{drawn}A\r\x1b[J")?;
+        stdout.flush()?;
+    }
+    result
+}
+
+/// Interactive provider picker over the bundled catalog. Returns the chosen
+/// provider id; errors if the user aborts with Esc/Ctrl+C.
+pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<String> {
+    let items: Vec<(String, String)> = catalog
+        .iter()
+        .map(|(id, p)| (id.clone(), p.name.clone()))
+        .collect();
+    match select_from_list("provider", &items)? {
+        Some(i) => Ok(items[i].0.clone()),
+        None => anyhow::bail!("provider selection aborted"),
+    }
+}
+
+/// Runs the interactive provider/key/model setup, mutating `config` in place
 pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
     let catalog = load_catalog()?;
     println!("welcome to gray — pick a provider to get started");
     println!("(saved to {}; /sys edits the system prompt)", saved_config_path()?.display());
 
-    // ---- provider: filter-as-you-type over the catalog -------------------
-    let pid = 'provider: {
-        let mut filter = String::new();
-        loop {
-            let filtered: Vec<&String> = catalog
-                .keys()
-                .filter(|k| {
-                    filter.is_empty()
-                        || k.contains(&filter.to_lowercase())
-                        || catalog[*k].name.to_lowercase().contains(&filter.to_lowercase())
-                })
-                .collect();
-            if filtered.is_empty() {
-                println!("  no providers match \"{}\"", filter);
-                filter.clear();
-                continue;
-            }
-            let (start, end) = render_page(&filtered, &catalog, 0, &filter);
-            let input = read_line("\nprovider: ")?;
-            if input.is_empty() {
-                continue;
-            }
-            if let Ok(n) = input.parse::<usize>() {
-                if n >= 1 && n <= end - start {
-                    break 'provider filtered[start + n - 1].clone();
-                }
-            }
-            filter = input.to_lowercase(); // anything else becomes the new filter
-        }
-    };
+    // ---- provider: live-filter picker over the catalog --------------------
+    let pid = select_from_catalog(&catalog)?;
     let provider = &catalog[&pid];
-    println!("→ {}", provider.name);
+    println!("provider → {}", provider.name);
 
     // ---- api key ----------------------------------------------------------
     println!("{}", rule("credentials"));
@@ -180,19 +263,22 @@ pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
     ))?;
     let api_key = if key_in.is_empty() { env_key } else { key_in };
 
-    // ---- model ------------------------------------------------------------
+    // ---- model: same live-filter picker over the provider's models --------
     println!("{}", rule("model"));
-    println!();
-    for (i, m) in provider.models.iter().enumerate() {
-        println!("  {}. {} ({})", i + 1, m.id, m.name);
-    }
-    let model_in = read_line(&format!("model [{}]: ", provider.models[0].id))?;
-    let model = if model_in.is_empty() {
-        provider.models[0].id.clone()
+    let model = if provider.models.is_empty() {
+        // Catalog entry with no models: fall back to free text.
+        let m = read_line("model id: ")?;
+        anyhow::ensure!(!m.is_empty(), "no model given");
+        m
     } else {
-        match model_in.parse::<usize>() {
-            Ok(n) if (1..=provider.models.len()).contains(&n) => provider.models[n - 1].id.clone(),
-            _ => model_in, // free-text: any model id the endpoint accepts
+        let items: Vec<(String, String)> = provider
+            .models
+            .iter()
+            .map(|m| (m.id.clone(), m.name.clone()))
+            .collect();
+        match select_from_list("model", &items)? {
+            Some(i) => items[i].0.clone(),
+            None => items[0].0.clone(), // Esc keeps the default model
         }
     };
 
@@ -245,5 +331,41 @@ mod tests {
         assert_eq!(loaded.api_key.as_deref(), Some("sk-test"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filter_matches_id_or_name_case_insensitively() {
+        assert!(matches_filter("", "openrouter", "OpenRouter"));
+        assert!(matches_filter("open", "openrouter", "Whatever"));
+        assert!(matches_filter("ROUTER", "openrouter", "whatever"));
+        assert!(matches_filter("deep", "x", "DeepSeek"));
+        assert!(!matches_filter("zzz", "openrouter", "OpenRouter"));
+        // empty filter matches everything; non-empty must hit id or name
+        let items = vec![
+            ("anthropic".into(), "Anthropic".into()),
+            ("openrouter".into(), "OpenRouter".into()),
+        ];
+        assert_eq!(filtered_indices(&items, ""), vec![0, 1]);
+        assert_eq!(filtered_indices(&items, "OPEN"), vec![1]);
+        assert!(filtered_indices(&items, "nomatch").is_empty());
+    }
+
+    #[test]
+    fn scroll_window_keeps_selection_visible() {
+        assert_eq!(scroll_start(0, 12), 0);
+        assert_eq!(scroll_start(11, 12), 0); // first page holds sel 0..=11
+        assert_eq!(scroll_start(12, 12), 1);
+        assert_eq!(scroll_start(200, 12), 189);
+        assert_eq!(scroll_start(4, 5), 0); // slash-panel window size
+        assert_eq!(scroll_start(6, 5), 2);
+    }
+
+    #[test]
+    fn catalog_items_are_built_for_picker() {
+        let cat = load_catalog().unwrap();
+        let items: Vec<(String, String)> = cat.iter().map(|(id, p)| (id.clone(), p.name.clone())).collect();
+        assert_eq!(items.len(), cat.len());
+        // filtering the built items finds a known provider by both id and name
+        assert!(items.iter().any(|(id, name)| matches_filter("deep", id, name)));
     }
 }
