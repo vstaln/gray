@@ -306,7 +306,7 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
                 auth_mode: Some("none".into()),
             })?;
             config.base_url = "https://opencode.ai/zen/v1".into();
-            config.api_key = Some("not-needed".into());
+            config.api_key = None;
             config.model = Some("laguna-s-2.1-free".into());
             println!("saved — you're on the free tier. /model to switch anytime.");
             return Ok(true);
@@ -363,7 +363,7 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
                 auth_mode: Some("none".into()),
             })?;
             config.base_url = base;
-            config.api_key = Some("not-needed".into());
+            config.api_key = None;
             config.model = Some(model);
             println!("saved — no auth needed for local endpoints.");
         }
