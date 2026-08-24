@@ -111,10 +111,17 @@ impl ToolExecutor for Registry {
         let ctx = ctx.clone();
         let name = name.to_string();
         Box::pin(async move {
-            match tool {
+            log::info!(target: "gray_tools", "tool start: {name}");
+            let out = match tool {
                 Some(tool) => tool.execute(&ctx, args).await,
                 None => ToolOutput::error(format!("unknown tool: {name}")),
+            };
+            if out.is_error {
+                log::warn!(target: "gray_tools", "tool {name} failed: {}", out.content);
+            } else {
+                log::info!(target: "gray_tools", "tool {name} done");
             }
+            out
         })
     }
 }

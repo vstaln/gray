@@ -74,8 +74,9 @@ async fn spawn_ctrl_c_policy() {
         if let Some(t) = token {
             t.cancel(); // first press mid-turn: cancel, stay alive
         } else {
+            // Say something — a bare exit(0) mid-turn looks like a crash.
             let _ = crossterm::terminal::disable_raw_mode();
-            let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
+            let _ = write!(std::io::stdout(), "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n");
             let _ = std::io::stdout().flush();
             std::process::exit(0);
         }
@@ -609,7 +610,9 @@ async fn persist_turn_messages(
         && agent.messages().len() > initial_count
     {
         for msg in &agent.messages()[initial_count..] {
-            let _ = state.store.append(&state.session_id, msg).await;
+            if let Err(e) = state.store.append(&state.session_id, msg).await {
+                log::warn!(target: "gray_session", "session append failed: {e}");
+            }
         }
     }
 }
@@ -682,7 +685,11 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
         let line = if interactive {
             let line = match read_prompt_line()? {
                 Some(l) => l,
-                None => break,
+                None => {
+                    // Ctrl-C / Ctrl-D at the prompt: exit visibly, not like a crash.
+                    println!("\x1b[2m\u{2b21} bye\x1b[0m");
+                    break;
+                }
             };
             // echo the submitted line into the transcript (frame was erased)
             println!("\x1b[2m\u{203a} {line}\x1b[0m");

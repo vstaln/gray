@@ -404,6 +404,7 @@ async fn send_request_with_retries(
         let req = base.header("Content-Type", "application/json").json(body);
 
         let res_result = req.send().await;
+        log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
         let err = match res_result {
             Ok(res) => {
                 let status = res.status();
@@ -431,8 +432,10 @@ async fn send_request_with_retries(
 
         let is_retryable = matches!(err, ProviderError::RateLimited(_) | ProviderError::Stream(_));
         if !is_retryable || attempt == MAX_ATTEMPTS {
+            log::warn!(target: "gray_provider", "request error after attempt {attempt}: {err}");
             return Err(err);
         }
+        log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
 
         let exp_factor = 1u64 << (attempt - 1);
         let backoff_ms = (initial_backoff.as_millis() as u64).saturating_mul(exp_factor);
@@ -540,6 +543,7 @@ fn stream_unfold_step(
                             };
                         }
                         Err(err) => {
+                            log::error!(target: "gray_provider", "stream request failed: {err}");
                             return Some((Err(err), StreamState::Done));
                         }
                     }
@@ -665,6 +669,7 @@ fn stream_unfold_step(
                             };
                         }
                         Some(Err(err)) => {
+                            log::error!(target: "gray_provider", "stream error: {err}");
                             return Some((
                                 Err(ProviderError::Stream(err.to_string())),
                                 StreamState::Done,
