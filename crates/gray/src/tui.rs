@@ -126,8 +126,8 @@ pub fn print_wrapped(text: &str, pad: usize) {
 pub fn print_logo() {
     let width = crossterm::terminal::size()
         .map(|(c, _)| (c as usize).saturating_sub(6))
-        .unwrap_or(40)
-        .clamp(16, 56);
+        .unwrap_or(44)
+        .clamp(24, 48);
     for line in braille_art(width) {
         print!("\r  \x1b[2m{line}\x1b[0m\r\n");
     }
