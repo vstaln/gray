@@ -300,7 +300,7 @@ fn logo_width() -> usize {
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     crate::tui::clear_screen();
     println!();
-    for line in crate::tui::braille_art(logo_width()) {
+    for line in crate::tui::logo_lines(logo_width()) {
         println!("  \x1b[2m{line}\x1b[0m");
     }
     println!();
