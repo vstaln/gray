@@ -52,15 +52,20 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     let mut agent = build_agent(config, &cwd)?;
 
     let user_msg = Message::user(prompt);
-    let events = agent
-        .run(user_msg, ctx)
-        .await
-        .map_err(|e| anyhow::anyhow!("agent execution failed: {e}"))?;
-
-    let mut stdout = std::io::stdout();
-    for event in &events {
-        render_event(&mut stdout, event)?;
-    }
+    // Stream events live so piped output isn't all-or-nothing.
+    let result = {
+        let stdout = std::io::stdout();
+        let mut on_event = |ev: &AgentEvent| {
+            if let Err(e) = render_event(&mut stdout.lock(), ev) {
+                eprintln!("render error: {e}");
+            }
+        };
+        agent
+            .run_streaming(user_msg, ctx, &mut on_event)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent execution failed: {e}"))?
+    };
+    drop(result);
 
     // Persist session to JSONL store
     let store = JsonlSessionStore::default();

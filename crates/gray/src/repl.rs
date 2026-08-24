@@ -789,14 +789,94 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 let user_msg = Message::user(&prompt_text);
                 let initial_count = agent.messages().len();
 
+                // Codex-style status line while the turn warms up: a bullet
+                // that blinks (•/◦, 600ms) or shimmers (truecolor sweep, 80ms)
+                // next to `Working… <elapsed>s`. Erased on the first event.
+                use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+                let stop = std::sync::Arc::new(AtomicBool::new(false));
+                let spinner_stop = stop.clone();
+                let spinner = tokio::spawn(async move {
+                    let truecolor = std::env::var("COLORTERM")
+                        .map(|v| v.contains("truecolor") || v.contains("24bit"))
+                        .unwrap_or(false);
+                    let started = std::time::Instant::now();
+                    let mut tick: u64 = 0;
+                    loop {
+                        if spinner_stop.load(AtomicOrdering::Relaxed) {
+                            return;
+                        }
+                        let secs = started.elapsed().as_secs();
+                        if truecolor {
+                            let text = format!("Working\u{2026} {secs}s (ctrl-c to cancel)");
+                            let chars: Vec<char> = text.chars().collect();
+                            let pos = (tick % (chars.len() as u64 + 10)) as isize;
+                            let mut line = String::from("\r\x1b[2m\u{2022}\x1b[0m ");
+                            for (i, c) in chars.iter().enumerate() {
+                                if (pos - i as isize).abs() < 3 {
+                                    line.push_str(&format!("\x1b[1;38;2;212;163;115m{c}\x1b[0m"));
+                                } else {
+                                    line.push_str(&format!("\x1b[2m{c}\x1b[0m"));
+                                }
+                            }
+                            print!("{line}");
+                        } else {
+                            let ind = if tick % 2 == 0 { "\u{2022}" } else { "\u{25e6}" };
+                            print!("\r\x1b[2m{ind} Working\u{2026} {secs}s (ctrl-c to cancel)\x1b[0m");
+                        }
+                        let _ = std::io::stdout().flush();
+                        tick += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(if truecolor {
+                            80
+                        } else {
+                            600
+                        }))
+                        .await;
+                    }
+                });
+
+                // Events stream to the printer task as they arrive; the printer
+                // clears the status line just before the first visible output.
+                let (tx, rx) = std::sync::mpsc::channel::<gray_core::event::AgentEvent>();
+                let printer_stop = stop.clone();
+                let printer = tokio::task::spawn_blocking(move || {
+                    let mut spinning = true;
+                    while let Ok(ev) = rx.recv() {
+                        let rendered = fmt_event(&ev);
+                        if rendered.is_empty() {
+                            continue; // Start etc. — keep the status line up
+                        }
+                        if spinning {
+                            // first VISIBLE output: kill the spinner, outlast one
+                            // tick so its final write lands, then wipe the line
+                            printer_stop.store(true, AtomicOrdering::Relaxed);
+                            std::thread::sleep(std::time::Duration::from_millis(700));
+                            print!("\r\x1b[K");
+                            let _ = std::io::stdout().flush();
+                            spinning = false;
+                        }
+                        print!("{rendered}");
+                        let _ = std::io::stdout().flush();
+                    }
+                });
+
                 let run_result = {
-                    let mut run_future = Box::pin(agent.run(user_msg, ctx));
+                    let tx_cb = tx.clone();
+                    let mut on_event = |ev: &AgentEvent| {
+                        let _ = tx_cb.send(ev.clone());
+                    };
+                    let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                     tokio::select! {
                         res = &mut run_future => res,
                         _ = cancel.cancelled() => Err(CoreError::Cancelled),
                     }
                 };
+                drop(tx);
+                stop.store(true, AtomicOrdering::Relaxed);
                 TURN_STATE.lock().expect("turn state lock").take();
+                let _ = spinner.await;
+                let _ = printer.await;
+                print!("\r\x1b[K"); // clear residue when the turn died before any output
+                let _ = std::io::stdout().flush();
 
                 match run_result {
                     Ok(events) => {

@@ -166,8 +166,40 @@ impl Agent {
     /// ([`CoreError::MaxTurnsExceeded`]). Tool failures are *not* errors:
     /// they become `is_error` tool results so the model can recover.
     pub async fn run(&mut self, input: Message, ctx: ToolContext) -> Result<Vec<AgentEvent>, CoreError> {
+        self.run_inner(input, ctx, None).await
+    }
+
+    /// Streaming variant of [`run`]: every [`AgentEvent`] is handed to
+    /// `on_event` the moment it is produced (text deltas arrive token-by-token)
+    /// *and* collected into the returned Vec, which equals `run`'s output.
+    pub async fn run_streaming(
+        &mut self,
+        input: Message,
+        ctx: ToolContext,
+        on_event: &mut dyn FnMut(&AgentEvent),
+    ) -> Result<Vec<AgentEvent>, CoreError> {
+        self.run_inner(input, ctx, Some(on_event)).await
+    }
+
+    async fn run_inner(
+        &mut self,
+        input: Message,
+        ctx: ToolContext,
+        mut sink: Option<&mut dyn FnMut(&AgentEvent)>,
+    ) -> Result<Vec<AgentEvent>, CoreError> {
         log::info!(target: "gray_agent", "agent run start ({} messages, max {} turns)", self.messages.len() + 1, self.max_turns);
-        let mut events = vec![AgentEvent::Start];
+        let mut events = Vec::new();
+        // Forward each event to the optional streaming sink, then collect it.
+        macro_rules! emit {
+            ($ev:expr) => {{
+                let ev = $ev;
+                if let Some(cb) = sink.as_deref_mut() {
+                    cb(&ev);
+                }
+                events.push(ev);
+            }};
+        }
+        emit!(AgentEvent::Start);
         self.messages.push(input);
         let mut total_usage = Usage::default();
 
@@ -195,7 +227,7 @@ impl Agent {
                 loop {
                     match stream.next().await {
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
-                            events.push(AgentEvent::text_delta(delta.clone()));
+                            emit!(AgentEvent::text_delta(delta.clone()));
                             text_parts.push(delta);
                         }
                         Some(Ok(StreamEvent::ToolCallDelta { index, id, name, arguments_delta })) => {
@@ -263,17 +295,17 @@ impl Agent {
 
             if tool_uses.is_empty() {
                 log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={}, {} messages", total_usage.input_tokens, total_usage.output_tokens, self.messages.len());
-                events.push(AgentEvent::turn_end(stop_reason, total_usage));
+                emit!(AgentEvent::turn_end(stop_reason, total_usage));
                 return Ok(events);
             }
 
             for (id, name, args) in tool_uses {
-                events.push(AgentEvent::tool_call_start(id.clone(), name.clone()));
-                events.push(AgentEvent::tool_call_end(id.clone(), args.clone()));
+                emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
+                emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
                 let output = self.executor.execute(&ctx, &name, args).await;
 
-                events.push(AgentEvent::tool_result(
+                emit!(AgentEvent::tool_result(
                     id.clone(),
                     output.content.clone(),
                     output.is_error,
