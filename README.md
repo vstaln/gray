@@ -3,14 +3,29 @@
 A minimal, modular agent harness in Rust. pi's philosophy, hermes' soul.
 
 ```
-you run `gray`  →  a local web app opens  →  you talk, it works.
+GRAY_API_KEY=sk-... gray --model anthropic/claude-sonnet-4
+# → web UI at http://127.0.0.1:7654 — open it, talk, done.
+
+gray --print "explain this repo in one line"   # scripting / no browser
 ```
 
-## Status: design phase
+## Status: v0.0.1 — working harness
 
-The full design lives in [`docs/superpowers/specs/2026-08-24-gray-harness-design.md`](docs/superpowers/specs/2026-08-24-gray-harness-design.md).
-Research notes in `docs/` (`pi-recon.md`, `dsh-recon.md`, `hermes-recon.md`,
-`reference-repos.md`, `system-prompt.md`).
+82 tests, clippy-clean, one binary, zero runtime deps beyond the Rust toolchain.
+
+## Usage
+
+```bash
+cargo build --release -p gray
+export GRAY_API_KEY=...          # or OPENAI_API_KEY
+./target/release/gray            # web UI on 127.0.0.1:7654 (default)
+./target/release/gray --port 8080
+./target/release/gray --base-url http://localhost:11434/v1 --model llama3  # ollama
+echo "hi" | ... gray --print "summarize ."    # print mode
+```
+
+Any OpenAI-compatible endpoint works (OpenRouter, DeepSeek, Groq, ollama, vLLM).
+Sessions persist to `~/.gray/sessions/*.jsonl`.
 
 ## Shape (planned)
 
