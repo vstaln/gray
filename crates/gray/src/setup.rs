@@ -98,7 +98,7 @@ pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()
     Ok(())
 }
 
-fn read_line(prompt: &str) -> anyhow::Result<String> {
+pub(crate) fn read_line(prompt: &str) -> anyhow::Result<String> {
     print!("{prompt}");
     std::io::stdout().flush()?;
     let mut line = String::new();
