@@ -117,8 +117,9 @@ fn update_active_codes(active: &mut Vec<String>, chunk: &str) {
 pub fn print_wrapped(text: &str, pad: usize) {
     let width = crate::term_width().saturating_sub(pad);
     for line in wrap(text, width) {
-        println!("{}{}", " ".repeat(pad), line);
+        print!("\r{}{}\r\n", " ".repeat(pad), line);
     }
+    let _ = std::io::stdout().flush();
 }
 
 /// Prints the gray logo (icon + wordmark) dim, sized to the terminal.
@@ -128,15 +129,16 @@ pub fn print_logo() {
         .unwrap_or(40)
         .clamp(16, 56);
     for line in braille_art(width) {
-        println!("  \x1b[2m{line}\x1b[0m");
+        print!("\r  \x1b[2m{line}\x1b[0m\r\n");
     }
+    let _ = std::io::stdout().flush();
 }
 
 /// Clears the terminal; tty-only.
 pub fn clear_screen() {
     use std::io::IsTerminal;
     if std::io::stdout().is_terminal() && crossterm::terminal::size().is_ok() {
-        print!("\x1b[2J\x1b[1;1H");
+        print!("\x1b[2J\x1b[1;1H\r");
         let _ = std::io::stdout().flush();
     }
 }
