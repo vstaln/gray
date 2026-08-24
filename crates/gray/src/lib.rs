@@ -12,7 +12,8 @@ use clap::Parser;
 
 pub use config::Config;
 pub use print::run_print_mode;
-pub use repl::{run_repl_mode, ReplCommand, parse_command};
+pub use repl::{parse_command, run_repl_mode, ReplCommand};
+pub use tui::{erase_shell_line, print_wrapped};
 
 use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;

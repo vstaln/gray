@@ -121,6 +121,16 @@ pub fn print_wrapped(text: &str, pad: usize) {
     }
 }
 
+/// Erases the shell's echoed command line (`~ ❯ gray`) from the terminal.
+/// Assumes the shell echoed the command on the previous line.
+pub fn erase_shell_line() {
+    use std::io::IsTerminal;
+    if std::io::stdout().is_terminal() && crossterm::terminal::size().is_ok() {
+        print!("\x1b[1A\x1b[2K");
+        let _ = std::io::stdout().flush();
+    }
+}
+
 /// A pi-tui component: renders to lines guaranteed ≤ `width` visible chars.
 pub trait Component {
     fn render(&self, width: usize) -> Vec<String>;
