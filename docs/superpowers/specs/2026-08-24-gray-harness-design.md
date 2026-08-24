@@ -3,6 +3,21 @@
 Date: 2026-08-24
 Status: approved direction, awaiting implementation plan
 
+## Surface
+
+**Default interface: a local web app.** The `gray` binary starts an axum
+server on `127.0.0.1:<port>` and serves an embedded single-page chat UI.
+You run `gray`, open a browser tab, talk to it. No accounts, no auth beyond
+loopback binding, sessions on disk. Cloud hosting / multi-user is a later
+product decision — architecture allows it (SessionStore trait, stateless
+events) but nothing in v0 assumes it.
+
+The chat UI is **lifted from grayweb/gray-app** (`src/components/gray/chat/*`):
+messages list, composer, markdown rendering, thinking block, auto-scroll,
+streaming hook — stripped of Supabase auth, reminders, grounding panels,
+profiles, and payments. It talks to the Rust backend over SSE instead of the
+FastAPI backend.
+
 ## What gray is
 
 A minimal, modular agent harness written in Rust. Surface strategy:
@@ -22,9 +37,10 @@ CodeAct (2402.01030), SWE-agent (2405.15793).
 
 ## Non-goals for v0
 
-- No TUI beyond a clean streaming REPL (ratatui is phase 2+)
+- No TUI polish — terminal is the dev backdoor (`--print` one-shot + basic REPL)
 - No MCP, no subagents, no skills directory
-- No chat-app gateway (Telegram/WhatsApp) — phase 2; see Consumer seam below
+- No chat-app gateways (Telegram/WhatsApp/etc.) — ever, until asked again
+- No cloud/hosted/multi-user deployment — localhost only
 - No embeddings/memory
 - No provider SDKs — hand-rolled HTTP/SSE against two wire protocols
 
@@ -37,8 +53,9 @@ gray/
     ├── gray-provider/      # LLM wire protocols + streaming
     ├── gray-core/          # agent loop, event stream, message model
     ├── gray-tools/         # Tool trait + 5 builtins
-    ├── gray-session/       # JSONL session persistence
-    └── gray/               # binary: CLI + REPL
+    ├── gray-session/       # SessionStore trait + JSONL impl
+    └── gray/               # binary: axum web server + embedded UI,
+                            #   plus --print one-shot mode and bare REPL
 ```
 
 Dependency rule (enforced by structure): `core` depends only on its own
@@ -132,12 +149,34 @@ can recover. A tool crashing the process is a bug.
   core takes a `token_budget: Option<usize>` — the compaction seam.
 - No SQLite, no indexes in v0.
 
-### gray (binary)
+### gray (binary) — web-first
 
-- Streaming REPL: prints deltas live, tool calls rendered compactly.
-- Flags: `--model provider/model-id`, `-c/--continue` (latest session),
-  `-r/--resume <id>`, `--base-url`, `-p/--print` (one-shot, non-interactive).
+- `gray` → binds `127.0.0.1:7654` (configurable), serves the embedded UI and
+  the JSON API below, opens nothing else. `--print "prompt"` stays for
+  scripting/dev; a bare stdin REPL exists as fallback when no browser is around.
+- HTTP API (all under `/api`):
+  - `POST /api/chat` → SSE stream of core `AgentEvent`s (serde-json lines),
+    request body `{session_id?, message}`; creates session when id omitted.
+  - `GET /api/sessions` → list (id, title-ish first message, timestamp).
+  - `GET /api/sessions/:id` → replayed normalized messages.
+  - `DELETE /api/sessions/:id`.
+  - `GET /api/config` → model name + provider (read-only, for the UI header).
+- Static UI embedded via `rust-embed` from `web/dist` (Vite build output);
+  `gray` ships as ONE self-contained binary with zero runtime assets.
+- Flags: `--model provider/model-id`, `--port`, `--base-url`, `-p/--print`.
 - Config precedence: flags > env > `~/.gray/config.toml`.
+
+### web/ (frontend, extracted from gray-app)
+
+- Vite + React + TypeScript, lifted component-by-component from
+  `grayweb/gray-app/src/components/gray/chat/`: `view/ChatMessagesList`,
+  `view/ChatMessageEditor`, `view/markdown/*`, `view/ThinkingBlock`,
+  `view/useChatViewScroll`, `provider/useAutoStreamState`.
+- Rewire data layer: delete Supabase/auth/reminders/payments modules;
+  `lib/api/chatStream.ts`'s async-generator pattern is kept but pointed at
+  `/api/chat` SSE with no auth header. Session CRUD hits `/api/sessions*`.
+- Sidebar = flat session list (from gray-app's sidebar, simplified).
+- Build: `npm run build` → `web/dist`, embedded by the binary at compile time.
 
 ## Data flow
 
@@ -145,9 +184,13 @@ can recover. A tool crashing the process is a bug.
 stdin ──▶ Session.append(user)
       ──▶ Agent.loop:
              request = system_prompt + messages + tool_defs
-             Provider.stream(request) ──▶ events ──▶ terminal + collector
+             Provider.stream(request) ──▶ events ──▶ collector
              if tool_calls: Tools.execute() ──▶ Session.append(assistant+results) ──┐
              else: done ◀──────────────────────────────────────────────────────────┘
+
+collector ──▶ two thin surfaces off the same event stream:
+               • axum SSE handler   → browser UI (default)
+               • stdout printer     → --print / REPL (dev)
 ```
 
 ## Error handling
@@ -182,7 +225,7 @@ CLI reporting. Keeps `dyn` boundaries typed and matchable.
 - MCP client: just another `Tool` source feeding the registry
 - Subagents: an `agent` tool wrapping a nested `Agent::run`
 - Gateway/TUI: consume `Agent`'s event stream instead of stdout
-- **Consumer surface:** swap `gray-tools` builtins for life tools (web,
-  email, calendar) and put a Telegram/WhatsApp adapter in front of the same
-  event stream — this is how gray serves non-technical users without forking
-  the architecture (pattern proven by openclaw/QwenPaw/hermes-agent)
+- **Consumer surface:** the local web UI is already the consumer face. When
+  cloud hosting becomes affordable, put a reverse proxy + auth layer in front
+  and swap `JsonlSessionStore` for a hosted one — no core changes. Swap
+  `gray-tools` builtins for life tools (web, email, calendar) as needed.
