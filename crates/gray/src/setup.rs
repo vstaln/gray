@@ -289,16 +289,17 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
 }
 
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
+    let _ = crossterm::terminal::disable_raw_mode();
     crate::tui::clear_screen();
-    println!();
+    print!("\r\n");
     crate::tui::print_logo();
-    println!();
+    print!("\r\n");
     print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
     print_wrapped(
         "\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m",
         2,
     );
-    println!();
+    print!("\r\n");
     let options = vec![
         ("Start free", String::new()),
         ("Add an API key", String::new()),

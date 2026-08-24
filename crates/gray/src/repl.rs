@@ -74,7 +74,9 @@ async fn spawn_ctrl_c_policy() {
                 t.cancel();
             }
         } else {
-            println!();
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
+            let _ = std::io::stdout().flush();
             std::process::exit(0);
         }
     }
@@ -549,6 +551,7 @@ fn clip_str(s: &str, max: usize) -> String {
 
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Result<()> {
+    let _ = crossterm::terminal::disable_raw_mode();
     crate::tui::clear_screen();
     let cwd = std::env::current_dir()?;
 
@@ -560,14 +563,14 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
     if unconfigured {
         let ready = crate::setup::run_onboarding(config).await?;
         if !ready {
-            println!("\x1b[2mrunning without a provider — send a message to set one up (or /setup)\x1b[0m");
+            print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /setup)\x1b[0m\r\n");
         }
-        println!();
+        print!("\r\n");
     } else {
         crate::tui::print_logo();
-        println!();
-        println!(
-            "\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m",
+        print!("\r\n");
+        print!(
+            "\r\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m\r\n",
             env!("CARGO_PKG_VERSION")
         );
     }

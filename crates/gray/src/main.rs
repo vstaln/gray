@@ -8,6 +8,7 @@ use gray::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
     let mut config = Config::resolve(&cli)?;
     // Best-effort: when the saved config is oauth-mode, pull a fresh access
