@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::{config::Config, rule};
 
 /// Provider entry from the vendored catalog.
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +170,7 @@ pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
     println!("→ {}", provider.name);
 
     // ---- api key ----------------------------------------------------------
+    println!("{}", rule("credentials"));
     let hint = env_hint(provider);
     let env_key = config.api_key.clone().unwrap_or_default();
     let key_in = read_line(&format!(
@@ -180,6 +181,7 @@ pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
     let api_key = if key_in.is_empty() { env_key } else { key_in };
 
     // ---- model ------------------------------------------------------------
+    println!("{}", rule("model"));
     println!();
     for (i, m) in provider.models.iter().enumerate() {
         println!("  {}. {} ({})", i + 1, m.id, m.name);

@@ -43,6 +43,15 @@ pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
     }
 }
 
+/// Renders an fx-style labeled rule: `── label ──────────────` (fixed 76-col width).
+pub fn rule(label: &str) -> String {
+    const WIDTH: usize = 76;
+    let prefix = format!("\u{2500}\u{2500} {label} ");
+    let used = prefix.chars().count();
+    let fill = WIDTH.saturating_sub(used);
+    format!("{prefix}{}", "\u{2500}".repeat(fill))
+}
+
 pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
     format!("{}\n\nCurrent working directory: {}", body.trim_end(), cwd.display())
 }
@@ -107,6 +116,14 @@ mod tests {
 
         assert!(formatted.starts_with("You are gray, a minimal agent"));
         assert!(formatted.contains("Current working directory: /workspace/test-dir"));
+    }
+
+    #[test]
+    fn rule_embeds_label_and_fills_width() {
+        let r = rule("tool \u{b7} bash");
+        assert!(r.starts_with("\u{2500}\u{2500} tool \u{b7} bash "));
+        assert_eq!(r.chars().count(), 76);
+        assert!(r.ends_with('\u{2500}'));
     }
 
     #[test]
