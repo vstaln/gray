@@ -189,8 +189,16 @@ async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
 }
 
 /// Runs Gray in interactive REPL mode.
-pub async fn run_repl_mode(config: &Config) -> anyhow::Result<()> {
+pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
+
+    // First-run onboarding: if provider details are missing, walk the user
+    // through setup before showing the prompt (pi/opencode style).
+    if config.model.is_none() || config.api_key.is_none() {
+        crate::setup::run_setup(config)?;
+        println!();
+    }
+
     // The agent is built lazily so the REPL opens even with no model/key configured;
     // we surface a friendly hint on first use instead of refusing to start.
     let mut agent: Option<Agent> = None;
