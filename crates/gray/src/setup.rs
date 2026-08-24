@@ -141,7 +141,7 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 /// redraws on every keystroke. Returns the selected index, or `None` on Esc /
 /// Ctrl+C. Restores cooked mode before returning on every path.
 fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<Option<usize>> {
-    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     const ROWS: usize = 12;
     let mut stdout = std::io::stdout();
@@ -158,23 +158,34 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
             }
             let selected = filtered.get(sel).copied();
 
-            // Build rows plain, clip parts to terminal width, then add ANSI.
-            let width = crate::term_width().saturating_sub(6);
-            let mut lines = vec![format!(
-                "{title}> {} \x1b[2m({}/{})\x1b[0m",
-                filter,
+            // Fresh width at EVERY paint; the rules frame the menu inside the
+            // repaintable block, so a resize mid-menu redraws them at new size.
+            let tw = crate::term_width();
+            let width = tw.saturating_sub(6);
+            let counter = format!(
+                "({}/{})",
                 if filtered.is_empty() { 0 } else { sel + 1 },
                 filtered.len()
-            )];
+            );
+            // Budget leaves room for `<title> `, one space, and the counter.
+            let filter_budget =
+                width.saturating_sub(3 + title.chars().count() + counter.chars().count());
+            let mut lines = vec![
+                rule(""),
+                format!("{title}> {} \x1b[2m{counter}\x1b[0m", clip(&filter, filter_budget)),
+            ];
             if filtered.is_empty() {
                 lines.push("  no matches".to_string());
             } else {
                 let start = scroll_start(sel, ROWS);
                 for &i in &filtered[start..(start + ROWS).min(filtered.len())] {
-                    let body = format!(
-                        "  {}  {}",
-                        clip(&items[i].0, 32),
-                        clip(&items[i].1, width.saturating_sub(34))
+                    let body = clip(
+                        &format!(
+                            "  {}  {}",
+                            clip(&items[i].0, 32),
+                            clip(&items[i].1, width.saturating_sub(34))
+                        ),
+                        tw,
                     );
                     lines.push(if Some(i) == selected {
                         format!("\x1b[7m{body}\x1b[0m")
@@ -183,6 +194,7 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
                     });
                 }
             }
+            lines.push(rule(""));
 
             // Redraw: jump back over the previous frame, clear each line as written.
             if drawn > 0 {
@@ -196,16 +208,16 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
             stdout.flush()?;
 
             match read()? {
-                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })
+                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
                     if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
-                Event::Key(KeyEvent { code, modifiers, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
                     match code {
                         KeyCode::Char('p') => sel = sel.saturating_sub(1),
                         KeyCode::Char('n') => sel = (sel + 1).min(filtered.len().saturating_sub(1)),
                         _ => {}
                     }
                 }
-                Event::Key(KeyEvent { code, .. }) => match code {
+                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                     KeyCode::Char(c) => {
                         filter.push(c);
                         sel = 0;
@@ -220,6 +232,7 @@ fn select_from_list(title: &str, items: &[(String, String)]) -> anyhow::Result<O
                     KeyCode::Esc => return Ok(None),
                     _ => {}
                 },
+                Event::Resize(_, _) => {} // width re-queried at top of loop; frame repaints
                 _ => {}
             }
         }
@@ -274,10 +287,8 @@ pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "de
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!();
-    println!("{}", rule(""));
     println!("  Welcome to gray");
     println!("  \x1b[2mgray by alignment\x1b[0m");
-    println!("{}", rule(""));
     println!();
     let options = vec![
         ("Start free", String::new()),
