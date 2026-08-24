@@ -221,10 +221,41 @@ CLI reporting. Keeps `dyn` boundaries typed and matchable.
 
 ## Phase 2 seams (designed for, not built)
 
-- Skills: `.gray/skills/*.md` appended to system prompt (hermes-style learning loop lives here later)
-- MCP client: just another `Tool` source feeding the registry
-- Subagents: an `agent` tool wrapping a nested `Agent::run`
-- Gateway/TUI: consume `Agent`'s event stream instead of stdout
+Priorities informed by hermes-agent analysis (see `docs/hermes-recon.md`,
+`docs/hermes-steal-agy.md`). Steal the kernels, never the plumbing.
+
+### v0 already carries three hermes-born details
+- **3-tier system prompt** in core's request builder: stable (identity+tools)
+  / context (memory, skills index) / volatile (session) sections.
+- **Tool output spillover**: outputs over ~8KB go to
+  `~/.gray/spill/<hash>.txt`; model gets `<persisted-output path=...>` + head/tail.
+- **Tool error cap**: error text bounded (~2KB) before it enters history.
+
+### Phase 2 (each is a small kernel)
+- **MCP client:** just another `Tool` source feeding the registry — unchanged from earlier draft.
+- **Skills:** `.gray/skills/<name>/SKILL.md` with YAML frontmatter; index
+  (name+description) into system prompt; one `skill_view(name)` tool loads
+  body. `/learn` command = static authoring-standards prompt as a normal turn;
+  agent authors skills with ordinary file tools. This IS the self-improvement
+  loop — no curator, no usage ledgers.
+- **Memory:** `.gray/MEMORY.md` + `.gray/USER.md` injected verbatim (§-delimited
+  sections); `memory(action=add/replace/remove)` tool; a 6-line memory-guidance
+  paragraph in the system prompt. No prefetch layer.
+- **Session search:** `rg` over session JSONL exposed as `session_search(query)`
+  tool; optional single-table FTS5 sidecar only if rg proves too slow.
+- **Subagents:** `delegate(task)` tool = child `Agent::run` with filtered
+  registry (no delegate/memory/cron), final text as result; optional git
+  worktree isolation per task.
+- **Cron:** `~/.gray/jobs.json` + tokio interval ticker → headless Agent::run,
+  output appended to a log. ~120 LOC.
+
+### Deliberate skips (hermes evidence)
+- Messaging gateways: hermes' gateway/run.py is 31k LOC for what gray's axum
+  SSE API already does. Any future surface = new adapter normalizing to the
+  same event stream; port nothing.
+- SQLite state DB, provider plugin zoo, fuzzy patching, compaction machinery:
+  all 10x-heavier than their ideas. Compaction when needed = threshold-triggered
+  summarize-oldest-half call.
 - **Consumer surface:** the local web UI is already the consumer face. When
   cloud hosting becomes affordable, put a reverse proxy + auth layer in front
   and swap `JsonlSessionStore` for a hosted one — no core changes. Swap
