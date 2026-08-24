@@ -3,6 +3,10 @@ name = "gray"
 version.workspace = true
 edition.workspace = true
 
+[lib]
+name = "gray"
+path = "src/lib.rs"
+
 [[bin]]
 name = "gray"
 path = "src/main.rs"
@@ -15,6 +19,7 @@ gray-session = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }
+futures = { workspace = true }
 rust-embed = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -22,4 +27,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
+reqwest = { workspace = true }
 tempfile = "3"

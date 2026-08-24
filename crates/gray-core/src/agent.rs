@@ -143,6 +143,12 @@ impl Agent {
         self
     }
 
+    /// Sets the initial conversation messages (useful for resumed sessions).
+    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
+        self.messages = messages;
+        self
+    }
+
     /// Read-only view of the accumulated conversation so far.
     pub fn messages(&self) -> &[Message] {
         &self.messages
@@ -560,5 +566,34 @@ mod agent_tests {
             call_log.lock().expect("calls lock poisoned").clone(),
             vec![TOOL_NAME.to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn with_messages_preserves_prior_conversation_history() {
+        let provider = FakeProvider::new(vec![vec![
+            StreamEvent::text_delta("hello again"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]]);
+        let prior = vec![
+            Message::user("first question"),
+            Message::assistant("first answer"),
+        ];
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_messages(prior);
+
+        let events = agent
+            .run(Message::user("second question"), ToolContext::default())
+            .await
+            .expect("run should succeed");
+
+        assert!(events.contains(&AgentEvent::text_delta("hello again")));
+        assert_eq!(agent.messages().len(), 4);
+        assert_eq!(agent.messages()[0], Message::user("first question"));
+        assert_eq!(agent.messages()[1], Message::assistant("first answer"));
+        assert_eq!(agent.messages()[2], Message::user("second question"));
+        assert_eq!(agent.messages()[3], Message::assistant("hello again"));
     }
 }
