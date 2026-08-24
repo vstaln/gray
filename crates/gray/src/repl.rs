@@ -39,14 +39,14 @@ pub fn fmt_event(event: &AgentEvent) -> String {
         AgentEvent::Start | AgentEvent::ToolCallEnd { .. } => String::new(),
         AgentEvent::TextDelta { delta } => delta.clone(),
         AgentEvent::ToolCallStart { name, .. } => {
-            format!("\n\x1b[2m[{name}]\x1b[0m\n")
+            format!("\n\x1b[2m· {name}\x1b[0m\n")
         }
         AgentEvent::ToolResult {
             output, is_error, ..
         } => {
             if *is_error {
                 let truncated = truncate_chars(output, MAX_ERROR_DISPLAY_CHARS);
-                format!("\x1b[31m! {truncated}\x1b[0m\n")
+                format!("\x1b[31m✗ {truncated}\x1b[0m\n")
             } else {
                 String::new()
             }
@@ -69,6 +69,8 @@ pub enum ReplCommand {
     /// Open the system-prompt file in `$EDITOR` (`/sys`), print it (`/sys show`),
     /// or restore the default (`/sys reset`).
     Sys(SysAction),
+    /// Run the interactive provider/key/model setup wizard (`/setup`).
+    Setup,
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Regular user prompt to feed to the agent.
@@ -102,6 +104,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Show)
     } else if trimmed == "/sys reset" {
         ReplCommand::Sys(SysAction::Reset)
+    } else if trimmed == "/setup" {
+        ReplCommand::Setup
     } else if trimmed.starts_with('/') {
         ReplCommand::Unknown(trimmed.to_string())
     } else {
@@ -192,11 +196,19 @@ async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
 pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // First-run onboarding: if provider details are missing, walk the user
-    // through setup before showing the prompt (pi/opencode style).
-    if config.model.is_none() || config.api_key.is_none() {
-        crate::setup::run_setup(config)?;
-        println!();
+    // Startup banner: the gray mark, dimmed so it reads on light and dark terminals.
+    print!("\x1b[2m{}", crate::LOGO);
+    println!(
+        "  gray {} — minimal agent harness\x1b[0m",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!();
+
+    // pi-style boot: no forced wizard. A dim hint appears when unconfigured,
+    // and the provider picker fires the moment credentials are needed.
+    let mut unconfigured = config.model.is_none() || config.api_key.is_none();
+    if unconfigured {
+        println!("\x1b[2mno provider configured yet — send a message and I'll walk you through it (or /setup)\x1b[0m");
     }
 
     // The agent is built lazily so the REPL opens even with no model/key configured;
@@ -241,12 +253,23 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
                 handle_sys(config, &cwd, action, &mut agent).await;
                 continue;
             }
+            ReplCommand::Setup => {
+                crate::setup::run_setup(config)?;
+                unconfigured = false;
+                reload_agent(&mut agent, config, &cwd).await;
+                continue;
+            }
             ReplCommand::Unknown(_) => {
                 println!("unknown command");
                 continue;
             }
             ReplCommand::Prompt(prompt_text) => {
                 if agent.is_none() {
+                    if unconfigured {
+                        crate::setup::run_setup(config)?;
+                        unconfigured = false;
+                        println!();
+                    }
                     match build_agent(config, &cwd) {
                         Ok(built) => agent = Some(built),
                         Err(e) => {
@@ -349,6 +372,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_command_identifies_setup() {
+        assert_eq!(parse_command("/setup"), ReplCommand::Setup);
+        assert_eq!(parse_command("  /setup  "), ReplCommand::Setup);
+        assert_eq!(parse_command("/setup\n"), ReplCommand::Setup);
+        // near-misses stay unknown
+        assert_eq!(
+            parse_command("/setup extra"),
+            ReplCommand::Unknown("/setup extra".to_string())
+        );
+    }
+
+    #[test]
     fn parse_command_identifies_unknown_slash_commands() {
         assert_eq!(
             parse_command("/foo"),
@@ -411,11 +446,11 @@ mod tests {
     fn fmt_event_renders_tool_call_start_chip() {
         assert_eq!(
             fmt_event(&AgentEvent::tool_call_start("call_1", "read")),
-            "\n\x1b[2m[read]\x1b[0m\n"
+            "\n\x1b[2m· read\x1b[0m\n"
         );
         assert_eq!(
             fmt_event(&AgentEvent::tool_call_start("call_2", "bash")),
-            "\n\x1b[2m[bash]\x1b[0m\n"
+            "\n\x1b[2m· bash\x1b[0m\n"
         );
     }
 
@@ -431,7 +466,7 @@ mod tests {
     fn fmt_event_renders_tool_result_error() {
         assert_eq!(
             fmt_event(&AgentEvent::tool_result("call_1", "file not found", true)),
-            "\x1b[31m! file not found\x1b[0m\n"
+            "\x1b[31m✗ file not found\x1b[0m\n"
         );
     }
 
@@ -439,7 +474,7 @@ mod tests {
     fn fmt_event_renders_tool_result_error_truncation_over_200_chars() {
         let long_error = "a".repeat(250);
         let rendered = fmt_event(&AgentEvent::tool_result("call_1", &long_error, true));
-        let expected = format!("\x1b[31m! {}\x1b[0m\n", "a".repeat(200));
+        let expected = format!("\x1b[31m✗ {}\x1b[0m\n", "a".repeat(200));
         assert_eq!(rendered, expected);
     }
 
@@ -447,7 +482,7 @@ mod tests {
     fn fmt_event_renders_tool_result_error_exact_200_chars() {
         let exact_error = "b".repeat(200);
         let rendered = fmt_event(&AgentEvent::tool_result("call_1", &exact_error, true));
-        let expected = format!("\x1b[31m! {}\x1b[0m\n", "b".repeat(200));
+        let expected = format!("\x1b[31m✗ {}\x1b[0m\n", "b".repeat(200));
         assert_eq!(rendered, expected);
     }
 

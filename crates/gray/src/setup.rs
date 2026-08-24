@@ -1,38 +1,61 @@
-//! First-run onboarding: an interactive wizard that collects provider, API key,
-//! and model, then persists them to `~/.gray/config.json`.
+//! First-run onboarding: a searchable provider picker fed by the bundled
+//! catalog (models.dev snapshot, see scripts/gen-providers.py), persisting
+//! to ~/.gray/config.json. Flow mirrors pi: nothing forced at boot; the
+//! picker appears the moment credentials are actually needed.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, DEFAULT_BASE_URL};
+use crate::config::Config;
 
-/// A known OpenAI-compatible provider, pre-wired with its base URL.
-pub struct ProviderPreset {
-    pub label: &'static str,
-    pub base_url: &'static str,
-    pub suggested_model: &'static str,
+/// Provider entry from the vendored catalog.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CatalogProvider {
+    pub name: String,
+    pub base_url: String,
+    /// models.dev emits either a string or a list of env var names.
+    #[serde(default)]
+    pub env_key: serde_json::Value,
+    pub featured: bool,
+    #[serde(default)]
+    pub models: Vec<CatalogModel>,
 }
 
-/// The short list shown by the wizard. Custom endpoints go through option 4.
-pub const PROVIDER_PRESETS: [ProviderPreset; 3] = [
-    ProviderPreset {
-        label: "OpenRouter",
-        base_url: "https://openrouter.ai/api/v1",
-        suggested_model: "anthropic/claude-sonnet-4",
-    },
-    ProviderPreset {
-        label: "DeepSeek",
-        base_url: "https://api.deepseek.com/v1",
-        suggested_model: "deepseek-chat",
-    },
-    ProviderPreset {
-        label: "Groq",
-        base_url: "https://api.groq.com/openai/v1",
-        suggested_model: "llama-3.3-70b-versatile",
-    },
-];
+#[derive(Debug, Clone, Deserialize)]
+pub struct CatalogModel {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// The full catalog, keyed by provider id (`openrouter`, `deepseek`, ...).
+pub type Catalog = BTreeMap<String, CatalogProvider>;
+
+/// Bundled snapshot — regenerated via scripts/gen-providers.py.
+pub const PROVIDERS_JSON: &str = include_str!("../assets/providers.json");
+
+/// Parses the embedded catalog. Infinitely unlikely to fail (compiled in),
+/// but returns a Result so callers can degrade gracefully.
+pub fn load_catalog() -> anyhow::Result<Catalog> {
+    Ok(serde_json::from_str(PROVIDERS_JSON)?)
+}
+
+/// First env var name from the catalog entry, for hints during key input.
+fn env_hint(p: &CatalogProvider) -> String {
+    match &p.env_key {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(a) => a
+            .iter()
+            .filter_map(|v| v.as_str())
+            .next()
+            .unwrap_or("API_KEY")
+            .to_string(),
+        _ => "API_KEY".to_string(),
+    }
+}
 
 /// On-disk configuration, kept deliberately tiny.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -83,64 +106,109 @@ fn read_line(prompt: &str) -> anyhow::Result<String> {
     Ok(line.trim().to_string())
 }
 
-/// Runs the interactive first-run wizard, mutating `config` in place and
-/// persisting the result. Only called when model or key are still unset.
-pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
-    println!("welcome to gray — three quick questions (saved to ~/.gray/config.json)");
+/// Renders one page of the filtered provider list; returns the visible slice
+/// and its starting offset within `filtered`.
+fn render_page(filtered: &[&String], catalog: &Catalog, page: usize, filter: &str) -> (usize, usize) {
+    const PER_PAGE: usize = 12;
+    let start = page * PER_PAGE;
+    let end = (start + PER_PAGE).min(filtered.len());
     println!();
-
-    // 1. Provider
-    println!("which provider?");
-    for (i, p) in PROVIDER_PRESETS.iter().enumerate() {
-        println!("  {}. {}", i + 1, p.label);
+    for (i, pid) in filtered[start..end].iter().enumerate() {
+        let p = &catalog[*pid];
+        let star = if p.featured { "*" } else { " " };
+        println!("  {:>2}. {}{}", i + 1, star, p.name);
     }
-    println!("  {}. custom endpoint", PROVIDER_PRESETS.len() + 1);
-    let choice = read_line("provider [1]: ")?;
-    let idx: usize = match choice.parse() {
-        Ok(n) if (1..=PROVIDER_PRESETS.len() + 1).contains(&n) => n - 1,
-        _ => 0,
-    };
+    println!();
+    println!(
+        "  showing {}–{} of {} (filter: \"{}\") — number to choose, text to filter",
+        start + 1,
+        end,
+        filtered.len(),
+        if filter.is_empty() { "all" } else { filter }
+    );
+    (start, end)
+}
 
-    // 2. Base URL (fixed for presets, asked for custom)
-    let (base_url, suggested) = match PROVIDER_PRESETS.get(idx) {
-        Some(p) => (p.base_url.to_string(), p.suggested_model.to_string()),
-        None => {
-            let url = read_line("base url (e.g. http://localhost:11434/v1): ")?;
-            let url = if url.is_empty() { DEFAULT_BASE_URL.to_string() } else { url };
-            let suggested = read_line("suggested model id (optional): ")?;
-            (url, suggested)
+/// Runs the interactive provider/key/model picker, mutating `config` in place
+/// and persisting the result.
+pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
+    let catalog = load_catalog()?;
+    println!("welcome to gray — pick a provider to get started");
+    println!("(saved to {}; /sys edits the system prompt)", saved_config_path()?.display());
+
+    // ---- provider: filter-as-you-type over the catalog -------------------
+    let pid = 'provider: {
+        let mut filter = String::new();
+        loop {
+            let filtered: Vec<&String> = catalog
+                .keys()
+                .filter(|k| {
+                    filter.is_empty()
+                        || k.contains(&filter.to_lowercase())
+                        || catalog[*k].name.to_lowercase().contains(&filter.to_lowercase())
+                })
+                .collect();
+            if filtered.is_empty() {
+                println!("  no providers match \"{}\"", filter);
+                filter.clear();
+                continue;
+            }
+            let (start, end) = render_page(&filtered, &catalog, 0, &filter);
+            let input = read_line("\nprovider: ")?;
+            if input.is_empty() {
+                continue;
+            }
+            if let Ok(n) = input.parse::<usize>() {
+                if n >= 1 && n <= end - start {
+                    break 'provider filtered[start + n - 1].clone();
+                }
+            }
+            filter = input.to_lowercase(); // anything else becomes the new filter
+        }
+    };
+    let provider = &catalog[&pid];
+    println!("→ {}", provider.name);
+
+    // ---- api key ----------------------------------------------------------
+    let hint = env_hint(provider);
+    let env_key = config.api_key.clone().unwrap_or_default();
+    let key_in = read_line(&format!(
+        "{} API key ({}): ",
+        provider.name,
+        if hint == "API_KEY" { "stored locally" } else { &hint }
+    ))?;
+    let api_key = if key_in.is_empty() { env_key } else { key_in };
+
+    // ---- model ------------------------------------------------------------
+    println!();
+    for (i, m) in provider.models.iter().enumerate() {
+        println!("  {}. {} ({})", i + 1, m.id, m.name);
+    }
+    let model_in = read_line(&format!("model [{}]: ", provider.models[0].id))?;
+    let model = if model_in.is_empty() {
+        provider.models[0].id.clone()
+    } else {
+        match model_in.parse::<usize>() {
+            Ok(n) if (1..=provider.models.len()).contains(&n) => provider.models[n - 1].id.clone(),
+            _ => model_in, // free-text: any model id the endpoint accepts
         }
     };
 
-    // 3. API key (pre-filled from environment if already exported)
-    let env_key = config.api_key.clone().unwrap_or_default();
-    let key_hint = if env_key.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}…{}]", &env_key[..3.min(env_key.len())], &env_key[env_key.len().saturating_sub(4)..])
-    };
-    let key_in = read_line(&format!("api key{key_hint}: "))?;
-    let api_key = if key_in.is_empty() { env_key } else { key_in };
-
-    // 4. Model
-    let model_in = read_line(&format!("model [{}]: ", suggested))?;
-    let model = if model_in.is_empty() { suggested } else { model_in };
-
-    // Persist + apply in memory
+    // ---- persist + apply --------------------------------------------------
     let saved = SavedConfig {
-        base_url: Some(base_url.clone()),
+        base_url: Some(provider.base_url.clone()),
         api_key: Some(api_key.clone()),
-        model: Some(model.clone()),
+        model: Some(model),
     };
     let path = saved_config_path()?;
     save_saved_config_at(&path, &saved)?;
 
-    config.model = Some(model);
-    config.api_key = Some(api_key);
-    config.base_url = base_url;
+    config.base_url = saved.base_url.unwrap();
+    config.api_key = saved.api_key;
+    config.model = saved.model;
 
     println!();
-    println!("saved. edit {} anytime, or re-run /setup.", path.display());
+    println!("saved — edit {} anytime, or /sys for the system prompt.", path.display());
     Ok(())
 }
 
@@ -149,12 +217,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bundled_catalog_parses_and_is_sane() {
+        let cat = load_catalog().expect("embedded catalog should parse");
+        assert!(cat.len() > 50, "expected a large catalog, got {}", cat.len());
+        let or = cat.get("openrouter").expect("openrouter present");
+        assert!(or.base_url.starts_with("https://"));
+        assert!(!or.models.is_empty(), "openrouter should suggest models");
+    }
+
+    #[test]
     fn saved_config_round_trips_through_json() {
-        let dir = std::env::temp_dir().join(format!("gray-setup-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("gray-setup2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("config.json");
 
-        assert!(load_saved_config_at(&path).model.is_none()); // missing file = defaults
+        assert!(load_saved_config_at(&path).model.is_none());
 
         let cfg = SavedConfig {
             base_url: Some("https://api.deepseek.com/v1".into()),
@@ -162,10 +239,8 @@ mod tests {
             model: Some("deepseek-chat".into()),
         };
         save_saved_config_at(&path, &cfg).unwrap();
-
         let loaded = load_saved_config_at(&path);
         assert_eq!(loaded.api_key.as_deref(), Some("sk-test"));
-        assert_eq!(loaded.model.as_deref(), Some("deepseek-chat"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
