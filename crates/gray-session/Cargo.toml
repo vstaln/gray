@@ -10,3 +10,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
+uuid = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
