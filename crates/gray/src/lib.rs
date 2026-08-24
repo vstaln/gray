@@ -16,8 +16,6 @@ use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;
 use gray_tools::Registry;
 
-pub const LOGO: &str = include_str!("../assets/logo.txt");
-
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`
 /// on first run. Edit that file (or use the `/sys` command) to change it.
 pub const DEFAULT_SYS_PROMPT: &str = include_str!("../assets/SYS.md");
