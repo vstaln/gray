@@ -3,6 +3,9 @@ pub mod error;
 pub mod event;
 pub mod message;
 
+pub use agent::{
+    Agent, Provider, ProviderError, ProviderStream, ToolContext, ToolExecutor, ToolOutput,
+};
 pub use error::{CoreError, Result};
 // Also provide Error as alias for CoreError
 pub use error::CoreError as Error;
