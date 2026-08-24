@@ -105,7 +105,7 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
 #[command(
     name = "gray",
     version,
-    about = "\u{2b21} gray — a minimal coding agent that runs tools, edits code, and works with any model provider",
+    about = "gray — a minimal, modular agent harness in Rust.",
     after_help = "Run with no arguments for the interactive REPL. Use -p for one-shot print mode."
 )]
 pub struct Cli {

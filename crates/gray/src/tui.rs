@@ -1,8 +1,8 @@
-//! Minimal Rust port of the parts of @earendil-works/pi-tui that gray uses:
+//! Minimal retained-mode TUI components:
 //! a retained component tree (`Container` of `Text`/`Spacer`/`Border`) whose
 //! renderer word-wraps text itself at terminal width and repaints atomically,
 //! so the terminal never soft-wraps behind our back and stale frame rows
-//! can't survive a redraw. Mirrors pi's first-time-setup pattern: rebuild the
+//! can't survive a redraw. Everything is rebuilt wholesale:
 //! container on every change, render, draw. Delete what you don't use.
 
 use std::io::Write;
@@ -143,9 +143,9 @@ pub fn clear_screen() {
     }
 }
 
-/// Rasterizes the embedded logo bitmap (scripts/gen-logo-asset.py) to braille
+/// Rasterizes the embedded logo bitmap (generated from the source bitmap) to braille
 /// dot-matrix lines sized to `target_chars` columns — recomputed per call so
-/// the art adapts to terminal width, like pi-tui rebuilding against live width.
+/// the art adapts to terminal width, rebuilt against live size on every draw.
 pub fn braille_art(target_chars: usize) -> Vec<String> {
     use crate::logo_data::{LOGO_H, LOGO_RLE, LOGO_W};
     let target_w = (target_chars.max(4) * 2).min(LOGO_W);
@@ -181,12 +181,12 @@ pub fn braille_art(target_chars: usize) -> Vec<String> {
     out
 }
 
-/// A pi-tui component: renders to lines guaranteed ≤ `width` visible chars.
+/// A TUI component: renders to lines guaranteed ≤ `width` visible chars.
 pub trait Component {
     fn render(&self, width: usize) -> Vec<String>;
 }
 
-/// Styled text with left/right padding, word-wrapped at `width` (pi-tui Text).
+/// Styled text with left/right padding, word-wrapped at `width`.
 pub struct Text {
     pub text: String,
     pub padding_x: usize,
@@ -209,7 +209,7 @@ impl Component for Text {
     }
 }
 
-/// Horizontal rule filling the width (pi-tui DynamicBorder).
+/// Horizontal rule filling the terminal width.
 #[derive(Default)]
 pub struct Border;
 
@@ -219,7 +219,7 @@ impl Component for Border {
     }
 }
 
-/// Retained component tree; rebuilt wholesale on every change, pi-style.
+/// Retained component tree; rebuilt wholesale on every change.
 #[derive(Default)]
 pub struct Container {
     children: Vec<Box<dyn Component>>,

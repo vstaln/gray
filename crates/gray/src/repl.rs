@@ -399,7 +399,7 @@ async fn handle_model(
 
 /// Repaints the prompt frame in place with ABSOLUTE cursor addressing:
 /// [top rule / panel… / '› ' input / bottom rule], input row pinned one above
-/// the terminal's bottom row — pi-style editor anchoring. The panel grows
+/// the terminal's bottom row — anchored-bottom editor. The panel grows
 /// upward without ever moving the input line; stale frame rows are cleared.
 /// No scroll, no cumulative drift: every draw recomputes from `terminal::size()`.
 /// `prev_panel` is the previous draw's panel row count, so shrinking the panel
@@ -460,7 +460,7 @@ fn erase_frame(out: &mut impl Write) -> anyhow::Result<()> {
 }
 
 /// Raw-mode prompt editor: 3-line frame (top rule / '› ' buffer / bottom rule)
-/// plus a pi-style slash-command completion panel when the buffer starts with '/'.
+/// plus a slash-command completion panel when the buffer starts with '/'.
 /// Returns the submitted line, or None on Ctrl-C / Ctrl-D-on-empty (exit request).
 fn read_prompt_line() -> anyhow::Result<Option<String>> {
     use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -525,7 +525,7 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
                 }
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                     KeyCode::Enter => {
-                        // pi-style: complete, then submit immediately. A bare
+                        // complete, then submit immediately. A bare
                         // "/" stays literal — completing it would fire /new
                         // and wipe the conversation by accident.
                         if buf.chars().count() > 1
@@ -623,7 +623,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
     crate::tui::clear_screen();
     let cwd = std::env::current_dir()?;
 
-    // pi-style boot: no forced wizard. A dim hint appears when unconfigured,
+    // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
 

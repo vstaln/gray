@@ -1,6 +1,6 @@
 //! First-run onboarding: a searchable provider picker fed by the bundled
-//! catalog (models.dev snapshot, see scripts/gen-providers.py), persisting
-//! to ~/.gray/config.json. Flow mirrors pi: nothing forced at boot; the
+//! catalog (models.dev snapshot), persisting
+//! to ~/.gray/config.json. Flow: nothing forced at boot; the
 //! picker appears the moment credentials are actually needed.
 
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ pub struct CatalogModel {
 /// The full catalog, keyed by provider id (`openrouter`, `deepseek`, ...).
 pub type Catalog = BTreeMap<String, CatalogProvider>;
 
-/// Bundled snapshot — regenerated via scripts/gen-providers.py.
+/// Bundled models.dev snapshot.
 pub const PROVIDERS_JSON: &str = include_str!("../assets/providers.json");
 
 /// Parses the embedded catalog. Infinitely unlikely to fail (compiled in),
@@ -250,7 +250,7 @@ pub(crate) fn select_from_list(
 
     crossterm::terminal::enable_raw_mode()?;
     // Hide the cursor: its block glyph parked at column 0 reads as a stray
-    // box-drawing artifact on the bottom border (pi's TUI hides it too).
+    // box-drawing artifact on the bottom border (TUI convention: hidden cursor).
     let _ = write!(stdout, "\x1b[?25l");
     stdout.flush()?;
     let result = (|| -> anyhow::Result<Option<usize>> {
@@ -261,7 +261,7 @@ pub(crate) fn select_from_list(
             }
             let selected = filtered.get(sel).copied();
 
-            // Fresh width at EVERY paint; rebuild the whole container pi-style
+            // Fresh width at EVERY paint; rebuild the whole container fresh
             // (FirstTimeSetupComponent.update()), so a resize mid-menu redraws
             // borders and wrapping at the new size.
             let tw = crate::term_width();
