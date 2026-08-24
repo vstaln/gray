@@ -1,6 +1,6 @@
 # gray
 
-A minimal, modular agent harness in Rust. pi's philosophy, hermes' soul.
+A minimal, modular agent harness in Rust.
 
 ```
 GRAY_API_KEY=sk-... gray --model anthropic/claude-sonnet-4
@@ -44,4 +44,3 @@ Design principles:
 - **Minimal core, hard walls.** Core knows nothing about HTTP, terminals, or files.
 - **Tiny prompt.** One identity line + Muse Code engineering conventions (~700 tokens total).
 - **Errors are data.** A failing tool is a message to the model, never a crash.
-- **Steal kernels, not frameworks.** See `docs/hermes-steal-agy.md`.
