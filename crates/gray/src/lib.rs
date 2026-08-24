@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod logo_data;
+pub mod logging;
 pub mod oauth;
 pub mod print;
 pub mod setup;
@@ -101,7 +102,12 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
 
 /// Command-line arguments for the Gray harness.
 #[derive(Parser, Debug, Clone)]
-#[command(name = "gray", version, about = "Minimal modular agent harness")]
+#[command(
+    name = "gray",
+    version,
+    about = "\u{2b21} gray — a minimal coding agent that runs tools, edits code, and works with any model provider",
+    after_help = "Run with no arguments for the interactive REPL. Use -p for one-shot print mode."
+)]
 pub struct Cli {
     /// Model to use (e.g. provider/model-id)
     #[arg(long)]

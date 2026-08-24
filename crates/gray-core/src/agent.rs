@@ -166,6 +166,7 @@ impl Agent {
     /// ([`CoreError::MaxTurnsExceeded`]). Tool failures are *not* errors:
     /// they become `is_error` tool results so the model can recover.
     pub async fn run(&mut self, input: Message, ctx: ToolContext) -> Result<Vec<AgentEvent>, CoreError> {
+        log::info!(target: "gray_agent", "agent run start ({} messages, max {} turns)", self.messages.len() + 1, self.max_turns);
         let mut events = vec![AgentEvent::Start];
         self.messages.push(input);
         let mut total_usage = Usage::default();
@@ -261,6 +262,7 @@ impl Agent {
                 .collect();
 
             if tool_uses.is_empty() {
+                log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={}, {} messages", total_usage.input_tokens, total_usage.output_tokens, self.messages.len());
                 events.push(AgentEvent::turn_end(stop_reason, total_usage));
                 return Ok(events);
             }

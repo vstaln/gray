@@ -80,11 +80,13 @@ impl Config {
             })
             .or(saved.api_key); // optional: validated on first use
 
-        Ok(Self {
+        let config = Self {
             model,
             base_url,
             api_key,
-        })
+        };
+        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"));
+        Ok(config)
     }
 }
 
