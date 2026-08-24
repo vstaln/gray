@@ -16,22 +16,23 @@ REPO_URL="https://gray.alignment.id/dl"
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 ARCH=$(uname -m)
+OS=$(uname -s)
+case "$OS" in
+    Linux) OS="linux" ;;
+    Darwin) OS="darwin" ;;
+    *) echo "this script is for Linux/macOS. on Windows, run install.ps1 in PowerShell instead."; exit 1 ;;
+esac
 case "$ARCH" in
     x86_64|amd64) ARCH="x86_64" ;;
-    aarch64|arm64) echo "note: aarch64 build not packaged yet — building from source instead (see github.com/vstaln/gray)"; exit 1 ;;
+    aarch64|arm64) ARCH="aarch64" ;;
     *) echo "unsupported architecture: $ARCH"; exit 1 ;;
 esac
 
-if [ "$(uname -s)" != "Linux" ]; then
-    echo "this script is for Linux/WSL. on Windows, run install.ps1 in PowerShell instead."
-    exit 1
-fi
-
-TARBALL="gray-${CHANNEL}-${ARCH}-linux.tar.gz"
+TARBALL="gray-${CHANNEL}-${ARCH}-${OS}.tar.gz"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-echo "→ downloading gray (${CHANNEL} channel, ${ARCH})..."
+echo "→ downloading gray (${CHANNEL} channel, ${ARCH} ${OS})..."
 if have_cmd curl; then
     curl -fsSL "${REPO_URL}/${TARBALL}" -o "${TMP}/${TARBALL}"
 elif have_cmd wget; then

@@ -4,6 +4,9 @@ name: release
 # stable channel: pushing a tag v<version> (must match Cargo.toml) deploys
 # gray-stable-* and creates a GitHub Release. Tags containing '-' (e.g.
 # v0.2.0-beta.1) deploy the beta file instead — a pinned, named beta.
+#
+# Matrix mirrors codex-rs: macos runner builds both darwin targets,
+# linux x86_64 via musl-tools, linux aarch64 via cross (docker).
 
 on:
   push:
@@ -19,12 +22,29 @@ concurrency:
 
 jobs:
   build-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            plat: x86_64-linux
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            plat: aarch64-linux
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            plat: aarch64-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            plat: x86_64-darwin
     steps:
       - uses: actions/checkout@v4
 
       - name: resolve channel + version guard
         id: meta
+        shell: bash
         run: |
           CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -33,53 +53,67 @@ jobs:
               echo "::error::tag v$TAG does not match Cargo.toml version $CARGO_VER"
               exit 1
             fi
-            # tags with a prerelease suffix (-beta.1 etc.) go to the beta channel
             case "$TAG" in *-*) echo "channel=beta" ;; *) echo "channel=stable" ;; esac >> "$GITHUB_OUTPUT"
-            echo "version=$CARGO_VER" >> "$GITHUB_OUTPUT"
           else
             echo "channel=beta" >> "$GITHUB_OUTPUT"
-            echo "version=$CARGO_VER-beta.$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: install musl tools
+      - name: install musl-tools (x86_64 linux)
+        if: matrix.plat == 'x86_64-linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
 
-      - name: build (static musl binary)
-        run: |
-          rustup target add x86_64-unknown-linux-musl
-          cargo build --release --target x86_64-unknown-linux-musl
+      - name: install cross (arm64 musl needs a cross C compiler for ring's asm)
+        if: matrix.plat == 'aarch64-linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
-      - name: smoke test
-        run: ./target/x86_64-unknown-linux-musl/release/gray --version
+      - name: build
+        shell: bash
+        run: |
+          if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+
+      - name: smoke test (native platforms)
+        if: matrix.plat == 'x86_64-linux' || matrix.plat == 'aarch64-darwin'
+        run: ./target/${{ matrix.target }}/release/gray --version
 
       - name: package
+        shell: bash
         run: |
-          tar czf gray-${{ steps.meta.outputs.channel }}-x86_64-linux.tar.gz \
-            -C target/x86_64-unknown-linux-musl/release gray
+          TAR=gray-${{ steps.meta.outputs.channel }}-${{ matrix.plat }}.tar.gz
+          tar czf "$TAR" -C target/${{ matrix.target }}/release gray
+          echo "TAR=$TAR" >> "$GITHUB_ENV"
 
       - name: github release (tags only)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           PRERELEASE=""
           case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" \
-            "gray-${{ steps.meta.outputs.channel }}-x86_64-linux.tar.gz#gray-${CARGO_VER:-${{ steps.meta.outputs.version }}}-x86_64-linux.tar.gz" \
-            $PRERELEASE --generate-notes || \
-            gh release upload "$GITHUB_REF_NAME" "gray-${{ steps.meta.outputs.channel }}-x86_64-linux.tar.gz" --clobber
+          gh release create "$GITHUB_REF_NAME" "$TAR" $PRERELEASE --generate-notes 2>/dev/null \
+            || gh release upload "$GITHUB_REF_NAME" "$TAR" --clobber
 
       - name: deploy to gray.alignment.id
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        shell: bash
         run: |
           [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
           mkdir -p ~/.ssh ~/.config/gray-deploy
           install -m 600 /dev/null ~/.config/gray-deploy/key
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
           ssh-keyscan -H 168.110.210.65 >> ~/.ssh/known_hosts 2>/dev/null
-          DEPLOY_KEY=~/.config/gray-deploy/key scripts/deploy.sh "${{ steps.meta.outputs.channel }}" \
-            "gray-${{ steps.meta.outputs.channel }}-x86_64-linux.tar.gz"
+          DEPLOY_KEY=~/.config/gray-deploy/key scripts/deploy.sh "$TAR"
