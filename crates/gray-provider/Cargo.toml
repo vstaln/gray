@@ -1,0 +1,15 @@
+[package]
+name = "gray-provider"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gray-core = { workspace = true }
+async-trait = { workspace = true }
+eventsource-stream = { workspace = true }
+futures = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
