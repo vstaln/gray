@@ -1,18 +1,8 @@
-<div align="center">
-
-# ⬡
-
-**gray**
+# gray
 
 **A minimal coding agent that runs tools, edits code, and works with any model provider.**
 
 `Rust` · `OpenAI-compatible` · `JSONL sessions` · `zero runtime deps beyond the toolchain`
-
-</div>
-
-<img src="docs/img/eclipse.jpg" width="100%" alt=""/>
-
----
 
 ```
   ⠀⠀⠀⣴⡶⣖⡒⠒⠒⠒⣒⡶⣶⡄⠀⠀⠀⠀⠀⠀⠀⢀⣀⣤⣄⣀
@@ -24,19 +14,24 @@
   ⠀⠀⠀⠀⠘⣷⣟⣁⣀⣙⣷⡟⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠛⠟⠛⠁
 ```
 
-## Quick start
+## Install
+
+```bash
+curl -fsSL https://gray.alignment.id/install.sh | sh
+```
+
+or build from source:
 
 ```bash
 cargo build --release -p gray
+```
 
-# interactive REPL: nothing forced at boot
-./target/release/gray
+## Quick start
 
-# one-shot print mode for scripts and pipes
-echo "hi" | ./target/release/gray -p "summarize this repo in one line"
-
-# resume your last session
-./target/release/gray -c
+```bash
+gray                                # interactive REPL — nothing forced at boot
+echo "hi" | gray -p "one-line summary of this repo"   # print mode for scripts
+gray -c                             # resume your last session
 ```
 
 First run drops you straight at the prompt. Configure whenever you feel like it:
@@ -87,7 +82,7 @@ crates/
 | `GRAY_MODEL`, `GRAY_BASE_URL` | defaults before `~/.gray/config.json` is consulted |
 | `GRAY_LOG` | log level: `error`…`trace` (default `info`) |
 
-<img src="docs/img/pagoda.jpg" width="480" alt=""/>
+<img src="docs/img/hokusai-kajikazawa.jpg" width="520" alt=""/>
 
 ---
 
