@@ -3583,35 +3583,35 @@
  },
  "opencode": {
   "name": "OpenCode Zen",
-  "base_url": "https://opencode.ai",
+  "base_url": "https://opencode.ai/zen/v1",
   "env_key": [
    "OPENCODE_API_KEY"
   ],
-  "featured": false,
+  "featured": true,
   "models": [
    {
-    "id": "gemini-3-pro",
-    "name": "Gemini 3 Pro"
+    "id": "deepseek-v4-flash-free",
+    "name": "DeepSeek V4 Flash (free)"
    },
    {
-    "id": "claude-opus-4-7",
-    "name": "Claude Opus 4.7"
-   },
-   {
-    "id": "glm-4.6",
-    "name": "GLM-4.6"
-   },
-   {
-    "id": "ling-3.0-flash-free",
-    "name": "Ling-3.0-flash Free"
-   },
-   {
-    "id": "laguna-s-2.1-free",
-    "name": "Laguna S 2.1 Free"
+    "id": "nemotron-3-ultra-free",
+    "name": "Nemotron 3 Ultra (free)"
    },
    {
     "id": "nemotron-3.5-lightning-free",
-    "name": "Nemotron 3.5 Lightning Free"
+    "name": "Nemotron 3.5 Lightning (free)"
+   },
+   {
+    "id": "laguna-s-2.1-free",
+    "name": "Laguna S 2.1 (free)"
+   },
+   {
+    "id": "hy3-free",
+    "name": "HY3 (free)"
+   },
+   {
+    "id": "claude-sonnet-5",
+    "name": "Claude Sonnet 5"
    }
   ],
   "no_auth": true
