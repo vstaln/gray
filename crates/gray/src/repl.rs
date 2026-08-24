@@ -500,12 +500,11 @@ fn read_prompt_line() -> anyhow::Result<Option<String>> {
                 }
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                     KeyCode::Enter => {
-                        if matches.is_empty() {
-                            return Ok(Some(buf));
-                        } else if matches.len() == 1 {
-                            return Ok(Some(format!("/{} ", matches[0].0)));
+                        // pi-style: complete, then submit immediately (executes the command)
+                        if let Some((name, _)) = matches.get(sel) {
+                            buf = format!("/{name} ");
                         }
-                        buf = format!("/{} ", matches[sel].0); // complete, keep editing args
+                        return Ok(Some(buf));
                     }
                     KeyCode::Tab => {
                         if let Some((name, _)) = matches.get(sel) {
