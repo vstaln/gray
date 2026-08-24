@@ -76,7 +76,7 @@ pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
 pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
-            "no model configured yet — run /setup (or set --model <provider/model>), then try again"
+            "no model configured yet — run /provider (or set --model <provider/model>), then try again"
         );
     };
     // Keyless upstreams (free tiers, local servers) run with an empty key.

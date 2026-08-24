@@ -21,7 +21,7 @@ use crate::setup::read_line;
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("new", "start a fresh conversation"),
     ("model", "switch or pick a model"),
-    ("setup", "re-run provider configuration"),
+    ("provider", "configure provider (API key, accounts, free tier)"),
     ("sys", "view, edit, or restore the system prompt"),
     ("help", "print the command list"),
     ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
@@ -140,8 +140,8 @@ pub enum ReplCommand {
     /// Open the system-prompt file in `$EDITOR` (`/sys`), print it (`/sys show`),
     /// or restore the default (`/sys reset`).
     Sys(SysAction),
-    /// Run the interactive provider/key/model setup wizard (`/setup`).
-    Setup,
+    /// Open the provider selection menu (`/provider`).
+    Provider,
     /// Start a fresh conversation (`/new`).
     New,
     /// Print the command list (`/help`).
@@ -167,7 +167,6 @@ pub enum SysAction {
     Reset,
 }
 
-
 /// Parses a line of input into a [`ReplCommand`].
 pub fn parse_command(line: &str) -> ReplCommand {
     let trimmed = line.trim();
@@ -183,8 +182,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Reset)
     } else if trimmed == "/new" {
         ReplCommand::New
-    } else if trimmed == "/setup" {
-        ReplCommand::Setup
+    } else if trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
+        ReplCommand::Provider
     } else if trimmed == "/help" {
         ReplCommand::Help
     } else if let Some(rest) = trimmed.strip_prefix("/model") {
@@ -289,6 +288,27 @@ async fn handle_model(
     direct: Option<String>,
     agent: &mut Option<Agent>,
 ) {
+    if let Some(id) = direct {
+        if Some(&id) == config.model.as_ref() {
+            println!("already on {id}");
+            return;
+        }
+        config.model = Some(id.clone());
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            saved.model = Some(id.clone());
+            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        }
+        println!("model set to {id} (saved)");
+        reload_agent(agent, config, cwd).await;
+        return;
+    }
+
+    if config.model.is_none() && config.api_key.is_none() && config.base_url.is_empty() {
+        println!("no provider configured — run /provider to set one up");
+        return;
+    }
+
     use crate::setup::load_catalog;
     let catalog = match load_catalog() {
         Ok(c) => c,
@@ -298,52 +318,33 @@ async fn handle_model(
         }
     };
 
-    // Resolve target model id: either the direct argument or a picker round.
-    let new_model = match direct {
-        Some(id) => id,
-        None => {
-            if config.model.is_none() || config.api_key.is_none() {
-                crate::setup::run_setup(config).ok();
-                config.model.clone().unwrap_or_default()
-            } else {
-                let current = config.model.clone().unwrap_or_default();
-                // featured providers' flagship models, catalog order (newest first)
-                let ours: Vec<_> = catalog
-                    .values()
-                    .filter(|p| p.featured)
-                    .flat_map(|p| p.models.iter().map(move |m| (p, m)))
-                    .take(8)
-                    .collect();
-                println!("models{}:", if ours.is_empty() { " (none matched — type any id)" } else { "" });
-                for (i, (_, m)) in ours.iter().enumerate() {
-                    let mark = if m.id == current { " ✓" } else { "" };
-                    println!("  {}. {}{}", i + 1, m.id, mark);
-                }
-                println!("  [a] all providers · [enter] keep {}", current);
-                let input = match read_line("model: ") {
-                    Ok(l) => l,
-                    Err(e) => {
-                        println!("{e}");
-                        return;
-                    }
-                };
-                if input.is_empty() {
-                    return; // keep current
-                }
-                if input.eq_ignore_ascii_case("a") {
-                    // delegate to the setup picker's provider stage by re-running it
-                    crate::setup::run_setup(config).ok();
-                    config.model.clone().unwrap_or_default()
-                } else if let Ok(n) = input.parse::<usize>() {
-                    if let Some((_, m)) = ours.get(n - 1) {
-                        m.id.clone()
-                    } else {
-                        println!("no such row");
-                        return;
-                    }
-                } else {
-                    input // free text: any id the endpoint accepts
-                }
+    // Find current provider's models, or models across catalog
+    let current_provider = catalog.values().find(|p| p.base_url == config.base_url.as_str());
+    let model_items: Vec<(String, String)> = if let Some(p) = current_provider {
+        p.models.iter().map(|m| (m.id.clone(), m.name.clone())).collect()
+    } else {
+        catalog
+            .values()
+            .flat_map(|p| p.models.iter().map(move |m| (m.id.clone(), format!("{} ({})", m.name, p.name))))
+            .collect()
+    };
+
+    let new_model = if model_items.is_empty() {
+        let input = match read_line("model id: ") {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        if input.is_empty() {
+            return;
+        }
+        input
+    } else {
+        match crate::setup::select_from_list("model", &model_items, true) {
+            Ok(Some(i)) => model_items[i].0.clone(),
+            Ok(None) => return,
+            Err(e) => {
+                println!("model selection error: {e}");
+                return;
             }
         }
     };
@@ -563,7 +564,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
     if unconfigured {
         let ready = crate::setup::run_onboarding(config).await?;
         if !ready {
-            print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /setup)\x1b[0m\r\n");
+            print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n");
         }
         print!("\r\n");
     } else {
@@ -646,7 +647,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
             ReplCommand::Help => {
                 println!("{}", crate::rule("commands"));
                 for (name, desc) in COMMANDS {
-                    println!("  /{name:<6} {desc}");
+                    println!("  /{name:<8} {desc}");
                 }
                 continue;
             }
@@ -656,10 +657,15 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 println!("started a fresh conversation");
                 continue;
             }
-            ReplCommand::Setup => {
-                crate::setup::run_setup(config)?;
-                unconfigured = false;
-                reload_agent(&mut agent, config, &cwd).await;
+            ReplCommand::Provider => {
+                match crate::setup::run_provider_menu(config).await {
+                    Ok(true) => {
+                        unconfigured = false;
+                        reload_agent(&mut agent, config, &cwd).await;
+                    }
+                    Ok(false) => {}
+                    Err(e) => println!("provider error: {e}"),
+                }
                 continue;
             }
             ReplCommand::Unknown(_) => {
@@ -669,9 +675,19 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
             ReplCommand::Prompt(prompt_text) => {
                 if agent.is_none() {
                     if unconfigured {
-                        crate::setup::run_setup(config)?;
-                        unconfigured = false;
-                        println!();
+                        match crate::setup::run_provider_menu(config).await {
+                            Ok(true) => {
+                                unconfigured = false;
+                                print!("\r\n");
+                            }
+                            Ok(false) => {
+                                continue;
+                            }
+                            Err(e) => {
+                                println!("provider error: {e}");
+                                continue;
+                            }
+                        }
                     }
                     match build_agent(config, &cwd) {
                         Ok(built) => agent = Some(built),
@@ -790,20 +806,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_command_identifies_setup() {
-        assert_eq!(parse_command("/setup"), ReplCommand::Setup);
+    fn parse_command_identifies_provider() {
+        assert_eq!(parse_command("/provider"), ReplCommand::Provider);
+        assert_eq!(parse_command("/providers"), ReplCommand::Provider);
+        assert_eq!(parse_command("/login"), ReplCommand::Provider);
         assert_eq!(parse_command("/help"), ReplCommand::Help);
         assert_eq!(
             parse_command("/model openai/gpt-4o"),
             ReplCommand::Model(Some("openai/gpt-4o".into()))
         );
         assert_eq!(parse_command("/model"), ReplCommand::Model(None));
-        assert_eq!(parse_command("  /setup  "), ReplCommand::Setup);
-        assert_eq!(parse_command("/setup\n"), ReplCommand::Setup);
+        assert_eq!(parse_command("  /provider  "), ReplCommand::Provider);
+        assert_eq!(parse_command("/provider\n"), ReplCommand::Provider);
         // near-misses stay unknown
         assert_eq!(
-            parse_command("/setup extra"),
-            ReplCommand::Unknown("/setup extra".to_string())
+            parse_command("/provider extra"),
+            ReplCommand::Unknown("/provider extra".to_string())
         );
     }
 
