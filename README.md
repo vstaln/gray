@@ -17,7 +17,8 @@
 ## Install
 
 ```bash
-curl -fsSL https://gray.alignment.id/install.sh | sh
+curl -fsSL https://gray.alignment.id/install.sh | sh              # stable
+curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # bleeding edge, rebuilt on every main push
 ```
 
 or build from source:
