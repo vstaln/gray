@@ -288,22 +288,19 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
     }
 }
 
-/// Braille dot-matrix gray logo.
-pub const SETUP_LOGO_LINES: [&str; 7] = [
-    "⠀⠀⠀⠀⣠⣶⣿⣿⣿⣿⣷⣦⡀",
-    "⠀⠀⠀⣾⣿⡟⠁⠀⠀⠀⠙⠿⠛⠀⠀⣤⣤⣀⣤⣤⠀⢀⣠⣤⣤⣤⣄⠀⠀⢠⣤⣄⠀⠀⠀⣠⣤⡤",
-    "⠀⠀⢸⣿⣿⠀⠀⠀⢰⣶⣶⣶⣶⡆⠀⣿⣿⡿⠛⠋⠀⠻⠿⠋⠉⢻⣿⣷⠀⠈⢿⣿⡆⠀⢠⣿⣿⠁",
-    "⠀⠀⠘⣿⣿⡄⠀⠀⠈⠉⠉⣻⣿⡇⠀⣿⣿⡇⠀⠀⢀⣤⣶⣾⠿⢿⣿⣿⠀⠀⠘⣿⣿⣀⣾⣿⠃",
-    "⠀⠀⠀⠘⢿⣿⣶⣤⣤⣤⣾⣿⠟⠀⠀⣿⣿⡇⠀⠀⢸⣿⣿⣀⣀⣼⣿⣿⠀⠀⠀⠸⣿⣿⣿⠏",
-    "⠀⠀⠀⠀⠀⠈⠙⠛⠛⠛⠉⠁⠀⠀⠀⠛⠛⠃⠀⠀⠀⠙⠛⠛⠛⠉⠛⠛⠀⠀⠀⠀⣹⣿⡟",
-    "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⠟",
-];
+/// Logo width in chars: fits the terminal with margins, capped so it stays tasteful.
+fn logo_width() -> usize {
+    crossterm::terminal::size()
+        .map(|(c, _)| (c as usize).saturating_sub(6))
+        .unwrap_or(40)
+        .clamp(16, 56)
+}
 
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     crate::tui::clear_screen();
     println!();
-    for line in SETUP_LOGO_LINES {
+    for line in crate::tui::braille_art(logo_width()) {
         println!("  \x1b[2m{line}\x1b[0m");
     }
     println!();
@@ -587,13 +584,5 @@ mod tests {
         assert_eq!(items.len(), cat.len());
         // filtering the built items finds a known provider by both id and name
         assert!(items.iter().any(|(id, name)| matches_filter("deep", id, name)));
-    }
-
-    #[test]
-    fn setup_logo_lines_are_defined_and_non_empty() {
-        assert_eq!(SETUP_LOGO_LINES.len(), 7);
-        for line in SETUP_LOGO_LINES {
-            assert!(!line.is_empty());
-        }
     }
 }
