@@ -292,13 +292,11 @@ async fn handle_model(
 pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // Startup banner: the gray mark, dimmed so it reads on light and dark terminals.
-    print!("\x1b[2m{}", crate::LOGO);
+    // fx-style welcome: one line, no art.
     println!(
-        "  gray {} — minimal agent harness\x1b[0m",
+        "\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m",
         env!("CARGO_PKG_VERSION")
     );
-    println!();
 
     // pi-style boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
