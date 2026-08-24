@@ -141,7 +141,7 @@ pub(crate) fn clip(s: &str, max: usize) -> String {
 /// Interactive live-filter list picker. Renders inline (no alternate screen),
 /// redraws on every keystroke. Returns the selected index, or `None` on Esc /
 /// Ctrl+C. Restores cooked mode before returning on every path.
-fn select_from_list(
+pub(crate) fn select_from_list(
     title: &str,
     items: &[(String, String)],
     filterable: bool,
@@ -255,19 +255,19 @@ fn select_from_list(
 }
 
 /// Interactive provider picker over the bundled catalog. Returns the chosen
-/// provider id; errors if the user aborts with Esc/Ctrl+C.
-pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<String> {
+/// provider id, or None if the user aborts with Esc/Ctrl+C.
+pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<Option<String>> {
     let items: Vec<(String, String)> = catalog
         .iter()
         .map(|(id, p)| (id.clone(), p.name.clone()))
         .collect();
     match select_from_list("provider", &items, true)? {
-        Some(i) => Ok(items[i].0.clone()),
-        None => anyhow::bail!("provider selection aborted"),
+        Some(i) => Ok(Some(items[i].0.clone())),
+        None => Ok(None),
     }
 }
 
-/// What the user picked on the onboarding screen.
+/// What the user picked on the onboarding/provider screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnboardingChoice {
     ApiKey,
@@ -288,38 +288,91 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
     }
 }
 
-pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
-    let _ = crossterm::terminal::disable_raw_mode();
-    crate::tui::clear_screen();
-    print!("\r\n");
-    crate::tui::print_logo();
-    print!("\r\n");
-    print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
-    print_wrapped(
-        "\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m",
-        2,
-    );
-    print!("\r\n");
+/// Interactive API-key flow: pick provider from catalog -> enter key -> pick model -> save.
+/// Returns Ok(true) on success, Ok(false) if cancelled.
+pub fn run_api_key_setup(config: &mut Config) -> anyhow::Result<bool> {
+    let catalog = load_catalog()?;
+    let pid = match select_from_catalog(&catalog)? {
+        Some(id) => id,
+        None => return Ok(false),
+    };
+    let provider = &catalog[&pid];
+    println!("provider → {}", provider.name);
+
+    println!("{}", rule("credentials"));
+    let hint = env_hint(provider);
+    let env_key = config.api_key.clone().unwrap_or_default();
+    let key_in = match read_line(&format!(
+        "{} API key ({}): ",
+        provider.name,
+        if hint == "API_KEY" { "stored locally" } else { &hint }
+    )) {
+        Ok(k) => k,
+        Err(_) => return Ok(false),
+    };
+    let api_key = if key_in.is_empty() { env_key } else { key_in };
+
+    println!("{}", rule("model"));
+    let model = if provider.models.is_empty() {
+        let m = match read_line("model id: ") {
+            Ok(m) => m,
+            Err(_) => return Ok(false),
+        };
+        if m.is_empty() {
+            return Ok(false);
+        }
+        m
+    } else {
+        let items: Vec<(String, String)> = provider
+            .models
+            .iter()
+            .map(|m| (m.id.clone(), m.name.clone()))
+            .collect();
+        match select_from_list("model", &items, true)? {
+            Some(i) => items[i].0.clone(),
+            None => items[0].0.clone(),
+        }
+    };
+
+    let saved = SavedConfig {
+        base_url: Some(provider.base_url.clone()),
+        api_key: Some(api_key.clone()),
+        model: Some(model),
+        auth_mode: Some("api_key".into()),
+    };
+    let path = saved_config_path()?;
+    save_saved_config_at(&path, &saved)?;
+
+    config.base_url = saved.base_url.unwrap();
+    config.api_key = saved.api_key;
+    config.model = saved.model;
+
+    println!();
+    println!("saved — edit {} anytime, or /sys for the system prompt.", path.display());
+    Ok(true)
+}
+
+/// Interactive provider menu: Free tier, API key, OAuth accounts, Local endpoints.
+/// Returns Ok(true) if a provider was configured, Ok(false) if cancelled / skipped.
+pub async fn run_provider_menu(config: &mut Config) -> anyhow::Result<bool> {
     let options = vec![
-        ("Start free", String::new()),
-        ("Add an API key", String::new()),
-        ("Sign in with account", String::new()),
-        ("Use a local model", String::new()),
+        ("Start free", "keyless free tier (9router)".to_string()),
+        ("Add an API key", "OpenRouter, DeepSeek, OpenAI, Anthropic, etc.".to_string()),
+        ("Sign in with account", "xAI / Grok, Codex / ChatGPT".to_string()),
+        ("Use a local model", "Ollama, LMStudio, localhost".to_string()),
         ("Skip for now", String::new()),
-        // anthropic stays "(coming soon)" inside the ACCOUNT sub-menu only
     ];
     let items: Vec<(String, String)> = options
         .into_iter()
         .map(|(a, b)| (a.to_string(), b))
         .collect();
-    let choice = match select_from_list("Get started", &items, false)? {
+    let choice = match select_from_list("Providers", &items, false)? {
         Some(i) => route_onboarding(i),
         None => OnboardingChoice::Skip,
     };
 
     match choice {
         OnboardingChoice::Free => {
-            // Zero-friction path: first keyless catalog provider that ships models.
             let (_, p) = load_catalog()?
                 .iter()
                 .find(|(_, p)| p.no_auth && !p.models.is_empty())
@@ -337,11 +390,10 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
             config.api_key = None;
             config.model = Some(model);
             println!("saved — you're on the free tier ({}). /model to switch anytime.", p.name);
-            return Ok(true);
+            Ok(true)
         }
-        OnboardingChoice::ApiKey => run_setup(config)?,
+        OnboardingChoice::ApiKey => run_api_key_setup(config),
         OnboardingChoice::OAuth => {
-            // Account sub-menu: xAI and Codex are live flows; the rest are placeholders.
             let accounts = vec![
                 ("xai / grok".to_string(), "sign in with your x.ai account".to_string()),
                 ("codex".to_string(), "sign in with your ChatGPT account".to_string()),
@@ -373,8 +425,6 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
                 Ok(auth) => {
                     save_saved_config_at(&saved_config_path()?, &SavedConfig {
                         base_url: Some(base_url.into()),
-                        // The access token lives in ~/.gray/auth.json (0600); it is
-                        // pulled into the session at startup by apply_saved_oauth.
                         api_key: None,
                         model: Some(model.into()),
                         auth_mode: Some("oauth".into()),
@@ -383,27 +433,38 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
                     config.model = Some(model.into());
                     config.api_key = Some(auth.access_token);
                     println!("{label} ready — saved to {}.", saved_config_path()?.display());
+                    Ok(true)
                 }
                 Err(e) => {
                     println!("sign-in failed: {e}");
-                    return Ok(false);
+                    Ok(false)
                 }
             }
         }
         OnboardingChoice::Local => {
             println!("{}", rule("local model"));
-            let base = read_line("base url [http://localhost:11434/v1]: ")?;
+            let base = match read_line("base url [http://localhost:11434/v1]: ") {
+                Ok(b) => b,
+                Err(_) => return Ok(false),
+            };
             let base = if base.is_empty() { "http://localhost:11434/v1".to_string() } else { base };
-            // Suggest a current model from the bundled lmstudio entry, not a stale hardcode.
             let suggested = load_catalog().ok()
                 .and_then(|c| c.get("lmstudio").map(|p| p.models[0].id.clone()))
                 .unwrap_or_default();
             let model_in = if suggested.is_empty() {
-                read_line("model id: ")?
+                match read_line("model id: ") {
+                    Ok(m) => m,
+                    Err(_) => return Ok(false),
+                }
             } else {
-                read_line(&format!("model [{suggested}]: "))?
+                match read_line(&format!("model [{suggested}]: ")) {
+                    Ok(m) => m,
+                    Err(_) => return Ok(false),
+                }
             };
-            anyhow::ensure!(!model_in.is_empty(), "no model given");
+            if model_in.is_empty() {
+                return Ok(false);
+            }
             let model = model_in;
             let path = saved_config_path()?;
             save_saved_config_at(&path, &SavedConfig {
@@ -416,70 +477,25 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
             config.api_key = None;
             config.model = Some(model);
             println!("saved — no auth needed for local endpoints.");
+            Ok(true)
         }
-        OnboardingChoice::Skip => return Ok(false),
+        OnboardingChoice::Skip => Ok(false),
     }
-    Ok(true)
 }
 
-/// Runs the interactive provider/key/model setup, mutating `config` in place
-pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
-    let catalog = load_catalog()?;
-    println!("welcome to gray — pick a provider to get started");
-    println!("(saved to {}; /sys edits the system prompt)", saved_config_path()?.display());
-
-    // ---- provider: live-filter picker over the catalog --------------------
-    let pid = select_from_catalog(&catalog)?;
-    let provider = &catalog[&pid];
-    println!("provider → {}", provider.name);
-
-    // ---- api key ----------------------------------------------------------
-    println!("{}", rule("credentials"));
-    let hint = env_hint(provider);
-    let env_key = config.api_key.clone().unwrap_or_default();
-    let key_in = read_line(&format!(
-        "{} API key ({}): ",
-        provider.name,
-        if hint == "API_KEY" { "stored locally" } else { &hint }
-    ))?;
-    let api_key = if key_in.is_empty() { env_key } else { key_in };
-
-    // ---- model: same live-filter picker over the provider's models --------
-    println!("{}", rule("model"));
-    let model = if provider.models.is_empty() {
-        // Catalog entry with no models: fall back to free text.
-        let m = read_line("model id: ")?;
-        anyhow::ensure!(!m.is_empty(), "no model given");
-        m
-    } else {
-        let items: Vec<(String, String)> = provider
-            .models
-            .iter()
-            .map(|m| (m.id.clone(), m.name.clone()))
-            .collect();
-        match select_from_list("model", &items, true)? {
-            Some(i) => items[i].0.clone(),
-            None => items[0].0.clone(), // Esc keeps the default model
-        }
-    };
-
-    // ---- persist + apply --------------------------------------------------
-    let saved = SavedConfig {
-        base_url: Some(provider.base_url.clone()),
-        api_key: Some(api_key.clone()),
-        model: Some(model),
-        auth_mode: Some("api_key".into()),
-    };
-    let path = saved_config_path()?;
-    save_saved_config_at(&path, &saved)?;
-
-    config.base_url = saved.base_url.unwrap();
-    config.api_key = saved.api_key;
-    config.model = saved.model;
-
-    println!();
-    println!("saved — edit {} anytime, or /sys for the system prompt.", path.display());
-    Ok(())
+pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
+    let _ = crossterm::terminal::disable_raw_mode();
+    crate::tui::clear_screen();
+    print!("\r\n");
+    crate::tui::print_logo();
+    print!("\r\n");
+    print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
+    print_wrapped(
+        "\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m",
+        2,
+    );
+    print!("\r\n");
+    run_provider_menu(config).await
 }
 
 #[cfg(test)]
