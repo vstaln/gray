@@ -1,6 +1,7 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
 pub mod config;
+pub mod oauth;
 pub mod print;
 pub mod setup;
 pub mod repl;
@@ -75,11 +76,13 @@ pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
 pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
-    let (Some(model), Some(api_key)) = (&config.model, &config.api_key) else {
+    let Some(model) = &config.model else {
         anyhow::bail!(
-            "no model configured yet — set --model <provider/model> and GRAY_API_KEY (or OPENAI_API_KEY), then try again"
+            "no model configured yet — run /setup (or set --model <provider/model>), then try again"
         );
     };
+    // Keyless upstreams (free tiers, local servers) run with an empty key.
+    let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
     let system_prompt = format_system_prompt(&body, cwd);
 
@@ -117,6 +120,10 @@ pub struct Cli {
     /// API key for authentication (overrides GRAY_API_KEY and OPENAI_API_KEY)
     #[arg(long)]
     pub api_key: Option<String>,
+
+    /// Continue the most recent conversation
+    #[arg(short = 'c', long = "continue")]
+    pub continue_last: bool,
 }
 
 #[cfg(test)]

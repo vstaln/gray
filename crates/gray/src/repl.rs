@@ -8,7 +8,9 @@ use gray_core::agent::{Agent, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-use gray_session::{default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore};
+use gray_session::{
+    default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore, SessionSummary,
+};
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex as StdMutex;
@@ -17,6 +19,7 @@ use crate::setup::read_line;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
+    ("new", "start a fresh conversation"),
     ("model", "switch or pick a model"),
     ("setup", "re-run provider configuration"),
     ("sys", "view, edit, or restore the system prompt"),
@@ -137,6 +140,8 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Run the interactive provider/key/model setup wizard (`/setup`).
     Setup,
+    /// Start a fresh conversation (`/new`).
+    New,
     /// Print the command list (`/help`).
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
@@ -174,6 +179,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Show)
     } else if trimmed == "/sys reset" {
         ReplCommand::Sys(SysAction::Reset)
+    } else if trimmed == "/new" {
+        ReplCommand::New
     } else if trimmed == "/setup" {
         ReplCommand::Setup
     } else if trimmed == "/help" {
@@ -191,6 +198,11 @@ pub fn parse_command(line: &str) -> ReplCommand {
 struct SessionState {
     store: JsonlSessionStore,
     session_id: SessionId,
+}
+
+/// Picks the most recently started session summary (pure, unit-tested).
+fn latest_summary(summaries: &[SessionSummary]) -> Option<&SessionSummary> {
+    summaries.iter().max_by_key(|s| s.started_at)
 }
 
 /// Handles the `/sys` command family: edit, show, reset.
@@ -512,7 +524,7 @@ fn clip_str(s: &str, max: usize) -> String {
 }
 
 /// Runs Gray in interactive REPL mode.
-pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
+pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
     // fx-style welcome: one line, no art.
@@ -525,9 +537,9 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
 
-    let mut unconfigured = config.model.is_none() || config.api_key.is_none();
+    let mut unconfigured = config.model.is_none();
     if unconfigured {
-        let ready = crate::setup::run_onboarding(config)?;
+        let ready = crate::setup::run_onboarding(config).await?;
         if !ready {
             println!("\x1b[2mrunning without a provider — send a message to set one up (or /setup)\x1b[0m");
         }
@@ -538,6 +550,34 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
     // we surface a friendly hint on first use instead of refusing to start.
     let mut agent: Option<Agent> = None;
     let mut session_state: Option<SessionState> = None;
+
+    // `-c`: reopen the most recent session instead of starting blank.
+    if resume_last
+        && let Some(root) = default_root()
+    {
+        let store = JsonlSessionStore::new(root);
+        if let Some(latest) = latest_summary(&store.list().await) {
+            match store.load(&latest.id).await {
+                Ok((_, entries)) => {
+                    let history: Vec<Message> =
+                        entries.into_iter().map(|e| e.message).collect();
+                    match build_agent(config, &cwd) {
+                        Ok(built) => {
+                            let n = history.len();
+                            agent = Some(built.with_messages(history));
+                            session_state = Some(SessionState {
+                                session_id: latest.id.clone(),
+                                store,
+                            });
+                            println!("\x1b[2mresumed {n}-message session {}\x1b[0m", latest.id.as_str());
+                        }
+                        Err(e) => println!("could not resume (no provider): {e}"),
+                    }
+                }
+                Err(e) => println!("could not resume: {e}"),
+            }
+        }
+    }
 
     // Interactive terminals get the raw-mode frame; piped input falls back
     // to plain cooked reads (scripts, tests).
@@ -587,6 +627,12 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
                 for (name, desc) in COMMANDS {
                     println!("  /{name:<6} {desc}");
                 }
+                continue;
+            }
+            ReplCommand::New => {
+                agent = None;
+                session_state = None;
+                println!("started a fresh conversation");
                 continue;
             }
             ReplCommand::Setup => {
@@ -691,6 +737,20 @@ mod tests {
     use super::*;
     use gray_core::event::{StopReason, Usage};
     use serde_json::json;
+
+    #[test]
+    fn latest_summary_picks_max_started_at() {
+        use gray_session::{SessionId, SessionSummary};
+        let mk = |id: &str, t: u64| SessionSummary {
+            id: SessionId::new(id),
+            started_at: t,
+            cwd: std::path::PathBuf::from("/tmp"),
+            first_user_text: None,
+        };
+        let v = vec![mk("a", 5), mk("b", 99), mk("c", 1)];
+        assert_eq!(latest_summary(&v).unwrap().id.as_str(), "b");
+        assert!(latest_summary(&[]).is_none());
+    }
 
     #[test]
     fn parse_command_identifies_quit_and_exit() {
