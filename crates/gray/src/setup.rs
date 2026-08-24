@@ -274,17 +274,18 @@ pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "de
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     println!();
+    println!("{}", rule(""));
     println!("  Welcome to gray");
-    println!("  \x1b[2mgray by alignment · fast · minimal · built to run 24/7\x1b[0m");
+    println!("  \x1b[2mgray by alignment\x1b[0m");
+    println!("{}", rule(""));
     println!();
-    println!("  Get started");
-
     let options = vec![
-        ("Start free — no sign-up", "chat in seconds via OpenCode Zen".to_string()),
-        ("Add an API key", "pick from 200+ providers".to_string()),
-        ("Sign in with account", "xAI / Grok · more coming soon".to_string()),
-        ("Use a local model", "Ollama / llama.cpp / vLLM".to_string()),
+        ("Start free", String::new()),
+        ("Add an API key", String::new()),
+        ("Sign in with account", String::new()),
+        ("Use a local model", String::new()),
         ("Skip for now", String::new()),
+        // anthropic stays "(coming soon)" inside the ACCOUNT sub-menu only
     ];
     let items: Vec<(String, String)> = options
         .into_iter()
@@ -313,34 +314,48 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
         }
         OnboardingChoice::ApiKey => run_setup(config)?,
         OnboardingChoice::OAuth => {
-            // Account sub-menu: xAI is the only live flow; the rest are placeholders.
+            // Account sub-menu: xAI and Codex are live flows; the rest are placeholders.
             let accounts = vec![
                 ("xai / grok".to_string(), "sign in with your x.ai account".to_string()),
+                ("codex".to_string(), "sign in with your ChatGPT account".to_string()),
                 ("anthropic".to_string(), "(coming soon)".to_string()),
-                ("codex".to_string(), "(coming soon)".to_string()),
             ];
             let pick = match select_from_list("account", &accounts)? {
                 Some(i) => i,
                 None => return Ok(false),
             };
-            if pick != 0 {
-                println!("{} — (coming soon)", accounts[pick].0);
-                return Ok(false);
-            }
-            match crate::oauth::run_xai_signin().await {
+            let (label, base_url, model, signin_result) = match pick {
+                0 => (
+                    "xAI / Grok",
+                    crate::oauth::XAI_API_BASE,
+                    crate::oauth::XAI_DEFAULT_MODEL,
+                    crate::oauth::run_xai_signin().await,
+                ),
+                1 => (
+                    "Codex",
+                    crate::oauth::CODEX_API_BASE,
+                    crate::oauth::CODEX_DEFAULT_MODEL,
+                    crate::oauth::run_codex_signin().await,
+                ),
+                _ => {
+                    println!("{} — (coming soon)", accounts[pick].0);
+                    return Ok(false);
+                }
+            };
+            match signin_result {
                 Ok(auth) => {
                     save_saved_config_at(&saved_config_path()?, &SavedConfig {
-                        base_url: Some(crate::oauth::XAI_API_BASE.into()),
+                        base_url: Some(base_url.into()),
                         // The access token lives in ~/.gray/auth.json (0600); it is
                         // pulled into the session at startup by apply_saved_oauth.
                         api_key: None,
-                        model: Some(crate::oauth::XAI_DEFAULT_MODEL.into()),
+                        model: Some(model.into()),
                         auth_mode: Some("oauth".into()),
                     })?;
-                    config.base_url = crate::oauth::XAI_API_BASE.into();
-                    config.model = Some(crate::oauth::XAI_DEFAULT_MODEL.into());
+                    config.base_url = base_url.into();
+                    config.model = Some(model.into());
                     config.api_key = Some(auth.access_token);
-                    println!("xAI / Grok ready — saved to {}.", saved_config_path()?.display());
+                    println!("{label} ready — saved to {}.", saved_config_path()?.display());
                 }
                 Err(e) => {
                     println!("sign-in failed: {e}");
