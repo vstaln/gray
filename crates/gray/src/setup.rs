@@ -192,7 +192,7 @@ fn select_from_list(
             c.push(Box::new(Border));
             c.push(Box::new(Text::new(header, 1)));
             if filtered.is_empty() {
-                c.push(Box::new(Text::new("no matches", 1)));
+                c.push(Box::new(Text::new("no matches", 3)));
             } else {
                 let start = scroll_start(sel, rows);
                 for &i in &filtered[start..(start + rows).min(filtered.len())] {
@@ -207,7 +207,7 @@ fn select_from_list(
                         } else {
                             body
                         },
-                        1,
+                        3,
                     )));
                 }
             }
@@ -290,11 +290,33 @@ pub fn route_onboarding(i: usize) -> OnboardingChoice {
 /// Default model suggestions for keyless/local setups.
 pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "deepseek-r1"];
 
+/// Braille dot-matrix gray logo.
+pub const SETUP_LOGO_LINES: [&str; 10] = [
+    "⠀⠀⠀⢠⣶⣶⣶⣖⠒⠒⠒⠒⠒⠒⣲⣶⣶⣶⡄",
+    "⠀⠀⢠⡟⢹⡿⣄⠉⠙⣳⣦⣴⣞⠋⠉⣠⢿⡏⢻⡄",
+    "⠀⣰⠏⠀⣸⣧⡿⣾⠛⠉⠀⠀⠉⠛⣷⢿⣼⣇⠀⠹⣆",
+    "⣴⣿⣶⣿⣭⣷⣤⣽⣦⣤⣤⣤⣤⣴⣯⣤⣾⣭⣿⣶⣿⣦",
+    "⠘⣿⣦⣄⠀⢿⠀⠀⠘⣧⠀⠀⣼⠃⠀⠀⡿⠀⣠⣴⣿⠃",
+    "⠀⠈⢷⡉⠳⣾⡇⠀⠀⠈⢷⡾⠁⠀⠀⢸⣷⠞⢉⡾⠁",
+    "⠀⠀⠈⢷⡄⠘⡿⢶⣄⢠⡞⢳⡄⣠⡶⢿⠃⢠⡾⠁",
+    "⠀⠀⠀⠀⢻⡄⣿⠀⢨⡿⣦⣴⢿⡅⠀⣿⢠⡟",
+    "⠀⠀⠀⠀⠀⠹⣿⣴⣿⠾⠋⠙⠷⣿⣦⣿⠏",
+    "⠀⠀⠀⠀⠀⠀⠙⠿⠷⠶⠶⠶⠶⠾⠿⠋",
+];
+
 /// fx-style first-run screen. Returns true when the user finished configuration.
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
+    crate::tui::erase_shell_line();
+    println!();
+    for line in SETUP_LOGO_LINES {
+        println!("  \x1b[2m{line}\x1b[0m");
+    }
     println!();
     print_wrapped("\x1b[2mWelcome to gray by alignment\x1b[0m", 2);
-    print_wrapped("\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m", 2);
+    print_wrapped(
+        "\x1b[2mgray is a minimal agent that runs tools, edits code, and works with any model provider.\x1b[0m",
+        2,
+    );
     println!();
     let options = vec![
         ("Start free", String::new()),
@@ -556,5 +578,13 @@ mod tests {
         assert_eq!(items.len(), cat.len());
         // filtering the built items finds a known provider by both id and name
         assert!(items.iter().any(|(id, name)| matches_filter("deep", id, name)));
+    }
+
+    #[test]
+    fn setup_logo_lines_are_defined_and_non_empty() {
+        assert_eq!(SETUP_LOGO_LINES.len(), 10);
+        for line in SETUP_LOGO_LINES {
+            assert!(!line.is_empty());
+        }
     }
 }

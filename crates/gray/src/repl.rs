@@ -527,12 +527,6 @@ fn clip_str(s: &str, max: usize) -> String {
 pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
 
-    // fx-style welcome: one line, no art.
-    println!(
-        "\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m",
-        env!("CARGO_PKG_VERSION")
-    );
-
     // pi-style boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
@@ -544,6 +538,13 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
             println!("\x1b[2mrunning without a provider — send a message to set one up (or /setup)\x1b[0m");
         }
         println!();
+    } else {
+        crate::tui::erase_shell_line();
+        // fx-style welcome: one line, no art.
+        println!(
+            "\x1b[1m\u{2b21} gray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m",
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
     // The agent is built lazily so the REPL opens even with no model/key configured;
