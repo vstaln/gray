@@ -373,6 +373,8 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
             break;
         };
 
+        // bottom frame of the input box
+        println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
         match parse_command(&line) {
             ReplCommand::Empty => continue,
             ReplCommand::Quit => break,
