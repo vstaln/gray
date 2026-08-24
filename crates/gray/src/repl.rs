@@ -344,10 +344,9 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
 
     loop {
         println!("\x1b[2m{}\x1b[0m", crate::plain_rule());
-        print!("› ");
         println!();
         print!("\x1b[2m{}\x1b[0m", crate::plain_rule());
-        print!("\x1b[1A\r\x1b[2C");
+        print!("\x1b[2A\r");
         std::io::stdout().flush()?;
 
         let read_res = tokio::select! {
