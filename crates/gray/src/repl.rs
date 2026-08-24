@@ -10,7 +10,33 @@ use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_session::{default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex as StdMutex;
+
 use crate::setup::read_line;
+
+/// True while an agent turn is in flight; controls what Ctrl-C means.
+static TURN_ACTIVE: AtomicBool = AtomicBool::new(false);
+static TURN_TOKEN: StdMutex<Option<tokio_util::sync::CancellationToken>> = StdMutex::new(None);
+
+/// Installs the single global Ctrl-C policy:
+/// - during a turn: cancel the turn (first press), the turn handler reports it
+/// - at the prompt: exit cleanly
+async fn spawn_ctrl_c_policy() {
+    loop {
+        if tokio::signal::ctrl_c().await.is_err() {
+            return;
+        }
+        if TURN_ACTIVE.load(Ordering::SeqCst) {
+            if let Some(t) = TURN_TOKEN.lock().ok().and_then(|mut g| g.take()) {
+                t.cancel();
+            }
+        } else {
+            println!();
+            std::process::exit(0);
+        }
+    }
+}
 use crate::{build_agent, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
 
@@ -72,6 +98,8 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Run the interactive provider/key/model setup wizard (`/setup`).
     Setup,
+    /// Print the command list (`/help`).
+    Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
     /// Unknown slash command (`/word`).
@@ -109,6 +137,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Reset)
     } else if trimmed == "/setup" {
         ReplCommand::Setup
+    } else if trimmed == "/help" {
+        ReplCommand::Help
     } else if let Some(rest) = trimmed.strip_prefix("/model") {
         let arg = rest.trim();
         ReplCommand::Model((!arg.is_empty()).then(|| arg.to_string()))
@@ -300,6 +330,8 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
 
     // pi-style boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
+    tokio::spawn(spawn_ctrl_c_policy());
+
     let mut unconfigured = config.model.is_none() || config.api_key.is_none();
     if unconfigured {
         println!("\x1b[2mno provider configured yet — send a message and I'll walk you through it (or /setup)\x1b[0m");
@@ -351,6 +383,14 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
                 handle_model(config, &cwd, direct, &mut agent).await;
                 continue;
             }
+            ReplCommand::Help => {
+                println!("{}", crate::rule("commands"));
+                println!("  /model [provider/id]  switch or pick a model");
+                println!("  /setup                re-run provider configuration");
+                println!("  /sys [show|reset]     view, edit, or restore the system prompt");
+                println!("  /quit                 exit (Ctrl-C exits at the prompt, cancels mid-turn)");
+                continue;
+            }
             ReplCommand::Setup => {
                 crate::setup::run_setup(config)?;
                 unconfigured = false;
@@ -376,8 +416,13 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
                         }
                     }
                 }
+                // pi-style separator: your input above, gray's reply below the line.
+                println!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(76));
+
                 let agent = agent.as_mut().expect("agent built above");
                 let cancel = tokio_util::sync::CancellationToken::new();
+                *TURN_TOKEN.lock().expect("token lock") = Some(cancel.clone());
+                TURN_ACTIVE.store(true, Ordering::SeqCst);
                 let ctx = ToolContext {
                     cwd: cwd.clone(),
                     cancel: cancel.clone(),
@@ -389,12 +434,11 @@ pub async fn run_repl_mode(config: &mut Config) -> anyhow::Result<()> {
                     let mut run_future = Box::pin(agent.run(user_msg, ctx));
                     tokio::select! {
                         res = &mut run_future => res,
-                        _ = tokio::signal::ctrl_c() => {
-                            cancel.cancel();
-                            run_future.await
-                        }
+                        _ = cancel.cancelled() => Err(CoreError::Cancelled),
                     }
                 };
+                TURN_ACTIVE.store(false, Ordering::SeqCst);
+                *TURN_TOKEN.lock().expect("token lock") = None;
 
                 match run_result {
                     Ok(events) => {
@@ -472,6 +516,12 @@ mod tests {
     #[test]
     fn parse_command_identifies_setup() {
         assert_eq!(parse_command("/setup"), ReplCommand::Setup);
+        assert_eq!(parse_command("/help"), ReplCommand::Help);
+        assert_eq!(
+            parse_command("/model openai/gpt-4o"),
+            ReplCommand::Model(Some("openai/gpt-4o".into()))
+        );
+        assert_eq!(parse_command("/model"), ReplCommand::Model(None));
         assert_eq!(parse_command("  /setup  "), ReplCommand::Setup);
         assert_eq!(parse_command("/setup\n"), ReplCommand::Setup);
         // near-misses stay unknown
@@ -486,10 +536,6 @@ mod tests {
         assert_eq!(
             parse_command("/foo"),
             ReplCommand::Unknown("/foo".to_string())
-        );
-        assert_eq!(
-            parse_command("/help"),
-            ReplCommand::Unknown("/help".to_string())
         );
         assert_eq!(
             parse_command("  /custom_cmd  "),
