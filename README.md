@@ -10,7 +10,7 @@
 
 </div>
 
-<img src="docs/img/inspo-ui.jpg" width="100%" alt=""/>
+<img src="docs/img/eclipse.jpg" width="100%" alt=""/>
 
 ---
 
@@ -87,7 +87,7 @@ crates/
 | `GRAY_MODEL`, `GRAY_BASE_URL` | defaults before `~/.gray/config.json` is consulted |
 | `GRAY_LOG` | log level: `error`…`trace` (default `info`) |
 
-<img src="docs/img/inspo-terminal.jpg" width="480" alt=""/>
+<img src="docs/img/pagoda.jpg" width="480" alt=""/>
 
 ---
 
