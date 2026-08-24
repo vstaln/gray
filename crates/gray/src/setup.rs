@@ -20,6 +20,9 @@ pub struct CatalogProvider {
     #[serde(default)]
     pub env_key: serde_json::Value,
     pub featured: bool,
+    /// True when the upstream serves a keyless/free tier (9router noAuth).
+    #[serde(default)]
+    pub no_auth: bool,
     #[serde(default)]
     pub models: Vec<CatalogModel>,
 }
@@ -66,6 +69,9 @@ pub struct SavedConfig {
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// How the provider authenticates: "api_key" | "oauth" | "none".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_mode: Option<String>,
 }
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
@@ -241,6 +247,82 @@ pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<String> {
     }
 }
 
+/// What the user picked on the onboarding screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OnboardingChoice {
+    ApiKey,
+    Local,
+    OAuth,
+    Skip,
+}
+
+/// Routes an onboarding menu selection index (pure, unit-tested).
+pub fn route_onboarding(i: usize) -> OnboardingChoice {
+    match i {
+        0 => OnboardingChoice::ApiKey,
+        1 => OnboardingChoice::OAuth,
+        2 => OnboardingChoice::Local,
+        _ => OnboardingChoice::Skip,
+    }
+}
+
+/// Default model suggestions for keyless/local setups.
+pub const LOCAL_MODEL_SUGGESTIONS: [&str; 3] = ["llama3.2", "qwen2.5-coder", "deepseek-r1"];
+
+/// fx-style first-run screen. Returns true when the user finished configuration.
+pub fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
+    println!();
+    println!("  Welcome to gray");
+    println!("  \x1b[2mgray by alignment — a minimal agent harness that runs tools,");
+    println!("  edits code, and works with any model provider.\x1b[0m");
+    println!();
+    println!("  Get started");
+
+    let options = vec![
+        ("Add an API key", "pick from 200+ providers".to_string()),
+        ("Sign in with account", "(coming soon)".to_string()),
+        ("Use a free or local model", "no sign-up needed".to_string()),
+        ("Skip for now", String::new()),
+    ];
+    let items: Vec<(String, String)> = options
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b))
+        .collect();
+    let choice = match select_from_list("Get started", &items)? {
+        Some(i) => route_onboarding(i),
+        None => OnboardingChoice::Skip,
+    };
+
+    match choice {
+        OnboardingChoice::ApiKey => run_setup(config)?,
+        OnboardingChoice::OAuth => {
+            println!("(OAuth sign-in lands in a future release — API keys work today)");
+            return Ok(false);
+        }
+        OnboardingChoice::Local => {
+            println!("{}", rule("local model"));
+            let base = read_line("base url [http://localhost:11434/v1]: ")?;
+            let base = if base.is_empty() { "http://localhost:11434/v1".to_string() } else { base };
+            let suggested = LOCAL_MODEL_SUGGESTIONS[0];
+            let model_in = read_line(&format!("model [{suggested}]: "))?;
+            let model = if model_in.is_empty() { suggested.to_string() } else { model_in };
+            let path = saved_config_path()?;
+            save_saved_config_at(&path, &SavedConfig {
+                base_url: Some(base.clone()),
+                api_key: Some("not-needed".into()),
+                model: Some(model.clone()),
+                auth_mode: Some("none".into()),
+            })?;
+            config.base_url = base;
+            config.api_key = Some("not-needed".into());
+            config.model = Some(model);
+            println!("saved — no auth needed for local endpoints.");
+        }
+        OnboardingChoice::Skip => return Ok(false),
+    }
+    Ok(true)
+}
+
 /// Runs the interactive provider/key/model setup, mutating `config` in place
 pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
     let catalog = load_catalog()?;
@@ -287,6 +369,7 @@ pub fn run_setup(config: &mut Config) -> anyhow::Result<()> {
         base_url: Some(provider.base_url.clone()),
         api_key: Some(api_key.clone()),
         model: Some(model),
+        auth_mode: Some("api_key".into()),
     };
     let path = saved_config_path()?;
     save_saved_config_at(&path, &saved)?;
@@ -314,6 +397,29 @@ mod tests {
     }
 
     #[test]
+    fn route_onboarding_maps_indices() {
+        use super::route_onboarding as r;
+        assert_eq!(r(0), super::OnboardingChoice::ApiKey);
+        assert_eq!(r(1), super::OnboardingChoice::OAuth);
+        assert_eq!(r(2), super::OnboardingChoice::Local);
+        assert_eq!(r(3), super::OnboardingChoice::Skip);
+    }
+
+    #[test]
+    fn auth_mode_serializes() {
+        let cfg = SavedConfig {
+            base_url: None,
+            api_key: Some("k".into()),
+            model: Some("m".into()),
+            auth_mode: Some("none".into()),
+        };
+        let j = serde_json::to_string(&cfg).unwrap();
+        assert!(j.contains("\"auth_mode\":\"none\""));
+        let back: SavedConfig = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.auth_mode.as_deref(), Some("none"));
+    }
+
+    #[test]
     fn saved_config_round_trips_through_json() {
         let dir = std::env::temp_dir().join(format!("gray-setup2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -325,6 +431,7 @@ mod tests {
             base_url: Some("https://api.deepseek.com/v1".into()),
             api_key: Some("sk-test".into()),
             model: Some("deepseek-chat".into()),
+            auth_mode: Some("api_key".into()),
         };
         save_saved_config_at(&path, &cfg).unwrap();
         let loaded = load_saved_config_at(&path);
