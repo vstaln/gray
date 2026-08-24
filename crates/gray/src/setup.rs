@@ -97,11 +97,23 @@ pub fn load_saved_config_at(path: &Path) -> SavedConfig {
 }
 
 /// Writes the config pretty-printed so users can hand-edit it too.
+/// Mode 0600: the file stores the plaintext api_key.
 pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()> {
+    use std::io::Write as _;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(cfg)?)?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    f.write_all(serde_json::to_string_pretty(cfg)?.as_bytes())?;
     Ok(())
 }
 
@@ -449,7 +461,7 @@ pub async fn run_provider_menu(config: &mut Config) -> anyhow::Result<bool> {
             };
             let base = if base.is_empty() { "http://localhost:11434/v1".to_string() } else { base };
             let suggested = load_catalog().ok()
-                .and_then(|c| c.get("lmstudio").map(|p| p.models[0].id.clone()))
+                .and_then(|c| c.get("lmstudio").and_then(|p| p.models.first()).map(|m| m.id.clone()))
                 .unwrap_or_default();
             let model_in = if suggested.is_empty() {
                 match read_line("model id: ") {
