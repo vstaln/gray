@@ -1,9 +1,16 @@
 #!/bin/sh
 # gray installer — https://gray.alignment.id
-# curl -fsSL https://gray.alignment.id/install.sh | sh
+# stable:  curl -fsSL https://gray.alignment.id/install.sh | sh
+# beta:    curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta
 set -eu
 
-VERSION="0.0.1"
+CHANNEL="stable"
+case "${1:-}" in
+    ""|stable) CHANNEL="stable" ;;
+    beta|nightly) CHANNEL="beta" ;;
+    *) echo "unknown channel '$1' (use: stable | beta)"; exit 1 ;;
+esac
+
 REPO_URL="https://gray.alignment.id/dl"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
@@ -20,11 +27,11 @@ if [ "$(uname -s)" != "Linux" ]; then
     exit 1
 fi
 
-TARBALL="gray-${VERSION}-${ARCH}-linux.tar.gz"
+TARBALL="gray-${CHANNEL}-${ARCH}-linux.tar.gz"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-echo "→ downloading gray v${VERSION} (${ARCH})..."
+echo "→ downloading gray (${CHANNEL} channel, ${ARCH})..."
 if have_cmd curl; then
     curl -fsSL "${REPO_URL}/${TARBALL}" -o "${TMP}/${TARBALL}"
 elif have_cmd wget; then
@@ -46,7 +53,7 @@ fi
 mv "${TMP}/gray" "${DEST}/gray"
 chmod +x "${DEST}/gray"
 
-echo "→ installed to ${DEST}/gray"
+echo "→ installed to ${DEST}/gray ($(${DEST}/gray --version 2>/dev/null || echo '?'), ${CHANNEL})"
 
 case ":$PATH:" in
     *":${DEST}:"*) ;;
@@ -57,18 +64,3 @@ case ":$PATH:" in
         echo "  add it:  echo 'export PATH=\"${DEST}:\$PATH\"' >> ${SHELL_RC}"
         ;;
 esac
-
-cat <<EOF
-
-  gray v${VERSION} installed.
-
-  get an API key (openrouter.ai or deepseek.com or any OpenAI-compatible), then:
-
-      export GRAY_API_KEY=sk-or-...
-      export GRAY_MODEL=anthropic/claude-sonnet-4     # or deepseek/deepseek-chat etc.
-      gray
-
-  one-shot:   gray --print "explain this repo"
-  docs:       https://github.com/vstaln/gray
-
-EOF
