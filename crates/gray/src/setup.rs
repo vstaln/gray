@@ -260,9 +260,9 @@ pub enum OnboardingChoice {
 /// Routes an onboarding menu selection index (pure, unit-tested).
 pub fn route_onboarding(i: usize) -> OnboardingChoice {
     match i {
-        0 => OnboardingChoice::ApiKey,
-        1 => OnboardingChoice::OAuth,
-        2 => OnboardingChoice::Free,
+        0 => OnboardingChoice::Free,
+        1 => OnboardingChoice::ApiKey,
+        2 => OnboardingChoice::OAuth,
         3 => OnboardingChoice::Local,
         _ => OnboardingChoice::Skip,
     }
