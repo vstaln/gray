@@ -46,3 +46,12 @@ GitHub's UI shows "Other" for dual licenses. Stars approximate.
 ## Excluded on license
 
 - zed-industries/zed assistant crate — GPL-3.0
+
+## Added 2026-08-24 (second recon round)
+
+| Repo | License | ⭐ | Steal |
+|---|---|---|---|
+| deepseek-ai/deepseek-harness | MIT | 189k | One-line tool registration; ordered PromptSection vec; 1-line default identity; `isConcurrencySafe` flag; spill policy as separable policy |
+| badlogic/pi-mono (core) | MIT | 96k | ~350-token system prompt pattern; in-place head/tail truncation (2000 lines/50KB); id/parentId session tree; flat hook seams |
+
+Full analyses: `docs/pi-recon.md`, `docs/dsh-recon.md`, `docs/hermes-recon.md`.

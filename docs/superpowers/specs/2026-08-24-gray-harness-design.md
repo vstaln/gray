@@ -224,12 +224,20 @@ CLI reporting. Keeps `dyn` boundaries typed and matchable.
 Priorities informed by hermes-agent analysis (see `docs/hermes-recon.md`,
 `docs/hermes-steal-agy.md`). Steal the kernels, never the plumbing.
 
-### v0 already carries three hermes-born details
-- **3-tier system prompt** in core's request builder: stable (identity+tools)
-  / context (memory, skills index) / volatile (session) sections.
-- **Tool output spillover**: outputs over ~8KB go to
-  `~/.gray/spill/<hash>.txt`; model gets `<persisted-output path=...>` + head/tail.
+### v0 carries these recon-born details (kept deliberately small)
+- **Tiny system prompt, pi-style:** base template ~350–450 tokens total
+  (pi's measured baseline). Identity is 1–2 lines (DSH's default is ONE:
+  "You are an AI agent powered by DeepSeek Harness."). Each tool contributes
+  a one-line `prompt_snippet` + optional conditional guideline; no tiers, no
+  persona essays, nothing hardcoded about coding beyond the tool list.
+- **In-place truncation, pi-style:** tool outputs capped at 2000 lines / 50KB,
+  head+tail kept with a size annotation; grep match lines capped at 500 chars.
+  (Hermes/DSH-style disk spillover is phase 2 if ever needed — see below.)
 - **Tool error cap**: error text bounded (~2KB) before it enters history.
+- **Stable entry ids:** every session entry gets `id` + `parentId` from day
+  one (pi's format) — branching/compaction later needs zero migration.
+- **Concurrency flag:** each `Tool` may declare `is_concurrency_safe(args)`;
+  safe tools run in parallel within a turn (DSH kernel).
 
 ### Phase 2 (each is a small kernel)
 - **MCP client:** just another `Tool` source feeding the registry — unchanged from earlier draft.
@@ -241,7 +249,9 @@ Priorities informed by hermes-agent analysis (see `docs/hermes-recon.md`,
 - **Memory:** `.gray/MEMORY.md` + `.gray/USER.md` injected verbatim (§-delimited
   sections); `memory(action=add/replace/remove)` tool; a 6-line memory-guidance
   paragraph in the system prompt. No prefetch layer.
-- **Session search:** `rg` over session JSONL exposed as `session_search(query)`
+- **Spill policy** (DSH pattern): results over max-inline-bytes saved to file,
+  model sees bounded preview + locator path; `read` exempted to avoid loops.
+- **Session search:** `rg` over session JSONL exposed as a `session_search(query)`
   tool; optional single-table FTS5 sidecar only if rg proves too slow.
 - **Subagents:** `delegate(task)` tool = child `Agent::run` with filtered
   registry (no delegate/memory/cron), final text as result; optional git
