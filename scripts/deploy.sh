@@ -8,7 +8,7 @@ set -eu
 CHANNEL="${1:?usage: deploy.sh <stable|beta> [tarball]}"
 [ "$CHANNEL" = "stable" ] || [ "$CHANNEL" = "beta" ] || { echo "channel must be stable|beta"; exit 1; }
 HOST="${DEPLOY_HOST:-opc@168.110.210.65}"
-KEY="${DEPLOY_KEY:-$HOME/.ssh/ssh-key-2025-08-25.key}"
+KEY="${DEPLOY_KEY:-$HOME/.ssh/oracle-new.key}"
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 SSH() { ssh -i "$KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$HOST" "$@"; }
