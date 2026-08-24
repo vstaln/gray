@@ -1,15 +1,16 @@
 //! Interactive REPL mode for Gray.
 
 use std::io::Write;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::ToolContext;
+use gray_core::agent::{Agent, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_session::{default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore};
 
-use crate::build_agent;
+use crate::{build_agent, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
 
 /// Maximum characters of error output rendered in tool results.
@@ -65,6 +66,9 @@ pub fn fmt_event(event: &AgentEvent) -> String {
 pub enum ReplCommand {
     /// Exit the REPL cleanly (`/quit` or `/exit`).
     Quit,
+    /// Open the system-prompt file in `$EDITOR` (`/sys`), print it (`/sys show`),
+    /// or restore the default (`/sys reset`).
+    Sys(SysAction),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Regular user prompt to feed to the agent.
@@ -73,6 +77,18 @@ pub enum ReplCommand {
     Empty,
 }
 
+/// What to do when the user types `/sys`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SysAction {
+    /// Edit `~/.gray/sys.md` in `$EDITOR`.
+    Edit,
+    /// Print the current prompt file contents and path.
+    Show,
+    /// Overwrite the file with the shipped default.
+    Reset,
+}
+
+
 /// Parses a line of input into a [`ReplCommand`].
 pub fn parse_command(line: &str) -> ReplCommand {
     let trimmed = line.trim();
@@ -80,6 +96,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Empty
     } else if trimmed == "/quit" || trimmed == "/exit" {
         ReplCommand::Quit
+    } else if trimmed == "/sys" {
+        ReplCommand::Sys(SysAction::Edit)
+    } else if trimmed == "/sys show" {
+        ReplCommand::Sys(SysAction::Show)
+    } else if trimmed == "/sys reset" {
+        ReplCommand::Sys(SysAction::Reset)
     } else if trimmed.starts_with('/') {
         ReplCommand::Unknown(trimmed.to_string())
     } else {
@@ -92,10 +114,86 @@ struct SessionState {
     session_id: SessionId,
 }
 
+/// Handles the `/sys` command family: edit, show, reset.
+async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut Option<Agent>) {
+    let path = match crate::sys_prompt_path() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+    match action {
+        SysAction::Show => {
+            match load_or_create_system_prompt_at(&path) {
+                Ok(body) => {
+                    println!("system prompt: {}", path.display());
+                    println!("---");
+                    println!("{body}");
+                    println!("---");
+                }
+                Err(e) => println!("failed to read {}: {e}", path.display()),
+            }
+        }
+        SysAction::Reset => {
+            if let Err(e) = std::fs::write(&path, DEFAULT_SYS_PROMPT) {
+                println!("failed to reset {}: {e}", path.display());
+                return;
+            }
+            println!("system prompt restored to default ({})", path.display());
+            reload_agent(agent, config, cwd).await;
+        }
+        SysAction::Edit => {
+            // Make sure the file exists before opening an editor on it.
+            if let Err(e) = load_or_create_system_prompt_at(&path) {
+                println!("{e}");
+                return;
+            }
+            let editor = std::env::var("GRAY_EDITOR")
+                .or_else(|_| std::env::var("EDITOR"))
+                .or_else(|_| std::env::var("VISUAL"))
+                .unwrap_or_else(|_| "vi".to_string());
+            let p = path.clone();
+            let status = tokio::task::spawn_blocking(move || {
+                std::process::Command::new(editor).arg(&p).status()
+            })
+            .await;
+            match status {
+                Ok(Ok(s)) if s.success() => {
+                    println!("system prompt saved — applies from your next message");
+                    reload_agent(agent, config, cwd).await;
+                }
+                Ok(Ok(s)) => println!("editor exited with {s}; prompt unchanged"),
+                Ok(Err(e)) => println!("could not launch editor: {e} (set $EDITOR)"),
+                Err(e) => println!("editor task failed: {e}"),
+            }
+        }
+    }
+}
+
+/// Rebuilds the agent after a system-prompt change, preserving conversation history.
+async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
+    let old = agent.take();
+    let mut rebuilt = match build_agent(config, cwd) {
+        Ok(a) => a,
+        Err(e) => {
+            println!("{e}");
+            *agent = old;
+            return;
+        }
+    };
+    if let Some(old) = old {
+        rebuilt = rebuilt.with_messages(old.messages().to_vec());
+    }
+    *agent = Some(rebuilt);
+}
+
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(config: &Config) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
-    let mut agent = build_agent(config, &cwd)?;
+    // The agent is built lazily so the REPL opens even with no model/key configured;
+    // we surface a friendly hint on first use instead of refusing to start.
+    let mut agent: Option<Agent> = None;
     let mut session_state: Option<SessionState> = None;
 
     loop {
@@ -131,11 +229,25 @@ pub async fn run_repl_mode(config: &Config) -> anyhow::Result<()> {
         match parse_command(&line) {
             ReplCommand::Empty => continue,
             ReplCommand::Quit => break,
+            ReplCommand::Sys(action) => {
+                handle_sys(config, &cwd, action, &mut agent).await;
+                continue;
+            }
             ReplCommand::Unknown(_) => {
                 println!("unknown command");
                 continue;
             }
             ReplCommand::Prompt(prompt_text) => {
+                if agent.is_none() {
+                    match build_agent(config, &cwd) {
+                        Ok(built) => agent = Some(built),
+                        Err(e) => {
+                            println!("{e}");
+                            continue;
+                        }
+                    }
+                }
+                let agent = agent.as_mut().expect("agent built above");
                 let cancel = tokio_util::sync::CancellationToken::new();
                 let ctx = ToolContext {
                     cwd: cwd.clone(),
@@ -177,7 +289,7 @@ pub async fn run_repl_mode(config: &Config) -> anyhow::Result<()> {
                                     session_id.clone(),
                                     timestamp,
                                     cwd.to_path_buf(),
-                                    config.model.clone(),
+                                    config.model.clone().unwrap_or_else(|| "unset".into()),
                                 );
                                 store.create(meta).await;
                                 session_state = Some(SessionState { store, session_id });

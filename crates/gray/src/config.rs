@@ -8,12 +8,12 @@ pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Resolved application configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
-    /// Target model identifier (e.g. "anthropic/claude-sonnet-4").
-    pub model: String,
+    /// Target model identifier (e.g. "anthropic/claude-sonnet-4"). None until set.
+    pub model: Option<String>,
     /// API endpoint base URL.
     pub base_url: String,
-    /// API key for authentication.
-    pub api_key: String,
+    /// API key for authentication. None until set.
+    pub api_key: Option<String>,
 }
 
 impl Config {
@@ -37,12 +37,7 @@ impl Config {
                 env("GRAY_MODEL")
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "model is required: provide via --model flag or GRAY_MODEL environment variable"
-                )
-            })?;
+            });  // optional: REPL starts without a model; validated on first use
 
         let base_url = cli
             .base_url
@@ -72,12 +67,7 @@ impl Config {
                 env("OPENAI_API_KEY")
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "API key is required: set GRAY_API_KEY or OPENAI_API_KEY environment variable"
-                )
-            })?;
+            });  // optional: validated on first use
 
         Ok(Self {
             model,
@@ -116,9 +106,9 @@ mod tests {
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
 
-        assert_eq!(config.model, "custom/flag-model");
+        assert_eq!(config.model.as_deref(), Some("custom/flag-model"));
         assert_eq!(config.base_url, "https://flag.example.com/v1");
-        assert_eq!(config.api_key, "flag-key-123");
+        assert_eq!(config.api_key.as_deref(), Some("flag-key-123"));
     }
 
     #[test]
@@ -132,9 +122,9 @@ mod tests {
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
 
-        assert_eq!(config.model, "env/gray-model");
+        assert_eq!(config.model.as_deref(), Some("env/gray-model"));
         assert_eq!(config.base_url, "https://env.custom.com/v1");
-        assert_eq!(config.api_key, "gray-key-456");
+        assert_eq!(config.api_key.as_deref(), Some("gray-key-456"));
     }
 
     #[test]
@@ -148,9 +138,9 @@ mod tests {
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
 
-        assert_eq!(config.model, "provider/model-default-test");
+        assert_eq!(config.model.as_deref(), Some("provider/model-default-test"));
         assert_eq!(config.base_url, DEFAULT_BASE_URL);
-        assert_eq!(config.api_key, "key-xyz");
+        assert_eq!(config.api_key.as_deref(), Some("key-xyz"));
     }
 
     #[test]
@@ -165,7 +155,7 @@ mod tests {
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
 
-        assert_eq!(config.api_key, "gray-specific-key");
+        assert_eq!(config.api_key.as_deref(), Some("gray-specific-key"));
     }
 
     #[test]
@@ -179,7 +169,7 @@ mod tests {
         let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
             .expect("resolution should succeed");
 
-        assert_eq!(config.api_key, "openai-only-key");
+        assert_eq!(config.api_key.as_deref(), Some("openai-only-key"));
     }
 
     #[test]
@@ -189,13 +179,9 @@ mod tests {
         let mut env_map = HashMap::new();
         env_map.insert("GRAY_API_KEY", "key");
 
-        let err = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
-            .expect_err("should fail when model is missing");
-
-        assert!(
-            err.to_string().contains("model is required"),
-            "unexpected error message: {err}"
-        );
+        let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
+            .expect("should succeed without a model");
+        assert_eq!(config.model, None);
     }
 
     #[test]
@@ -205,13 +191,9 @@ mod tests {
         let mut env_map = HashMap::new();
         env_map.insert("GRAY_MODEL", "model-name");
 
-        let err = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
-            .expect_err("should fail when api key is missing");
-
-        assert!(
-            err.to_string().contains("API key is required"),
-            "unexpected error message: {err}"
-        );
+        let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
+            .expect("should succeed without an api key");
+        assert_eq!(config.api_key, None);
     }
 
 
@@ -224,9 +206,8 @@ mod tests {
         env_map.insert("GRAY_MODEL", "   ");
         env_map.insert("GRAY_API_KEY", "key");
 
-        let err = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
-            .expect_err("should treat whitespace model as unset");
-
-        assert!(err.to_string().contains("model is required"));
+        let config = Config::resolve_with(&cli, |k| env_map.get(k).map(|s| s.to_string()))
+            .expect("whitespace model should be treated as unset");
+        assert_eq!(config.model, None);
     }
 }

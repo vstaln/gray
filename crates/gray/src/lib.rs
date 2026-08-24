@@ -4,7 +4,7 @@ pub mod config;
 pub mod print;
 pub mod repl;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use clap::Parser;
 
 pub use config::Config;
@@ -15,37 +15,51 @@ use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;
 use gray_tools::Registry;
 
-/// The base system prompt embedding identity and Muse Code engineering conventions.
-pub const SYSTEM_PROMPT: &str = "\
-You are gray, a minimal agent running on the user's machine.
-You help by using tools: read files, run commands, edit code, search.
+/// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`
+/// on first run. Edit that file (or use the `/sys` command) to change it.
+pub const DEFAULT_SYS_PROMPT: &str = include_str!("../assets/SYS.md");
 
-# Engineering conventions
+/// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `sys.md`.
+pub fn sys_prompt_path() -> anyhow::Result<PathBuf> {
+    let base = std::env::var("GRAY_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
+        .map_err(|_| anyhow::anyhow!("cannot resolve home: set HOME or GRAY_HOME"))?;
+    Ok(PathBuf::from(base).join("sys.md"))
+}
 
-- Derive the contract from the repository rather than the issue text. Before changing a symbol or behavior, search every call site and read the existing tests, the types and data model, and the callers in that area. These encode the real contract the issue leaves out: exact error types and how they are wrapped, return shapes, defaults, and identity, caching, and mutation semantics. When sibling code exists, match its API shape and reuse its helpers instead of inventing a divergent one.
+/// Loads the system prompt from `path`, writing the embedded default there first if absent.
+pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(body) => Ok(body),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(path, DEFAULT_SYS_PROMPT)?;
+            Ok(DEFAULT_SYS_PROMPT.to_string())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
 
-- Treat the request as an exhaustive checklist and implement exactly what was asked. Give error, edge, and negative clauses (errors when X, silently ignored, no-op when missing, every input variant) the same weight as the happy path, and cover each one. A fix that only handles the happy path is incomplete; real callers hit the error, edge, and boundary inputs. Keep edits scoped, and fix the root cause rather than the symptom.
-
-- Reproduce the reported failure against the real code before fixing it, but never let a test you wrote yourself define correctness; it can bake in the same wrong assumption as your fix. Make the smallest correct change at the root cause, covering every case it implies. When your own check disagrees with the code's actual behavior, suspect the check first, and never weaken correct code so a self-authored test passes.
-
-- Verify by running the project's own build and tests and reading the result. Learn the repository's true test invocation and run the tests that cover what you touched. Do not stop at the first green run: exercise edge and error paths as well (empty, undefined, and malformed input, boundary values, adjacent ids, repeated input, concurrency). Run the whole relevant test file unmodified and never narrow a failing run to force a pass. A test that fails on code you changed is the requirement itself, not a stale artifact.
-
-- When the answer is a boundary value (start or end offset, cutoff, inclusive versus exclusive bound), write the competing conventions side by side and justify the choice from the task's own wording. A boundary that is off by one is still wrong.
-
-- Task-private graders, oracles, answer keys, and reference solutions are forbidden inputs, not repository context. Never go looking for them. Solve and test only from the public task contract.
-
-- When the next step is clear, keep going without asking. Continue until the requested change is implemented and verified, or a genuine blocker stops progress. Editing alone is not done, and a throwaway script is not a substitute for the project's real tests.
-
-- Ground every claim about code, tests, or tools in something you actually read or ran. The code is the source of truth; docs and comments describe intent and can go stale.";
-
-/// Formats the complete system prompt at runtime, appending the working directory.
-pub fn format_system_prompt(cwd: &Path) -> String {
-    format!("{}\n\nCurrent working directory: {}", SYSTEM_PROMPT, cwd.display())
+pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
+    format!("{}\n\nCurrent working directory: {}", body.trim_end(), cwd.display())
 }
 
 /// Builds an [`Agent`] instance wired with the OpenAI provider, builtin tools, and system prompt.
+///
+/// Errors here are user-configuration problems (missing model or API key), so the
+/// message is written for a human, not a log file.
 pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
-    let provider = OpenAiProvider::builder(&config.api_key, &config.model)
+    let (Some(model), Some(api_key)) = (&config.model, &config.api_key) else {
+        anyhow::bail!(
+            "no model configured yet — set --model <provider/model> and GRAY_API_KEY (or OPENAI_API_KEY), then try again"
+        );
+    };
+    let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
+    let system_prompt = format_system_prompt(&body, cwd);
+
+    let provider = OpenAiProvider::builder(api_key, model)
         .base_url(&config.base_url)
         .build()
         .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
@@ -53,7 +67,6 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     let registry = Registry::builtin();
     let tool_defs = registry.defs();
 
-    let system_prompt = format_system_prompt(cwd);
     let agent = Agent::new(Box::new(provider), Box::new(registry))
         .with_system(system_prompt)
         .with_tools(tool_defs);
@@ -87,12 +100,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_system_prompt_includes_identity_conventions_and_cwd() {
+    fn format_system_prompt_appends_cwd() {
         let cwd = Path::new("/workspace/test-dir");
-        let formatted = format_system_prompt(cwd);
+        let formatted = format_system_prompt(DEFAULT_SYS_PROMPT, cwd);
 
         assert!(formatted.starts_with("You are gray, a minimal agent"));
-        assert!(formatted.contains("# Engineering conventions"));
         assert!(formatted.contains("Current working directory: /workspace/test-dir"));
+    }
+
+    #[test]
+    fn load_or_create_writes_default_then_reads_back() {
+        let dir = std::env::temp_dir().join(format!("gray-sys-test-{}", std::process::id()));
+        let path = dir.join("sys.md");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let first = load_or_create_system_prompt_at(&path).unwrap();
+        assert_eq!(first, DEFAULT_SYS_PROMPT);
+        assert!(path.exists());
+
+        std::fs::write(&path, "custom prompt body").unwrap();
+        let second = load_or_create_system_prompt_at(&path).unwrap();
+        assert_eq!(second, "custom prompt body");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
