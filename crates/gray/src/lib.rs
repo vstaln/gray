@@ -62,11 +62,6 @@ pub fn rule(label: &str) -> String {
     format!("{prefix}{}", "\u{2500}".repeat(fill))
 }
 
-/// Full-width unlabeled rule.
-pub fn plain_rule() -> String {
-    "\u{2500}".repeat(term_width())
-}
-
 pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
     format!("{}\n\nCurrent working directory: {}", body.trim_end(), cwd.display())
 }
