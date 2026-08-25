@@ -147,6 +147,10 @@ struct OpenAiMessageRequest {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     content: Option<String>,
+    /// Reasoning from a prior assistant turn, sent back so reasoning models
+    /// keep their chain-of-thought in context (deepseek/openai-compat style).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenAiToolCallRequest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,6 +206,8 @@ struct OpenAiDeltaChunk {
     #[serde(default)]
     content: Option<String>,
     #[serde(default)]
+    reasoning_content: Option<String>,
+    #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCallChunk>>,
 }
 
@@ -228,6 +234,14 @@ struct OpenAiUsageChunk {
     prompt_tokens: usize,
     #[serde(default, alias = "output_tokens")]
     completion_tokens: usize,
+    #[serde(default)]
+    completion_tokens_details: Option<OpenAiCompletionDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiCompletionDetails {
+    #[serde(default)]
+    reasoning_tokens: usize,
 }
 
 fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
@@ -238,6 +252,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
         messages.push(OpenAiMessageRequest {
             role: "system".to_string(),
             content: Some(system),
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         });
@@ -248,6 +263,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
         match msg.role {
             Role::Assistant => {
                 let mut text_parts = Vec::new();
+                let mut thinking_parts = Vec::new();
                 let mut tool_calls = Vec::new();
                 let mut tool_results = Vec::new();
 
@@ -256,6 +272,11 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                         ContentBlock::Text { text } => {
                             if !text.is_empty() {
                                 text_parts.push(text);
+                            }
+                        }
+                        ContentBlock::Thinking { text } => {
+                            if !text.is_empty() {
+                                thinking_parts.push(text);
                             }
                         }
                         ContentBlock::ToolUse { id, name, args } => {
@@ -290,9 +311,16 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                     Some(tool_calls)
                 };
 
+                let reasoning_content = if thinking_parts.is_empty() {
+                    None
+                } else {
+                    Some(thinking_parts.join("\n"))
+                };
+
                 messages.push(OpenAiMessageRequest {
                     role: "assistant".to_string(),
                     content,
+                    reasoning_content,
                     tool_calls: tool_calls_opt,
                     tool_call_id: None,
                 });
@@ -301,6 +329,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                     messages.push(OpenAiMessageRequest {
                         role: "tool".to_string(),
                         content: Some(content),
+                        reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(id),
                     });
@@ -329,6 +358,10 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                         ContentBlock::ToolUse { id, name, args } => {
                             tool_results.push((id, format!("{name}: {args}")));
                         }
+                        // Reasoning from user/system turns isn't a thing; drop
+                        // stale assistant thinking here rather than echoing it
+                        // into tool results.
+                        ContentBlock::Thinking { .. } => {}
                     }
                 }
 
@@ -336,6 +369,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                     messages.push(OpenAiMessageRequest {
                         role: "tool".to_string(),
                         content: Some(content),
+                        reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(id),
                     });
@@ -345,6 +379,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                     messages.push(OpenAiMessageRequest {
                         role: role_str.to_string(),
                         content: Some(text_parts.join("\n")),
+                        reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,
                     });
@@ -387,7 +422,11 @@ fn map_finish_reason(reason: &str) -> Option<StopReason> {
 }
 
 fn map_usage(u: &OpenAiUsageChunk) -> Usage {
-    Usage::new(u.prompt_tokens, u.completion_tokens)
+    let mut usage = Usage::new(u.prompt_tokens, u.completion_tokens);
+    if let Some(details) = &u.completion_tokens_details {
+        usage.reasoning_tokens = details.reasoning_tokens;
+    }
+    usage
 }
 
 fn chat_completions_url(base_url: &Url) -> Result<Url, ProviderError> {
@@ -624,6 +663,16 @@ fn stream_unfold_step(
                                                 _ => {}
                                             }
 
+                                            if let Some(reasoning) = choice.delta.reasoning_content {
+                                                if !reasoning.is_empty() {
+                                                    pending_events.push_back(
+                                                        StreamEvent::ThinkingDelta {
+                                                            delta: reasoning,
+                                                        },
+                                                    );
+                                                }
+                                            }
+
                                             if let Some(tool_calls) = choice.delta.tool_calls {
                                                 for tc in tool_calls {
                                                     // ponytail: cap wire-controlled indices so a broken/
@@ -801,6 +850,60 @@ mod tests {
                     stop_reason: Some(StopReason::EndTurn),
                     usage: None,
                 }
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn streams_reasoning_content_as_thinking_deltas() {
+        let server = MockServer::start().await;
+
+        // deepseek/openai-compat style: reasoning arrives in delta.reasoning_content
+        let think1 = json!({
+            "choices": [{"index": 0, "delta": {"reasoning_content": "pondering "}}]
+        });
+        let think2 = json!({
+            "choices": [{"index": 0, "delta": {"reasoning_content": "hard"}}]
+        });
+        let text = json!({
+            "choices": [{"index": 0, "delta": {"content": "answer"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 30,
+                "completion_tokens_details": {"reasoning_tokens": 21}
+            }
+        });
+        let sse_body = format!("{}{}{}{}", sse_json(&think1), sse_json(&think2), sse_json(&text), sse_done());
+
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(sse_body, "text/event-stream"))
+            .mount(&server)
+            .await;
+
+        let provider = OpenAiProvider::builder("test-key", "gpt-4o")
+            .base_url(server.uri())
+            .build()
+            .expect("valid provider builder");
+
+        let req = ChatRequest::new(vec![Message::user("Hi")]);
+        let mut stream = provider.stream(req);
+
+        let mut events = Vec::new();
+        while let Some(res) = stream.next().await {
+            events.push(res.expect("stream event should succeed"));
+        }
+
+        assert_eq!(
+            events,
+            vec![
+                StreamEvent::thinking_delta("pondering "),
+                StreamEvent::thinking_delta("hard"),
+                StreamEvent::TextDelta { delta: "answer".to_string() },
+                StreamEvent::message_complete(
+                    Some(StopReason::EndTurn),
+                    Some(Usage { input_tokens: 10, output_tokens: 30, reasoning_tokens: 21 }),
+                ),
             ]
         );
     }

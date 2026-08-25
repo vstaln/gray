@@ -221,6 +221,7 @@ impl Agent {
             // keyed by their stream index (id/name arrive once, arguments
             // may be split across many deltas).
             let mut text_parts: Vec<String> = Vec::new();
+            let mut thinking_parts: Vec<String> = Vec::new();
             let mut pending: Vec<PendingToolCall> = Vec::new();
             let (stop_reason, usage) = {
                 let mut stream = self.provider.stream(req);
@@ -229,6 +230,10 @@ impl Agent {
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
                             emit!(AgentEvent::text_delta(delta.clone()));
                             text_parts.push(delta);
+                        }
+                        Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
+                            emit!(AgentEvent::thinking_delta(delta.clone()));
+                            thinking_parts.push(delta);
                         }
                         Some(Ok(StreamEvent::ToolCallDelta { index, id, name, arguments_delta })) => {
                             // ponytail: cap wire-controlled indices — a hostile/broken server
@@ -259,9 +264,15 @@ impl Agent {
                             // user's screen: salvage the partial assistant text
                             // into history so the transcript matches what was seen.
                             if !text_parts.is_empty() && pending.is_empty() {
+                                let mut content = Vec::new();
+                                let thinking = thinking_parts.concat();
+                                if !thinking.is_empty() {
+                                    content.push(ContentBlock::Thinking { text: thinking });
+                                }
+                                content.push(ContentBlock::Text { text: text_parts.concat() });
                                 self.messages.push(Message {
                                     role: Role::Assistant,
-                                    content: vec![ContentBlock::Text { text: text_parts.concat() }],
+                                    content,
                                 });
                             }
                             return Err(CoreError::from(e));
@@ -278,7 +289,13 @@ impl Agent {
             total_usage.output_tokens += usage.output_tokens;
 
             // Finalize the assistant message exactly as streamed.
+            // Reasoning precedes text, mirroring the provider's emission order
+            // (pi renders runs of thinking blocks ahead of prose).
             let mut content: Vec<ContentBlock> = Vec::new();
+            let thinking = thinking_parts.concat();
+            if !thinking.is_empty() {
+                content.push(ContentBlock::Thinking { text: thinking });
+            }
             let text = text_parts.concat();
             if !text.is_empty() {
                 content.push(ContentBlock::Text { text });
@@ -454,6 +471,37 @@ mod agent_tests {
             StreamEvent::tool_call_delta(0, None, None, r#""x"}"#),
             StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
         ]
+    }
+
+    #[tokio::test]
+    async fn reasoning_deltas_stream_and_persist_into_history() {
+        let provider = FakeProvider::new(vec![vec![
+            StreamEvent::thinking_delta("hmm "),
+            StreamEvent::thinking_delta("let me think"),
+            StreamEvent::text_delta("answer"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]]);
+        let executor = FakeExecutor::new(ToolOutput::ok("unused"));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+
+        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+
+        // Thinking deltas surface in the event stream, before the text.
+        assert!(events.contains(&AgentEvent::thinking_delta("hmm ")));
+        assert!(events.contains(&AgentEvent::thinking_delta("let me think")));
+        let text_pos = events.iter().position(|e| *e == AgentEvent::text_delta("answer")).unwrap();
+        let think_pos = events.iter().position(|e| *e == AgentEvent::thinking_delta("hmm ")).unwrap();
+        assert!(think_pos < text_pos, "reasoning should precede prose");
+
+        // ...and land in the transcript as a thinking block ahead of the text.
+        let assistant = &agent.messages()[1];
+        assert_eq!(
+            assistant.content,
+            vec![
+                ContentBlock::Thinking { text: "hmm let me think".to_string() },
+                ContentBlock::Text { text: "answer".to_string() },
+            ]
+        );
     }
 
     #[tokio::test]

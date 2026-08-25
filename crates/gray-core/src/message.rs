@@ -38,6 +38,9 @@ pub enum ContentBlock {
         #[serde(default)]
         is_error: bool,
     },
+    /// The model's reasoning / chain-of-thought for an assistant turn.
+    /// Displayed dim+italic in the REPL (mirrors pi's thinking blocks).
+    Thinking { text: String },
 }
 
 impl ContentBlock {
@@ -57,6 +60,11 @@ impl ContentBlock {
             name: name.into(),
             args,
         }
+    }
+
+    /// Creates a new thinking block.
+    pub fn thinking(text: impl Into<String>) -> Self {
+        Self::Thinking { text: text.into() }
     }
 
     /// Creates a new tool result block.

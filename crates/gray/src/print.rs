@@ -21,6 +21,11 @@ pub fn render_event<W: Write>(w: &mut W, event: &AgentEvent) -> std::io::Result<
             write!(w, "{delta}")?;
             w.flush()
         }
+        AgentEvent::ThinkingDelta { delta } => {
+            // Same dim+italic treatment as the REPL (pi's thinking style).
+            write!(w, "\x1b[2m\x1b[3m{delta}\x1b[0m")?;
+            w.flush()
+        }
         AgentEvent::ToolCallStart { name, .. } => {
             writeln!(w, "[tool] {name}")?;
             w.flush()

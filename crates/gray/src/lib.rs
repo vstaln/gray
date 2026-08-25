@@ -1,5 +1,6 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
+pub mod composer;
 pub mod config;
 pub mod logo_data;
 pub mod logging;

@@ -143,6 +143,7 @@ fn test_agent_events_stream_roundtrip_integration() {
             Usage {
                 input_tokens: 320,
                 output_tokens: 85,
+                reasoning_tokens: 0,
             },
         ),
     ];

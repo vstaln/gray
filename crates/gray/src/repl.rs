@@ -28,33 +28,13 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// Commands whose name starts with `filter` (the text after '/'), table order.
-fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
+pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
     COMMANDS
         .iter()
         .filter(|(n, _)| n.starts_with(&f))
         .copied()
         .collect()
-}
-
-/// Pure prompt-buffer edit op (unit-tested without a tty).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PromptEdit {
-    Insert(char),
-    Backspace,
-    Clear,
-}
-
-fn apply_edit(buf: &str, op: PromptEdit) -> String {
-    let mut b = buf.to_string();
-    match op {
-        PromptEdit::Insert(c) => b.push(c),
-        PromptEdit::Backspace => {
-            b.pop();
-        }
-        PromptEdit::Clear => b.clear(),
-    }
-    b
 }
 
 /// True while an agent turn is in flight: `Some(token)` cancels on first
@@ -105,11 +85,19 @@ pub fn fmt_usage(total: usize) -> String {
     }
 }
 
+/// ANSI dim + italic — pi's styling for rendered thinking blocks
+/// (italic muted color; dim stands in for pi's `thinkingText` theme color).
+pub const THINKING_STYLE: &str = "\x1b[2m\x1b[3m";
+
 /// Formats an [`AgentEvent`] for display in the interactive REPL.
 pub fn fmt_event(event: &AgentEvent) -> String {
     match event {
         AgentEvent::Start | AgentEvent::ToolCallEnd { .. } => String::new(),
         AgentEvent::TextDelta { delta } => delta.clone(),
+        AgentEvent::ThinkingDelta { delta } => {
+            // Streamed live, dim+italic like pi's rendered thinking blocks.
+            format!("{THINKING_STYLE}{}\x1b[0m", delta.clone())
+        }
         AgentEvent::ToolCallStart { name, .. } => {
             format!("\n\x1b[2m· {name}\x1b[0m\n")
         }
@@ -125,7 +113,12 @@ pub fn fmt_event(event: &AgentEvent) -> String {
         }
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
-                format!("\n\x1b[2m· {} tok\x1b[0m\n", fmt_usage(usage.total()))
+                let reasoning = if usage.reasoning_tokens > 0 {
+                    format!(" · {} think", fmt_usage(usage.reasoning_tokens))
+                } else {
+                    String::new()
+                };
+                format!("\n\x1b[2m\u{b7} {} tok{reasoning}\x1b[0m\n", fmt_usage(usage.total()))
             } else {
                 "\n".to_string()
             }
@@ -397,213 +390,6 @@ async fn handle_model(
     reload_agent(agent, config, cwd).await;
 }
 
-/// Repaints the prompt frame in place with ABSOLUTE cursor addressing:
-/// [top rule / panel… / '› ' input / bottom rule], input row pinned one above
-/// the terminal's bottom row — anchored-bottom editor. The panel grows
-/// upward without ever moving the input line; stale frame rows are cleared.
-/// No scroll, no cumulative drift: every draw recomputes from `terminal::size()`.
-/// `prev_panel` is the previous draw's panel row count, so shrinking the panel
-/// clears its leftover rows instead of leaving ghosts between rule and input.
-fn draw_prompt_frame(
-    out: &mut impl Write,
-    buf: &str,
-    panel: &[String],
-    cols: usize,
-    prev_panel: usize,
-) -> anyhow::Result<()> {
-    let (_, rows) = crossterm::terminal::size()?;
-    let rows = rows as usize;
-    // All CUP rows below are 1-based. Input sits on the second-to-last screen row.
-    let input_cup = rows.saturating_sub(1).max(2);
-    let rule_cup = input_cup - panel.len().min(input_cup - 2) - 1; // panel grows upward, flush above input
-    let prev_rule_cup = input_cup - prev_panel.min(input_cup - 2) - 1;
-    let clear_from = rule_cup.min(prev_rule_cup); // cover both old and new frame tops
-    let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols));
-    // ponytail: cursor column = char count, not display width — wide glyphs drift; unicode-width if that matters.
-    let budget = cols.saturating_sub(6);
-    let chars: Vec<char> = buf.chars().collect();
-    let shown: String = if chars.len() > budget {
-        chars[chars.len() - budget..].iter().collect()
-    } else {
-        buf.to_string()
-    };
-
-    write!(out, "\x1b[{clear_from};1H\x1b[J")?;
-    write!(out, "\x1b[{rule_cup};1H{rule}")?;
-    for (j, row) in panel.iter().enumerate() {
-        write!(out, "\x1b[{};1H{row}", rule_cup + 1 + j)?;
-    }
-    write!(out, "\x1b[{input_cup};1H\u{203a} {shown}")?;
-    write!(out, "\x1b[{rows};1H{rule}")?;
-    // park the cursor on the input line, after the typed text
-    write!(out, "\x1b[{input_cup};{}G", shown.chars().count() + 3)?;
-    out.flush()?;
-    Ok(())
-}
-
-/// Keeps the highlighted row visible within a `visible`-row window.
-fn scroll_start(sel: usize, visible: usize) -> usize {
-    if sel < visible { 0 } else { sel.saturating_sub(visible - 1) }
-}
-
-/// Max completion rows shown above the input line (shared by draw + erase).
-const PANEL_ROWS: usize = 5;
-
-/// Erases the whole prompt-frame zone and parks the cursor at its top, so the
-/// submitted line's output starts on a clean screen with no frame residue.
-fn erase_frame(out: &mut impl Write) -> anyhow::Result<()> {
-    let (_, rows) = crossterm::terminal::size()?;
-    let top = (rows as usize).saturating_sub(1).saturating_sub(PANEL_ROWS + 1).max(1);
-    write!(out, "\x1b[{top};1H\x1b[J\x1b[{top};1H")?;
-    out.flush()?;
-    Ok(())
-}
-
-/// Codex trick: while a turn runs, own the terminal's bottom row with a
-/// persistent rule and make everything else scroll inside a restricted
-/// region (DECSTBM) above it — so the `───` never disappears mid-turn.
-/// Returns the region's bottom row (content scrolls within 1..=region_end).
-fn pin_bottom_rule(out: &mut impl Write) -> anyhow::Result<usize> {
-    let (cols, rows) = crossterm::terminal::size()?;
-    let (cols, rows) = (cols as usize, rows as usize);
-    if rows < 5 {
-        return Ok(rows); // too small for region games; degrade gracefully
-    }
-    let region_end = rows - 2; // leave room: rule row + one spare
-    // scroll region 1..region_end, park cursor at its bottom-left
-    write!(out, "\x1b[1;{region_end}r\x1b[{region_end};1H")?;
-    let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols.max(1) - 1));
-    write!(out, "\x1b[{rows};1H{rule}\x1b[{region_end};1H")?; // rule below the region, cursor back inside it
-    out.flush()?;
-    Ok(region_end)
-}
-
-/// Resets the scroll region so normal full-screen drawing works again.
-fn unpin_bottom_rule(out: &mut impl Write) -> anyhow::Result<()> {
-    write!(out, "\x1b[r")?;
-    out.flush()?;
-    Ok(())
-}
-
-/// Raw-mode prompt editor: 3-line frame (top rule / '› ' buffer / bottom rule)
-/// plus a slash-command completion panel when the buffer starts with '/'.
-/// Returns the submitted line, or None on Ctrl-C / Ctrl-D-on-empty (exit request).
-fn read_prompt_line() -> anyhow::Result<Option<String>> {
-    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-
-    let mut stdout = std::io::stdout();
-    let mut buf = String::new();
-    let mut sel = 0usize; // highlighted row within visible matches
-    let mut prev_panel = 0usize; // last draw's panel height, for ghost-row cleanup
-    let mut cols = crate::term_width();
-
-    crossterm::terminal::enable_raw_mode()?;
-    let result = (|| -> anyhow::Result<Option<String>> {
-        loop {
-            // Panel is live while the buffer is "/..." with no whitespace yet.
-            let active = buf.starts_with('/') && !buf[1..].contains(char::is_whitespace);
-            let matches = if active { completion_matches(&buf[1..]) } else { Vec::new() };
-            if sel >= matches.len() {
-                sel = matches.len().saturating_sub(1);
-            }
-
-            let mut panel: Vec<String> = Vec::new();
-            if !matches.is_empty() {
-                let width = cols.saturating_sub(4);
-                let start = scroll_start(sel, PANEL_ROWS);
-                for (i, (name, desc)) in matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
-                    let body = format!("  /{name} \u{2014} {}", clip_str(desc, width));
-                    panel.push(if i == sel {
-                        format!("\x1b[7m{body}\x1b[0m")
-                    } else {
-                        body
-                    });
-                }
-            }
-            let panel: Vec<String> = panel
-                .into_iter()
-                .map(|l| clip_str(&l, cols))
-                .collect();
-
-            draw_prompt_frame(&mut stdout, &buf, &panel, cols, prev_panel)?;
-            prev_panel = panel.len();
-
-            match read()? {
-                Event::Resize(new_cols, _) => {
-                    cols = new_cols as usize; // next draw repaints at the new size
-                }
-                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
-                    if modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    return Ok(None)
-                }
-                Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. })
-                    if modifiers.contains(KeyModifiers::CONTROL) && buf.is_empty() =>
-                {
-                    return Ok(None) // EOF parity with the old cooked-mode Ctrl-D
-                }
-                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                    match code {
-                        KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                        KeyCode::Char('n') => sel = (sel + 1).min(matches.len().saturating_sub(1)),
-                        _ => {}
-                    }
-                }
-                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
-                    KeyCode::Enter => {
-                        // complete, then submit immediately. A bare
-                        // "/" stays literal — completing it would fire /new
-                        // and wipe the conversation by accident.
-                        if buf.chars().count() > 1
-                            && let Some((name, _)) = matches.get(sel)
-                        {
-                            buf = format!("/{name} ");
-                        }
-                        return Ok(Some(buf));
-                    }
-                    KeyCode::Tab => {
-                        if let Some((name, _)) = matches.get(sel) {
-                            buf = format!("/{name} ");
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        buf = apply_edit(&buf, PromptEdit::Insert(c));
-                        sel = 0;
-                    }
-                    KeyCode::Backspace => {
-                        buf = apply_edit(&buf, PromptEdit::Backspace);
-                        sel = 0;
-                    }
-                    KeyCode::Esc => {
-                        buf = apply_edit(&buf, PromptEdit::Clear);
-                        sel = 0;
-                    }
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(matches.len().saturating_sub(1)),
-                    _ => {}
-                },
-                _ => {}
-            }
-        }
-    })();
-    crossterm::terminal::disable_raw_mode()?;
-    erase_frame(&mut stdout)?;
-    result.map(|opt| opt.map(|mut line| {
-        // strip the trailing space added by command completion ("/model " -> "/model")
-        if line.starts_with('/') {
-            while line.ends_with(' ') {
-                line.pop();
-            }
-        }
-        line.trim_end().to_string()
-    }))
-}
-
-/// Clips to at most `max` chars.
-fn clip_str(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
-}
-
 /// Appends whatever messages reached memory this turn (success, cancel, or
 /// error) to the session store, so the JSONL transcript never diverges from
 /// in-memory history.
@@ -702,35 +488,49 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
         }
     }
 
-    // Interactive terminals get the raw-mode frame; piped input falls back
+    // Interactive terminals get the ratatui composer; piped input falls back
     // to plain cooked reads (scripts, tests).
     let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
 
-    let mut pinned = false; // scroll-region active for the current submission
+    // The composer owns the bottom pane for the whole session. A tiny ticker
+    // task refreshes the elapsed-seconds status while turns run.
+    let tui = interactive.then(|| {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        let shared = crate::composer::SharedTui(
+            std::sync::Arc::new(std::sync::Mutex::new(
+                crate::composer::Tui::new().expect("composer init"),
+            )),
+        );
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let ticker_stop = stop.clone();
+        let ticker_tui = shared.clone();
+        tokio::spawn(async move {
+            while !ticker_stop.load(AtomicOrdering::Relaxed) {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if let Ok(mut t) = ticker_tui.lock() {
+                    t.tick_status();
+                }
+            }
+        });
+        (shared, stop)
+    });
+
     loop {
         let line = if interactive {
-            if pinned {
-                // back from the previous submission: restore normal scrolling
-                let _ = unpin_bottom_rule(&mut std::io::stdout());
-                pinned = false;
-            }
-            let line = match read_prompt_line()? {
-                Some(l) => l,
-                None => {
-                    // Ctrl-C / Ctrl-D at the prompt: exit visibly, not like a crash.
-                    println!("\x1b[2mbye\x1b[0m");
-                    break;
+            let (shared, _) = tui.as_ref().expect("interactive implies tui");
+            let line = {
+                let mut t = shared.lock().expect("tui lock");
+                match t.read_line()? {
+                    Some(l) => l,
+                    None => {
+                        // Ctrl-C / Ctrl-D at the prompt: exit visibly, not like a crash.
+                        t.shutdown();
+                        println!("\x1b[2mbye\x1b[0m");
+                        break;
+                    }
                 }
             };
-            // echo the submitted line into the transcript (frame was erased),
-            // then pin a bottom rule + scroll region for the turn (codex-style:
-            // output scrolls above a persistent bottom rule)
-            println!("\x1b[2m\u{203a} {line}\x1b[0m");
-            if interactive {
-                let _ = pin_bottom_rule(&mut std::io::stdout());
-                pinned = true;
-            }
             line
         } else {
             print!("\u{203a} ");
@@ -827,114 +627,59 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 let user_msg = Message::user(&prompt_text);
                 let initial_count = agent.messages().len();
 
-                // Codex-style status line while the turn warms up: a bullet
-                // that blinks (•/◦, 600ms) or shimmers (truecolor sweep, 80ms)
-                // next to `Working… <elapsed>s`. Erased on the first event.
-                use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-                let stop = std::sync::Arc::new(AtomicBool::new(false));
-                let spinner_stop = stop.clone();
-                let spinner = tokio::spawn(async move {
-                    let truecolor = std::env::var("COLORTERM")
-                        .map(|v| v.contains("truecolor") || v.contains("24bit"))
-                        .unwrap_or(false);
-                    let started = std::time::Instant::now();
-                    let mut tick: u64 = 0;
-                    loop {
-                        if spinner_stop.load(AtomicOrdering::Relaxed) {
-                            return;
-                        }
-                        let secs = started.elapsed().as_secs();
-                        if truecolor {
-                            let text = format!("Working\u{2026} {secs}s (ctrl-c to cancel)");
-                            let chars: Vec<char> = text.chars().collect();
-                            let pos = (tick % (chars.len() as u64 + 10)) as isize;
-                            let mut line = String::from("\r\x1b[2m\u{2022}\x1b[0m ");
-                            for (i, c) in chars.iter().enumerate() {
-                                if (pos - i as isize).abs() < 3 {
-                                    line.push_str(&format!("\x1b[1;38;2;212;163;115m{c}\x1b[0m"));
-                                } else {
-                                    line.push_str(&format!("\x1b[2m{c}\x1b[0m"));
-                                }
-                            }
-                            print!("{line}");
-                        } else {
-                            let ind = if tick % 2 == 0 { "\u{2022}" } else { "\u{25e6}" };
-                            print!("\r\x1b[2m{ind} Working\u{2026} {secs}s (ctrl-c to cancel)\x1b[0m");
-                        }
-                        let _ = std::io::stdout().flush();
-                        tick += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(if truecolor {
-                            80
-                        } else {
-                            600
-                        }))
-                        .await;
-                    }
-                });
+                let (shared, _) = if interactive {
+                    (Some(tui.as_ref().expect("interactive implies tui")), ())
+                } else { (None, ()) };
 
-                // Events stream to the printer task as they arrive; the printer
-                // clears the status line just before the first visible output.
-                let (tx, rx) = std::sync::mpsc::channel::<gray_core::event::AgentEvent>();
-                let printer_stop = stop.clone();
-                let printer = tokio::task::spawn_blocking(move || {
-                    let mut spinning = true;
-                    while let Ok(ev) = rx.recv() {
-                        let rendered = fmt_event(&ev);
-                        if rendered.is_empty() {
-                            continue; // Start etc. — keep the status line up
-                        }
-                        if spinning {
-                            // first VISIBLE output: kill the spinner, outlast one
-                            // tick so its final write lands, then wipe the line
-                            printer_stop.store(true, AtomicOrdering::Relaxed);
-                            std::thread::sleep(std::time::Duration::from_millis(700));
-                            print!("\r\x1b[K");
-                            let _ = std::io::stdout().flush();
-                            spinning = false;
-                        }
-                        print!("{rendered}");
-                        let _ = std::io::stdout().flush();
-                    }
-                });
+                // status row on; events stream straight into the composer
+                let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
+                if let Some(s) = &tui_stream {
+                    s.lock().expect("tui lock").begin_turn("Working");
+                }
 
                 let run_result = {
-                    let tx_cb = tx.clone();
                     let mut on_event = |ev: &AgentEvent| {
-                        let _ = tx_cb.send(ev.clone());
+                        if let Some(shared) = &tui_stream
+                            && let Ok(mut t) = shared.lock()
+                        {
+                            t.stream(&crate::repl::fmt_event(ev));
+                        }
                     };
-                    let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
+                    let mut run_future =
+                        Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                     tokio::select! {
                         res = &mut run_future => res,
                         _ = cancel.cancelled() => Err(CoreError::Cancelled),
                     }
                 };
-                drop(tx);
-                stop.store(true, AtomicOrdering::Relaxed);
                 TURN_STATE.lock().expect("turn state lock").take();
-                let _ = spinner.await;
-                let _ = printer.await;
-                print!("\r\x1b[K"); // clear residue when the turn died before any output
-                let _ = std::io::stdout().flush();
+                if let Some(s) = &tui_stream {
+                    s.lock().expect("tui lock").end_turn();
+                }
 
                 match run_result {
-                    Ok(events) => {
-                        for event in &events {
-                            let rendered = fmt_event(event);
-                            if !rendered.is_empty() {
-                                print!("{rendered}");
-                            }
-                        }
-                        std::io::stdout().flush()?;
-
+                    Ok(_) => {
                         persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
                     }
                     Err(CoreError::Cancelled) => {
                         persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
-                        println!("(interrupted)");
+                        if interactive {
+                            if let Some((shared, _)) = &tui {
+                                shared.lock().expect("tui lock").stream("(interrupted)\n");
+                            }
+                        } else {
+                            println!("(interrupted)");
+                        }
                     }
                     Err(e) => {
                         persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
-                        eprintln!("agent error: {e}");
+                        if interactive {
+                            if let Some((shared, _)) = &tui {
+                                shared.lock().expect("tui lock").stream(&format!("agent error: {e}\n"));
+                            }
+                        } else {
+                            eprintln!("agent error: {e}");
+                        }
                     }
                 }
             }
@@ -1130,5 +875,25 @@ mod tests {
             fmt_event(&AgentEvent::turn_end(StopReason::EndTurn, Usage::new(400, 800))),
             "\n\x1b[2m· 1.2k tok\x1b[0m\n"
         );
+    }
+
+    #[test]
+    fn fmt_event_thinking_delta_is_dim_italic() {
+        assert_eq!(
+            fmt_event(&AgentEvent::thinking_delta("pondering")),
+            "\x1b[2m\x1b[3mpondering\x1b[0m"
+        );
+    }
+
+    #[test]
+    fn fmt_event_turn_end_shows_reasoning_tokens_when_present() {
+        let usage = Usage { input_tokens: 100, output_tokens: 200, reasoning_tokens: 64 };
+        assert!(fmt_event(&AgentEvent::turn_end(StopReason::EndTurn, usage)).contains("64 think"));
+        // Zero reasoning tokens must not add a "think" segment.
+        let plain = fmt_event(&AgentEvent::turn_end(
+            StopReason::EndTurn,
+            Usage { input_tokens: 1, output_tokens: 2, reasoning_tokens: 0 },
+        ));
+        assert!(!plain.contains("think"));
     }
 }
