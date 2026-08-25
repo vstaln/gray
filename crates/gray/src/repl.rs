@@ -23,6 +23,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("provider", "configure provider (API key, accounts, free tier)"),
     ("key", "add or update a provider API key (input hidden)"),
     ("sys", "view, edit, or restore the system prompt"),
+    ("thinking", "toggle hiding reasoning (shows a Thinking… label)"),
     ("help", "print the command list"),
     ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
 ];
@@ -152,6 +153,8 @@ pub enum ReplCommand {
     Key(Option<String>),
     /// Start a fresh conversation (`/new`).
     New,
+    /// Toggle hiding thinking blocks (`/thinking`).
+    Thinking,
     /// Print the command list (`/help`).
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
@@ -190,6 +193,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Reset)
     } else if trimmed == "/new" {
         ReplCommand::New
+    } else if trimmed == "/thinking" {
+        ReplCommand::Thinking
     } else if trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
         ReplCommand::Provider
     } else if trimmed == "/key" || trimmed == "/keys" {
@@ -596,6 +601,9 @@ pub async fn run_repl_mode(
         (shared, stop)
     });
 
+    // pi's hideThinkingBlock — toggled with /thinking, session-only.
+    let mut hide_thinking = false;
+
     loop {
         let line = if interactive {
             let (shared, stop) = tui.as_ref().expect("interactive implies tui");
@@ -661,6 +669,23 @@ pub async fn run_repl_mode(
                 agent = None;
                 session_state = None;
                 println!("started a fresh conversation");
+                continue;
+            }
+            ReplCommand::Thinking => {
+                hide_thinking = !hide_thinking;
+                let msg = if hide_thinking {
+                    "thinking hidden — /thinking to show it again"
+                } else {
+                    "thinking shown"
+                };
+                if let Some((shared, _)) = &tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.set_hide_thinking(hide_thinking);
+                    // scrollback, not println — the viewport owns the cursor row
+                    t.push_dim(msg.to_string());
+                } else {
+                    println!("{msg}");
+                }
                 continue;
             }
             ReplCommand::Provider => {
@@ -914,6 +939,17 @@ mod tests {
             ReplCommand::Unknown("/custom_cmd".to_string())
         );
         assert_eq!(parse_command("/"), ReplCommand::Unknown("/".to_string()));
+    }
+
+    #[test]
+    fn parse_command_identifies_thinking_toggle() {
+        assert_eq!(parse_command("/thinking"), ReplCommand::Thinking);
+        assert_eq!(parse_command("  /thinking  "), ReplCommand::Thinking);
+        // near-misses stay unknown
+        assert_eq!(
+            parse_command("/thinking off"),
+            ReplCommand::Unknown("/thinking off".to_string())
+        );
     }
 
     #[test]

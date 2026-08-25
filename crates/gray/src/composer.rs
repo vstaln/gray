@@ -49,6 +49,9 @@ pub struct Tui {
     /// True while a thinking run is streaming: lines render dim+italic and
     /// blank lines separate the run from surrounding text (pi-style).
     thinking: bool,
+    /// pi's hideThinkingBlock: show a one-line "Thinking…" label per run
+    /// instead of the full content.
+    hide_thinking: bool,
 }
 
 /// pi's thinking style: dim + italic (theme.fg("thinkingText") + italic).
@@ -142,6 +145,7 @@ impl Tui {
                 .map(|v| v.contains("truecolor") || v.contains("24bit"))
                 .unwrap_or(false),
             thinking: false,
+            hide_thinking: false,
         })
     }
 
@@ -372,8 +376,19 @@ impl Tui {
         if !self.thinking {
             self.thinking = true;
             self.push_line(String::new());
+            if self.hide_thinking {
+                // pi: one static italic label stands in for the whole run.
+                self.push_line_styled("Thinking\u{2026}".to_string(), thinking_style());
+            }
         }
-        self.stream(chunk);
+        if !self.hide_thinking {
+            self.stream(chunk);
+        }
+    }
+
+    /// Toggles pi's hideThinkingBlock: collapse thinking runs to a label.
+    pub fn set_hide_thinking(&mut self, hide: bool) {
+        self.hide_thinking = hide;
     }
 
     /// Answer text after (or without) thinking: closes the thinking run and
