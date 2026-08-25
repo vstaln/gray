@@ -459,6 +459,32 @@ fn erase_frame(out: &mut impl Write) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Codex trick: while a turn runs, own the terminal's bottom row with a
+/// persistent rule and make everything else scroll inside a restricted
+/// region (DECSTBM) above it — so the `───` never disappears mid-turn.
+/// Returns the region's bottom row (content scrolls within 1..=region_end).
+fn pin_bottom_rule(out: &mut impl Write) -> anyhow::Result<usize> {
+    let (cols, rows) = crossterm::terminal::size()?;
+    let (cols, rows) = (cols as usize, rows as usize);
+    if rows < 5 {
+        return Ok(rows); // too small for region games; degrade gracefully
+    }
+    let region_end = rows - 2; // leave room: rule row + one spare
+    // scroll region 1..region_end, park cursor at its bottom-left
+    write!(out, "\x1b[1;{region_end}r\x1b[{region_end};1H")?;
+    let rule = format!("\x1b[2m{}\x1b[0m", "\u{2500}".repeat(cols.max(1) - 1));
+    write!(out, "\x1b[{rows};1H{rule}\x1b[{region_end};1H")?; // rule below the region, cursor back inside it
+    out.flush()?;
+    Ok(region_end)
+}
+
+/// Resets the scroll region so normal full-screen drawing works again.
+fn unpin_bottom_rule(out: &mut impl Write) -> anyhow::Result<()> {
+    write!(out, "\x1b[r")?;
+    out.flush()?;
+    Ok(())
+}
+
 /// Raw-mode prompt editor: 3-line frame (top rule / '› ' buffer / bottom rule)
 /// plus a slash-command completion panel when the buffer starts with '/'.
 /// Returns the submitted line, or None on Ctrl-C / Ctrl-D-on-empty (exit request).
@@ -681,8 +707,14 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
     let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
 
+    let mut pinned = false; // scroll-region active for the current submission
     loop {
         let line = if interactive {
+            if pinned {
+                // back from the previous submission: restore normal scrolling
+                let _ = unpin_bottom_rule(&mut std::io::stdout());
+                pinned = false;
+            }
             let line = match read_prompt_line()? {
                 Some(l) => l,
                 None => {
@@ -691,8 +723,14 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                     break;
                 }
             };
-            // echo the submitted line into the transcript (frame was erased)
+            // echo the submitted line into the transcript (frame was erased),
+            // then pin a bottom rule + scroll region for the turn (codex-style:
+            // output scrolls above a persistent bottom rule)
             println!("\x1b[2m\u{203a} {line}\x1b[0m");
+            if interactive {
+                let _ = pin_bottom_rule(&mut std::io::stdout());
+                pinned = true;
+            }
             line
         } else {
             print!("\u{203a} ");

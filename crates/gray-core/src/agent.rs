@@ -254,7 +254,18 @@ impl Agent {
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
                             break (stop_reason.unwrap_or(StopReason::EndTurn), usage.unwrap_or_default());
                         }
-                        Some(Err(e)) => return Err(CoreError::from(e)),
+                        Some(Err(e)) => {
+                            // Mid-stream failure after deltas already reached the
+                            // user's screen: salvage the partial assistant text
+                            // into history so the transcript matches what was seen.
+                            if !text_parts.is_empty() && pending.is_empty() {
+                                self.messages.push(Message {
+                                    role: Role::Assistant,
+                                    content: vec![ContentBlock::Text { text: text_parts.concat() }],
+                                });
+                            }
+                            return Err(CoreError::from(e));
+                        }
                         None => {
                             // Provider closed without a completion event;
                             // treat as a normal end of turn.
