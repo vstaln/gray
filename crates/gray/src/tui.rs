@@ -122,14 +122,20 @@ pub fn print_wrapped(text: &str, pad: usize) {
     let _ = std::io::stdout().flush();
 }
 
-/// Prints the gray logo (icon + wordmark) dim, sized to the terminal.
-pub fn print_logo() {
+/// The gray logo (icon) as plain indented lines sized to the terminal —
+/// for callers that insert it into scrollback rather than printing raw.
+pub fn logo_lines() -> Vec<String> {
     let width = crossterm::terminal::size()
         .map(|(c, _)| (c as usize).saturating_sub(6))
         .unwrap_or(44)
         .clamp(24, 48);
-    for line in braille_art(width) {
-        print!("\r  \x1b[2m{line}\x1b[0m\r\n");
+    braille_art(width).into_iter().map(|l| format!("  {l}")).collect()
+}
+
+/// Prints the gray logo (icon + wordmark) dim, sized to the terminal.
+pub fn print_logo() {
+    for line in logo_lines() {
+        print!("\r\x1b[2m{line}\x1b[0m\r\n");
     }
     let _ = std::io::stdout().flush();
 }

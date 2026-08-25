@@ -435,6 +435,11 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
     crate::tui::clear_screen();
     let cwd = std::env::current_dir()?;
 
+    // Interactive terminals get the ratatui composer; piped input falls back
+    // to plain cooked reads (scripts, tests).
+    let interactive = std::io::stdin().is_terminal();
+    use std::io::IsTerminal;
+
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
@@ -446,7 +451,10 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
             print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n");
         }
         print!("\r\n");
-    } else {
+    } else if !interactive {
+        // In the interactive composer the banner is inserted into scrollback
+        // below (a direct print here gets scrolled off by the viewport
+        // anchoring in Tui::new).
         crate::tui::print_logo();
         print!("\r\n");
         print!(
@@ -490,17 +498,23 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
 
     // Interactive terminals get the ratatui composer; piped input falls back
     // to plain cooked reads (scripts, tests).
-    let interactive = std::io::stdin().is_terminal();
-    use std::io::IsTerminal;
-
     // The composer owns the bottom pane for the whole session. A tiny ticker
     // task refreshes the elapsed-seconds status while turns run.
     let tui = interactive.then(|| {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         let shared = crate::composer::SharedTui(
-            std::sync::Arc::new(std::sync::Mutex::new(
-                crate::composer::Tui::new().expect("composer init"),
-            )),
+            std::sync::Arc::new(std::sync::Mutex::new({
+                let mut t = crate::composer::Tui::new().expect("composer init");
+                // Banner goes into scrollback above the bottom-anchored pane.
+                for line in crate::tui::logo_lines() {
+                    t.push_dim(line);
+                }
+                t.push_dim(format!(
+                    "gray {} \u{b7} Run /help for commands",
+                    env!("CARGO_PKG_VERSION")
+                ));
+                t
+            })),
         );
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let ticker_stop = stop.clone();
@@ -524,9 +538,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 match t.read_line()? {
                     Some(l) => l,
                     None => {
-                        // Ctrl-C / Ctrl-D at the prompt: exit visibly, not like a crash.
                         t.shutdown();
-                        println!("\x1b[2mbye\x1b[0m");
                         break;
                     }
                 }

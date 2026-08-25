@@ -70,8 +70,11 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
         .enumerate()
         .map(|(i, ch)| {
             let dist = ((i as isize + padding as isize) - pos as isize).abs() as f32;
+            // 0 -> 1 cosine bump across the band (codex-rs motion.rs).
+            // Parens matter: .cos() must bind to PI*x only, not 1.0 + PI*x
+            // (that variant goes negative and freezes both style paths).
             let t = if dist <= band_half_width {
-                0.5 * (1.0 + std::f32::consts::PI * (dist / band_half_width)).cos()
+                0.5 * (1.0 + (std::f32::consts::PI * (dist / band_half_width)).cos())
             } else {
                 0.0
             };
@@ -360,6 +363,19 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
 
+    /// Pushes one pre-wrapped plain-text line into scrollback, rendered dim
+    /// (startup banner).
+    pub fn push_dim(&mut self, line: String) {
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(Line::from(Span::styled(
+                line,
+                Style::new().add_modifier(Modifier::DIM),
+            )))
+            .render(buf.area, buf);
+        });
+        let _ = std::io::stdout().flush();
+    }
+
     /// Refreshes the elapsed-seconds display while a turn runs (ticker task).
     pub fn tick_status(&mut self) {
         if self.status.is_some() {
@@ -397,4 +413,63 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shimmer_spans_change_across_ticks() {
+        let text = "\u{2022} Working\u{2026} 1s (ctrl-c to cancel)";
+        // Band needs ~190ms to enter the text from the left padding; sample
+        // inside the sweep where consecutive ticks must differ.
+        let mut prev = shimmer_spans(text, Duration::from_millis(300), false);
+        for ms in (400..=1200).step_by(100) {
+            let cur = shimmer_spans(text, Duration::from_millis(ms), false);
+            assert_ne!(prev, cur, "no change between {}ms and {}ms", ms - 100, ms);
+            prev = cur;
+        }
+    }
+
+    #[test]
+    fn shimmer_truecolor_changes_across_ticks() {
+        let text = "\u{2022} Working\u{2026} 1s";
+        let a = shimmer_spans(text, Duration::from_millis(500), true);
+        let b = shimmer_spans(text, Duration::from_millis(600), true);
+        assert_ne!(a, b);
+    }
+
+    /// The full draw path: two consecutive tick_status()-style frames with
+    /// different elapsed times must produce different backend content.
+    #[test]
+    fn consecutive_frames_differ_in_test_backend() {
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use std::cell::Cell;
+
+        let status: Cell<Option<(Instant, String)>> = Cell::new(Some((Instant::now(), "Working".into())));
+        // Simulate frozen start by overriding elapsed via distinct Instants.
+        let t0 = Instant::now();
+        let render = |term: &mut Term| unreachable!();
+        let _ = (status, t0, render);
+
+        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
+        let started = Instant::now();
+        let frame_at = |ms: u64, term: &mut Terminal<TestBackend>| {
+            let fake_started = started - Duration::from_millis(ms);
+            term.draw(|f| {
+                let text = format!("\u{2022} Working\u{2026} 1s");
+                let spans = shimmer_spans(&text, fake_started.elapsed(), false);
+                f.render_widget(
+                    Paragraph::new(Line::from(spans)),
+                    Rect::new(0, 0, 40, 1),
+                );
+            }).unwrap();
+            term.backend().buffer().clone()
+        };
+        let b1 = frame_at(500, &mut terminal);
+        let b2 = frame_at(600, &mut terminal);
+        assert_ne!(b1, b2, "ratatui diff should see changing spans across 100ms ticks");
+    }
 }
