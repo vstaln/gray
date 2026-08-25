@@ -242,12 +242,23 @@ struct OpenAiUsageChunk {
     completion_tokens: usize,
     #[serde(default)]
     completion_tokens_details: Option<OpenAiCompletionDetails>,
+    #[serde(default)]
+    prompt_tokens_details: Option<OpenAiPromptDetails>,
+    /// Some providers (OpenRouter) also surface cached_tokens at top level
+    #[serde(default)]
+    cached_tokens: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiCompletionDetails {
     #[serde(default)]
     reasoning_tokens: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiPromptDetails {
+    #[serde(default)]
+    cached_tokens: usize,
 }
 
 /// Anthropic prompt-caching: put an ephemeral cache breakpoint on the
@@ -502,6 +513,13 @@ fn map_usage(u: &OpenAiUsageChunk) -> Usage {
     let mut usage = Usage::new(u.prompt_tokens, u.completion_tokens);
     if let Some(details) = &u.completion_tokens_details {
         usage.reasoning_tokens = details.reasoning_tokens;
+    }
+    if let Some(details) = &u.prompt_tokens_details {
+        usage.cached_tokens = details.cached_tokens;
+    }
+    // fallback for providers that put cached_tokens at top level
+    if usage.cached_tokens == 0 {
+        usage.cached_tokens = u.cached_tokens;
     }
     usage
 }
@@ -983,7 +1001,7 @@ mod tests {
                 StreamEvent::TextDelta { delta: "answer".to_string() },
                 StreamEvent::message_complete(
                     Some(StopReason::EndTurn),
-                    Some(Usage { input_tokens: 10, output_tokens: 30, reasoning_tokens: 21 }),
+                    Some(Usage { input_tokens: 10, output_tokens: 30, reasoning_tokens: 21, ..Default::default() }),
                 ),
             ]
         );

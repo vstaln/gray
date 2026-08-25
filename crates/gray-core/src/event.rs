@@ -11,6 +11,9 @@ pub struct Usage {
     /// `output_tokens` when reported). 0 when the provider doesn't say.
     #[serde(default)]
     pub reasoning_tokens: usize,
+    /// Prompt tokens served from Anthropic cache (via `cache_control`).
+    #[serde(default)]
+    pub cached_tokens: usize,
 }
 
 impl Usage {
@@ -20,12 +23,22 @@ impl Usage {
             input_tokens,
             output_tokens,
             reasoning_tokens: 0,
+            cached_tokens: 0,
         }
     }
 
     /// Computes the total tokens consumed.
     pub fn total(&self) -> usize {
         self.input_tokens + self.output_tokens
+    }
+
+    /// Cache hit rate for prompt tokens (0.0–1.0).
+    pub fn cache_hit_rate(&self) -> f64 {
+        if self.input_tokens == 0 {
+            0.0
+        } else {
+            self.cached_tokens as f64 / self.input_tokens as f64
+        }
     }
 }
 

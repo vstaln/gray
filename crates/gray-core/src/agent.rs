@@ -287,6 +287,8 @@ impl Agent {
             };
             total_usage.input_tokens += usage.input_tokens;
             total_usage.output_tokens += usage.output_tokens;
+            total_usage.cached_tokens += usage.cached_tokens;
+            total_usage.reasoning_tokens += usage.reasoning_tokens;
 
             // Finalize the assistant message exactly as streamed.
             // Reasoning precedes text, mirroring the provider's emission order
@@ -322,7 +324,12 @@ impl Agent {
                 .collect();
 
             if tool_uses.is_empty() {
-                log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={}, {} messages", total_usage.input_tokens, total_usage.output_tokens, self.messages.len());
+                let hit = if total_usage.input_tokens > 0 {
+                    total_usage.cached_tokens as f64 / total_usage.input_tokens as f64 * 100.0
+                } else {
+                    0.0
+                };
+                log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, total_usage));
                 return Ok(events);
             }
