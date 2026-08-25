@@ -46,6 +46,14 @@ pub struct Tui {
     pending: String,
     /// 24-bit color support — selects shimmer vs blink for the status row.
     truecolor: bool,
+    /// True while a thinking run is streaming: lines render dim+italic and
+    /// blank lines separate the run from surrounding text (pi-style).
+    thinking: bool,
+}
+
+/// pi's thinking style: dim + italic (theme.fg("thinkingText") + italic).
+fn thinking_style() -> Style {
+    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
 }
 
 /// Codex-rs shimmer (motion.rs/shimmer.rs), ported: a highlight band sweeps
@@ -133,6 +141,7 @@ impl Tui {
             truecolor: std::env::var("COLORTERM")
                 .map(|v| v.contains("truecolor") || v.contains("24bit"))
                 .unwrap_or(false),
+            thinking: false,
         })
     }
 
@@ -336,7 +345,8 @@ impl Tui {
         self.status = None;
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            self.push_line(rest);
+            let style = if self.thinking { thinking_style() } else { Style::default() };
+            self.push_line_styled(rest, style);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
@@ -349,13 +359,59 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let line = line.trim_end_matches('\n').to_string();
-            self.push_line(line);
+            let style = if self.thinking { thinking_style() } else { Style::default() };
+            self.push_line_styled(line, style);
         }
         let _ = self.draw();
     }
 
+    /// pi-style thinking run: streams dim+italic, opens with a blank line.
+    /// Styling lives HERE (ratatui span), not in ANSI codes — stream()
+    /// strips ANSI, so styled text must never travel through it.
+    pub fn stream_thinking(&mut self, chunk: &str) {
+        if !self.thinking {
+            self.thinking = true;
+            self.push_line(String::new());
+        }
+        self.stream(chunk);
+    }
+
+    /// Answer text after (or without) thinking: closes the thinking run and
+    /// puts a blank line between it and the prose (pi's Spacer).
+    pub fn stream_text(&mut self, chunk: &str) {
+        self.end_thinking_run(true);
+        self.stream(chunk);
+    }
+
+    /// Closes the thinking run WITHOUT a trailing spacer — the next event's
+    /// leading newline (tool chip, usage line) provides the separation.
+    pub fn end_thinking(&mut self) {
+        self.end_thinking_run(false);
+        let _ = self.draw();
+    }
+
+    fn end_thinking_run(&mut self, spacer: bool) {
+        if !self.thinking {
+            return;
+        }
+        self.thinking = false;
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, thinking_style());
+        }
+        if spacer {
+            self.push_line(String::new());
+        }
+    }
+
     /// Pushes one wrapped line into real scrollback above the viewport.
     pub fn push_line(&mut self, line: String) {
+        self.push_line_styled(line, Style::default());
+    }
+
+    /// Pushes one wrapped line with a ratatui style (survives strip_ansi —
+    /// styling is applied at render, not via ANSI codes in the text).
+    fn push_line_styled(&mut self, line: String, style: Style) {
         let w = self.width().max(10);
         let chars: Vec<char> = line.chars().collect();
         let mut height = 0usize;
@@ -363,7 +419,7 @@ impl Tui {
             let text: String = chunk.iter().collect();
             height += 1;
             let _ = self.terminal.insert_before(1, |buf| {
-                Paragraph::new(Line::from(text.as_str())).render(buf.area, buf);
+                Paragraph::new(Line::from(Span::styled(text, style))).render(buf.area, buf);
             });
         }
         if height == 0 {

@@ -770,7 +770,17 @@ pub async fn run_repl_mode(
                         if let Some(shared) = &tui_stream
                             && let Ok(mut t) = shared.lock()
                         {
-                            t.stream(&crate::repl::fmt_event(ev));
+                            // Thinking/text get composer-level styling (ANSI
+                            // would be stripped by stream()); any other event
+                            // closes the thinking run first.
+                            match ev {
+                                AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
+                                AgentEvent::TextDelta { delta } => t.stream_text(delta),
+                                other => {
+                                    t.end_thinking();
+                                    t.stream(&crate::repl::fmt_event(other));
+                                }
+                            }
                         }
                     };
                     let mut run_future =
@@ -796,7 +806,9 @@ pub async fn run_repl_mode(
                         persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
                         if interactive {
                             if let Some((shared, _)) = &tui {
-                                shared.lock().expect("tui lock").stream("(interrupted)\n");
+                                let mut t = shared.lock().expect("tui lock");
+                                t.end_thinking();
+                                t.stream("(interrupted)\n");
                             }
                         } else {
                             println!("(interrupted)");
@@ -806,7 +818,9 @@ pub async fn run_repl_mode(
                         persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
                         if interactive {
                             if let Some((shared, _)) = &tui {
-                                shared.lock().expect("tui lock").stream(&format!("agent error: {e}\n"));
+                                let mut t = shared.lock().expect("tui lock");
+                                t.end_thinking();
+                                t.stream(&format!("agent error: {e}\n"));
                             }
                         } else {
                             eprintln!("agent error: {e}");
