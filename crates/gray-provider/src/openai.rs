@@ -461,11 +461,9 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
         }
     }
 
-    // Anthropic prompt caching — only for Claude/Anthropic (others ignore)
-    let lower = model.to_ascii_lowercase();
-    if lower.contains("claude") || lower.contains("anthropic") {
-        set_cache_control(&mut messages);
-    }
+    // Anthropic prompt caching — always set, non-Anthropic providers ignore it
+    // (mini-swe-agent's default_end does the same when enabled)
+    set_cache_control(&mut messages);
 
     // 3. Map tools
     let tools = req
@@ -1308,10 +1306,12 @@ mod tests {
     }
 
     #[test]
-    fn cache_control_not_set_for_openai_models() {
+    fn cache_control_set_even_for_openai_models() {
+        // A: always-on — non-Anthropic ignores it, so safe to set
         let req = ChatRequest::new(vec![Message::user("hello")]);
         let mapped = map_chat_request(req, "openai/gpt-4o");
-        assert!(mapped.messages[0].cache_control.is_none());
-        assert!(mapped.messages[0].content.as_ref().unwrap().is_string());
+        let last = &mapped.messages[0];
+        assert!(last.content.as_ref().unwrap().is_array());
+        assert_eq!(last.content.as_ref().unwrap()[0]["cache_control"], json!({"type": "ephemeral"}));
     }
 }
