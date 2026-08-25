@@ -390,6 +390,16 @@ async fn handle_model(
     reload_agent(agent, config, cwd).await;
 }
 
+/// pi-style exit hint: how to reopen this conversation later.
+fn print_exit_hint(session_state: &Option<SessionState>) {
+    if let Some(state) = session_state {
+        println!(
+            "\x1b[2mTo resume this session: gray --session {}\x1b[0m",
+            state.session_id.as_str()
+        );
+    }
+}
+
 /// Appends whatever messages reached memory this turn (success, cancel, or
 /// error) to the session store, so the JSONL transcript never diverges from
 /// in-memory history.
@@ -430,7 +440,11 @@ async fn persist_turn_messages(
 }
 
 /// Runs Gray in interactive REPL mode.
-pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Result<()> {
+pub async fn run_repl_mode(
+    config: &mut Config,
+    resume_last: bool,
+    session_id: Option<&str>,
+) -> anyhow::Result<()> {
     let _ = crossterm::terminal::disable_raw_mode();
     crate::tui::clear_screen();
     let cwd = std::env::current_dir()?;
@@ -468,8 +482,34 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
     let mut agent: Option<Agent> = None;
     let mut session_state: Option<SessionState> = None;
 
+    // `--session <id>`: reopen that exact session.
+    if let Some(id) = session_id
+        && let Some(root) = default_root()
+    {
+        let store = JsonlSessionStore::new(root);
+        match store.load(&SessionId::new(id)).await {
+            Ok((_, entries)) => {
+                let history: Vec<Message> = entries.into_iter().map(|e| e.message).collect();
+                match build_agent(config, &cwd) {
+                    Ok(built) => {
+                        let n = history.len();
+                        agent = Some(built.with_messages(history));
+                        session_state = Some(SessionState {
+                            session_id: SessionId::new(id),
+                            store,
+                        });
+                        println!("\x1b[2mresumed {n}-message session {id}\x1b[0m");
+                    }
+                    Err(e) => println!("could not resume (no provider): {e}"),
+                }
+            }
+            Err(e) => println!("could not resume session {id}: {e}"),
+        }
+    }
+
     // `-c`: reopen the most recent session instead of starting blank.
     if resume_last
+        && session_state.is_none()
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
@@ -539,6 +579,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                     Some(l) => l,
                     None => {
                         t.shutdown();
+                        print_exit_hint(&session_state);
                         break;
                     }
                 }
@@ -560,6 +601,7 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                 if let Some((shared, _)) = &tui {
                     shared.lock().expect("tui lock").shutdown();
                 }
+                print_exit_hint(&session_state);
                 break;
             }
             ReplCommand::Sys(action) => {
@@ -654,6 +696,37 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                     s.lock().expect("tui lock").begin_turn("Working");
                 }
 
+                // Raw mode swallows ^C (no SIGINT), so a watcher must read
+                // key events during the turn and translate Ctrl-C into cancel.
+                let watch_cancel = cancel.clone();
+                let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let watcher_stopped = watch_stop.clone();
+                let key_watcher = tokio::task::spawn_blocking(move || {
+                    use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+                    loop {
+                        // abort() can't kill a blocking task — poll the flag so
+                        // the thread actually exits when the turn ends.
+                        if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                            return;
+                        }
+                        match poll(std::time::Duration::from_millis(100)) {
+                            Ok(true) => {}
+                            _ => continue,
+                        }
+                        if let Ok(Event::Key(KeyEvent {
+                            code: KeyCode::Char('c'),
+                            modifiers,
+                            kind: KeyEventKind::Press,
+                            ..
+                        })) = read()
+                            && modifiers.contains(KeyModifiers::CONTROL)
+                        {
+                            watch_cancel.cancel();
+                            return;
+                        }
+                    }
+                });
+
                 let run_result = {
                     let mut on_event = |ev: &AgentEvent| {
                         if let Some(shared) = &tui_stream
@@ -670,6 +743,9 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
                     }
                 };
                 TURN_STATE.lock().expect("turn state lock").take();
+                // signal the watcher to exit; it dies within one 100ms tick.
+                // (Never .await it here without the flag — deadlock.)
+                watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 if let Some(s) = &tui_stream {
                     s.lock().expect("tui lock").end_turn();
                 }

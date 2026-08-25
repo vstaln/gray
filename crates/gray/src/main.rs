@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(prompt) = cli.print.as_deref() {
         run_print_mode(&config, prompt).await?;
     } else {
-        run_repl_mode(&mut config, cli.continue_last).await?;
+        run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
     }
     Ok(())
 }

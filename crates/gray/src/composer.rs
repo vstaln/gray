@@ -170,21 +170,32 @@ impl Tui {
             // Status row sits directly above the top rule while a turn runs.
             // Animation copied from codex-rs motion/shimmer: a highlight band
             // sweeps the text on a 2s cosine cycle (truecolor) or steps
-            // through dim/bold bands (fallback).
-            if let Some((started, label)) = &self.status {
-                let secs = started.elapsed().as_secs();
-                let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 {
-                    "\u{2022}"
-                } else {
-                    "\u{25e6}"
-                };
-                let bullet = if self.truecolor { "\u{2022}" } else { blink_bullet };
-                let text = format!("{bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
-                let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
-                frame.render_widget(
-                    Paragraph::new(Line::from(spans)),
-                    Rect::new(area.x, area.y + PANEL_ROWS as u16, area.width, 1),
-                );
+            // through dim/bold bands (fallback). ALWAYS rendered — an empty
+            // Paragraph writes zero cells, so the stale text would survive
+            // ratatui's cell-diff forever.
+            {
+                let status_rect = Rect::new(area.x, area.y + PANEL_ROWS as u16, area.width, 1);
+                match &self.status {
+                    Some((started, label)) => {
+                        let secs = started.elapsed().as_secs();
+                        let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 {
+                            "\u{2022}"
+                        } else {
+                            "\u{25e6}"
+                        };
+                        let bullet = if self.truecolor { "\u{2022}" } else { blink_bullet };
+                        let text =
+                            format!("{bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
+                        let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
+                        frame.render_widget(Paragraph::new(Line::from(spans)), status_rect);
+                    }
+                    None => {
+                        frame.render_widget(
+                            Paragraph::new(Line::from(" ".repeat(w))),
+                            status_rect,
+                        );
+                    }
+                }
             }
 
             // Rule / input / rule.
@@ -376,11 +387,10 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
 
-    /// Refreshes the elapsed-seconds display while a turn runs (ticker task).
+    /// Refreshes the status/elapsed display (ticker task, whole session).
+    /// Unconditional redraw: any stale frame residue self-heals within a tick.
     pub fn tick_status(&mut self) {
-        if self.status.is_some() {
-            let _ = self.draw();
-        }
+        let _ = self.draw();
     }
 
     /// Restores cooked mode (called on exit). Leaves the cursor on a fresh

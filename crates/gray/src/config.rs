@@ -103,6 +103,7 @@ mod tests {
             print: None,
             api_key: None,
             continue_last: false,
+            session: None,
         }
     }
 

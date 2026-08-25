@@ -129,6 +129,10 @@ pub struct Cli {
     /// Continue the most recent conversation
     #[arg(short = 'c', long = "continue")]
     pub continue_last: bool,
+
+    /// Resume a specific session by id (see the hint printed on exit)
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
 }
 
 #[cfg(test)]
