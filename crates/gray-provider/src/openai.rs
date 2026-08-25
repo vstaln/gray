@@ -205,8 +205,12 @@ struct OpenAiChoiceChunk {
 struct OpenAiDeltaChunk {
     #[serde(default)]
     content: Option<String>,
+    /// DeepSeek style.
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// OpenRouter style (ox-alpha et al.).
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCallChunk>>,
 }
@@ -663,7 +667,11 @@ fn stream_unfold_step(
                                                 _ => {}
                                             }
 
-                                            if let Some(reasoning) = choice.delta.reasoning_content {
+                                            let reasoning = choice
+                                                .delta
+                                                .reasoning_content
+                                                .or(choice.delta.reasoning);
+                                            if let Some(reasoning) = reasoning {
                                                 if !reasoning.is_empty() {
                                                     pending_events.push_back(
                                                         StreamEvent::ThinkingDelta {

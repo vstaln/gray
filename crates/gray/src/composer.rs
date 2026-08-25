@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use ratatui::Terminal;
 
@@ -44,11 +44,75 @@ pub struct Tui {
     status: Option<(Instant, String)>,
     /// Partial streamed line awaiting its newline.
     pending: String,
+    /// 24-bit color support — selects shimmer vs blink for the status row.
+    truecolor: bool,
+}
+
+/// Codex-rs shimmer (motion.rs/shimmer.rs), ported: a highlight band sweeps
+/// the text on a 2s cosine cycle; truecolor blends bg->fg per char with a
+/// bold peak, plain terminals step through dim/normal/bold instead.
+fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'static>> {
+    use ratatui::style::Color;
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let padding = 10usize;
+    let period = chars.len() + padding * 2;
+    let sweep_seconds = 2.0f32;
+    let pos = ((elapsed.as_secs_f32() % sweep_seconds) / sweep_seconds * (period as f32)) as usize;
+    let band_half_width = 5.0f32;
+    const BASE: (u8, u8, u8) = (150, 148, 144);
+    const HIGHLIGHT: (u8, u8, u8) = (255, 255, 255);
+
+    chars
+        .iter()
+        .enumerate()
+        .map(|(i, ch)| {
+            let dist = ((i as isize + padding as isize) - pos as isize).abs() as f32;
+            let t = if dist <= band_half_width {
+                0.5 * (1.0 + std::f32::consts::PI * (dist / band_half_width)).cos()
+            } else {
+                0.0
+            };
+            let style = if truecolor {
+                let k = t.clamp(0.0, 1.0) * 0.9;
+                let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k) as u8;
+                Style::default()
+                    .fg(Color::Rgb(
+                        lerp(BASE.0, HIGHLIGHT.0),
+                        lerp(BASE.1, HIGHLIGHT.1),
+                        lerp(BASE.2, HIGHLIGHT.2),
+                    ))
+                    .add_modifier(if t > 0.3 { Modifier::BOLD } else { Modifier::empty() })
+            } else if t < 0.2 {
+                Style::default().add_modifier(Modifier::DIM)
+            } else if t < 0.6 {
+                Style::default()
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            };
+            Span::styled(ch.to_string(), style)
+        })
+        .collect()
 }
 
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+        // Anchor the viewport to the BOTTOM edge of the terminal (pi/codex
+        // behavior): jump to the last row and emit H newlines — the screen
+        // scrolls exactly H lines and the cursor ends on the bottom row,
+        // where ratatui's inline viewport then sits.
+        let (_, rows) = crossterm::terminal::size()?;
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::MoveTo(0, rows.saturating_sub(1))
+        )?;
+        for _ in 0..VIEWPORT_H {
+            write!(std::io::stdout(), "\r\n")?;
+        }
+        let _ = std::io::stdout().flush();
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
@@ -63,6 +127,9 @@ impl Tui {
             sel: 0,
             status: None,
             pending: String::new(),
+            truecolor: std::env::var("COLORTERM")
+                .map(|v| v.contains("truecolor") || v.contains("24bit"))
+                .unwrap_or(false),
         })
     }
 
@@ -98,11 +165,21 @@ impl Tui {
             }
 
             // Status row sits directly above the top rule while a turn runs.
+            // Animation copied from codex-rs motion/shimmer: a highlight band
+            // sweeps the text on a 2s cosine cycle (truecolor) or steps
+            // through dim/bold bands (fallback).
             if let Some((started, label)) = &self.status {
                 let secs = started.elapsed().as_secs();
-                let status = format!("\u{2022} {label}\u{2026} {secs}s (ctrl-c to cancel)");
+                let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 {
+                    "\u{2022}"
+                } else {
+                    "\u{25e6}"
+                };
+                let bullet = if self.truecolor { "\u{2022}" } else { blink_bullet };
+                let text = format!("{bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
+                let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
                 frame.render_widget(
-                    Paragraph::new(Line::from(status.as_str()).style(Style::default().dim())),
+                    Paragraph::new(Line::from(spans)),
                     Rect::new(area.x, area.y + PANEL_ROWS as u16, area.width, 1),
                 );
             }
