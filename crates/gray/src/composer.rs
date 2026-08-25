@@ -393,15 +393,17 @@ impl Tui {
         let _ = self.draw();
     }
 
-    /// Restores cooked mode (called on exit). Leaves the cursor on a fresh
-    /// line just below the owned pane — pi-style, so whatever prints next
-    /// ("bye", the shell prompt) starts clean instead of gluing itself to
-    /// the rule.
+    /// Restores cooked mode (called on exit). Steps the cursor past the
+    /// bottom rule so whatever prints next starts on a clean line,
+    /// pi-style. Moves to the screen's last row first so the newlines
+    /// always scroll past the bottom rule even if the cursor is parked
+    /// on the input row.
     pub fn shutdown(&mut self) {
-        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let _ = write!(std::io::stdout(), "\x1b[{rows};1H\r\n\x1b[?25h");
-        let _ = std::io::stdout().flush();
         let _ = crossterm::terminal::disable_raw_mode();
+        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let _ = write!(std::io::stdout(), "\x1b[{};1H\n\n", rows);
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+        let _ = std::io::stdout().flush();
     }
 }
 

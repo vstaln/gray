@@ -397,6 +397,7 @@ fn print_exit_hint(session_state: &Option<SessionState>) {
             "\x1b[2mTo resume this session: gray --session {}\x1b[0m",
             state.session_id.as_str()
         );
+        let _ = std::io::stdout().flush();
     }
 }
 
@@ -560,9 +561,22 @@ pub async fn run_repl_mode(
         let ticker_stop = stop.clone();
         let ticker_tui = shared.clone();
         tokio::spawn(async move {
-            while !ticker_stop.load(AtomicOrdering::Relaxed) {
+            loop {
+                if ticker_stop.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                if let Ok(mut t) = ticker_tui.lock() {
+                if ticker_stop.load(AtomicOrdering::Relaxed) {
+                    break;
+                }
+                if let Ok(mut t) = ticker_tui.try_lock() {
+                    // Stop may have been set while we were waiting to
+                    // acquire the lock (blocked on read_line). Don't
+                    // repaint the viewport after the main thread has
+                    // already started shutdown.
+                    if ticker_stop.load(AtomicOrdering::Relaxed) {
+                        break;
+                    }
                     t.tick_status();
                 }
             }
@@ -572,17 +586,25 @@ pub async fn run_repl_mode(
 
     loop {
         let line = if interactive {
-            let (shared, _) = tui.as_ref().expect("interactive implies tui");
+            let (shared, stop) = tui.as_ref().expect("interactive implies tui");
             let line = {
                 let mut t = shared.lock().expect("tui lock");
-                match t.read_line()? {
+                let l = match t.read_line()? {
                     Some(l) => l,
                     None => {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
                         t.shutdown();
                         print_exit_hint(&session_state);
                         break;
                     }
+                };
+                // Quit will shut down immediately after this block;
+                // set the stop flag now while we still hold the lock so
+                // the ticker's try_lock gap can't slip a draw in between.
+                if matches!(parse_command(&l), ReplCommand::Quit) {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                l
             };
             line
         } else {
@@ -598,10 +620,14 @@ pub async fn run_repl_mode(
         match parse_command(&line) {
             ReplCommand::Empty => continue,
             ReplCommand::Quit => {
-                if let Some((shared, _)) = &tui {
-                    shared.lock().expect("tui lock").shutdown();
+                if let Some((shared, stop)) = &tui {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let mut t = shared.lock().expect("tui lock");
+                    t.shutdown();
+                    print_exit_hint(&session_state);
+                } else {
+                    print_exit_hint(&session_state);
                 }
-                print_exit_hint(&session_state);
                 break;
             }
             ReplCommand::Sys(action) => {
@@ -701,7 +727,7 @@ pub async fn run_repl_mode(
                 let watch_cancel = cancel.clone();
                 let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let watcher_stopped = watch_stop.clone();
-                let key_watcher = tokio::task::spawn_blocking(move || {
+                let _key_watcher = tokio::task::spawn_blocking(move || {
                     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
                     loop {
                         // abort() can't kill a blocking task — poll the flag so
