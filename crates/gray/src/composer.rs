@@ -367,11 +367,15 @@ impl Tui {
         }
     }
 
-    /// Restores cooked mode (called on exit).
+    /// Restores cooked mode (called on exit). Leaves the cursor on a fresh
+    /// line just below the owned pane — pi-style, so whatever prints next
+    /// ("bye", the shell prompt) starts clean instead of gluing itself to
+    /// the rule.
     pub fn shutdown(&mut self) {
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = write!(std::io::stdout(), "\x1b[?25h\r\n");
+        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let _ = write!(std::io::stdout(), "\x1b[{rows};1H\r\n\x1b[?25h");
         let _ = std::io::stdout().flush();
+        let _ = crossterm::terminal::disable_raw_mode();
     }
 }
 

@@ -544,7 +544,12 @@ pub async fn run_repl_mode(config: &mut Config, resume_last: bool) -> anyhow::Re
 
         match parse_command(&line) {
             ReplCommand::Empty => continue,
-            ReplCommand::Quit => break,
+            ReplCommand::Quit => {
+                if let Some((shared, _)) = &tui {
+                    shared.lock().expect("tui lock").shutdown();
+                }
+                break;
+            }
             ReplCommand::Sys(action) => {
                 handle_sys(config, &cwd, action, &mut agent).await;
                 continue;
