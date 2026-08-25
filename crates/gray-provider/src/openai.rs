@@ -146,7 +146,7 @@ struct OpenAiChatRequest {
 struct OpenAiMessageRequest {
     role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    content: Option<String>,
+    content: Option<Value>,
     /// Reasoning from a prior assistant turn, sent back so reasoning models
     /// keep their chain-of-thought in context (deepseek/openai-compat style).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -155,6 +155,8 @@ struct OpenAiMessageRequest {
     tool_calls: Option<Vec<OpenAiToolCallRequest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -248,6 +250,68 @@ struct OpenAiCompletionDetails {
     reasoning_tokens: usize,
 }
 
+/// Anthropic prompt-caching: put an ephemeral cache breakpoint on the
+/// last message so the prefix (system + history) can be cached. Copied
+/// from mini-swe-agent's `cache_control.py` (MIT) — they show it cuts
+/// input cost/latency for long trajectories.
+///
+/// Only for Anthropic-family models (Claude etc.) — other providers
+/// ignore the field, Anthropic via OpenRouter honors it.
+fn set_cache_control(messages: &mut [OpenAiMessageRequest]) {
+    // clear any stale marks first (idempotent on retry)
+    for m in messages.iter_mut() {
+        m.cache_control = None;
+        if let Some(Value::Array(arr)) = &mut m.content {
+            if arr.len() == 1 {
+                if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
+                    obj.remove("cache_control");
+                }
+            }
+        }
+    }
+    let Some(last) = messages.last_mut() else {
+        return;
+    };
+    // assistant with only tool_use has no content → top-level cache_control
+    if last.content.is_none() {
+        last.cache_control = Some(serde_json::json!({"type": "ephemeral"}));
+        return;
+    }
+    if let Some(content) = &mut last.content {
+        match content {
+            Value::String(s) => {
+                let text = std::mem::take(s);
+                // empty string still needs a list wrapper to attach cache_control
+                *content = serde_json::json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"}
+                }]);
+                if last.role == "tool" {
+                    if let Value::Array(arr) = content {
+                        if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
+                            obj.remove("cache_control");
+                        }
+                    }
+                    last.cache_control = Some(serde_json::json!({"type": "ephemeral"}));
+                }
+            }
+            Value::Array(arr) => {
+                if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
+                    obj.insert("cache_control".to_string(), serde_json::json!({"type": "ephemeral"}));
+                }
+                if last.role == "tool" {
+                    if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
+                        obj.remove("cache_control");
+                    }
+                    last.cache_control = Some(serde_json::json!({"type": "ephemeral"}));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
     let mut messages = Vec::new();
 
@@ -255,10 +319,11 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
     if let Some(system) = req.system {
         messages.push(OpenAiMessageRequest {
             role: "system".to_string(),
-            content: Some(system),
+            content: Some(Value::String(system)),
             reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
+            cache_control: None,
         });
     }
 
@@ -301,12 +366,12 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
 
                 let content = if text_parts.is_empty() {
                     if tool_calls.is_empty() {
-                        Some(String::new())
+                        Some(Value::String(String::new()))
                     } else {
                         None
                     }
                 } else {
-                    Some(text_parts.join("\n"))
+                    Some(Value::String(text_parts.join("\n")))
                 };
 
                 let tool_calls_opt = if tool_calls.is_empty() {
@@ -327,15 +392,17 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                     reasoning_content,
                     tool_calls: tool_calls_opt,
                     tool_call_id: None,
+                    cache_control: None,
                 });
 
                 for (id, content) in tool_results {
                     messages.push(OpenAiMessageRequest {
                         role: "tool".to_string(),
-                        content: Some(content),
+                        content: Some(Value::String(content)),
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(id),
+                        cache_control: None,
                     });
                 }
             }
@@ -372,24 +439,32 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                 for (id, content) in tool_results {
                     messages.push(OpenAiMessageRequest {
                         role: "tool".to_string(),
-                        content: Some(content),
+                        content: Some(Value::String(content)),
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(id),
+                        cache_control: None,
                     });
                 }
 
                 if !text_parts.is_empty() || messages.is_empty() {
                     messages.push(OpenAiMessageRequest {
                         role: role_str.to_string(),
-                        content: Some(text_parts.join("\n")),
+                        content: Some(Value::String(text_parts.join("\n"))),
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,
+                        cache_control: None,
                     });
                 }
             }
         }
+    }
+
+    // Anthropic prompt caching — only for Claude/Anthropic (others ignore)
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("claude") || lower.contains("anthropic") {
+        set_cache_control(&mut messages);
     }
 
     // 3. Map tools
@@ -1168,5 +1243,75 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn cache_control_last_user_gets_ephemeral() {
+        let req = ChatRequest::new(vec![Message::user("hello")]).with_system("you are helpful");
+        let mapped = map_chat_request(req, "anthropic/claude-sonnet-4");
+        assert_eq!(mapped.messages.len(), 2);
+        // system has no cache_control
+        assert!(mapped.messages[0].cache_control.is_none());
+        // last user should have ephemeral inside content
+        let last = &mapped.messages[1];
+        assert_eq!(last.role, "user");
+        let content = last.content.as_ref().unwrap();
+        assert!(content.is_array(), "last user content should be array with cache_control");
+        assert_eq!(content[0]["cache_control"], json!({"type": "ephemeral"}));
+        assert!(last.cache_control.is_none());
+    }
+
+    #[test]
+    fn cache_control_clears_previous_and_sets_only_last() {
+        // 2 user messages -> only last gets cache_control
+        let req = ChatRequest::new(vec![Message::user("first"), Message::user("second")]);
+        let mapped = map_chat_request(req, "anthropic/claude");
+        assert_eq!(mapped.messages.len(), 2);
+        // first user: string content, no cache
+        assert!(mapped.messages[0].content.as_ref().unwrap().is_string());
+        assert!(mapped.messages[0].cache_control.is_none());
+        // second user: array with cache_control
+        let last = &mapped.messages[1];
+        assert!(last.content.as_ref().unwrap().is_array());
+        assert_eq!(last.content.as_ref().unwrap()[0]["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    #[test]
+    fn cache_control_tool_last_uses_top_level() {
+        // Build a request where last message is a tool result
+        let mut req = ChatRequest::new(vec![Message::user("hi")]);
+        req.messages.push(Message {
+            role: gray_core::message::Role::Assistant,
+            content: vec![gray_core::message::ContentBlock::ToolUse {
+                id: "call_1".into(),
+                name: "bash".into(),
+                args: serde_json::json!({"cmd": "ls"}),
+            }],
+        });
+        req.messages.push(Message {
+            role: gray_core::message::Role::User,
+            content: vec![gray_core::message::ContentBlock::ToolResult {
+                id: "call_1".into(),
+                content: "output".into(),
+                is_error: false,
+            }],
+        });
+        let mapped = map_chat_request(req, "anthropic/claude");
+        let last = mapped.messages.last().unwrap();
+        assert_eq!(last.role, "tool");
+        // tool should have top-level cache_control, not inside content
+        assert_eq!(last.cache_control, Some(json!({"type": "ephemeral"})));
+        // content should be array without inner cache_control (mini workaround)
+        let content = last.content.as_ref().unwrap();
+        assert!(content.is_array());
+        assert!(content[0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn cache_control_not_set_for_openai_models() {
+        let req = ChatRequest::new(vec![Message::user("hello")]);
+        let mapped = map_chat_request(req, "openai/gpt-4o");
+        assert!(mapped.messages[0].cache_control.is_none());
+        assert!(mapped.messages[0].content.as_ref().unwrap().is_string());
     }
 }
