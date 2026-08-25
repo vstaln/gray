@@ -1,12 +1,16 @@
 //! Session storage for the Gray agent.
 //!
 //! This crate provides session persistence and management for conversations,
-//! storing each session as a JSONL file.
+//! storing each session as a JSONL file (legacy) and — phase 1 — a SQLite
+//! store with FTS5 (new).
 //!
 //! # Architecture & Logging Choice
 //! This crate uses the lightweight [`log`] facade (not `tracing`) as it is a leaf
 //! library with no spans or asynchronous task hierarchies of its own. Warnings
 //! (`log::warn!`) are emitted only on skipped or corrupt data.
+
+pub mod store;
+pub use store::{Error as StoreError, SearchHit, SessionMeta as StoreSessionMeta, StateStore};
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;

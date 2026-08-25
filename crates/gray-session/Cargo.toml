@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled-full"] }
 
 [dev-dependencies]
 tempfile = "3"
