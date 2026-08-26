@@ -5,6 +5,7 @@ pub mod close_preview_tool;
 pub mod close_terminal_tool;
 pub mod computer_use_tool;
 pub mod daemon_pool;
+pub mod file_state;
 pub mod focus_pane_tool;
 pub mod interpreter_shutdown;
 pub mod openrouter_client;
