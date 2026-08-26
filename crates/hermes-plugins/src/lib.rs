@@ -2,6 +2,7 @@ pub mod a2a_security;
 pub mod a2a_tools;
 pub mod agent_plugins;
 pub mod byterover;
+pub mod cron_providers;
 pub mod disk_cleanup;
 pub mod feishu_comment_rules;
 pub mod plugin_dev;
