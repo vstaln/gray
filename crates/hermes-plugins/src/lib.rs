@@ -4,6 +4,7 @@ pub mod agent_plugins;
 pub mod byterover;
 pub mod disk_cleanup;
 pub mod feishu_comment_rules;
+pub mod plugin_dev;
 pub mod google_meet_cli;
 pub mod holographic;
 pub mod homeassistant;
