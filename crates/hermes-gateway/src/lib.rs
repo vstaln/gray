@@ -1,6 +1,7 @@
 pub mod command_manifest;
 pub mod dead_targets;
 pub mod disk_status;
+pub mod media_policy;
 pub mod message_timestamps;
 pub mod sticker_cache;
 pub mod profile_routing;
