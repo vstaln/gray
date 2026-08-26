@@ -1,4 +1,5 @@
 pub mod async_utils;
+pub mod iteration_budget;
 pub mod markdown_tables;
 pub mod monitoring_events;
 pub mod monitoring_redaction;
