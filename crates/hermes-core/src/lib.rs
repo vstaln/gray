@@ -5,6 +5,7 @@ pub mod markdown_tables;
 pub mod monitoring_events;
 pub mod monitoring_policy;
 pub mod monitoring_redaction;
+pub mod pet_init;
 pub mod pet_state;
 pub mod prompt_cache_boundary;
 pub mod rate_limit_tracker;
