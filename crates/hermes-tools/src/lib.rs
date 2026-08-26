@@ -13,6 +13,7 @@ pub mod openrouter_client;
 pub mod path_security;
 pub mod plugin_guard;
 pub mod read_window_tool;
+pub mod threat_patterns;
 pub mod shell_heredoc;
 pub mod subagent_worktree;
 pub mod voice_client_config;
