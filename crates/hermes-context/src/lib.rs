@@ -11,6 +11,7 @@
 //! audit against the Python source.
 
 pub mod compressor_slice1;
+pub mod compressor_slice2;
 pub mod context_breakdown;
 pub mod context_engine;
 pub mod context_references;
