@@ -1,6 +1,7 @@
 pub mod event_publisher;
 pub mod git_probe;
 pub mod loop_noise;
+pub mod mcp_oauth_sessions;
 pub mod mcp_rpc_helpers;
 pub mod method_ctx;
 pub mod transport;
