@@ -1,4 +1,5 @@
 pub mod daytona;
+pub mod docker_slice1;
 pub mod file_sync;
 pub mod managed_modal;
 pub mod modal;
