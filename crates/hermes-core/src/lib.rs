@@ -1,4 +1,5 @@
 pub mod async_utils;
+pub mod compaction_display;
 pub mod iteration_budget;
 pub mod lmstudio_reasoning;
 pub mod markdown_tables;
