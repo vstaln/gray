@@ -7,5 +7,6 @@ pub mod prompt_cache_boundary;
 pub mod rate_limit_tracker;
 pub mod repetition_guard;
 pub mod runtime_cwd;
+pub mod stream_single_writer;
 pub mod turn_retry_state;
 pub mod verify_environment;
