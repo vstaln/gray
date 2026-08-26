@@ -22,3 +22,4 @@ pub mod ddgs_provider;
 pub mod parallel_provider;
 pub mod wecom_callback;
 pub mod xai_provider;
+pub mod browser_use_provider;
