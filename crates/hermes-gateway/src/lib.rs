@@ -4,6 +4,7 @@ pub mod disk_status;
 pub mod message_timestamps;
 pub mod sticker_cache;
 pub mod profile_routing;
+pub mod qqbot_init;
 pub mod readiness;
 pub mod relay_transport;
 pub mod response_filters;
