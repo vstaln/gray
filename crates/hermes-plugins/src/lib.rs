@@ -6,6 +6,7 @@ pub mod feishu_comment_rules;
 pub mod google_meet_cli;
 pub mod holographic;
 pub mod homeassistant;
+pub mod image_openai;
 pub mod sms_adapter;
 pub mod spotify_client;
 pub mod spotify_tools;
