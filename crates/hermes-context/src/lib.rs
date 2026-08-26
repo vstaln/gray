@@ -15,4 +15,5 @@ pub mod context_breakdown;
 pub mod context_engine;
 pub mod context_references;
 pub mod conversation_slice1;
+pub mod manual_compression_feedback;
 pub mod partial_compress;
