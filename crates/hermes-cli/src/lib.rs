@@ -19,3 +19,4 @@ pub mod cli_commands_slice1;
 pub mod setup_slice1;
 pub mod kanban_slice1;
 pub mod model_setup_slice1;
+pub mod doctor_slice1;
