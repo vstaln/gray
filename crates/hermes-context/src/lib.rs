@@ -9,4 +9,5 @@
 //! audit against the Python source.
 
 pub mod compressor_slice1;
+pub mod context_references;
 pub mod conversation_slice1;
