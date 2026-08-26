@@ -8,6 +8,7 @@ pub mod message_timestamps;
 pub mod sticker_cache;
 pub mod profile_routing;
 pub mod qqbot_constants;
+pub mod qqbot_crypto;
 pub mod qqbot_init;
 pub mod qqbot_utils;
 pub mod readiness;
