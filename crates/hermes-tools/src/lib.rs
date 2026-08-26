@@ -6,5 +6,6 @@ pub mod close_terminal_tool;
 pub mod computer_use_tool;
 pub mod daemon_pool;
 pub mod focus_pane_tool;
+pub mod interpreter_shutdown;
 pub mod path_security;
 pub mod read_window_tool;
