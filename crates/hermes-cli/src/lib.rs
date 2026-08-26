@@ -8,3 +8,4 @@ pub mod main_slice1;
 pub mod kanban_db_slice1;
 pub mod auth_slice1;
 pub mod update_cmd_slice1;
+pub mod gateway_slice1;
