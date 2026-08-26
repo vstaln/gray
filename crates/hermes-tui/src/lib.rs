@@ -1,3 +1,4 @@
+pub mod event_publisher;
 pub mod loop_noise;
 pub mod mcp_rpc_helpers;
 pub mod method_ctx;
