@@ -6,6 +6,7 @@ pub mod mcp_rpc_helpers;
 pub mod method_ctx;
 pub mod transport;
 pub mod methods_bot_relay;
+pub mod methods_browser_control;
 pub mod methods_images;
 pub mod render2;
 pub mod slash_fuzzy;
