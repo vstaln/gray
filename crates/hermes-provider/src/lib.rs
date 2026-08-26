@@ -1,6 +1,7 @@
 //! hermes-provider — secret + model provider crate.
 //!
 //! T0032: 1:1 port of `agent/secret_sources/bitwarden.py` (1055) → `bitwarden.rs`.
+//! T0033: 1:1 port of `agent/account_usage.py` (902) → `account_usage.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -8,4 +9,5 @@
 //! `hermes-provider ← transports/: chat_completions, anthropic, codex, bedrock, gemini, …`
 //! Secret sources live here as provider-adjacent fetchers (Bitwarden, 1Password, …).
 
+pub mod account_usage;
 pub mod bitwarden;
