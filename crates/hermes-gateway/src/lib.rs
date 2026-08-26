@@ -9,6 +9,7 @@ pub mod profile_routing;
 pub mod qqbot_init;
 pub mod readiness;
 pub mod relay_transport;
+pub mod rich_sent_store;
 pub mod response_filters;
 pub mod signal_format;
 pub mod session_stall;
