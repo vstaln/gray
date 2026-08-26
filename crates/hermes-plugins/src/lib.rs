@@ -1,3 +1,4 @@
+pub mod a2a_security;
 pub mod a2a_tools;
 pub mod agent_plugins;
 pub mod byterover;
