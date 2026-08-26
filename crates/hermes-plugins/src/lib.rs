@@ -13,5 +13,6 @@ pub mod spotify_client;
 pub mod spotify_tools;
 pub mod teams_cli;
 pub mod teams_meetings;
+pub mod voice_mixer;
 pub mod wecom_callback;
 pub mod xai_provider;
