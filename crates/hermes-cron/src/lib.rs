@@ -7,8 +7,10 @@
 //! T0378: 1:1 port of `cron/monitor.py` → `monitor.rs`.
 //! T0379: 1:1 port of `cron/notepad.py` → `notepad.rs`.
 //! T0380: 1:1 port of `cron/suggestion_catalog.py` → `suggestion_catalog.rs`.
+//! T0381: 1:1 port of `cron/__init__.py` (42) → `init.rs`.
 
 pub mod executions2;
+pub mod init;
 pub mod monitor;
 pub mod notepad;
 pub mod suggestion_catalog;
