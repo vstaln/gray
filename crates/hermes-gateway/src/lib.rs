@@ -2,6 +2,7 @@ pub mod command_manifest;
 pub mod dead_targets;
 pub mod message_timestamps;
 pub mod profile_routing;
+pub mod readiness;
 pub mod relay_transport;
 pub mod response_filters;
 pub mod signal_format;
