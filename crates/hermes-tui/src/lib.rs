@@ -1,3 +1,4 @@
+pub mod entry;
 pub mod event_publisher;
 pub mod git_probe;
 pub mod loop_noise;
