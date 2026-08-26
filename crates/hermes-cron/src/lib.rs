@@ -3,5 +3,7 @@
 //! T0376: 1:1 port of `cron/executions.py` → `executions2.rs`.
 //! `executions.rs` is intentionally untouched to avoid name clash;
 //! this crate exposes the new ledger as `executions2`.
+//! T0377: 1:1 port of `cron/suggestions.py` → `suggestions.rs`.
 
 pub mod executions2;
+pub mod suggestions;
