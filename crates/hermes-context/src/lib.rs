@@ -13,6 +13,8 @@
 //! T0017 — full file (lines 1-489).
 //! 1:1 Rust port of `reference/NousResearch/hermes-agent/agent/conversation_compression.py` (4465 LOC).
 //! T0015 — slice 3/6 (lines 1600-2400).
+//! 1:1 Rust port of `reference/NousResearch/hermes-agent/agent/conversation_compression.py` (4465 LOC).
+//! T0015 — slice 4/6 (lines 2400-3200).
 //!
 //! NEVER cargo — 1:1 translation only (no `cargo check` / `cargo build`).
 //! `cargo` is not invoked by this slice; the file is verified by line-level
@@ -28,5 +30,6 @@ pub mod context_references;
 pub mod conversation_slice1;
 pub mod conversation_slice2;
 pub mod conversation_slice3;
+pub mod conversation_slice4;
 pub mod manual_compression_feedback;
 pub mod partial_compress;
