@@ -10,4 +10,5 @@ pub mod render2;
 pub mod slash_fuzzy;
 pub mod slash_worker;
 pub mod stdin_recovery;
+pub mod synthetic_turn;
 pub mod turn_marker;
