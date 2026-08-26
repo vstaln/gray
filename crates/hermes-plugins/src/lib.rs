@@ -5,5 +5,6 @@ pub mod google_meet_cli;
 pub mod homeassistant;
 pub mod sms_adapter;
 pub mod teams_cli;
+pub mod teams_meetings;
 pub mod wecom_callback;
 pub mod xai_provider;
