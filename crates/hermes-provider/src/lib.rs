@@ -8,6 +8,7 @@
 //! T0037: 1:1 port of `agent/azure_identity_adapter.py` (571) → `azure_identity.rs`.
 //! T0038: 1:1 port of `agent/secret_sources/registry.py` (564) → `secret_registry.rs`.
 //! T0039: 1:1 port of `agent/billing_view.py` (511) → `billing_view.rs`.
+//! T0040: 1:1 port of `agent/secret_sources/command.py` (501) → `command_secret.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -19,6 +20,7 @@ pub mod account_usage;
 pub mod azure_identity;
 pub mod billing_view;
 pub mod bitwarden;
+pub mod command_secret;
 pub mod nous_account;
 pub mod nous_billing;
 pub mod onepassword;
