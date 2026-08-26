@@ -10,6 +10,7 @@
 //! T0380: 1:1 port of `cron/suggestion_catalog.py` → `suggestion_catalog.rs`.
 //! T0381: 1:1 port of `cron/__init__.py` (42) → `init.rs`.
 
+pub mod blueprint_catalog;
 pub mod executions2;
 pub mod init;
 pub mod monitor;
