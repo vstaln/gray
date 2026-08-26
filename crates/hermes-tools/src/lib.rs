@@ -11,3 +11,4 @@ pub mod openrouter_client;
 pub mod path_security;
 pub mod read_window_tool;
 pub mod shell_heredoc;
+pub mod subagent_worktree;
