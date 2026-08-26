@@ -15,3 +15,4 @@ pub mod slash_worker;
 pub mod stdin_recovery;
 pub mod synthetic_turn;
 pub mod turn_marker;
+pub mod ws;
