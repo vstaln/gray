@@ -11,6 +11,7 @@ pub mod methods_browser_control;
 pub mod methods_config;
 pub mod methods_images;
 pub mod render2;
+pub mod host_supervisor;
 pub mod slash_fuzzy;
 pub mod slash_worker;
 pub mod stdin_recovery;
