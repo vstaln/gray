@@ -15,3 +15,4 @@ pub mod tools_config_slice1;
 pub mod config_defaults_slice1;
 pub mod model_switch_slice1;
 pub mod cli_commands_slice1;
+pub mod setup_slice1;
