@@ -6,3 +6,4 @@ pub mod methods_images;
 pub mod render2;
 pub mod slash_fuzzy;
 pub mod stdin_recovery;
+pub mod turn_marker;
