@@ -5,6 +5,7 @@ pub mod google_meet_cli;
 pub mod holographic;
 pub mod homeassistant;
 pub mod sms_adapter;
+pub mod spotify_tools;
 pub mod teams_cli;
 pub mod teams_meetings;
 pub mod wecom_callback;
