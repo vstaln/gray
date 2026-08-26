@@ -13,3 +13,4 @@ pub mod plugin_guard;
 pub mod read_window_tool;
 pub mod shell_heredoc;
 pub mod subagent_worktree;
+pub mod voice_client_config;
