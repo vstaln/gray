@@ -5,7 +5,9 @@
 //! this crate exposes the new ledger as `executions2`.
 //! T0377: 1:1 port of `cron/suggestions.py` → `suggestions.rs`.
 //! T0378: 1:1 port of `cron/monitor.py` → `monitor.rs`.
+//! T0379: 1:1 port of `cron/notepad.py` → `notepad.rs`.
 
 pub mod executions2;
 pub mod monitor;
+pub mod notepad;
 pub mod suggestions;
