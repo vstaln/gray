@@ -5,6 +5,7 @@
 //! T0034: 1:1 port of `hermes_cli/nous_account.py` (814) → `nous_account.rs`.
 //! T0035: 1:1 port of `agent/secret_sources/onepassword.py` (682) → `onepassword.rs`.
 //! T0036: 1:1 port of `hermes_cli/nous_billing.py` (675) → `nous_billing.rs`.
+//! T0037: 1:1 port of `agent/azure_identity_adapter.py` (571) → `azure_identity.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -13,6 +14,7 @@
 //! Secret sources live here as provider-adjacent fetchers (Bitwarden, 1Password, …).
 
 pub mod account_usage;
+pub mod azure_identity;
 pub mod bitwarden;
 pub mod nous_account;
 pub mod nous_billing;
