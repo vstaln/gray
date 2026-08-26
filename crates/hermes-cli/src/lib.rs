@@ -5,3 +5,4 @@
 //! covers ~1/10 of the 14 268-line Python source.
 
 pub mod main_slice1;
+pub mod kanban_db_slice1;
