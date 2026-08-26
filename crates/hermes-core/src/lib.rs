@@ -4,6 +4,7 @@ pub mod iteration_budget;
 pub mod lmstudio_reasoning;
 pub mod markdown_tables;
 pub mod message_content;
+pub mod message_metadata;
 pub mod monitoring_events;
 pub mod monitoring_policy;
 pub mod monitoring_redaction;
