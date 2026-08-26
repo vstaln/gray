@@ -6,4 +6,5 @@
 //! `StateStore` type. This crate is the single owner of the `state.db` SQLite
 //! store (rusqlite, WAL). See `docs/port/root-modules.md` §4.
 
+pub mod common;
 pub mod portability;
