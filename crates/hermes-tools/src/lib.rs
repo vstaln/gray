@@ -16,5 +16,6 @@ pub mod read_window_tool;
 pub mod threat_patterns;
 pub mod shell_heredoc;
 pub mod subagent_worktree;
+pub mod tts_text_normalize;
 pub mod voice_client_config;
 pub mod website_policy;
