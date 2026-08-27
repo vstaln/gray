@@ -1,6 +1,7 @@
 pub mod apply_layout_tool;
 pub mod binary_extensions;
 pub mod blueprints;
+pub mod budget_config;
 pub mod browser_camofox_state;
 pub mod browser_extension_router;
 pub mod close_preview_tool;
