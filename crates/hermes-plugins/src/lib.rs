@@ -26,4 +26,5 @@ pub mod wecom_callback;
 pub mod xai_provider;
 pub mod browser_use_provider;
 pub mod process_manager;
+pub mod providers_init;
 pub mod telegram_network;
