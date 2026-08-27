@@ -20,11 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-/// Viewport rows: 5 completion panel + status + gap + input (+ attach if needed).
-/// 7 would be tight (5+1+1) but attachments need 8, so keep 9 to avoid
-/// ratatui Buffer index panic (Rect y38 h7 vs y45) — was panicking at
-/// buffer.rs:253. 9 gives headroom without visible change.
-const VIEWPORT_H: u16 = 9;
+const VIEWPORT_H: u16 = 18;
 const PANEL_ROWS: usize = 5;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -383,21 +379,17 @@ impl Tui {
             let attach_y = box_y.saturating_sub(attach_h);
             let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h);
             let panel_y = status_y.saturating_sub(panel_h);
-            let welcome_top = (if !self.matches.is_empty() {
-                panel_y
-            } else if has_status {
-                status_y
-            } else if has_attach {
-                attach_y
-            } else {
-                box_y
-            }).saturating_sub(welcome_h);
+            let avail_welcome_h = box_y.saturating_sub(area.y);
+            let welcome_render_h = welcome_h.min(avail_welcome_h);
 
             // 0. Render centered welcome logo and banner if active
-            if self.show_welcome && welcome_h > 0 {
+            if self.show_welcome && welcome_render_h > 0 {
+                let welcome_top = box_y.saturating_sub(welcome_render_h);
+                let skip_count = welcome_lines.len().saturating_sub(welcome_render_h as usize);
+                let visible_lines: Vec<Line<'static>> = welcome_lines.into_iter().skip(skip_count).collect();
                 frame.render_widget(
-                    Paragraph::new(welcome_lines),
-                    Rect::new(area.x, welcome_top, area.width, welcome_h),
+                    Paragraph::new(visible_lines),
+                    Rect::new(area.x, welcome_top, area.width, welcome_render_h),
                 );
             }
 
