@@ -35,3 +35,4 @@ pub mod mem0_backend;
 pub mod honcho_config;
 pub mod telegram_network;
 pub mod browserbase;
+pub mod plugin_index;
