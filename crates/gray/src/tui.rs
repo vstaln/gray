@@ -138,18 +138,41 @@ pub fn logo_lines() -> Vec<String> {
         .collect()
 }
 
-/// Prints the gray logo with a subtle cyan/blue gradient, sized to terminal.
+pub fn blend_color(base: ratatui::style::Color, hilite: ratatui::style::Color, t: f32) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match (base, hilite) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let r = (r1 as f32 + (r2 as f32 - r1 as f32) * t).round() as u8;
+            let g = (g1 as f32 + (g2 as f32 - g1 as f32) * t).round() as u8;
+            let b = (b1 as f32 + (b2 as f32 - b1 as f32) * t).round() as u8;
+            Color::Rgb(r, g, b)
+        }
+        _ => base,
+    }
+}
+
+/// Prints the gray logo with a subtle diagonal shine gradient, sized to terminal.
 /// Falls back to dim if NO_COLOR is set.
 pub fn print_logo() {
     let no_color = std::env::var_os("NO_COLOR").is_some();
-    // ponytail: 6-step cyan→blue gradient, ANSI 256; truecolor would be overkill
-    let palette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;75m", "\x1b[38;5;69m", "\x1b[38;5;63m", "\x1b[38;5;57m"];
-    for (i, line) in logo_lines().into_iter().enumerate() {
+    let lines = logo_lines();
+    let rows = lines.len().max(1) as f32;
+    let max_w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(1) as f32;
+
+    for (row, line) in lines.iter().enumerate() {
         if no_color {
             print!("\r\x1b[2m{line}\x1b[0m\r\n");
         } else {
-            let col = palette[i % palette.len()];
-            print!("\r{col}{line}\x1b[0m\r\n");
+            let mut formatted = String::new();
+            for (col, ch) in line.chars().enumerate() {
+                let diag = (col as f32 + (rows - 1.0 - row as f32)) / (max_w + rows);
+                let t = (0.2 + 0.8 * diag).clamp(0.0, 1.0);
+                let r = (100.0 + 140.0 * t).round() as u8;
+                let g = (100.0 + 140.0 * t).round() as u8;
+                let b = (100.0 + 140.0 * t).round() as u8;
+                formatted.push_str(&format!("\x1b[38;2;{r};{g};{b}m{ch}"));
+            }
+            print!("\r{formatted}\x1b[0m\r\n");
         }
     }
     let _ = std::io::stdout().flush();

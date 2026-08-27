@@ -354,26 +354,28 @@ impl Tui {
             // Centered welcome banner (rendered when session starts, disappears on input)
             let mut welcome_lines: Vec<Line<'static>> = Vec::new();
             if self.show_welcome {
-                let logo = crate::tui::logo_lines();
-                let palette = [
-                    Color::Rgb(180, 180, 180),
-                    Color::Rgb(160, 160, 160),
-                    Color::Rgb(140, 140, 140),
-                    Color::Rgb(120, 120, 120),
-                    Color::Rgb(100, 100, 100),
-                    Color::Rgb(80, 80, 80),
-                ];
-                let max_logo_w = logo.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
+                let logo_raw = crate::tui::logo_lines();
+                let rows = logo_raw.len().max(1) as f32;
+                let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
+                let cols = (max_logo_w as f32).max(1.0);
                 let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
-                for (i, line) in logo.iter().enumerate() {
+                let base = Color::Rgb(110, 110, 110);
+                let hilite = Color::Rgb(240, 240, 240);
+
+                for (row, line) in logo_raw.iter().enumerate() {
                     let trimmed = line.trim_end();
-                    let col = palette[i % palette.len()];
-                    welcome_lines.push(Line::from(vec![
-                        Span::raw(" ".repeat(logo_pad)),
-                        Span::styled(trimmed.to_string(), Style::default().fg(col)),
-                    ]));
+                    let mut spans: Vec<Span<'static>> = Vec::new();
+                    spans.push(Span::raw(" ".repeat(logo_pad)));
+                    for (col, ch) in trimmed.chars().enumerate() {
+                        let diag = (col as f32 + (rows - 1.0 - row as f32)) / (cols + rows);
+                        let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
+                        let color = crate::tui::blend_color(base, hilite, t);
+                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                    }
+                    welcome_lines.push(Line::from(spans));
                 }
+                welcome_lines.push(Line::from(""));
                 let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
                 let banner_len = banner_raw.chars().count();
                 let pad = w.saturating_sub(banner_len) / 2;
