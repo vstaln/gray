@@ -23,3 +23,4 @@ pub mod doctor_slice1;
 pub mod profiles_slice1;
 pub mod runtime_provider_slice1;
 pub mod goals_slice1;
+pub mod backup_slice1;
