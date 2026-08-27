@@ -570,9 +570,12 @@ impl Tui {
                                 self.textarea.insert_str("\n");
                                 continue;
                             }
-                            if cur_text.chars().count() > 1 && let Some((name, _)) = self.matches.get(self.sel) {
-                                self.textarea.set_text(&format!("/{name} "));
-                                continue;
+                            if !self.matches.is_empty() && let Some((name, _)) = self.matches.get(self.sel) {
+                                if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
+                                    self.textarea.set_text(&format!("/{name} "));
+                                    self.textarea.move_to_end();
+                                    continue;
+                                }
                             }
                             if self.show_welcome {
                                 self.show_welcome = false;
@@ -605,35 +608,52 @@ impl Tui {
                             return Ok(Some(trimmed));
                         }
                         KeyCode::Tab => {
-                            if let Some((name, _)) = self.matches.get(self.sel) { self.textarea.set_text(&format!("/{name} ")); }
+                            if let Some((name, _)) = self.matches.get(self.sel) {
+                                self.textarea.set_text(&format!("/{name} "));
+                                self.textarea.move_to_end();
+                            }
                         }
                         KeyCode::Char(c) => {
                             // plain char insert at cursor (codex textarea insert_str)
                             self.textarea.insert_str(&c.to_string());
                             self.history_idx = None;
+                            self.sel = 0;
                         }
-                        KeyCode::Backspace => { self.textarea.delete_backward(1); }
-                        KeyCode::Delete => { self.textarea.delete_forward(1); }
+                        KeyCode::Backspace => {
+                            self.textarea.delete_backward(1);
+                            self.sel = 0;
+                        }
+                        KeyCode::Delete => {
+                            self.textarea.delete_forward(1);
+                            self.sel = 0;
+                        }
                         KeyCode::Esc => {
                             self.textarea.set_text("");
                             self.attachments.clear();
                             self.history_idx = None;
+                            self.sel = 0;
                         }
                         KeyCode::Left => self.textarea.move_left(),
                         KeyCode::Right => self.textarea.move_right(),
                         KeyCode::Up => {
-                            // history navigation when at top or single-line; otherwise move cursor up (codex)
-                            let has_multiline = self.textarea.text().contains('\n');
-                            let at_top = self.textarea.cursor() == 0 || !has_multiline;
-                            if at_top && !self.history.is_empty() {
-                                if self.history_idx.is_none() { self.draft = self.textarea.text().to_string(); self.history_idx = Some(self.history.len()); }
-                                if let Some(idx) = self.history_idx.as_mut() {
-                                    if *idx > 0 { *idx -= 1; let h = self.history[*idx].clone(); self.textarea.set_text(&h); self.textarea.move_to_end(); }
-                                }
-                            } else { self.textarea.move_up(); }
+                            if !self.matches.is_empty() {
+                                self.sel = self.sel.saturating_sub(1);
+                            } else {
+                                // history navigation when at top or single-line; otherwise move cursor up (codex)
+                                let has_multiline = self.textarea.text().contains('\n');
+                                let at_top = self.textarea.cursor() == 0 || !has_multiline;
+                                if at_top && !self.history.is_empty() {
+                                    if self.history_idx.is_none() { self.draft = self.textarea.text().to_string(); self.history_idx = Some(self.history.len()); }
+                                    if let Some(idx) = self.history_idx.as_mut() {
+                                        if *idx > 0 { *idx -= 1; let h = self.history[*idx].clone(); self.textarea.set_text(&h); self.textarea.move_to_end(); }
+                                    }
+                                } else { self.textarea.move_up(); }
+                            }
                         }
                         KeyCode::Down => {
-                            if self.history_idx.is_some() {
+                            if !self.matches.is_empty() {
+                                self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1));
+                            } else if self.history_idx.is_some() {
                                 let idx = self.history_idx.unwrap();
                                 if idx + 1 >= self.history.len() {
                                     self.textarea.set_text(&self.draft); self.textarea.move_to_end(); self.history_idx = None;
