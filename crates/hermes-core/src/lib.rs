@@ -19,6 +19,7 @@ pub mod runtime_cwd;
 pub mod ssl_verify;
 pub mod stream_single_writer;
 pub mod tool_result_classification;
+pub mod cli_slice2;
 pub mod trajectory;
 pub mod turn_retry_state;
 pub mod verify_environment;
