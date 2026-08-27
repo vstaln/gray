@@ -13,9 +13,9 @@ use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
 use ratatui::Terminal;
 
 use crate::repl::completion_matches;
@@ -241,9 +241,9 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        let (_, rows) = crossterm::terminal::size()?;
-        crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, rows.saturating_sub(1)))?;
-        for _ in 0..VIEWPORT_H { write!(std::io::stdout(), "\r\n")?; }
+        // no MoveTo bottom — keep viewport where cursor is after logo so top (logo)
+        // stays anchored just above bottom input, no huge 30-row scrollback gap.
+        // (was MoveTo(rows-1) + VIEWPORT_H newlines → empty gap between logo and input)
         let _ = std::io::stdout().flush();
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
@@ -421,7 +421,11 @@ impl Tui {
                         self.attachments.clear();
                         self.matches.clear();
                         self.sel = 0;
-                        self.push_line(format!("\u{203a} {trimmed}"));
+                        if trimmed.starts_with('/') {
+                            self.push_line(format!("\u{203a} {trimmed}"));
+                        } else {
+                            self.push_user_prompt(&trimmed);
+                        }
                         return Ok(Some(trimmed));
                     }
                     KeyCode::Tab => {
@@ -497,6 +501,52 @@ impl Tui {
         self.thinking = false;
         if !self.pending.is_empty() { let rest = std::mem::take(&mut self.pending); self.push_line_styled(rest, thinking_style()); }
         if spacer { self.push_line(String::new()); }
+    }
+    pub fn push_user_prompt(&mut self, text: &str) {
+        let w = self.width().max(20);
+        let content_width = w.saturating_sub(4).max(1);
+
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for raw_line in text.lines() {
+            if raw_line.is_empty() {
+                lines.push(Line::from(""));
+            } else {
+                let chars: Vec<char> = raw_line.chars().collect();
+                for chunk in chars.chunks(content_width) {
+                    let s: String = chunk.iter().collect();
+                    lines.push(Line::from(s));
+                }
+            }
+        }
+        if lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+
+        let height = lines.len() as u16;
+
+        let accent_color = if self.truecolor {
+            Color::Rgb(88, 166, 255)
+        } else {
+            Color::Cyan
+        };
+        let bg_color = if self.truecolor {
+            Color::Rgb(30, 33, 42)
+        } else {
+            Color::Indexed(236)
+        };
+
+        let block = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(accent_color).add_modifier(Modifier::BOLD))
+            .style(Style::default().bg(bg_color).fg(Color::White))
+            .padding(Padding::horizontal(1));
+
+        let paragraph = Paragraph::new(lines).block(block);
+
+        let _ = self.terminal.insert_before(height, |buf| {
+            paragraph.render(buf.area, buf);
+        });
+        let _ = std::io::stdout().flush();
     }
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
     fn push_line_styled(&mut self, line: String, style: Style) {

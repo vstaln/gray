@@ -240,6 +240,47 @@ impl Component for Border {
     }
 }
 
+/// Container box with a solid vertical left accent bar and background fill.
+pub struct PromptContainerBox {
+    pub text: String,
+    pub bar_char: &'static str,
+    pub accent_rgb: (u8, u8, u8),
+    pub bg_rgb: (u8, u8, u8),
+}
+
+impl PromptContainerBox {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            bar_char: "▎",
+            accent_rgb: (88, 166, 255),
+            bg_rgb: (30, 33, 42),
+        }
+    }
+}
+
+impl Component for PromptContainerBox {
+    fn render(&self, width: usize) -> Vec<String> {
+        let content_width = width.saturating_sub(4).max(1);
+        let wrapped = wrap(&self.text, content_width);
+        let (ar, ag, ab) = self.accent_rgb;
+        let (br, bg, bb) = self.bg_rgb;
+
+        let bar = format!("\x1b[38;2;{ar};{ag};{ab}m{}\x1b[0m", self.bar_char);
+        let bg_start = format!("\x1b[48;2;{br};{bg};{bb}m");
+        let reset = "\x1b[0m";
+
+        wrapped
+            .into_iter()
+            .map(|line| {
+                let pad_len = content_width.saturating_sub(visible_width(&line));
+                let pad = " ".repeat(pad_len);
+                format!("{bar}{bg_start} {line}{pad} {reset}")
+            })
+            .collect()
+    }
+}
+
 /// Retained component tree; rebuilt wholesale on every change.
 #[derive(Default)]
 pub struct Container {
@@ -368,5 +409,14 @@ mod tests {
         let lines = c.render(20);
         assert_eq!(lines.len(), 2); // 1 text + 1 border
         assert_eq!(lines[0], " hi");
+    }
+
+    #[test]
+    fn prompt_container_box_renders_with_accent_and_background() {
+        let p = PromptContainerBox::new("hello world");
+        let lines = p.render(30);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("▎"));
+        assert!(lines[0].contains("hello world"));
     }
 }
