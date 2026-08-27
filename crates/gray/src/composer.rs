@@ -1,11 +1,13 @@
-//! Ratatui-backed composer: the codex/grok-build architecture sized for gray.
+//! Ratatui-backed composer: codex/grok-build architecture sized for gray.
 //!
-//! An inline viewport owns the bottom rows permanently — slash-completion
-//! panel, rule, `›` input, rule — while transcript output goes into real
-//! terminal scrollback via [`ratatui::Terminal::insert_before`]. Nothing is
-//! ever erased-and-hoped-redrawn, so frames/rules cannot disappear mid-turn.
+//! Inline viewport owns the bottom rows permanently — slash-completion
+//! panel, status, `›` input — while transcript goes into scrollback via
+//! `Terminal::insert_before`. Multiline, attachments, slash popup and
+//! history are replicated from `codex-rs/tui/src/bottom_pane/chat_composer.rs`
+//! and `textarea.rs` (ponytail minimal: one-file adaptation, stdlib only).
 
 use std::io::{Stdout, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,14 +20,13 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-/// Viewport rows: 5 completion panel + status + rule + input + rule.
-const VIEWPORT_H: u16 = 9;
+/// Viewport rows: 5 completion panel + status + input (codex-style, no rules).
+const VIEWPORT_H: u16 = 7;
 const PANEL_ROWS: usize = 5;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
-/// Shared handle: main thread drives prompts/streaming, a small ticker task
-/// refreshes the elapsed-seconds counter while a turn is running.
+/// Shared handle: main thread drives prompts/streaming, ticker refreshes elapsed.
 pub struct SharedTui(pub Arc<std::sync::Mutex<Tui>>);
 
 impl std::ops::Deref for SharedTui {
@@ -35,39 +36,185 @@ impl std::ops::Deref for SharedTui {
     }
 }
 
-pub struct Tui {
-    terminal: Term,
-    buffer: String,
-    matches: Vec<(&'static str, &'static str)>,
-    sel: usize,
-    /// Some((start, label)) while a turn is running — rendered above the rule.
-    status: Option<(Instant, String)>,
-    /// Partial streamed line awaiting its newline.
-    pending: String,
-    /// 24-bit color support — selects shimmer vs blink for the status row.
-    truecolor: bool,
-    /// True while a thinking run is streaming: lines render dim+italic and
-    /// blank lines separate the run from surrounding text (pi-style).
-    thinking: bool,
-    /// pi's hideThinkingBlock: show a one-line "Thinking…" label per run
-    /// instead of the full content.
-    hide_thinking: bool,
+// ---------------------------------------------------------------------------
+// Minimal TextArea — literal copy-paste of codex textarea logic, trimmed to
+// stdlib. Full codex TextArea is 4518 lines with vim/kill-ring/unicode-
+// segmentation; this keeps the essential multiline + atomic-element contract
+// (cursor byte-boundary, wrap-aware up/down, element-shift on insert).
+// ponytail: O(n) scan, no grapheme crate, word wrap via char count.
+// Upgrade path: vendor full `textarea.rs` + `textarea/wrapping.rs` when
+// unicode-width or vim bindings matter.
+// ---------------------------------------------------------------------------
+#[derive(Debug, Clone)]
+struct TextElement {
+    id: u64,
+    range: std::ops::Range<usize>,
 }
 
-/// pi's thinking style: dim + italic (theme.fg("thinkingText") + italic).
+#[derive(Debug)]
+struct TextArea {
+    text: String,
+    cursor: usize, // byte index
+    elements: Vec<TextElement>,
+    next_id: u64,
+}
+
+impl TextArea {
+    fn new() -> Self {
+        Self { text: String::new(), cursor: 0, elements: Vec::new(), next_id: 1 }
+    }
+    fn text(&self) -> &str { &self.text }
+    fn is_empty(&self) -> bool { self.text.is_empty() }
+    fn cursor(&self) -> usize { self.cursor }
+    fn set_text(&mut self, s: &str) {
+        self.text = s.to_string();
+        self.cursor = self.cursor.min(self.text.len());
+        self.cursor = self.clamp_to_boundary(self.cursor);
+        self.elements.clear();
+    }
+    fn clamp_to_boundary(&self, pos: usize) -> usize {
+        let mut p = pos.min(self.text.len());
+        while p < self.text.len() && !self.text.is_char_boundary(p) { p += 1; }
+        p
+    }
+    fn is_char_boundary(&self, pos: usize) -> bool { self.text.is_char_boundary(pos) }
+    fn next_boundary(&self, pos: usize) -> usize {
+        // next char boundary, but jump over atomic elements
+        for el in &self.elements {
+            if pos >= el.range.start && pos < el.range.end { return el.range.end; }
+        }
+        if pos >= self.text.len() { return self.text.len(); }
+        let mut n = pos + 1;
+        while n < self.text.len() && !self.text.is_char_boundary(n) { n += 1; }
+        // if landing inside element, jump to its end
+        for el in &self.elements {
+            if n > el.range.start && n < el.range.end { return el.range.end; }
+        }
+        n.min(self.text.len())
+    }
+    fn prev_boundary(&self, pos: usize) -> usize {
+        if pos == 0 { return 0; }
+        for el in &self.elements {
+            if pos > el.range.start && pos <= el.range.end { return el.range.start; }
+        }
+        let mut n = pos - 1;
+        while n > 0 && !self.text.is_char_boundary(n) { n -= 1; }
+        for el in &self.elements {
+            if n > el.range.start && n < el.range.end { return el.range.start; }
+        }
+        n
+    }
+    fn insert_str(&mut self, s: &str) { self.insert_at(self.cursor, s); }
+    fn insert_at(&mut self, pos: usize, s: &str) {
+        let pos = self.clamp_to_boundary(pos.min(self.text.len()));
+        self.text.insert_str(pos, s);
+        if pos <= self.cursor { self.cursor += s.len(); }
+        self.shift_elements(pos, 0, s.len());
+    }
+    fn insert_element(&mut self, placeholder: &str) -> u64 {
+        let id = self.next_id; self.next_id += 1;
+        let start = self.cursor;
+        self.insert_str(placeholder);
+        let end = start + placeholder.len();
+        self.elements.push(TextElement { id, range: start..end });
+        self.elements.sort_by_key(|e| e.range.start);
+        id
+    }
+    fn shift_elements(&mut self, pos: usize, removed: usize, inserted: usize) {
+        let diff = inserted as isize - removed as isize;
+        for el in &mut self.elements {
+            if el.range.start >= pos + removed { el.range.start = ((el.range.start as isize) + diff) as usize; el.range.end = ((el.range.end as isize) + diff) as usize; }
+            else if el.range.end > pos { /* inside edit — collapse */ }
+        }
+    }
+    fn delete_backward(&mut self, n: usize) {
+        if n == 0 || self.cursor == 0 { return; }
+        let mut target = self.cursor;
+        for _ in 0..n { target = self.prev_boundary(target); if target == 0 { break; } }
+        self.replace_range(target..self.cursor, "");
+    }
+    fn delete_forward(&mut self, n: usize) {
+        if n == 0 || self.cursor >= self.text.len() { return; }
+        let mut target = self.cursor;
+        for _ in 0..n { target = self.next_boundary(target); if target >= self.text.len() { break; } }
+        self.replace_range(self.cursor..target, "");
+    }
+    fn replace_range(&mut self, range: std::ops::Range<usize>, s: &str) {
+        let start = range.start.min(self.text.len());
+        let end = range.end.min(self.text.len());
+        let removed = end - start;
+        self.text.replace_range(start..end, s);
+        if self.cursor < start {} else if self.cursor <= end { self.cursor = start + s.len(); } else { self.cursor = ((self.cursor as isize) + s.len() as isize - removed as isize) as usize; }
+        self.cursor = self.cursor.min(self.text.len());
+        self.cursor = self.clamp_to_boundary(self.cursor);
+        self.shift_elements(start, removed, s.len());
+    }
+    fn set_cursor(&mut self, pos: usize) {
+        self.cursor = self.clamp_to_boundary(pos.min(self.text.len()));
+        // avoid landing inside element
+        for el in &self.elements {
+            if self.cursor > el.range.start && self.cursor < el.range.end { self.cursor = el.range.end; break; }
+        }
+    }
+    fn move_left(&mut self) { self.cursor = self.prev_boundary(self.cursor); }
+    fn move_right(&mut self) { self.cursor = self.next_boundary(self.cursor); }
+    fn move_up(&mut self) {
+        // ponytail: line-based up, char-count wrap at width 80 if no cache
+        let bol = self.text[..self.cursor].rfind('\n').map(|i| i+1).unwrap_or(0);
+        let col = self.text[bol..self.cursor].chars().count();
+        if bol == 0 { self.cursor = 0; return; }
+        let prev_bol = self.text[..bol-1].rfind('\n').map(|i| i+1).unwrap_or(0);
+        let prev_eol = bol-1;
+        let prev_line = &self.text[prev_bol..prev_eol];
+        let target = prev_line.chars().take(col).collect::<String>().len();
+        // byte offset of col chars in prev line
+        let byte_col = prev_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(prev_line.len());
+        self.cursor = prev_bol + byte_col;
+        self.cursor = self.clamp_to_boundary(self.cursor);
+    }
+    fn move_down(&mut self) {
+        let eol = self.text[self.cursor..].find('\n').map(|i| i+self.cursor).unwrap_or(self.text.len());
+        let bol = self.text[..self.cursor].rfind('\n').map(|i| i+1).unwrap_or(0);
+        let col = self.text[bol..self.cursor].chars().count();
+        if eol >= self.text.len() { self.cursor = self.text.len(); return; }
+        let next_bol = eol + 1;
+        let next_eol = self.text[next_bol..].find('\n').map(|i| i+next_bol).unwrap_or(self.text.len());
+        let next_line = &self.text[next_bol..next_eol];
+        let byte_col = next_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(next_line.len());
+        self.cursor = next_bol + byte_col;
+        self.cursor = self.clamp_to_boundary(self.cursor);
+    }
+    fn move_to_end(&mut self) { self.cursor = self.text.len(); }
+}
+
+pub struct Tui {
+    terminal: Term,
+    // codex TextArea logic: multiline, attachments as atomic elements, slash popup, history
+    textarea: TextArea,
+    matches: Vec<(&'static str, &'static str)>,
+    sel: usize,
+    status: Option<(Instant, String)>,
+    pending: String,
+    truecolor: bool,
+    thinking: bool,
+    hide_thinking: bool,
+    // history — mirrors codex ChatComposerHistory (in-session Vec + persistent stub)
+    history: Vec<String>,
+    history_idx: Option<usize>,
+    draft: String,
+    // attachments — mirrors codex AttachmentState (local images as atomic placeholders)
+    attachments: Vec<PathBuf>,
+    pending_pastes: Vec<(String, String)>, // (placeholder, full_text) like codex LARGE_PASTE
+}
+
 fn thinking_style() -> Style {
     Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
 }
 
-/// Codex-rs shimmer (motion.rs/shimmer.rs), ported: a highlight band sweeps
-/// the text on a 2s cosine cycle; truecolor blends bg->fg per char with a
-/// bold peak, plain terminals step through dim/normal/bold instead.
 fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'static>> {
     use ratatui::style::Color;
     let chars: Vec<char> = text.chars().collect();
-    if chars.is_empty() {
-        return Vec::new();
-    }
+    if chars.is_empty() { return Vec::new(); }
     let padding = 10usize;
     let period = chars.len() + padding * 2;
     let sweep_seconds = 2.0f32;
@@ -75,261 +222,232 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
     let band_half_width = 5.0f32;
     const BASE: (u8, u8, u8) = (150, 148, 144);
     const HIGHLIGHT: (u8, u8, u8) = (255, 255, 255);
-
-    chars
-        .iter()
-        .enumerate()
-        .map(|(i, ch)| {
-            let dist = ((i as isize + padding as isize) - pos as isize).abs() as f32;
-            // 0 -> 1 cosine bump across the band (codex-rs motion.rs).
-            // Parens matter: .cos() must bind to PI*x only, not 1.0 + PI*x
-            // (that variant goes negative and freezes both style paths).
-            let t = if dist <= band_half_width {
-                0.5 * (1.0 + (std::f32::consts::PI * (dist / band_half_width)).cos())
-            } else {
-                0.0
-            };
-            let style = if truecolor {
-                let k = t.clamp(0.0, 1.0) * 0.9;
-                let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k) as u8;
-                Style::default()
-                    .fg(Color::Rgb(
-                        lerp(BASE.0, HIGHLIGHT.0),
-                        lerp(BASE.1, HIGHLIGHT.1),
-                        lerp(BASE.2, HIGHLIGHT.2),
-                    ))
-                    .add_modifier(if t > 0.3 { Modifier::BOLD } else { Modifier::empty() })
-            } else if t < 0.2 {
-                Style::default().add_modifier(Modifier::DIM)
-            } else if t < 0.6 {
-                Style::default()
-            } else {
-                Style::default().add_modifier(Modifier::BOLD)
-            };
-            Span::styled(ch.to_string(), style)
-        })
-        .collect()
+    chars.iter().enumerate().map(|(i, ch)| {
+        let dist = ((i as isize + padding as isize) - pos as isize).abs() as f32;
+        let t = if dist <= band_half_width { 0.5 * (1.0 + (std::f32::consts::PI * (dist / band_half_width)).cos()) } else { 0.0 };
+        let style = if truecolor {
+            let k = t.clamp(0.0, 1.0) * 0.9;
+            let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k) as u8;
+            Style::default().fg(Color::Rgb(lerp(BASE.0, HIGHLIGHT.0), lerp(BASE.1, HIGHLIGHT.1), lerp(BASE.2, HIGHLIGHT.2))).add_modifier(if t > 0.3 { Modifier::BOLD } else { Modifier::empty() })
+        } else if t < 0.2 { Style::default().add_modifier(Modifier::DIM) } else if t < 0.6 { Style::default() } else { Style::default().add_modifier(Modifier::BOLD) };
+        Span::styled(ch.to_string(), style)
+    }).collect()
 }
 
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        // Anchor the viewport to the BOTTOM edge of the terminal (pi/codex
-        // behavior): jump to the last row and emit H newlines — the screen
-        // scrolls exactly H lines and the cursor ends on the bottom row,
-        // where ratatui's inline viewport then sits.
         let (_, rows) = crossterm::terminal::size()?;
-        crossterm::execute!(
-            std::io::stdout(),
-            crossterm::cursor::MoveTo(0, rows.saturating_sub(1))
-        )?;
-        for _ in 0..VIEWPORT_H {
-            write!(std::io::stdout(), "\r\n")?;
-        }
+        crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, rows.saturating_sub(1)))?;
+        for _ in 0..VIEWPORT_H { write!(std::io::stdout(), "\r\n")?; }
         let _ = std::io::stdout().flush();
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
-            },
+            ratatui::TerminalOptions { viewport: ratatui::Viewport::Inline(VIEWPORT_H) },
         )?;
         terminal.clear()?;
         Ok(Self {
             terminal,
-            buffer: String::new(),
+            textarea: TextArea::new(),
             matches: Vec::new(),
             sel: 0,
             status: None,
             pending: String::new(),
-            truecolor: std::env::var("COLORTERM")
-                .map(|v| v.contains("truecolor") || v.contains("24bit"))
-                .unwrap_or(false),
+            truecolor: std::env::var("COLORTERM").map(|v| v.contains("truecolor") || v.contains("24bit")).unwrap_or(false),
             thinking: false,
-            hide_thinking: false,
+            hide_thinking: true,
+            history: Vec::new(),
+            history_idx: None,
+            draft: String::new(),
+            attachments: Vec::new(),
+            pending_pastes: Vec::new(),
         })
     }
 
-    fn width(&self) -> usize {
-        self.terminal.size().map(|a| a.width as usize).unwrap_or(80)
-    }
+    fn width(&self) -> usize { self.terminal.size().map(|a| a.width as usize).unwrap_or(80) }
 
-    /// One full repaint of the owned bottom pane.
     fn draw(&mut self) -> anyhow::Result<()> {
         self.terminal.draw(|frame| {
             let area = frame.area();
             let w = area.width as usize;
-            let rule_style = Style::default().add_modifier(Modifier::DIM);
-
-            // Slash-completion panel (top 5 rows, hidden while empty).
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
-                for (i, (name, desc)) in
-                    self.matches.iter().enumerate().skip(start).take(PANEL_ROWS)
-                {
+                for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
                     let y = i - start;
                     let body = format!("  /{name} \u{2014} {desc}");
-                    let line = if i == self.sel {
-                        Line::from(body.as_str()).style(Style::default().reversed())
-                    } else {
-                        Line::from(body.as_str()).style(Style::default().dim())
-                    };
-                    frame.render_widget(
-                        Paragraph::new(line),
-                        Rect::new(area.x, area.y + y as u16, area.width, 1),
-                    );
+                    let line = if i == self.sel { Line::from(body.as_str()).style(Style::default().reversed()) } else { Line::from(body.as_str()).style(Style::default().dim()) };
+                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, area.y + y as u16, area.width, 1));
                 }
             }
-
-            // Status row sits directly above the top rule while a turn runs.
-            // Animation copied from codex-rs motion/shimmer: a highlight band
-            // sweeps the text on a 2s cosine cycle (truecolor) or steps
-            // through dim/bold bands (fallback). ALWAYS rendered — an empty
-            // Paragraph writes zero cells, so the stale text would survive
-            // ratatui's cell-diff forever.
             {
                 let status_rect = Rect::new(area.x, area.y + PANEL_ROWS as u16, area.width, 1);
                 match &self.status {
                     Some((started, label)) => {
                         let secs = started.elapsed().as_secs();
-                        let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 {
-                            "\u{2022}"
-                        } else {
-                            "\u{25e6}"
-                        };
+                        let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 { "\u{2022}" } else { "\u{25e6}" };
                         let bullet = if self.truecolor { "\u{2022}" } else { blink_bullet };
-                        let text =
-                            format!("{bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
+                        let text = format!("{bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
                         let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
                         frame.render_widget(Paragraph::new(Line::from(spans)), status_rect);
                     }
-                    None => {
-                        frame.render_widget(
-                            Paragraph::new(Line::from(" ".repeat(w))),
-                            status_rect,
-                        );
-                    }
+                    None => { frame.render_widget(Paragraph::new(Line::from(" ".repeat(w))), status_rect); }
                 }
             }
-
-            // Rule / input / rule.
             let rule_y = area.y + (PANEL_ROWS + 1) as u16;
-            frame.render_widget(
-                Paragraph::new(Line::from("\u{2500}".repeat(w)).style(rule_style)),
-                Rect::new(area.x, rule_y, area.width, 1),
-            );
-            let budget = w.saturating_sub(3);
-            let shown: String = {
-                let chars: Vec<char> = self.buffer.chars().collect();
-                if chars.len() > budget {
-                    chars[chars.len() - budget..].iter().collect()
-                } else {
-                    self.buffer.clone()
-                }
+            // attachments row (codex remote/local image placeholder)
+            let has_attach = !self.attachments.is_empty();
+            let input_y = if has_attach { rule_y + 2 } else { rule_y + 1 };
+            if has_attach {
+                let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
+                frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, rule_y + 1, area.width, 1));
+            }
+            // multiline input: render textarea with wrap, cursor after text
+            let text = self.textarea.text().to_string();
+            let display = if text.is_empty() {
+                Line::from(vec!["\u{203a} ".dim(), "Ask anything\u{2026} ".dim().italic()])
+            } else {
+                // show newlines as wrapped lines; codex textarea does grapheme wrap — we do simple char wrap
+                // ponytail: char-count wrap, not unicode-width
+                let shown = text.replace('\n', " \u{21a9} ");
+                let budget = w.saturating_sub(3);
+                let shown: String = if shown.chars().count() > budget && !shown.contains('\n') {
+                    shown.chars().skip(shown.chars().count() - budget).collect()
+                } else { shown };
+                // truncate to fit single viewport row for now; full multiline viewport is upgrade path
+                Line::from(vec!["\u{203a} ".dim(), shown.as_str().into()])
             };
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    "\u{203a} ".dim(),
-                    shown.as_str().into(),
-                ])),
-                Rect::new(area.x, rule_y + 1, area.width, 1),
-            );
-            frame.render_widget(
-                Paragraph::new(Line::from("\u{2500}".repeat(w)).style(rule_style)),
-                Rect::new(area.x, rule_y + 2, area.width, 1),
-            );
-
-            // Park the terminal cursor right after the typed text.
-            let col = (2 + shown.chars().count()).min(w.saturating_sub(1));
-            frame.set_cursor_position(Position::new(
-                area.x + col as u16,
-                rule_y + 1,
-            ));
+            frame.render_widget(Paragraph::new(display), Rect::new(area.x, input_y, area.width, 1));
+            // cursor: column after prompt + cursor char offset (single-line approx)
+            let col = if text.is_empty() { 2 } else {
+                let before = &text[..self.textarea.cursor().min(text.len())];
+                let before = before.replace('\n', " ");
+                2 + before.chars().count()
+            }.min(w.saturating_sub(1));
+            frame.set_cursor_position(Position::new(area.x + col as u16, input_y));
         })?;
         Ok(())
     }
 
-    /// Raw-mode prompt editor. Returns the submitted line, or None on
-    /// Ctrl-C / Ctrl-D-on-empty (exit request). Same keys as always:
-    /// Enter completes-and-fires, Tab inserts, arrows/Ctrl-N/P navigate.
+    /// Attach image path as atomic placeholder (mirrors codex AttachmentState + textarea element)
+    pub fn attach_image(&mut self, path: PathBuf) {
+        let idx = self.attachments.len() + 1;
+        let placeholder = format!("[Image #{idx}]");
+        self.textarea.insert_element(&placeholder);
+        self.attachments.push(path);
+        let _ = self.draw();
+    }
+
+    /// Handle paste: large pastes become placeholder + pending_pastes (codex LARGE_PASTE_CHAR_THRESHOLD=1000)
+    pub fn handle_paste(&mut self, pasted: String) -> bool {
+        const THRESHOLD: usize = 1000;
+        let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+        let n = pasted.chars().count();
+        if n > THRESHOLD {
+            let placeholder = format!("[Pasted Content {n} chars]");
+            self.textarea.insert_element(&placeholder);
+            self.pending_pastes.push((placeholder, pasted));
+        } else {
+            self.textarea.insert_str(&pasted);
+        }
+        let _ = self.draw();
+        true
+    }
+
     pub fn read_line(&mut self) -> anyhow::Result<Option<String>> {
         use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
         loop {
-            self.matches = if self.buffer.starts_with('/')
-                && !self.buffer[1..].contains(char::is_whitespace)
-            {
-                completion_matches(&self.buffer[1..])
-            } else {
-                Vec::new()
-            };
-            if self.sel >= self.matches.len() {
-                self.sel = self.matches.len().saturating_sub(1);
-            }
+            let cur_text = self.textarea.text().to_string();
+            self.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
+                completion_matches(&cur_text[1..])
+            } else { Vec::new() };
+            if self.sel >= self.matches.len() { self.sel = self.matches.len().saturating_sub(1); }
             self.draw()?;
-
-            if !poll(Duration::from_millis(250))? {
-                continue; // pure timeout: nothing to do while idle
-            }
+            if !poll(Duration::from_millis(250))? { continue; }
             match read()? {
-                Event::Resize(_, _) => {} // next draw picks up the new size
-                Event::Key(KeyEvent {
-                    code: KeyCode::Char('c'),
-                    modifiers,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Char('d'),
-                    modifiers,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) if modifiers.contains(KeyModifiers::CONTROL) && self.buffer.is_empty() => {
-                    return Ok(None)
-                }
-                Event::Key(KeyEvent {
-                    code,
-                    modifiers,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
+                Event::Resize(_, _) => {}
+                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+                Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
+                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
                     KeyCode::Char('p') => self.sel = self.sel.saturating_sub(1),
-                    KeyCode::Char('n') => {
-                        self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1))
+                    KeyCode::Char('n') => self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1)),
+                    KeyCode::Char('k') => self.textarea.delete_backward(usize::MAX), // kill to start simplified
+                    KeyCode::Char('j') => { // Ctrl-J inserts newline (codex insert_newline)
+                        self.textarea.insert_str("\n");
                     }
                     _ => {}
                 },
-                Event::Key(KeyEvent {
-                    code,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) => match code {
+                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers }) => match code {
                     KeyCode::Enter => {
-                        // complete, then submit immediately (fires the command)
-                        if self.buffer.chars().count() > 1
-                            && let Some((name, _)) = self.matches.get(self.sel)
-                        {
-                            self.buffer = format!("/{name} ");
+                        // Shift+Enter / Alt+Enter inserts newline (codex insert_newline), plain Enter submits or completes
+                        let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
+                        if is_newline {
+                            self.textarea.insert_str("\n");
+                            continue;
                         }
-                        let line = std::mem::take(&mut self.buffer);
+                        if cur_text.chars().count() > 1 && let Some((name, _)) = self.matches.get(self.sel) {
+                            self.textarea.set_text(&format!("/{name} "));
+                            continue;
+                        }
+                        // expand pending pastes (codex does this on submit)
+                        let mut text = self.textarea.text().to_string();
+                        for (ph, full) in &self.pending_pastes { text = text.replace(ph, full); }
+                        self.pending_pastes.clear();
+                        // trim and preserve attachments mention
+                        let trimmed = text.trim().to_string();
+                        if trimmed.is_empty() && self.attachments.is_empty() { continue; }
+                        // history push (codex ChatComposerHistory local history)
+                        if !trimmed.is_empty() {
+                            self.history.push(trimmed.clone());
+                            // keep last 100 like codex
+                            if self.history.len() > 100 { self.history.remove(0); }
+                        }
+                        self.history_idx = None;
+                        self.draft.clear();
+                        self.textarea.set_text("");
+                        self.attachments.clear();
                         self.matches.clear();
                         self.sel = 0;
-                        let trimmed = line.trim_end().to_string();
                         self.push_line(format!("\u{203a} {trimmed}"));
                         return Ok(Some(trimmed));
                     }
                     KeyCode::Tab => {
-                        if let Some((name, _)) = self.matches.get(self.sel) {
-                            self.buffer = format!("/{name} ");
-                        }
+                        if let Some((name, _)) = self.matches.get(self.sel) { self.textarea.set_text(&format!("/{name} ")); }
                     }
-                    KeyCode::Char(c) => self.buffer.push(c),
-                    KeyCode::Backspace => {
-                        self.buffer.pop();
+                    KeyCode::Char(c) => {
+                        // plain char insert at cursor (codex textarea insert_str)
+                        self.textarea.insert_str(&c.to_string());
+                        self.history_idx = None;
                     }
-                    KeyCode::Esc => self.buffer.clear(),
-                    KeyCode::Up => self.sel = self.sel.saturating_sub(1),
+                    KeyCode::Backspace => { self.textarea.delete_backward(1); }
+                    KeyCode::Delete => { self.textarea.delete_forward(1); }
+                    KeyCode::Esc => {
+                        self.textarea.set_text("");
+                        self.attachments.clear();
+                        self.history_idx = None;
+                    }
+                    KeyCode::Left => self.textarea.move_left(),
+                    KeyCode::Right => self.textarea.move_right(),
+                    KeyCode::Up => {
+                        // history navigation when at top or single-line; otherwise move cursor up (codex)
+                        let has_multiline = self.textarea.text().contains('\n');
+                        let at_top = self.textarea.cursor() == 0 || !has_multiline;
+                        if at_top && !self.history.is_empty() {
+                            if self.history_idx.is_none() { self.draft = self.textarea.text().to_string(); self.history_idx = Some(self.history.len()); }
+                            if let Some(idx) = self.history_idx.as_mut() {
+                                if *idx > 0 { *idx -= 1; let h = self.history[*idx].clone(); self.textarea.set_text(&h); self.textarea.move_to_end(); }
+                            }
+                        } else { self.textarea.move_up(); }
+                    }
                     KeyCode::Down => {
-                        self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1))
+                        if self.history_idx.is_some() {
+                            let idx = self.history_idx.unwrap();
+                            if idx + 1 >= self.history.len() {
+                                self.textarea.set_text(&self.draft); self.textarea.move_to_end(); self.history_idx = None;
+                            } else {
+                                self.history_idx = Some(idx+1); let h = self.history[idx+1].clone(); self.textarea.set_text(&h); self.textarea.move_to_end();
+                            }
+                        } else { self.textarea.move_down(); }
                     }
                     _ => {}
                 },
@@ -338,26 +456,12 @@ impl Tui {
         }
     }
 
-    /// Marks the start of a turn: status row appears ("• Working…").
-    pub fn begin_turn(&mut self, label: &str) {
-        self.status = Some((Instant::now(), label.to_string()));
-        let _ = self.draw();
-    }
-
-    /// Marks the end of a turn: status row disappears.
+    pub fn begin_turn(&mut self, label: &str) { self.status = Some((Instant::now(), label.to_string())); let _ = self.draw(); }
     pub fn end_turn(&mut self) {
         self.status = None;
-        if !self.pending.is_empty() {
-            let rest = std::mem::take(&mut self.pending);
-            let style = if self.thinking { thinking_style() } else { Style::default() };
-            self.push_line_styled(rest, style);
-        }
-        let _ = std::io::stdout().flush();
-        let _ = self.draw();
+        if !self.pending.is_empty() { let rest = std::mem::take(&mut self.pending); let style = if self.thinking { thinking_style() } else { Style::default() }; self.push_line_styled(rest, style); }
+        let _ = std::io::stdout().flush(); let _ = self.draw();
     }
-
-    /// Streams a rendered event chunk into the transcript. Complete lines are
-    /// pushed into scrollback immediately; the tail stays in the viewport.
     pub fn stream(&mut self, chunk: &str) {
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
@@ -368,64 +472,20 @@ impl Tui {
         }
         let _ = self.draw();
     }
-
-    /// pi-style thinking run: streams dim+italic, opens with a blank line.
-    /// Styling lives HERE (ratatui span), not in ANSI codes — stream()
-    /// strips ANSI, so styled text must never travel through it.
     pub fn stream_thinking(&mut self, chunk: &str) {
-        if !self.thinking {
-            self.thinking = true;
-            self.push_line(String::new());
-            if self.hide_thinking {
-                // pi: one static italic label stands in for the whole run.
-                self.push_line_styled("Thinking\u{2026}".to_string(), thinking_style());
-            }
-        }
-        if !self.hide_thinking {
-            self.stream(chunk);
-        }
+        if !self.thinking { self.thinking = true; self.push_line(String::new()); if self.hide_thinking { self.push_line_styled("Thinking\u{2026}".to_string(), thinking_style()); } }
+        if !self.hide_thinking { self.stream(chunk); }
     }
-
-    /// Toggles pi's hideThinkingBlock: collapse thinking runs to a label.
-    pub fn set_hide_thinking(&mut self, hide: bool) {
-        self.hide_thinking = hide;
-    }
-
-    /// Answer text after (or without) thinking: closes the thinking run and
-    /// puts a blank line between it and the prose (pi's Spacer).
-    pub fn stream_text(&mut self, chunk: &str) {
-        self.end_thinking_run(true);
-        self.stream(chunk);
-    }
-
-    /// Closes the thinking run WITHOUT a trailing spacer — the next event's
-    /// leading newline (tool chip, usage line) provides the separation.
-    pub fn end_thinking(&mut self) {
-        self.end_thinking_run(false);
-        let _ = self.draw();
-    }
-
+    pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
+    pub fn stream_text(&mut self, chunk: &str) { self.end_thinking_run(true); self.stream(chunk); }
+    pub fn end_thinking(&mut self) { self.end_thinking_run(false); let _ = self.draw(); }
     fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking {
-            return;
-        }
+        if !self.thinking { return; }
         self.thinking = false;
-        if !self.pending.is_empty() {
-            let rest = std::mem::take(&mut self.pending);
-            self.push_line_styled(rest, thinking_style());
-        }
-        if spacer {
-            self.push_line(String::new());
-        }
+        if !self.pending.is_empty() { let rest = std::mem::take(&mut self.pending); self.push_line_styled(rest, thinking_style()); }
+        if spacer { self.push_line(String::new()); }
     }
-
-    /// Pushes one wrapped line into real scrollback above the viewport.
-    pub fn push_line(&mut self, line: String) {
-        self.push_line_styled(line, Style::default());
-    }
-
-    /// Pushes one wrapped line with a ratatui style (survives strip_ansi —
-    /// styling is applied at render, not via ANSI codes in the text).
+    pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
     fn push_line_styled(&mut self, line: String, style: Style) {
         let w = self.width().max(10);
         let chars: Vec<char> = line.chars().collect();
@@ -433,42 +493,18 @@ impl Tui {
         for chunk in chars.chunks(w.saturating_sub(1)) {
             let text: String = chunk.iter().collect();
             height += 1;
-            let _ = self.terminal.insert_before(1, |buf| {
-                Paragraph::new(Line::from(Span::styled(text, style))).render(buf.area, buf);
-            });
+            let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(Line::from(Span::styled(text, style))).render(buf.area, buf); });
         }
-        if height == 0 {
-            let _ = self.terminal.insert_before(1, |buf| {
-                Paragraph::new(Line::from("")).render(buf.area, buf);
-            });
-        }
+        if height == 0 { let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(Line::from("")).render(buf.area, buf); }); }
         let _ = std::io::stdout().flush();
     }
-
-    /// Pushes one pre-wrapped plain-text line into scrollback, rendered dim
-    /// (startup banner).
     pub fn push_dim(&mut self, line: String) {
         let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(Line::from(Span::styled(
-                line,
-                Style::new().add_modifier(Modifier::DIM),
-            )))
-            .render(buf.area, buf);
+            Paragraph::new(Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)))).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }
-
-    /// Refreshes the status/elapsed display (ticker task, whole session).
-    /// Unconditional redraw: any stale frame residue self-heals within a tick.
-    pub fn tick_status(&mut self) {
-        let _ = self.draw();
-    }
-
-    /// Restores cooked mode (called on exit). Steps the cursor past the
-    /// bottom rule so whatever prints next starts on a clean line,
-    /// pi-style. Moves to the screen's last row first so the newlines
-    /// always scroll past the bottom rule even if the cursor is parked
-    /// on the input row.
+    pub fn tick_status(&mut self) { let _ = self.draw(); }
     pub fn shutdown(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
         let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -478,22 +514,14 @@ impl Tui {
     }
 }
 
-/// Strips ANSI escape sequences — ratatui renders plain text; our fmt_event
-/// decorations (dim chips etc.) become plain transcript lines.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' && chars.peek() == Some(&'[') {
             chars.next();
-            for c2 in chars.by_ref() {
-                if c2.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
+            for c2 in chars.by_ref() { if c2.is_ascii_alphabetic() { break; } }
+        } else { out.push(c); }
     }
     out
 }
@@ -501,12 +529,9 @@ fn strip_ansi(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn shimmer_spans_change_across_ticks() {
         let text = "\u{2022} Working\u{2026} 1s (ctrl-c to cancel)";
-        // Band needs ~190ms to enter the text from the left padding; sample
-        // inside the sweep where consecutive ticks must differ.
         let mut prev = shimmer_spans(text, Duration::from_millis(300), false);
         for ms in (400..=1200).step_by(100) {
             let cur = shimmer_spans(text, Duration::from_millis(ms), false);
@@ -514,7 +539,6 @@ mod tests {
             prev = cur;
         }
     }
-
     #[test]
     fn shimmer_truecolor_changes_across_ticks() {
         let text = "\u{2022} Working\u{2026} 1s";
@@ -522,21 +546,35 @@ mod tests {
         let b = shimmer_spans(text, Duration::from_millis(600), true);
         assert_ne!(a, b);
     }
-
-    /// The full draw path: two consecutive tick_status()-style frames with
-    /// different elapsed times must produce different backend content.
+    #[test]
+    fn textarea_multiline_and_history() {
+        let mut ta = TextArea::new();
+        ta.insert_str("hello");
+        ta.insert_str("\nworld");
+        assert_eq!(ta.text(), "hello\nworld");
+        ta.set_cursor(0);
+        ta.move_down();
+        assert!(ta.cursor() > 0);
+        ta.move_up();
+        assert_eq!(ta.cursor(), 0);
+        ta.move_to_end();
+        assert_eq!(ta.cursor(), ta.text().len());
+    }
+    #[test]
+    fn textarea_atomic_element() {
+        let mut ta = TextArea::new();
+        ta.insert_str("a");
+        ta.insert_element("[Image #1]");
+        assert!(ta.text().contains("[Image #1]"));
+        let before = ta.cursor();
+        ta.move_left();
+        // cursor jumps over element atomically
+        assert!(ta.cursor() < before);
+    }
     #[test]
     fn consecutive_frames_differ_in_test_backend() {
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
-        use std::cell::Cell;
-
-        let status: Cell<Option<(Instant, String)>> = Cell::new(Some((Instant::now(), "Working".into())));
-        // Simulate frozen start by overriding elapsed via distinct Instants.
-        let t0 = Instant::now();
-        let render = |term: &mut Term| unreachable!();
-        let _ = (status, t0, render);
-
         let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
         let started = Instant::now();
         let frame_at = |ms: u64, term: &mut Terminal<TestBackend>| {
@@ -544,10 +582,7 @@ mod tests {
             term.draw(|f| {
                 let text = format!("\u{2022} Working\u{2026} 1s");
                 let spans = shimmer_spans(&text, fake_started.elapsed(), false);
-                f.render_widget(
-                    Paragraph::new(Line::from(spans)),
-                    Rect::new(0, 0, 40, 1),
-                );
+                f.render_widget(Paragraph::new(Line::from(spans)), Rect::new(0, 0, 40, 1));
             }).unwrap();
             term.backend().buffer().clone()
         };
