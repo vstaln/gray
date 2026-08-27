@@ -34,3 +34,4 @@ pub mod relay_metrics_slice1;
 pub mod managed_uv_slice1;
 pub mod sessions_cmd_slice1;
 pub mod kanban_diagnostics_slice1;
+pub mod web_profiles_slice1;
