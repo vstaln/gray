@@ -18,7 +18,7 @@ use crate::setup::read_line;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
-    ("connect", "connect a provider & setup API key (OpenCode GUI)"),
+    ("connect", "connect a provider & setup API key"),
     ("new", "start a fresh conversation"),
     ("model", "switch or pick a model"),
     ("provider", "configure provider (API key, accounts, free tier)"),
