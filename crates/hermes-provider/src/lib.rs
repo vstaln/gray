@@ -22,6 +22,7 @@
 //! T0049: 1:1 port of `hermes_cli/proxy/adapters/xai.py` (145) → `xai_adapter.rs`.
 //! T0050: 1:1 port of `agent/aux_accounting.py` (138) → `aux_accounting.rs`.
 //! T0051: 1:1 port of `agent/billing_links.py` (124) → `billing_links.rs`.
+//! T0052: 1:1 port of `agent/secret_sources/__init__.py` (41) → `secret_init.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -48,6 +49,7 @@ pub mod nous_portal_adapter;
 pub mod onepassword;
 pub mod secret_base;
 pub mod secret_cache;
+pub mod secret_init;
 pub mod secret_registry;
 pub mod vertex_adapter;
 pub mod xai_adapter;
