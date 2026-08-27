@@ -36,3 +36,4 @@ pub mod sessions_cmd_slice1;
 pub mod kanban_diagnostics_slice1;
 pub mod banner_slice1;
 pub mod web_profiles_slice1;
+pub mod dashboard_routes_slice1;
