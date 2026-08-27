@@ -25,6 +25,7 @@ pub mod methods_session_slice1;
 pub mod methods_session_slice2;
 pub mod methods_session_slice3;
 pub mod methods_prompt_slice1;
+pub mod methods_prompt_slice2;
 pub mod project_tree;
 pub mod project_tree2;
 pub mod server_slice3;
