@@ -573,264 +573,456 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     items
 }
 
-/// Interactive "Connect a provider" GUI modal, matching OpenCode's visual design.
-/// Live search filter, categorized into Popular and Providers, peach selection highlight,
-/// instant API key entry, and auto-configured default model.
+/// Interactive "Connect a provider" GUI modal, matching OpenCode/Grok-style visual design.
+/// Centered floating popup with live search filter, Popular & Providers categories,
+/// peach selection highlight, in-modal API key dialog, and auto-configured default model.
 pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
-    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+    use ratatui::backend::CrosstermBackend;
+    use ratatui::layout::{Alignment, Rect};
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+    use ratatui::Terminal;
     use std::io::Write as _;
+    use std::time::Duration;
 
     let catalog = load_catalog()?;
     let all_items = build_connect_items(&catalog);
     let mut filter = String::new();
     let mut sel = 0usize;
-    let mut frame = crate::tui::InlineFrame::default();
-    let mut stdout = std::io::stdout();
+    let mut scroll_top = 0usize;
 
-    crossterm::terminal::enable_raw_mode()?;
-    let _ = write!(stdout, "\x1b[?25l"); // Hide cursor during selection
-    stdout.flush()?;
+    enum ModalState {
+        Selecting,
+        EnteringKey {
+            item: ConnectItem,
+            key_buf: String,
+            existing_key: Option<String>,
+            status_msg: Option<String>,
+        },
+    }
 
-    let selected_item = (|| -> anyhow::Result<Option<ConnectItem>> {
+    let mut state = ModalState::Selecting;
+    let mut connected_name: Option<(String, String)> = None;
+
+    enable_raw_mode()?;
+    let mut stdout_handle = std::io::stdout();
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+
+    let backend = CrosstermBackend::new(stdout_handle);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = (|| -> anyhow::Result<bool> {
         loop {
             let auth_keys = load_auth_keys();
-            let filtered: Vec<&ConnectItem> = all_items
-                .iter()
-                .filter(|item| {
-                    let f = filter.to_lowercase();
-                    f.is_empty()
-                        || item.name.to_lowercase().contains(&f)
-                        || item.id.to_lowercase().contains(&f)
-                        || item.sublabel.to_lowercase().contains(&f)
-                })
-                .collect();
 
-            if filtered.is_empty() {
-                sel = 0;
-            } else if sel >= filtered.len() {
-                sel = filtered.len().saturating_sub(1);
-            }
-
-            let tw = crate::term_width();
-            let th = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
-            let modal_w = 54.min(tw.saturating_sub(4)).max(36);
-            let modal_pad = tw.saturating_sub(modal_w) / 2;
-            let pad_str = " ".repeat(modal_pad);
-
-            let max_visible = 12.min(th.saturating_sub(8)).max(4);
-            let start = scroll_start(sel, max_visible);
-            let visible_slice = if filtered.is_empty() {
-                &[]
-            } else {
-                &filtered[start..(start + max_visible).min(filtered.len())]
-            };
-
-            let mut c = crate::tui::Container::new();
-
-            // 1. Header: Connect a provider                 esc
-            let title_left = "\x1b[1;37mConnect a provider\x1b[0m";
-            let esc_right = "\x1b[2;37mesc\x1b[0m";
-            let title_pad = modal_w.saturating_sub(18 + 3);
-            c.push(Box::new(crate::tui::Text::new(
-                format!("{pad_str}{}{}{}", title_left, " ".repeat(title_pad), esc_right),
-                0,
-            )));
-            c.push(Box::new(crate::tui::Text::new(String::new(), 0)));
-
-            // 2. Search input
-            let search_line = if filter.is_empty() {
-                format!("{pad_str}\x1b[48;2;246;173;126m\x1b[38;2;0;0;0mS\x1b[0m\x1b[2;37mearch\x1b[0m")
-            } else {
-                format!("{pad_str}\x1b[1;37mSearch:\x1b[0m {filter}\x1b[7m \x1b[0m")
-            };
-            c.push(Box::new(crate::tui::Text::new(search_line, 0)));
-            c.push(Box::new(crate::tui::Text::new(String::new(), 0)));
-
-            // 3. Render items with category headers when appropriate
-            if filtered.is_empty() {
-                c.push(Box::new(crate::tui::Text::new(format!("{pad_str}  \x1b[2mNo matching providers\x1b[0m"), 0)));
-            } else {
-                let mut last_category: Option<&'static str> = None;
-                for (rel_idx, item) in visible_slice.iter().enumerate() {
-                    let abs_idx = start + rel_idx;
-                    let is_selected = abs_idx == sel;
-
-                    // Show category header if category changes (and filter is empty)
-                    if filter.is_empty() && last_category != Some(item.category) {
-                        last_category = Some(item.category);
-                        c.push(Box::new(crate::tui::Text::new(
-                            format!("{pad_str}\x1b[1;38;2;167;139;250m{}\x1b[0m", item.category),
-                            0,
-                        )));
-                    }
-
-                    let is_connected = auth_keys.contains_key(&item.id)
-                        || (config.base_url == item.base_url && config.api_key.is_some());
-
-                    let check_glyph = if is_connected { "✓ " } else { "  " };
-
-                    if is_selected {
-                        // OpenCode peach highlight bar across the full row
-                        let sub = if item.sublabel.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" {}", item.sublabel)
-                        };
-                        let raw_content = format!(" {check_glyph}{}{sub}", item.name);
-                        let fill = modal_w.saturating_sub(raw_content.chars().count());
-                        let full_bar = format!("{}{}", raw_content, " ".repeat(fill));
-                        let row_styled = format!("{pad_str}\x1b[48;2;246;173;126m\x1b[38;2;0;0;0m{full_bar}\x1b[0m");
-                        c.push(Box::new(crate::tui::Text::new(row_styled, 0)));
-                    } else {
-                        let check_styled = if is_connected {
-                            "\x1b[38;2;74;222;128m✓\x1b[0m "
-                        } else {
-                            "  "
-                        };
-                        let name_styled = format!("\x1b[1;37m{}\x1b[0m", item.name);
-                        let sub_styled = if item.sublabel.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" \x1b[2;38;2;130;130;130m{}\x1b[0m", item.sublabel)
-                        };
-                        c.push(Box::new(crate::tui::Text::new(
-                            format!("{pad_str} {check_styled}{name_styled}{sub_styled}"),
-                            0,
-                        )));
-                    }
+            terminal.draw(|frame| {
+                let area = frame.area();
+                if area.width < 20 || area.height < 10 {
+                    return;
                 }
-            }
 
-            frame.draw(&mut stdout, &c, tw)?;
+                match &state {
+                    ModalState::Selecting => {
+                        let filtered: Vec<&ConnectItem> = all_items
+                            .iter()
+                            .filter(|item| {
+                                let f = filter.to_lowercase();
+                                f.is_empty()
+                                    || item.name.to_lowercase().contains(&f)
+                                    || item.id.to_lowercase().contains(&f)
+                                    || item.sublabel.to_lowercase().contains(&f)
+                            })
+                            .collect();
 
-            match read()? {
-                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
-                    if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
-                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                    match code {
-                        KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                        KeyCode::Char('n') => {
-                            if !filtered.is_empty() {
-                                sel = (sel + 1).min(filtered.len() - 1);
+                        let modal_w = 64.min(area.width.saturating_sub(4)).max(38);
+                        let modal_h = 22.min(area.height.saturating_sub(2)).max(12);
+                        let modal_x = (area.width.saturating_sub(modal_w)) / 2;
+                        let modal_y = (area.height.saturating_sub(modal_h)) / 2;
+                        let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
+
+                        // Clear popup background
+                        frame.render_widget(Clear, modal_rect);
+
+                        // Outer border block
+                        let block = Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(Color::Rgb(167, 139, 250)))
+                            .title(Line::from(vec![
+                                Span::styled(" ❖ Connect a provider ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                            ]))
+                            .title_alignment(Alignment::Left);
+                        frame.render_widget(block, modal_rect);
+
+                        let inner_w = modal_w.saturating_sub(2);
+                        let inner = Rect::new(modal_x + 1, modal_y + 1, inner_w, modal_h.saturating_sub(2));
+
+                        // 1. Search Bar
+                        let search_line = if filter.is_empty() {
+                            Line::from(vec![
+                                Span::styled(" Search: ", Style::default().fg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
+                                Span::styled("Type to filter providers (e.g. openai, groq)...", Style::default().fg(Color::Rgb(100, 100, 100))),
+                            ])
+                        } else {
+                            Line::from(vec![
+                                Span::styled(" Search: ", Style::default().fg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
+                                Span::styled(&filter, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                                Span::styled("▎", Style::default().fg(Color::Rgb(246, 173, 126))),
+                            ])
+                        };
+                        frame.render_widget(Paragraph::new(search_line), Rect::new(inner.x, inner.y, inner.width, 1));
+
+                        // 2. Separator line
+                        let sep_line = Line::from(Span::styled("\u{2500}".repeat(inner.width as usize), Style::default().fg(Color::Rgb(60, 60, 60))));
+                        frame.render_widget(Paragraph::new(sep_line), Rect::new(inner.x, inner.y + 1, inner.width, 1));
+
+                        // 3. Provider List
+                        let list_y = inner.y + 2;
+                        let list_h = inner.height.saturating_sub(3) as usize; // 1 search + 1 sep + 1 footer
+
+                        if filtered.is_empty() {
+                            let empty_msg = Paragraph::new(Line::from(vec![
+                                Span::styled("  No matching providers found", Style::default().fg(Color::Rgb(120, 120, 120))),
+                            ]));
+                            frame.render_widget(empty_msg, Rect::new(inner.x, list_y + 1, inner.width, 1));
+                        } else {
+                            // Adjust scroll_top
+                            let safe_sel = sel.min(filtered.len().saturating_sub(1));
+                            if safe_sel < scroll_top {
+                                scroll_top = safe_sel;
+                            } else if safe_sel >= scroll_top + list_h {
+                                scroll_top = safe_sel.saturating_sub(list_h.saturating_sub(1));
+                            }
+
+                            for r in 0..list_h {
+                                let idx = scroll_top + r;
+                                if idx >= filtered.len() {
+                                    break;
+                                }
+
+                                let item = filtered[idx];
+                                let is_selected = idx == safe_sel;
+
+                                let is_connected = auth_keys.contains_key(&item.id)
+                                    || (config.base_url == item.base_url && config.api_key.is_some());
+
+                                let check_span = if is_connected {
+                                    Span::styled(" ✓ ", Style::default().fg(if is_selected { Color::Black } else { Color::Rgb(74, 222, 128) }).add_modifier(Modifier::BOLD))
+                                } else {
+                                    Span::styled("   ", Style::default())
+                                };
+
+                                let name_span = Span::styled(
+                                    &item.name,
+                                    if is_selected {
+                                        Style::default().fg(Color::Black).add_modifier(Modifier::BOLD)
+                                    } else {
+                                        Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                                    },
+                                );
+
+                                let sub_span = if item.sublabel.is_empty() {
+                                    Span::raw("")
+                                } else {
+                                    Span::styled(
+                                        format!(" {}", item.sublabel),
+                                        if is_selected {
+                                            Style::default().fg(Color::Rgb(40, 40, 40))
+                                        } else {
+                                            Style::default().fg(Color::Rgb(130, 130, 130))
+                                        },
+                                    )
+                                };
+
+                                let row_spans = vec![check_span, name_span, sub_span];
+                                let mut row_paragraph = Paragraph::new(Line::from(row_spans));
+                                if is_selected {
+                                    row_paragraph = row_paragraph.style(Style::default().bg(Color::Rgb(246, 173, 126)));
+                                }
+
+                                frame.render_widget(
+                                    row_paragraph,
+                                    Rect::new(inner.x, list_y + r as u16, inner.width, 1),
+                                );
                             }
                         }
+
+                        // 4. Footer Help Line
+                        let footer_line = Line::from(vec![
+                            Span::styled(" [↑/↓] ", Style::default().fg(Color::Rgb(167, 139, 250)).add_modifier(Modifier::BOLD)),
+                            Span::styled("Navigate  ", Style::default().fg(Color::Rgb(140, 140, 140))),
+                            Span::styled("[Enter] ", Style::default().fg(Color::Rgb(167, 139, 250)).add_modifier(Modifier::BOLD)),
+                            Span::styled("Select  ", Style::default().fg(Color::Rgb(140, 140, 140))),
+                            Span::styled("[Esc] ", Style::default().fg(Color::Rgb(167, 139, 250)).add_modifier(Modifier::BOLD)),
+                            Span::styled("Close", Style::default().fg(Color::Rgb(140, 140, 140))),
+                        ]);
+                        frame.render_widget(
+                            Paragraph::new(footer_line),
+                            Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+                        );
+                    }
+                    ModalState::EnteringKey {
+                        item,
+                        key_buf,
+                        existing_key,
+                        status_msg,
+                    } => {
+                        let dialog_w = 60.min(area.width.saturating_sub(4)).max(36);
+                        let dialog_h = 13.min(area.height.saturating_sub(2)).max(10);
+                        let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
+                        let dialog_y = (area.height.saturating_sub(dialog_h)) / 2;
+                        let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
+
+                        frame.render_widget(Clear, dialog_rect);
+
+                        let block = Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(Color::Rgb(246, 173, 126)))
+                            .title(Line::from(vec![
+                                Span::styled(format!(" Connect to {} ", item.name), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                            ]))
+                            .title_alignment(Alignment::Left);
+                        frame.render_widget(block, dialog_rect);
+
+                        let inner = Rect::new(dialog_x + 2, dialog_y + 1, dialog_w.saturating_sub(4), dialog_h.saturating_sub(2));
+
+                        // Details
+                        let line0 = Line::from(vec![
+                            Span::styled("Provider: ", Style::default().fg(Color::Rgb(140, 140, 140))),
+                            Span::styled(&item.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                            Span::styled(format!(" (model: {})", item.default_model), Style::default().fg(Color::Rgb(140, 140, 140))),
+                        ]);
+                        let line1 = Line::from(vec![
+                            Span::styled("Base URL: ", Style::default().fg(Color::Rgb(140, 140, 140))),
+                            Span::styled(&item.base_url, Style::default().fg(Color::Rgb(180, 180, 180))),
+                        ]);
+                        frame.render_widget(Paragraph::new(line0), Rect::new(inner.x, inner.y, inner.width, 1));
+                        frame.render_widget(Paragraph::new(line1), Rect::new(inner.x, inner.y + 1, inner.width, 1));
+
+                        // Prompt label
+                        let hint = if item.env_key.is_empty() { "API_KEY" } else { &item.env_key };
+                        let prompt_text = format!("Enter {hint}:");
+                        let prompt_line = Line::from(Span::styled(prompt_text, Style::default().fg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)));
+                        frame.render_widget(Paragraph::new(prompt_line), Rect::new(inner.x, inner.y + 3, inner.width, 1));
+
+                        // Input Box
+                        let input_box_rect = Rect::new(inner.x, inner.y + 4, inner.width, 3);
+                        let input_box = Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(BorderType::Rounded)
+                            .border_style(Style::default().fg(Color::Rgb(120, 120, 120)));
+                        frame.render_widget(input_box, input_box_rect);
+
+                        let input_content = if key_buf.is_empty() {
+                            if existing_key.is_some() {
+                                Line::from(Span::styled(" (stored key exists \u{2014} press Enter to keep)", Style::default().fg(Color::Rgb(100, 100, 100))))
+                            } else {
+                                Line::from(vec![
+                                    Span::styled(" ", Style::default()),
+                                    Span::styled("▎", Style::default().fg(Color::Rgb(246, 173, 126))),
+                                    Span::styled(" Paste or type API key...", Style::default().fg(Color::Rgb(80, 80, 80))),
+                                ])
+                            }
+                        } else {
+                            let masked = "•".repeat(key_buf.chars().count());
+                            Line::from(vec![
+                                Span::styled(" ", Style::default()),
+                                Span::styled(masked, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                                Span::styled("▎", Style::default().fg(Color::Rgb(246, 173, 126))),
+                            ])
+                        };
+                        frame.render_widget(Paragraph::new(input_content), Rect::new(inner.x + 1, inner.y + 5, inner.width.saturating_sub(2), 1));
+
+                        // Status or note
+                        let note_line = if let Some(msg) = status_msg {
+                            Line::from(Span::styled(format!(" \u{2022} {msg}"), Style::default().fg(Color::Rgb(239, 68, 68))))
+                        } else {
+                            Line::from(Span::styled(" (Key stored securely in ~/.gray/auth.json mode 0600)", Style::default().fg(Color::Rgb(90, 90, 90))))
+                        };
+                        frame.render_widget(Paragraph::new(note_line), Rect::new(inner.x, inner.y + 7, inner.width, 1));
+
+                        // Footer buttons
+                        let footer = Line::from(vec![
+                            Span::styled("[Enter] ", Style::default().fg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
+                            Span::styled("Save & Connect    ", Style::default().fg(Color::Rgb(140, 140, 140))),
+                            Span::styled("[Esc] ", Style::default().fg(Color::Rgb(167, 139, 250)).add_modifier(Modifier::BOLD)),
+                            Span::styled("Back to Providers", Style::default().fg(Color::Rgb(140, 140, 140))),
+                        ]);
+                        frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
+                    }
+                }
+            })?;
+
+            if !poll(Duration::from_millis(100))? {
+                continue;
+            }
+
+            match &mut state {
+                ModalState::Selecting => {
+                    let filtered: Vec<&ConnectItem> = all_items
+                        .iter()
+                        .filter(|item| {
+                            let f = filter.to_lowercase();
+                            f.is_empty()
+                                || item.name.to_lowercase().contains(&f)
+                                || item.id.to_lowercase().contains(&f)
+                                || item.sublabel.to_lowercase().contains(&f)
+                        })
+                        .collect();
+
+                    if filtered.is_empty() {
+                        sel = 0;
+                    } else if sel >= filtered.len() {
+                        sel = filtered.len().saturating_sub(1);
+                    }
+
+                    match read()? {
+                        Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
+                            if modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
+                        Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            match code {
+                                KeyCode::Char('p') => sel = sel.saturating_sub(1),
+                                KeyCode::Char('n') => {
+                                    if !filtered.is_empty() {
+                                        sel = (sel + 1).min(filtered.len() - 1);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
+                            KeyCode::Up => sel = sel.saturating_sub(1),
+                            KeyCode::Down => {
+                                if !filtered.is_empty() {
+                                    sel = (sel + 1).min(filtered.len() - 1);
+                                }
+                            }
+                            KeyCode::PageUp => sel = sel.saturating_sub(8),
+                            KeyCode::PageDown => {
+                                if !filtered.is_empty() {
+                                    sel = (sel + 8).min(filtered.len() - 1);
+                                }
+                            }
+                            KeyCode::Char(ch) => {
+                                filter.push(ch);
+                                sel = 0;
+                            }
+                            KeyCode::Backspace => {
+                                filter.pop();
+                                sel = 0;
+                            }
+                            KeyCode::Esc => return Ok(false),
+                            KeyCode::Enter => {
+                                if let Some(&item) = filtered.get(sel) {
+                                    if item.no_auth {
+                                        config.base_url = item.base_url.clone();
+                                        config.api_key = None;
+                                        config.model = Some(item.default_model.clone());
+                                        let path = saved_config_path()?;
+                                        save_saved_config_at(&path, &SavedConfig {
+                                            base_url: Some(item.base_url.clone()),
+                                            api_key: None,
+                                            model: Some(item.default_model.clone()),
+                                            auth_mode: Some("none".into()),
+                                        })?;
+                                        connected_name = Some((item.name.clone(), item.default_model.clone()));
+                                        return Ok(true);
+                                    } else {
+                                        let existing = load_auth_keys()
+                                            .get(&item.id)
+                                            .cloned()
+                                            .or_else(|| if config.base_url == item.base_url { config.api_key.clone() } else { None });
+                                        state = ModalState::EnteringKey {
+                                            item: item.clone(),
+                                            key_buf: String::new(),
+                                            existing_key: existing,
+                                            status_msg: None,
+                                        };
+                                    }
+                                }
+                            }
+                            _ => {}
+                        },
+                        Event::Resize(_, _) => {}
                         _ => {}
                     }
                 }
-                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => {
-                        if !filtered.is_empty() {
-                            sel = (sel + 1).min(filtered.len() - 1);
+                ModalState::EnteringKey {
+                    item,
+                    key_buf,
+                    existing_key,
+                    status_msg,
+                } => match read()? {
+                    Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
+                        if modifiers.contains(KeyModifiers::CONTROL) => {
+                        state = ModalState::Selecting;
+                    }
+                    Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
+                        KeyCode::Esc => {
+                            state = ModalState::Selecting;
                         }
-                    }
-                    KeyCode::PageUp => sel = sel.saturating_sub(10),
-                    KeyCode::PageDown => {
-                        if !filtered.is_empty() {
-                            sel = (sel + 10).min(filtered.len() - 1);
+                        KeyCode::Char(ch) => {
+                            key_buf.push(ch);
+                            *status_msg = None;
                         }
-                    }
-                    KeyCode::Char(ch) => {
-                        filter.push(ch);
-                        sel = 0;
-                    }
-                    KeyCode::Backspace => {
-                        filter.pop();
-                        sel = 0;
-                    }
-                    KeyCode::Enter => {
-                        if let Some(&item) = filtered.get(sel) {
-                            return Ok(Some(item.clone()));
+                        KeyCode::Backspace => {
+                            key_buf.pop();
+                            *status_msg = None;
                         }
-                    }
-                    KeyCode::Esc => return Ok(None),
+                        KeyCode::Enter => {
+                            let final_key = if key_buf.is_empty() {
+                                existing_key.clone().unwrap_or_default()
+                            } else {
+                                key_buf.clone()
+                            };
+
+                            if final_key.is_empty() {
+                                *status_msg = Some("No API key entered — please enter a valid key".into());
+                            } else {
+                                save_auth_key(&item.id, &final_key)?;
+                                config.base_url = item.base_url.clone();
+                                config.api_key = Some(final_key);
+                                let model = if !item.default_model.is_empty() {
+                                    item.default_model.clone()
+                                } else {
+                                    "default".to_string()
+                                };
+                                config.model = Some(model.clone());
+
+                                let path = saved_config_path()?;
+                                let mut saved = load_saved_config_at(&path);
+                                saved.base_url = Some(config.base_url.clone());
+                                saved.api_key = config.api_key.clone();
+                                saved.model = config.model.clone();
+                                saved.auth_mode = Some("api_key".into());
+                                save_saved_config_at(&path, &saved)?;
+
+                                connected_name = Some((item.name.clone(), model));
+                                return Ok(true);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Event::Resize(_, _) => {}
                     _ => {}
                 },
-                Event::Resize(_, _) => {}
-                _ => {}
             }
         }
     })();
 
-    crossterm::terminal::disable_raw_mode()?;
-    let _ = write!(stdout, "\x1b[?25h"); // Restore cursor
-    stdout.flush()?;
+    disable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+    let _ = std::io::stdout().flush();
 
-    frame.erase(&mut stdout)?;
-
-    let Some(item) = selected_item? else {
-        return Ok(false);
-    };
-
-    // Connection flow
-    if item.no_auth {
-        config.base_url = item.base_url.clone();
-        config.api_key = None;
-        config.model = Some(item.default_model.clone());
-        let path = saved_config_path()?;
-        save_saved_config_at(&path, &SavedConfig {
-            base_url: Some(item.base_url.clone()),
-            api_key: None,
-            model: Some(item.default_model.clone()),
-            auth_mode: Some("none".into()),
-        })?;
-        println!("\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{}\x1b[0m! Active model: \x1b[1m{}\x1b[0m\r\n", item.name, item.default_model);
-        return Ok(true);
+    if let Some((name, model)) = connected_name {
+        println!("\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{name}\x1b[0m! Active model: \x1b[1m{model}\x1b[0m");
     }
 
-    let existing = load_auth_keys()
-        .get(&item.id)
-        .cloned()
-        .or_else(|| if config.base_url == item.base_url { config.api_key.clone() } else { None });
-
-    let hint = if item.env_key.is_empty() { "API_KEY" } else { &item.env_key };
-    let status_hint = if existing.is_some() {
-        "stored \u{2014} Enter keeps it"
-    } else {
-        hint
-    };
-
-    println!("\r\x1b[1;37mConnect to {}\x1b[0m", item.name);
-    let prompt = format!("Enter API key ({}): ", status_hint);
-    let key_in = match read_secret(&prompt) {
-        Ok(k) => k,
-        Err(_) => return Ok(false),
-    };
-    let key = if key_in.is_empty() {
-        existing.unwrap_or_default()
-    } else {
-        key_in
-    };
-
-    if key.is_empty() {
-        println!("no API key entered");
-        return Ok(false);
-    }
-
-    save_auth_key(&item.id, &key)?;
-    config.base_url = item.base_url.clone();
-    config.api_key = Some(key.clone());
-
-    let model = if !item.default_model.is_empty() {
-        item.default_model.clone()
-    } else {
-        "default".to_string()
-    };
-    config.model = Some(model.clone());
-
-    let path = saved_config_path()?;
-    let mut saved = load_saved_config_at(&path);
-    saved.base_url = Some(config.base_url.clone());
-    saved.api_key = config.api_key.clone();
-    saved.model = config.model.clone();
-    saved.auth_mode = Some("api_key".into());
-    save_saved_config_at(&path, &saved)?;
-
-    println!(
-        "\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{}\x1b[0m! Active model: \x1b[1m{}\x1b[0m\r\n",
-        item.name, model
-    );
-    Ok(true)
+    result
 }
 
 pub async fn run_provider_menu(config: &mut Config) -> anyhow::Result<bool> {
