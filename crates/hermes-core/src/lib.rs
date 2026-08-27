@@ -23,6 +23,7 @@ pub mod cli_slice2;
 pub mod cli_slice3;
 pub mod run_agent_slice2;
 pub mod run_agent_slice3;
+pub mod run_agent_slice4;
 pub mod trajectory;
 pub mod turn_retry_state;
 pub mod verify_environment;
