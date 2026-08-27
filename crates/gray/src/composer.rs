@@ -293,7 +293,6 @@ impl Tui {
             let bg_color = Color::Rgb(22, 22, 22);
             let prompt_color = Color::Rgb(180, 180, 180);
             let text_primary = Color::Rgb(225, 225, 225);
-            let text_secondary = Color::Rgb(140, 140, 140);
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
@@ -365,15 +364,6 @@ impl Tui {
                     }
                     welcome_lines.push(Line::from(spans));
                 }
-                welcome_lines.push(Line::from(""));
-                let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
-                let banner_len = banner_raw.chars().count();
-                let pad = w.saturating_sub(banner_len) / 2;
-                welcome_lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled("gray", Style::default().bold().fg(text_primary)),
-                    Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(text_secondary)),
-                ]));
                 welcome_lines.push(Line::from(""));
             }
 
