@@ -12,6 +12,7 @@ pub mod holographic;
 pub mod homeassistant;
 pub mod image_openai;
 pub mod deepinfra_image;
+pub mod openai_client;
 pub mod plugin_capabilities;
 pub mod security_patterns;
 pub mod sms_adapter;
