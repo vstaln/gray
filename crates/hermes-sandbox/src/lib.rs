@@ -1,3 +1,4 @@
+pub mod base_slice1;
 pub mod daytona;
 pub mod docker_slice1;
 pub mod docker_slice2;
