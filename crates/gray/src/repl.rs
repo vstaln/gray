@@ -567,14 +567,6 @@ pub async fn run_repl_mode(
                     t.set_model(m.clone());
                 }
                 t.set_cwd(cwd.display().to_string());
-                // Banner goes into scrollback above the bottom-anchored pane.
-                for line in crate::tui::logo_lines() {
-                    t.push_dim(line);
-                }
-                t.push_dim(format!(
-                    "gray {} \u{b7} Run /help for commands",
-                    env!("CARGO_PKG_VERSION")
-                ));
                 t
             })),
         );

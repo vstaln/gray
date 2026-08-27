@@ -164,17 +164,14 @@ impl TextArea {
     fn move_left(&mut self) { self.cursor = self.prev_boundary(self.cursor); }
     fn move_right(&mut self) { self.cursor = self.next_boundary(self.cursor); }
     fn move_up(&mut self) {
-        // ponytail: line-based up, char-count wrap at width 80 if no cache
         let bol = self.text[..self.cursor].rfind('\n').map(|i| i+1).unwrap_or(0);
         let col = self.text[bol..self.cursor].chars().count();
         if bol == 0 { self.cursor = 0; return; }
-        let prev_bol = self.text[..bol-1].rfind('\n').map(|i| i+1).unwrap_or(0);
-        let prev_eol = bol-1;
+        let prev_eol = bol - 1;
+        let prev_bol = self.text[..prev_eol].rfind('\n').map(|i| i+1).unwrap_or(0);
         let prev_line = &self.text[prev_bol..prev_eol];
-        // byte offset of col chars in prev line
         let byte_col = prev_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(prev_line.len());
-        self.cursor = prev_bol + byte_col;
-        self.cursor = self.clamp_to_boundary(self.cursor);
+        self.cursor = self.clamp_to_boundary(prev_bol + byte_col);
     }
     fn move_down(&mut self) {
         let eol = self.text[self.cursor..].find('\n').map(|i| i+self.cursor).unwrap_or(self.text.len());
@@ -185,8 +182,7 @@ impl TextArea {
         let next_eol = self.text[next_bol..].find('\n').map(|i| i+next_bol).unwrap_or(self.text.len());
         let next_line = &self.text[next_bol..next_eol];
         let byte_col = next_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(next_line.len());
-        self.cursor = next_bol + byte_col;
-        self.cursor = self.clamp_to_boundary(self.cursor);
+        self.cursor = self.clamp_to_boundary(next_bol + byte_col);
     }
     fn move_to_end(&mut self) { self.cursor = self.text.len(); }
 }
@@ -211,6 +207,7 @@ pub struct Tui {
     pending_pastes: Vec<(String, String)>, // (placeholder, full_text) like codex LARGE_PASTE
     model_name: String,
     cwd: String,
+    show_welcome: bool,
 }
 
 fn thinking_style() -> Style {
@@ -279,6 +276,7 @@ impl Tui {
             pending_pastes: Vec::new(),
             model_name: String::new(),
             cwd,
+            show_welcome: true,
         })
     }
 
@@ -337,6 +335,40 @@ impl Tui {
                 }
             }
 
+            // Centered welcome banner (rendered when session starts, disappears on input)
+            let mut welcome_lines: Vec<Line<'static>> = Vec::new();
+            if self.show_welcome {
+                let logo = crate::tui::logo_lines();
+                let palette = [
+                    Color::Indexed(45),
+                    Color::Indexed(81),
+                    Color::Indexed(75),
+                    Color::Indexed(69),
+                    Color::Indexed(63),
+                    Color::Indexed(57),
+                ];
+                for (i, line) in logo.iter().enumerate() {
+                    let trimmed = line.trim();
+                    let line_len = trimmed.chars().count();
+                    let pad = w.saturating_sub(line_len) / 2;
+                    let col = palette[i % palette.len()];
+                    welcome_lines.push(Line::from(vec![
+                        Span::raw(" ".repeat(pad)),
+                        Span::styled(trimmed.to_string(), Style::default().fg(col)),
+                    ]));
+                }
+                let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
+                let banner_len = banner_raw.chars().count();
+                let pad = w.saturating_sub(banner_len) / 2;
+                welcome_lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled("gray", Style::default().bold()),
+                    Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().dim()),
+                ]));
+                welcome_lines.push(Line::from(""));
+            }
+
+            let welcome_h = welcome_lines.len() as u16;
             let box_h = box_lines.len().max(1) as u16;
             let footer_h = 1u16;
             let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
@@ -351,6 +383,23 @@ impl Tui {
             let attach_y = box_y.saturating_sub(attach_h);
             let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h);
             let panel_y = status_y.saturating_sub(panel_h);
+            let welcome_top = (if !self.matches.is_empty() {
+                panel_y
+            } else if has_status {
+                status_y
+            } else if has_attach {
+                attach_y
+            } else {
+                box_y
+            }).saturating_sub(welcome_h);
+
+            // 0. Render centered welcome logo and banner if active
+            if self.show_welcome && welcome_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(welcome_lines),
+                    Rect::new(area.x, welcome_top, area.width, welcome_h),
+                );
+            }
 
             // 1. Autocomplete popup panel
             if !self.matches.is_empty() {
@@ -438,6 +487,7 @@ impl Tui {
 
     /// Attach image path as atomic placeholder (mirrors codex AttachmentState + textarea element)
     pub fn attach_image(&mut self, path: PathBuf) {
+        self.show_welcome = false;
         let idx = self.attachments.len() + 1;
         let placeholder = format!("[Image #{idx}]");
         self.textarea.insert_element(&placeholder);
@@ -447,6 +497,7 @@ impl Tui {
 
     /// Handle paste: large pastes become placeholder + pending_pastes (codex LARGE_PASTE_CHAR_THRESHOLD=1000)
     pub fn handle_paste(&mut self, pasted: String) -> bool {
+        self.show_welcome = false;
         const THRESHOLD: usize = 1000;
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let n = pasted.chars().count();
@@ -479,90 +530,100 @@ impl Tui {
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
                     KeyCode::Char('p') => self.sel = self.sel.saturating_sub(1),
                     KeyCode::Char('n') => self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1)),
-                    KeyCode::Char('k') => self.textarea.delete_backward(usize::MAX), // kill to start simplified
-                    KeyCode::Char('j') => { // Ctrl-J inserts newline (codex insert_newline)
+                    KeyCode::Char('k') => {
+                        if self.show_welcome { self.show_welcome = false; let _ = self.terminal.clear(); }
+                        self.textarea.delete_backward(usize::MAX);
+                    }
+                    KeyCode::Char('j') => {
+                        if self.show_welcome { self.show_welcome = false; let _ = self.terminal.clear(); }
                         self.textarea.insert_str("\n");
                     }
                     _ => {}
                 },
-                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) => match code {
-                    KeyCode::Enter => {
-                        // Shift+Enter / Alt+Enter inserts newline (codex insert_newline), plain Enter submits or completes
-                        let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
-                        if is_newline {
-                            self.textarea.insert_str("\n");
-                            continue;
-                        }
-                        if cur_text.chars().count() > 1 && let Some((name, _)) = self.matches.get(self.sel) {
-                            self.textarea.set_text(&format!("/{name} "));
-                            continue;
-                        }
-                        // expand pending pastes (codex does this on submit)
-                        let mut text = self.textarea.text().to_string();
-                        for (ph, full) in &self.pending_pastes { text = text.replace(ph, full); }
-                        self.pending_pastes.clear();
-                        // trim and preserve attachments mention
-                        let trimmed = text.trim().to_string();
-                        if trimmed.is_empty() && self.attachments.is_empty() { continue; }
-                        // history push (codex ChatComposerHistory local history)
-                        if !trimmed.is_empty() {
-                            self.history.push(trimmed.clone());
-                            // keep last 100 like codex
-                            if self.history.len() > 100 { self.history.remove(0); }
-                        }
-                        self.history_idx = None;
-                        self.draft.clear();
-                        self.textarea.set_text("");
-                        self.attachments.clear();
-                        self.matches.clear();
-                        self.sel = 0;
-                        if trimmed.starts_with('/') {
-                            self.push_line(format!("\u{203a} {trimmed}"));
-                        } else {
-                            self.push_user_prompt(&trimmed);
-                        }
-                        return Ok(Some(trimmed));
+                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) => {
+                    if self.show_welcome {
+                        self.show_welcome = false;
+                        let _ = self.terminal.clear();
                     }
-                    KeyCode::Tab => {
-                        if let Some((name, _)) = self.matches.get(self.sel) { self.textarea.set_text(&format!("/{name} ")); }
-                    }
-                    KeyCode::Char(c) => {
-                        // plain char insert at cursor (codex textarea insert_str)
-                        self.textarea.insert_str(&c.to_string());
-                        self.history_idx = None;
-                    }
-                    KeyCode::Backspace => { self.textarea.delete_backward(1); }
-                    KeyCode::Delete => { self.textarea.delete_forward(1); }
-                    KeyCode::Esc => {
-                        self.textarea.set_text("");
-                        self.attachments.clear();
-                        self.history_idx = None;
-                    }
-                    KeyCode::Left => self.textarea.move_left(),
-                    KeyCode::Right => self.textarea.move_right(),
-                    KeyCode::Up => {
-                        // history navigation when at top or single-line; otherwise move cursor up (codex)
-                        let has_multiline = self.textarea.text().contains('\n');
-                        let at_top = self.textarea.cursor() == 0 || !has_multiline;
-                        if at_top && !self.history.is_empty() {
-                            if self.history_idx.is_none() { self.draft = self.textarea.text().to_string(); self.history_idx = Some(self.history.len()); }
-                            if let Some(idx) = self.history_idx.as_mut() {
-                                if *idx > 0 { *idx -= 1; let h = self.history[*idx].clone(); self.textarea.set_text(&h); self.textarea.move_to_end(); }
+                    match code {
+                        KeyCode::Enter => {
+                            // Shift+Enter / Alt+Enter inserts newline (codex insert_newline), plain Enter submits or completes
+                            let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
+                            if is_newline {
+                                self.textarea.insert_str("\n");
+                                continue;
                             }
-                        } else { self.textarea.move_up(); }
-                    }
-                    KeyCode::Down => {
-                        if self.history_idx.is_some() {
-                            let idx = self.history_idx.unwrap();
-                            if idx + 1 >= self.history.len() {
-                                self.textarea.set_text(&self.draft); self.textarea.move_to_end(); self.history_idx = None;
+                            if cur_text.chars().count() > 1 && let Some((name, _)) = self.matches.get(self.sel) {
+                                self.textarea.set_text(&format!("/{name} "));
+                                continue;
+                            }
+                            // expand pending pastes (codex does this on submit)
+                            let mut text = self.textarea.text().to_string();
+                            for (ph, full) in &self.pending_pastes { text = text.replace(ph, full); }
+                            self.pending_pastes.clear();
+                            // trim and preserve attachments mention
+                            let trimmed = text.trim().to_string();
+                            if trimmed.is_empty() && self.attachments.is_empty() { continue; }
+                            // history push (codex ChatComposerHistory local history)
+                            if !trimmed.is_empty() {
+                                self.history.push(trimmed.clone());
+                                // keep last 100 like codex
+                                if self.history.len() > 100 { self.history.remove(0); }
+                            }
+                            self.history_idx = None;
+                            self.draft.clear();
+                            self.textarea.set_text("");
+                            self.attachments.clear();
+                            self.matches.clear();
+                            self.sel = 0;
+                            if trimmed.starts_with('/') {
+                                self.push_line(format!("\u{203a} {trimmed}"));
                             } else {
-                                self.history_idx = Some(idx+1); let h = self.history[idx+1].clone(); self.textarea.set_text(&h); self.textarea.move_to_end();
+                                self.push_user_prompt(&trimmed);
                             }
-                        } else { self.textarea.move_down(); }
+                            return Ok(Some(trimmed));
+                        }
+                        KeyCode::Tab => {
+                            if let Some((name, _)) = self.matches.get(self.sel) { self.textarea.set_text(&format!("/{name} ")); }
+                        }
+                        KeyCode::Char(c) => {
+                            // plain char insert at cursor (codex textarea insert_str)
+                            self.textarea.insert_str(&c.to_string());
+                            self.history_idx = None;
+                        }
+                        KeyCode::Backspace => { self.textarea.delete_backward(1); }
+                        KeyCode::Delete => { self.textarea.delete_forward(1); }
+                        KeyCode::Esc => {
+                            self.textarea.set_text("");
+                            self.attachments.clear();
+                            self.history_idx = None;
+                        }
+                        KeyCode::Left => self.textarea.move_left(),
+                        KeyCode::Right => self.textarea.move_right(),
+                        KeyCode::Up => {
+                            // history navigation when at top or single-line; otherwise move cursor up (codex)
+                            let has_multiline = self.textarea.text().contains('\n');
+                            let at_top = self.textarea.cursor() == 0 || !has_multiline;
+                            if at_top && !self.history.is_empty() {
+                                if self.history_idx.is_none() { self.draft = self.textarea.text().to_string(); self.history_idx = Some(self.history.len()); }
+                                if let Some(idx) = self.history_idx.as_mut() {
+                                    if *idx > 0 { *idx -= 1; let h = self.history[*idx].clone(); self.textarea.set_text(&h); self.textarea.move_to_end(); }
+                                }
+                            } else { self.textarea.move_up(); }
+                        }
+                        KeyCode::Down => {
+                            if self.history_idx.is_some() {
+                                let idx = self.history_idx.unwrap();
+                                if idx + 1 >= self.history.len() {
+                                    self.textarea.set_text(&self.draft); self.textarea.move_to_end(); self.history_idx = None;
+                                } else {
+                                    self.history_idx = Some(idx+1); let h = self.history[idx+1].clone(); self.textarea.set_text(&h); self.textarea.move_to_end();
+                                }
+                            } else { self.textarea.move_down(); }
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }
