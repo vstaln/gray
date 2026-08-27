@@ -8,6 +8,7 @@ pub mod close_terminal_tool;
 pub mod drive_preview_tool;
 pub mod computer_use_tool;
 pub mod daemon_pool;
+pub mod env_passthrough;
 pub mod file_state;
 pub mod focus_pane_tool;
 pub mod hook_output_spill;
