@@ -28,3 +28,4 @@ pub mod methods_prompt_slice1;
 pub mod project_tree;
 pub mod server_slice3;
 pub mod methods_tools_slice1;
+pub mod methods_tools_slice2;
