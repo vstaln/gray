@@ -298,7 +298,10 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            // 1. Prompt input rows (clean colored block, no border chars)
+            // 1. Top row (colored row, no symbols)
+            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
+
+            // 2. Prompt input rows
             let prompt_arrow = "❯ ";
             let arrow_span = Span::styled(prompt_arrow, Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
 
@@ -336,7 +339,7 @@ impl Tui {
                 }
             }
 
-            // 2. Info row inside box: Build · <model>
+            // 3. Info row inside box: Build · <model>
             let model_display = if self.model_name.is_empty() {
                 "gray".to_string()
             } else {
@@ -347,6 +350,9 @@ impl Tui {
                 Span::styled(" \u{b7} ", Style::default().fg(border_color).bg(bg_color)),
                 Span::styled(model_display, Style::default().fg(text_secondary).bg(bg_color)),
             ]).style(Style::default().bg(bg_color)));
+
+            // 4. Bottom row (colored row, no symbols)
+            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
             // Centered welcome banner (rendered when session starts, disappears on input)
             let mut welcome_lines: Vec<Line<'static>> = Vec::new();
@@ -477,7 +483,7 @@ impl Tui {
                 Rect::new(area.x, footer_y, area.width, 1),
             );
 
-            // Cursor positioned inside the container box on the prompt input line
+            // Cursor positioned inside the container box on the prompt input line (row 1 after top row)
             let (cursor_line_idx, cursor_col) = {
                 let cursor = self.textarea.cursor().min(text.len());
                 let before = &text[..cursor];
@@ -489,7 +495,7 @@ impl Tui {
             let padding_cols = 1u16;
             let prefix_cols = 2u16; // "❯ "
             let cursor_x = (area.x + padding_cols + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cursor_y = (box_y + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
+            let cursor_y = (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         })?;
         Ok(())
@@ -678,6 +684,8 @@ impl Tui {
         let text_primary = Color::Rgb(225, 225, 225);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        lines.push(Line::from("").style(Style::default().bg(bg_color)));
+
         let arrow_span = Span::styled("❯ ", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
 
         let lines_raw: Vec<&str> = text.split('\n').collect();
@@ -707,6 +715,8 @@ impl Tui {
                 }
             }
         }
+
+        lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
         let height = lines.len() as u16;
         let block = Block::default()
