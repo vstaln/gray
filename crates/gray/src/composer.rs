@@ -555,20 +555,14 @@ impl Tui {
                     KeyCode::Char('p') => self.sel = self.sel.saturating_sub(1),
                     KeyCode::Char('n') => self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1)),
                     KeyCode::Char('k') => {
-                        if self.show_welcome { self.show_welcome = false; let _ = self.terminal.clear(); }
                         self.textarea.delete_backward(usize::MAX);
                     }
                     KeyCode::Char('j') => {
-                        if self.show_welcome { self.show_welcome = false; let _ = self.terminal.clear(); }
                         self.textarea.insert_str("\n");
                     }
                     _ => {}
                 },
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) => {
-                    if self.show_welcome {
-                        self.show_welcome = false;
-                        let _ = self.terminal.clear();
-                    }
                     match code {
                         KeyCode::Enter => {
                             // Shift+Enter / Alt+Enter inserts newline (codex insert_newline), plain Enter submits or completes
@@ -580,6 +574,10 @@ impl Tui {
                             if cur_text.chars().count() > 1 && let Some((name, _)) = self.matches.get(self.sel) {
                                 self.textarea.set_text(&format!("/{name} "));
                                 continue;
+                            }
+                            if self.show_welcome {
+                                self.show_welcome = false;
+                                let _ = self.terminal.clear();
                             }
                             // expand pending pastes (codex does this on submit)
                             let mut text = self.textarea.text().to_string();
