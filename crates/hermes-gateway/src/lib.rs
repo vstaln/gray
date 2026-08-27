@@ -25,3 +25,4 @@ pub mod cwd_placeholder;
 pub mod platforms_init;
 pub mod run_slice1;
 pub mod api_server_slice1;
+pub mod base_slice1;
