@@ -20,8 +20,8 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 6;
-const PANEL_ROWS: usize = 5;
+const VIEWPORT_H: u16 = 8;
+const PANEL_ROWS: usize = 4;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -390,16 +390,20 @@ impl Tui {
             let status_h: u16 = if has_status { 1 } else { 0 };
 
             let footer_y = area.y + area.height.saturating_sub(footer_h);
-            let box_y = footer_y.saturating_sub(box_h);
-            let attach_y = box_y.saturating_sub(attach_h);
-            let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h);
-            let panel_y = status_y.saturating_sub(panel_h);
+            let box_y = footer_y.saturating_sub(box_h).max(area.y);
+            let attach_y = box_y.saturating_sub(attach_h).max(area.y);
+            let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h).max(area.y);
+            let panel_y = status_y.saturating_sub(panel_h).max(area.y);
 
             if !self.matches.is_empty() {
-                let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
+                let start = self.sel.saturating_sub(PANEL_ROWS.saturating_sub(1)).min(self.sel);
                 let visible_count = self.matches.len().min(PANEL_ROWS);
                 for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(visible_count) {
-                    let y = i - start;
+                    let y = (i - start) as u16;
+                    let item_y = panel_y + y;
+                    if item_y < area.y || item_y >= status_y {
+                        continue;
+                    }
                     let is_sel = i == self.sel;
                     let cmd_str = format!(" /{name} ");
                     let desc_str = format!(" {desc} ");
@@ -414,25 +418,30 @@ impl Tui {
                             Span::styled(desc_str, Style::default().fg(Color::Rgb(140, 140, 140)).bg(Color::Rgb(28, 28, 28))),
                         ])
                     };
-                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, panel_y + y as u16, area.width, 1));
+                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, item_y, area.width, 1));
                 }
             }
 
             if let Some((started, label)) = &self.status {
-                let text = format!("\u{2022} {label}\u{2026} {}s (ctrl-c to cancel)", started.elapsed().as_secs());
-                let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
-                frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+                if status_y >= area.y && status_y < box_y {
+                    let text = format!("\u{2022} {label}\u{2026} {}s (ctrl-c to cancel)", started.elapsed().as_secs());
+                    let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+                }
             }
 
-            if has_attach {
+            if has_attach && attach_y >= area.y && attach_y < box_y {
                 let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            frame.render_widget(
-                Paragraph::new(box_lines).block(Block::default().style(Style::default().bg(bg_color)).padding(ratatui::widgets::Padding::horizontal(1))),
-                Rect::new(area.x, box_y, area.width, box_h),
-            );
+            let rendered_box_h = box_h.min((area.y + area.height).saturating_sub(box_y));
+            if rendered_box_h > 0 {
+                frame.render_widget(
+                    Paragraph::new(box_lines).block(Block::default().style(Style::default().bg(bg_color)).padding(ratatui::widgets::Padding::horizontal(1))),
+                    Rect::new(area.x, box_y, area.width, rendered_box_h),
+                );
+            }
 
             let cwd_display = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
             let model_display = self.model_name.clone();
@@ -450,14 +459,18 @@ impl Tui {
             let pad_len = w.saturating_sub(cwd_display.chars().count() + right_len);
             let mut footer_spans = vec![Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))), Span::raw(" ".repeat(pad_len))];
             footer_spans.extend(right_parts);
-            frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
+            if footer_y >= area.y && footer_y < area.y + area.height {
+                frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
+            }
 
             let (cursor_line_idx, cursor_col) = {
                 let cursor = self.textarea.cursor().min(text.len());
                 let before = &text[..cursor];
                 (before.matches('\n').count(), before[before.rfind('\n').map(|i| i + 1).unwrap_or(0)..].chars().count())
             };
-            frame.set_cursor_position(Position::new((area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1)), (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1))));
+            let cur_x = (area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
+            let cur_y = (box_y + 1 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
+            frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())
     }
