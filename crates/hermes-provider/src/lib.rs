@@ -1,5 +1,6 @@
 //! hermes-provider — secret + model provider crate.
 //!
+//! T0021: 1:1 port of `agent/auxiliary_client.py` (10831) slice1 → `auxiliary_slice1.rs` (first 900).
 //! T0032: 1:1 port of `agent/secret_sources/bitwarden.py` (1055) → `bitwarden.rs`.
 //! T0033: 1:1 port of `agent/account_usage.py` (902) → `account_usage.rs`.
 //! T0034: 1:1 port of `hermes_cli/nous_account.py` (814) → `nous_account.rs`.
@@ -25,6 +26,7 @@
 //! Secret sources live here as provider-adjacent fetchers (Bitwarden, 1Password, …).
 
 pub mod account_usage;
+pub mod auxiliary_slice1;
 pub mod azure_identity;
 pub mod billing_usage;
 pub mod billing_view;
