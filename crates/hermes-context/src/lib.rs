@@ -17,6 +17,8 @@
 //! T0015 — slice 4/6 (lines 2400-3200).
 //! 1:1 Rust port of `reference/NousResearch/hermes-agent/agent/context_compressor.py` (8211 LOC).
 //! T0014 — slice 10/11 (lines 7200-8000).
+//! 1:1 Rust port of `reference/NousResearch/hermes-agent/agent/context_compressor.py` (8211 LOC).
+//! T0014 — slice 11/11 (lines 8000-8211) (last).
 //!
 //! NEVER cargo — 1:1 translation only (no `cargo check` / `cargo build`).
 //! `cargo` is not invoked by this slice; the file is verified by line-level
@@ -32,6 +34,7 @@ pub mod compressor_slice7;
 pub mod compressor_slice8;
 pub mod compressor_slice9;
 pub mod compressor_slice10;
+pub mod compressor_slice11;
 pub mod context_breakdown;
 pub mod context_engine;
 pub mod context_references;
