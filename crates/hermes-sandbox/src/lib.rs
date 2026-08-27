@@ -4,6 +4,7 @@ pub mod docker_slice2;
 pub mod docker_slice3;
 pub mod file_sync;
 pub mod local_slice1;
+pub mod local_slice2;
 pub mod managed_modal;
 pub mod modal;
 pub mod modal_utils;
