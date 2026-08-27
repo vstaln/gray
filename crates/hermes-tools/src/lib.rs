@@ -10,6 +10,7 @@ pub mod daemon_pool;
 pub mod file_state;
 pub mod focus_pane_tool;
 pub mod interpreter_shutdown;
+pub mod microsoft_graph_auth;
 pub mod openrouter_client;
 pub mod path_security;
 pub mod plugin_guard;
