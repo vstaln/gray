@@ -365,6 +365,15 @@ impl Tui {
                     welcome_lines.push(Line::from(spans));
                 }
                 welcome_lines.push(Line::from(""));
+                let banner_raw = format!("gray {} · Run /help for commands", env!("CARGO_PKG_VERSION"));
+                let banner_len = banner_raw.chars().count();
+                let pad = w.saturating_sub(banner_len) / 2;
+                welcome_lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled("gray", Style::default().bold().fg(text_primary)),
+                    Span::styled(format!(" {} · Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
+                ]));
+                welcome_lines.push(Line::from(""));
             }
 
             let welcome_h = welcome_lines.len() as u16;
