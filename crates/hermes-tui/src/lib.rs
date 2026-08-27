@@ -30,3 +30,4 @@ pub mod project_tree2;
 pub mod server_slice3;
 pub mod methods_tools_slice1;
 pub mod methods_tools_slice2;
+pub mod methods_tools_slice3;
