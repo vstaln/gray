@@ -28,4 +28,5 @@ pub mod xai_provider;
 pub mod browser_use_provider;
 pub mod process_manager;
 pub mod providers_init;
+pub mod mem0;
 pub mod telegram_network;
