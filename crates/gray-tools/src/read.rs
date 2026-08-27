@@ -6,10 +6,11 @@ use gray_core::message::ToolDef;
 use serde_json::json;
 use serde_json::Value;
 
-use crate::{fail, finish, get_opt_u64, get_str, resolve_path, Tool};
+use crate::truncate::{format_size, truncate_head, DEFAULT_MAX_BYTES};
+use crate::{fail, get_opt_u64, get_str, resolve_path, Tool};
 
-/// Lines returned when no `limit` is given.
-const DEFAULT_LIMIT: u64 = 2000;
+pub const READ_SNIPPET: &str = "Read file contents";
+pub const READ_GUIDELINES: &[&str] = &["Use read to examine files instead of cat or sed."];
 
 /// Reads a text file (`path`, optional 1-based `offset`, optional `limit`).
 pub struct ReadTool;
@@ -42,6 +43,14 @@ impl Tool for ReadTool {
         )
     }
 
+    fn prompt_snippet(&self) -> Option<&'static str> {
+        Some(READ_SNIPPET)
+    }
+
+    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
+        Some(READ_GUIDELINES)
+    }
+
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let path = match get_str(&args, "path") {
@@ -67,22 +76,84 @@ impl Tool for ReadTool {
             Err(_) => return fail(format!("{}: not valid UTF-8 (binary file?)", full.display())),
         };
 
+        let total_lines = text.lines().count();
         let start = offset.unwrap_or(1).max(1).saturating_sub(1) as usize;
-        let limit = limit.unwrap_or(DEFAULT_LIMIT) as usize;
-        let selected: Vec<&str> = text.lines().skip(start).take(limit).collect();
-        if start > 0 && start >= text.lines().count() {
+        if start > 0 && start >= total_lines {
             return fail(format!(
                 "offset {start} is past the end of {} ({} lines)",
                 full.display(),
-                text.lines().count()
+                total_lines
             ));
         }
 
-        let mut out = selected.join("\n");
-        if text.ends_with('\n') && !out.is_empty() {
-            out.push('\n');
-        }
-        finish(out)
+        // Apply offset/limit windowing first (pi: user limit honored before truncation).
+        let limit_opt = limit.map(|v| v as usize);
+        let selected: Vec<&str> = match limit_opt {
+            Some(lim) => text.lines().skip(start).take(lim).collect(),
+            None => text.lines().skip(start).collect(),
+        };
+        let selected_content = selected.join("\n");
+        let truncation = truncate_head(&selected_content);
+        let start_display = start + 1; // 1-indexed for messages
+
+        let output = if truncation.first_line_exceeds_limit {
+            let first_line = selected.first().copied().unwrap_or("");
+            let first_size = format_size(first_line.as_bytes().len());
+            format!(
+                "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
+                start_display,
+                first_size,
+                format_size(DEFAULT_MAX_BYTES),
+                start_display,
+                path,
+                DEFAULT_MAX_BYTES
+            )
+        } else if truncation.truncated {
+            let end_display = start_display + truncation.output_lines.saturating_sub(1);
+            let next_offset = end_display + 1;
+            let hint = if truncation.truncated_by == Some(crate::truncate::TruncatedBy::Lines) {
+                format!(
+                    "[Showing lines {}-{} of {}. Use offset={} to continue.]",
+                    start_display, end_display, total_lines, next_offset
+                )
+            } else {
+                format!(
+                    "[Showing lines {}-{} of {} ({} limit). Use offset={} to continue.]",
+                    start_display,
+                    end_display,
+                    total_lines,
+                    format_size(DEFAULT_MAX_BYTES),
+                    next_offset
+                )
+            };
+            if truncation.content.is_empty() {
+                hint
+            } else {
+                format!("{}\n\n{}", truncation.content, hint)
+            }
+        } else if limit_opt.is_some() {
+            let lim = limit_opt.unwrap();
+            if start + lim < total_lines {
+                let remaining = total_lines - (start + lim);
+                let next_offset = start + lim + 1;
+                if truncation.content.is_empty() {
+                    format!("[{} more lines in file. Use offset={} to continue.]", remaining, next_offset)
+                } else {
+                    format!(
+                        "{}\n\n[{} more lines in file. Use offset={} to continue.]",
+                        truncation.content, remaining, next_offset
+                    )
+                }
+            } else {
+                truncation.content
+            }
+        } else {
+            truncation.content
+        };
+
+        // Already truncated via truncate_head with actionable hint; bypass the
+        // generic head+tail truncation that would hide it.
+        ToolOutput::ok(output)
     }
 }
 
@@ -100,7 +171,8 @@ mod tests {
         std::fs::write(dir.path().join("a.txt"), "line1\nline2\nline3\n").unwrap();
         let out = ReadTool.execute(&ctx(dir.path()), json!({"path": "a.txt"})).await;
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(out.content, "line1\nline2\nline3\n");
+        // normalize: pi-style read no longer guarantees trailing newline
+        assert!(out.content.starts_with("line1\nline2\nline3"));
     }
 
     #[tokio::test]
@@ -123,7 +195,7 @@ mod tests {
             .execute(&ctx(dir.path()), json!({"path": "a.txt", "offset": 3, "limit": 2}))
             .await;
         assert!(!out.is_error, "{}", out.content);
-        assert_eq!(out.content, "line3\nline4\n");
+        assert!(out.content.starts_with("line3\nline4"));
     }
 
     #[tokio::test]

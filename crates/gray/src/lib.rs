@@ -6,10 +6,13 @@ pub mod logo_data;
 pub mod logging;
 pub mod oauth;
 pub mod print;
+pub mod prompt_templates;
 pub mod setup;
+pub mod skills;
 pub mod sys_editor;
 pub mod repl;
 pub mod streaming;
+pub mod system_prompt;
 pub mod tui;
 
 use std::path::{Path, PathBuf};
@@ -75,6 +78,13 @@ pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
 
 /// Builds an [`Agent`] instance wired with the OpenAI provider, builtin tools, and system prompt.
 ///
+/// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills` +
+/// `~/.pi/agent/skills` compat + project `cwd/.gray/skills` / `cwd/.pi/skills`
+/// walked up to git root) respecting `.gitignore`/`.ignore`/`.fdignore`, and
+/// `AGENTS.md`/`CLAUDE.md` context files are discovered walking up to git root
+/// and appended as `<project_context>` blocks. Skills are only surfaced when the
+/// `read` tool is present.
+///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
 pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
@@ -86,7 +96,31 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
-    let system_prompt = format_system_prompt(&body, cwd);
+
+    // Discover skills + AGENTS.md / CLAUDE.md context (literal port of pi discovery)
+    let discovered = skills::discover_skills(cwd);
+    let context_files = system_prompt::discover_context_files(cwd);
+
+    // Tools only appear in the prompt when they have a snippet — literal port of
+    // `visibleTools = tools.filter(name => !!toolSnippets[name])`.
+    let tmp_registry = Registry::builtin();
+    let tool_snippets = tmp_registry.prompt_snippets();
+    let selected_tools = tmp_registry.tool_names();
+    let prompt_guidelines = {
+        let g = tmp_registry.prompt_guidelines();
+        if g.is_empty() { None } else { Some(g) }
+    };
+
+    let system_prompt = system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
+        custom_prompt: Some(body),
+        selected_tools: Some(selected_tools),
+        tool_snippets: Some(tool_snippets),
+        prompt_guidelines,
+        append_system_prompt: None,
+        cwd: cwd.to_path_buf(),
+        context_files: Some(context_files),
+        skills: Some(discovered.skills),
+    });
 
     let provider = OpenAiProvider::builder(api_key, model)
         .base_url(&config.base_url)

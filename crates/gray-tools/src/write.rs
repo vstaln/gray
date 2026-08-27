@@ -6,7 +6,11 @@ use gray_core::message::ToolDef;
 use serde_json::json;
 use serde_json::Value;
 
+use crate::file_mutation_queue::with_file_mutation_queue;
 use crate::{fail, finish, get_str, resolve_path, Tool};
+
+pub const WRITE_SNIPPET: &str = "Create or overwrite files";
+pub const WRITE_GUIDELINES: &[&str] = &["Use write only for new files or complete rewrites."];
 
 /// Writes `content` to `path`, creating parent directories as needed.
 pub struct WriteTool;
@@ -32,6 +36,14 @@ impl Tool for WriteTool {
         )
     }
 
+    fn prompt_snippet(&self) -> Option<&'static str> {
+        Some(WRITE_SNIPPET)
+    }
+
+    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
+        Some(WRITE_GUIDELINES)
+    }
+
     // Mutates the filesystem: never run in parallel.
     fn is_concurrency_safe(&self, _args: &Value) -> bool {
         false
@@ -48,15 +60,22 @@ impl Tool for WriteTool {
         };
 
         let full = resolve_path(&ctx.cwd, &path);
-        if let Some(parent) = full.parent()
-            && let Err(e) = tokio::fs::create_dir_all(parent).await
-        {
-            return fail(format!("write failed for {}: {e}", full.display()));
-        }
-        match tokio::fs::write(&full, content.as_bytes()).await {
-            Ok(()) => finish(format!("wrote {} bytes to {}", content.len(), full.display())),
-            Err(e) => fail(format!("write failed for {}: {e}", full.display())),
-        }
+        with_file_mutation_queue(full.clone(), || {
+            let full = full.clone();
+            let content = content.clone();
+            async move {
+                if let Some(parent) = full.parent()
+                    && let Err(e) = tokio::fs::create_dir_all(parent).await
+                {
+                    return fail(format!("write failed for {}: {e}", full.display()));
+                }
+                match tokio::fs::write(&full, content.as_bytes()).await {
+                    Ok(()) => finish(format!("wrote {} bytes to {}", content.len(), full.display())),
+                    Err(e) => fail(format!("write failed for {}: {e}", full.display())),
+                }
+            }
+        })
+        .await
     }
 }
 

@@ -17,6 +17,9 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 /// Hard upper bound for the timeout argument.
 const MAX_TIMEOUT_SECS: u64 = 300;
 
+pub const BASH_SNIPPET: &str = "Execute bash commands (ls, grep, find, etc.)";
+pub const BASH_GUIDELINES: &[&str] = &["You can inspect PI_* environment variables for current model and session details."];
+
 /// Runs a command through the shell (`sh -c`).
 pub struct BashTool;
 
@@ -39,6 +42,14 @@ impl Tool for BashTool {
                 "required": ["command"]
             }),
         )
+    }
+
+    fn prompt_snippet(&self) -> Option<&'static str> {
+        Some(BASH_SNIPPET)
+    }
+
+    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
+        Some(BASH_GUIDELINES)
     }
 
     // Shell commands have arbitrary side effects: serialize them.

@@ -7,7 +7,14 @@
 
 pub mod bash;
 pub mod edit;
+pub mod edit_diff;
+pub mod find;
+pub mod grep;
+pub mod ls;
+pub mod file_mutation_queue;
 pub mod read;
+pub mod path_utils;
+pub mod truncate;
 pub mod write;
 
 use std::sync::Arc;
@@ -20,6 +27,9 @@ use serde_json::Value;
 
 pub use bash::BashTool;
 pub use edit::EditTool;
+pub use find::FindTool;
+pub use grep::GrepTool;
+pub use ls::LsTool;
 pub use read::ReadTool;
 pub use write::WriteTool;
 
@@ -35,6 +45,17 @@ pub const MAX_ERROR_BYTES: usize = 2048;
 pub trait Tool: Send + Sync {
     /// Static definition surfaced to the model (name, description, schema).
     fn def(&self) -> ToolDef;
+
+    /// One-line snippet rendered in the system prompt's "Available tools" list.
+    /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
+    fn prompt_snippet(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Guideline bullets contributed to the system prompt when this tool is active.
+    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
+        None
+    }
 
     /// Whether this tool may run in parallel with others in the same turn.
     /// Args allow context-sensitive decisions (e.g. read-only operations).
@@ -59,13 +80,41 @@ impl Registry {
         Self::default()
     }
 
-    /// A registry preloaded with the four v0 builtins: bash, read, write, edit.
-    pub fn builtin() -> Self {
+    /// Coding bundle: read + bash + edit + write (mirrors pi's `createCodingTools`).
+    pub fn coding() -> Self {
         let mut reg = Self::new();
         reg.register(Box::new(BashTool));
         reg.register(Box::new(ReadTool));
         reg.register(Box::new(WriteTool));
         reg.register(Box::new(EditTool));
+        reg
+    }
+
+    /// Alias for [`Self::coding`] — kept for backwards compatibility.
+    pub fn builtin() -> Self {
+        Self::coding()
+    }
+
+    /// Read-only bundle: read + grep + find + ls (mirrors pi's `createReadOnlyTools`).
+    pub fn readonly() -> Self {
+        let mut reg = Self::new();
+        reg.register(Box::new(ReadTool));
+        reg.register(Box::new(GrepTool));
+        reg.register(Box::new(FindTool));
+        reg.register(Box::new(LsTool));
+        reg
+    }
+
+    /// All tools bundle: coding + read-only (mirrors pi's `createAllTools` sans powershell).
+    pub fn all() -> Self {
+        let mut reg = Self::new();
+        reg.register(Box::new(BashTool));
+        reg.register(Box::new(ReadTool));
+        reg.register(Box::new(WriteTool));
+        reg.register(Box::new(EditTool));
+        reg.register(Box::new(GrepTool));
+        reg.register(Box::new(FindTool));
+        reg.register(Box::new(LsTool));
         reg
     }
 
@@ -96,6 +145,34 @@ impl Registry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// Names of registered tools in registration order.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.def().name.clone()).collect()
+    }
+
+    /// One-line snippets keyed by tool name — only tools with `Some` snippet are included
+    /// (mirrors pi's `visibleTools = tools.filter(name => !!toolSnippets[name])`).
+    pub fn prompt_snippets(&self) -> std::collections::HashMap<String, String> {
+        let mut m = std::collections::HashMap::new();
+        for tool in &self.tools {
+            if let Some(snippet) = tool.prompt_snippet() {
+                m.insert(tool.def().name.clone(), snippet.to_string());
+            }
+        }
+        m
+    }
+
+    /// Collected guideline bullets from all registered tools (in registration order, deduped by caller).
+    pub fn prompt_guidelines(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for tool in &self.tools {
+            if let Some(guidelines) = tool.prompt_guidelines() {
+                out.extend(guidelines.iter().map(|g| g.to_string()));
+            }
+        }
+        out
     }
 }
 
