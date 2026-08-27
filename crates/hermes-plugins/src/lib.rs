@@ -7,6 +7,7 @@ pub mod disk_cleanup;
 pub mod feishu_comment_rules;
 pub mod plugin_dev;
 pub mod google_meet_cli;
+pub mod google_meet_tools;
 pub mod holographic;
 pub mod homeassistant;
 pub mod image_openai;
