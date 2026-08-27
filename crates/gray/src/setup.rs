@@ -646,7 +646,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             })
                             .collect();
 
-                        let modal_w = 64.min(area.width.saturating_sub(4)).max(38);
+                        let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
                         let modal_h = 20.min(area.height.saturating_sub(2)).max(12);
                         let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                         let modal_y = (area.height.saturating_sub(modal_h)) / 2;
@@ -660,8 +660,9 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             .style(Style::default().bg(box_bg));
                         frame.render_widget(box_block, modal_rect);
 
-                        let inner_w = modal_w.saturating_sub(2);
-                        let inner = Rect::new(modal_x + 1, modal_y + 1, inner_w, modal_h.saturating_sub(2));
+                        let pad_x = 3u16;
+                        let inner_w = modal_w.saturating_sub(pad_x * 2);
+                        let inner = Rect::new(modal_x + pad_x, modal_y + 1, inner_w, modal_h.saturating_sub(2));
 
                         // 1. Header Line (with esc at top right)
                         let title_str = "Connect a provider";
@@ -772,7 +773,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         existing_key,
                         status_msg,
                     } => {
-                        let dialog_w = 60.min(area.width.saturating_sub(4)).max(36);
+                        let dialog_w = 64.min(area.width.saturating_sub(4)).max(40);
                         let dialog_h = 10.min(area.height.saturating_sub(2)).max(8);
                         let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
                         let dialog_y = (area.height.saturating_sub(dialog_h)) / 2;
@@ -784,7 +785,9 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             .style(Style::default().bg(box_bg));
                         frame.render_widget(box_block, dialog_rect);
 
-                        let inner = Rect::new(dialog_x + 2, dialog_y + 1, dialog_w.saturating_sub(4), dialog_h.saturating_sub(2));
+                        let pad_x = 3u16;
+                        let inner_w = dialog_w.saturating_sub(pad_x * 2);
+                        let inner = Rect::new(dialog_x + pad_x, dialog_y + 1, inner_w, dialog_h.saturating_sub(2));
 
                         // Header (with esc at top right)
                         let title_str = "API Key Configuration";
