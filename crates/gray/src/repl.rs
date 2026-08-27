@@ -563,6 +563,10 @@ pub async fn run_repl_mode(
         let shared = crate::composer::SharedTui(
             std::sync::Arc::new(std::sync::Mutex::new({
                 let mut t = crate::composer::Tui::new().expect("composer init");
+                if let Some(m) = &config.model {
+                    t.set_model(m.clone());
+                }
+                t.set_cwd(cwd.display().to_string());
                 // Banner goes into scrollback above the bottom-anchored pane.
                 for line in crate::tui::logo_lines() {
                     t.push_dim(line);
@@ -657,6 +661,11 @@ pub async fn run_repl_mode(
             }
             ReplCommand::Model(direct) => {
                 handle_model(config, &cwd, direct, &mut agent).await;
+                if let Some((shared, _)) = &tui
+                    && let Some(m) = &config.model
+                {
+                    shared.lock().expect("tui lock").set_model(m.clone());
+                }
                 continue;
             }
             ReplCommand::Help => {

@@ -209,6 +209,8 @@ pub struct Tui {
     // attachments — mirrors codex AttachmentState (local images as atomic placeholders)
     attachments: Vec<PathBuf>,
     pending_pastes: Vec<(String, String)>, // (placeholder, full_text) like codex LARGE_PASTE
+    model_name: String,
+    cwd: String,
 }
 
 fn thinking_style() -> Style {
@@ -250,6 +252,9 @@ impl Tui {
             ratatui::TerminalOptions { viewport: ratatui::Viewport::Inline(VIEWPORT_H) },
         )?;
         terminal.clear()?;
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         Ok(Self {
             terminal,
             textarea: TextArea::new(),
@@ -265,8 +270,13 @@ impl Tui {
             draft: String::new(),
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
+            model_name: String::new(),
+            cwd,
         })
     }
+
+    pub fn set_model(&mut self, model: String) { self.model_name = model; }
+    pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
 
     fn width(&self) -> usize { self.terminal.size().map(|a| a.width as usize).unwrap_or(80) }
 
@@ -296,46 +306,123 @@ impl Tui {
                 cur_y += 1;
             }
 
-            // 3. Input row
-            let input_y = cur_y;
+            // 3. Active Composer Container Box
+            let box_y = cur_y;
             let text = self.textarea.text().to_string();
-            let display = if text.is_empty() {
-                Line::from(vec![
-                    Span::styled("\u{203a} ", Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD)),
-                    "Ask anything\u{2026} ".dim().italic(),
-                ])
+            let content_w = w.saturating_sub(4).max(1);
+
+            let accent_color = if self.truecolor {
+                Color::Rgb(88, 166, 255)
+            } else {
+                Color::Cyan
+            };
+            let bg_color = if self.truecolor {
+                Color::Rgb(30, 33, 42)
+            } else {
+                Color::Indexed(236)
+            };
+
+            let mut box_lines: Vec<Line<'static>> = Vec::new();
+
+            // Line 1: User prompt input
+            if text.is_empty() {
+                box_lines.push(Line::from(Span::styled(
+                    "Ask anything\u{2026}",
+                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                )));
             } else {
                 let raw = text.replace('\n', " \u{21a9} ");
-                let budget = w.saturating_sub(3);
-                let shown: String = if raw.chars().count() > budget && !raw.contains('\n') {
-                    raw.chars().skip(raw.chars().count() - budget).collect()
-                } else { raw };
-                Line::from(vec![
-                    Span::styled("\u{203a} ", Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Span::raw(shown),
-                ])
+                let shown: String = if raw.chars().count() > content_w && !raw.contains('\n') {
+                    raw.chars().skip(raw.chars().count() - content_w).collect()
+                } else {
+                    raw
+                };
+                box_lines.push(Line::from(Span::styled(
+                    shown,
+                    Style::default().fg(Color::White),
+                )));
+            }
+
+            // Line 2: Mode and model tag inside container box (e.g. "Build · Muse Spark 1.2")
+            let model_display = if self.model_name.is_empty() {
+                "gray".to_string()
+            } else {
+                self.model_name.clone()
             };
-            frame.render_widget(Paragraph::new(display), Rect::new(area.x, input_y, area.width, 1));
+            box_lines.push(Line::from(vec![
+                Span::styled(
+                    "Build",
+                    Style::default().fg(accent_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" \u{b7} ", Style::default().fg(Color::DarkGray)),
+                Span::styled(model_display, Style::default().fg(Color::Gray)),
+            ]));
+
+            let box_h = box_lines.len() as u16;
+            let box_block = Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(accent_color).add_modifier(Modifier::BOLD))
+                .style(Style::default().bg(bg_color))
+                .padding(Padding::horizontal(1));
+
+            frame.render_widget(
+                Paragraph::new(box_lines).block(box_block),
+                Rect::new(area.x, box_y, area.width, box_h),
+            );
+            cur_y += box_h;
+
+            // 4. Footer line below box: current dir on left, hints on right
+            let footer_y = cur_y;
+            let cwd_display = if self.cwd.is_empty() {
+                std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            } else {
+                self.cwd.clone()
+            };
+            let hint_str = "ctrl+p commands";
+            let left_len = cwd_display.chars().count();
+            let right_len = hint_str.chars().count();
+            let pad_len = w.saturating_sub(left_len + right_len);
+            let footer_line = Line::from(vec![
+                Span::styled(cwd_display, Style::default().fg(Color::DarkGray)),
+                Span::raw(" ".repeat(pad_len)),
+                Span::styled(hint_str, Style::default().fg(Color::DarkGray)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(footer_line),
+                Rect::new(area.x, footer_y, area.width, 1),
+            );
             cur_y += 1;
 
-            // 4. Autocomplete popup panel below input
+            // 5. Autocomplete popup panel below footer
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
                 for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
                     let y = i - start;
                     let body = format!("  /{name} \u{2014} {desc}");
-                    let line = if i == self.sel { Line::from(body.as_str()).style(Style::default().reversed()) } else { Line::from(body.as_str()).style(Style::default().dim()) };
-                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, cur_y + y as u16, area.width, 1));
+                    let line = if i == self.sel {
+                        Line::from(body.as_str()).style(Style::default().reversed())
+                    } else {
+                        Line::from(body.as_str()).style(Style::default().dim())
+                    };
+                    frame.render_widget(
+                        Paragraph::new(line),
+                        Rect::new(area.x, cur_y + y as u16, area.width, 1),
+                    );
                 }
             }
 
-            // cursor: column after prompt + cursor char offset (single-line approx)
-            let col = if text.is_empty() { 2 } else {
+            // Cursor positioned inside the container box on the prompt input line
+            let col = if text.is_empty() {
+                0
+            } else {
                 let before = &text[..self.textarea.cursor().min(text.len())];
                 let before = before.replace('\n', " ");
-                2 + before.chars().count()
-            }.min(w.saturating_sub(1));
-            frame.set_cursor_position(Position::new(area.x + col as u16, input_y));
+                before.chars().count()
+            };
+            let cursor_x = (area.x + 2 + col as u16).min(area.x + area.width.saturating_sub(1));
+            frame.set_cursor_position(Position::new(cursor_x, box_y));
         })?;
         Ok(())
     }
