@@ -275,17 +275,23 @@ impl Tui {
             let area = frame.area();
             let w = area.width as usize;
             let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
+            // bottom-anchored: input stays at very bottom row, status/attach/panel stack upward
+            let input_y = area.y + area.height.saturating_sub(1);
+            let has_attach = !self.attachments.is_empty();
+            let attach_y = if has_attach { input_y.saturating_sub(1) } else { input_y };
+            let status_y = if has_attach { attach_y.saturating_sub(1) } else { input_y.saturating_sub(1) };
+            let panel_y = status_y.saturating_sub(panel_h);
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
                 for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
                     let y = i - start;
                     let body = format!("  /{name} \u{2014} {desc}");
                     let line = if i == self.sel { Line::from(body.as_str()).style(Style::default().reversed()) } else { Line::from(body.as_str()).style(Style::default().dim()) };
-                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, area.y + y as u16, area.width, 1));
+                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, panel_y + y as u16, area.width, 1));
                 }
             }
             {
-                let status_rect = Rect::new(area.x, area.y + panel_h, area.width, 1);
+                let status_rect = Rect::new(area.x, status_y, area.width, 1);
                 match &self.status {
                     Some((started, label)) => {
                         let secs = started.elapsed().as_secs();
@@ -298,17 +304,9 @@ impl Tui {
                     None => { frame.render_widget(Paragraph::new(Line::from(" ".repeat(w))), status_rect); }
                 }
             }
-            let rule_y = area.y + panel_h + 1;
-            // attachments row (codex remote/local image placeholder)
-            let has_attach = !self.attachments.is_empty();
-            let mut input_y = if has_attach { rule_y + 2 } else { rule_y + 1 };
-            // clamp to viewport bottom — prevents Buffer index panic (0,45) on
-            // small terminals or when VIEWPORT_H tight
-            let max_y = area.y + area.height.saturating_sub(1);
-            if input_y > max_y { input_y = max_y; }
             if has_attach {
                 let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
-                frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, rule_y + 1, area.width, 1));
+                frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
             // multiline input: render textarea with wrap, cursor after text
             let text = self.textarea.text().to_string();
