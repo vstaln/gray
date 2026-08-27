@@ -15,6 +15,7 @@
 //! T0045: 1:1 port of `agent/vertex_adapter.py` (251) → `vertex_adapter.rs`.
 //! T0046: 1:1 port of `agent/secret_sources/_cache.py` (215) → `secret_cache.rs`.
 //! T0047: 1:1 port of `hermes_cli/proxy/adapters/nous_portal.py` (199) → `nous_portal_adapter.rs`.
+//! T0048: 1:1 port of `agent/credential_persistence.py` (174) → `credential_persistence.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -29,6 +30,7 @@ pub mod billing_view;
 pub mod bitwarden;
 pub mod command_secret;
 pub mod credential_lifecycle;
+pub mod credential_persistence;
 pub mod nous_account;
 pub mod nous_billing;
 pub mod nous_portal_adapter;
