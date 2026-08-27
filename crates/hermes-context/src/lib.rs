@@ -28,6 +28,7 @@ pub mod compressor_slice5;
 pub mod compressor_slice6;
 pub mod compressor_slice7;
 pub mod compressor_slice8;
+pub mod compressor_slice9;
 pub mod context_breakdown;
 pub mod context_engine;
 pub mod context_references;
