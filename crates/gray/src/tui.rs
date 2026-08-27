@@ -129,7 +129,7 @@ pub fn logo_lines() -> Vec<String> {
         .map(|(c, _)| (c as usize).saturating_sub(6))
         .unwrap_or(44)
         .clamp(24, 48);
-    braille_art(width).into_iter().map(|l| format!("  {l}")).collect()
+    block_art(width).into_iter().map(|l| format!("  {l}")).collect()
 }
 
 /// Prints the gray logo (icon + wordmark) dim, sized to the terminal.
@@ -149,13 +149,15 @@ pub fn clear_screen() {
     }
 }
 
-/// Rasterizes the embedded logo bitmap (generated from the source bitmap) to braille
-/// dot-matrix lines sized to `target_chars` columns — recomputed per call so
-/// the art adapts to terminal width, rebuilt against live size on every draw.
-pub fn braille_art(target_chars: usize) -> Vec<String> {
+/// Rasterizes the embedded logo bitmap to half-block characters (▀▄█)
+/// sized to `target_chars` columns — one terminal cell = 1×2 pixels.
+/// Blocks give denser, higher-contrast logo than braille, better suited
+/// to the monospace terminal (single-pass, no braille dot sparsity).
+pub fn block_art(target_chars: usize) -> Vec<String> {
     use crate::logo_data::{LOGO_H, LOGO_RLE, LOGO_W};
-    let target_w = (target_chars.max(4) * 2).min(LOGO_W);
-    let target_h = (LOGO_H * target_w / LOGO_W) / 4 * 4; // whole braille rows only
+    let target_w = target_chars.max(4).min(LOGO_W);
+    let target_h_px = (LOGO_H * target_w / LOGO_W).max(2);
+    let cells_h = target_h_px.div_ceil(2);
     // decode RLE runs into a flat bit lookup
     let mut bits = Vec::with_capacity(LOGO_W * LOGO_H);
     for &(n, v) in LOGO_RLE {
@@ -164,27 +166,33 @@ pub fn braille_art(target_chars: usize) -> Vec<String> {
     let px = |x: usize, y: usize| {
         bits[y.min(LOGO_H - 1) * LOGO_W + x.min(LOGO_W - 1)]
     };
-    let dot_bits = [[1u32, 2, 4, 64], [8, 16, 32, 128]];
     let mut out = Vec::new();
-    for cy in 0..target_h / 4 {
+    for cy in 0..cells_h {
         let mut line = String::new();
-        for cx in 0..target_w / 2 {
-            let mut code = 0u32;
-            for (dx, col) in dot_bits.iter().enumerate() {
-                for (dy, &bit) in col.iter().enumerate() {
-                    // nearest source pixel for this dot
-                    let sx = ((cx * 2 + dx) * LOGO_W) / target_w;
-                    let sy = ((cy * 4 + dy) * LOGO_H) / target_h;
-                    if px(sx, sy) {
-                        code |= bit;
-                    }
-                }
-            }
-            line.push(char::from_u32(0x2800 + code).unwrap());
+        for cx in 0..target_w {
+            let sx = (cx * LOGO_W) / target_w;
+            let sy_top = (cy * 2 * LOGO_H) / (cells_h * 2);
+            let sy_bot = ((cy * 2 + 1) * LOGO_H) / (cells_h * 2);
+            let top = px(sx, sy_top);
+            let bot = px(sx, sy_bot);
+            line.push(match (top, bot) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => ' ',
+            });
         }
-        out.push(line.trim_end_matches('\u{2800}').to_string());
+        out.push(line.trim_end().to_string());
+    }
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
     }
     out
+}
+
+/// Kept for compat; now delegates to block_art (braille → blocks per user request).
+pub fn braille_art(target_chars: usize) -> Vec<String> {
+    block_art(target_chars)
 }
 
 /// A TUI component: renders to lines guaranteed ≤ `width` visible chars.

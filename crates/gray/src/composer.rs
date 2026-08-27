@@ -45,6 +45,7 @@ impl std::ops::Deref for SharedTui {
 // Upgrade path: vendor full `textarea.rs` + `textarea/wrapping.rs` when
 // unicode-width or vim bindings matter.
 // ---------------------------------------------------------------------------
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct TextElement {
     id: u64,
@@ -59,6 +60,7 @@ struct TextArea {
     next_id: u64,
 }
 
+#[allow(dead_code)]
 impl TextArea {
     fn new() -> Self {
         Self { text: String::new(), cursor: 0, elements: Vec::new(), next_id: 1 }
@@ -166,7 +168,6 @@ impl TextArea {
         let prev_bol = self.text[..bol-1].rfind('\n').map(|i| i+1).unwrap_or(0);
         let prev_eol = bol-1;
         let prev_line = &self.text[prev_bol..prev_eol];
-        let target = prev_line.chars().take(col).collect::<String>().len();
         // byte offset of col chars in prev line
         let byte_col = prev_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(prev_line.len());
         self.cursor = prev_bol + byte_col;
@@ -308,13 +309,13 @@ impl Tui {
             } else {
                 // show newlines as wrapped lines; codex textarea does grapheme wrap — we do simple char wrap
                 // ponytail: char-count wrap, not unicode-width
-                let shown = text.replace('\n', " \u{21a9} ");
+                let raw = text.replace('\n', " \u{21a9} ");
                 let budget = w.saturating_sub(3);
-                let shown: String = if shown.chars().count() > budget && !shown.contains('\n') {
-                    shown.chars().skip(shown.chars().count() - budget).collect()
-                } else { shown };
+                let shown: String = if raw.chars().count() > budget && !raw.contains('\n') {
+                    raw.chars().skip(raw.chars().count() - budget).collect()
+                } else { raw };
                 // truncate to fit single viewport row for now; full multiline viewport is upgrade path
-                Line::from(vec!["\u{203a} ".dim(), shown.as_str().into()])
+                Line::from(vec!["\u{203a} ".dim(), Span::raw(shown)])
             };
             frame.render_widget(Paragraph::new(display), Rect::new(area.x, input_y, area.width, 1));
             // cursor: column after prompt + cursor char offset (single-line approx)
@@ -377,7 +378,7 @@ impl Tui {
                     }
                     _ => {}
                 },
-                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers }) => match code {
+                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) => match code {
                     KeyCode::Enter => {
                         // Shift+Enter / Alt+Enter inserts newline (codex insert_newline), plain Enter submits or completes
                         let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);

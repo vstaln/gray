@@ -602,7 +602,8 @@ pub async fn run_repl_mode(
     });
 
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
-    let mut hide_thinking = false;
+    // Default hidden (codex-style) — prevents reasoning spill into transcript (see screenshot).
+    let mut hide_thinking = true;
 
     loop {
         let line = if interactive {
