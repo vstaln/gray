@@ -19,6 +19,7 @@ pub mod stdin_recovery;
 pub mod synthetic_turn;
 pub mod turn_marker;
 pub mod ws;
+pub mod methods_complete;
 pub mod server_slice2;
 pub mod methods_session_slice1;
 pub mod methods_session_slice2;
