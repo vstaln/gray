@@ -699,8 +699,7 @@ pub async fn run_repl_mode(
                 if let Some((shared, _)) = &tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(hide_thinking);
-                    // scrollback, not println — the viewport owns the cursor row
-                    t.push_dim(msg.to_string());
+                    t.push_dim(format!("╰ {msg}"));
                 } else {
                     println!("{msg}");
                 }
@@ -711,14 +710,29 @@ pub async fn run_repl_mode(
                     Ok(true) => {
                         unconfigured = false;
                         if let Some((shared, _)) = &tui {
+                            let mut t = shared.lock().expect("tui lock");
                             if let Some(m) = &config.model {
-                                shared.lock().expect("tui lock").set_model(m.clone());
+                                t.set_model(m.clone());
                             }
+                            let model_str = config.model.as_deref().unwrap_or("default");
+                            let catalog = crate::setup::load_catalog().ok();
+                            let prov_name = catalog
+                                .as_ref()
+                                .and_then(|c| c.values().find(|p| p.base_url == config.base_url))
+                                .map(|p| p.name.as_str())
+                                .unwrap_or("provider");
+                            t.push_dim(format!("╰ connected to {prov_name} · {model_str}"));
                         }
                         reload_agent(&mut agent, config, &cwd).await;
                     }
                     Ok(false) => {}
-                    Err(e) => println!("provider error: {e}"),
+                    Err(e) => {
+                        if let Some((shared, _)) = &tui {
+                            shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
+                        } else {
+                            println!("provider error: {e}");
+                        }
+                    }
                 }
                 continue;
             }

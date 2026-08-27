@@ -577,6 +577,122 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     items
 }
 
+/// Returns the models list for a provider (checking catalog + curated popular models).
+pub fn get_provider_models(provider_id: &str, catalog: &Catalog) -> Vec<(String, String)> {
+    let mut list = Vec::new();
+    if let Some(p) = catalog.get(provider_id) {
+        for m in &p.models {
+            list.push((m.id.clone(), m.name.clone()));
+        }
+    }
+
+    match provider_id {
+        "openrouter" => {
+            let mut top = vec![
+                ("anthropic/claude-3.7-sonnet".into(), "Claude 3.7 Sonnet".into()),
+                ("anthropic/claude-3.5-sonnet".into(), "Claude 3.5 Sonnet".into()),
+                ("openai/gpt-4.5-preview".into(), "GPT-4.5 Preview".into()),
+                ("openai/gpt-4o".into(), "GPT-4o".into()),
+                ("deepseek/deepseek-r1".into(), "DeepSeek R1".into()),
+                ("deepseek/deepseek-chat".into(), "DeepSeek V3".into()),
+                ("google/gemini-2.5-pro".into(), "Gemini 2.5 Pro".into()),
+                ("google/gemini-2.0-flash-001".into(), "Gemini 2.0 Flash".into()),
+                ("meta-llama/llama-3.3-70b-instruct".into(), "Llama 3.3 70B".into()),
+            ];
+            for (id, name) in list {
+                if !top.iter().any(|(t_id, _)| t_id == &id) {
+                    top.push((id, name));
+                }
+            }
+            top
+        }
+        "anthropic" => {
+            if list.is_empty() {
+                vec![
+                    ("claude-3-7-sonnet-20250219".into(), "Claude 3.7 Sonnet".into()),
+                    ("claude-3-5-sonnet-20241022".into(), "Claude 3.5 Sonnet".into()),
+                    ("claude-3-5-haiku-20241022".into(), "Claude 3.5 Haiku".into()),
+                    ("claude-3-opus-20240229".into(), "Claude 3 Opus".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        "openai" => {
+            if list.is_empty() {
+                vec![
+                    ("gpt-4o".into(), "GPT-4o".into()),
+                    ("gpt-4o-mini".into(), "GPT-4o Mini".into()),
+                    ("o1".into(), "o1 Reasoning".into()),
+                    ("o3-mini".into(), "o3-mini Reasoning".into()),
+                    ("gpt-4-turbo".into(), "GPT-4 Turbo".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        "google" => {
+            if list.is_empty() {
+                vec![
+                    ("gemini-2.5-flash".into(), "Gemini 2.5 Flash".into()),
+                    ("gemini-2.5-pro".into(), "Gemini 2.5 Pro".into()),
+                    ("gemini-2.0-flash".into(), "Gemini 2.0 Flash".into()),
+                    ("gemini-2.0-pro-exp-02-05".into(), "Gemini 2.0 Pro Exp".into()),
+                    ("gemini-1.5-pro".into(), "Gemini 1.5 Pro".into()),
+                    ("gemini-1.5-flash".into(), "Gemini 1.5 Flash".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        "deepseek" => {
+            if list.is_empty() {
+                vec![
+                    ("deepseek-chat".into(), "DeepSeek V3".into()),
+                    ("deepseek-reasoner".into(), "DeepSeek R1".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        "groq" => {
+            if list.is_empty() {
+                vec![
+                    ("llama-3.3-70b-versatile".into(), "Llama 3.3 70B".into()),
+                    ("deepseek-r1-distill-llama-70b".into(), "DeepSeek R1 Distill Llama 70B".into()),
+                    ("mixtral-8x7b-32768".into(), "Mixtral 8x7B".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        "ollama" => {
+            if list.is_empty() {
+                vec![
+                    ("llama3.2".into(), "Llama 3.2".into()),
+                    ("deepseek-r1".into(), "DeepSeek R1".into()),
+                    ("qwen2.5-coder".into(), "Qwen 2.5 Coder".into()),
+                    ("mistral".into(), "Mistral 7B".into()),
+                    ("phi4".into(), "Phi 4".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        "xai" => {
+            if list.is_empty() {
+                vec![
+                    ("grok-2-latest".into(), "Grok 2".into()),
+                    ("grok-beta".into(), "Grok Beta".into()),
+                ]
+            } else {
+                list
+            }
+        }
+        _ => list,
+    }
+}
+
 /// Interactive "Connect a provider" GUI modal with clean colored box styling.
 /// Floating container block matching the composer prompt text box, live search filter,
 /// peach selection highlight, and in-modal API key entry.
@@ -606,6 +722,13 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
             existing_key: Option<String>,
             status_msg: Option<String>,
         },
+        SelectingModel {
+            item: ConnectItem,
+            models: Vec<(String, String)>,
+            filter: String,
+            sel: usize,
+            scroll_top: usize,
+        },
     }
 
     let mut state = ModalState::Selecting;
@@ -633,7 +756,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                     return;
                 }
 
-                match &state {
+                match &mut state {
                     ModalState::Selecting => {
                         let filtered: Vec<&ConnectItem> = all_items
                             .iter()
@@ -839,6 +962,136 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         ]);
                         frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
                     }
+                    ModalState::SelectingModel {
+                        item,
+                        models,
+                        filter: m_filter,
+                        sel: m_sel,
+                        scroll_top: m_scroll_top,
+                    } => {
+                        let filtered_models: Vec<&(String, String)> = models
+                            .iter()
+                            .filter(|(m_id, m_name)| {
+                                let f = m_filter.to_lowercase();
+                                f.is_empty() || m_id.to_lowercase().contains(&f) || m_name.to_lowercase().contains(&f)
+                            })
+                            .collect();
+
+                        let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
+                        let modal_h = 20.min(area.height.saturating_sub(2)).max(12);
+                        let modal_x = (area.width.saturating_sub(modal_w)) / 2;
+                        let modal_y = (area.height.saturating_sub(modal_h)) / 2;
+                        let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
+
+                        frame.render_widget(Clear, modal_rect);
+
+                        let box_block = Block::default().style(Style::default().bg(box_bg));
+                        frame.render_widget(box_block, modal_rect);
+
+                        let pad_x = 3u16;
+                        let inner_w = modal_w.saturating_sub(pad_x * 2);
+                        let inner = Rect::new(modal_x + pad_x, modal_y + 1, inner_w, modal_h.saturating_sub(2));
+
+                        // Header: Select Model — Provider ... esc
+                        let title_str = format!("Select model \u{2014} {}", item.name);
+                        let esc_str = "esc";
+                        let pad_len = (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
+                        let header_line = Line::from(vec![
+                            Span::styled(title_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
+                            Span::styled(esc_str, Style::default().fg(text_dim).bg(box_bg)),
+                        ]);
+                        frame.render_widget(Paragraph::new(header_line), Rect::new(inner.x, inner.y, inner.width, 1));
+
+                        // Search Bar
+                        let search_line = if m_filter.is_empty() {
+                            Line::from(vec![
+                                Span::styled("Search: ", Style::default().fg(accent_peach).add_modifier(Modifier::BOLD).bg(box_bg)),
+                                Span::styled("Type to filter models...", Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg)),
+                            ])
+                        } else {
+                            Line::from(vec![
+                                Span::styled("Search: ", Style::default().fg(accent_peach).add_modifier(Modifier::BOLD).bg(box_bg)),
+                                Span::styled(&*m_filter, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                                Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
+                            ])
+                        };
+                        frame.render_widget(Paragraph::new(search_line), Rect::new(inner.x, inner.y + 1, inner.width, 1));
+
+                        // Model list
+                        let list_y = inner.y + 3;
+                        let list_h = inner.height.saturating_sub(4) as usize;
+
+                        if filtered_models.is_empty() {
+                            let empty_msg = if m_filter.is_empty() {
+                                Paragraph::new(Line::from(vec![
+                                    Span::styled("  No models listed — press Enter to continue", Style::default().fg(text_dim).bg(box_bg)),
+                                ]))
+                            } else {
+                                Paragraph::new(Line::from(vec![
+                                    Span::styled("  Use custom model: ", Style::default().fg(text_dim).bg(box_bg)),
+                                    Span::styled(&*m_filter, Style::default().fg(accent_peach).add_modifier(Modifier::BOLD).bg(box_bg)),
+                                ]))
+                            };
+                            frame.render_widget(empty_msg, Rect::new(inner.x, list_y + 1, inner.width, 1));
+                        } else {
+                            let safe_sel = (*m_sel).min(filtered_models.len().saturating_sub(1));
+                            if safe_sel < *m_scroll_top {
+                                *m_scroll_top = safe_sel;
+                            } else if safe_sel >= *m_scroll_top + list_h {
+                                *m_scroll_top = safe_sel.saturating_sub(list_h.saturating_sub(1));
+                            }
+
+                            for r in 0..list_h {
+                                let idx = *m_scroll_top + r;
+                                if idx >= filtered_models.len() {
+                                    break;
+                                }
+
+                                let (m_id, m_name) = filtered_models[idx];
+                                let is_selected = idx == safe_sel;
+
+                                let sub = if m_name.is_empty() || m_name == m_id {
+                                    String::new()
+                                } else {
+                                    format!(" ({m_name})")
+                                };
+
+                                let raw_content = format!("  {m_id}{sub}");
+                                let fill = (inner.width as usize).saturating_sub(raw_content.chars().count());
+                                let full_row_str = format!("{}{}", raw_content, " ".repeat(fill));
+
+                                let row_line = if is_selected {
+                                    Line::from(Span::styled(
+                                        full_row_str,
+                                        Style::default().fg(Color::Black).bg(accent_peach).add_modifier(Modifier::BOLD),
+                                    ))
+                                } else {
+                                    let id_span = Span::styled(format!("  {m_id}"), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg));
+                                    let sub_span = Span::styled(sub, Style::default().fg(Color::Rgb(130, 130, 130)).bg(box_bg));
+                                    let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(box_bg));
+                                    Line::from(vec![id_span, sub_span, pad_span])
+                                };
+
+                                frame.render_widget(
+                                    Paragraph::new(row_line),
+                                    Rect::new(inner.x, list_y + r as u16, inner.width, 1),
+                                );
+                            }
+                        }
+
+                        // Footer
+                        let footer_line = Line::from(vec![
+                            Span::styled("↑↓ ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("navigate    ", Style::default().fg(text_dim).bg(box_bg)),
+                            Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("select", Style::default().fg(text_dim).bg(box_bg)),
+                        ]);
+                        frame.render_widget(
+                            Paragraph::new(footer_line),
+                            Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+                        );
+                    }
                 }
             })?;
 
@@ -906,16 +1159,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                                     if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
-                                        config.model = Some(item.default_model.clone());
-                                        let path = saved_config_path()?;
-                                        save_saved_config_at(&path, &SavedConfig {
-                                            base_url: Some(item.base_url.clone()),
-                                            api_key: None,
-                                            model: Some(item.default_model.clone()),
-                                            auth_mode: Some("none".into()),
-                                        })?;
-                                        connected_name = Some((item.name.clone(), item.default_model.clone()));
-                                        return Ok(true);
+                                        let models = get_provider_models(&item.id, &catalog);
+                                        state = ModalState::SelectingModel {
+                                            item: item.clone(),
+                                            models,
+                                            filter: String::new(),
+                                            sel: 0,
+                                            scroll_top: 0,
+                                        };
                                     } else {
                                         let existing = load_auth_keys()
                                             .get(&item.id)
@@ -971,23 +1222,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
                                 config.api_key = Some(final_key);
-                                let model = if !item.default_model.is_empty() {
-                                    item.default_model.clone()
-                                } else {
-                                    "default".to_string()
+                                let models = get_provider_models(&item.id, &catalog);
+                                state = ModalState::SelectingModel {
+                                    item: item.clone(),
+                                    models,
+                                    filter: String::new(),
+                                    sel: 0,
+                                    scroll_top: 0,
                                 };
-                                config.model = Some(model.clone());
-
-                                let path = saved_config_path()?;
-                                let mut saved = load_saved_config_at(&path);
-                                saved.base_url = Some(config.base_url.clone());
-                                saved.api_key = config.api_key.clone();
-                                saved.model = config.model.clone();
-                                saved.auth_mode = Some("api_key".into());
-                                save_saved_config_at(&path, &saved)?;
-
-                                connected_name = Some((item.name.clone(), model));
-                                return Ok(true);
                             }
                         }
                         _ => {}
@@ -995,6 +1237,95 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                     Event::Resize(_, _) => {}
                     _ => {}
                 },
+                ModalState::SelectingModel {
+                    item,
+                    models,
+                    filter: m_filter,
+                    sel: m_sel,
+                    scroll_top: _,
+                } => {
+                    let filtered_models: Vec<&(String, String)> = models
+                        .iter()
+                        .filter(|(m_id, m_name)| {
+                            let f = m_filter.to_lowercase();
+                            f.is_empty() || m_id.to_lowercase().contains(&f) || m_name.to_lowercase().contains(&f)
+                        })
+                        .collect();
+
+                    if filtered_models.is_empty() {
+                        *m_sel = 0;
+                    } else if *m_sel >= filtered_models.len() {
+                        *m_sel = filtered_models.len().saturating_sub(1);
+                    }
+
+                    match read()? {
+                        Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
+                            if modifiers.contains(KeyModifiers::CONTROL) => return Ok(false),
+                        Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                            match code {
+                                KeyCode::Char('p') => *m_sel = m_sel.saturating_sub(1),
+                                KeyCode::Char('n') => {
+                                    if !filtered_models.is_empty() {
+                                        *m_sel = (*m_sel + 1).min(filtered_models.len() - 1);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
+                            KeyCode::Up => *m_sel = m_sel.saturating_sub(1),
+                            KeyCode::Down => {
+                                if !filtered_models.is_empty() {
+                                    *m_sel = (*m_sel + 1).min(filtered_models.len() - 1);
+                                }
+                            }
+                            KeyCode::PageUp => *m_sel = m_sel.saturating_sub(8),
+                            KeyCode::PageDown => {
+                                if !filtered_models.is_empty() {
+                                    *m_sel = (*m_sel + 8).min(filtered_models.len() - 1);
+                                }
+                            }
+                            KeyCode::Char(ch) => {
+                                m_filter.push(ch);
+                                *m_sel = 0;
+                            }
+                            KeyCode::Backspace => {
+                                m_filter.pop();
+                                *m_sel = 0;
+                            }
+                            KeyCode::Esc => {
+                                state = ModalState::Selecting;
+                            }
+                            KeyCode::Enter => {
+                                let chosen_model = if let Some(&(m_id, _)) = filtered_models.get(*m_sel) {
+                                    m_id.clone()
+                                } else if !m_filter.is_empty() {
+                                    m_filter.trim().to_string()
+                                } else if !item.default_model.is_empty() {
+                                    item.default_model.clone()
+                                } else {
+                                    "default".to_string()
+                                };
+
+                                config.model = Some(chosen_model.clone());
+
+                                let path = saved_config_path()?;
+                                let mut saved = load_saved_config_at(&path);
+                                saved.base_url = Some(config.base_url.clone());
+                                saved.api_key = config.api_key.clone();
+                                saved.model = config.model.clone();
+                                saved.auth_mode = Some(if item.no_auth { "none".into() } else { "api_key".into() });
+                                save_saved_config_at(&path, &saved)?;
+
+                                connected_name = Some((item.name.clone(), chosen_model));
+                                return Ok(true);
+                            }
+                            _ => {}
+                        },
+                        Event::Resize(_, _) => {}
+                        _ => {}
+                    }
+                }
             }
         }
     })();
@@ -1002,10 +1333,6 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
     disable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
     let _ = std::io::stdout().flush();
-
-    if let Some((name, _model)) = connected_name {
-        println!("\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{name}\x1b[0m");
-    }
 
     result
 }
