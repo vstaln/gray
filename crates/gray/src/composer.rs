@@ -391,12 +391,13 @@ impl Tui {
             let attach_y = box_y.saturating_sub(attach_h);
             let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h);
             let panel_y = status_y.saturating_sub(panel_h);
-            let avail_welcome_h = box_y.saturating_sub(area.y);
+            let top_anchor = if !self.matches.is_empty() { panel_y } else { box_y };
+            let avail_welcome_h = top_anchor.saturating_sub(area.y);
             let welcome_render_h = welcome_h.min(avail_welcome_h);
 
-            // 0. Render centered welcome logo and banner if active and prompt is empty
-            if self.show_welcome && self.matches.is_empty() && text.is_empty() && welcome_render_h > 0 {
-                let welcome_top = box_y.saturating_sub(welcome_render_h);
+            // 0. Render centered welcome logo and banner if active (persists while typing, clears on Enter)
+            if self.show_welcome && welcome_render_h > 0 {
+                let welcome_top = top_anchor.saturating_sub(welcome_render_h);
                 let skip_count = welcome_lines.len().saturating_sub(welcome_render_h as usize);
                 let visible_lines: Vec<Line<'static>> = welcome_lines.into_iter().skip(skip_count).collect();
                 frame.render_widget(
@@ -521,7 +522,6 @@ impl Tui {
 
     /// Attach image path as atomic placeholder (mirrors codex AttachmentState + textarea element)
     pub fn attach_image(&mut self, path: PathBuf) {
-        self.show_welcome = false;
         let idx = self.attachments.len() + 1;
         let placeholder = format!("[Image #{idx}]");
         self.textarea.insert_element(&placeholder);
@@ -531,7 +531,6 @@ impl Tui {
 
     /// Handle paste: large pastes become placeholder + pending_pastes (codex LARGE_PASTE_CHAR_THRESHOLD=1000)
     pub fn handle_paste(&mut self, pasted: String) -> bool {
-        self.show_welcome = false;
         const THRESHOLD: usize = 1000;
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let n = pasted.chars().count();
