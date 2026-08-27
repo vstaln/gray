@@ -32,3 +32,4 @@ pub mod voice_client_config;
 pub mod permissions;
 pub mod website_policy;
 pub mod xai_video_tools;
+pub mod bot_failure_reasons;
