@@ -28,5 +28,6 @@ pub mod tour_tool;
 pub mod tts_text_normalize;
 pub mod vision_routing;
 pub mod voice_client_config;
+pub mod permissions;
 pub mod website_policy;
 pub mod xai_video_tools;
