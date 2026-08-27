@@ -19,6 +19,8 @@
 //! T0014 — slice 10/11 (lines 7200-8000).
 //! 1:1 Rust port of `reference/NousResearch/hermes-agent/agent/context_compressor.py` (8211 LOC).
 //! T0014 — slice 11/11 (lines 8000-8211) (last).
+//! 1:1 Rust port of `reference/NousResearch/hermes-agent/agent/context_compressor.py` (8211 LOC).
+//! T0014 — extra (lines 8211 tail — EOF sentinel, no new Python lines).
 //!
 //! NEVER cargo — 1:1 translation only (no `cargo check` / `cargo build`).
 //! `cargo` is not invoked by this slice; the file is verified by line-level
@@ -35,6 +37,7 @@ pub mod compressor_slice8;
 pub mod compressor_slice9;
 pub mod compressor_slice10;
 pub mod compressor_slice11;
+pub mod compressor_extra;
 pub mod context_breakdown;
 pub mod context_engine;
 pub mod context_references;
