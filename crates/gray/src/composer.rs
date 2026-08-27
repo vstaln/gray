@@ -297,42 +297,46 @@ impl Tui {
 
             let accent_color = Color::Rgb(88, 166, 255);
             let bg_color = Color::Rgb(36, 40, 52);
+            let style = Style::default().bg(bg_color);
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            // Line 1: User prompt input
+            // User prompt input (Codex format: › <text>)
             if text.is_empty() {
-                box_lines.push(Line::from(Span::styled(
-                    "Ask anything\u{2026}",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
-                )));
+                box_lines.push(Line::from(vec![
+                    Span::styled("› ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled("Ask anything\u{2026}", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                ]).style(style));
             } else {
-                let raw = text.replace('\n', " \u{21a9} ");
-                let shown: String = if raw.chars().count() > content_w && !raw.contains('\n') {
-                    raw.chars().skip(raw.chars().count() - content_w).collect()
-                } else {
-                    raw
-                };
-                box_lines.push(Line::from(Span::styled(
-                    shown,
-                    Style::default().fg(Color::White),
-                )));
+                let lines_raw: Vec<&str> = text.split('\n').collect();
+                for (i, raw_line) in lines_raw.iter().enumerate() {
+                    let prefix = if i == 0 { "› " } else { "  " };
+                    let prefix_span = if i == 0 {
+                        Span::styled(prefix, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                    } else {
+                        Span::raw(prefix)
+                    };
+                    if raw_line.is_empty() {
+                        box_lines.push(Line::from(vec![prefix_span]).style(style));
+                    } else {
+                        let chars: Vec<char> = raw_line.chars().collect();
+                        for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
+                            let s: String = chunk.iter().collect();
+                            if chunk_idx == 0 {
+                                box_lines.push(Line::from(vec![
+                                    prefix_span.clone(),
+                                    Span::styled(s, Style::default().fg(Color::White)),
+                                ]).style(style));
+                            } else {
+                                box_lines.push(Line::from(vec![
+                                    Span::raw("  "),
+                                    Span::styled(s, Style::default().fg(Color::White)),
+                                ]).style(style));
+                            }
+                        }
+                    }
+                }
             }
-
-            // Line 2: Mode and model tag inside container box (e.g. "Build · Muse Spark 1.2")
-            let model_display = if self.model_name.is_empty() {
-                "gray".to_string()
-            } else {
-                self.model_name.clone()
-            };
-            box_lines.push(Line::from(vec![
-                Span::styled(
-                    "Build",
-                    Style::default().fg(accent_color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" \u{b7} ", Style::default().fg(Color::DarkGray)),
-                Span::styled(model_display, Style::default().fg(Color::Gray)),
-            ]));
 
             let box_h = box_lines.len() as u16;
             let footer_h = 1u16;
@@ -383,7 +387,7 @@ impl Tui {
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            // 4. Container Box (Prompt Input + Mode/Model)
+            // 4. Container Box (Prompt Input with highlight background)
             let box_block = Block::default()
                 .borders(Borders::LEFT)
                 .border_style(Style::default().fg(accent_color).add_modifier(Modifier::BOLD))
@@ -418,15 +422,18 @@ impl Tui {
             );
 
             // Cursor positioned inside the container box on the prompt input line
-            let col = if text.is_empty() {
-                0
-            } else {
-                let before = &text[..self.textarea.cursor().min(text.len())];
-                let before = before.replace('\n', " ");
-                before.chars().count()
+            let (cursor_line_idx, cursor_col) = {
+                let cursor = self.textarea.cursor().min(text.len());
+                let before = &text[..cursor];
+                let line_idx = before.matches('\n').count();
+                let last_nl = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let col = before[last_nl..].chars().count();
+                (line_idx, col)
             };
-            let cursor_x = (area.x + 2 + col as u16).min(area.x + area.width.saturating_sub(1));
-            frame.set_cursor_position(Position::new(cursor_x, box_y));
+            let prefix_cols = 4u16; // 1 border + 1 padding + 2 prefix
+            let cursor_x = (area.x + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
+            let cursor_y = (box_y + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
+            frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         })?;
         Ok(())
     }
