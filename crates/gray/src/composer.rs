@@ -614,16 +614,8 @@ impl Tui {
 
         let height = lines.len() as u16;
 
-        let accent_color = if self.truecolor {
-            Color::Rgb(88, 166, 255)
-        } else {
-            Color::Cyan
-        };
-        let bg_color = if self.truecolor {
-            Color::Rgb(30, 33, 42)
-        } else {
-            Color::Indexed(236)
-        };
+        let accent_color = Color::Rgb(88, 166, 255);
+        let bg_color = Color::Rgb(36, 40, 52);
 
         let block = Block::default()
             .borders(Borders::LEFT)
