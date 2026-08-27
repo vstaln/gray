@@ -24,6 +24,7 @@
 //! T0051: 1:1 port of `agent/billing_links.py` (124) → `billing_links.rs`.
 //! T0052: 1:1 port of `agent/secret_sources/__init__.py` (41) → `secret_init.rs`.
 //! T0025: 1:1 port of `agent/proxy_sources/iron_proxy.py` (2494) slice1 → `iron_proxy_slice1.rs` (first 900).
+//! T0024: 1:1 port of `agent/credential_pool.py` (3258) slice1 → `credential_pool_slice1.rs` (first 900).
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -35,6 +36,7 @@ pub mod account_usage;
 pub mod aux_accounting;
 pub mod auxiliary_slice1;
 pub mod auxiliary_slice2;
+pub mod credential_pool_slice1;
 pub mod iron_proxy_slice1;
 pub mod model_metadata_slice1;
 pub mod azure_identity;
