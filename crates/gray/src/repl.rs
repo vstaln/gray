@@ -14,7 +14,6 @@ use gray_session::{
 
 use std::sync::Mutex as StdMutex;
 
-use crate::setup::read_line;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
@@ -324,103 +323,46 @@ async fn handle_model(
     cwd: &Path,
     direct: Option<String>,
     agent: &mut Option<Agent>,
+    tui: Option<&crate::composer::SharedTui>,
 ) {
-    if let Some(id) = direct {
-        if Some(&id) == config.model.as_ref() {
-            println!("already on {id}");
-            return;
-        }
-        config.model = Some(id.clone());
-        // If the model id belongs to a known provider, move base_url with it
-        // so cross-provider switches don't post to the old endpoint.
-        let provider = load_catalog()
-            .ok()
-            .and_then(|c| {
-                c.values()
-                    .find(|p| p.models.iter().any(|m| m.id == id))
-                    .cloned()
-            });
-        if let Some(p) = provider {
-            config.base_url = p.base_url.clone();
-        }
+    if let Some(m) = direct {
+        config.model = Some(m.clone());
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);
-            saved.model = Some(id.clone());
-            saved.base_url = Some(config.base_url.clone());
-            saved.api_key = config.api_key.clone();
+            saved.model = Some(m.clone());
             let _ = crate::setup::save_saved_config_at(&path, &saved);
         }
-        println!("model set to {id} (saved)");
+        if let Some(shared) = tui {
+            let mut t = shared.lock().expect("tui lock");
+            t.set_model(m.clone());
+            t.push_dim(format!("╰ model set to {m}"));
+        } else {
+            println!("model set to {m}");
+        }
         reload_agent(agent, config, cwd).await;
         return;
     }
 
-    if config.model.is_none() && config.api_key.is_none() && config.base_url.is_empty() {
-        println!("no provider configured — run /provider to set one up");
-        return;
-    }
-
-    use crate::setup::load_catalog;
-    let catalog = match load_catalog() {
-        Ok(c) => c,
+    match crate::setup::run_model_menu(config).await {
+        Ok(true) => {
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                if let Some(m) = &config.model {
+                    t.set_model(m.clone());
+                    t.push_dim(format!("╰ model set to {m}"));
+                }
+            }
+            reload_agent(agent, config, cwd).await;
+        }
+        Ok(false) => {}
         Err(e) => {
-            println!("catalog error: {e}");
-            return;
-        }
-    };
-
-    // Find current provider's models, or models across catalog
-    let current_provider = catalog.values().find(|p| p.base_url == config.base_url.as_str());
-    let model_items: Vec<(String, String)> = if let Some(p) = current_provider {
-        p.models.iter().map(|m| (m.id.clone(), m.name.clone())).collect()
-    } else {
-        catalog
-            .values()
-            .flat_map(|p| p.models.iter().map(move |m| (m.id.clone(), format!("{} ({})", m.name, p.name))))
-            .collect()
-    };
-
-    let new_model = if model_items.is_empty() {
-        let input = match read_line("model id: ") {
-            Ok(l) => l,
-            Err(_) => return,
-        };
-        if input.is_empty() {
-            return;
-        }
-        input
-    } else {
-        match crate::setup::select_from_list("model", &model_items, true) {
-            Ok(Some(i)) => model_items[i].0.clone(),
-            Ok(None) => return,
-            Err(e) => {
-                println!("model selection error: {e}");
-                return;
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
+            } else {
+                println!("model error: {e}");
             }
         }
-    };
-
-    if Some(&new_model) == config.model.as_ref() {
-        println!("already on {new_model}");
-        return;
     }
-    config.model = Some(new_model.clone());
-    // persist
-    let path = match crate::setup::saved_config_path() {
-        Ok(p) => p,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
-    };
-    let mut saved = crate::setup::load_saved_config_at(&path);
-    saved.model = Some(new_model.clone());
-    if let Err(e) = crate::setup::save_saved_config_at(&path, &saved) {
-        println!("switched for this session, but could not save: {e}");
-    } else {
-        println!("model set to {new_model} (saved)");
-    }
-    reload_agent(agent, config, cwd).await;
 }
 
 /// pi-style exit hint: how to reopen this conversation later.
@@ -668,12 +610,7 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Model(direct) => {
-                handle_model(config, &cwd, direct, &mut agent).await;
-                if let Some((shared, _)) = &tui
-                    && let Some(m) = &config.model
-                {
-                    shared.lock().expect("tui lock").set_model(m.clone());
-                }
+                handle_model(config, &cwd, direct, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Help => {
@@ -691,14 +628,15 @@ pub async fn run_repl_mode(
             }
             ReplCommand::Thinking => {
                 hide_thinking = !hide_thinking;
-                let msg = if hide_thinking {
-                    "thinking hidden — /thinking to show it again"
+                let (msg, effort) = if hide_thinking {
+                    ("thinking hidden — /thinking to show it again", "off")
                 } else {
-                    "thinking shown"
+                    ("thinking shown", "high")
                 };
                 if let Some((shared, _)) = &tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(hide_thinking);
+                    t.set_thinking_effort(effort.to_string());
                     t.push_dim(format!("╰ {msg}"));
                 } else {
                     println!("{msg}");

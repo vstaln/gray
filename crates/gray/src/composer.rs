@@ -20,7 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 18;
+const VIEWPORT_H: u16 = 6;
 const PANEL_ROWS: usize = 5;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -203,7 +203,7 @@ pub struct Tui {
     pending_pastes: Vec<(String, String)>, // (placeholder, full_text) like codex LARGE_PASTE
     model_name: String,
     cwd: String,
-    show_welcome: bool,
+    thinking_effort: String,
 }
 
 fn thinking_style() -> Style {
@@ -236,7 +236,7 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
         crossterm::execute!(
             std::io::stdout(),
             crossterm::cursor::MoveTo(0, rows.saturating_sub(1))
@@ -252,6 +252,48 @@ impl Tui {
             },
         )?;
         terminal.clear()?;
+
+        // Print welcome logo into scrollback once at startup
+        let logo_raw = crate::tui::logo_lines();
+        let l_rows = logo_raw.len().max(1) as f32;
+        let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
+        let l_cols = (max_logo_w as f32).max(1.0);
+        let w = cols as usize;
+        let logo_pad = w.saturating_sub(max_logo_w) / 2;
+
+        let base = Color::Rgb(110, 110, 110);
+        let hilite = Color::Rgb(240, 240, 240);
+
+        let mut welcome_lines: Vec<Line<'static>> = Vec::new();
+        welcome_lines.push(Line::from(""));
+        for (row, line) in logo_raw.iter().enumerate() {
+            let trimmed = line.trim_end();
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            spans.push(Span::raw(" ".repeat(logo_pad)));
+            for (col, ch) in trimmed.chars().enumerate() {
+                let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
+                let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
+                let color = crate::tui::blend_color(base, hilite, t);
+                spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+            }
+            welcome_lines.push(Line::from(spans));
+        }
+        welcome_lines.push(Line::from(""));
+        let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
+        let banner_len = banner_raw.chars().count();
+        let pad = w.saturating_sub(banner_len) / 2;
+        welcome_lines.push(Line::from(vec![
+            Span::raw(" ".repeat(pad)),
+            Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
+            Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
+        ]));
+        welcome_lines.push(Line::from(""));
+
+        let welcome_h = welcome_lines.len() as u16;
+        let _ = terminal.insert_before(welcome_h, |buf| {
+            Paragraph::new(welcome_lines).render(buf.area, buf);
+        });
+
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -272,12 +314,13 @@ impl Tui {
             pending_pastes: Vec::new(),
             model_name: String::new(),
             cwd,
-            show_welcome: true,
+            thinking_effort: "high".to_string(),
         })
     }
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
+    pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
 
     fn width(&self) -> usize { self.terminal.size().map(|a| a.width as usize).unwrap_or(80) }
 
@@ -336,47 +379,8 @@ impl Tui {
                     }
                 }
             }
-
-            // 3. Bottom row (colored row, no symbols)
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
-            // Centered welcome banner (rendered when session starts, disappears on input)
-            let mut welcome_lines: Vec<Line<'static>> = Vec::new();
-            if self.show_welcome {
-                let logo_raw = crate::tui::logo_lines();
-                let rows = logo_raw.len().max(1) as f32;
-                let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
-                let cols = (max_logo_w as f32).max(1.0);
-                let logo_pad = w.saturating_sub(max_logo_w) / 2;
-
-                let base = Color::Rgb(110, 110, 110);
-                let hilite = Color::Rgb(240, 240, 240);
-
-                for (row, line) in logo_raw.iter().enumerate() {
-                    let trimmed = line.trim_end();
-                    let mut spans: Vec<Span<'static>> = Vec::new();
-                    spans.push(Span::raw(" ".repeat(logo_pad)));
-                    for (col, ch) in trimmed.chars().enumerate() {
-                        let diag = (col as f32 + (rows - 1.0 - row as f32)) / (cols + rows);
-                        let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
-                        let color = crate::tui::blend_color(base, hilite, t);
-                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                    }
-                    welcome_lines.push(Line::from(spans));
-                }
-                welcome_lines.push(Line::from(""));
-                let banner_raw = format!("gray {} · Run /help for commands", env!("CARGO_PKG_VERSION"));
-                let banner_len = banner_raw.chars().count();
-                let pad = w.saturating_sub(banner_len) / 2;
-                welcome_lines.push(Line::from(vec![
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled("gray", Style::default().bold().fg(text_primary)),
-                    Span::styled(format!(" {} · Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
-                ]));
-                welcome_lines.push(Line::from(""));
-            }
-
-            let welcome_h = welcome_lines.len() as u16;
             let box_h = box_lines.len().max(1) as u16;
             let footer_h = 1u16;
             let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
@@ -385,28 +389,12 @@ impl Tui {
             let has_status = self.status.is_some();
             let status_h: u16 = if has_status { 1 } else { 0 };
 
-            // Bottom-anchored inside viewport
             let footer_y = area.y + area.height.saturating_sub(footer_h);
             let box_y = footer_y.saturating_sub(box_h);
             let attach_y = box_y.saturating_sub(attach_h);
             let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h);
             let panel_y = status_y.saturating_sub(panel_h);
-            let top_anchor = if !self.matches.is_empty() { panel_y } else { box_y };
-            let avail_welcome_h = top_anchor.saturating_sub(area.y);
-            let welcome_render_h = welcome_h.min(avail_welcome_h);
 
-            // 0. Render centered welcome logo and banner if active (persists while typing, clears on Enter)
-            if self.show_welcome && welcome_render_h > 0 {
-                let welcome_top = top_anchor.saturating_sub(welcome_render_h);
-                let skip_count = welcome_lines.len().saturating_sub(welcome_render_h as usize);
-                let visible_lines: Vec<Line<'static>> = welcome_lines.into_iter().skip(skip_count).collect();
-                frame.render_widget(
-                    Paragraph::new(visible_lines),
-                    Rect::new(area.x, welcome_top, area.width, welcome_render_h),
-                );
-            }
-
-            // 1. Autocomplete popup panel (directly attached above input box)
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
                 let visible_count = self.matches.len().min(PANEL_ROWS);
@@ -415,7 +403,6 @@ impl Tui {
                     let is_sel = i == self.sel;
                     let cmd_str = format!(" /{name} ");
                     let desc_str = format!(" {desc} ");
-                    let item_w = (cmd_str.chars().count() + desc_str.chars().count()) as u16;
                     let line = if is_sel {
                         Line::from(vec![
                             Span::styled(cmd_str, Style::default().fg(Color::Black).bg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
@@ -427,100 +414,54 @@ impl Tui {
                             Span::styled(desc_str, Style::default().fg(Color::Rgb(140, 140, 140)).bg(Color::Rgb(28, 28, 28))),
                         ])
                     };
-                    let render_w = item_w.min(area.width);
-                    frame.render_widget(
-                        Paragraph::new(line),
-                        Rect::new(area.x, panel_y + y as u16, render_w, 1),
-                    );
+                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, panel_y + y as u16, area.width, 1));
                 }
             }
 
-            // 2. Status row
             if let Some((started, label)) = &self.status {
-                let status_rect = Rect::new(area.x, status_y, area.width, 1);
-                let secs = started.elapsed().as_secs();
-                let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 { "\u{2022}" } else { "\u{25e6}" };
-                let text = format!("{blink_bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
+                let text = format!("\u{2022} {label}\u{2026} {}s (ctrl-c to cancel)", started.elapsed().as_secs());
                 let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
-                frame.render_widget(Paragraph::new(Line::from(spans)), status_rect);
+                frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
             }
 
-            // 3. Attachments row
             if has_attach {
                 let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            // 4. Container Box: Pure colored block (no border characters)
-            let box_block = Block::default()
-                .style(Style::default().bg(bg_color))
-                .padding(ratatui::widgets::Padding::horizontal(1));
-
             frame.render_widget(
-                Paragraph::new(box_lines).block(box_block),
+                Paragraph::new(box_lines).block(Block::default().style(Style::default().bg(bg_color)).padding(ratatui::widgets::Padding::horizontal(1))),
                 Rect::new(area.x, box_y, area.width, box_h),
             );
 
-            // 5. Footer Line
-            let cwd_display = if self.cwd.is_empty() {
-                std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default()
-            } else {
-                self.cwd.clone()
-            };
-            let hint_str = "ctrl+p commands";
-            let model_display = if self.model_name.is_empty() {
-                String::new()
-            } else {
-                self.model_name.clone()
-            };
+            let cwd_display = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
+            let model_display = self.model_name.clone();
+            let effort_display = &self.thinking_effort;
             let right_parts = if model_display.is_empty() {
-                vec![Span::styled(hint_str, Style::default().fg(Color::Rgb(108, 108, 108)))]
+                vec![Span::styled(effort_display.clone(), Style::default().fg(Color::Rgb(108, 108, 108)))]
             } else {
                 vec![
                     Span::styled(model_display.clone(), Style::default().fg(Color::Rgb(140, 140, 140))),
                     Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
-                    Span::styled(hint_str, Style::default().fg(Color::Rgb(108, 108, 108))),
+                    Span::styled(effort_display.clone(), Style::default().fg(Color::Rgb(108, 108, 108))),
                 ]
             };
-            let right_len = if model_display.is_empty() {
-                hint_str.chars().count()
-            } else {
-                model_display.chars().count() + 3 + hint_str.chars().count()
-            };
-            let left_len = cwd_display.chars().count();
-            let pad_len = w.saturating_sub(left_len + right_len);
-            let mut footer_spans = vec![
-                Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))),
-                Span::raw(" ".repeat(pad_len)),
-            ];
+            let right_len = if model_display.is_empty() { effort_display.chars().count() } else { model_display.chars().count() + 3 + effort_display.chars().count() };
+            let pad_len = w.saturating_sub(cwd_display.chars().count() + right_len);
+            let mut footer_spans = vec![Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))), Span::raw(" ".repeat(pad_len))];
             footer_spans.extend(right_parts);
-            let footer_line = Line::from(footer_spans);
-            frame.render_widget(
-                Paragraph::new(footer_line),
-                Rect::new(area.x, footer_y, area.width, 1),
-            );
+            frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
 
-            // Cursor positioned inside the container box on the prompt input line (row 1 after top row)
             let (cursor_line_idx, cursor_col) = {
                 let cursor = self.textarea.cursor().min(text.len());
                 let before = &text[..cursor];
-                let line_idx = before.matches('\n').count();
-                let last_nl = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                let col = before[last_nl..].chars().count();
-                (line_idx, col)
+                (before.matches('\n').count(), before[before.rfind('\n').map(|i| i + 1).unwrap_or(0)..].chars().count())
             };
-            let padding_cols = 1u16;
-            let prefix_cols = 2u16; // "❯ "
-            let cursor_x = (area.x + padding_cols + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cursor_y = (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
-            frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+            frame.set_cursor_position(Position::new((area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1)), (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1))));
         })?;
         Ok(())
     }
 
-    /// Attach image path as atomic placeholder (mirrors codex AttachmentState + textarea element)
     pub fn attach_image(&mut self, path: PathBuf) {
         let idx = self.attachments.len() + 1;
         let placeholder = format!("[Image #{idx}]");
@@ -529,7 +470,6 @@ impl Tui {
         let _ = self.draw();
     }
 
-    /// Handle paste: large pastes become placeholder + pending_pastes (codex LARGE_PASTE_CHAR_THRESHOLD=1000)
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         const THRESHOLD: usize = 1000;
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
@@ -565,23 +505,22 @@ impl Tui {
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
                     KeyCode::Char('p') => self.sel = self.sel.saturating_sub(1),
                     KeyCode::Char('n') => self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1)),
+                    KeyCode::Char('u') => { self.textarea.set_text(""); self.history_idx = None; }
+                    KeyCode::Char('a') => self.textarea.set_cursor(0),
+                    KeyCode::Char('e') => self.textarea.move_to_end(),
                     KeyCode::Char('k') => {
-                        self.textarea.delete_backward(usize::MAX);
+                        let cur = self.textarea.cursor();
+                        self.textarea.replace_range(cur..usize::MAX, "");
                     }
-                    KeyCode::Char('j') => {
-                        self.textarea.insert_str("\n");
-                    }
+                    KeyCode::Char('w') => { self.textarea.delete_backward(1); }
+                    KeyCode::Char('j') | KeyCode::Char('m') => { self.textarea.insert_str("\n"); }
                     _ => {}
                 },
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) => {
                     match code {
                         KeyCode::Enter => {
-                            // Shift+Enter / Alt+Enter inserts newline (codex insert_newline), plain Enter submits or completes
                             let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
-                            if is_newline {
-                                self.textarea.insert_str("\n");
-                                continue;
-                            }
+                            if is_newline { self.textarea.insert_str("\n"); continue; }
                             if !self.matches.is_empty() && let Some((name, _)) = self.matches.get(self.sel) {
                                 if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
                                     self.textarea.set_text(&format!("/{name} "));
@@ -589,21 +528,13 @@ impl Tui {
                                     continue;
                                 }
                             }
-                            if self.show_welcome {
-                                self.show_welcome = false;
-                                let _ = self.terminal.clear();
-                            }
-                            // expand pending pastes (codex does this on submit)
                             let mut text = self.textarea.text().to_string();
                             for (ph, full) in &self.pending_pastes { text = text.replace(ph, full); }
                             self.pending_pastes.clear();
-                            // trim and preserve attachments mention
                             let trimmed = text.trim().to_string();
                             if trimmed.is_empty() && self.attachments.is_empty() { continue; }
-                            // history push (codex ChatComposerHistory local history)
                             if !trimmed.is_empty() {
                                 self.history.push(trimmed.clone());
-                                // keep last 100 like codex
                                 if self.history.len() > 100 { self.history.remove(0); }
                             }
                             self.history_idx = None;
@@ -612,11 +543,7 @@ impl Tui {
                             self.attachments.clear();
                             self.matches.clear();
                             self.sel = 0;
-                            if trimmed.starts_with('/') {
-                                self.push_line(format!("\u{203a} {trimmed}"));
-                            } else {
-                                self.push_user_prompt(&trimmed);
-                            }
+                            self.push_user_prompt(&trimmed);
                             return Ok(Some(trimmed));
                         }
                         KeyCode::Tab => {
@@ -712,7 +639,6 @@ impl Tui {
         if spacer { self.push_line(String::new()); }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
-        self.show_welcome = false;
         let w = self.width().max(20);
         let content_w = w.saturating_sub(4).max(1);
 
