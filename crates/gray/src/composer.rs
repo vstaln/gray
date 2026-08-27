@@ -289,12 +289,11 @@ impl Tui {
             let text = self.textarea.text().to_string();
             let content_w = w.saturating_sub(4).max(1);
 
-            // GrokNight palette
+            // Neutral Gray palette (no blue)
             let bg_color = Color::Rgb(22, 22, 22);
-            let border_color = Color::Rgb(80, 80, 80);
-            let accent_blue = Color::Rgb(122, 162, 247);
+            let prompt_color = Color::Rgb(180, 180, 180);
             let text_primary = Color::Rgb(225, 225, 225);
-            let text_secondary = Color::Rgb(200, 200, 200);
+            let text_secondary = Color::Rgb(140, 140, 140);
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
@@ -303,7 +302,7 @@ impl Tui {
 
             // 2. Prompt input rows
             let prompt_arrow = "❯ ";
-            let arrow_span = Span::styled(prompt_arrow, Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
+            let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
             if text.is_empty() {
                 box_lines.push(Line::from(vec![
@@ -339,15 +338,13 @@ impl Tui {
                 }
             }
 
-            // 3. Info row inside box: Build · <model>
+            // 3. Info row inside box: <model>
             let model_display = if self.model_name.is_empty() {
                 "gray".to_string()
             } else {
                 self.model_name.clone()
             };
             box_lines.push(Line::from(vec![
-                Span::styled("Build", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color)),
-                Span::styled(" \u{b7} ", Style::default().fg(border_color).bg(bg_color)),
                 Span::styled(model_display, Style::default().fg(text_secondary).bg(bg_color)),
             ]).style(Style::default().bg(bg_color)));
 
@@ -359,12 +356,12 @@ impl Tui {
             if self.show_welcome {
                 let logo = crate::tui::logo_lines();
                 let palette = [
-                    Color::Rgb(122, 162, 247), // #7aa2f7
-                    Color::Rgb(125, 207, 255), // #7dcfff
-                    Color::Rgb(115, 218, 202), // #73daca
-                    Color::Rgb(158, 206, 106), // #9ece6a
-                    Color::Rgb(187, 154, 247), // #bb9af7
-                    Color::Rgb(157, 124, 216), // #9d7cd8
+                    Color::Rgb(180, 180, 180),
+                    Color::Rgb(160, 160, 160),
+                    Color::Rgb(140, 140, 140),
+                    Color::Rgb(120, 120, 120),
+                    Color::Rgb(100, 100, 100),
+                    Color::Rgb(80, 80, 80),
                 ];
                 let max_logo_w = logo.iter().map(|l| l.trim().chars().count()).max().unwrap_or(0);
                 let logo_pad = w.saturating_sub(max_logo_w) / 2;
@@ -680,13 +677,13 @@ impl Tui {
         let content_w = w.saturating_sub(4).max(1);
 
         let bg_color = Color::Rgb(22, 22, 22);
-        let accent_blue = Color::Rgb(122, 162, 247);
+        let prompt_color = Color::Rgb(180, 180, 180);
         let text_primary = Color::Rgb(225, 225, 225);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
-        let arrow_span = Span::styled("❯ ", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
+        let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
         let lines_raw: Vec<&str> = text.split('\n').collect();
         for (i, raw_line) in lines_raw.iter().enumerate() {
