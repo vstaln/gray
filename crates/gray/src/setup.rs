@@ -663,10 +663,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         let inner_w = modal_w.saturating_sub(2);
                         let inner = Rect::new(modal_x + 1, modal_y + 1, inner_w, modal_h.saturating_sub(2));
 
-                        // 1. Header Line
+                        // 1. Header Line (with esc at top right)
+                        let title_str = "Connect a provider";
+                        let esc_str = "esc";
+                        let pad_len = (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
                         let header_line = Line::from(vec![
-                            Span::styled("Connect a provider", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
-                            Span::styled("  (esc to close)", Style::default().fg(text_dim).bg(box_bg)),
+                            Span::styled(title_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
+                            Span::styled(esc_str, Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         frame.render_widget(Paragraph::new(header_line), Rect::new(inner.x, inner.y, inner.width, 1));
 
@@ -750,9 +754,12 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             }
                         }
 
-                        // 4. Footer Help Line
+                        // 4. Footer Help Line (no brackets)
                         let footer_line = Line::from(vec![
-                            Span::styled("[↑/↓] navigate   [enter] select   [esc] close", Style::default().fg(Color::Rgb(100, 100, 100)).bg(box_bg)),
+                            Span::styled("↑↓ ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("navigate    ", Style::default().fg(text_dim).bg(box_bg)),
+                            Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("select", Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         frame.render_widget(
                             Paragraph::new(footer_line),
@@ -766,7 +773,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         status_msg,
                     } => {
                         let dialog_w = 60.min(area.width.saturating_sub(4)).max(36);
-                        let dialog_h = 11.min(area.height.saturating_sub(2)).max(9);
+                        let dialog_h = 10.min(area.height.saturating_sub(2)).max(8);
                         let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
                         let dialog_y = (area.height.saturating_sub(dialog_h)) / 2;
                         let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
@@ -779,9 +786,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
 
                         let inner = Rect::new(dialog_x + 2, dialog_y + 1, dialog_w.saturating_sub(4), dialog_h.saturating_sub(2));
 
-                        // Header
+                        // Header (with esc at top right)
+                        let title_str = "API Key Configuration";
+                        let esc_str = "esc";
+                        let pad_len = (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
                         let line0 = Line::from(vec![
-                            Span::styled("API Key Configuration", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled(title_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
+                            Span::styled(esc_str, Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         let line1 = Line::from(vec![
                             Span::styled(format!("Provider: {}", item.name), Style::default().fg(text_dim).bg(box_bg)),
@@ -789,33 +801,23 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         frame.render_widget(Paragraph::new(line0), Rect::new(inner.x, inner.y, inner.width, 1));
                         frame.render_widget(Paragraph::new(line1), Rect::new(inner.x, inner.y + 1, inner.width, 1));
 
-                        // Prompt label
-                        let hint = if item.env_key.is_empty() { "API_KEY" } else { &item.env_key };
-                        let prompt_text = format!("Enter {hint}:");
-                        let prompt_line = Line::from(Span::styled(prompt_text, Style::default().fg(accent_peach).add_modifier(Modifier::BOLD).bg(box_bg)));
-                        frame.render_widget(Paragraph::new(prompt_line), Rect::new(inner.x, inner.y + 3, inner.width, 1));
-
                         // Input Box (inset colored block)
                         let input_content = if key_buf.is_empty() {
                             if existing_key.is_some() {
                                 Line::from(Span::styled(" (stored key exists \u{2014} press Enter to keep)", Style::default().fg(Color::Rgb(140, 140, 140)).bg(input_bg)))
                             } else {
                                 Line::from(vec![
-                                    Span::styled(" ", Style::default().bg(input_bg)),
-                                    Span::styled("▎", Style::default().fg(accent_peach).bg(input_bg)),
                                     Span::styled(" Paste or type API key...", Style::default().fg(Color::Rgb(110, 110, 110)).bg(input_bg)),
                                 ])
                             }
                         } else {
                             let masked = "•".repeat(key_buf.chars().count());
                             Line::from(vec![
-                                Span::styled(" ", Style::default().bg(input_bg)),
-                                Span::styled(masked, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(input_bg)),
-                                Span::styled("▎", Style::default().fg(accent_peach).bg(input_bg)),
+                                Span::styled(format!(" {masked}"), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(input_bg)),
                             ])
                         };
 
-                        let input_rect = Rect::new(inner.x, inner.y + 4, inner.width, 1);
+                        let input_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
                         frame.render_widget(Clear, input_rect);
                         frame.render_widget(Paragraph::new(input_content).style(Style::default().bg(input_bg)), input_rect);
 
@@ -823,13 +825,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         let note_line = if let Some(msg) = status_msg {
                             Line::from(Span::styled(format!(" \u{2022} {msg}"), Style::default().fg(Color::Rgb(239, 68, 68)).bg(box_bg)))
                         } else {
-                            Line::from(Span::styled(" (Key stored securely in ~/.gray/auth.json mode 0600)", Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg)))
+                            Line::from(Span::styled(" (Key stored securely in ~/.gray/auth.json)", Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg)))
                         };
-                        frame.render_widget(Paragraph::new(note_line), Rect::new(inner.x, inner.y + 6, inner.width, 1));
+                        frame.render_widget(Paragraph::new(note_line), Rect::new(inner.x, inner.y + 5, inner.width, 1));
 
-                        // Footer buttons
+                        // Footer buttons (enter submit - no brackets)
                         let footer = Line::from(vec![
-                            Span::styled("[enter] save & connect   [esc] back", Style::default().fg(Color::Rgb(110, 110, 110)).bg(box_bg)),
+                            Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("submit", Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
                     }
