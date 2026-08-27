@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{config::Config, rule, tui::print_wrapped};
@@ -497,135 +496,345 @@ pub fn run_key_setup(config: &mut Config, pid: Option<String>) -> anyhow::Result
     Ok(true)
 }
 
-/// Interactive provider menu: Free tier, API key, OAuth accounts, Local endpoints.
-/// Returns Ok(true) if a provider was configured, Ok(false) if cancelled / skipped.
-pub async fn run_provider_menu(config: &mut Config) -> anyhow::Result<bool> {
-    let options = vec![
-        ("Start free", "keyless free tier (9router)".to_string()),
-        ("Add an API key", "OpenRouter, DeepSeek, OpenAI, Anthropic, etc.".to_string()),
-        ("Sign in with account", "xAI / Grok, Codex / ChatGPT".to_string()),
-        ("Use a local model", "Ollama, LMStudio, localhost".to_string()),
-        ("Skip for now", String::new()),
+/// Provider item displayed in the "Connect a provider" modal.
+#[derive(Debug, Clone)]
+pub struct ConnectItem {
+    pub id: String,
+    pub name: String,
+    pub sublabel: String,
+    pub category: &'static str,
+    pub base_url: String,
+    pub default_model: String,
+    pub env_key: String,
+    pub no_auth: bool,
+}
+
+/// Builds the full list of providers for the connect modal:
+/// Popular section on top, followed by all catalog providers under Providers.
+pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
+    let popular_defs = [
+        ("opencode", "OpenCode Zen", "(Recommended)", "https://opencode.ai/zen/v1", "glm-5.2", "OPENCODE_API_KEY", false),
+        ("opencode-go", "OpenCode Go", "Low cost subscription for everyone", "https://opencode.ai/zen/go/v1", "glm-5.2", "OPENCODE_API_KEY", false),
+        ("openai", "OpenAI", "(ChatGPT Plus/Pro or API key)", "https://api.openai.com/v1", "gpt-4o", "OPENAI_API_KEY", false),
+        ("github-copilot", "GitHub Copilot", "", "https://api.githubcopilot.com", "gpt-4o", "COPILOT_API_KEY", false),
+        ("anthropic", "Anthropic", "(API key)", "https://api.anthropic.com/v1", "claude-3-7-sonnet-20250219", "ANTHROPIC_API_KEY", false),
+        ("google", "Google", "(Gemini API key)", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", "GEMINI_API_KEY", false),
+        ("deepseek", "DeepSeek", "", "https://api.deepseek.com", "deepseek-chat", "DEEPSEEK_API_KEY", false),
+        ("openrouter", "OpenRouter", "(Access 300+ models)", "https://openrouter.ai/api/v1", "anthropic/claude-3.7-sonnet", "OPENROUTER_API_KEY", false),
+        ("groq", "Groq", "(Fast inference)", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "GROQ_API_KEY", false),
+        ("ollama", "Ollama", "(Local http://localhost:11434)", "http://localhost:11434/v1", "llama3", "", true),
     ];
-    let items: Vec<(String, String)> = options
-        .into_iter()
-        .map(|(a, b)| (a.to_string(), b))
-        .collect();
-    let choice = match select_from_list("Providers", &items, false)? {
-        Some(i) => route_onboarding(i),
-        None => OnboardingChoice::Skip,
+
+    let mut items = Vec::new();
+    let mut popular_ids = std::collections::HashSet::new();
+
+    for (id, name, sublabel, base_url, def_model, env_k, no_auth) in popular_defs {
+        popular_ids.insert(id.to_string());
+        let (url, model, env) = if let Some(p) = catalog.get(id) {
+            let m = p.models.first().map(|m| m.id.as_str()).unwrap_or(def_model);
+            let e = env_hint(p);
+            (p.base_url.as_str(), m, e)
+        } else {
+            (base_url, def_model, env_k.to_string())
+        };
+        items.push(ConnectItem {
+            id: id.to_string(),
+            name: name.to_string(),
+            sublabel: sublabel.to_string(),
+            category: "Popular",
+            base_url: url.to_string(),
+            default_model: model.to_string(),
+            env_key: env,
+            no_auth,
+        });
+    }
+
+    // All catalog providers in alphabetical order
+    let mut catalog_entries: Vec<_> = catalog.iter().collect();
+    catalog_entries.sort_by_key(|(_, p)| p.name.to_lowercase());
+
+    for (id, p) in catalog_entries {
+        if popular_ids.contains(id) {
+            continue;
+        }
+        let model = p.models.first().map(|m| m.id.clone()).unwrap_or_default();
+        items.push(ConnectItem {
+            id: id.clone(),
+            name: p.name.clone(),
+            sublabel: String::new(),
+            category: "Providers",
+            base_url: p.base_url.clone(),
+            default_model: model,
+            env_key: env_hint(p),
+            no_auth: p.no_auth,
+        });
+    }
+
+    items
+}
+
+/// Interactive "Connect a provider" GUI modal, matching OpenCode's visual design.
+/// Live search filter, categorized into Popular and Providers, peach selection highlight,
+/// instant API key entry, and auto-configured default model.
+pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
+    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+    use std::io::Write as _;
+
+    let catalog = load_catalog()?;
+    let all_items = build_connect_items(&catalog);
+    let mut filter = String::new();
+    let mut sel = 0usize;
+    let mut frame = crate::tui::InlineFrame::default();
+    let mut stdout = std::io::stdout();
+
+    crossterm::terminal::enable_raw_mode()?;
+    let _ = write!(stdout, "\x1b[?25l"); // Hide cursor during selection
+    stdout.flush()?;
+
+    let selected_item = (|| -> anyhow::Result<Option<ConnectItem>> {
+        loop {
+            let auth_keys = load_auth_keys();
+            let filtered: Vec<&ConnectItem> = all_items
+                .iter()
+                .filter(|item| {
+                    let f = filter.to_lowercase();
+                    f.is_empty()
+                        || item.name.to_lowercase().contains(&f)
+                        || item.id.to_lowercase().contains(&f)
+                        || item.sublabel.to_lowercase().contains(&f)
+                })
+                .collect();
+
+            if filtered.is_empty() {
+                sel = 0;
+            } else if sel >= filtered.len() {
+                sel = filtered.len().saturating_sub(1);
+            }
+
+            let tw = crate::term_width();
+            let th = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
+            let modal_w = 54.min(tw.saturating_sub(4)).max(36);
+            let modal_pad = tw.saturating_sub(modal_w) / 2;
+            let pad_str = " ".repeat(modal_pad);
+
+            let max_visible = 12.min(th.saturating_sub(8)).max(4);
+            let start = scroll_start(sel, max_visible);
+            let visible_slice = if filtered.is_empty() {
+                &[]
+            } else {
+                &filtered[start..(start + max_visible).min(filtered.len())]
+            };
+
+            let mut c = crate::tui::Container::new();
+
+            // 1. Header: Connect a provider                 esc
+            let title_left = "\x1b[1;37mConnect a provider\x1b[0m";
+            let esc_right = "\x1b[2;37mesc\x1b[0m";
+            let title_pad = modal_w.saturating_sub(18 + 3);
+            c.push(Box::new(crate::tui::Text::new(
+                format!("{pad_str}{}{}{}", title_left, " ".repeat(title_pad), esc_right),
+                0,
+            )));
+            c.push(Box::new(crate::tui::Text::new(String::new(), 0)));
+
+            // 2. Search input
+            let search_line = if filter.is_empty() {
+                format!("{pad_str}\x1b[48;2;246;173;126m\x1b[38;2;0;0;0mS\x1b[0m\x1b[2;37mearch\x1b[0m")
+            } else {
+                format!("{pad_str}\x1b[1;37mSearch:\x1b[0m {filter}\x1b[7m \x1b[0m")
+            };
+            c.push(Box::new(crate::tui::Text::new(search_line, 0)));
+            c.push(Box::new(crate::tui::Text::new(String::new(), 0)));
+
+            // 3. Render items with category headers when appropriate
+            if filtered.is_empty() {
+                c.push(Box::new(crate::tui::Text::new(format!("{pad_str}  \x1b[2mNo matching providers\x1b[0m"), 0)));
+            } else {
+                let mut last_category: Option<&'static str> = None;
+                for (rel_idx, item) in visible_slice.iter().enumerate() {
+                    let abs_idx = start + rel_idx;
+                    let is_selected = abs_idx == sel;
+
+                    // Show category header if category changes (and filter is empty)
+                    if filter.is_empty() && last_category != Some(item.category) {
+                        last_category = Some(item.category);
+                        c.push(Box::new(crate::tui::Text::new(
+                            format!("{pad_str}\x1b[1;38;2;167;139;250m{}\x1b[0m", item.category),
+                            0,
+                        )));
+                    }
+
+                    let is_connected = auth_keys.contains_key(&item.id)
+                        || (config.base_url == item.base_url && config.api_key.is_some());
+
+                    let check_glyph = if is_connected { "✓ " } else { "  " };
+
+                    if is_selected {
+                        // OpenCode peach highlight bar across the full row
+                        let sub = if item.sublabel.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" {}", item.sublabel)
+                        };
+                        let raw_content = format!(" {check_glyph}{}{sub}", item.name);
+                        let fill = modal_w.saturating_sub(raw_content.chars().count());
+                        let full_bar = format!("{}{}", raw_content, " ".repeat(fill));
+                        let row_styled = format!("{pad_str}\x1b[48;2;246;173;126m\x1b[38;2;0;0;0m{full_bar}\x1b[0m");
+                        c.push(Box::new(crate::tui::Text::new(row_styled, 0)));
+                    } else {
+                        let check_styled = if is_connected {
+                            "\x1b[38;2;74;222;128m✓\x1b[0m "
+                        } else {
+                            "  "
+                        };
+                        let name_styled = format!("\x1b[1;37m{}\x1b[0m", item.name);
+                        let sub_styled = if item.sublabel.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" \x1b[2;38;2;130;130;130m{}\x1b[0m", item.sublabel)
+                        };
+                        c.push(Box::new(crate::tui::Text::new(
+                            format!("{pad_str} {check_styled}{name_styled}{sub_styled}"),
+                            0,
+                        )));
+                    }
+                }
+            }
+
+            frame.draw(&mut stdout, &c, tw)?;
+
+            match read()? {
+                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
+                    if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    match code {
+                        KeyCode::Char('p') => sel = sel.saturating_sub(1),
+                        KeyCode::Char('n') => {
+                            if !filtered.is_empty() {
+                                sel = (sel + 1).min(filtered.len() - 1);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
+                    KeyCode::Up => sel = sel.saturating_sub(1),
+                    KeyCode::Down => {
+                        if !filtered.is_empty() {
+                            sel = (sel + 1).min(filtered.len() - 1);
+                        }
+                    }
+                    KeyCode::PageUp => sel = sel.saturating_sub(10),
+                    KeyCode::PageDown => {
+                        if !filtered.is_empty() {
+                            sel = (sel + 10).min(filtered.len() - 1);
+                        }
+                    }
+                    KeyCode::Char(ch) => {
+                        filter.push(ch);
+                        sel = 0;
+                    }
+                    KeyCode::Backspace => {
+                        filter.pop();
+                        sel = 0;
+                    }
+                    KeyCode::Enter => {
+                        if let Some(&item) = filtered.get(sel) {
+                            return Ok(Some(item.clone()));
+                        }
+                    }
+                    KeyCode::Esc => return Ok(None),
+                    _ => {}
+                },
+                Event::Resize(_, _) => {}
+                _ => {}
+            }
+        }
+    })();
+
+    crossterm::terminal::disable_raw_mode()?;
+    let _ = write!(stdout, "\x1b[?25h"); // Restore cursor
+    stdout.flush()?;
+
+    frame.erase(&mut stdout)?;
+
+    let Some(item) = selected_item? else {
+        return Ok(false);
     };
 
-    match choice {
-        OnboardingChoice::Free => {
-            let (_, p) = load_catalog()?
-                .iter()
-                .find(|(_, p)| p.no_auth && !p.models.is_empty())
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .with_context(|| "no keyless provider with models in bundled catalog")?;
-            let model = p.models[0].id.clone();
-            let path = saved_config_path()?;
-            save_saved_config_at(&path, &SavedConfig {
-                base_url: Some(p.base_url.clone()),
-                api_key: None,
-                model: Some(model.clone()),
-                auth_mode: Some("none".into()),
-            })?;
-            config.base_url = p.base_url.clone();
-            config.api_key = None;
-            config.model = Some(model);
-            println!("saved — you're on the free tier ({}). /model to switch anytime.", p.name);
-            Ok(true)
-        }
-        OnboardingChoice::ApiKey => run_api_key_setup(config),
-        OnboardingChoice::OAuth => {
-            let accounts = vec![
-                ("xai / grok".to_string(), "sign in with your x.ai account".to_string()),
-                ("codex".to_string(), "sign in with your ChatGPT account".to_string()),
-                ("anthropic".to_string(), "(coming soon)".to_string()),
-            ];
-            let pick = match select_from_list("account", &accounts, false)? {
-                Some(i) => i,
-                None => return Ok(false),
-            };
-            let (label, base_url, model, signin_result) = match pick {
-                0 => (
-                    "xAI / Grok",
-                    crate::oauth::XAI_API_BASE,
-                    crate::oauth::XAI_DEFAULT_MODEL,
-                    crate::oauth::run_xai_signin().await,
-                ),
-                1 => (
-                    "Codex",
-                    crate::oauth::CODEX_API_BASE,
-                    crate::oauth::CODEX_DEFAULT_MODEL,
-                    crate::oauth::run_codex_signin().await,
-                ),
-                _ => {
-                    println!("{} — (coming soon)", accounts[pick].0);
-                    return Ok(false);
-                }
-            };
-            match signin_result {
-                Ok(auth) => {
-                    save_saved_config_at(&saved_config_path()?, &SavedConfig {
-                        base_url: Some(base_url.into()),
-                        api_key: None,
-                        model: Some(model.into()),
-                        auth_mode: Some("oauth".into()),
-                    })?;
-                    config.base_url = base_url.into();
-                    config.model = Some(model.into());
-                    config.api_key = Some(auth.access_token);
-                    println!("{label} ready — saved to {}.", saved_config_path()?.display());
-                    Ok(true)
-                }
-                Err(e) => {
-                    println!("sign-in failed: {e}");
-                    Ok(false)
-                }
-            }
-        }
-        OnboardingChoice::Local => {
-            println!("{}", rule("local model"));
-            let base = match read_line("base url [http://localhost:11434/v1]: ") {
-                Ok(b) => b,
-                Err(_) => return Ok(false),
-            };
-            let base = if base.is_empty() { "http://localhost:11434/v1".to_string() } else { base };
-            let suggested = load_catalog().ok()
-                .and_then(|c| c.get("lmstudio").and_then(|p| p.models.first()).map(|m| m.id.clone()))
-                .unwrap_or_default();
-            let model_in = if suggested.is_empty() {
-                match read_line("model id: ") {
-                    Ok(m) => m,
-                    Err(_) => return Ok(false),
-                }
-            } else {
-                match read_line(&format!("model [{suggested}]: ")) {
-                    Ok(m) => m,
-                    Err(_) => return Ok(false),
-                }
-            };
-            if model_in.is_empty() {
-                return Ok(false);
-            }
-            let model = model_in;
-            let path = saved_config_path()?;
-            save_saved_config_at(&path, &SavedConfig {
-                base_url: Some(base.clone()),
-                api_key: None,
-                model: Some(model.clone()),
-                auth_mode: Some("none".into()),
-            })?;
-            config.base_url = base;
-            config.api_key = None;
-            config.model = Some(model);
-            println!("saved — no auth needed for local endpoints.");
-            Ok(true)
-        }
-        OnboardingChoice::Skip => Ok(false),
+    // Connection flow
+    if item.no_auth {
+        config.base_url = item.base_url.clone();
+        config.api_key = None;
+        config.model = Some(item.default_model.clone());
+        let path = saved_config_path()?;
+        save_saved_config_at(&path, &SavedConfig {
+            base_url: Some(item.base_url.clone()),
+            api_key: None,
+            model: Some(item.default_model.clone()),
+            auth_mode: Some("none".into()),
+        })?;
+        println!("\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{}\x1b[0m! Active model: \x1b[1m{}\x1b[0m\r\n", item.name, item.default_model);
+        return Ok(true);
     }
+
+    let existing = load_auth_keys()
+        .get(&item.id)
+        .cloned()
+        .or_else(|| if config.base_url == item.base_url { config.api_key.clone() } else { None });
+
+    let hint = if item.env_key.is_empty() { "API_KEY" } else { &item.env_key };
+    let status_hint = if existing.is_some() {
+        "stored \u{2014} Enter keeps it"
+    } else {
+        hint
+    };
+
+    println!("\r\x1b[1;37mConnect to {}\x1b[0m", item.name);
+    let prompt = format!("Enter API key ({}): ", status_hint);
+    let key_in = match read_secret(&prompt) {
+        Ok(k) => k,
+        Err(_) => return Ok(false),
+    };
+    let key = if key_in.is_empty() {
+        existing.unwrap_or_default()
+    } else {
+        key_in
+    };
+
+    if key.is_empty() {
+        println!("no API key entered");
+        return Ok(false);
+    }
+
+    save_auth_key(&item.id, &key)?;
+    config.base_url = item.base_url.clone();
+    config.api_key = Some(key.clone());
+
+    let model = if !item.default_model.is_empty() {
+        item.default_model.clone()
+    } else {
+        "default".to_string()
+    };
+    config.model = Some(model.clone());
+
+    let path = saved_config_path()?;
+    let mut saved = load_saved_config_at(&path);
+    saved.base_url = Some(config.base_url.clone());
+    saved.api_key = config.api_key.clone();
+    saved.model = config.model.clone();
+    saved.auth_mode = Some("api_key".into());
+    save_saved_config_at(&path, &saved)?;
+
+    println!(
+        "\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{}\x1b[0m! Active model: \x1b[1m{}\x1b[0m\r\n",
+        item.name, model
+    );
+    Ok(true)
+}
+
+pub async fn run_provider_menu(config: &mut Config) -> anyhow::Result<bool> {
+    run_connect_modal(config)
 }
 
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {

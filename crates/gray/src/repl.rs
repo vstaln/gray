@@ -18,6 +18,7 @@ use crate::setup::read_line;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
+    ("connect", "connect a provider & setup API key (OpenCode GUI)"),
     ("new", "start a fresh conversation"),
     ("model", "switch or pick a model"),
     ("provider", "configure provider (API key, accounts, free tier)"),
@@ -195,7 +196,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::New
     } else if trimmed == "/thinking" {
         ReplCommand::Thinking
-    } else if trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
+    } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
         ReplCommand::Provider
     } else if trimmed == "/key" || trimmed == "/keys" {
         ReplCommand::Key(None)
@@ -694,6 +695,11 @@ pub async fn run_repl_mode(
                 match crate::setup::run_provider_menu(config).await {
                     Ok(true) => {
                         unconfigured = false;
+                        if let Some((shared, _)) = &tui {
+                            if let Some(m) = &config.model {
+                                shared.lock().expect("tui lock").set_model(m.clone());
+                            }
+                        }
                         reload_agent(&mut agent, config, &cwd).await;
                     }
                     Ok(false) => {}
@@ -722,6 +728,11 @@ pub async fn run_repl_mode(
                         match crate::setup::run_provider_menu(config).await {
                             Ok(true) => {
                                 unconfigured = false;
+                                if let Some((shared, _)) = &tui {
+                                    if let Some(m) = &config.model {
+                                        shared.lock().expect("tui lock").set_model(m.clone());
+                                    }
+                                }
                                 print!("\r\n");
                             }
                             Ok(false) => {
@@ -912,6 +923,7 @@ mod tests {
 
     #[test]
     fn parse_command_identifies_provider() {
+        assert_eq!(parse_command("/connect"), ReplCommand::Provider);
         assert_eq!(parse_command("/provider"), ReplCommand::Provider);
         assert_eq!(parse_command("/providers"), ReplCommand::Provider);
         assert_eq!(parse_command("/login"), ReplCommand::Provider);
