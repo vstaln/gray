@@ -16,6 +16,7 @@
 //! T0046: 1:1 port of `agent/secret_sources/_cache.py` (215) → `secret_cache.rs`.
 //! T0047: 1:1 port of `hermes_cli/proxy/adapters/nous_portal.py` (199) → `nous_portal_adapter.rs`.
 //! T0048: 1:1 port of `agent/credential_persistence.py` (174) → `credential_persistence.rs`.
+//! T0049: 1:1 port of `hermes_cli/proxy/adapters/xai.py` (145) → `xai_adapter.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -39,3 +40,4 @@ pub mod secret_base;
 pub mod secret_cache;
 pub mod secret_registry;
 pub mod vertex_adapter;
+pub mod xai_adapter;
