@@ -19,6 +19,7 @@ pub mod osv_check;
 pub mod path_security;
 pub mod plugin_guard;
 pub mod project_tools;
+pub mod react_to_message_tool;
 pub mod read_window_tool;
 pub mod shell_heredoc;
 pub mod skillevaluator_scan;
