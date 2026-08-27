@@ -15,7 +15,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Padding, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
 
 use crate::repl::completion_matches;
@@ -287,61 +287,91 @@ impl Tui {
             let w = area.width as usize;
 
             let text = self.textarea.text().to_string();
-            let content_w = w.saturating_sub(4).max(1);
+            let inner_w = w.saturating_sub(8).max(1);
 
-            let bg_color = Color::Rgb(24, 24, 24);
-            let style = Style::default().bg(bg_color);
-            let prompt_style = Style::default().fg(Color::Rgb(180, 180, 180)).add_modifier(Modifier::BOLD);
+            // GrokNight palette
+            let bg_color = Color::Rgb(20, 20, 20);
+            let border_color = Color::Rgb(65, 65, 65);
+            let accent_blue = Color::Rgb(122, 162, 247);
+            let text_primary = Color::Rgb(225, 225, 225);
+            let text_secondary = Color::Rgb(200, 200, 200);
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            // User prompt input (clean, no "Ask anything" placeholder)
+            // 1. Top border: ╭──────────────╮
+            let top_border = format!("╭{}╮", "─".repeat(w.saturating_sub(2)));
+            box_lines.push(Line::from(Span::styled(top_border, Style::default().fg(border_color).bg(bg_color))));
+
+            // 2. Middle rows: ┃ ❯ <text>
+            let prompt_arrow = "❯ ";
+            let bar_span = Span::styled("┃ ", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
+            let arrow_span = Span::styled(prompt_arrow, Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
+
             if text.is_empty() {
                 box_lines.push(Line::from(vec![
-                    Span::styled("› ", prompt_style),
-                ]).style(style));
+                    bar_span.clone(),
+                    arrow_span.clone(),
+                ]).style(Style::default().bg(bg_color)));
             } else {
                 let lines_raw: Vec<&str> = text.split('\n').collect();
                 for (i, raw_line) in lines_raw.iter().enumerate() {
-                    let prefix = if i == 0 { "› " } else { "  " };
                     let prefix_span = if i == 0 {
-                        Span::styled(prefix, prompt_style)
+                        arrow_span.clone()
                     } else {
-                        Span::raw(prefix)
+                        Span::styled("  ", Style::default().bg(bg_color))
                     };
                     if raw_line.is_empty() {
-                        box_lines.push(Line::from(vec![prefix_span]).style(style));
+                        box_lines.push(Line::from(vec![bar_span.clone(), prefix_span]).style(Style::default().bg(bg_color)));
                     } else {
                         let chars: Vec<char> = raw_line.chars().collect();
-                        for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
+                        for (chunk_idx, chunk) in chars.chunks(inner_w).enumerate() {
                             let s: String = chunk.iter().collect();
                             if chunk_idx == 0 {
                                 box_lines.push(Line::from(vec![
+                                    bar_span.clone(),
                                     prefix_span.clone(),
-                                    Span::styled(s, Style::default().fg(Color::White)),
-                                ]).style(style));
+                                    Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                                ]).style(Style::default().bg(bg_color)));
                             } else {
                                 box_lines.push(Line::from(vec![
-                                    Span::raw("  "),
-                                    Span::styled(s, Style::default().fg(Color::White)),
-                                ]).style(style));
+                                    bar_span.clone(),
+                                    Span::styled("  ", Style::default().bg(bg_color)),
+                                    Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                                ]).style(Style::default().bg(bg_color)));
                             }
                         }
                     }
                 }
             }
 
+            // 3. Info row inside box: ┃ Build · <model>
+            let model_display = if self.model_name.is_empty() {
+                "gray".to_string()
+            } else {
+                self.model_name.clone()
+            };
+            box_lines.push(Line::from(vec![
+                bar_span.clone(),
+                Span::styled("Build", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color)),
+                Span::styled(" \u{b7} ", Style::default().fg(border_color).bg(bg_color)),
+                Span::styled(model_display, Style::default().fg(text_secondary).bg(bg_color)),
+            ]).style(Style::default().bg(bg_color)));
+
+            // 4. Bottom border: ╰──────────────╯
+            let bottom_border = format!("╰{}╯", "─".repeat(w.saturating_sub(2)));
+            box_lines.push(Line::from(Span::styled(bottom_border, Style::default().fg(border_color).bg(bg_color))));
+
             // Centered welcome banner (rendered when session starts, disappears on input)
             let mut welcome_lines: Vec<Line<'static>> = Vec::new();
             if self.show_welcome {
                 let logo = crate::tui::logo_lines();
                 let palette = [
-                    Color::Indexed(45),
-                    Color::Indexed(81),
-                    Color::Indexed(75),
-                    Color::Indexed(69),
-                    Color::Indexed(63),
-                    Color::Indexed(57),
+                    Color::Rgb(122, 162, 247), // #7aa2f7
+                    Color::Rgb(125, 207, 255), // #7dcfff
+                    Color::Rgb(115, 218, 202), // #73daca
+                    Color::Rgb(158, 206, 106), // #9ece6a
+                    Color::Rgb(187, 154, 247), // #bb9af7
+                    Color::Rgb(157, 124, 216), // #9d7cd8
                 ];
                 for (i, line) in logo.iter().enumerate() {
                     let trimmed = line.trim();
@@ -358,8 +388,8 @@ impl Tui {
                 let pad = w.saturating_sub(banner_len) / 2;
                 welcome_lines.push(Line::from(vec![
                     Span::raw(" ".repeat(pad)),
-                    Span::styled("gray", Style::default().bold()),
-                    Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().dim()),
+                    Span::styled("gray", Style::default().bold().fg(text_primary)),
+                    Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(text_secondary)),
                 ]));
                 welcome_lines.push(Line::from(""));
             }
@@ -427,10 +457,9 @@ impl Tui {
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            // 4. Container Box: Faint neutral background fill, no borders
+            // 4. Container Box: Full styled Block
             let box_block = Block::default()
-                .style(Style::default().bg(bg_color))
-                .padding(Padding::horizontal(1));
+                .style(Style::default().bg(bg_color));
 
             frame.render_widget(
                 Paragraph::new(box_lines).block(box_block),
@@ -450,16 +479,16 @@ impl Tui {
             let right_len = hint_str.chars().count();
             let pad_len = w.saturating_sub(left_len + right_len);
             let footer_line = Line::from(vec![
-                Span::styled(cwd_display, Style::default().fg(Color::DarkGray)),
+                Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))),
                 Span::raw(" ".repeat(pad_len)),
-                Span::styled(hint_str, Style::default().fg(Color::DarkGray)),
+                Span::styled(hint_str, Style::default().fg(Color::Rgb(108, 108, 108))),
             ]);
             frame.render_widget(
                 Paragraph::new(footer_line),
                 Rect::new(area.x, footer_y, area.width, 1),
             );
 
-            // Cursor positioned inside the container box on the prompt input line
+            // Cursor positioned inside the container box on the prompt input line (row 1 after top border)
             let (cursor_line_idx, cursor_col) = {
                 let cursor = self.textarea.cursor().min(text.len());
                 let before = &text[..cursor];
@@ -468,10 +497,9 @@ impl Tui {
                 let col = before[last_nl..].chars().count();
                 (line_idx, col)
             };
-            let padding_cols = 1u16;
-            let prefix_cols = 2u16; // "› "
-            let cursor_x = (area.x + padding_cols + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cursor_y = (box_y + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
+            let prefix_cols = 4u16; // "┃ ❯ "
+            let cursor_x = (area.x + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(2));
+            let cursor_y = (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(2));
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         })?;
         Ok(())
@@ -651,47 +679,58 @@ impl Tui {
         if spacer { self.push_line(String::new()); }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
+        self.show_welcome = false;
         let w = self.width().max(20);
-        let content_width = w.saturating_sub(4).max(1);
+        let inner_w = w.saturating_sub(8).max(1);
 
-        let bg_color = Color::Rgb(24, 24, 24);
-        let style = Style::default().bg(bg_color);
-        let prompt_style = Style::default().fg(Color::Rgb(180, 180, 180)).add_modifier(Modifier::BOLD);
+        let bg_color = Color::Rgb(20, 20, 20);
+        let border_color = Color::Rgb(65, 65, 65);
+        let accent_blue = Color::Rgb(122, 162, 247);
+        let text_primary = Color::Rgb(225, 225, 225);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+
+        let top_border = format!("╭{}╮", "─".repeat(w.saturating_sub(2)));
+        lines.push(Line::from(Span::styled(top_border, Style::default().fg(border_color).bg(bg_color))));
+
+        let bar_span = Span::styled("┃ ", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
+        let arrow_span = Span::styled("❯ ", Style::default().fg(accent_blue).add_modifier(Modifier::BOLD).bg(bg_color));
+
         let lines_raw: Vec<&str> = text.split('\n').collect();
         for (i, raw_line) in lines_raw.iter().enumerate() {
-            let prefix = if i == 0 { "› " } else { "  " };
             let prefix_span = if i == 0 {
-                Span::styled(prefix, prompt_style)
+                arrow_span.clone()
             } else {
-                Span::raw(prefix)
+                Span::styled("  ", Style::default().bg(bg_color))
             };
             if raw_line.is_empty() {
-                lines.push(Line::from(vec![prefix_span]).style(style));
+                lines.push(Line::from(vec![bar_span.clone(), prefix_span]).style(Style::default().bg(bg_color)));
             } else {
                 let chars: Vec<char> = raw_line.chars().collect();
-                for (chunk_idx, chunk) in chars.chunks(content_width).enumerate() {
+                for (chunk_idx, chunk) in chars.chunks(inner_w).enumerate() {
                     let s: String = chunk.iter().collect();
                     if chunk_idx == 0 {
                         lines.push(Line::from(vec![
+                            bar_span.clone(),
                             prefix_span.clone(),
-                            Span::styled(s, Style::default().fg(Color::White)),
-                        ]).style(style));
+                            Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                        ]).style(Style::default().bg(bg_color)));
                     } else {
                         lines.push(Line::from(vec![
-                            Span::raw("  "),
-                            Span::styled(s, Style::default().fg(Color::White)),
-                        ]).style(style));
+                            bar_span.clone(),
+                            Span::styled("  ", Style::default().bg(bg_color)),
+                            Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                        ]).style(Style::default().bg(bg_color)));
                     }
                 }
             }
         }
 
-        let height = lines.len().max(1) as u16;
-        let block = Block::default()
-            .style(style)
-            .padding(Padding::horizontal(1));
+        let bottom_border = format!("╰{}╯", "─".repeat(w.saturating_sub(2)));
+        lines.push(Line::from(Span::styled(bottom_border, Style::default().fg(border_color).bg(bg_color))));
+
+        let height = lines.len() as u16;
+        let block = Block::default().style(Style::default().bg(bg_color));
 
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines).block(block).render(buf.area, buf);
