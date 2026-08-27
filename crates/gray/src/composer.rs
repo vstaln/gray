@@ -274,6 +274,7 @@ impl Tui {
         self.terminal.draw(|frame| {
             let area = frame.area();
             let w = area.width as usize;
+            let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
                 for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
@@ -284,7 +285,7 @@ impl Tui {
                 }
             }
             {
-                let status_rect = Rect::new(area.x, area.y + PANEL_ROWS as u16, area.width, 1);
+                let status_rect = Rect::new(area.x, area.y + panel_h, area.width, 1);
                 match &self.status {
                     Some((started, label)) => {
                         let secs = started.elapsed().as_secs();
@@ -297,7 +298,7 @@ impl Tui {
                     None => { frame.render_widget(Paragraph::new(Line::from(" ".repeat(w))), status_rect); }
                 }
             }
-            let rule_y = area.y + (PANEL_ROWS + 1) as u16;
+            let rule_y = area.y + panel_h + 1;
             // attachments row (codex remote/local image placeholder)
             let has_attach = !self.attachments.is_empty();
             let mut input_y = if has_attach { rule_y + 2 } else { rule_y + 1 };
