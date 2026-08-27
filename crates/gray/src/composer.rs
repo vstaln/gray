@@ -338,17 +338,7 @@ impl Tui {
                 }
             }
 
-            // 3. Info row inside box: <model>
-            let model_display = if self.model_name.is_empty() {
-                "gray".to_string()
-            } else {
-                self.model_name.clone()
-            };
-            box_lines.push(Line::from(vec![
-                Span::styled(model_display, Style::default().fg(text_secondary).bg(bg_color)),
-            ]).style(Style::default().bg(bg_color)));
-
-            // 4. Bottom row (colored row, no symbols)
+            // 3. Bottom row (colored row, no symbols)
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
             // Centered welcome banner (rendered when session starts, disappears on input)
@@ -469,14 +459,33 @@ impl Tui {
                 self.cwd.clone()
             };
             let hint_str = "ctrl+p commands";
+            let model_display = if self.model_name.is_empty() {
+                String::new()
+            } else {
+                self.model_name.clone()
+            };
+            let right_parts = if model_display.is_empty() {
+                vec![Span::styled(hint_str, Style::default().fg(Color::Rgb(108, 108, 108)))]
+            } else {
+                vec![
+                    Span::styled(model_display.clone(), Style::default().fg(Color::Rgb(140, 140, 140))),
+                    Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                    Span::styled(hint_str, Style::default().fg(Color::Rgb(108, 108, 108))),
+                ]
+            };
+            let right_len = if model_display.is_empty() {
+                hint_str.chars().count()
+            } else {
+                model_display.chars().count() + 3 + hint_str.chars().count()
+            };
             let left_len = cwd_display.chars().count();
-            let right_len = hint_str.chars().count();
             let pad_len = w.saturating_sub(left_len + right_len);
-            let footer_line = Line::from(vec![
+            let mut footer_spans = vec![
                 Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))),
                 Span::raw(" ".repeat(pad_len)),
-                Span::styled(hint_str, Style::default().fg(Color::Rgb(108, 108, 108))),
-            ]);
+            ];
+            footer_spans.extend(right_parts);
+            let footer_line = Line::from(footer_spans);
             frame.render_widget(
                 Paragraph::new(footer_line),
                 Rect::new(area.x, footer_y, area.width, 1),
