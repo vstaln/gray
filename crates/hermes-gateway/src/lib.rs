@@ -10,6 +10,7 @@ pub mod profile_routing;
 pub mod qqbot_constants;
 pub mod qqbot_crypto;
 pub mod qqbot_init;
+pub mod qqbot_onboard;
 pub mod qqbot_utils;
 pub mod readiness;
 pub mod relay_transport;
