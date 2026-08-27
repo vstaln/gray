@@ -122,21 +122,20 @@ pub fn print_wrapped(text: &str, pad: usize) {
     let _ = std::io::stdout().flush();
 }
 
+pub const LOGO: &str = include_str!("../assets/logo.txt");
+pub const LOGO_SMALL: &str = include_str!("../assets/logo_small.txt");
+
 /// The gray logo (icon) as plain indented lines sized to the terminal —
 /// for callers that insert it into scrollback rather than printing raw.
 pub fn logo_lines() -> Vec<String> {
     let width = crossterm::terminal::size()
-        .map(|(c, _)| (c as usize).saturating_sub(6))
-        .unwrap_or(44)
-        .clamp(24, 48);
-    let mut lines: Vec<String> = braille_art(width)
-        .into_iter()
+        .map(|(c, _)| c as usize)
+        .unwrap_or(80);
+    let logo = if width < 40 { LOGO_SMALL } else { LOGO };
+    logo.lines()
+        .filter(|l| !l.trim().is_empty())
         .map(|l| format!("  {l}"))
-        .collect();
-    while lines.last().is_some_and(|l| l.trim().is_empty()) {
-        lines.pop();
-    }
-    lines
+        .collect()
 }
 
 /// Prints the gray logo with a subtle cyan/blue gradient, sized to terminal.
@@ -165,47 +164,17 @@ pub fn clear_screen() {
     }
 }
 
-/// Rasterizes the embedded logo bitmap (generated from the source bitmap) to braille
-/// dot-matrix lines sized to `target_chars` columns — recomputed per call so
-/// the art adapts to terminal width, rebuilt against live size on every draw.
+/// Returns the embedded logo braille art lines for a given target column width.
 pub fn braille_art(target_chars: usize) -> Vec<String> {
-    use crate::logo_data::{LOGO_H, LOGO_RLE, LOGO_W};
-    let target_w = (target_chars.max(4) * 2).min(LOGO_W);
-    let target_h = (LOGO_H * target_w / LOGO_W) / 4 * 4; // whole braille rows only
-    // decode RLE runs into a flat bit lookup
-    let mut bits = Vec::with_capacity(LOGO_W * LOGO_H);
-    for &(n, v) in LOGO_RLE {
-        bits.extend(std::iter::repeat_n(v != 0, n as usize));
-    }
-    let px = |x: usize, y: usize| {
-        bits[y.min(LOGO_H - 1) * LOGO_W + x.min(LOGO_W - 1)]
-    };
-    let dot_bits = [[1u32, 2, 4, 64], [8, 16, 32, 128]];
-    let mut out = Vec::new();
-    for cy in 0..target_h / 4 {
-        let mut line = String::new();
-        for cx in 0..target_w / 2 {
-            let mut code = 0u32;
-            for (dx, col) in dot_bits.iter().enumerate() {
-                for (dy, &bit) in col.iter().enumerate() {
-                    // nearest source pixel for this dot
-                    let sx = ((cx * 2 + dx) * LOGO_W) / target_w;
-                    let sy = ((cy * 4 + dy) * LOGO_H) / target_h;
-                    if px(sx, sy) {
-                        code |= bit;
-                    }
-                }
-            }
-            line.push(char::from_u32(0x2800 + code).unwrap());
-        }
-        out.push(line.trim_end_matches('\u{2800}').to_string());
-    }
-    out
+    let logo = if target_chars < 14 { LOGO_SMALL } else { LOGO };
+    logo.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
+        .collect()
 }
 
 /// Block variant kept for future use (user requested revert to braille).
 pub fn block_art(target_chars: usize) -> Vec<String> {
-    // alias for now — braille is the active logo
     braille_art(target_chars)
 }
 

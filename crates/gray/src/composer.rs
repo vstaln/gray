@@ -363,11 +363,11 @@ impl Tui {
                     Color::Rgb(100, 100, 100),
                     Color::Rgb(80, 80, 80),
                 ];
-                let max_logo_w = logo.iter().map(|l| l.trim().chars().count()).max().unwrap_or(0);
+                let max_logo_w = logo.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
                 let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
                 for (i, line) in logo.iter().enumerate() {
-                    let trimmed = line.trim();
+                    let trimmed = line.trim_end();
                     let col = palette[i % palette.len()];
                     welcome_lines.push(Line::from(vec![
                         Span::raw(" ".repeat(logo_pad)),
