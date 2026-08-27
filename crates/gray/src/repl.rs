@@ -259,27 +259,29 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
         }
         SysAction::Edit => {
             // Make sure the file exists before opening an editor on it.
-            if let Err(e) = load_or_create_system_prompt_at(&path) {
-                println!("{e}");
-                return;
-            }
-            let editor = std::env::var("GRAY_EDITOR")
-                .or_else(|_| std::env::var("EDITOR"))
-                .or_else(|_| std::env::var("VISUAL"))
-                .unwrap_or_else(|_| "vi".to_string());
-            let p = path.clone();
-            let status = tokio::task::spawn_blocking(move || {
-                std::process::Command::new(editor).arg(&p).status()
-            })
-            .await;
-            match status {
-                Ok(Ok(s)) if s.success() => {
+            let initial = match load_or_create_system_prompt_at(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    println!("{e}");
+                    return;
+                }
+            };
+            let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
+            match editor.run() {
+                Ok(Some(saved)) => {
+                    if let Err(e) = std::fs::write(&path, &saved) {
+                        println!("failed to save {}: {e}", path.display());
+                        return;
+                    }
                     println!("system prompt saved — applies from your next message");
                     reload_agent(agent, config, cwd).await;
                 }
-                Ok(Ok(s)) => println!("editor exited with {s}; prompt unchanged"),
-                Ok(Err(e)) => println!("could not launch editor: {e} (set $EDITOR)"),
-                Err(e) => println!("editor task failed: {e}"),
+                Ok(None) => {
+                    println!("prompt unchanged");
+                }
+                Err(e) => {
+                    println!("editor error: {e}");
+                }
             }
         }
     }

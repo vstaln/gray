@@ -7,6 +7,7 @@ pub mod logging;
 pub mod oauth;
 pub mod print;
 pub mod setup;
+pub mod sys_editor;
 pub mod repl;
 pub mod streaming;
 pub mod tui;
