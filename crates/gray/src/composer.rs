@@ -15,7 +15,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget};
+use ratatui::widgets::{Block, Padding, Paragraph, Widget};
 use ratatui::Terminal;
 
 use crate::repl::completion_matches;
@@ -296,7 +296,6 @@ impl Tui {
             let content_w = w.saturating_sub(4).max(1);
 
             let bg_color = Color::Rgb(24, 24, 24);
-            let border_color = Color::Rgb(55, 55, 55);
             let style = Style::default().bg(bg_color);
             let prompt_style = Style::default().fg(Color::Rgb(180, 180, 180)).add_modifier(Modifier::BOLD);
 
@@ -338,8 +337,7 @@ impl Tui {
                 }
             }
 
-            // Top and bottom borders add 2 rows to box height
-            let box_h = (box_lines.len() as u16) + 2;
+            let box_h = box_lines.len().max(1) as u16;
             let footer_h = 1u16;
             let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
             let has_attach = !self.attachments.is_empty();
@@ -388,10 +386,8 @@ impl Tui {
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            // 4. Container Box with top & bottom boundaries and faint neutral background
+            // 4. Container Box: Faint neutral background fill, no borders
             let box_block = Block::default()
-                .borders(Borders::TOP | Borders::BOTTOM)
-                .border_style(Style::default().fg(border_color))
                 .style(Style::default().bg(bg_color))
                 .padding(Padding::horizontal(1));
 
@@ -422,7 +418,7 @@ impl Tui {
                 Rect::new(area.x, footer_y, area.width, 1),
             );
 
-            // Cursor positioned inside the container box on the prompt input line (accounting for top border)
+            // Cursor positioned inside the container box on the prompt input line
             let (cursor_line_idx, cursor_col) = {
                 let cursor = self.textarea.cursor().min(text.len());
                 let before = &text[..cursor];
@@ -434,7 +430,7 @@ impl Tui {
             let padding_cols = 1u16;
             let prefix_cols = 2u16; // "› "
             let cursor_x = (area.x + padding_cols + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cursor_y = (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(2));
+            let cursor_y = (box_y + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         })?;
         Ok(())
@@ -606,7 +602,6 @@ impl Tui {
         let content_width = w.saturating_sub(4).max(1);
 
         let bg_color = Color::Rgb(24, 24, 24);
-        let border_color = Color::Rgb(55, 55, 55);
         let style = Style::default().bg(bg_color);
         let prompt_style = Style::default().fg(Color::Rgb(180, 180, 180)).add_modifier(Modifier::BOLD);
 
@@ -640,10 +635,8 @@ impl Tui {
             }
         }
 
-        let height = (lines.len() as u16) + 2;
+        let height = lines.len().max(1) as u16;
         let block = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::default().fg(border_color))
             .style(style)
             .padding(Padding::horizontal(1));
 
