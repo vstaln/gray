@@ -15,6 +15,7 @@ pub mod hook_output_spill;
 pub mod interpreter_shutdown;
 pub mod microsoft_graph_auth;
 pub mod openrouter_client;
+pub mod osv_check;
 pub mod path_security;
 pub mod plugin_guard;
 pub mod read_window_tool;
