@@ -17,6 +17,7 @@ pub mod spotify_client;
 pub mod spotify_tools;
 pub mod teams_cli;
 pub mod teams_meetings;
+pub mod teams_models;
 pub mod voice_mixer;
 pub mod ddgs_provider;
 pub mod parallel_provider;
