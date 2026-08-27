@@ -295,24 +295,24 @@ impl Tui {
             let text = self.textarea.text().to_string();
             let content_w = w.saturating_sub(4).max(1);
 
-            let accent_color = Color::Rgb(88, 166, 255);
-            let bg_color = Color::Rgb(36, 40, 52);
+            let bg_color = Color::Rgb(24, 24, 24);
+            let border_color = Color::Rgb(55, 55, 55);
             let style = Style::default().bg(bg_color);
+            let prompt_style = Style::default().fg(Color::Rgb(180, 180, 180)).add_modifier(Modifier::BOLD);
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            // User prompt input (Codex format: › <text>)
+            // User prompt input (clean, no "Ask anything" placeholder)
             if text.is_empty() {
                 box_lines.push(Line::from(vec![
-                    Span::styled("› ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Span::styled("Ask anything\u{2026}", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                    Span::styled("› ", prompt_style),
                 ]).style(style));
             } else {
                 let lines_raw: Vec<&str> = text.split('\n').collect();
                 for (i, raw_line) in lines_raw.iter().enumerate() {
                     let prefix = if i == 0 { "› " } else { "  " };
                     let prefix_span = if i == 0 {
-                        Span::styled(prefix, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                        Span::styled(prefix, prompt_style)
                     } else {
                         Span::raw(prefix)
                     };
@@ -338,7 +338,8 @@ impl Tui {
                 }
             }
 
-            let box_h = box_lines.len() as u16;
+            // Top and bottom borders add 2 rows to box height
+            let box_h = (box_lines.len() as u16) + 2;
             let footer_h = 1u16;
             let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
             let has_attach = !self.attachments.is_empty();
@@ -387,10 +388,10 @@ impl Tui {
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            // 4. Container Box (Prompt Input with highlight background)
+            // 4. Container Box with top & bottom boundaries and faint neutral background
             let box_block = Block::default()
-                .borders(Borders::LEFT)
-                .border_style(Style::default().fg(accent_color).add_modifier(Modifier::BOLD))
+                .borders(Borders::TOP | Borders::BOTTOM)
+                .border_style(Style::default().fg(border_color))
                 .style(Style::default().bg(bg_color))
                 .padding(Padding::horizontal(1));
 
@@ -421,7 +422,7 @@ impl Tui {
                 Rect::new(area.x, footer_y, area.width, 1),
             );
 
-            // Cursor positioned inside the container box on the prompt input line
+            // Cursor positioned inside the container box on the prompt input line (accounting for top border)
             let (cursor_line_idx, cursor_col) = {
                 let cursor = self.textarea.cursor().min(text.len());
                 let before = &text[..cursor];
@@ -430,9 +431,10 @@ impl Tui {
                 let col = before[last_nl..].chars().count();
                 (line_idx, col)
             };
-            let prefix_cols = 4u16; // 1 border + 1 padding + 2 prefix
-            let cursor_x = (area.x + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cursor_y = (box_y + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(1));
+            let padding_cols = 1u16;
+            let prefix_cols = 2u16; // "› "
+            let cursor_x = (area.x + padding_cols + prefix_cols + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
+            let cursor_y = (box_y + 1 + cursor_line_idx as u16).min(box_y + box_h.saturating_sub(2));
             frame.set_cursor_position(Position::new(cursor_x, cursor_y));
         })?;
         Ok(())
@@ -603,37 +605,50 @@ impl Tui {
         let w = self.width().max(20);
         let content_width = w.saturating_sub(4).max(1);
 
+        let bg_color = Color::Rgb(24, 24, 24);
+        let border_color = Color::Rgb(55, 55, 55);
+        let style = Style::default().bg(bg_color);
+        let prompt_style = Style::default().fg(Color::Rgb(180, 180, 180)).add_modifier(Modifier::BOLD);
+
         let mut lines: Vec<Line<'static>> = Vec::new();
-        for raw_line in text.lines() {
+        let lines_raw: Vec<&str> = text.split('\n').collect();
+        for (i, raw_line) in lines_raw.iter().enumerate() {
+            let prefix = if i == 0 { "› " } else { "  " };
+            let prefix_span = if i == 0 {
+                Span::styled(prefix, prompt_style)
+            } else {
+                Span::raw(prefix)
+            };
             if raw_line.is_empty() {
-                lines.push(Line::from(""));
+                lines.push(Line::from(vec![prefix_span]).style(style));
             } else {
                 let chars: Vec<char> = raw_line.chars().collect();
-                for chunk in chars.chunks(content_width) {
+                for (chunk_idx, chunk) in chars.chunks(content_width).enumerate() {
                     let s: String = chunk.iter().collect();
-                    lines.push(Line::from(s));
+                    if chunk_idx == 0 {
+                        lines.push(Line::from(vec![
+                            prefix_span.clone(),
+                            Span::styled(s, Style::default().fg(Color::White)),
+                        ]).style(style));
+                    } else {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(s, Style::default().fg(Color::White)),
+                        ]).style(style));
+                    }
                 }
             }
         }
-        if lines.is_empty() {
-            lines.push(Line::from(""));
-        }
 
-        let height = lines.len() as u16;
-
-        let accent_color = Color::Rgb(88, 166, 255);
-        let bg_color = Color::Rgb(36, 40, 52);
-
+        let height = (lines.len() as u16) + 2;
         let block = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(accent_color).add_modifier(Modifier::BOLD))
-            .style(Style::default().bg(bg_color).fg(Color::White))
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(border_color))
+            .style(style)
             .padding(Padding::horizontal(1));
 
-        let paragraph = Paragraph::new(lines).block(block);
-
         let _ = self.terminal.insert_before(height, |buf| {
-            paragraph.render(buf.area, buf);
+            Paragraph::new(lines).block(block).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }
