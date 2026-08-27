@@ -8,4 +8,5 @@
 
 pub mod common;
 pub mod portability;
+pub mod schema_slice1;
 pub mod search_slice1;
