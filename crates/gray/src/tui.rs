@@ -132,10 +132,19 @@ pub fn logo_lines() -> Vec<String> {
     braille_art(width).into_iter().map(|l| format!("  {l}")).collect()
 }
 
-/// Prints the gray logo (icon + wordmark) dim, sized to the terminal.
+/// Prints the gray logo with a subtle cyan/blue gradient, sized to terminal.
+/// Falls back to dim if NO_COLOR is set.
 pub fn print_logo() {
-    for line in logo_lines() {
-        print!("\r\x1b[2m{line}\x1b[0m\r\n");
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    // ponytail: 6-step cyan→blue gradient, ANSI 256; truecolor would be overkill
+    let palette = ["\x1b[38;5;45m", "\x1b[38;5;81m", "\x1b[38;5;75m", "\x1b[38;5;69m", "\x1b[38;5;63m", "\x1b[38;5;57m"];
+    for (i, line) in logo_lines().into_iter().enumerate() {
+        if no_color {
+            print!("\r\x1b[2m{line}\x1b[0m\r\n");
+        } else {
+            let col = palette[i % palette.len()];
+            print!("\r{col}{line}\x1b[0m\r\n");
+        }
     }
     let _ = std::io::stdout().flush();
 }

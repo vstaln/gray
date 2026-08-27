@@ -8,6 +8,7 @@ pub mod oauth;
 pub mod print;
 pub mod setup;
 pub mod repl;
+pub mod streaming;
 pub mod tui;
 
 use std::path::{Path, PathBuf};

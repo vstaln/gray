@@ -312,7 +312,10 @@ impl Tui {
             // multiline input: render textarea with wrap, cursor after text
             let text = self.textarea.text().to_string();
             let display = if text.is_empty() {
-                Line::from(vec!["\u{203a} ".dim(), "Ask anything\u{2026} ".dim().italic()])
+                Line::from(vec![
+                    Span::styled("\u{203a} ", Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD)),
+                    "Ask anything\u{2026} ".dim().italic(),
+                ])
             } else {
                 // show newlines as wrapped lines; codex textarea does grapheme wrap — we do simple char wrap
                 // ponytail: char-count wrap, not unicode-width
@@ -322,7 +325,10 @@ impl Tui {
                     raw.chars().skip(raw.chars().count() - budget).collect()
                 } else { raw };
                 // truncate to fit single viewport row for now; full multiline viewport is upgrade path
-                Line::from(vec!["\u{203a} ".dim(), Span::raw(shown)])
+                Line::from(vec![
+                    Span::styled("\u{203a} ", Style::default().fg(ratatui::style::Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw(shown),
+                ])
             };
             frame.render_widget(Paragraph::new(display), Rect::new(area.x, input_y, area.width, 1));
             // cursor: column after prompt + cursor char offset (single-line approx)
