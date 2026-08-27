@@ -19,6 +19,7 @@
 //! T0047: 1:1 port of `hermes_cli/proxy/adapters/nous_portal.py` (199) → `nous_portal_adapter.rs`.
 //! T0048: 1:1 port of `agent/credential_persistence.py` (174) → `credential_persistence.rs`.
 //! T0049: 1:1 port of `hermes_cli/proxy/adapters/xai.py` (145) → `xai_adapter.rs`.
+//! T0050: 1:1 port of `agent/aux_accounting.py` (138) → `aux_accounting.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -27,6 +28,7 @@
 //! Secret sources live here as provider-adjacent fetchers (Bitwarden, 1Password, …).
 
 pub mod account_usage;
+pub mod aux_accounting;
 pub mod auxiliary_slice1;
 pub mod auxiliary_slice2;
 pub mod azure_identity;
