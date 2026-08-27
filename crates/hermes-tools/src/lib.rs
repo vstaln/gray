@@ -17,6 +17,7 @@ pub mod path_security;
 pub mod plugin_guard;
 pub mod read_window_tool;
 pub mod shell_heredoc;
+pub mod skillevaluator_scan;
 pub mod subagent_worktree;
 pub mod terminal_hints;
 pub mod threat_patterns;
