@@ -379,7 +379,7 @@ impl Tui {
             let welcome_h = welcome_lines.len() as u16;
             let box_h = box_lines.len().max(1) as u16;
             let footer_h = 1u16;
-            let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
+            let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
@@ -394,8 +394,8 @@ impl Tui {
             let avail_welcome_h = box_y.saturating_sub(area.y);
             let welcome_render_h = welcome_h.min(avail_welcome_h);
 
-            // 0. Render centered welcome logo and banner if active
-            if self.show_welcome && welcome_render_h > 0 {
+            // 0. Render centered welcome logo and banner if active and prompt is empty
+            if self.show_welcome && self.matches.is_empty() && text.is_empty() && welcome_render_h > 0 {
                 let welcome_top = box_y.saturating_sub(welcome_render_h);
                 let skip_count = welcome_lines.len().saturating_sub(welcome_render_h as usize);
                 let visible_lines: Vec<Line<'static>> = welcome_lines.into_iter().skip(skip_count).collect();
@@ -405,20 +405,31 @@ impl Tui {
                 );
             }
 
-            // 1. Autocomplete popup panel
+            // 1. Autocomplete popup panel (directly attached above input box)
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
-                for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
+                let visible_count = self.matches.len().min(PANEL_ROWS);
+                for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(visible_count) {
                     let y = i - start;
-                    let body = format!("  /{name} \u{2014} {desc}");
-                    let line = if i == self.sel {
-                        Line::from(body.as_str()).style(Style::default().reversed())
+                    let is_sel = i == self.sel;
+                    let cmd_str = format!(" /{name} ");
+                    let desc_str = format!(" {desc} ");
+                    let item_w = (cmd_str.chars().count() + desc_str.chars().count()) as u16;
+                    let line = if is_sel {
+                        Line::from(vec![
+                            Span::styled(cmd_str, Style::default().fg(Color::Black).bg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
+                            Span::styled(desc_str, Style::default().fg(Color::Rgb(40, 40, 40)).bg(Color::Rgb(246, 173, 126))),
+                        ])
                     } else {
-                        Line::from(body.as_str()).style(Style::default().dim())
+                        Line::from(vec![
+                            Span::styled(cmd_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(Color::Rgb(28, 28, 28))),
+                            Span::styled(desc_str, Style::default().fg(Color::Rgb(140, 140, 140)).bg(Color::Rgb(28, 28, 28))),
+                        ])
                     };
+                    let render_w = item_w.min(area.width);
                     frame.render_widget(
                         Paragraph::new(line),
-                        Rect::new(area.x, panel_y + y as u16, area.width, 1),
+                        Rect::new(area.x, panel_y + y as u16, render_w, 1),
                     );
                 }
             }

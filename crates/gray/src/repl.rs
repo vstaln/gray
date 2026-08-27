@@ -29,14 +29,27 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
 ];
 
-/// Commands whose name starts with `filter` (the text after '/'), table order.
+/// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
 pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
-    COMMANDS
+    let mut matches: Vec<(&'static str, &'static str)> = COMMANDS
         .iter()
-        .filter(|(n, _)| n.starts_with(&f))
+        .filter(|(n, desc)| n.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f))
         .copied()
-        .collect()
+        .collect();
+
+    matches.sort_by_key(|(n, _)| {
+        let nl = n.to_lowercase();
+        if nl == f {
+            0
+        } else if nl.starts_with(&f) {
+            1
+        } else {
+            2
+        }
+    });
+
+    matches
 }
 
 /// True while an agent turn is in flight: `Some(token)` cancels on first
