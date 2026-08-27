@@ -20,8 +20,11 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-/// Viewport rows: 5 completion panel + status + input (codex-style, no rules).
-const VIEWPORT_H: u16 = 7;
+/// Viewport rows: 5 completion panel + status + gap + input (+ attach if needed).
+/// 7 would be tight (5+1+1) but attachments need 8, so keep 9 to avoid
+/// ratatui Buffer index panic (Rect y38 h7 vs y45) — was panicking at
+/// buffer.rs:253. 9 gives headroom without visible change.
+const VIEWPORT_H: u16 = 9;
 const PANEL_ROWS: usize = 5;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -297,7 +300,11 @@ impl Tui {
             let rule_y = area.y + (PANEL_ROWS + 1) as u16;
             // attachments row (codex remote/local image placeholder)
             let has_attach = !self.attachments.is_empty();
-            let input_y = if has_attach { rule_y + 2 } else { rule_y + 1 };
+            let mut input_y = if has_attach { rule_y + 2 } else { rule_y + 1 };
+            // clamp to viewport bottom — prevents Buffer index panic (0,45) on
+            // small terminals or when VIEWPORT_H tight
+            let max_y = area.y + area.height.saturating_sub(1);
+            if input_y > max_y { input_y = max_y; }
             if has_attach {
                 let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, rule_y + 1, area.width, 1));
