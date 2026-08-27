@@ -24,6 +24,7 @@ pub mod skillevaluator_scan;
 pub mod subagent_worktree;
 pub mod terminal_hints;
 pub mod threat_patterns;
+pub mod tour_tool;
 pub mod tts_text_normalize;
 pub mod vision_routing;
 pub mod voice_client_config;
