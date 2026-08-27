@@ -28,3 +28,4 @@ pub mod api_server_slice1;
 pub mod base_slice1;
 pub mod slash_commands_slice1;
 pub mod slash_commands_slice2;
+pub mod yuanbao_slice1;
