@@ -26,3 +26,4 @@ pub mod platforms_init;
 pub mod run_slice1;
 pub mod api_server_slice1;
 pub mod base_slice1;
+pub mod slash_commands_slice1;
