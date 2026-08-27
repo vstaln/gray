@@ -21,6 +21,7 @@
 //! T0048: 1:1 port of `agent/credential_persistence.py` (174) → `credential_persistence.rs`.
 //! T0049: 1:1 port of `hermes_cli/proxy/adapters/xai.py` (145) → `xai_adapter.rs`.
 //! T0050: 1:1 port of `agent/aux_accounting.py` (138) → `aux_accounting.rs`.
+//! T0051: 1:1 port of `agent/billing_links.py` (124) → `billing_links.rs`.
 //! Crate root re-exports the sliced modules; each `*_sliceN.rs` covers a
 //! Python source file's 1:1 port.
 //!
@@ -34,6 +35,7 @@ pub mod auxiliary_slice1;
 pub mod auxiliary_slice2;
 pub mod model_metadata_slice1;
 pub mod azure_identity;
+pub mod billing_links;
 pub mod billing_usage;
 pub mod billing_view;
 pub mod bitwarden;
