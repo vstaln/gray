@@ -784,7 +784,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             Span::styled("API Key Configuration", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
                         ]);
                         let line1 = Line::from(vec![
-                            Span::styled(format!("Provider: {} \u{b7} Default Model: {}", item.name, item.default_model), Style::default().fg(text_dim).bg(box_bg)),
+                            Span::styled(format!("Provider: {}", item.name), Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         frame.render_widget(Paragraph::new(line0), Rect::new(inner.x, inner.y, inner.width, 1));
                         frame.render_widget(Paragraph::new(line1), Rect::new(inner.x, inner.y + 1, inner.width, 1));
@@ -997,8 +997,8 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
     crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
     let _ = std::io::stdout().flush();
 
-    if let Some((name, model)) = connected_name {
-        println!("\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{name}\x1b[0m (model: \x1b[1m{model}\x1b[0m)");
+    if let Some((name, _model)) = connected_name {
+        println!("\r\x1b[38;2;74;222;128m✓\x1b[0m Connected to \x1b[1m{name}\x1b[0m");
     }
 
     result

@@ -537,7 +537,9 @@ impl Tui {
 
     pub fn read_line(&mut self) -> anyhow::Result<Option<String>> {
         use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
+        let _ = self.terminal.clear();
         loop {
             let cur_text = self.textarea.text().to_string();
             self.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
