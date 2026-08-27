@@ -243,13 +243,20 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        // no MoveTo bottom — keep viewport where cursor is after logo so top (logo)
-        // stays anchored just above bottom input, no huge 30-row scrollback gap.
-        // (was MoveTo(rows-1) + VIEWPORT_H newlines → empty gap between logo and input)
+        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::MoveTo(0, rows.saturating_sub(1))
+        )?;
+        for _ in 0..VIEWPORT_H {
+            write!(std::io::stdout(), "\r\n")?;
+        }
         let _ = std::io::stdout().flush();
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions { viewport: ratatui::Viewport::Inline(VIEWPORT_H) },
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+            },
         )?;
         terminal.clear()?;
         let cwd = std::env::current_dir()
@@ -262,7 +269,7 @@ impl Tui {
             sel: 0,
             status: None,
             pending: String::new(),
-            truecolor: std::env::var("COLORTERM").map(|v| v.contains("truecolor") || v.contains("24bit")).unwrap_or(false),
+            truecolor: true,
             thinking: false,
             hide_thinking: true,
             history: Vec::new(),
@@ -285,42 +292,11 @@ impl Tui {
             let area = frame.area();
             let w = area.width as usize;
 
-            let mut cur_y = area.y;
-
-            // 1. Status row (rendered when turn is active)
-            if let Some((started, label)) = &self.status {
-                let status_rect = Rect::new(area.x, cur_y, area.width, 1);
-                let secs = started.elapsed().as_secs();
-                let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 { "\u{2022}" } else { "\u{25e6}" };
-                let bullet = if self.truecolor { "\u{2022}" } else { blink_bullet };
-                let text = format!("{bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
-                let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
-                frame.render_widget(Paragraph::new(Line::from(spans)), status_rect);
-                cur_y += 1;
-            }
-
-            // 2. Attachments row if any
-            if !self.attachments.is_empty() {
-                let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
-                frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, cur_y, area.width, 1));
-                cur_y += 1;
-            }
-
-            // 3. Active Composer Container Box
-            let box_y = cur_y;
             let text = self.textarea.text().to_string();
             let content_w = w.saturating_sub(4).max(1);
 
-            let accent_color = if self.truecolor {
-                Color::Rgb(88, 166, 255)
-            } else {
-                Color::Cyan
-            };
-            let bg_color = if self.truecolor {
-                Color::Rgb(30, 33, 42)
-            } else {
-                Color::Indexed(236)
-            };
+            let accent_color = Color::Rgb(88, 166, 255);
+            let bg_color = Color::Rgb(36, 40, 52);
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
@@ -359,6 +335,55 @@ impl Tui {
             ]));
 
             let box_h = box_lines.len() as u16;
+            let footer_h = 1u16;
+            let panel_h: u16 = if self.matches.is_empty() { 0 } else { PANEL_ROWS as u16 };
+            let has_attach = !self.attachments.is_empty();
+            let attach_h: u16 = if has_attach { 1 } else { 0 };
+            let has_status = self.status.is_some();
+            let status_h: u16 = if has_status { 1 } else { 0 };
+
+            // Bottom-anchored inside viewport
+            let footer_y = area.y + area.height.saturating_sub(footer_h);
+            let box_y = footer_y.saturating_sub(box_h);
+            let attach_y = box_y.saturating_sub(attach_h);
+            let status_y = (if has_attach { attach_y } else { box_y }).saturating_sub(status_h);
+            let panel_y = status_y.saturating_sub(panel_h);
+
+            // 1. Autocomplete popup panel
+            if !self.matches.is_empty() {
+                let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
+                for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
+                    let y = i - start;
+                    let body = format!("  /{name} \u{2014} {desc}");
+                    let line = if i == self.sel {
+                        Line::from(body.as_str()).style(Style::default().reversed())
+                    } else {
+                        Line::from(body.as_str()).style(Style::default().dim())
+                    };
+                    frame.render_widget(
+                        Paragraph::new(line),
+                        Rect::new(area.x, panel_y + y as u16, area.width, 1),
+                    );
+                }
+            }
+
+            // 2. Status row
+            if let Some((started, label)) = &self.status {
+                let status_rect = Rect::new(area.x, status_y, area.width, 1);
+                let secs = started.elapsed().as_secs();
+                let blink_bullet = if (started.elapsed().as_millis() / 600) % 2 == 0 { "\u{2022}" } else { "\u{25e6}" };
+                let text = format!("{blink_bullet} {label}\u{2026} {secs}s (ctrl-c to cancel)");
+                let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
+                frame.render_widget(Paragraph::new(Line::from(spans)), status_rect);
+            }
+
+            // 3. Attachments row
+            if has_attach {
+                let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
+                frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
+            }
+
+            // 4. Container Box (Prompt Input + Mode/Model)
             let box_block = Block::default()
                 .borders(Borders::LEFT)
                 .border_style(Style::default().fg(accent_color).add_modifier(Modifier::BOLD))
@@ -369,10 +394,8 @@ impl Tui {
                 Paragraph::new(box_lines).block(box_block),
                 Rect::new(area.x, box_y, area.width, box_h),
             );
-            cur_y += box_h;
 
-            // 4. Footer line below box: current dir on left, hints on right
-            let footer_y = cur_y;
+            // 5. Footer Line
             let cwd_display = if self.cwd.is_empty() {
                 std::env::current_dir()
                     .map(|p| p.display().to_string())
@@ -393,25 +416,6 @@ impl Tui {
                 Paragraph::new(footer_line),
                 Rect::new(area.x, footer_y, area.width, 1),
             );
-            cur_y += 1;
-
-            // 5. Autocomplete popup panel below footer
-            if !self.matches.is_empty() {
-                let start = self.sel.saturating_sub(PANEL_ROWS - 1).min(self.sel);
-                for (i, (name, desc)) in self.matches.iter().enumerate().skip(start).take(PANEL_ROWS) {
-                    let y = i - start;
-                    let body = format!("  /{name} \u{2014} {desc}");
-                    let line = if i == self.sel {
-                        Line::from(body.as_str()).style(Style::default().reversed())
-                    } else {
-                        Line::from(body.as_str()).style(Style::default().dim())
-                    };
-                    frame.render_widget(
-                        Paragraph::new(line),
-                        Rect::new(area.x, cur_y + y as u16, area.width, 1),
-                    );
-                }
-            }
 
             // Cursor positioned inside the container box on the prompt input line
             let col = if text.is_empty() {

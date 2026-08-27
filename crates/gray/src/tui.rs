@@ -129,7 +129,14 @@ pub fn logo_lines() -> Vec<String> {
         .map(|(c, _)| (c as usize).saturating_sub(6))
         .unwrap_or(44)
         .clamp(24, 48);
-    braille_art(width).into_iter().map(|l| format!("  {l}")).collect()
+    let mut lines: Vec<String> = braille_art(width)
+        .into_iter()
+        .map(|l| format!("  {l}"))
+        .collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    lines
 }
 
 /// Prints the gray logo with a subtle cyan/blue gradient, sized to terminal.
