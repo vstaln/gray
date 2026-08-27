@@ -30,5 +30,6 @@ pub mod skills_hub_slice1;
 pub mod nous_subscription_slice1;
 pub mod console_engine_slice1;
 pub mod gateway_windows_slice1;
+pub mod relay_metrics_slice1;
 pub mod managed_uv_slice1;
 pub mod sessions_cmd_slice1;
