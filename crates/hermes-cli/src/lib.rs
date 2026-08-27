@@ -27,5 +27,6 @@ pub mod goals_slice2;
 pub mod backup_slice1;
 pub mod session_recovery_slice1;
 pub mod skills_hub_slice1;
+pub mod nous_subscription_slice1;
 pub mod console_engine_slice1;
 pub mod gateway_windows_slice1;
