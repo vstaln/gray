@@ -8,3 +8,4 @@
 
 pub mod common;
 pub mod portability;
+pub mod search_slice1;
