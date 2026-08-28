@@ -487,6 +487,107 @@ pub fn get_provider_models(provider_id: &str, catalog: &Catalog) -> Vec<(String,
     result
 }
 
+/// Dynamically queries the provider's live /models endpoint (e.g. OpenAI, OpenRouter, Ollama, vLLM, LMStudio, etc.).
+pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let base = base_url.to_string();
+        let key = api_key.map(|k| k.to_string());
+        std::thread::scope(|s| {
+            s.spawn(move || {
+                handle.block_on(async move {
+                    let client = match reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_millis(2500))
+                        .build()
+                    {
+                        Ok(c) => c,
+                        Err(_) => return Vec::new(),
+                    };
+
+                    let trimmed_base = base.trim_end_matches('/');
+                    let endpoints = if trimmed_base.contains("openrouter.ai") {
+                        vec!["https://openrouter.ai/api/v1/models".to_string()]
+                    } else if trimmed_base.ends_with("/v1") {
+                        vec![format!("{trimmed_base}/models")]
+                    } else {
+                        vec![
+                            format!("{trimmed_base}/models"),
+                            format!("{trimmed_base}/v1/models"),
+                            format!("{trimmed_base}/api/tags"),
+                        ]
+                    };
+
+                    for url in endpoints {
+                        let mut req = client.get(&url);
+                        if let Some(k) = &key {
+                            if !k.is_empty() {
+                                req = req.header("Authorization", format!("Bearer {k}"));
+                            }
+                        }
+                        if url.contains("openrouter") {
+                            req = req.header("HTTP-Referer", "https://github.com/vstaln/gray");
+                            req = req.header("X-Title", "Gray");
+                        }
+
+                        if let Ok(resp) = req.send().await {
+                            if resp.status().is_success() {
+                                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                    let mut models = Vec::new();
+                                    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
+                                        for item in data {
+                                            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                                let name = item.get("name")
+                                                    .and_then(|n| n.as_str())
+                                                    .map(|s| s.to_string())
+                                                    .unwrap_or_else(|| friendly_model_name(id));
+                                                models.push((id.to_string(), name));
+                                            }
+                                        }
+                                    }
+                                    if models.is_empty() {
+                                        if let Some(items) = json.get("models").and_then(|m| m.as_array()) {
+                                            for item in items {
+                                                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                                                    models.push((name.to_string(), friendly_model_name(name)));
+                                                } else if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                                    models.push((id.to_string(), friendly_model_name(id)));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !models.is_empty() {
+                                        return models;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Vec::new()
+                })
+            }).join().unwrap_or_default()
+        })
+    } else {
+        Vec::new()
+    }
+}
+
+/// Returns the models list for a provider (checking curated modern models + live endpoint fetch + catalog).
+pub fn get_provider_models_with_live(
+    provider_id: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    catalog: &Catalog,
+) -> Vec<(String, String)> {
+    let mut curated = get_provider_models(provider_id, catalog);
+    let live = fetch_live_provider_models(base_url, api_key);
+    for (id, name) in live {
+        if !curated.iter().any(|(c_id, _)| c_id == &id) {
+            curated.push((id, name));
+        }
+    }
+    curated
+}
+
 /// Interactive "Connect a provider" GUI modal with clean colored box styling.
 /// Floating container block matching the composer prompt text box, live search filter,
 /// peach selection highlight, and in-modal API key entry.
@@ -962,7 +1063,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                                     if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
-                                        let models = get_provider_models(&item.id, &catalog);
+                                        let models = get_provider_models_with_live(&item.id, &item.base_url, None, &catalog);
                                         state = ModalState::SelectingModel {
                                             item: item.clone(),
                                             models,
@@ -1024,8 +1125,8 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             } else {
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
-                                config.api_key = Some(final_key);
-                                let models = get_provider_models(&item.id, &catalog);
+                                config.api_key = Some(final_key.clone());
+                                let models = get_provider_models_with_live(&item.id, &item.base_url, Some(&final_key), &catalog);
                                 state = ModalState::SelectingModel {
                                     item: item.clone(),
                                     models,
@@ -1176,7 +1277,7 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
         no_auth: false,
     };
 
-    let models = get_provider_models(&item_id, &catalog);
+    let models = get_provider_models_with_live(&item_id, &config.base_url, config.api_key.as_deref(), &catalog);
 
     enable_raw_mode()?;
     let mut stdout_handle = std::io::stdout();
