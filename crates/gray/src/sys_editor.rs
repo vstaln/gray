@@ -45,7 +45,10 @@ impl SysEditor {
     }
 
     pub fn run(&mut self) -> anyhow::Result<Option<String>> {
-        enable_raw_mode()?;
+        let composer_was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        if !composer_was_raw {
+            enable_raw_mode()?;
+        }
         let mut stdout_handle = stdout();
         crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Show)?;
 
@@ -54,8 +57,24 @@ impl SysEditor {
 
         let res = self.event_loop(&mut terminal);
 
-        disable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+        if !composer_was_raw {
+            disable_raw_mode()?;
+        } else {
+            enable_raw_mode()?;
+        }
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::MoveTo(0, 0),
+        );
+        if let Ok((cols, rows)) = crossterm::terminal::size() {
+            for y in 0..rows {
+                let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, y));
+                let _ = write!(std::io::stdout(), "{}", " ".repeat(cols as usize));
+            }
+            let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, 0));
+        }
         let _ = std::io::stdout().flush();
 
         res

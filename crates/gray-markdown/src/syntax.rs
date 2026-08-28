@@ -41,6 +41,43 @@ impl Syntect {
         let syntax_set = two_face::syntax::extra_newlines();
         Self { theme, syntax_set }
     }
+}
+
+impl Default for Syntect {
+    fn default() -> Self {
+        let ts = ThemeSet::load_defaults();
+        let theme = ts
+            .themes
+            .get("base16-ocean.dark")
+            .cloned()
+            .or_else(|| ts.themes.values().next().cloned())
+            .unwrap_or_default();
+        let syntax_set = two_face::syntax::extra_newlines();
+        Self { theme, syntax_set }
+    }
+}
+
+/// Get a shared, static Syntect instance.
+pub fn get_syntect() -> &'static Syntect {
+    static SYNTECT: std::sync::OnceLock<Syntect> = std::sync::OnceLock::new();
+    SYNTECT.get_or_init(Syntect::default)
+}
+
+/// Convert a syntect Style to a Ratatui Style with foreground and font modifiers.
+pub fn syntect_to_ratatui_fg(style: syntect::highlighting::Style) -> ratatui::style::Style {
+    use ratatui::style::{Color, Modifier, Style};
+    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
+    let mut s = Style::default().fg(fg);
+    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+        s = s.add_modifier(Modifier::BOLD);
+    }
+    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+        s = s.add_modifier(Modifier::ITALIC);
+    }
+    s
+}
+
+impl Syntect {
 
     /// Find a syntax definition by file path extension.
     pub fn find_syntax_by_file_path(&self, file_path: &Path) -> Option<&SyntaxReference> {

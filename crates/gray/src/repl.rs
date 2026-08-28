@@ -273,7 +273,7 @@ fn latest_summary(summaries: &[SessionSummary]) -> Option<&SessionSummary> {
 }
 
 /// Handles the `/sys` command family: edit, show, reset.
-async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut Option<Agent>) {
+async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut Option<Agent>, tui: Option<&crate::composer::SharedTui>) {
     let path = match crate::sys_prompt_path() {
         Ok(p) => p,
         Err(e) => {
@@ -310,8 +310,20 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
                     return;
                 }
             };
+            let _tui_guard = tui.as_ref().map(|s| s.lock().expect("tui lock"));
             let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
-            match editor.run() {
+            let res = editor.run();
+            drop(_tui_guard);
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                let _ = t.terminal.clear();
+                t.pending_resize = None;
+                if let Ok((cols, _)) = crossterm::terminal::size() {
+                    t.last_width = cols;
+                }
+                let _ = t.draw();
+            }
+            match res {
                 Ok(Some(saved)) => {
                     if let Err(e) = std::fs::write(&path, &saved) {
                         println!("failed to save {}: {e}", path.display());
@@ -875,7 +887,7 @@ pub async fn run_repl_mode(
                 break;
             }
             ReplCommand::Sys(action) => {
-                handle_sys(config, &cwd, action, &mut agent).await;
+                handle_sys(config, &cwd, action, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Model(direct) => {
@@ -1081,6 +1093,7 @@ pub async fn run_repl_mode(
                 });
 
                 let mut current_tool_name: Option<String> = None;
+                let mut current_tool_args: Option<serde_json::Value> = None;
                 let run_result = {
                     let mut on_event = |ev: &AgentEvent| {
                         if let Some(shared) = &tui_stream
@@ -1092,16 +1105,19 @@ pub async fn run_repl_mode(
                                 AgentEvent::ToolCallStart { name, .. } => {
                                     t.end_thinking();
                                     current_tool_name = Some(name.clone());
+                                    current_tool_args = None;
                                 }
                                 AgentEvent::ToolCallEnd { args, .. } => {
                                     t.end_thinking();
                                     let name = current_tool_name.as_deref().unwrap_or("tool");
+                                    current_tool_args = Some(args.clone());
                                     let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd));
                                     t.push_line_spans(header);
                                 }
                                 AgentEvent::ToolResult { output, is_error, .. } => {
                                     let name = current_tool_name.take().unwrap_or_default();
-                                    let lines = crate::tool_fmt::format_tool_result_lines(&name, output, *is_error);
+                                    let args = current_tool_args.take();
+                                    let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
                                     if !lines.is_empty() {
                                         t.push_styled_lines(lines);
                                     }
@@ -1125,7 +1141,7 @@ pub async fn run_repl_mode(
                                             String::new()
                                         };
                                         t.push_usage(format!(
-                                            "\u{2b22} {} tok{think}{cached}",
+                                            "\u{25c6} {} tok{think}{cached}",
                                             fmt_usage(usage.total())
                                         ));
                                     }
@@ -1138,14 +1154,17 @@ pub async fn run_repl_mode(
                                 AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
                                 AgentEvent::ToolCallStart { name, .. } => {
                                     current_tool_name = Some(name.clone());
+                                    current_tool_args = None;
                                 }
                                 AgentEvent::ToolCallEnd { args, .. } => {
                                     let name = current_tool_name.as_deref().unwrap_or("tool");
+                                    current_tool_args = Some(args.clone());
                                     println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd)));
                                 }
                                 AgentEvent::ToolResult { output, is_error, .. } => {
                                     let name = current_tool_name.take().unwrap_or_default();
-                                    let res = crate::tool_fmt::format_tool_result_plain(&name, output, *is_error);
+                                    let args = current_tool_args.take();
+                                    let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
                                     if !res.is_empty() {
                                         print!("{res}");
                                     }
@@ -1166,7 +1185,7 @@ pub async fn run_repl_mode(
                                         } else {
                                             String::new()
                                         };
-                                        println!("\n\x1b[2m\u{2b22} {} tok{think}{cached}\x1b[0m", fmt_usage(usage.total()));
+                                        println!("\n\x1b[2m\u{25c6} {} tok{think}{cached}\x1b[0m", fmt_usage(usage.total()));
                                     }
                                 }
                                 _ => {}

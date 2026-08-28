@@ -57,7 +57,8 @@ pub use parse::{MarkdownParser, ParsedMarkdown};
 pub use source_map::SourceMap;
 pub use streaming::StreamingMarkdownRenderer;
 pub use style::{MarkdownStyle, TableBorders};
-pub use syntax::Syntect;
+pub use syntax::{Syntect, get_syntect, syntect_to_ratatui_fg};
+pub use syntect;
 
 // Re-export test helpers when fuzzing
 #[cfg(fuzzing)]

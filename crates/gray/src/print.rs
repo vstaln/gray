@@ -13,6 +13,13 @@ use gray_session::{JsonlSessionStore, SessionId, SessionMeta, SessionStore};
 use crate::build_agent;
 use crate::config::Config;
 
+/// Tracking state for active tool call during streaming.
+#[derive(Debug, Clone, Default)]
+pub struct ActiveToolCall {
+    pub name: String,
+    pub args: Option<serde_json::Value>,
+}
+
 /// Renders a single AgentEvent to a writer according to CLI display conventions.
 pub fn render_event<W: Write>(w: &mut W, event: &AgentEvent) -> std::io::Result<()> {
     let mut current_tool = None;
@@ -24,7 +31,7 @@ pub fn render_event_with_context<W: Write>(
     w: &mut W,
     event: &AgentEvent,
     cwd: Option<&Path>,
-    current_tool: &mut Option<String>,
+    current_tool: &mut Option<ActiveToolCall>,
 ) -> std::io::Result<()> {
     match event {
         AgentEvent::Start => Ok(()),
@@ -38,17 +45,23 @@ pub fn render_event_with_context<W: Write>(
             w.flush()
         }
         AgentEvent::ToolCallStart { name, .. } => {
-            *current_tool = Some(name.clone());
+            *current_tool = Some(ActiveToolCall {
+                name: name.clone(),
+                args: None,
+            });
             Ok(())
         }
         AgentEvent::ToolCallEnd { args, .. } => {
-            let name = current_tool.as_deref().unwrap_or("tool");
-            writeln!(w, "\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, cwd))?;
+            let name = current_tool.as_ref().map(|t| t.name.clone()).unwrap_or_else(|| "tool".to_string());
+            if let Some(t) = current_tool {
+                t.args = Some(args.clone());
+            }
+            writeln!(w, "\n{}", crate::tool_fmt::format_tool_call_header_plain(&name, args, cwd))?;
             w.flush()
         }
         AgentEvent::ToolResult { output, is_error, .. } => {
-            let name = current_tool.take().unwrap_or_default();
-            let res = crate::tool_fmt::format_tool_result_plain(&name, output, *is_error);
+            let tool = current_tool.take().unwrap_or_default();
+            let res = crate::tool_fmt::format_tool_result_plain_with_context(&tool.name, tool.args.as_ref(), output, *is_error, cwd);
             if !res.is_empty() {
                 write!(w, "{res}")?;
             }
@@ -70,7 +83,7 @@ pub fn render_event_with_context<W: Write>(
                 } else {
                     String::new()
                 };
-                writeln!(w, "\n\x1b[2m\u{2b22} {} tok{think}{cached}\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
+                writeln!(w, "\n\x1b[2m\u{25c6} {} tok{think}{cached}\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
             } else {
                 writeln!(w)?;
             }
@@ -176,7 +189,10 @@ mod tests {
         assert_eq!(buf, b"");
         buf.clear();
 
-        let mut tool2 = Some("read".to_string());
+        let mut tool2 = Some(ActiveToolCall {
+            name: "read".to_string(),
+            args: None,
+        });
         render_event_with_context(&mut buf, &AgentEvent::tool_result("call_1", "file not found", true), None, &mut tool2).unwrap();
         assert!(!buf.is_empty());
         buf.clear();

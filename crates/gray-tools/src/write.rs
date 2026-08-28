@@ -76,7 +76,7 @@ impl Tool for WriteTool {
                         if existed && !old.is_empty() {
                             let patch = crate::edit_diff::generate_unified_patch(&path, &old, &content, 3);
                             if patch.is_empty() { finish(format!("wrote {} bytes to {} (no change)", content.len(), full.display())) }
-                            else { finish(format!("wrote {} bytes to {}\n{}", content.len(), full.display(), patch)) }
+                            else { finish(patch) }
                         } else {
                             finish(format!("wrote {} bytes to {}", content.len(), full.display()))
                         }

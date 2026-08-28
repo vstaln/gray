@@ -4,7 +4,7 @@ use gray_core::message::ToolDef;
 use serde_json::{json, Value};
 
 use crate::edit_diff::{
-    apply_edits_to_normalized_content, detect_line_ending, generate_diff_string_default,
+    apply_edits_to_normalized_content, detect_line_ending,
     normalize_to_lf, restore_line_endings, split_bom, Edit,
 };
 use crate::file_mutation_queue::with_file_mutation_queue;
@@ -151,13 +151,12 @@ impl Tool for EditTool {
                 if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
                     return fail(format!("edit failed for {}: {e}", full.display()));
                 }
-                let diff = generate_diff_string_default(&applied.base_content, &applied.new_content);
-                let mut msg = format!("Successfully replaced {} block(s) in {}.", edits.len(), path_clone);
-                if !diff.diff.is_empty() {
-                    msg.push_str("\n\n");
-                    msg.push_str(&diff.diff);
+                let patch = crate::edit_diff::generate_unified_patch(&path_clone, &applied.base_content, &applied.new_content, 3);
+                if patch.is_empty() {
+                    ToolOutput::ok(format!("Successfully replaced {} block(s) in {}.", edits.len(), path_clone))
+                } else {
+                    ToolOutput::ok(patch)
                 }
-                ToolOutput::ok(msg)
             }
         }).await
     }
