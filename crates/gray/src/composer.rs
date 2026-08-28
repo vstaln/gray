@@ -498,7 +498,7 @@ impl Tui {
 
             if let Some((started, label)) = &self.status {
                 if status_y < area.y + area.height {
-                    let raw = format!("\u{2b22} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
+                    let raw = format!("\u{2b21} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
                     let spans = shimmer_spans(&raw, started.elapsed(), self.truecolor);
                     frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
