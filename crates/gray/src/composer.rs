@@ -335,7 +335,8 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            // 1. Top margin row (colored row, no symbols)
+            let top_padding = Line::from("").style(Style::default().bg(bg_color));
+            box_lines.push(top_padding.clone());
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
             // 2. Prompt input rows
@@ -376,7 +377,7 @@ impl Tui {
                 }
             }
 
-            // 3. Bottom margin row (colored row, no symbols)
+            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
             let box_h = box_lines.len().max(1) as u16;
@@ -397,12 +398,9 @@ impl Tui {
 
             if let Some((started, label)) = &self.status {
                 if area.y < area.y + area.height {
-                    let elapsed = started.elapsed().as_secs();
-                    let line = Line::from(vec![
-                        Span::styled(label.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-                        Span::styled(format!(" ({elapsed}s \u{2022} esc to interrupt)"), Style::default().fg(Color::Rgb(140, 140, 140)).add_modifier(Modifier::DIM)),
-                    ]);
-                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, status_y, area.width, 1));
+                    let raw = format!("\u{2022} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
+                    let spans = shimmer_spans(&raw, started.elapsed(), self.truecolor);
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
             }
 
@@ -481,7 +479,7 @@ impl Tui {
                 (before.matches('\n').count(), before[before.rfind('\n').map(|i| i + 1).unwrap_or(0)..].chars().count())
             };
             let cur_x = (area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + 1 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + 2 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())
