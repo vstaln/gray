@@ -91,13 +91,9 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
     }
 }
 
-/// Formats a token count: `<1_000` as-is, else one decimal place with `k`.
+/// Formats a token count as exact total number.
 pub fn fmt_usage(total: usize) -> String {
-    if total < 1_000 {
-        format!("{total}")
-    } else {
-        format!("{:.1}k", total as f64 / 1000.0)
-    }
+    format!("{total}")
 }
 
 /// ANSI dim + italic — pi's styling for rendered thinking blocks
@@ -1361,14 +1357,13 @@ mod tests {
     }
 
     #[test]
-    fn fmt_usage_formats_under_and_over_1000() {
+    fn fmt_usage_formats_exact_total() {
         assert_eq!(fmt_usage(0), "0");
         assert_eq!(fmt_usage(500), "500");
         assert_eq!(fmt_usage(999), "999");
-        assert_eq!(fmt_usage(1000), "1.0k");
-        assert_eq!(fmt_usage(1200), "1.2k");
-        assert_eq!(fmt_usage(1250), "1.2k");
-        assert_eq!(fmt_usage(10500), "10.5k");
+        assert_eq!(fmt_usage(1000), "1000");
+        assert_eq!(fmt_usage(1200), "1200");
+        assert_eq!(fmt_usage(10500), "10500");
     }
 
     #[test]

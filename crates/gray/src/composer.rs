@@ -486,23 +486,21 @@ impl Tui {
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
-            let status_h: u16 = if has_status { 3 } else { 0 };
+            let status_h: u16 = if has_status { 2 } else { 0 };
 
-            // Top: status/thinking, then input box, then slash panel. Status
-            // belongs at the top so it never sits between the input and the
-            // viewport edge — it reads as a header, not a footer.
-            let status_y = area.y;
+            // Top: 1-row gap margin so composer box / status NEVER touches scrollback content above it.
+            let top_gap_h: u16 = 1;
+            let status_y = area.y + top_gap_h;
             let box_y = status_y + status_h;
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
             let footer_y = attach_y + attach_h;
 
             if let Some((started, label)) = &self.status {
-                let status_row = status_y + 1;
-                if status_row < area.y + area.height {
+                if status_y < area.y + area.height {
                     let raw = format!("\u{2b22} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
                     let spans = shimmer_spans(&raw, started.elapsed(), self.truecolor);
-                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_row, area.width, 1));
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
             }
 
@@ -801,8 +799,6 @@ impl Tui {
 
         if let Some(tok) = self.pending_tokens.take() {
             self.push_dim(tok);
-        } else {
-            self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
@@ -945,7 +941,6 @@ impl Tui {
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
-        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
     }
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
@@ -1013,7 +1008,6 @@ impl Tui {
         let _ = self.terminal.insert_before(1, |buf| {
             Paragraph::new(styled).render(buf.area, buf);
         });
-        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
     }
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
