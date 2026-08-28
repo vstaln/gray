@@ -649,17 +649,41 @@ impl Tui {
         let _ = self.draw();
     }
     pub fn stream_thinking(&mut self, chunk: &str) {
-        if !self.thinking { self.thinking = true; self.push_line(String::new()); if self.hide_thinking { self.push_line_styled("Thinking\u{2026}".to_string(), thinking_style()); } }
-        if !self.hide_thinking { self.stream(chunk); }
+        if !self.thinking {
+            self.thinking = true;
+            self.set_status(Some("Thinking"));
+            if !self.hide_thinking {
+                self.push_line(String::new());
+            }
+        }
+        if !self.hide_thinking {
+            self.stream(chunk);
+        }
     }
     pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
-    pub fn stream_text(&mut self, chunk: &str) { self.end_thinking_run(true); self.stream(chunk); }
-    pub fn end_thinking(&mut self) { self.end_thinking_run(false); let _ = self.draw(); }
+    pub fn stream_text(&mut self, chunk: &str) {
+        self.end_thinking_run(true);
+        self.set_status(Some("Working"));
+        self.stream(chunk);
+    }
+    pub fn end_thinking(&mut self) {
+        self.end_thinking_run(false);
+        let _ = self.draw();
+    }
     fn end_thinking_run(&mut self, spacer: bool) {
         if !self.thinking { return; }
         self.thinking = false;
-        if !self.pending.is_empty() { let rest = std::mem::take(&mut self.pending); self.push_line_styled(rest, thinking_style()); }
-        if spacer { self.push_line(String::new()); }
+        if !self.hide_thinking {
+            if !self.pending.is_empty() {
+                let rest = std::mem::take(&mut self.pending);
+                self.push_line_styled(rest, thinking_style());
+            }
+            if spacer {
+                self.push_line(String::new());
+            }
+        } else {
+            self.pending.clear();
+        }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
         // 1-line gap between messages (Codex style)

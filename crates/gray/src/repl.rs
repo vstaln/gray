@@ -127,11 +127,6 @@ pub fn fmt_event(event: &AgentEvent) -> String {
         }
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
-                let reasoning = if usage.reasoning_tokens > 0 {
-                    format!(" · {} think", fmt_usage(usage.reasoning_tokens))
-                } else {
-                    String::new()
-                };
                 let cached = if usage.cached_tokens > 0 {
                     format!(
                         " · {} cached ({:.0}%)",
@@ -142,7 +137,7 @@ pub fn fmt_event(event: &AgentEvent) -> String {
                     String::new()
                 };
                 format!(
-                    "\n\x1b[2m\u{b7} {} tok{reasoning}{cached}\x1b[0m\n",
+                    "\n\x1b[2m\u{b7} {} tok{cached}\x1b[0m\n",
                     fmt_usage(usage.total())
                 )
             } else {
@@ -1244,14 +1239,11 @@ mod tests {
     }
 
     #[test]
-    fn fmt_event_turn_end_shows_reasoning_tokens_when_present() {
+    fn fmt_event_turn_end_formats_clean_usage() {
         let usage = Usage { input_tokens: 100, output_tokens: 200, reasoning_tokens: 64, ..Default::default() };
-        assert!(fmt_event(&AgentEvent::turn_end(StopReason::EndTurn, usage)).contains("64 think"));
-        // Zero reasoning tokens must not add a "think" segment.
-        let plain = fmt_event(&AgentEvent::turn_end(
-            StopReason::EndTurn,
-            Usage { input_tokens: 1, output_tokens: 2, reasoning_tokens: 0, ..Default::default() },
-        ));
-        assert!(!plain.contains("think"));
+        assert_eq!(
+            fmt_event(&AgentEvent::turn_end(StopReason::EndTurn, usage)),
+            "\n\x1b[2m· 300 tok\x1b[0m\n"
+        );
     }
 }
