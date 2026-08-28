@@ -267,10 +267,7 @@ struct SessionState {
     session_id: SessionId,
 }
 
-/// Picks the most recently started session summary (pure, unit-tested).
-fn latest_summary(summaries: &[SessionSummary]) -> Option<&SessionSummary> {
-    summaries.iter().max_by_key(|s| s.started_at)
-}
+
 
 /// Handles the `/sys` command family: edit, show, reset.
 async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut Option<Agent>, tui: Option<&crate::composer::SharedTui>) {
@@ -310,17 +307,21 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
                     return;
                 }
             };
-            let _tui_guard = tui.as_ref().map(|s| s.lock().expect("tui lock"));
+            let tui_cloned = tui.cloned();
+            if let Some(shared) = &tui_cloned {
+                if let Ok(mut t) = shared.try_lock() {
+                    t.pending_resize = Some((t.last_width, std::time::Instant::now() + std::time::Duration::from_secs(3600)));
+                }
+            }
             let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
             let res = editor.run();
-            drop(_tui_guard);
-            if let Some(shared) = tui {
+            if let Some(shared) = &tui_cloned {
                 let mut t = shared.lock().expect("tui lock");
-                let _ = t.terminal.clear();
                 t.pending_resize = None;
                 if let Ok((cols, _)) = crossterm::terminal::size() {
                     t.last_width = cols;
                 }
+                let _ = t.terminal.clear();
                 let _ = t.draw();
             }
             match res {
@@ -622,18 +623,19 @@ async fn handle_resume(
     let Some(root) = default_root() else { return; };
     let store = JsonlSessionStore::new(root);
     match store.load(&sid).await {
-        Ok((_, entries)) => {
-            let history: Vec<Message> = entries.into_iter().map(|e| e.message).collect();
+        Ok((_meta, entries)) => {
+            let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
             match build_agent(config, cwd) {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
                     *session_state = Some(SessionState { session_id: sid.clone(), store });
-                    let msg = format!("resumed {n}-message session {}", sid.as_str());
                     if let Some(shared) = &tui {
-                        shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                        let mut t = shared.lock().expect("tui lock");
+                        t.replay_session_history(&entries, cwd);
+                        t.push_dim(format!("\u{2b22} Resumed session {} ({n} messages)", sid.as_str()));
                     } else {
-                        println!("\x1b[2m{msg}\x1b[0m");
+                        println!("\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m", sid.as_str());
                     }
                 }
                 Err(e) => {
@@ -735,29 +737,34 @@ pub async fn run_repl_mode(
     // we surface a friendly hint on first use instead of refusing to start.
     let mut agent: Option<Agent> = None;
     let mut session_state: Option<SessionState> = None;
+    let mut pending_history: Vec<Message> = Vec::new();
+    let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
 
     // `--session <id>`: reopen that exact session.
     if let Some(id) = session_id
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
-        match store.load(&SessionId::new(id)).await {
-            Ok((_, entries)) => {
-                let history: Vec<Message> = entries.into_iter().map(|e| e.message).collect();
-                match build_agent(config, &cwd) {
-                    Ok(built) => {
-                        let n = history.len();
-                        agent = Some(built.with_messages(history));
-                        session_state = Some(SessionState {
-                            session_id: SessionId::new(id),
-                            store,
-                        });
-                        println!("\x1b[2mresumed {n}-message session {id}\x1b[0m");
-                    }
-                    Err(e) => println!("could not resume (no provider): {e}"),
+        let sid = SessionId::new(id);
+        match store.load(&sid).await {
+            Ok((meta, entries)) => {
+                if config.model.is_none() && !meta.model.is_empty() {
+                    config.model = Some(meta.model.clone());
                 }
+                let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
+                pending_history = history.clone();
+                if let Ok(built) = build_agent(config, &cwd) {
+                    agent = Some(built.with_messages(history));
+                }
+                session_state = Some(SessionState {
+                    session_id: sid.clone(),
+                    store,
+                });
+                resumed_session_info = Some((sid, entries));
             }
-            Err(e) => println!("could not resume session {id}: {e}"),
+            Err(e) => {
+                println!("could not resume session {id}: {e}");
+            }
         }
     }
 
@@ -767,23 +774,24 @@ pub async fn run_repl_mode(
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
-        if let Some(latest) = latest_summary(&store.list().await) {
+        let summaries = store.list().await;
+        let cwd_now = std::env::current_dir().ok();
+        if let Some(latest) = crate::resume::latest_summary(&summaries, cwd_now.as_deref()).or_else(|| crate::resume::latest_summary(&summaries, None)) {
             match store.load(&latest.id).await {
-                Ok((_, entries)) => {
-                    let history: Vec<Message> =
-                        entries.into_iter().map(|e| e.message).collect();
-                    match build_agent(config, &cwd) {
-                        Ok(built) => {
-                            let n = history.len();
-                            agent = Some(built.with_messages(history));
-                            session_state = Some(SessionState {
-                                session_id: latest.id.clone(),
-                                store,
-                            });
-                            println!("\x1b[2mresumed {n}-message session {}\x1b[0m", latest.id.as_str());
-                        }
-                        Err(e) => println!("could not resume (no provider): {e}"),
+                Ok((meta, entries)) => {
+                    if config.model.is_none() && !meta.model.is_empty() {
+                        config.model = Some(meta.model.clone());
                     }
+                    let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
+                    pending_history = history.clone();
+                    if let Ok(built) = build_agent(config, &cwd) {
+                        agent = Some(built.with_messages(history));
+                    }
+                    session_state = Some(SessionState {
+                        session_id: latest.id.clone(),
+                        store,
+                    });
+                    resumed_session_info = Some((latest.id.clone(), entries));
                 }
                 Err(e) => println!("could not resume: {e}"),
             }
@@ -806,6 +814,10 @@ pub async fn run_repl_mode(
                     t.set_thinking_effort(eff.clone());
                 }
                 t.set_cwd(cwd.display().to_string());
+                if let Some((ref sid, ref entries)) = resumed_session_info {
+                    t.replay_session_history(entries, &cwd);
+                    t.push_dim(format!("\u{2b22} Resumed session {} ({} messages)", sid.as_str(), entries.len()));
+                }
                 t
             })),
         );
@@ -1034,7 +1046,13 @@ pub async fn run_repl_mode(
                         }
                     }
                     match build_agent(config, &cwd) {
-                        Ok(built) => agent = Some(built),
+                        Ok(built) => {
+                            if !pending_history.is_empty() {
+                                agent = Some(built.with_messages(std::mem::take(&mut pending_history)));
+                            } else {
+                                agent = Some(built);
+                            }
+                        }
                         Err(e) => {
                             println!("{e}");
                             continue;
@@ -1126,22 +1144,8 @@ pub async fn run_repl_mode(
                                     t.end_thinking();
                                     t.set_usage(*usage);
                                     if usage.total() > 0 {
-                                        let cached = if usage.cached_tokens > 0 {
-                                            format!(
-                                                " · {} cached ({:.0}%)",
-                                                fmt_usage(usage.cached_tokens),
-                                                usage.cache_hit_rate() * 100.0
-                                            )
-                                        } else {
-                                            String::new()
-                                        };
-                                        let think = if usage.reasoning_tokens > 0 {
-                                            format!(" · {} think", fmt_usage(usage.reasoning_tokens))
-                                        } else {
-                                            String::new()
-                                        };
                                         t.push_usage(format!(
-                                            "\u{25c6} {} tok{think}{cached}",
+                                            "\u{2b22} {} tok",
                                             fmt_usage(usage.total())
                                         ));
                                     }
@@ -1171,21 +1175,7 @@ pub async fn run_repl_mode(
                                 }
                                 AgentEvent::TurnEnd { usage, .. } => {
                                     if usage.total() > 0 {
-                                        let cached = if usage.cached_tokens > 0 {
-                                            format!(
-                                                " · {} cached ({:.0}%)",
-                                                fmt_usage(usage.cached_tokens),
-                                                usage.cache_hit_rate() * 100.0
-                                            )
-                                        } else {
-                                            String::new()
-                                        };
-                                        let think = if usage.reasoning_tokens > 0 {
-                                            format!(" · {} think", fmt_usage(usage.reasoning_tokens))
-                                        } else {
-                                            String::new()
-                                        };
-                                        println!("\n\x1b[2m\u{25c6} {} tok{think}{cached}\x1b[0m", fmt_usage(usage.total()));
+                                        println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", fmt_usage(usage.total()));
                                     }
                                 }
                                 _ => {}

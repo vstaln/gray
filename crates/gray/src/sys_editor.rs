@@ -49,31 +49,28 @@ impl SysEditor {
         if !composer_was_raw {
             enable_raw_mode()?;
         }
-        let mut stdout_handle = stdout();
-        crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Show)?;
 
-        let backend = CrosstermBackend::new(stdout_handle);
+        crossterm::execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Show)?;
+        // Some tiling WMs deliver a resize between EnterAlternateScreen and
+        // Terminal::new, which ratatui would then map to a zero-sized viewport.
+        // Match codex tui::init pattern: re-query after the switch so we anchor correctly.
+        let _ = crossterm::terminal::size();
+        let backend = CrosstermBackend::new(stdout());
         let mut terminal = Terminal::new(backend)?;
 
         let res = self.event_loop(&mut terminal);
 
+        let _ = terminal.clear();
         crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+        // LeaveAlternateScreen already restores the main screen buffer — do NOT
+        // emit ClearType::All / blank-line floods here, they race the compositor's
+        // own synchronized-update flush and are exactly the ghost-text your 17:22
+        // screenshot shows (codex restore path is LeaveAlternateScreen → raw-mode
+        // resync only, see tui.rs restore_common).
         if !composer_was_raw {
             disable_raw_mode()?;
         } else {
             enable_raw_mode()?;
-        }
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-            crossterm::cursor::MoveTo(0, 0),
-        );
-        if let Ok((cols, rows)) = crossterm::terminal::size() {
-            for y in 0..rows {
-                let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, y));
-                let _ = write!(std::io::stdout(), "{}", " ".repeat(cols as usize));
-            }
-            let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, 0));
         }
         let _ = std::io::stdout().flush();
 

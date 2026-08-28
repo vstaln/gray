@@ -27,6 +27,7 @@ const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
 /// Shared handle: main thread drives prompts/streaming, ticker refreshes elapsed.
+#[derive(Clone)]
 pub struct SharedTui(pub Arc<std::sync::Mutex<Tui>>);
 
 impl std::ops::Deref for SharedTui {
@@ -185,7 +186,7 @@ impl TextArea {
 }
 
 pub struct Tui {
-    terminal: Term,
+    pub(crate) terminal: Term,
     textarea: TextArea,
     matches: Vec<(&'static str, &'static str)>,
     sel: usize,
@@ -204,11 +205,11 @@ pub struct Tui {
     cwd: String,
     thinking_effort: String,
     pub transcript: Vec<Line<'static>>,
-    last_width: u16,
+    pub(crate) last_width: u16,
     pub latest_usage: Option<gray_core::event::Usage>,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
-    pending_resize: Option<(u16, Instant)>,
+    pub(crate) pending_resize: Option<(u16, Instant)>,
 }
 
 fn thinking_style() -> Style {
@@ -377,7 +378,7 @@ impl Tui {
 
     fn width(&self) -> usize { self.last_width.max(20) as usize }
 
-    fn draw(&mut self) -> anyhow::Result<()> {
+    pub(crate) fn draw(&mut self) -> anyhow::Result<()> {
         let w = self.width();
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -790,7 +791,7 @@ impl Tui {
         let output = std::mem::replace(
             &mut self.markdown_renderer,
             gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
-        ).finish_into_output(None);
+        ).finish_into_output(Some(gray_markdown::get_syntect()));
         if output.lines.len() > self.committed_markdown_lines {
             let remaining_lines: Vec<Line<'static>> = output.lines[self.committed_markdown_lines..].to_vec();
             self.push_styled_lines(remaining_lines);
@@ -856,7 +857,7 @@ impl Tui {
             self.set_status(Some("Working"));
         }
         let clean = strip_ansi(chunk);
-        self.markdown_renderer.push_and_render(&clean, None);
+        self.markdown_renderer.push_and_render(&clean, Some(gray_markdown::get_syntect()));
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
             let view = self.markdown_renderer.view();
@@ -1029,6 +1030,96 @@ impl Tui {
             Paragraph::new(line).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
+    }
+
+    /// Replays a previous session's message history into the TUI scrollback.
+    pub fn replay_session_history(&mut self, entries: &[gray_session::SessionEntry], cwd: &std::path::Path) {
+        let mut tool_calls: std::collections::HashMap<String, (String, serde_json::Value)> = std::collections::HashMap::new();
+
+        for entry in entries {
+            match entry.message.role {
+                gray_core::Role::User => {
+                    let mut user_text = String::new();
+                    for block in &entry.message.content {
+                        match block {
+                            gray_core::ContentBlock::Text { text } => {
+                                if !user_text.is_empty() {
+                                    user_text.push('\n');
+                                }
+                                user_text.push_str(text);
+                            }
+                            gray_core::ContentBlock::ToolResult { id, content, is_error } => {
+                                let (name, args) = tool_calls
+                                    .get(id)
+                                    .map(|(n, a)| (n.as_str(), Some(a)))
+                                    .unwrap_or(("tool", None));
+                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+                                    name,
+                                    args,
+                                    content,
+                                    *is_error,
+                                    Some(cwd),
+                                );
+                                if !lines.is_empty() {
+                                    self.push_styled_lines(lines);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if !user_text.is_empty() {
+                        self.push_user_prompt(&user_text);
+                    }
+                }
+                gray_core::Role::Assistant => {
+                    for block in &entry.message.content {
+                        match block {
+                            gray_core::ContentBlock::Thinking { .. } => {
+                                // Thinking blocks are hidden by default in scrollback
+                            }
+                            gray_core::ContentBlock::Text { text } => {
+                                let clean = strip_ansi(text);
+                                if !clean.trim().is_empty() {
+                                    let (output, _) = gray_markdown::render_markdown_ratatui_full(
+                                        &clean,
+                                        gray_markdown::gray_markdown_style(),
+                                        true,
+                                        Some(gray_markdown::get_syntect()),
+                                    );
+                                    self.push_styled_lines(output.lines);
+                                }
+                            }
+                            gray_core::ContentBlock::ToolUse { id, name, args } => {
+                                tool_calls.insert(id.clone(), (name.clone(), args.clone()));
+                                let header = crate::tool_fmt::format_tool_call_header(name, args, Some(cwd));
+                                self.push_line_spans(header);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                gray_core::Role::System => {
+                    for block in &entry.message.content {
+                        if let gray_core::ContentBlock::ToolResult { id, content, is_error } = block {
+                            let (name, args) = tool_calls
+                                .get(id)
+                                .map(|(n, a)| (n.as_str(), Some(a)))
+                                .unwrap_or(("tool", None));
+                            let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+                                name,
+                                args,
+                                content,
+                                *is_error,
+                                Some(cwd),
+                            );
+                            if !lines.is_empty() {
+                                self.push_styled_lines(lines);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
         let (used_tokens, cache_hit_rate) = if let Some(u) = self.latest_usage {
