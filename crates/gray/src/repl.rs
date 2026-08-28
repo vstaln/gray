@@ -729,6 +729,7 @@ async fn persist_turn_messages(
     config: &Config,
     cwd: &Path,
     initial_count: usize,
+    latest_usage: Option<gray_core::event::Usage>,
 ) {
     if session_state.is_none()
         && let Some(root) = default_root()
@@ -751,8 +752,14 @@ async fn persist_turn_messages(
     if let Some(state) = session_state
         && agent.messages().len() > initial_count
     {
-        for msg in &agent.messages()[initial_count..] {
-            if let Err(e) = state.store.append(&state.session_id, msg).await {
+        let new_messages = &agent.messages()[initial_count..];
+        for (i, msg) in new_messages.iter().enumerate() {
+            let usage = if i == new_messages.len() - 1 {
+                latest_usage
+            } else {
+                None
+            };
+            if let Err(e) = state.store.append_with_usage(&state.session_id, msg, usage).await {
                 log::warn!(target: "gray_session", "session append failed: {e}");
             }
         }
@@ -1181,6 +1188,7 @@ pub async fn run_repl_mode(
 
                 let mut current_tool_name: Option<String> = None;
                 let mut current_tool_args: Option<serde_json::Value> = None;
+                let mut turn_usage: Option<gray_core::event::Usage> = None;
                 let run_result = {
                     let mut on_event = |ev: &AgentEvent| {
                         if let Some(shared) = &tui_stream
@@ -1210,6 +1218,7 @@ pub async fn run_repl_mode(
                                     }
                                 }
                                 AgentEvent::TurnEnd { usage, .. } => {
+                                    turn_usage = Some(*usage);
                                     t.end_thinking();
                                     t.set_usage(*usage);
                                     if usage.total() > 0 {
@@ -1243,6 +1252,7 @@ pub async fn run_repl_mode(
                                     }
                                 }
                                 AgentEvent::TurnEnd { usage, .. } => {
+                                    turn_usage = Some(*usage);
                                     if usage.total() > 0 {
                                         println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", fmt_usage(usage.total()));
                                     }
@@ -1269,10 +1279,10 @@ pub async fn run_repl_mode(
 
                 match run_result {
                     Ok(_) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
                     }
                     Err(CoreError::Cancelled) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
                         if interactive {
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");
@@ -1284,7 +1294,7 @@ pub async fn run_repl_mode(
                         }
                     }
                     Err(e) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count).await;
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
                         if interactive {
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");

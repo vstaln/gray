@@ -14,9 +14,9 @@ pub const PATH_COLOR: Color = Color::Rgb(255, 158, 100); // #ff9e64 (TokyoNight 
 pub const COMMAND_COLOR: Color = Color::Rgb(224, 175, 104); // #e0af68 (TokyoNight yellow)
 pub const DIM_COLOR: Color = Color::Rgb(108, 108, 108); // #6c6c6c (muted gray)
 
-pub const DIFF_DELETE_BG: Color = Color::Rgb(66, 14, 20); // #420e14 (dark red)
+pub const DIFF_DELETE_BG: Color = Color::Rgb(74, 34, 29); // #4A221D (dark red, Codex matching)
 pub const DIFF_DELETE_FG: Color = Color::Rgb(247, 118, 142); // #f7768e (bright red)
-pub const DIFF_INSERT_BG: Color = Color::Rgb(6, 56, 6); // #063806 (dark green)
+pub const DIFF_INSERT_BG: Color = Color::Rgb(33, 58, 43); // #213A2B (dark green, Codex matching)
 pub const DIFF_INSERT_FG: Color = Color::Rgb(158, 206, 106); // #9ece6a (bright green)
 pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code text)
 pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
@@ -418,15 +418,23 @@ pub fn render_diff_hunks(
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
 
+        let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(40);
+
         for line in hunk {
             let mut spans = Vec::new();
-            spans.push(Span::raw("  "));
 
             let bg_color = match line.tag {
                 DiffTag::Equal => None,
                 DiffTag::Delete => Some(DIFF_DELETE_BG),
                 DiffTag::Insert => Some(DIFF_INSERT_BG),
             };
+
+            let prefix_style = if let Some(bg) = bg_color {
+                Style::default().bg(bg)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled("  ", prefix_style));
 
             let gutter_style = match line.tag {
                 DiffTag::Equal => Style::default().fg(DIFF_GUTTER_FG),
@@ -446,10 +454,8 @@ pub fn render_diff_hunks(
                 DiffTag::Insert => "+",
             };
 
-            spans.push(Span::styled(
-                format!("{:>width$} | {sign} ", num, width = gutter_width),
-                gutter_style,
-            ));
+            let gutter_str = format!("{:>width$} | {sign} ", num, width = gutter_width);
+            spans.push(Span::styled(gutter_str.clone(), gutter_style));
 
             let text = &line.text;
             let content_spans = match line.tag {
@@ -468,6 +474,14 @@ pub fn render_diff_hunks(
                 }
             };
             spans.extend(content_spans);
+
+            if let Some(bg) = bg_color {
+                let used_w = 2 + gutter_str.chars().count() + text.chars().count();
+                let pad_w = term_w.saturating_sub(used_w);
+                if pad_w > 0 {
+                    spans.push(Span::styled(" ".repeat(pad_w), Style::default().bg(bg)));
+                }
+            }
 
             lines.push(Line::from(spans));
         }

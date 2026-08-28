@@ -99,7 +99,6 @@ impl SessionMeta {
     }
 }
 
-/// A recorded turn or event entry within a session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionEntry {
     /// Monotonic sequence ID of this entry in the session.
@@ -110,6 +109,9 @@ pub struct SessionEntry {
     pub timestamp: u64,
     /// The conversation turn message stored in this entry.
     pub message: Message,
+    /// Token usage recorded for this turn, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<gray_core::event::Usage>,
 }
 
 /// Summary overview of a session for listing operations.
@@ -163,7 +165,17 @@ pub trait SessionStore: Send + Sync {
     async fn create(&self, meta: SessionMeta) -> SessionId;
 
     /// Appends a new message entry to an existing session.
-    async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId>;
+    async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId> {
+        self.append_with_usage(id, msg, None).await
+    }
+
+    /// Appends a new message entry with optional usage stats.
+    async fn append_with_usage(
+        &self,
+        id: &SessionId,
+        msg: &Message,
+        usage: Option<gray_core::event::Usage>,
+    ) -> Result<SessionEntryId>;
 
     /// Loads the metadata and all entries for a given session.
     async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)>;
@@ -295,7 +307,12 @@ impl SessionStore for JsonlSessionStore {
         id
     }
 
-    async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId> {
+    async fn append_with_usage(
+        &self,
+        id: &SessionId,
+        msg: &Message,
+        usage: Option<gray_core::event::Usage>,
+    ) -> Result<SessionEntryId> {
         let _guard = self.lock.lock().await;
         let path = self.session_path(id);
 
@@ -330,6 +347,7 @@ impl SessionStore for JsonlSessionStore {
             parent_id,
             timestamp: now_millis(),
             message: msg.clone(),
+            usage,
         };
 
         let json = serde_json::to_string(&entry)?;

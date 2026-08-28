@@ -354,12 +354,7 @@ impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
 
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        for _ in 0..rows {
-            print!("\r\n");
-        }
-        let _ = std::io::stdout().flush();
-
+        let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
@@ -1251,6 +1246,11 @@ impl Tui {
                     }
                 }
             }
+        }
+
+        // Restore last known token usage from session history
+        if let Some(last_usage) = entries.iter().rev().find_map(|e| e.usage) {
+            self.set_usage(last_usage);
         }
     }
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {

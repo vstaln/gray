@@ -203,7 +203,7 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
     }
 
     add_guideline("Be concise in your responses".to_string());
-    add_guideline("Show file paths clearly when working with files".to_string());
+    add_guideline("Show file paths clearly with clickable file:// or markdown links (e.g. file:///path/to/file or [filename](file:///path/to/file)) so users can click to open them".to_string());
 
     let guidelines = guidelines_list.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n");
 
