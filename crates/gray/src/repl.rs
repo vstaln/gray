@@ -9,7 +9,7 @@ use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_session::{
-    default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore, SessionSummary,
+    default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore,
 };
 
 use std::sync::Mutex as StdMutex;
