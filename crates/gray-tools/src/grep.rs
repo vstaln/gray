@@ -30,36 +30,7 @@ fn truncate_line(line: &str) -> (String, bool) {
     (format!("{truncated}... [truncated]"), true)
 }
 
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
-/// Head truncation keeping complete lines that fit within `max_bytes`.
-fn truncate_head(content: &str, max_bytes: usize) -> (String, bool) {
-    if content.len() <= max_bytes {
-        return (content.to_string(), false);
-    }
-    let mut out_lines: Vec<&str> = Vec::new();
-    let mut bytes = 0usize;
-    for (i, line) in content.split('\n').enumerate() {
-        let line_bytes = line.len() + if i > 0 { 1 } else { 0 };
-        if bytes + line_bytes > max_bytes {
-            break;
-        }
-        out_lines.push(line);
-        bytes += line_bytes;
-    }
-    if out_lines.is_empty() {
-        return (String::new(), true);
-    }
-    (out_lines.join("\n"), true)
-}
+use crate::truncate::truncate_head;
 
 fn relativize(search_path: &Path, file_path: &str, is_dir: bool) -> String {
     let fp = Path::new(file_path);
@@ -353,7 +324,8 @@ impl Tool for GrepTool {
         }
 
         let raw_output = output_lines.join("\n");
-        let (mut output, byte_truncated) = truncate_head(&raw_output, MAX_BYTES);
+        let trunc = truncate_head(&raw_output);
+        let mut output = trunc.content;
 
         let mut notices: Vec<String> = Vec::new();
         if match_limit_reached {
@@ -362,8 +334,8 @@ impl Tool for GrepTool {
                 effective_limit * 2
             ));
         }
-        if byte_truncated {
-            notices.push(format!("{} limit reached", format_size(MAX_BYTES)));
+        if trunc.truncated {
+            notices.push(format!("{} limit reached", crate::truncate::format_size(MAX_BYTES)));
         }
         if lines_truncated {
             notices.push(format!(

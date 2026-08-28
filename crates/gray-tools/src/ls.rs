@@ -7,37 +7,9 @@ use serde_json::{json, Value};
 
 use crate::{fail, finish, get_opt_u64, resolve_path, Tool, MAX_BYTES};
 
+use crate::truncate::truncate_head;
+
 const DEFAULT_LIMIT: usize = 500;
-
-fn format_size(bytes: usize) -> String {
-    if bytes < 1024 {
-        format!("{bytes}B")
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
-
-fn truncate_head(content: &str, max_bytes: usize) -> (String, bool) {
-    if content.len() <= max_bytes {
-        return (content.to_string(), false);
-    }
-    let mut out_lines: Vec<&str> = Vec::new();
-    let mut bytes = 0usize;
-    for (i, line) in content.split('\n').enumerate() {
-        let line_bytes = line.len() + if i > 0 { 1 } else { 0 };
-        if bytes + line_bytes > max_bytes {
-            break;
-        }
-        out_lines.push(line);
-        bytes += line_bytes;
-    }
-    if out_lines.is_empty() {
-        return (String::new(), true);
-    }
-    (out_lines.join("\n"), true)
-}
 
 pub const LS_SNIPPET: &str = "List directory contents";
 pub const LS_GUIDELINES: &[&str] = &[];
@@ -144,7 +116,8 @@ impl Tool for LsTool {
         }
 
         let raw_output = results.join("\n");
-        let (mut output, byte_truncated) = truncate_head(&raw_output, MAX_BYTES);
+        let trunc = truncate_head(&raw_output);
+        let mut output = trunc.content;
 
         let mut notices: Vec<String> = Vec::new();
         if entry_limit_reached {
@@ -153,8 +126,8 @@ impl Tool for LsTool {
                 effective_limit * 2
             ));
         }
-        if byte_truncated {
-            notices.push(format!("{} limit reached", format_size(MAX_BYTES)));
+        if trunc.truncated {
+            notices.push(format!("{} limit reached", crate::truncate::format_size(MAX_BYTES)));
         }
         if !notices.is_empty() {
             output.push_str("\n\n[");

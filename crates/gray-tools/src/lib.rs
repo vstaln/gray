@@ -13,7 +13,6 @@ pub mod grep;
 pub mod ls;
 pub mod file_mutation_queue;
 pub mod read;
-pub mod path_utils;
 pub mod truncate;
 pub mod write;
 

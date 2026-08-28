@@ -4,12 +4,11 @@
 //! picker appears the moment credentials are actually needed.
 
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, rule, tui::print_wrapped};
+use crate::{config::Config, tui::print_wrapped};
 
 /// Provider entry from the vendored catalog.
 #[derive(Debug, Clone, Deserialize)]
@@ -116,13 +115,6 @@ pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()
     Ok(())
 }
 
-pub(crate) fn read_line(prompt: &str) -> anyhow::Result<String> {
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
-    Ok(line.trim().to_string())
-}
 
 /// Reads a secret with masked input (echoes `*` per char, like opencode's
 /// password prompt). Enter confirms, Esc/Ctrl-C returns an error.
@@ -201,246 +193,6 @@ pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Case-insensitive substring match over id and name; empty filter matches all.
-/// Pure so the picker's core logic is testable without a tty.
-fn matches_filter(filter: &str, primary: &str, secondary: &str) -> bool {
-    let f = filter.to_lowercase();
-    f.is_empty() || primary.to_lowercase().contains(&f) || secondary.to_lowercase().contains(&f)
-}
-
-/// Indices of `items` matching `filter`, in original order.
-fn filtered_indices(items: &[(String, String)], filter: &str) -> Vec<usize> {
-    (0..items.len())
-        .filter(|&i| matches_filter(filter, &items[i].0, &items[i].1))
-        .collect()
-}
-
-/// First visible row index for a window of `max_rows` with `sel` kept in view.
-pub(crate) fn scroll_start(sel: usize, max_rows: usize) -> usize {
-    sel.saturating_sub(max_rows - 1)
-}
-
-/// Clips to at most `max` chars.
-/// ponytail: char count, not unicode display width — wide glyphs may overflow; swap in unicode-width if that matters.
-pub(crate) fn clip(s: &str, max: usize) -> String {
-    s.chars().take(max).collect()
-}
-
-/// Interactive live-filter list picker. Renders inline (no alternate screen),
-/// redraws on every keystroke. Returns the selected index, or `None` on Esc /
-/// Ctrl+C. Restores cooked mode before returning on every path.
-pub(crate) fn select_from_list(
-    title: &str,
-    items: &[(String, String)],
-    filterable: bool,
-) -> anyhow::Result<Option<usize>> {
-    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-
-    const ROWS: usize = 12;
-    // Keep the whole frame inside short panes: banner/welcome occupy ~8 rows
-    // above us and one rule row sits below; never let printing scroll the pane.
-    let term_rows = crossterm::terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
-    let rows = ROWS.min(term_rows.saturating_sub(11)).max(3);
-    let mut stdout = std::io::stdout();
-    let mut filter = String::new();
-    let mut sel = 0usize;
-    use crate::tui::{Border, Container, InlineFrame, Text};
-    let mut frame = InlineFrame::default();
-
-    crossterm::terminal::enable_raw_mode()?;
-    // Hide the cursor: its block glyph parked at column 0 reads as a stray
-    // box-drawing artifact on the bottom border (TUI convention: hidden cursor).
-    let _ = write!(stdout, "\x1b[?25l");
-    stdout.flush()?;
-    let result = (|| -> anyhow::Result<Option<usize>> {
-        loop {
-            let filtered = filtered_indices(items, &filter);
-            if sel >= filtered.len() {
-                sel = filtered.len().saturating_sub(1);
-            }
-            let selected = filtered.get(sel).copied();
-
-            // Fresh width at EVERY paint; rebuild the whole container fresh
-            // (FirstTimeSetupComponent.update()), so a resize mid-menu redraws
-            // borders and wrapping at the new size.
-            let tw = crate::term_width();
-            let header = if filter.is_empty() {
-                title.to_string()
-            } else {
-                let counter = format!(
-                    "({}/{})",
-                    if filtered.is_empty() { 0 } else { sel + 1 },
-                    filtered.len()
-                );
-                // Budget leaves room for padding plus `<title> `, one space, counter.
-                let filter_budget = tw
-                    .saturating_sub(6 + title.chars().count() + counter.chars().count());
-                format!("{title}> {} \x1b[2m{counter}\x1b[0m", clip(&filter, filter_budget))
-            };
-            let mut c = Container::new();
-            c.push(Box::new(Border));
-            c.push(Box::new(Text::new(header, 1)));
-            if filtered.is_empty() {
-                c.push(Box::new(Text::new("no matches", 3)));
-            } else {
-                let start = scroll_start(sel, rows);
-                for &i in &filtered[start..(start + rows).min(filtered.len())] {
-                    let body = format!(
-                        "{}  {}",
-                        clip(&items[i].0, 32),
-                        clip(&items[i].1, tw.saturating_sub(40))
-                    );
-                    c.push(Box::new(Text::new(
-                        if Some(i) == selected {
-                            format!("\x1b[7m{body}\x1b[0m")
-                        } else {
-                            body
-                        },
-                        3,
-                    )));
-                }
-            }
-            c.push(Box::new(Border));
-            frame.draw(&mut stdout, &c, tw)?;
-
-            match read()? {
-                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
-                    if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
-                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
-                    match code {
-                        KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                        KeyCode::Char('n') => sel = (sel + 1).min(filtered.len().saturating_sub(1)),
-                        _ => {}
-                    }
-                }
-                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
-                    KeyCode::Char(c) if filterable => {
-                        filter.push(c);
-                        sel = 0;
-                    }
-                    KeyCode::Backspace if filterable => {
-                        filter.pop();
-                        sel = 0;
-                    }
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(filtered.len().saturating_sub(1)),
-                    KeyCode::Enter => return Ok(selected),
-                    KeyCode::Esc => return Ok(None),
-                    _ => {}
-                },
-                Event::Resize(_, _) => {} // width re-queried at top of loop; frame repaints
-                _ => {}
-            }
-        }
-    })();
-    crossterm::terminal::disable_raw_mode()?;
-    let _ = write!(stdout, "\x1b[?25h");
-    stdout.flush()?;
-
-    // Erase the picker UI so the transcript shows only the outcome.
-    frame.erase(&mut stdout)?;
-    result
-}
-
-/// Interactive provider picker over the bundled catalog. Returns the chosen
-/// provider id, or None if the user aborts with Esc/Ctrl+C.
-pub fn select_from_catalog(catalog: &Catalog) -> anyhow::Result<Option<String>> {
-    let items: Vec<(String, String)> = catalog
-        .iter()
-        .map(|(id, p)| (id.clone(), p.name.clone()))
-        .collect();
-    match select_from_list("provider", &items, true)? {
-        Some(i) => Ok(Some(items[i].0.clone())),
-        None => Ok(None),
-    }
-}
-
-/// What the user picked on the onboarding/provider screen.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OnboardingChoice {
-    ApiKey,
-    OAuth,
-    Free,
-    Local,
-    Skip,
-}
-
-/// Routes an onboarding menu selection index (pure, unit-tested).
-pub fn route_onboarding(i: usize) -> OnboardingChoice {
-    match i {
-        0 => OnboardingChoice::Free,
-        1 => OnboardingChoice::ApiKey,
-        2 => OnboardingChoice::OAuth,
-        3 => OnboardingChoice::Local,
-        _ => OnboardingChoice::Skip,
-    }
-}
-
-/// Interactive API-key flow: pick provider from catalog -> enter key -> pick model -> save.
-/// Returns Ok(true) on success, Ok(false) if cancelled.
-pub fn run_api_key_setup(config: &mut Config) -> anyhow::Result<bool> {
-    let catalog = load_catalog()?;
-    let pid = match select_from_catalog(&catalog)? {
-        Some(id) => id,
-        None => return Ok(false),
-    };
-    let provider = &catalog[&pid];
-    println!("provider → {}", provider.name);
-
-    println!("{}", rule("credentials"));
-    let hint = env_hint(provider);
-    let env_key = config.api_key.clone().unwrap_or_default();
-    let key_in = match read_secret(&format!(
-        "{} API key ({}): ",
-        provider.name,
-        if hint == "API_KEY" { "input hidden" } else { &hint }
-    )) {
-        Ok(k) => k,
-        Err(_) => return Ok(false),
-    };
-    let api_key = if key_in.is_empty() { env_key } else { key_in };
-    let _ = save_auth_key(&pid, &api_key);
-
-    println!("{}", rule("model"));
-    let model = if provider.models.is_empty() {
-        let m = match read_line("model id: ") {
-            Ok(m) => m,
-            Err(_) => return Ok(false),
-        };
-        if m.is_empty() {
-            return Ok(false);
-        }
-        m
-    } else {
-        let items: Vec<(String, String)> = provider
-            .models
-            .iter()
-            .map(|m| (m.id.clone(), m.name.clone()))
-            .collect();
-        match select_from_list("model", &items, true)? {
-            Some(i) => items[i].0.clone(),
-            None => items[0].0.clone(),
-        }
-    };
-
-    let saved = SavedConfig {
-        base_url: Some(provider.base_url.clone()),
-        api_key: Some(api_key.clone()),
-        model: Some(model),
-        auth_mode: Some("api_key".into()),
-    };
-    let path = saved_config_path()?;
-    save_saved_config_at(&path, &saved)?;
-
-    config.base_url = saved.base_url.unwrap();
-    config.api_key = saved.api_key;
-    config.model = saved.model;
-
-    println!();
-    println!("saved — edit {} anytime, or /sys for the system prompt.", path.display());
-    Ok(true)
-}
-
 /// `/key [provider-id]`: masked key entry for a catalog provider. Stores the
 /// key per-provider in `~/.gray/auth.json` (opencode-style) and activates it
 /// (base_url + api_key) without touching the chosen model. Returns Ok(true)
@@ -453,10 +205,7 @@ pub fn run_key_setup(config: &mut Config, pid: Option<String>) -> anyhow::Result
             println!("unknown provider '{p}' — use /key with no argument to pick from the list");
             return Ok(false);
         }
-        None => match select_from_catalog(&catalog)? {
-            Some(id) => id,
-            None => return Ok(false),
-        },
+        None => return run_connect_modal(config),
     };
     let provider = &catalog[&pid];
     let existing = load_auth_keys()
@@ -1723,41 +1472,5 @@ mod tests {
         assert_eq!(loaded.api_key.as_deref(), Some("sk-test"));
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn filter_matches_id_or_name_case_insensitively() {
-        assert!(matches_filter("", "openrouter", "OpenRouter"));
-        assert!(matches_filter("open", "openrouter", "Whatever"));
-        assert!(matches_filter("ROUTER", "openrouter", "whatever"));
-        assert!(matches_filter("deep", "x", "DeepSeek"));
-        assert!(!matches_filter("zzz", "openrouter", "OpenRouter"));
-        // empty filter matches everything; non-empty must hit id or name
-        let items = vec![
-            ("anthropic".into(), "Anthropic".into()),
-            ("openrouter".into(), "OpenRouter".into()),
-        ];
-        assert_eq!(filtered_indices(&items, ""), vec![0, 1]);
-        assert_eq!(filtered_indices(&items, "OPEN"), vec![1]);
-        assert!(filtered_indices(&items, "nomatch").is_empty());
-    }
-
-    #[test]
-    fn scroll_window_keeps_selection_visible() {
-        assert_eq!(scroll_start(0, 12), 0);
-        assert_eq!(scroll_start(11, 12), 0); // first page holds sel 0..=11
-        assert_eq!(scroll_start(12, 12), 1);
-        assert_eq!(scroll_start(200, 12), 189);
-        assert_eq!(scroll_start(4, 5), 0); // slash-panel window size
-        assert_eq!(scroll_start(6, 5), 2);
-    }
-
-    #[test]
-    fn catalog_items_are_built_for_picker() {
-        let cat = load_catalog().unwrap();
-        let items: Vec<(String, String)> = cat.iter().map(|(id, p)| (id.clone(), p.name.clone())).collect();
-        assert_eq!(items.len(), cat.len());
-        // filtering the built items finds a known provider by both id and name
-        assert!(items.iter().any(|(id, name)| matches_filter("deep", id, name)));
     }
 }

@@ -2,16 +2,13 @@
 
 pub mod composer;
 pub mod config;
-pub mod logo_data;
 pub mod logging;
 pub mod oauth;
 pub mod print;
-pub mod prompt_templates;
 pub mod setup;
 pub mod skills;
 pub mod sys_editor;
 pub mod repl;
-pub mod streaming;
 pub mod system_prompt;
 pub mod tui;
 
