@@ -736,10 +736,14 @@ impl Tui {
     }
     pub fn tick_status(&mut self) { let _ = self.draw(); }
     pub fn shutdown(&mut self) {
+        let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
-        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let _ = write!(std::io::stdout(), "\x1b[{};1H\n\n", rows);
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::Show,
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+        );
         let _ = std::io::stdout().flush();
     }
 }

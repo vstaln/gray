@@ -331,160 +331,38 @@ pub fn friendly_model_name(model_id: &str) -> String {
     if model_id.is_empty() {
         return String::new();
     }
-    match model_id {
-        "anthropic/claude-3.7-sonnet" | "claude-3-7-sonnet-20250219" | "claude-3.7-sonnet" => "Claude 3.7 Sonnet".into(),
-        "anthropic/claude-3.7-sonnet:thinking" => "Claude 3.7 Sonnet (Thinking)".into(),
-        "anthropic/claude-3.5-sonnet" | "claude-3-5-sonnet-20241022" | "claude-3.5-sonnet" => "Claude 3.5 Sonnet".into(),
-        "anthropic/claude-3.5-haiku" | "claude-3-5-haiku-20241022" | "claude-3.5-haiku" => "Claude 3.5 Haiku".into(),
-        "anthropic/claude-3-opus" | "claude-3-opus-20240229" => "Claude 3 Opus".into(),
-        "openai/gpt-4.5-preview" | "gpt-4.5-preview" => "GPT-4.5 Preview".into(),
-        "openai/gpt-4o" | "gpt-4o" => "GPT-4o".into(),
-        "openai/gpt-4o-mini" | "gpt-4o-mini" => "GPT-4o Mini".into(),
-        "openai/o1" | "o1" => "o1".into(),
-        "openai/o3-mini" | "o3-mini" => "o3-mini".into(),
-        "deepseek/deepseek-r1" | "deepseek-reasoner" => "DeepSeek R1".into(),
-        "deepseek/deepseek-chat" | "deepseek-chat" => "DeepSeek V3".into(),
-        "google/gemini-2.5-pro" | "gemini-2.5-pro" => "Gemini 2.5 Pro".into(),
-        "google/gemini-2.5-flash" | "gemini-2.5-flash" => "Gemini 2.5 Flash".into(),
-        "google/gemini-2.0-flash-001" | "google/gemini-2.0-flash" | "gemini-2.0-flash" => "Gemini 2.0 Flash".into(),
-        "meta-llama/llama-3.3-70b-instruct" => "Llama 3.3 70B".into(),
-        "qwen/qwen-2.5-coder-32b-instruct" => "Qwen 2.5 Coder 32B".into(),
-        "x-ai/grok-2-1212" | "grok-2" => "Grok 2".into(),
-        "mistralai/mistral-large-2411" => "Mistral Large".into(),
-        other => {
-            if let Ok(catalog) = load_catalog() {
-                for provider in catalog.values() {
-                    for m in &provider.models {
-                        if m.id == other {
-                            return m.name.clone();
-                        }
-                    }
+    if let Ok(catalog) = load_catalog() {
+        for provider in catalog.values() {
+            for m in &provider.models {
+                if m.id == model_id {
+                    return m.name.clone();
                 }
             }
-            let name = other.split('/').last().unwrap_or(other);
-            let words: Vec<String> = name
-                .split('-')
-                .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().chain(c).collect(),
-                    }
-                })
-                .collect();
-            words.join(" ")
         }
     }
+    let name = model_id.split('/').last().unwrap_or(model_id);
+    let words: Vec<String> = name
+        .split('-')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                None => String::new(),
+                Some(f) => f.to_uppercase().chain(c).collect(),
+            }
+        })
+        .collect();
+    words.join(" ")
 }
 
-/// Returns the models list for a provider (checking curated modern models + catalog).
+/// Returns the models list for a provider from the catalog.
 pub fn get_provider_models(provider_id: &str, catalog: &Catalog) -> Vec<(String, String)> {
-    let mut catalog_models = Vec::new();
+    let mut list = Vec::new();
     if let Some(p) = catalog.get(provider_id) {
         for m in &p.models {
-            catalog_models.push((m.id.clone(), m.name.clone()));
+            list.push((m.id.clone(), m.name.clone()));
         }
     }
-
-    let modern_models = match provider_id {
-        "openrouter" => vec![
-            ("anthropic/claude-3.7-sonnet".into(), "Claude 3.7 Sonnet".into()),
-            ("anthropic/claude-3.7-sonnet:thinking".into(), "Claude 3.7 Sonnet (Thinking)".into()),
-            ("anthropic/claude-3.5-sonnet".into(), "Claude 3.5 Sonnet".into()),
-            ("anthropic/claude-3.5-haiku".into(), "Claude 3.5 Haiku".into()),
-            ("openai/gpt-4.5-preview".into(), "GPT-4.5 Preview".into()),
-            ("openai/gpt-4o".into(), "GPT-4o".into()),
-            ("openai/gpt-4o-mini".into(), "GPT-4o Mini".into()),
-            ("openai/o3-mini".into(), "o3-mini".into()),
-            ("openai/o1".into(), "o1".into()),
-            ("deepseek/deepseek-r1".into(), "DeepSeek R1".into()),
-            ("deepseek/deepseek-chat".into(), "DeepSeek V3".into()),
-            ("google/gemini-2.5-pro".into(), "Gemini 2.5 Pro".into()),
-            ("google/gemini-2.5-flash".into(), "Gemini 2.5 Flash".into()),
-            ("google/gemini-2.0-flash-001".into(), "Gemini 2.0 Flash".into()),
-            ("meta-llama/llama-3.3-70b-instruct".into(), "Llama 3.3 70B".into()),
-            ("qwen/qwen-2.5-coder-32b-instruct".into(), "Qwen 2.5 Coder 32B".into()),
-            ("x-ai/grok-2-1212".into(), "Grok 2".into()),
-            ("mistralai/mistral-large-2411".into(), "Mistral Large".into()),
-        ],
-        "anthropic" => vec![
-            ("claude-3-7-sonnet-20250219".into(), "Claude 3.7 Sonnet".into()),
-            ("claude-3-5-sonnet-20241022".into(), "Claude 3.5 Sonnet".into()),
-            ("claude-3-5-haiku-20241022".into(), "Claude 3.5 Haiku".into()),
-            ("claude-3-opus-20240229".into(), "Claude 3 Opus".into()),
-        ],
-        "openai" => vec![
-            ("gpt-4.5-preview".into(), "GPT-4.5 Preview".into()),
-            ("gpt-4o".into(), "GPT-4o".into()),
-            ("gpt-4o-mini".into(), "GPT-4o Mini".into()),
-            ("o3-mini".into(), "o3-mini Reasoning".into()),
-            ("o1".into(), "o1 Reasoning".into()),
-            ("gpt-4-turbo".into(), "GPT-4 Turbo".into()),
-        ],
-        "google" => vec![
-            ("gemini-2.5-flash".into(), "Gemini 2.5 Flash".into()),
-            ("gemini-2.5-pro".into(), "Gemini 2.5 Pro".into()),
-            ("gemini-2.0-flash".into(), "Gemini 2.0 Flash".into()),
-            ("gemini-2.0-flash-thinking-exp".into(), "Gemini 2.0 Flash Thinking".into()),
-            ("gemini-1.5-pro".into(), "Gemini 1.5 Pro".into()),
-            ("gemini-1.5-flash".into(), "Gemini 1.5 Flash".into()),
-        ],
-        "deepseek" => vec![
-            ("deepseek-chat".into(), "DeepSeek V3".into()),
-            ("deepseek-reasoner".into(), "DeepSeek R1".into()),
-        ],
-        "groq" => vec![
-            ("llama-3.3-70b-versatile".into(), "Llama 3.3 70B".into()),
-            ("deepseek-r1-distill-llama-70b".into(), "DeepSeek R1 Distill Llama 70B".into()),
-            ("llama-3.1-8b-instant".into(), "Llama 3.1 8B Instant".into()),
-            ("mixtral-8x7b-32768".into(), "Mixtral 8x7B".into()),
-        ],
-        "xai" => vec![
-            ("grok-2-latest".into(), "Grok 2".into()),
-            ("grok-2-vision-1212".into(), "Grok 2 Vision".into()),
-            ("grok-beta".into(), "Grok Beta".into()),
-        ],
-        "mistral" => vec![
-            ("mistral-large-latest".into(), "Mistral Large".into()),
-            ("mistral-small-latest".into(), "Mistral Small".into()),
-            ("codestral-latest".into(), "Codestral".into()),
-            ("pixtral-large-latest".into(), "Pixtral Large".into()),
-        ],
-        "github-copilot" => vec![
-            ("claude-3.7-sonnet".into(), "Claude 3.7 Sonnet".into()),
-            ("claude-3.5-sonnet".into(), "Claude 3.5 Sonnet".into()),
-            ("gpt-4o".into(), "GPT-4o".into()),
-            ("o3-mini".into(), "o3-mini".into()),
-        ],
-        "ollama" => vec![
-            ("llama3.3".into(), "Llama 3.3".into()),
-            ("qwen2.5-coder".into(), "Qwen 2.5 Coder".into()),
-            ("deepseek-r1".into(), "DeepSeek R1".into()),
-            ("mistral".into(), "Mistral 7B".into()),
-            ("llama3.2".into(), "Llama 3.2".into()),
-        ],
-        "fireworks-ai" => vec![
-            ("accounts/fireworks/models/deepseek-r1".into(), "DeepSeek R1".into()),
-            ("accounts/fireworks/models/deepseek-v3".into(), "DeepSeek V3".into()),
-            ("accounts/fireworks/models/llama-v3p3-70b-instruct".into(), "Llama 3.3 70B".into()),
-            ("accounts/fireworks/models/qwen2p5-coder-32b-instruct".into(), "Qwen 2.5 Coder 32B".into()),
-        ],
-        "together" => vec![
-            ("deepseek-ai/DeepSeek-R1".into(), "DeepSeek R1".into()),
-            ("deepseek-ai/DeepSeek-V3".into(), "DeepSeek V3".into()),
-            ("meta-llama/Llama-3.3-70B-Instruct-Turbo".into(), "Llama 3.3 70B Turbo".into()),
-            ("Qwen/Qwen2.5-Coder-32B-Instruct".into(), "Qwen 2.5 Coder 32B".into()),
-        ],
-        _ => catalog_models.clone(),
-    };
-
-    let mut result = modern_models;
-    for (id, name) in catalog_models {
-        if !result.iter().any(|(r_id, _)| r_id == &id) {
-            result.push((id, name));
-        }
-    }
-    result
+    list
 }
 
 /// Dynamically queries the provider's live /models endpoint (e.g. OpenAI, OpenRouter, Ollama, vLLM, LMStudio, etc.).
@@ -571,21 +449,19 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
     }
 }
 
-/// Returns the models list for a provider (checking curated modern models + live endpoint fetch + catalog).
+/// Returns the models list for a provider (checking live endpoint first, falling back to catalog).
 pub fn get_provider_models_with_live(
     provider_id: &str,
     base_url: &str,
     api_key: Option<&str>,
     catalog: &Catalog,
 ) -> Vec<(String, String)> {
-    let mut curated = get_provider_models(provider_id, catalog);
     let live = fetch_live_provider_models(base_url, api_key);
-    for (id, name) in live {
-        if !curated.iter().any(|(c_id, _)| c_id == &id) {
-            curated.push((id, name));
-        }
+    if !live.is_empty() {
+        live
+    } else {
+        get_provider_models(provider_id, catalog)
     }
-    curated
 }
 
 /// Interactive "Connect a provider" GUI modal with clean colored box styling.
