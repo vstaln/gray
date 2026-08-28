@@ -204,6 +204,7 @@ pub struct Tui {
     model_name: String,
     cwd: String,
     thinking_effort: String,
+    pub transcript: Vec<Line<'static>>,
 }
 
 fn thinking_style() -> Style {
@@ -284,7 +285,7 @@ impl Tui {
 
         let welcome_h = welcome_lines.len() as u16;
         let _ = terminal.insert_before(welcome_h, |buf| {
-            Paragraph::new(welcome_lines).render(buf.area, buf);
+            Paragraph::new(welcome_lines.clone()).render(buf.area, buf);
         });
 
         let cwd = std::env::current_dir()
@@ -308,6 +309,7 @@ impl Tui {
             model_name: String::new(),
             cwd,
             thinking_effort: "high".to_string(),
+            transcript: welcome_lines,
         })
     }
 
@@ -780,8 +782,13 @@ impl Tui {
             .padding(ratatui::widgets::Padding::horizontal(1));
 
         let _ = self.terminal.insert_before(height, |buf| {
-            Paragraph::new(lines).block(block).render(buf.area, buf);
+            Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
         });
+        self.transcript.push(Line::from(""));
+        self.transcript.extend(lines);
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
     }
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
@@ -792,12 +799,24 @@ impl Tui {
         for chunk in chars.chunks(w.saturating_sub(1)) {
             let text: String = chunk.iter().collect();
             height += 1;
-            let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(Line::from(Span::styled(text, style))).render(buf.area, buf); });
+            let styled_line = Line::from(Span::styled(text.clone(), style));
+            self.transcript.push(styled_line.clone());
+            let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(styled_line).render(buf.area, buf); });
         }
-        if height == 0 { let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(Line::from("")).render(buf.area, buf); }); }
+        if height == 0 {
+            self.transcript.push(Line::from(""));
+            let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(Line::from("")).render(buf.area, buf); });
+        }
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
     }
     pub fn push_line_spans(&mut self, line: Line<'static>) {
+        self.transcript.push(line.clone());
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = self.terminal.insert_before(1, |buf| {
             Paragraph::new(line).render(buf.area, buf);
         });
@@ -808,14 +827,23 @@ impl Tui {
         if count == 0 {
             return;
         }
+        self.transcript.extend(lines.clone());
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = self.terminal.insert_before(count, |buf| {
             Paragraph::new(lines).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }
     pub fn push_dim(&mut self, line: String) {
+        let styled = Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)));
+        self.transcript.push(styled.clone());
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)))).render(buf.area, buf);
+            Paragraph::new(styled).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }
@@ -828,10 +856,24 @@ impl Tui {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
         }
+        let line = Line::from(spans);
+        self.transcript.push(line.clone());
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(Line::from(spans)).render(buf.area, buf);
+            Paragraph::new(line).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
+    }
+    pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
+        crate::setup::BackgroundSnapshot {
+            transcript: self.transcript.clone(),
+            cwd: self.cwd.clone(),
+            model_name: self.model_name.clone(),
+            thinking_effort: self.thinking_effort.clone(),
+            prompt_text: self.textarea.text().to_string(),
+        }
     }
     pub fn tick_status(&mut self) { let _ = self.draw(); }
     pub fn shutdown(&mut self) {

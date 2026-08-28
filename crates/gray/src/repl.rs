@@ -345,7 +345,8 @@ async fn handle_model(
         return;
     }
 
-    match crate::setup::run_model_menu(config).await {
+    let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
+    match crate::setup::run_model_menu(config, bg.as_ref()).await {
         Ok(true) => {
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
@@ -395,7 +396,8 @@ async fn handle_effort(
         return;
     }
 
-    match crate::setup::run_effort_menu(config).await {
+    let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
+    match crate::setup::run_effort_menu(config, bg.as_ref()).await {
         Ok(true) => {
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
@@ -830,7 +832,8 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Provider => {
-                match crate::setup::run_provider_menu(config).await {
+                let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
+                match crate::setup::run_provider_menu(config, bg.as_ref()).await {
                     Ok(true) => {
                         unconfigured = false;
                         if let Some((shared, _)) = &tui {
@@ -867,7 +870,8 @@ pub async fn run_repl_mode(
             ReplCommand::Prompt(prompt_text) => {
                 if agent.is_none() {
                     if unconfigured {
-                        match crate::setup::run_provider_menu(config).await {
+                        let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
+                        match crate::setup::run_provider_menu(config, bg.as_ref()).await {
                             Ok(true) => {
                                 unconfigured = false;
                                 if let Some((shared, _)) = &tui {
