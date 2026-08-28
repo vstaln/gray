@@ -16,6 +16,8 @@ pub struct Config {
     pub base_url: String,
     /// API key for authentication. None until set.
     pub api_key: Option<String>,
+    /// Thinking / reasoning effort level ("off", "minimal", "low", "medium", "high", "xhigh", "max").
+    pub thinking_effort: Option<String>,
 }
 
 impl Config {
@@ -80,10 +82,16 @@ impl Config {
             })
             .or(saved.api_key); // optional: validated on first use
 
+        let thinking_effort = env("GRAY_THINKING_EFFORT")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or(saved.thinking_effort);
+
         let config = Self {
             model,
             base_url,
             api_key,
+            thinking_effort,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"));
         Ok(config)

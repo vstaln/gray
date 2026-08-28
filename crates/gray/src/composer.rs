@@ -383,9 +383,28 @@ impl Tui {
             // 3. Bottom margin row (colored row, no symbols)
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
-            // Exactly 1 line tall gap between scrollback history and the active prompt box
-            let box_y = area.y + 1;
             let box_h = box_lines.len().max(1) as u16;
+            let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
+            let has_attach = !self.attachments.is_empty();
+            let attach_h: u16 = if has_attach { 1 } else { 0 };
+            let has_status = self.status.is_some();
+            let status_h: u16 = if has_status { 1 } else { 0 };
+            let footer_h: u16 = 1;
+
+            // Anchor all composer elements to the bottom of the viewport (codex-style)
+            let footer_y = (area.y + area.height).saturating_sub(footer_h);
+            let status_y = footer_y.saturating_sub(status_h);
+            let attach_y = status_y.saturating_sub(attach_h);
+            let panel_y = attach_y.saturating_sub(panel_h);
+            let box_y = panel_y.saturating_sub(box_h);
+
+            // Clear any blank space above box_y within the inline viewport
+            if box_y > area.y {
+                frame.render_widget(
+                    ratatui::widgets::Clear,
+                    Rect::new(area.x, area.y, area.width, box_y - area.y),
+                );
+            }
 
             let rendered_box_h = box_h.min((area.y + area.height).saturating_sub(box_y));
             if rendered_box_h > 0 {
@@ -394,9 +413,6 @@ impl Tui {
                     Rect::new(area.x, box_y, area.width, rendered_box_h),
                 );
             }
-
-            let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
-            let panel_y = box_y + box_h;
 
             if !self.matches.is_empty() {
                 let start = self.sel.saturating_sub(PANEL_ROWS.saturating_sub(1)).min(self.sel);
@@ -425,18 +441,10 @@ impl Tui {
                 }
             }
 
-            let has_attach = !self.attachments.is_empty();
-            let attach_h: u16 = if has_attach { 1 } else { 0 };
-            let attach_y = panel_y + panel_h;
-
             if has_attach && attach_y < area.y + area.height {
                 let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
-
-            let has_status = self.status.is_some();
-            let status_h: u16 = if has_status { 1 } else { 0 };
-            let status_y = attach_y + attach_h;
 
             if let Some((started, label)) = &self.status {
                 if status_y < area.y + area.height {
@@ -445,8 +453,6 @@ impl Tui {
                     frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
             }
-
-            let footer_y = status_y + status_h;
 
             let cwd_display = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
             let model_display = crate::setup::friendly_model_name(&self.model_name);

@@ -18,12 +18,10 @@ use std::sync::Mutex as StdMutex;
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "connect a provider & setup API key"),
+    ("model", "switch or pick a model"),
+    ("effort", "set thinking reasoning effort (off, low, medium, high...)"),
     ("new", "start a fresh conversation"),
     ("compact", "compress conversation context into a structured summary"),
-    ("compress", "alias for /compact"),
-    ("model", "switch or pick a model"),
-    ("provider", "configure provider (API key, accounts, free tier)"),
-    ("key", "add or update a provider API key (input hidden)"),
     ("sys", "view, edit, or restore the system prompt"),
     ("thinking", "toggle hiding reasoning (shows a Thinking… label)"),
     ("help", "print the command list"),
@@ -176,6 +174,8 @@ pub enum ReplCommand {
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
+    /// Open the thinking effort picker (`/effort`) or set directly (`/effort high`).
+    Effort(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Regular user prompt to feed to the agent.
@@ -220,6 +220,11 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Compact((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed == "/thinking" {
         ReplCommand::Thinking
+    } else if trimmed == "/effort" {
+        ReplCommand::Effort(None)
+    } else if let Some(rest) = trimmed.strip_prefix("/effort ") {
+        let arg = rest.trim();
+        ReplCommand::Effort((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
         ReplCommand::Provider
     } else if trimmed == "/key" || trimmed == "/keys" {
@@ -372,6 +377,56 @@ async fn handle_model(
                 shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
             } else {
                 println!("model error: {e}");
+            }
+        }
+    }
+}
+
+/// Handles `/effort`: interactive picker (no arg) or direct set (`/effort high`).
+/// Switching persists to ~/.gray/config.json and updates the live TUI footer.
+async fn handle_effort(
+    config: &mut Config,
+    cwd: &Path,
+    direct: Option<String>,
+    agent: &mut Option<Agent>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    if let Some(eff) = direct {
+        let eff_clean = eff.to_lowercase();
+        config.thinking_effort = Some(eff_clean.clone());
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            saved.thinking_effort = Some(eff_clean.clone());
+            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        }
+        if let Some(shared) = tui {
+            let mut t = shared.lock().expect("tui lock");
+            t.set_thinking_effort(eff_clean.clone());
+            t.push_action("Thinking effort set to", Some(&eff_clean));
+        } else {
+            println!("✓ Thinking effort set to {eff_clean}");
+        }
+        reload_agent(agent, config, cwd).await;
+        return;
+    }
+
+    match crate::setup::run_effort_menu(config).await {
+        Ok(true) => {
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                if let Some(eff) = &config.thinking_effort {
+                    t.set_thinking_effort(eff.clone());
+                    t.push_action("Thinking effort set to", Some(eff));
+                }
+            }
+            reload_agent(agent, config, cwd).await;
+        }
+        Ok(false) => {}
+        Err(e) => {
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
+            } else {
+                println!("effort error: {e}");
             }
         }
     }
@@ -621,6 +676,9 @@ pub async fn run_repl_mode(
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
                 }
+                if let Some(eff) = &config.thinking_effort {
+                    t.set_thinking_effort(eff.clone());
+                }
                 t.set_cwd(cwd.display().to_string());
                 t
             })),
@@ -708,6 +766,10 @@ pub async fn run_repl_mode(
             }
             ReplCommand::Model(direct) => {
                 handle_model(config, &cwd, direct, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
+            ReplCommand::Effort(direct) => {
+                handle_effort(config, &cwd, direct, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Help => {
