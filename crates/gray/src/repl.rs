@@ -1112,6 +1112,7 @@ pub async fn run_repl_mode(
                                 }
                                 AgentEvent::TurnEnd { usage, .. } => {
                                     t.end_thinking();
+                                    t.set_usage(*usage);
                                     if usage.total() > 0 {
                                         let cached = if usage.cached_tokens > 0 {
                                             format!(

@@ -204,6 +204,7 @@ pub struct Tui {
     thinking_effort: String,
     pub transcript: Vec<Line<'static>>,
     last_width: u16,
+    pub latest_usage: Option<gray_core::event::Usage>,
 }
 
 fn thinking_style() -> Style {
@@ -311,12 +312,14 @@ impl Tui {
             thinking_effort: "high".to_string(),
             transcript: welcome_lines,
             last_width: cols,
+            latest_usage: None,
         })
     }
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
+    pub fn set_usage(&mut self, usage: gray_core::event::Usage) { self.latest_usage = Some(usage); }
 
     fn width(&self) -> usize { self.terminal.size().map(|a| a.width as usize).unwrap_or(80) }
 
@@ -488,7 +491,20 @@ impl Tui {
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
             }
 
-            let cwd_display = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
+            let (max_tokens, max_label) = crate::setup::model_context_info(&self.model_name);
+            let (used_tokens, hit_rate) = if let Some(u) = self.latest_usage {
+                (u.total(), u.cache_hit_rate() * 100.0)
+            } else {
+                (0, 0.0)
+            };
+            let pct = if max_tokens > 0 {
+                (used_tokens as f64 / max_tokens as f64 * 100.0).min(100.0)
+            } else {
+                0.0
+            };
+            let ctx_display = format!("{pct:.1}%/{max_label} (auto)");
+            let cache_display = format!("{hit_rate:.1}% cache");
+
             let model_display = crate::setup::friendly_model_name(&self.model_name);
             let effort_display = &self.thinking_effort;
             let right_parts = if model_display.is_empty() {
@@ -501,10 +517,20 @@ impl Tui {
                 ]
             };
             let right_len = if model_display.is_empty() { effort_display.chars().count() } else { model_display.chars().count() + 3 + effort_display.chars().count() };
-            let pad_len = w.saturating_sub(2 + cwd_display.chars().count() + right_len);
+            let left_len = 2 + ctx_display.chars().count() + 3 + cache_display.chars().count();
+            let pad_len = w.saturating_sub(left_len + right_len);
+
+            let cache_color = if hit_rate > 0.0 {
+                Color::Rgb(130, 145, 130)
+            } else {
+                Color::Rgb(80, 80, 80)
+            };
+
             let mut footer_spans = vec![
                 Span::raw("  "),
-                Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))),
+                Span::styled(ctx_display, Style::default().fg(Color::Rgb(108, 108, 108))),
+                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))),
+                Span::styled(cache_display, Style::default().fg(cache_color)),
                 Span::raw(" ".repeat(pad_len)),
             ];
             footer_spans.extend(right_parts);
@@ -919,12 +945,19 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
+        let (used_tokens, cache_hit_rate) = if let Some(u) = self.latest_usage {
+            (u.total(), u.cache_hit_rate())
+        } else {
+            (0, 0.0)
+        };
         crate::setup::BackgroundSnapshot {
             transcript: self.transcript.clone(),
             cwd: self.cwd.clone(),
             model_name: self.model_name.clone(),
             thinking_effort: self.thinking_effort.clone(),
             prompt_text: self.textarea.text().to_string(),
+            used_tokens,
+            cache_hit_rate,
         }
     }
     pub fn tick_status(&mut self) {

@@ -375,6 +375,26 @@ pub fn get_provider_models_with_live(
     }
 }
 
+/// Returns the model context limit in tokens and a human-friendly label (e.g. 256_000, "256k").
+pub fn model_context_info(model_name: &str) -> (usize, &'static str) {
+    let lower = model_name.to_lowercase();
+    if lower.contains("gemini-1.5") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") {
+        (1_000_000, "1M")
+    } else if lower.contains("claude") {
+        (200_000, "200k")
+    } else if lower.contains("gpt-4") && !lower.contains("gpt-4o") {
+        (128_000, "128k")
+    } else if lower.contains("gpt-4o") || lower.contains("gpt-5") || lower.contains("o1") || lower.contains("o3") {
+        (128_000, "128k")
+    } else if lower.contains("1m") {
+        (1_000_000, "1M")
+    } else if lower.contains("2m") {
+        (2_000_000, "2M")
+    } else {
+        (256_000, "256k")
+    }
+}
+
 /// Snapshot of background UI to render dimmed underneath popups.
 #[derive(Debug, Clone, Default)]
 pub struct BackgroundSnapshot {
@@ -383,6 +403,8 @@ pub struct BackgroundSnapshot {
     pub model_name: String,
     pub thinking_effort: String,
     pub prompt_text: String,
+    pub used_tokens: usize,
+    pub cache_hit_rate: f64,
 }
 
 impl BackgroundSnapshot {
@@ -436,6 +458,8 @@ impl BackgroundSnapshot {
             model_name: String::new(),
             thinking_effort: "high".to_string(),
             prompt_text: String::new(),
+            used_tokens: 0,
+            cache_hit_rate: 0.0,
         }
     }
 }
@@ -524,11 +548,15 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         Line::from("").style(Style::default().bg(box_bg)),
     ];
 
-    let cwd_display = if bg.cwd.is_empty() {
-        std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default()
+    let (max_tokens, max_label) = model_context_info(&bg.model_name);
+    let pct = if max_tokens > 0 {
+        (bg.used_tokens as f64 / max_tokens as f64 * 100.0).min(100.0)
     } else {
-        bg.cwd.clone()
+        0.0
     };
+    let ctx_display = format!("{pct:.1}%/{max_label} (auto)");
+    let cache_display = format!("{:.1}% cache", bg.cache_hit_rate * 100.0);
+
     let model_display = friendly_model_name(&bg.model_name);
     let effort_display = if bg.thinking_effort.is_empty() { "high" } else { &bg.thinking_effort };
     let right_text = if model_display.is_empty() {
@@ -536,10 +564,14 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     } else {
         format!("{model_display} · {effort_display}")
     };
-    let pad_len = w.saturating_sub(2 + cwd_display.chars().count() + right_text.chars().count());
+    let left_len = 2 + ctx_display.chars().count() + 3 + cache_display.chars().count();
+    let pad_len = w.saturating_sub(left_len + right_text.chars().count());
+
     let footer_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(cwd_display, Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM)),
+        Span::styled(ctx_display, Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM)),
+        Span::styled(" · ", Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM)),
+        Span::styled(cache_display, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM)),
         Span::raw(" ".repeat(pad_len)),
         Span::styled(right_text, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM)),
     ]);
