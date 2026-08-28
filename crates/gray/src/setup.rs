@@ -527,6 +527,9 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                     return;
                 }
 
+                let backdrop_bg = Color::Rgb(10, 10, 10);
+                frame.render_widget(Block::default().style(Style::default().bg(backdrop_bg)), area);
+
                 let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
                 let modal_h = 18.min(area.height.saturating_sub(2)).max(10);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
@@ -1191,6 +1194,9 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
                 if area.width < 20 || area.height < 6 {
                     return;
                 }
+
+                let backdrop_bg = Color::Rgb(10, 10, 10);
+                frame.render_widget(Block::default().style(Style::default().bg(backdrop_bg)), area);
 
                 let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
                 let modal_h = 16.min(area.height.saturating_sub(2)).max(10);

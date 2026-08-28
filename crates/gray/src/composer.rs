@@ -561,7 +561,10 @@ impl Tui {
                             self.attachments.clear();
                             self.matches.clear();
                             self.sel = 0;
-                            self.push_user_prompt(&trimmed);
+                            let is_slash_cmd = trimmed.starts_with('/') && !trimmed.contains('\n');
+                            if !is_slash_cmd {
+                                self.push_user_prompt(&trimmed);
+                            }
                             return Ok(Some(trimmed));
                         }
                         KeyCode::Tab => {
@@ -736,6 +739,26 @@ impl Tui {
     pub fn push_dim(&mut self, line: String) {
         let _ = self.terminal.insert_before(1, |buf| {
             Paragraph::new(Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)))).render(buf.area, buf);
+        });
+        let _ = std::io::stdout().flush();
+    }
+    pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(Line::from("")).render(buf.area, buf);
+        });
+        let _ = self.terminal.insert_before(1, |buf| {
+            let mut spans = vec![
+                Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
+                Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            ];
+            if let Some(d) = detail {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
+            }
+            Paragraph::new(Line::from(spans)).render(buf.area, buf);
+        });
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(Line::from("")).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }

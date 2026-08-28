@@ -347,9 +347,9 @@ async fn handle_model(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
-            t.push_dim(format!("╰ model set to {m}"));
+            t.push_action("Model set to", Some(&m));
         } else {
-            println!("model set to {m}");
+            println!("✓ Model set to {m}");
         }
         reload_agent(agent, config, cwd).await;
         return;
@@ -361,7 +361,7 @@ async fn handle_model(
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
-                    t.push_dim(format!("╰ model set to {m}"));
+                    t.push_action("Model set to", Some(m));
                 }
             }
             reload_agent(agent, config, cwd).await;
@@ -739,17 +739,17 @@ pub async fn run_repl_mode(
                     reload_agent(&mut agent, config, &cwd).await;
                     if let Some((shared, _)) = &tui {
                         let mut t = shared.lock().expect("tui lock");
-                        t.push_dim(format!("╰ started fresh conversation ({short_id})"));
+                        t.push_action("New conversation started", Some(&format!("({short_id})")));
                     } else {
-                        println!("started fresh conversation ({short_id})");
+                        println!("✓ New conversation started ({short_id})");
                     }
                 } else {
                     reload_agent(&mut agent, config, &cwd).await;
                     if let Some((shared, _)) = &tui {
                         let mut t = shared.lock().expect("tui lock");
-                        t.push_dim("╰ started fresh conversation".to_string());
+                        t.push_action("New conversation started", None);
                     } else {
-                        println!("started fresh conversation");
+                        println!("✓ New conversation started");
                     }
                 }
                 continue;
