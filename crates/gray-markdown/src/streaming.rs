@@ -218,6 +218,11 @@ impl StreamingMarkdownRenderer {
         }
     }
 
+    /// Number of frozen lines rendered so far.
+    pub fn frozen_lines_len(&self) -> usize {
+        self.frozen.lines_len
+    }
+
     /// Replace the markdown style and trigger a full re-render.
     ///
     /// Used when the theme changes at runtime so existing blocks pick up

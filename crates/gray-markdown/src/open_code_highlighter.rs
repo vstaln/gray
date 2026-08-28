@@ -79,6 +79,9 @@ pub(crate) struct OpenCodeHighlighter {
     closed_memo_bytes: usize,
 }
 
+unsafe impl Send for OpenCodeHighlighter {}
+unsafe impl Sync for OpenCodeHighlighter {}
+
 impl OpenCodeHighlighter {
     /// Create an empty cache. The `parse_state`/`highlight_state` are seeded
     /// with the plain-text syntax purely as placeholders: the empty

@@ -205,6 +205,8 @@ pub struct Tui {
     pub transcript: Vec<Line<'static>>,
     last_width: u16,
     pub latest_usage: Option<gray_core::event::Usage>,
+    markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
+    committed_markdown_lines: usize,
 }
 
 fn thinking_style() -> Style {
@@ -313,6 +315,8 @@ impl Tui {
             transcript: welcome_lines,
             last_width: cols,
             latest_usage: None,
+            markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
+            committed_markdown_lines: 0,
         })
     }
 
@@ -726,6 +730,16 @@ impl Tui {
                 }
             }
         }
+        let output = std::mem::replace(
+            &mut self.markdown_renderer,
+            gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
+        ).finish_into_output(None);
+        if output.lines.len() > self.committed_markdown_lines {
+            let remaining_lines: Vec<Line<'static>> = output.lines[self.committed_markdown_lines..].to_vec();
+            self.push_styled_lines(remaining_lines);
+        }
+        self.committed_markdown_lines = 0;
+
         if let Some(tok) = self.pending_tokens.take() {
             self.push_dim(tok);
         }
@@ -742,7 +756,7 @@ impl Tui {
                 }
             }
         }
-        if self.transcript_in_response() {
+        if self.transcript_in_response() || self.committed_markdown_lines > 0 {
             self.pending_tokens = Some(tok_line);
         } else {
             self.push_dim(tok_line);
@@ -792,8 +806,19 @@ impl Tui {
     pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
     pub fn stream_text(&mut self, chunk: &str) {
         self.end_thinking_run(true);
-        self.set_status(Some("Working"));
-        self.stream(chunk);
+        if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
+            self.set_status(Some("Working"));
+        }
+        let clean = strip_ansi(chunk);
+        self.markdown_renderer.push_and_render(&clean, None);
+        let frozen_len = self.markdown_renderer.frozen_lines_len();
+        if frozen_len > self.committed_markdown_lines {
+            let view = self.markdown_renderer.view();
+            let new_lines: Vec<Line<'static>> = view.lines[self.committed_markdown_lines..frozen_len].to_vec();
+            self.committed_markdown_lines = frozen_len;
+            self.push_styled_lines(new_lines);
+        }
+        let _ = self.draw();
     }
     pub fn end_thinking(&mut self) {
         self.end_thinking_run(false);
