@@ -328,6 +328,9 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                                                     .and_then(|n| n.as_str())
                                                     .map(|s| s.to_string())
                                                     .unwrap_or_else(|| friendly_model_name(id));
+                                                if let Some(len) = extract_context_length_from_json(item) {
+                                                    cache_model_context(id, len);
+                                                }
                                                 models.push((id.to_string(), name));
                                             }
                                         }
@@ -336,8 +339,14 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                                         if let Some(items) = json.get("models").and_then(|m| m.as_array()) {
                                             for item in items {
                                                 if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                                                    if let Some(len) = extract_context_length_from_json(item) {
+                                                        cache_model_context(name, len);
+                                                    }
                                                     models.push((name.to_string(), friendly_model_name(name)));
                                                 } else if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                                    if let Some(len) = extract_context_length_from_json(item) {
+                                                        cache_model_context(id, len);
+                                                    }
                                                     models.push((id.to_string(), friendly_model_name(id)));
                                                 }
                                             }
@@ -375,24 +384,169 @@ pub fn get_provider_models_with_live(
     }
 }
 
-/// Returns the model context limit in tokens and a human-friendly label (e.g. 256_000, "256k").
-pub fn model_context_info(model_name: &str) -> (usize, &'static str) {
-    let lower = model_name.to_lowercase();
-    if lower.contains("gemini-1.5") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") {
-        (1_000_000, "1M")
-    } else if lower.contains("claude") {
-        (200_000, "200k")
-    } else if lower.contains("gpt-4") && !lower.contains("gpt-4o") {
-        (128_000, "128k")
-    } else if lower.contains("gpt-4o") || lower.contains("gpt-5") || lower.contains("o1") || lower.contains("o3") {
-        (128_000, "128k")
-    } else if lower.contains("1m") {
-        (1_000_000, "1M")
-    } else if lower.contains("2m") {
-        (2_000_000, "2M")
-    } else {
-        (256_000, "256k")
+static MODEL_CONTEXT_CACHE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, usize>>> = std::sync::OnceLock::new();
+
+fn model_context_cache() -> &'static std::sync::RwLock<std::collections::HashMap<String, usize>> {
+    MODEL_CONTEXT_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+pub fn cache_model_context(model_id: &str, length: usize) {
+    if length == 0 { return; }
+    if let Ok(mut g) = model_context_cache().write() {
+        g.insert(model_id.to_string(), length);
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            g.insert(lower, length);
+        }
     }
+}
+
+pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
+    if let Ok(g) = model_context_cache().read() {
+        if let Some(v) = g.get(model_id).copied() {
+            return Some(v);
+        }
+        let lower = model_id.to_lowercase();
+        if let Some(v) = g.get(&lower).copied() {
+            return Some(v);
+        }
+    }
+    None
+}
+
+pub fn extract_context_length_from_json(val: &serde_json::Value) -> Option<usize> {
+    const KEYS: &[&str] = &[
+        "context_length",
+        "context_window",
+        "max_context_length",
+        "max_context_window",
+        "max_position_embeddings",
+        "max_model_len",
+        "max_input_tokens",
+        "max_sequence_length",
+        "max_seq_len",
+        "n_ctx_train",
+        "n_ctx",
+        "ctx_size",
+    ];
+    for key in KEYS {
+        if let Some(v) = val.get(*key) {
+            if let Some(n) = v.as_u64() {
+                if n > 0 {
+                    return Some(n as usize);
+                }
+            } else if let Some(s) = v.as_str() {
+                if let Ok(n) = s.parse::<usize>() {
+                    if n > 0 {
+                        return Some(n);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn format_context_length(tokens: usize) -> String {
+    if tokens >= 1_000_000 {
+        let val = tokens as f64 / 1_000_000.0;
+        let rounded = val.round();
+        if (val - rounded).abs() < 0.05 {
+            format!("{:.0}M", rounded)
+        } else {
+            format!("{:.1}M", val)
+        }
+    } else if tokens >= 1_000 {
+        let val = tokens as f64 / 1000.0;
+        let rounded = val.round();
+        if (val - rounded).abs() < 0.05 {
+            format!("{:.0}k", rounded)
+        } else {
+            let val_kibi = tokens as f64 / 1024.0;
+            let rounded_kibi = val_kibi.round();
+            if (val_kibi - rounded_kibi).abs() < 0.05 {
+                format!("{:.0}k", rounded_kibi)
+            } else {
+                format!("{:.1}k", val)
+            }
+        }
+    } else {
+        tokens.to_string()
+    }
+}
+
+pub fn resolve_model_context_length(model_name: &str) -> usize {
+    if let Some(cached) = get_cached_model_context(model_name) {
+        return cached;
+    }
+    let lower = model_name.to_lowercase();
+    if let Some(cached) = get_cached_model_context(&lower) {
+        return cached;
+    }
+
+    // Advertised model context capacities
+    if lower.contains("gemini-1.5-pro") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") || lower.contains("gemini-1.5-flash") || lower.contains("gemini") {
+        1_048_576
+    } else if lower.contains("claude-opus-4") || lower.contains("claude-sonnet-4") || lower.contains("claude-4") || lower.contains("claude-5") {
+        1_000_000
+    } else if lower.contains("claude-3") || lower.contains("claude") {
+        200_000
+    } else if lower.contains("gpt-5") || lower.contains("gpt-4.5") || lower.contains("gpt-4.1") {
+        1_048_576
+    } else if lower.contains("gpt-4o") || lower.contains("o1") || lower.contains("o3") || lower.contains("gpt-4-turbo") {
+        128_000
+    } else if lower.contains("gpt-4-32k") {
+        32_768
+    } else if lower.contains("gpt-4") {
+        8_192
+    } else if lower.contains("gpt-3.5-turbo-16k") {
+        16_384
+    } else if lower.contains("gpt-3.5") {
+        4_096
+    } else if lower.contains("deepseek-v4") {
+        1_000_000
+    } else if lower.contains("deepseek-chat") || lower.contains("deepseek-reasoner") || lower.contains("deepseek-v3") || lower.contains("deepseek-r1") || lower.contains("deepseek") {
+        131_072
+    } else if lower.contains("qwen3") {
+        1_000_000
+    } else if lower.contains("qwen2.5") || lower.contains("qwen") {
+        131_072
+    } else if lower.contains("grok-4") {
+        2_000_000
+    } else if lower.contains("grok-3") || lower.contains("grok-2") || lower.contains("grok") {
+        131_072
+    } else if lower.contains("llama-3.3") || lower.contains("llama-3.2") || lower.contains("llama-3.1") {
+        131_072
+    } else if lower.contains("llama-3") {
+        8_192
+    } else if lower.contains("mistral-large") || lower.contains("codestral") {
+        128_000
+    } else if lower.contains("kimi-k3") {
+        1_048_576
+    } else if lower.contains("kimi") {
+        262_144
+    } else if lower.contains("glm-5") {
+        1_048_576
+    } else if lower.contains("glm") {
+        128_000
+    } else if lower.contains("1m") {
+        1_000_000
+    } else if lower.contains("2m") {
+        2_000_000
+    } else if lower.contains("128k") {
+        128_000
+    } else if lower.contains("256k") {
+        256_000
+    } else {
+        256_000
+    }
+}
+
+/// Returns the model context limit in tokens and a human-friendly label (e.g. 256_000, "256k").
+pub fn model_context_info(model_name: &str) -> (usize, String) {
+    let tokens = resolve_model_context_length(model_name);
+    let label = format_context_length(tokens);
+    (tokens, label)
 }
 
 /// Snapshot of background UI to render dimmed underneath popups.
@@ -554,7 +708,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     } else {
         0.0
     };
-    let ctx_display = format!("{pct:.1}%/{max_label} (auto)");
+    let ctx_display = format!("{pct:.1}%/{max_label}");
     let cache_display = format!("{:.1}% cache", bg.cache_hit_rate * 100.0);
 
     let model_display = friendly_model_name(&bg.model_name);

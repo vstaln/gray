@@ -502,7 +502,7 @@ impl Tui {
             } else {
                 0.0
             };
-            let ctx_display = format!("{pct:.1}%/{max_label} (auto)");
+            let ctx_display = format!("{pct:.1}%/{max_label}");
             let cache_display = format!("{hit_rate:.1}% cache");
 
             let model_display = crate::setup::friendly_model_name(&self.model_name);
