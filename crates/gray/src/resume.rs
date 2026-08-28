@@ -305,6 +305,11 @@ fn run_picker_sync(
                 };
                 frame.render_widget(Paragraph::new(filter_line), Rect::new(inner.x, inner.y + 2, inner.width, 1));
 
+                let date_w = 9usize;
+                let cwd_w = 14usize;
+                let id_w = 8usize;
+                let prev_w = (inner.width as usize).saturating_sub(1 + date_w + 2 + cwd_w + 2 + id_w + 2).max(12);
+
                 let list_y = inner.y + 4;
                 let list_h = inner.height.saturating_sub(6) as usize;
 
@@ -335,21 +340,19 @@ fn run_picker_sync(
                         let s = filtered[idx];
                         let is_sel = idx == sel;
                         let date = format_relative(s.started_at);
-                        let cwd_s = cwd_display(&s.cwd, 26);
-                        let prev = preview_text(s, 34);
+                        let cwd_s = cwd_display(&s.cwd, cwd_w);
+                        let prev = preview_text(s, prev_w);
                         let sid = short_id(&s.id);
-                        let date_w = 12usize;
-                        let cwd_w = 26usize;
-                        let prev_w = 34usize;
                         let content = format!(
-                            " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {}",
+                            " {:>date_w$}  {:cwd_w$}  {:prev_w$}  {:>id_w$}",
                             date,
                             cwd_s,
                             prev,
                             sid,
                             date_w = date_w,
                             cwd_w = cwd_w,
-                            prev_w = prev_w
+                            prev_w = prev_w,
+                            id_w = id_w
                         );
                         let fill = (inner.width as usize).saturating_sub(content.chars().count());
                         let row_str = format!("{}{}", content, " ".repeat(fill));

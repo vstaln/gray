@@ -20,7 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 10;
+const VIEWPORT_H: u16 = 7;
 const PANEL_ROWS: usize = 6;
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
@@ -500,12 +500,12 @@ impl Tui {
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
-            let status_h: u16 = if has_status { 3 } else { 0 }; // 1 row top padding, 1 row status, 1 row bottom padding
+            let top_gap_h: u16 = 1;
+            let status_h: u16 = if has_status { 2 } else { 0 }; // 1 row status + 1 row gap before composer box
 
             // When slash commands are open (!self.matches.is_empty()):
             // Composer box moves temporarily to the top of the viewport (area.y) so commands show below it.
             // When normal/idle:
-            // Composer box and footer are anchored flush to the bottom of the viewport.
             let (status_y, box_y, panel_y, attach_y, footer_y) = if !self.matches.is_empty() {
                 let box_y = area.y;
                 let panel_y = box_y + box_h;
@@ -513,23 +513,29 @@ impl Tui {
                 let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
                 let status_y = area.y;
                 (status_y, box_y, panel_y, attach_y, footer_y)
+            } else if has_status {
+                let status_y = area.y + top_gap_h;
+                let box_y = status_y + status_h;
+                let panel_y = box_y + box_h;
+                let attach_y = panel_y + panel_h;
+                let footer_y = attach_y + attach_h;
+                (status_y, box_y, panel_y, attach_y, footer_y)
             } else {
-                let footer_y = area.y + area.height.saturating_sub(1);
-                let attach_y = footer_y.saturating_sub(attach_h);
-                let panel_y = attach_y.saturating_sub(panel_h);
-                let box_y = panel_y.saturating_sub(box_h);
-                let status_y = box_y.saturating_sub(status_h);
+                let status_y = area.y;
+                let box_y = area.y + top_gap_h;
+                let panel_y = box_y + box_h;
+                let attach_y = panel_y + panel_h;
+                let footer_y = attach_y + attach_h;
                 (status_y, box_y, panel_y, attach_y, footer_y)
             };
 
             if let Some((started, label)) = &self.status {
-                let text_y = status_y + 1; // 1-row top padding above status text
-                if text_y < area.y + area.height {
+                if status_y < area.y + area.height {
                     let label_text = format!("\u{2b21} {label}\u{2026}");
                     let mut spans = shimmer_spans(&label_text, started.elapsed(), self.truecolor);
                     let suffix = format!(" {}s (esc to interrupt)", started.elapsed().as_secs());
                     spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, text_y, area.width, 1));
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
             }
 
