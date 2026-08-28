@@ -160,10 +160,8 @@ pub enum ReplCommand {
     /// Open the system-prompt file in `$EDITOR` (`/sys`), print it (`/sys show`),
     /// or restore the default (`/sys reset`).
     Sys(SysAction),
-    /// Open the provider selection menu (`/provider`).
+    /// Open the provider selection menu (`/connect` or `/provider`).
     Provider,
-    /// Add/update an API key in the CLI (`/key [provider]`), opencode-style.
-    Key(Option<String>),
     /// Start a fresh conversation (`/new`).
     New,
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
@@ -225,16 +223,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
     } else if let Some(rest) = trimmed.strip_prefix("/effort ") {
         let arg = rest.trim();
         ReplCommand::Effort((!arg.is_empty()).then(|| arg.to_string()))
-    } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
+    } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" || trimmed == "/key" || trimmed == "/keys" || trimmed.starts_with("/key ") {
         ReplCommand::Provider
-    } else if trimmed == "/key" || trimmed == "/keys" {
-        ReplCommand::Key(None)
-    } else if let Some(rest) = trimmed
-        .strip_prefix("/key ")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        ReplCommand::Key(Some(rest.to_string()))
     } else if trimmed == "/help" {
         ReplCommand::Help
     } else if let Some(rest) = trimmed.strip_prefix("/model") {
@@ -872,17 +862,6 @@ pub async fn run_repl_mode(
                             println!("provider error: {e}");
                         }
                     }
-                }
-                continue;
-            }
-            ReplCommand::Key(pid) => {
-                match crate::setup::run_key_setup(config, pid) {
-                    Ok(true) => {
-                        unconfigured = false;
-                        reload_agent(&mut agent, config, &cwd).await;
-                    }
-                    Ok(false) => {}
-                    Err(e) => println!("key error: {e}"),
                 }
                 continue;
             }

@@ -119,46 +119,6 @@ pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()
 }
 
 
-/// Reads a secret with masked input (echoes `*` per char, like opencode's
-/// password prompt). Enter confirms, Esc/Ctrl-C returns an error.
-pub(crate) fn read_secret(prompt: &str) -> anyhow::Result<String> {
-    use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use std::io::Write as _;
-    print!("{prompt}");
-    std::io::stdout().flush()?;
-    crossterm::terminal::enable_raw_mode()?;
-    let result = (|| -> anyhow::Result<String> {
-        let mut buf = String::new();
-        loop {
-            if let Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) = read()? {
-                match code {
-                    KeyCode::Enter => break,
-                    KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                        anyhow::bail!("cancelled");
-                    }
-                    KeyCode::Esc => anyhow::bail!("cancelled"),
-                    KeyCode::Backspace => {
-                        if buf.pop().is_some() {
-                            print!("\x08 \x08");
-                            std::io::stdout().flush()?;
-                        }
-                    }
-                    KeyCode::Char(c) => {
-                        buf.push(c);
-                        print!("*");
-                        std::io::stdout().flush()?;
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(buf)
-    })();
-    let _ = crossterm::terminal::disable_raw_mode();
-    println!();
-    result
-}
-
 /// Per-provider API-key store (`~/.gray/auth.json`, mode 0600), mirroring
 /// opencode's credential file: `{ "<provider-id>": "<key>", ... }`.
 fn auth_store_path() -> anyhow::Result<PathBuf> {
@@ -194,58 +154,6 @@ pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
     }
     f.write_all(serde_json::to_string_pretty(&keys)?.as_bytes())?;
     Ok(())
-}
-
-/// `/key [provider-id]`: masked key entry for a catalog provider. Stores the
-/// key per-provider in `~/.gray/auth.json` (opencode-style) and activates it
-/// (base_url + api_key) without touching the chosen model. Returns Ok(true)
-/// if a key was configured.
-pub fn run_key_setup(config: &mut Config, pid: Option<String>) -> anyhow::Result<bool> {
-    let catalog = load_catalog()?;
-    let pid = match pid {
-        Some(p) if catalog.contains_key(&p) => p,
-        Some(p) => {
-            println!("unknown provider '{p}' — use /key with no argument to pick from the list");
-            return Ok(false);
-        }
-        None => return run_connect_modal(config),
-    };
-    let provider = &catalog[&pid];
-    let existing = load_auth_keys()
-        .get(&pid)
-        .cloned()
-        .or_else(|| config.api_key.clone())
-        .unwrap_or_default();
-    let hint = env_hint(provider);
-    let status = if existing.is_empty() {
-        if hint == "API_KEY" { "input hidden" } else { &hint }
-    } else {
-        "stored — Enter keeps it"
-    };
-    let key_in = match read_secret(&format!("{} API key ({}): ", provider.name, status)) {
-        Ok(k) => k,
-        Err(_) => return Ok(false),
-    };
-    let key = if key_in.is_empty() { existing } else { key_in };
-    if key.is_empty() {
-        println!("no key entered");
-        return Ok(false);
-    }
-    save_auth_key(&pid, &key)?;
-    config.base_url = provider.base_url.clone();
-    config.api_key = Some(key);
-    let path = saved_config_path()?;
-    let mut saved = load_saved_config_at(&path);
-    saved.base_url = Some(config.base_url.clone());
-    saved.api_key = config.api_key.clone();
-    saved.auth_mode = Some("api_key".into());
-    save_saved_config_at(&path, &saved)?;
-    println!(
-        "{} ready — key stored in {}",
-        provider.name,
-        auth_store_path()?.display()
-    );
-    Ok(true)
 }
 
 /// Provider item displayed in the "Connect a provider" modal.

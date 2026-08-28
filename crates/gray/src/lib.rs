@@ -70,10 +70,6 @@ pub fn rule(label: &str) -> String {
     format!("{prefix}{}", "\u{2500}".repeat(fill))
 }
 
-pub fn format_system_prompt(body: &str, cwd: &Path) -> String {
-    format!("{}\n\nCurrent working directory: {}", body.trim_end(), cwd.display())
-}
-
 /// Builds an [`Agent`] instance wired with the OpenAI provider, builtin tools, and system prompt.
 ///
 /// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills` +
@@ -172,15 +168,6 @@ pub struct Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_system_prompt_appends_cwd() {
-        let cwd = Path::new("/workspace/test-dir");
-        let formatted = format_system_prompt(DEFAULT_SYS_PROMPT, cwd);
-
-        assert!(formatted.starts_with("You are gray, a minimal agent"));
-        assert!(formatted.contains("Current working directory: /workspace/test-dir"));
-    }
 
     #[test]
     fn rule_embeds_label_and_is_wide() {
