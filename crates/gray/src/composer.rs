@@ -203,6 +203,7 @@ pub struct Tui {
     cwd: String,
     thinking_effort: String,
     pub transcript: Vec<Line<'static>>,
+    last_width: u16,
 }
 
 fn thinking_style() -> Style {
@@ -309,6 +310,7 @@ impl Tui {
             cwd,
             thinking_effort: "high".to_string(),
             transcript: welcome_lines,
+            last_width: cols,
         })
     }
 
@@ -395,9 +397,12 @@ impl Tui {
 
             if let Some((started, label)) = &self.status {
                 if area.y < area.y + area.height {
-                    let text = format!("\u{2022} {label}\u{2026} {}s (ctrl-c to cancel)", started.elapsed().as_secs());
-                    let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
-                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+                    let elapsed = started.elapsed().as_secs();
+                    let line = Line::from(vec![
+                        Span::styled(label.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                        Span::styled(format!(" ({elapsed}s \u{2022} esc to interrupt)"), Style::default().fg(Color::Rgb(140, 140, 140)).add_modifier(Modifier::DIM)),
+                    ]);
+                    frame.render_widget(Paragraph::new(line), Rect::new(area.x, status_y, area.width, 1));
                 }
             }
 
@@ -519,7 +524,9 @@ impl Tui {
             self.draw()?;
             if !poll(Duration::from_millis(250))? { continue; }
             match read()? {
-                Event::Resize(_, _) => {}
+                Event::Resize(cols, _) => {
+                    self.last_width = cols;
+                }
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
@@ -654,6 +661,7 @@ impl Tui {
         if let Some(tok) = self.pending_tokens.take() {
             self.push_dim(tok);
         }
+        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }
@@ -671,11 +679,23 @@ impl Tui {
             self.pending_tokens = Some(tok_line);
         } else {
             self.push_dim(tok_line);
+            self.ensure_gap(1);
         }
     }
 
     fn transcript_in_response(&self) -> bool {
         self.transcript.last().is_some_and(|l| l.width() > 0)
+    }
+
+    fn ensure_gap(&mut self, n: usize) {
+        let trailing = self.transcript.iter().rev().take_while(|l| l.width() == 0).count();
+        let need = n.saturating_sub(trailing);
+        for _ in 0..need {
+            self.transcript.push(Line::from(""));
+            let _ = self.terminal.insert_before(1, |buf| {
+                Paragraph::new(Line::from("")).render(buf.area, buf);
+            });
+        }
     }
     pub fn stream(&mut self, chunk: &str) {
         self.pending.push_str(&strip_ansi(chunk));
@@ -728,12 +748,7 @@ impl Tui {
         }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
-        let last_blank = self.transcript.last().is_some_and(|l| l.width() == 0);
-        if !last_blank {
-            let _ = self.terminal.insert_before(1, |buf| {
-                Paragraph::new(Line::from("")).render(buf.area, buf);
-            });
-        }
+        self.ensure_gap(1);
 
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
@@ -877,7 +892,14 @@ impl Tui {
             prompt_text: self.textarea.text().to_string(),
         }
     }
-    pub fn tick_status(&mut self) { let _ = self.draw(); }
+    pub fn tick_status(&mut self) {
+        if let Ok((cols, _)) = crossterm::terminal::size() {
+            if cols != self.last_width {
+                self.last_width = cols;
+            }
+        }
+        let _ = self.draw();
+    }
     pub fn shutdown(&mut self) {
         let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
