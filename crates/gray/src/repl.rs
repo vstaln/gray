@@ -307,22 +307,25 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
                     return;
                 }
             };
-            let tui_cloned = tui.cloned();
-            if let Some(shared) = &tui_cloned {
+            let tui_snap = tui.cloned();
+            let editor_paused = if let Some(shared) = &tui_snap {
                 if let Ok(mut t) = shared.try_lock() {
                     t.pending_resize = Some((t.last_width, std::time::Instant::now() + std::time::Duration::from_secs(3600)));
-                }
-            }
+                    true
+                } else { false }
+            } else { false };
             let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
             let res = editor.run();
-            if let Some(shared) = &tui_cloned {
-                let mut t = shared.lock().expect("tui lock");
-                t.pending_resize = None;
-                if let Ok((cols, _)) = crossterm::terminal::size() {
-                    t.last_width = cols;
+            if editor_paused {
+                if let Some(shared) = &tui_snap {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.pending_resize = None;
+                    if let Ok((cols, _)) = crossterm::terminal::size() {
+                        t.last_width = cols;
+                    }
+                    let _ = t.terminal.clear();
+                    let _ = t.draw();
                 }
-                let _ = t.terminal.clear();
-                let _ = t.draw();
             }
             match res {
                 Ok(Some(saved)) => {
