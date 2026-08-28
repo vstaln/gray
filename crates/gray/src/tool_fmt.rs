@@ -25,8 +25,13 @@ fn arg_path<'a>(args: &'a serde_json::Value) -> &'a str {
     args.get("path")
         .or_else(|| args.get("file_path"))
         .or_else(|| args.get("filePath"))
+        .or_else(|| args.get("TargetFile"))
+        .or_else(|| args.get("target_file"))
+        .or_else(|| args.get("targetFile"))
         .or_else(|| args.get("file"))
         .or_else(|| args.get("filename"))
+        .or_else(|| args.get("target"))
+        .or_else(|| args.get("destination"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
 }
@@ -34,6 +39,9 @@ fn arg_path<'a>(args: &'a serde_json::Value) -> &'a str {
 fn arg_content<'a>(args: &'a serde_json::Value) -> &'a str {
     args.get("content")
         .or_else(|| args.get("contents"))
+        .or_else(|| args.get("CodeContent"))
+        .or_else(|| args.get("code_content"))
+        .or_else(|| args.get("codeContent"))
         .or_else(|| args.get("text"))
         .or_else(|| args.get("code"))
         .or_else(|| args.get("body"))
@@ -333,18 +341,40 @@ fn render_content_spans(
     spans
 }
 
-/// Renders diff hunks with Grok-style gutter line numbers, background colors,
-/// hunk separators, and Syntect syntax highlighting.
+/// Renders unified diff hunks with Codex/Grok-style gutter line numbers,
+/// additions/removals summary, background colors, and Syntect syntax highlighting.
 pub fn render_diff_hunks(
     hunks: &[DiffHunk],
     path: Option<&Path>,
+    cwd: Option<&Path>,
 ) -> Vec<Line<'static>> {
     let syntect = gray_markdown::get_syntect();
     let mut lines = Vec::new();
 
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+    for hunk in hunks {
+        for line in hunk {
+            match line.tag {
+                DiffTag::Insert => additions += 1,
+                DiffTag::Delete => deletions += 1,
+                DiffTag::Equal => {}
+            }
+        }
+    }
+
+    if let Some(p) = path {
+        let p_display = shorten_path(&p.display().to_string(), cwd);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Updated ", Style::default().fg(Color::Rgb(160, 160, 160))),
+            Span::styled(p_display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" with {additions} additions and {deletions} removals"), Style::default().fg(Color::Rgb(160, 160, 160))),
+        ]));
+    }
+
     for (i, hunk) in hunks.iter().enumerate() {
         if i > 0 && !lines.is_empty() {
-            // Hunk gap separator: "  … N unchanged lines"
             let prev_last = hunks[i - 1]
                 .iter()
                 .rev()
@@ -383,49 +413,45 @@ pub fn render_diff_hunks(
         for line in hunk {
             max_num = max_num.max(line.lo).max(line.ln);
         }
-        let gutter_width = max_num.to_string().len();
+        let gutter_width = max_num.to_string().len().max(3);
 
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
 
         for line in hunk {
             let mut spans = Vec::new();
-            // 1. Indent: 2 spaces
             spans.push(Span::raw("  "));
 
-            // 2. Gutter: line number
-            match line.tag {
-                DiffTag::Equal => {
-                    spans.push(Span::styled(
-                        format!("{:>width$}", line.ln, width = gutter_width),
-                        Style::default().fg(DIFF_GUTTER_FG),
-                    ));
-                }
-                DiffTag::Delete => {
-                    spans.push(Span::styled(
-                        format!("{:>width$}", line.lo, width = gutter_width),
-                        Style::default().fg(DIFF_DELETE_FG),
-                    ));
-                }
-                DiffTag::Insert => {
-                    spans.push(Span::styled(
-                        format!("{:>width$}", line.ln, width = gutter_width),
-                        Style::default().fg(DIFF_INSERT_FG),
-                    ));
-                }
-            }
-
-            // 3. Gap between gutter and code: 2 spaces
-            spans.push(Span::raw("  "));
-
-            // 4. Code content with syntax highlighting and background
-            let text = &line.text;
             let bg_color = match line.tag {
                 DiffTag::Equal => None,
                 DiffTag::Delete => Some(DIFF_DELETE_BG),
                 DiffTag::Insert => Some(DIFF_INSERT_BG),
             };
 
+            let gutter_style = match line.tag {
+                DiffTag::Equal => Style::default().fg(DIFF_GUTTER_FG),
+                DiffTag::Delete => Style::default().fg(DIFF_DELETE_FG).bg(DIFF_DELETE_BG),
+                DiffTag::Insert => Style::default().fg(DIFF_INSERT_FG).bg(DIFF_INSERT_BG),
+            };
+
+            let num = match line.tag {
+                DiffTag::Equal => line.ln,
+                DiffTag::Delete => line.lo,
+                DiffTag::Insert => line.ln,
+            };
+
+            let sign = match line.tag {
+                DiffTag::Equal => " ",
+                DiffTag::Delete => "-",
+                DiffTag::Insert => "+",
+            };
+
+            spans.push(Span::styled(
+                format!("{:>width$} | {sign} ", num, width = gutter_width),
+                gutter_style,
+            ));
+
+            let text = &line.text;
             let content_spans = match line.tag {
                 DiffTag::Delete => {
                     render_content_spans(text, &mut old_highlighter, syntect, DIFF_DELETE_FG, bg_color)
@@ -450,7 +476,70 @@ pub fn render_diff_hunks(
     lines
 }
 
-/// Formats tool output lines with Grok-style rendering.
+/// Renders a newly created / written code block with line numbers and syntax highlighting.
+pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static>> {
+    let syntect = gray_markdown::get_syntect();
+    let mut highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
+    let raw_lines: Vec<&str> = content.lines().collect();
+    let total = raw_lines.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let max_lines_to_show = 30usize;
+    let gutter_width = total.to_string().len().max(3);
+    let mut lines = Vec::new();
+
+    if total <= max_lines_to_show {
+        for (idx, line_text) in raw_lines.iter().enumerate() {
+            let line_num = idx + 1;
+            let mut spans = Vec::new();
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("{:>width$} | ", line_num, width = gutter_width),
+                Style::default().fg(DIFF_GUTTER_FG),
+            ));
+            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, None);
+            spans.extend(content_spans);
+            lines.push(Line::from(spans));
+        }
+    } else {
+        const HEAD: usize = 18;
+        const TAIL: usize = 6;
+        for (idx, line_text) in raw_lines.iter().take(HEAD).enumerate() {
+            let line_num = idx + 1;
+            let mut spans = Vec::new();
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("{:>width$} | ", line_num, width = gutter_width),
+                Style::default().fg(DIFF_GUTTER_FG),
+            ));
+            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, None);
+            spans.extend(content_spans);
+            lines.push(Line::from(spans));
+        }
+        let omitted = total.saturating_sub(HEAD + TAIL);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
+        ]));
+        for (idx, line_text) in raw_lines.iter().skip(total - TAIL).enumerate() {
+            let line_num = total - TAIL + idx + 1;
+            let mut spans = Vec::new();
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                format!("{:>width$} | ", line_num, width = gutter_width),
+                Style::default().fg(DIFF_GUTTER_FG),
+            ));
+            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, None);
+            spans.extend(content_spans);
+            lines.push(Line::from(spans));
+        }
+    }
+
+    lines
+}
+
+/// Formats tool output lines with Codex/Grok-style rendering.
 pub fn format_tool_result_lines_with_context(
     tool_name: &str,
     args: Option<&serde_json::Value>,
@@ -474,23 +563,24 @@ pub fn format_tool_result_lines_with_context(
         return lines;
     }
 
-    let raw_path = args.and_then(|a| a.get("path")).and_then(|v| v.as_str());
-    let path_buf = raw_path.map(|p| {
-        if let Some(c) = cwd {
-            c.join(p)
+    let raw_path = args.map(arg_path).unwrap_or("");
+    let path_buf = if !raw_path.is_empty() {
+        Some(if let Some(c) = cwd {
+            c.join(raw_path)
         } else {
-            Path::new(p).to_path_buf()
-        }
-    });
+            Path::new(raw_path).to_path_buf()
+        })
+    } else {
+        None
+    };
     let file_path = path_buf.as_deref();
 
     // Check if this output is a diff or from edit/write tool
     if tool_name == "edit" || output.starts_with("--- ") || output.contains("@@ ") {
         let hunks = parse_diff_hunks(output);
         if !hunks.is_empty() {
-            return render_diff_hunks(&hunks, file_path);
+            return render_diff_hunks(&hunks, file_path, cwd);
         }
-        // If edit produced no diff (e.g. simple success message), keep clean
         return Vec::new();
     }
 
@@ -499,15 +589,18 @@ pub fn format_tool_result_lines_with_context(
         if output.starts_with("--- ") || output.contains("@@ ") {
             let hunks = parse_diff_hunks(output);
             if !hunks.is_empty() {
-                return render_diff_hunks(&hunks, file_path);
+                return render_diff_hunks(&hunks, file_path, cwd);
             }
         }
-        // New file writes already display "Wrote path (N lines)" in the header; no extra clutter needed.
+        // If a file was written/created, display the written code block with line numbers & syntax highlighting
+        let content = args.map(arg_content).unwrap_or("");
+        if !content.is_empty() {
+            return render_code_block(content, file_path);
+        }
         return Vec::new();
     }
 
     if tool_name == "read" {
-        // Reading files is quiet in Grok
         return Vec::new();
     }
 

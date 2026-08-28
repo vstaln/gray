@@ -8,7 +8,7 @@ use crate::edit_diff::{
     normalize_to_lf, restore_line_endings, split_bom, Edit,
 };
 use crate::file_mutation_queue::with_file_mutation_queue;
-use crate::{fail, get_opt_bool, get_str, resolve_path, Tool};
+use crate::{fail, get_opt_bool, resolve_path, Tool};
 
 pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
 pub const EDIT_GUIDELINES: &[&str] = &[
@@ -26,7 +26,7 @@ fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
             let parsed: Value = serde_json::from_str(s).map_err(|e| format!("edits JSON parse failed: {e}"))?;
             return parse_edits_array(&parsed);
         }
-        if edits_val.is_object() && edits_val.get("oldText").is_some() || edits_val.get("old_text").is_some() {
+        if edits_val.is_object() {
             let e = parse_single_edit(edits_val)?;
             return Ok(vec![e]);
         }
@@ -37,8 +37,19 @@ fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
             return Err("edits must be an array of {oldText, newText}".to_string());
         }
     }
-    let old = args.get("oldText").or_else(|| args.get("old_text"));
-    let new = args.get("newText").or_else(|| args.get("new_text"));
+    let old = args.get("oldText")
+        .or_else(|| args.get("old_text"))
+        .or_else(|| args.get("TargetContent"))
+        .or_else(|| args.get("target_content"))
+        .or_else(|| args.get("targetContent"))
+        .or_else(|| args.get("search"))
+        .or_else(|| args.get("find"));
+    let new = args.get("newText")
+        .or_else(|| args.get("new_text"))
+        .or_else(|| args.get("ReplacementContent"))
+        .or_else(|| args.get("replacement_content"))
+        .or_else(|| args.get("replacementContent"))
+        .or_else(|| args.get("replace"));
     if let (Some(o), Some(n)) = (old, new) {
         if let (Some(os), Some(ns)) = (o.as_str(), n.as_str()) {
             return Ok(vec![Edit { old_text: os.to_string(), new_text: ns.to_string() }]);
@@ -49,8 +60,23 @@ fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
 }
 
 fn parse_single_edit(v: &Value) -> Result<Edit, String> {
-    let old = v.get("oldText").or_else(|| v.get("old_text")).and_then(|x| x.as_str()).ok_or("edit missing oldText")?;
-    let new = v.get("newText").or_else(|| v.get("new_text")).and_then(|x| x.as_str()).ok_or("edit missing newText")?;
+    let old = v.get("oldText")
+        .or_else(|| v.get("old_text"))
+        .or_else(|| v.get("TargetContent"))
+        .or_else(|| v.get("target_content"))
+        .or_else(|| v.get("targetContent"))
+        .or_else(|| v.get("search"))
+        .or_else(|| v.get("find"))
+        .and_then(|x| x.as_str())
+        .ok_or("edit missing oldText / TargetContent")?;
+    let new = v.get("newText")
+        .or_else(|| v.get("new_text"))
+        .or_else(|| v.get("ReplacementContent"))
+        .or_else(|| v.get("replacement_content"))
+        .or_else(|| v.get("replacementContent"))
+        .or_else(|| v.get("replace"))
+        .and_then(|x| x.as_str())
+        .ok_or("edit missing newText / ReplacementContent")?;
     Ok(Edit { old_text: old.to_string(), new_text: new.to_string() })
 }
 
@@ -102,7 +128,21 @@ impl Tool for EditTool {
     fn is_concurrency_safe(&self, _args: &Value) -> bool { false }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = match get_str(&args, "path") { Ok(p) => p, Err(e) => return e };
+        let path = args.get("path")
+            .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("filePath"))
+            .or_else(|| args.get("TargetFile"))
+            .or_else(|| args.get("target_file"))
+            .or_else(|| args.get("targetFile"))
+            .or_else(|| args.get("file"))
+            .or_else(|| args.get("filename"))
+            .or_else(|| args.get("target"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if path.is_empty() {
+            return fail("missing required argument 'path'".to_string());
+        }
         let replace_all = match get_opt_bool(&args, "replace_all") { Ok(v) => v.unwrap_or(false), Err(e) => return e };
 
         let edits = match parse_edits(&args) {
