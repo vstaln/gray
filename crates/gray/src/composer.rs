@@ -398,6 +398,8 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
+            box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+
             // Prompt input rows
             let prompt_arrow = "❯ ";
             let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
@@ -491,10 +493,14 @@ impl Tui {
                 }
             }
 
+            box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+
             let box_h = box_lines.len().max(1) as u16;
             let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
+            let has_status = self.status.is_some();
+            let status_h: u16 = if has_status { 3 } else { 0 }; // 1 row top padding, 1 row status, 1 row bottom padding
 
             // When slash commands are open (!self.matches.is_empty()):
             // Composer box moves temporarily to the top of the viewport (area.y) so commands show below it.
@@ -512,17 +518,18 @@ impl Tui {
                 let attach_y = footer_y.saturating_sub(attach_h);
                 let panel_y = attach_y.saturating_sub(panel_h);
                 let box_y = panel_y.saturating_sub(box_h);
-                let status_y = box_y.saturating_sub(1);
+                let status_y = box_y.saturating_sub(status_h);
                 (status_y, box_y, panel_y, attach_y, footer_y)
             };
 
             if let Some((started, label)) = &self.status {
-                if status_y < area.y + area.height {
+                let text_y = status_y + 1; // 1-row top padding above status text
+                if text_y < area.y + area.height {
                     let label_text = format!("\u{2b21} {label}\u{2026}");
                     let mut spans = shimmer_spans(&label_text, started.elapsed(), self.truecolor);
                     let suffix = format!(" {}s (esc to interrupt)", started.elapsed().as_secs());
                     spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, text_y, area.width, 1));
                 }
             }
 
@@ -623,7 +630,7 @@ impl Tui {
             }
 
             let cur_x = (area.x + 2 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + cur_row as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + 1 + cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())
