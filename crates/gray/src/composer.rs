@@ -7,7 +7,7 @@
 //! and `textarea.rs` (ponytail minimal: one-file adaptation, stdlib only).
 
 use std::io::{Stdout, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -255,6 +255,8 @@ pub struct Tui {
     matches: Vec<(&'static str, &'static str)>,
     sel: usize,
     status: Option<(Instant, String)>,
+    turn_started: Option<Instant>,
+    turn_had_thinking: bool,
     pending: String,
     truecolor: bool,
     thinking: bool,
@@ -353,6 +355,7 @@ fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
         let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut terminal = Terminal::with_options(
@@ -411,6 +414,8 @@ impl Tui {
             matches: Vec::new(),
             sel: 0,
             status: None,
+            turn_started: None,
+            turn_had_thinking: false,
             pending: String::new(),
             truecolor: true,
             thinking: false,
@@ -719,9 +724,44 @@ impl Tui {
         let _ = self.draw();
     }
 
+    fn is_image_path(path: &str) -> bool {
+        let p = Path::new(path.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`'));
+        if !p.exists() || !p.is_file() {
+            return false;
+        }
+        matches!(
+            p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
+            Some("png") | Some("jpg") | Some("jpeg") | Some("webp") | Some("gif") | Some("bmp") | Some("heic") | Some("heif")
+        )
+    }
+
+    fn try_attach_image_paste(&mut self, pasted: &str) -> bool {
+        let trimmed = pasted.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
+        // single line, no newline, looks like a path, file exists and is image
+        if trimmed.contains('\n') || trimmed.is_empty() || trimmed.len() > 512 {
+            return false;
+        }
+        // also handle file:// prefix
+        let path_str = if let Some(stripped) = trimmed.strip_prefix("file://") {
+            stripped
+        } else {
+            trimmed
+        };
+        if Self::is_image_path(path_str) {
+            let path = PathBuf::from(path_str);
+            self.attach_image(path);
+            return true;
+        }
+        false
+    }
+
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         const THRESHOLD: usize = 1000;
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+        // try image file path first (single line)
+        if self.try_attach_image_paste(&pasted) {
+            return true;
+        }
         let n = pasted.chars().count();
         if n > THRESHOLD {
             let placeholder = format!("[Pasted Content {n} chars]");
@@ -765,6 +805,9 @@ impl Tui {
             match read()? {
                 Event::Resize(cols, _) => {
                     self.pending_resize = Some((cols, Instant::now()));
+                }
+                Event::Paste(data) => {
+                    self.handle_paste(data);
                 }
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
@@ -915,7 +958,12 @@ impl Tui {
     }
 
     pub fn begin_turn(&mut self, label: &str) {
-        self.status = Some((Instant::now(), label.to_string()));
+        let now = Instant::now();
+        if self.turn_started.is_none() {
+            self.turn_started = Some(now);
+            self.turn_had_thinking = false;
+        }
+        self.status = Some((now, label.to_string()));
         let _ = self.draw();
     }
     pub fn set_status(&mut self, label: Option<&str>) {
@@ -923,6 +971,10 @@ impl Tui {
         let _ = self.draw();
     }
     pub fn end_turn(&mut self) {
+        // capture elapsed before clearing
+        let elapsed = self.turn_started.take().map(|s| s.elapsed());
+        let had_thinking = self.turn_had_thinking;
+        self.turn_had_thinking = false;
         self.status = None;
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
@@ -943,7 +995,30 @@ impl Tui {
         }
         self.committed_markdown_lines = 0;
 
-        if let Some(tok) = self.pending_tokens.take() {
+        let pending_tok = self.pending_tokens.take();
+        if let Some(elapsed) = elapsed {
+            let secs = elapsed.as_secs_f64();
+            let elapsed_str = if secs < 1.0 {
+                format!("{}ms", elapsed.as_millis())
+            } else if secs < 60.0 {
+                // keep one decimal, trim trailing .0
+                let s = format!("{secs:.1}s");
+                if s.ends_with(".0s") { s.replacen(".0s", "s", 1) } else { s }
+            } else {
+                let m = (secs as u64) / 60;
+                let s = (secs as u64) % 60;
+                if s == 0 { format!("{m}m") } else { format!("{m}m {s}s") }
+            };
+            let verb = if had_thinking { "Thought for" } else { "Worked for" };
+            let tok_suffix = if let Some(u) = self.latest_usage {
+                format!(" · {} tok", crate::repl::fmt_usage(u.total()))
+            } else {
+                String::new()
+            };
+            // Codex-style: ✻ Worked for 6s · N tok (dim)
+            let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
+            self.push_dim(line);
+        } else if let Some(tok) = pending_tok {
             self.push_dim(tok);
         }
         let _ = std::io::stdout().flush();
@@ -986,6 +1061,7 @@ impl Tui {
     pub fn stream_thinking(&mut self, chunk: &str) {
         if !self.thinking {
             self.thinking = true;
+            self.turn_had_thinking = true;
             self.set_status(Some("Thinking"));
             if !self.hide_thinking {
                 self.push_line(String::new());
@@ -1315,6 +1391,7 @@ impl Tui {
     pub fn shutdown(&mut self) {
         let _ = self.terminal.clear();
         let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(
             std::io::stdout(),
             crossterm::cursor::Show,
@@ -1328,6 +1405,7 @@ impl Tui {
 impl Drop for Tui {
     fn drop(&mut self) {
         let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }
