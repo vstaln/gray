@@ -21,6 +21,27 @@ pub const DIFF_INSERT_FG: Color = Color::Rgb(158, 206, 106); // #9ece6a (bright 
 pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code text)
 pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
 
+fn arg_path<'a>(args: &'a serde_json::Value) -> &'a str {
+    args.get("path")
+        .or_else(|| args.get("file_path"))
+        .or_else(|| args.get("filePath"))
+        .or_else(|| args.get("file"))
+        .or_else(|| args.get("filename"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
+fn arg_content<'a>(args: &'a serde_json::Value) -> &'a str {
+    args.get("content")
+        .or_else(|| args.get("contents"))
+        .or_else(|| args.get("text"))
+        .or_else(|| args.get("code"))
+        .or_else(|| args.get("body"))
+        .or_else(|| args.get("data"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
 /// Shortens a path relative to CWD or HOME for compact terminal display.
 pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     let path = Path::new(path_str);
@@ -62,12 +83,9 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         "write" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let path = shorten_path(raw_path, cwd);
-            let lines_count = args.get("content")
-                .and_then(|v| v.as_str())
-                .map(|c| c.lines().count())
-                .unwrap_or(0);
+            let path = shorten_path(arg_path(args), cwd);
+            let content = arg_content(args);
+            let lines_count = content.lines().count();
             Line::from(vec![
                 bullet,
                 Span::styled("Wrote ", action_style),
@@ -76,8 +94,7 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         "edit" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let path = shorten_path(raw_path, cwd);
+            let path = shorten_path(arg_path(args), cwd);
             Line::from(vec![
                 bullet,
                 Span::styled("Edit ", action_style),
@@ -85,8 +102,7 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         "read" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let path = shorten_path(raw_path, cwd);
+            let path = shorten_path(arg_path(args), cwd);
             let offset = args.get("offset").and_then(|v| v.as_u64());
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let span_detail = match (offset, limit) {
@@ -562,19 +578,17 @@ pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: 
             format!("{bullet} {bold}Ran{reset} {yellow}{cmd}{reset}")
         }
         "write" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let path = shorten_path(raw_path, cwd);
-            let lines_count = args.get("content").and_then(|v| v.as_str()).map(|c| c.lines().count()).unwrap_or(0);
+            let path = shorten_path(arg_path(args), cwd);
+            let content = arg_content(args);
+            let lines_count = content.lines().count();
             format!("{bullet} {bold}Wrote{reset} {orange}{path}{reset} {dim}({lines_count} lines){reset}")
         }
         "edit" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let path = shorten_path(raw_path, cwd);
+            let path = shorten_path(arg_path(args), cwd);
             format!("{bullet} {bold}Edit{reset} {orange}{path}{reset}")
         }
         "read" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let path = shorten_path(raw_path, cwd);
+            let path = shorten_path(arg_path(args), cwd);
             let offset = args.get("offset").and_then(|v| v.as_u64());
             let limit = args.get("limit").and_then(|v| v.as_u64());
             let span_detail = match (offset, limit) {

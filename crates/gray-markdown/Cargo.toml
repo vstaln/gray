@@ -23,3 +23,6 @@ url = "2"
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

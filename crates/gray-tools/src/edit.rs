@@ -37,8 +37,8 @@ fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
             return Err("edits must be an array of {oldText, newText}".to_string());
         }
     }
-    let old = args.get("oldText").or_else(|| args.get("old_text")).or_else(|| args.get("oldText"));
-    let new = args.get("newText").or_else(|| args.get("new_text")).or_else(|| args.get("newText"));
+    let old = args.get("oldText").or_else(|| args.get("old_text"));
+    let new = args.get("newText").or_else(|| args.get("new_text"));
     if let (Some(o), Some(n)) = (old, new) {
         if let (Some(os), Some(ns)) = (o.as_str(), n.as_str()) {
             return Ok(vec![Edit { old_text: os.to_string(), new_text: ns.to_string() }]);

@@ -912,41 +912,47 @@ pub async fn run_repl_mode(
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Default hidden (codex-style) — prevents reasoning spill into transcript (see screenshot).
     let mut hide_thinking = true;
+    let mut pending_command: Option<ReplCommand> = None;
 
     loop {
-        let line = if interactive {
-            let (shared, stop) = tui.as_ref().expect("interactive implies tui");
-            let line = {
-                let mut t = shared.lock().expect("tui lock");
-                let l = match t.read_line()? {
-                    Some(l) => l,
-                    None => {
-                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                        t.shutdown();
-                        print_exit_hint(&session_state);
-                        break;
-                    }
-                };
-                // Quit will shut down immediately after this block;
-                // set the stop flag now while we still hold the lock so
-                // the ticker's try_lock gap can't slip a draw in between.
-                if matches!(parse_command(&l), ReplCommand::Quit) {
-                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                }
-                l
-            };
-            line
+        let cmd = if let Some(c) = pending_command.take() {
+            c
         } else {
-            print!("\u{203a} ");
-            std::io::stdout().flush()?;
-            let mut buf = String::new();
-            if std::io::stdin().read_line(&mut buf)? == 0 {
-                break;
-            }
-            buf.trim().to_string()
+            let line = if interactive {
+                let (shared, stop) = tui.as_ref().expect("interactive implies tui");
+                let line = {
+                    let mut t = shared.lock().expect("tui lock");
+                    let l = match t.read_line()? {
+                        Some(l) => l,
+                        None => {
+                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                            t.shutdown();
+                            print_exit_hint(&session_state);
+                            break;
+                        }
+                    };
+                    // Quit will shut down immediately after this block;
+                    // set the stop flag now while we still hold the lock so
+                    // the ticker's try_lock gap can't slip a draw in between.
+                    if matches!(parse_command(&l), ReplCommand::Quit) {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    l
+                };
+                line
+            } else {
+                print!("\u{203a} ");
+                std::io::stdout().flush()?;
+                let mut buf = String::new();
+                if std::io::stdin().read_line(&mut buf)? == 0 {
+                    break;
+                }
+                buf.trim().to_string()
+            };
+            parse_command(&line)
         };
 
-        match parse_command(&line) {
+        match cmd {
             ReplCommand::Empty => continue,
             ReplCommand::Quit => {
                 if let Some((shared, stop)) = &tui {
@@ -1019,8 +1025,12 @@ pub async fn run_repl_mode(
                 }
 
                 if let Some(prompt_text) = initial_prompt {
-                    let _ = prompt_text;
-                    // Prompt will continue on next turn
+                    if let Some((shared, _)) = &tui {
+                        shared.lock().expect("tui lock").push_user_prompt(&prompt_text);
+                    } else {
+                        println!("❯ {prompt_text}");
+                    }
+                    pending_command = Some(ReplCommand::Prompt(prompt_text));
                 }
                 continue;
             }
