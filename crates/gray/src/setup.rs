@@ -536,14 +536,15 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     } else {
         format!("{model_display} · {effort_display}")
     };
-    let pad_len = w.saturating_sub(cwd_display.chars().count() + right_text.chars().count());
+    let pad_len = w.saturating_sub(2 + cwd_display.chars().count() + right_text.chars().count());
     let footer_line = Line::from(vec![
+        Span::raw("  "),
         Span::styled(cwd_display, Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM)),
         Span::raw(" ".repeat(pad_len)),
         Span::styled(right_text, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM)),
     ]);
 
-    let composer_h = 5usize;
+    let composer_h = 4usize;
     let transcript_avail_h = h.saturating_sub(composer_h);
 
     let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
@@ -563,8 +564,6 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
             full_screen_lines.push(dim_line(l));
         }
     }
-
-    full_screen_lines.push(Line::from(""));
 
     for l in bottom_box_lines {
         full_screen_lines.push(l);

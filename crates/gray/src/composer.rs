@@ -326,7 +326,7 @@ impl Tui {
             let w = area.width as usize;
 
             let text = self.textarea.text().to_string();
-            let content_w = w.saturating_sub(4).max(1);
+            let content_w = w.saturating_sub(2).max(1);
 
             // Neutral Gray palette (no blue)
             let bg_color = Color::Rgb(22, 22, 22);
@@ -341,24 +341,49 @@ impl Tui {
             let prompt_arrow = "❯ ";
             let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
+            let mut cur_row = 0usize;
+            let mut cur_col = 0usize;
+            let cursor = self.textarea.cursor().min(text.len());
+
             if text.is_empty() {
                 box_lines.push(Line::from(vec![
                     arrow_span.clone(),
                 ]).style(Style::default().bg(bg_color)));
+                cur_row = 0;
+                cur_col = 0;
             } else {
                 let lines_raw: Vec<&str> = text.split('\n').collect();
+                let mut cursor_found = false;
+                let mut current_byte_pos = 0usize;
+                let mut row_count = 0usize;
+
                 for (i, raw_line) in lines_raw.iter().enumerate() {
                     let prefix_span = if i == 0 {
                         arrow_span.clone()
                     } else {
                         Span::styled("  ", Style::default().bg(bg_color))
                     };
+
+                    let line_len_bytes = raw_line.len();
+                    let line_end_bytes = current_byte_pos + line_len_bytes;
+                    let has_cursor = !cursor_found && (cursor <= line_end_bytes || i == lines_raw.len() - 1);
+
                     if raw_line.is_empty() {
                         box_lines.push(Line::from(vec![prefix_span]).style(Style::default().bg(bg_color)));
+                        if has_cursor {
+                            cur_row = row_count;
+                            cur_col = 0;
+                            cursor_found = true;
+                        }
+                        row_count += 1;
                     } else {
                         let chars: Vec<char> = raw_line.chars().collect();
+                        let mut line_byte_offset = 0usize;
+
                         for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
                             let s: String = chunk.iter().collect();
+                            let chunk_byte_len: usize = chunk.iter().map(|c| c.len_utf8()).sum();
+
                             if chunk_idx == 0 {
                                 box_lines.push(Line::from(vec![
                                     prefix_span.clone(),
@@ -370,8 +395,30 @@ impl Tui {
                                     Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
                                 ]).style(Style::default().bg(bg_color)));
                             }
+
+                            if has_cursor && !cursor_found {
+                                let cursor_in_line_bytes = cursor.saturating_sub(current_byte_pos);
+                                if cursor_in_line_bytes <= line_byte_offset + chunk_byte_len || chunk_idx == chars.chunks(content_w).count() - 1 {
+                                    cur_row = row_count;
+                                    let bytes_into_chunk = cursor_in_line_bytes.saturating_sub(line_byte_offset);
+                                    let mut col = 0usize;
+                                    let mut b = 0usize;
+                                    for ch in chunk {
+                                        if b >= bytes_into_chunk { break; }
+                                        b += ch.len_utf8();
+                                        col += 1;
+                                    }
+                                    cur_col = col;
+                                    cursor_found = true;
+                                }
+                            }
+
+                            line_byte_offset += chunk_byte_len;
+                            row_count += 1;
                         }
                     }
+
+                    current_byte_pos = line_end_bytes + 1;
                 }
             }
 
@@ -404,7 +451,7 @@ impl Tui {
             let rendered_box_h = box_h.min((area.y + area.height).saturating_sub(box_y));
             if rendered_box_h > 0 {
                 frame.render_widget(
-                    Paragraph::new(box_lines).block(Block::default().style(Style::default().bg(bg_color)).padding(ratatui::widgets::Padding::horizontal(1))),
+                    Paragraph::new(box_lines).block(Block::default().style(Style::default().bg(bg_color))),
                     Rect::new(area.x, box_y, area.width, rendered_box_h),
                 );
             }
@@ -454,8 +501,12 @@ impl Tui {
                 ]
             };
             let right_len = if model_display.is_empty() { effort_display.chars().count() } else { model_display.chars().count() + 3 + effort_display.chars().count() };
-            let pad_len = w.saturating_sub(cwd_display.chars().count() + right_len);
-            let mut footer_spans = vec![Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))), Span::raw(" ".repeat(pad_len))];
+            let pad_len = w.saturating_sub(2 + cwd_display.chars().count() + right_len);
+            let mut footer_spans = vec![
+                Span::raw("  "),
+                Span::styled(cwd_display, Style::default().fg(Color::Rgb(108, 108, 108))),
+                Span::raw(" ".repeat(pad_len)),
+            ];
             footer_spans.extend(right_parts);
             if footer_y < area.y + area.height {
                 frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
@@ -470,13 +521,8 @@ impl Tui {
                 );
             }
 
-            let (cursor_line_idx, cursor_col) = {
-                let cursor = self.textarea.cursor().min(text.len());
-                let before = &text[..cursor];
-                (before.matches('\n').count(), before[before.rfind('\n').map(|i| i + 1).unwrap_or(0)..].chars().count())
-            };
-            let cur_x = (area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + 1 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_x = (area.x + 2 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
+            let cur_y = (box_y + 1 + cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())
@@ -656,7 +702,6 @@ impl Tui {
         if let Some(tok) = self.pending_tokens.take() {
             self.push_dim(tok);
         }
-        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }
@@ -674,7 +719,6 @@ impl Tui {
             self.pending_tokens = Some(tok_line);
         } else {
             self.push_dim(tok_line);
-            self.ensure_gap(1);
         }
     }
 
@@ -682,6 +726,7 @@ impl Tui {
         self.transcript.last().is_some_and(|l| l.width() > 0)
     }
 
+    #[allow(dead_code)]
     fn ensure_gap(&mut self, n: usize) {
         let trailing = self.transcript.iter().rev().take_while(|l| l.width() == 0).count();
         let need = n.saturating_sub(trailing);
@@ -743,11 +788,9 @@ impl Tui {
         }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
-        self.ensure_gap(1);
-
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
-        let content_w = w.saturating_sub(4).max(1);
+        let content_w = w.saturating_sub(2).max(1);
 
         let bg_color = Color::Rgb(22, 22, 22);
         let prompt_color = Color::Rgb(180, 180, 180);
@@ -789,14 +832,11 @@ impl Tui {
         lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
         let height = lines.len() as u16;
-        let block = Block::default()
-            .style(Style::default().bg(bg_color))
-            .padding(ratatui::widgets::Padding::horizontal(1));
+        let block = Block::default().style(Style::default().bg(bg_color));
 
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
         });
-        self.transcript.push(Line::from(""));
         self.transcript.extend(lines);
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
