@@ -22,6 +22,7 @@ use crate::repl::completion_matches;
 
 const VIEWPORT_H: u16 = 12;
 const PANEL_ROWS: usize = 8;
+const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -207,6 +208,7 @@ pub struct Tui {
     pub latest_usage: Option<gray_core::event::Usage>,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
+    pending_resize: Option<(u16, Instant)>,
 }
 
 fn thinking_style() -> Style {
@@ -317,6 +319,7 @@ impl Tui {
             latest_usage: None,
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
             committed_markdown_lines: 0,
+            pending_resize: None,
         })
     }
 
@@ -325,12 +328,12 @@ impl Tui {
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) { self.latest_usage = Some(usage); }
 
-    fn width(&self) -> usize { self.terminal.size().map(|a| a.width as usize).unwrap_or(80) }
+    fn width(&self) -> usize { self.last_width.max(20) as usize }
 
     fn draw(&mut self) -> anyhow::Result<()> {
+        let w = self.width();
         self.terminal.draw(|frame| {
             let area = frame.area();
-            let w = area.width as usize;
 
             let text = self.textarea.text().to_string();
             let content_w = w.saturating_sub(2).max(1);
@@ -594,10 +597,19 @@ impl Tui {
             } else { Vec::new() };
             if self.sel >= self.matches.len() { self.sel = self.matches.len().saturating_sub(1); }
             self.draw()?;
-            if !poll(Duration::from_millis(250))? { continue; }
+            if let Some((cols, at)) = self.pending_resize && at.elapsed() >= RESIZE_DEBOUNCE {
+                self.pending_resize = None;
+                self.last_width = cols;
+                self.draw()?;
+            }
+            let timeout = self.pending_resize.map(|(_, at)| {
+                let e = at.elapsed();
+                if e >= RESIZE_DEBOUNCE { Duration::from_millis(0) } else { RESIZE_DEBOUNCE - e }
+            }).unwrap_or(Duration::from_millis(250));
+            if !poll(timeout)? { continue; }
             match read()? {
                 Event::Resize(cols, _) => {
-                    self.last_width = cols;
+                    self.pending_resize = Some((cols, Instant::now()));
                 }
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
@@ -742,25 +754,15 @@ impl Tui {
 
         if let Some(tok) = self.pending_tokens.take() {
             self.push_dim(tok);
+        } else {
+            self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }
 
     pub fn push_usage(&mut self, tok_line: String) {
-        if !self.pending.is_empty() {
-            for line in std::mem::take(&mut self.pending).split('\n') {
-                if !line.is_empty() {
-                    let style = if self.thinking { thinking_style() } else { Style::default() };
-                    self.push_line_styled(line.to_string(), style);
-                }
-            }
-        }
-        if self.transcript_in_response() || self.committed_markdown_lines > 0 {
-            self.pending_tokens = Some(tok_line);
-        } else {
-            self.push_dim(tok_line);
-        }
+        self.pending_tokens = Some(tok_line);
     }
 
     fn transcript_in_response(&self) -> bool {
@@ -895,6 +897,7 @@ impl Tui {
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
+        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
     }
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
@@ -920,30 +923,40 @@ impl Tui {
     }
     pub fn push_line_spans(&mut self, line: Line<'static>) {
         self.ensure_gap(1);
-        self.transcript.push(line.clone());
+        let w = self.width().max(10);
+        let wrapped = wrap_styled_line(line, w.saturating_sub(1));
+        for l in wrapped {
+            self.transcript.push(l.clone());
+            let _ = self.terminal.insert_before(1, |buf| {
+                Paragraph::new(l).render(buf.area, buf);
+            });
+        }
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(line).render(buf.area, buf);
-        });
         let _ = std::io::stdout().flush();
     }
     pub fn push_styled_lines(&mut self, lines: Vec<Line<'static>>) {
-        let count = lines.len() as u16;
-        if count == 0 {
+        if lines.is_empty() {
             return;
         }
-        self.transcript.extend(lines.clone());
+        let w = self.width().max(10);
+        for line in lines {
+            let wrapped = wrap_styled_line(line, w.saturating_sub(1));
+            for l in wrapped {
+                self.transcript.push(l.clone());
+                let _ = self.terminal.insert_before(1, |buf| {
+                    Paragraph::new(l).render(buf.area, buf);
+                });
+            }
+        }
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
-        let _ = self.terminal.insert_before(count, |buf| {
-            Paragraph::new(lines).render(buf.area, buf);
-        });
         let _ = std::io::stdout().flush();
     }
     pub fn push_dim(&mut self, line: String) {
+        self.ensure_gap(1);
         let styled = Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)));
         self.transcript.push(styled.clone());
         if self.transcript.len() > 1000 {
@@ -952,6 +965,7 @@ impl Tui {
         let _ = self.terminal.insert_before(1, |buf| {
             Paragraph::new(styled).render(buf.area, buf);
         });
+        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
     }
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
@@ -991,10 +1005,14 @@ impl Tui {
         }
     }
     pub fn tick_status(&mut self) {
-        if let Ok((cols, _)) = crossterm::terminal::size() {
-            if cols != self.last_width {
-                self.last_width = cols;
-            }
+        if let Some((cols, at)) = self.pending_resize && at.elapsed() >= RESIZE_DEBOUNCE {
+            self.pending_resize = None;
+            self.last_width = cols;
+        } else if self.pending_resize.is_some() {
+            return;
+        } else if let Ok((cols, _)) = crossterm::terminal::size() && cols != self.last_width {
+            self.pending_resize = Some((cols, Instant::now()));
+            return;
         }
         let _ = self.draw();
     }
