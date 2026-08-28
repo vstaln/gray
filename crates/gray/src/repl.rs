@@ -13,6 +13,7 @@ use gray_session::{
 };
 
 use std::sync::Mutex as StdMutex;
+use ratatui::widgets::Widget;
 
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
@@ -114,9 +115,19 @@ fn truncate_chars(s: &str, max_chars: usize) -> &str {
     }
 }
 
-/// Formats a token count as exact total number.
+/// Formats a token count with comma separators (e.g., 1000 -> 1,000).
 pub fn fmt_usage(total: usize) -> String {
-    format!("{total}")
+    let s = total.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    let mut count = 0;
+    for ch in s.chars().rev() {
+        if count != 0 && count % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+        count += 1;
+    }
+    out.chars().rev().collect()
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -967,7 +978,7 @@ pub async fn run_repl_mode(
 
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Default hidden (codex-style) — prevents reasoning spill into transcript (see screenshot).
-    let mut hide_thinking = true;
+    let mut hide_thinking = false;
     let mut pending_command: Option<ReplCommand> = None;
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
@@ -1329,11 +1340,10 @@ pub async fn run_repl_mode(
                 let watch_cancel = cancel.clone();
                 let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let watcher_stopped = watch_stop.clone();
+                let watcher_tui = tui_stream.clone();
                 let _key_watcher = tokio::task::spawn_blocking(move || {
                     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
                     loop {
-                        // abort() can't kill a blocking task — poll the flag so
-                        // the thread actually exits when the turn ends.
                         if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
                             return;
                         }
@@ -1341,22 +1351,89 @@ pub async fn run_repl_mode(
                             Ok(true) => {}
                             _ => continue,
                         }
-                        if let Ok(Event::Key(KeyEvent {
-                            code,
-                            modifiers,
-                            kind,
-                            ..
-                        })) = read()
-                        {
-                            if kind == KeyEventKind::Release {
-                                continue;
+                        let Ok(event) = read() else { continue; };
+                        match event {
+                            Event::Key(KeyEvent { code, modifiers, kind, .. }) => {
+                                if kind == KeyEventKind::Release {
+                                    continue;
+                                }
+                                if code == KeyCode::Esc
+                                    || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+                                {
+                                    watch_cancel.cancel();
+                                    return;
+                                }
+                                // When a turn is running, allow typing and queue on Enter
+                                let Some(shared) = watcher_tui.as_ref() else { continue; };
+                                let Ok(mut t) = shared.try_lock() else { continue; };
+                                if !t.is_task_running {
+                                    continue;
+                                }
+                                match code {
+                                    KeyCode::Left => {
+                                        t.textarea.move_left();
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Right => {
+                                        t.textarea.move_right();
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Enter => {
+                                        let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
+                                        if is_newline {
+                                            t.textarea.insert_str("\n");
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        let mut text = t.textarea.text().to_string();
+                                        for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
+                                        text = text.trim().to_string();
+                                        let attached = std::mem::take(&mut t.attachments);
+                                        // clear pending pastes already handled
+                                        if text.is_empty() && attached.is_empty() { continue; }
+                                        // queue it
+                                        t.queued_inputs.push_back((text.clone(), attached));
+                                        t.textarea.set_text("");
+                                        t.pending_pastes.clear();
+                                        // show queued preview as dim line in transcript
+                                        let preview = if text.is_empty() { format!("queued {} image(s)", t.queued_inputs.back().map(|(_, imgs)| imgs.len()).unwrap_or(0)) } else { format!("queued: {}", text.chars().take(80).collect::<String>()) };
+                                        let preview_line = ratatui::text::Line::from(ratatui::text::Span::styled(preview, ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::DIM)));
+                                        t.transcript.push(preview_line.clone());
+                                        let _ = t.terminal.insert_before(1, |buf| {
+                                            ratatui::widgets::Paragraph::new(preview_line.clone()).render(buf.area, buf);
+                                        });
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Char(c) => {
+                                        t.textarea.insert_str(&c.to_string());
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Backspace => {
+                                        t.textarea.delete_backward(1);
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Delete => {
+                                        t.textarea.delete_forward(1);
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Up => {
+                                        t.textarea.move_up();
+                                        let _ = t.draw();
+                                    }
+                                    KeyCode::Down => {
+                                        t.textarea.move_down();
+                                        let _ = t.draw();
+                                    }
+                                    _ => {}
+                                }
                             }
-                            if code == KeyCode::Esc
-                                || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
-                            {
-                                watch_cancel.cancel();
-                                return;
+                            Event::Paste(data) => {
+                                let Some(shared) = watcher_tui.as_ref() else { continue; };
+                                let Ok(mut t) = shared.try_lock() else { continue; };
+                                if !t.is_task_running { continue; }
+                                t.handle_paste(data);
                             }
+                            _ => {}
                         }
                     }
                 });
@@ -1478,6 +1555,23 @@ pub async fn run_repl_mode(
                             }
                         } else {
                             eprintln!("agent error: {e}");
+                        }
+                    }
+                }
+                // if we queued input while working, start it immediately
+                if interactive {
+                    if let Some((shared, _)) = &tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
+                            // show the queued user block now (was only preview before)
+                            t.push_user_prompt(&qtext);
+                            if !qimages.is_empty() {
+                                let names = qimages.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
+                                t.push_dim(format!("↳ queued {names}"));
+                            }
+                            drop(t);
+                            pending_command = Some(ReplCommand::Prompt(qtext));
+                            pending_images = qimages;
                         }
                     }
                 }

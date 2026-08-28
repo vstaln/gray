@@ -54,7 +54,7 @@ struct TextElement {
 }
 
 #[derive(Debug)]
-struct TextArea {
+pub(crate) struct TextArea {
     text: String,
     cursor: usize, // byte index
     elements: Vec<TextElement>,
@@ -63,25 +63,25 @@ struct TextArea {
 
 #[allow(dead_code)]
 impl TextArea {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { text: String::new(), cursor: 0, elements: Vec::new(), next_id: 1 }
     }
-    fn text(&self) -> &str { &self.text }
-    fn is_empty(&self) -> bool { self.text.is_empty() }
-    fn cursor(&self) -> usize { self.cursor }
-    fn set_text(&mut self, s: &str) {
+    pub(crate) fn text(&self) -> &str { &self.text }
+    pub(crate) fn is_empty(&self) -> bool { self.text.is_empty() }
+    pub(crate) fn cursor(&self) -> usize { self.cursor }
+    pub(crate) fn set_text(&mut self, s: &str) {
         self.text = s.to_string();
         self.cursor = self.cursor.min(self.text.len());
         self.cursor = self.clamp_to_boundary(self.cursor);
         self.elements.clear();
     }
-    fn clamp_to_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn clamp_to_boundary(&self, pos: usize) -> usize {
         let mut p = pos.min(self.text.len());
         while p < self.text.len() && !self.text.is_char_boundary(p) { p += 1; }
         p
     }
-    fn is_char_boundary(&self, pos: usize) -> bool { self.text.is_char_boundary(pos) }
-    fn next_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn is_char_boundary(&self, pos: usize) -> bool { self.text.is_char_boundary(pos) }
+    pub(crate) fn next_boundary(&self, pos: usize) -> usize {
         // next char boundary, but jump over atomic elements
         for el in &self.elements {
             if pos >= el.range.start && pos < el.range.end { return el.range.end; }
@@ -95,7 +95,7 @@ impl TextArea {
         }
         n.min(self.text.len())
     }
-    fn prev_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn prev_boundary(&self, pos: usize) -> usize {
         if pos == 0 { return 0; }
         for el in &self.elements {
             if pos > el.range.start && pos <= el.range.end { return el.range.start; }
@@ -107,14 +107,14 @@ impl TextArea {
         }
         n
     }
-    fn insert_str(&mut self, s: &str) { self.insert_at(self.cursor, s); }
-    fn insert_at(&mut self, pos: usize, s: &str) {
+    pub(crate) fn insert_str(&mut self, s: &str) { self.insert_at(self.cursor, s); }
+    pub(crate) fn insert_at(&mut self, pos: usize, s: &str) {
         let pos = self.clamp_to_boundary(pos.min(self.text.len()));
         self.text.insert_str(pos, s);
         if pos <= self.cursor { self.cursor += s.len(); }
         self.shift_elements(pos, 0, s.len());
     }
-    fn insert_element(&mut self, placeholder: &str) -> u64 {
+    pub(crate) fn insert_element(&mut self, placeholder: &str) -> u64 {
         let id = self.next_id; self.next_id += 1;
         let start = self.cursor;
         self.insert_str(placeholder);
@@ -123,26 +123,26 @@ impl TextArea {
         self.elements.sort_by_key(|e| e.range.start);
         id
     }
-    fn shift_elements(&mut self, pos: usize, removed: usize, inserted: usize) {
+    pub(crate) fn shift_elements(&mut self, pos: usize, removed: usize, inserted: usize) {
         let diff = inserted as isize - removed as isize;
         for el in &mut self.elements {
             if el.range.start >= pos + removed { el.range.start = ((el.range.start as isize) + diff) as usize; el.range.end = ((el.range.end as isize) + diff) as usize; }
             else if el.range.end > pos { /* inside edit — collapse */ }
         }
     }
-    fn delete_backward(&mut self, n: usize) {
+    pub(crate) fn delete_backward(&mut self, n: usize) {
         if n == 0 || self.cursor == 0 { return; }
         let mut target = self.cursor;
         for _ in 0..n { target = self.prev_boundary(target); if target == 0 { break; } }
         self.replace_range(target..self.cursor, "");
     }
-    fn delete_forward(&mut self, n: usize) {
+    pub(crate) fn delete_forward(&mut self, n: usize) {
         if n == 0 || self.cursor >= self.text.len() { return; }
         let mut target = self.cursor;
         for _ in 0..n { target = self.next_boundary(target); if target >= self.text.len() { break; } }
         self.replace_range(self.cursor..target, "");
     }
-    fn prev_word_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn prev_word_boundary(&self, pos: usize) -> usize {
         if pos == 0 { return 0; }
         for el in &self.elements {
             if pos > el.range.start && pos <= el.range.end { return el.range.start; }
@@ -164,7 +164,7 @@ impl TextArea {
         }
         0
     }
-    fn next_word_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn next_word_boundary(&self, pos: usize) -> usize {
         if pos >= self.text.len() { return self.text.len(); }
         for el in &self.elements {
             if pos >= el.range.start && pos < el.range.end { return el.range.end; }
@@ -186,27 +186,27 @@ impl TextArea {
         }
         self.text.len()
     }
-    fn delete_word_backward(&mut self) {
+    pub(crate) fn delete_word_backward(&mut self) {
         let target = self.prev_word_boundary(self.cursor);
         if target < self.cursor {
             self.replace_range(target..self.cursor, "");
         }
     }
-    fn delete_word_forward(&mut self) {
+    pub(crate) fn delete_word_forward(&mut self) {
         let target = self.next_word_boundary(self.cursor);
         if target > self.cursor {
             self.replace_range(self.cursor..target, "");
         }
     }
-    fn move_word_left(&mut self) {
+    pub(crate) fn move_word_left(&mut self) {
         let target = self.prev_word_boundary(self.cursor);
         self.set_cursor(target);
     }
-    fn move_word_right(&mut self) {
+    pub(crate) fn move_word_right(&mut self) {
         let target = self.next_word_boundary(self.cursor);
         self.set_cursor(target);
     }
-    fn replace_range(&mut self, range: std::ops::Range<usize>, s: &str) {
+    pub(crate) fn replace_range(&mut self, range: std::ops::Range<usize>, s: &str) {
         let start = range.start.min(self.text.len());
         let end = range.end.min(self.text.len());
         let removed = end - start;
@@ -216,16 +216,16 @@ impl TextArea {
         self.cursor = self.clamp_to_boundary(self.cursor);
         self.shift_elements(start, removed, s.len());
     }
-    fn set_cursor(&mut self, pos: usize) {
+    pub(crate) fn set_cursor(&mut self, pos: usize) {
         self.cursor = self.clamp_to_boundary(pos.min(self.text.len()));
         // avoid landing inside element
         for el in &self.elements {
             if self.cursor > el.range.start && self.cursor < el.range.end { self.cursor = el.range.end; break; }
         }
     }
-    fn move_left(&mut self) { self.cursor = self.prev_boundary(self.cursor); }
-    fn move_right(&mut self) { self.cursor = self.next_boundary(self.cursor); }
-    fn move_up(&mut self) {
+    pub(crate) fn move_left(&mut self) { self.cursor = self.prev_boundary(self.cursor); }
+    pub(crate) fn move_right(&mut self) { self.cursor = self.next_boundary(self.cursor); }
+    pub(crate) fn move_up(&mut self) {
         let bol = self.text[..self.cursor].rfind('\n').map(|i| i+1).unwrap_or(0);
         let col = self.text[bol..self.cursor].chars().count();
         if bol == 0 { self.cursor = 0; return; }
@@ -235,7 +235,7 @@ impl TextArea {
         let byte_col = prev_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(prev_line.len());
         self.cursor = self.clamp_to_boundary(prev_bol + byte_col);
     }
-    fn move_down(&mut self) {
+    pub(crate) fn move_down(&mut self) {
         let eol = self.text[self.cursor..].find('\n').map(|i| i+self.cursor).unwrap_or(self.text.len());
         let bol = self.text[..self.cursor].rfind('\n').map(|i| i+1).unwrap_or(0);
         let col = self.text[bol..self.cursor].chars().count();
@@ -246,17 +246,19 @@ impl TextArea {
         let byte_col = next_line.char_indices().nth(col).map(|(i,_)| i).unwrap_or(next_line.len());
         self.cursor = self.clamp_to_boundary(next_bol + byte_col);
     }
-    fn move_to_end(&mut self) { self.cursor = self.text.len(); }
+    pub(crate) fn move_to_end(&mut self) { self.cursor = self.text.len(); }
 }
 
 pub struct Tui {
     pub(crate) terminal: Term,
-    textarea: TextArea,
+    pub(crate) textarea: TextArea,
     matches: Vec<(&'static str, &'static str)>,
     sel: usize,
     status: Option<(Instant, String)>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
+    pub is_task_running: bool,
+    pub queued_inputs: std::collections::VecDeque<(String, Vec<PathBuf>)>,
     pending: String,
     truecolor: bool,
     thinking: bool,
@@ -265,8 +267,8 @@ pub struct Tui {
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: String,
-    attachments: Vec<PathBuf>,
-    pending_pastes: Vec<(String, String)>,
+    pub(crate) attachments: Vec<PathBuf>,
+    pub(crate) pending_pastes: Vec<(String, String)>,
     model_name: String,
     cwd: String,
     thinking_effort: String,
@@ -416,10 +418,12 @@ impl Tui {
             status: None,
             turn_started: None,
             turn_had_thinking: false,
+            is_task_running: false,
+            queued_inputs: std::collections::VecDeque::new(),
             pending: String::new(),
             truecolor: true,
             thinking: false,
-            hide_thinking: true,
+            hide_thinking: false,
             pending_tokens: None,
             history: Vec::new(),
             history_idx: None,
@@ -444,7 +448,7 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) { self.latest_usage = Some(usage); }
     pub fn reset_usage(&mut self) { self.latest_usage = None; }
 
-    fn width(&self) -> usize { self.last_width.max(20) as usize }
+    pub(crate) fn width(&self) -> usize { self.last_width.max(20) as usize }
 
     pub(crate) fn draw(&mut self) -> anyhow::Result<()> {
         let w = self.width();
@@ -593,7 +597,14 @@ impl Tui {
                 if status_y < area.y + area.height {
                     let label_text = format!("\u{2b21} {label}\u{2026}");
                     let mut spans = shimmer_spans(&label_text, started.elapsed(), self.truecolor);
-                    let suffix = format!(" {}s (esc to interrupt)", started.elapsed().as_secs());
+                    let elapsed = started.elapsed();
+                    let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
+                    let tok_suffix = if let Some(u) = self.latest_usage {
+                        format!(" · {} tok", crate::repl::fmt_usage(u.total()))
+                    } else {
+                        String::new()
+                    };
+                    let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
                     spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
                     frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
@@ -724,7 +735,7 @@ impl Tui {
         let _ = self.draw();
     }
 
-    fn is_image_path(path: &str) -> bool {
+    pub(crate) fn is_image_path(path: &str) -> bool {
         let p = Path::new(path.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`'));
         if !p.exists() || !p.is_file() {
             return false;
@@ -735,7 +746,7 @@ impl Tui {
         )
     }
 
-    fn try_attach_image_paste(&mut self, pasted: &str) -> bool {
+    pub(crate) fn try_attach_image_paste(&mut self, pasted: &str) -> bool {
         let trimmed = pasted.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`');
         // single line, no newline, looks like a path, file exists and is image
         if trimmed.contains('\n') || trimmed.is_empty() || trimmed.len() > 512 {
@@ -963,6 +974,7 @@ impl Tui {
             self.turn_started = Some(now);
             self.turn_had_thinking = false;
         }
+        self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
     }
@@ -1030,12 +1042,12 @@ impl Tui {
     }
 
     #[allow(dead_code)]
-    fn transcript_in_response(&self) -> bool {
+    pub(crate) fn transcript_in_response(&self) -> bool {
         self.transcript.last().is_some_and(|l| l.width() > 0)
     }
 
     #[allow(dead_code)]
-    fn ensure_gap(&mut self, n: usize) {
+    pub(crate) fn ensure_gap(&mut self, n: usize) {
         let trailing = self.transcript.iter().rev().take_while(|l| l.width() == 0).count();
         let need = n.saturating_sub(trailing);
         for _ in 0..need {
@@ -1092,7 +1104,7 @@ impl Tui {
         self.end_thinking_run(false);
         let _ = self.draw();
     }
-    fn end_thinking_run(&mut self, spacer: bool) {
+    pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
         if !self.thinking { return; }
         self.thinking = false;
         if !self.hide_thinking {
@@ -1173,7 +1185,7 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
-    fn push_line_styled(&mut self, line: String, style: Style) {
+    pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
         let w = self.width().max(10);
         let chars: Vec<char> = line.chars().collect();
         let mut height = 0usize;
@@ -1426,7 +1438,7 @@ fn strip_ansi(s: &str) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn shimmer_spans_change_across_ticks() {
+    pub(crate) fn shimmer_spans_change_across_ticks() {
         let text = "\u{2022} Working\u{2026} 1s (ctrl-c to cancel)";
         let mut prev = shimmer_spans(text, Duration::from_millis(300), false);
         for ms in (400..=1200).step_by(100) {
@@ -1436,14 +1448,14 @@ mod tests {
         }
     }
     #[test]
-    fn shimmer_truecolor_changes_across_ticks() {
+    pub(crate) fn shimmer_truecolor_changes_across_ticks() {
         let text = "\u{2022} Working\u{2026} 1s";
         let a = shimmer_spans(text, Duration::from_millis(500), true);
         let b = shimmer_spans(text, Duration::from_millis(600), true);
         assert_ne!(a, b);
     }
     #[test]
-    fn textarea_multiline_and_history() {
+    pub(crate) fn textarea_multiline_and_history() {
         let mut ta = TextArea::new();
         ta.insert_str("hello");
         ta.insert_str("\nworld");
@@ -1457,7 +1469,7 @@ mod tests {
         assert_eq!(ta.cursor(), ta.text().len());
     }
     #[test]
-    fn textarea_atomic_element() {
+    pub(crate) fn textarea_atomic_element() {
         let mut ta = TextArea::new();
         ta.insert_str("a");
         ta.insert_element("[Image #1]");
@@ -1468,7 +1480,7 @@ mod tests {
         assert!(ta.cursor() < before);
     }
     #[test]
-    fn consecutive_frames_differ_in_test_backend() {
+    pub(crate) fn consecutive_frames_differ_in_test_backend() {
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
         let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
