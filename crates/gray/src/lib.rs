@@ -174,7 +174,7 @@ pub struct Cli {
 /// Subcommands mirroring `codex resume` / `codex fork` ergonomics.
 #[derive(Parser, Debug, Clone)]
 pub enum Commands {
-    /// Resume a previous session (picker by default; use --last for most recent)
+    /// Resume a previous conversation
     Resume {
         /// Session id (UUID or prefix). If omitted, shows picker unless --last.
         #[arg(value_name = "SESSION_ID")]

@@ -20,7 +20,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "connect a provider & setup API key"),
     ("model", "switch or pick a model"),
     ("effort", "set thinking reasoning effort (off, low, medium, high...)"),
-    ("resume", "resume a previous session (picker, --last, or <id>)"),
+    ("resume", "resume a previous conversation"),
     ("new", "start a fresh conversation"),
     ("compact", "compress conversation context into a structured summary"),
     ("sys", "view, edit, or restore the system prompt"),
