@@ -290,14 +290,18 @@ impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
 
-        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        for _ in 0..rows {
+            print!("\r\n");
+        }
+        let _ = std::io::stdout().flush();
+
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
                 viewport: ratatui::Viewport::Inline(VIEWPORT_H),
             },
         )?;
-        terminal.clear()?;
 
         // Print welcome logo into scrollback once at startup
         let logo_raw = crate::tui::logo_lines();
@@ -635,7 +639,6 @@ impl Tui {
         use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
-        let _ = self.terminal.clear();
         loop {
             let cur_text = self.textarea.text().to_string();
             self.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {

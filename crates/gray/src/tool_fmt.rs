@@ -43,9 +43,9 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
 
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
 pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> Line<'static> {
-    let bullet = Span::styled("\u{25c6} ", Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::BOLD));
+    let bullet = Span::styled("\u{2b22} ", Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::BOLD));
     let action_style = Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD);
-    let path_style = Style::default().fg(PATH_COLOR).add_modifier(Modifier::BOLD);
+    let path_style = Style::default().fg(PATH_COLOR).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let cmd_style = Style::default().fg(COMMAND_COLOR).add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(DIM_COLOR);
 
@@ -549,7 +549,7 @@ pub fn format_tool_result_lines(tool_name: &str, output: &str, is_error: bool) -
 
 /// Plain ANSI string formatting for one-shot / non-TUI output header.
 pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> String {
-    let bullet = "\x1b[38;2;158;206;106m\x1b[1m\u{25c6}\x1b[0m";
+    let bullet = "\x1b[38;2;158;206;106m\x1b[1m\u{2b22}\x1b[0m";
     let bold = "\x1b[1m";
     let orange = "\x1b[38;2;255;158;100m\x1b[1m";
     let yellow = "\x1b[38;2;224;175;104m\x1b[1m";

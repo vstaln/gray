@@ -69,23 +69,7 @@ pub fn render_event_with_context<W: Write>(
         }
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
-                let cached = if usage.cached_tokens > 0 {
-                    format!(
-                        " · {} cached ({:.0}%)",
-                        crate::repl::fmt_usage(usage.cached_tokens),
-                        usage.cache_hit_rate() * 100.0
-                    )
-                } else {
-                    String::new()
-                };
-                let think = if usage.reasoning_tokens > 0 {
-                    format!(" · {} think", crate::repl::fmt_usage(usage.reasoning_tokens))
-                } else {
-                    String::new()
-                };
-                writeln!(w, "\n\x1b[2m\u{25c6} {} tok{think}{cached}\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
-            } else {
-                writeln!(w)?;
+                writeln!(w, "\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
             }
             w.flush()
         }

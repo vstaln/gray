@@ -511,6 +511,9 @@ impl SessionStore for JsonlSessionStore {
 
 /// Returns the default session directory (`~/.gray/sessions`), or `None` if `$HOME` is not set.
 pub fn default_root() -> Option<PathBuf> {
+    if let Some(gh) = std::env::var_os("GRAY_HOME") {
+        return Some(PathBuf::from(gh).join("sessions"));
+    }
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".gray").join("sessions"))
 }
 

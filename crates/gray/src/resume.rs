@@ -117,35 +117,50 @@ pub fn latest_summary<'a>(summaries: &'a [SessionSummary], cwd_filter: Option<&P
 pub async fn resolve_prefix(store: &JsonlSessionStore, input: &str, all: bool) -> Option<SessionId> {
     let cwd = std::env::current_dir().ok();
     let summaries = store.list().await;
-    let filter_cwd = if all { None } else { cwd.as_deref() };
-    let candidates: Vec<&SessionSummary> = summaries
-        .iter()
-        .filter(|s| {
-            if let Some(c) = filter_cwd {
-                paths_match(&s.cwd, c)
-            } else {
-                true
-            }
-        })
-        .collect();
-    let lower = input.to_lowercase();
-    let mut matches: Vec<&SessionSummary> = candidates
-        .into_iter()
-        .filter(|s| s.id.as_str().to_lowercase().starts_with(&lower))
-        .collect();
-    if matches.len() == 1 {
-        return Some(matches.remove(0).id.clone());
+    let lower = input.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
     }
-    if matches.is_empty() {
-        if let Ok(id) = uuid::Uuid::parse_str(input) {
-            let sid = SessionId::new(id.to_string());
-            for s in summaries.iter() {
-                if s.id == sid {
-                    return Some(sid);
-                }
+
+    // 1. Exact match across all sessions
+    if let Some(s) = summaries.iter().find(|s| s.id.as_str().to_lowercase() == lower) {
+        return Some(s.id.clone());
+    }
+
+    // 2. Prefix match within CWD first (if not all)
+    if !all && let Some(c) = cwd.as_deref() {
+        let cwd_matches: Vec<&SessionSummary> = summaries
+            .iter()
+            .filter(|s| paths_match(&s.cwd, c) && s.id.as_str().to_lowercase().starts_with(&lower))
+            .collect();
+        if cwd_matches.len() == 1 {
+            return Some(cwd_matches[0].id.clone());
+        }
+        if cwd_matches.len() > 1 {
+            // Pick most recent in CWD
+            let latest = cwd_matches.into_iter().max_by_key(|s| s.started_at);
+            if let Some(s) = latest {
+                return Some(s.id.clone());
             }
         }
     }
+
+    // 3. Prefix match across ALL sessions in store
+    let all_matches: Vec<&SessionSummary> = summaries
+        .iter()
+        .filter(|s| s.id.as_str().to_lowercase().starts_with(&lower))
+        .collect();
+    if all_matches.len() == 1 {
+        return Some(all_matches[0].id.clone());
+    }
+    if all_matches.len() > 1 {
+        // Pick the most recent session matching this prefix
+        let latest = all_matches.into_iter().max_by_key(|s| s.started_at);
+        if let Some(s) = latest {
+            return Some(s.id.clone());
+        }
+    }
+
     None
 }
 
