@@ -396,7 +396,6 @@ impl Tui {
             Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
             Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
         ]));
-        welcome_lines.push(Line::from(""));
 
         let welcome_h = welcome_lines.len() as u16;
         let _ = terminal.insert_before(welcome_h, |buf| {
@@ -563,19 +562,25 @@ impl Tui {
             let gap_h: u16 = 1;
             let status_h: u16 = if has_status { 1 } else { 0 };
             let (status_y, box_y, panel_y, attach_y, footer_y) = if !self.matches.is_empty() {
-                let box_y = area.y + gap_h;
+                let box_y = area.y;
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
                 let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
-                let status_y = area.y + gap_h;
+                let status_y = area.y;
                 (status_y, box_y, panel_y, attach_y, footer_y)
-            } else {
-                let footer_y = area.y + area.height.saturating_sub(1);
-                let panel_y_base = area.y + area.height.saturating_sub(1 + gap_h + 1);
-                let box_y = panel_y_base.saturating_sub(box_h + panel_h + attach_h);
-                let status_y = box_y.saturating_sub(status_h + gap_h);
+            } else if has_status {
+                let status_y = area.y;
+                let box_y = status_y + status_h + gap_h;
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
+                let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
+                (status_y, box_y, panel_y, attach_y, footer_y)
+            } else {
+                let box_y = area.y;
+                let status_y = area.y;
+                let panel_y = box_y + box_h;
+                let attach_y = panel_y + panel_h;
+                let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
                 (status_y, box_y, panel_y, attach_y, footer_y)
             };
 
