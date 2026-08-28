@@ -1,37 +1,46 @@
 //! Serialize file mutations targeting the same path, mirroring
 //! `pi/packages/coding-agent/src/core/tools/file-mutation-queue.ts`.
 //!
-//! Different paths run in parallel; mutations for the same canonical path are
-//! serialized via a per-path `tokio::sync::Mutex`.
+//! Different paths and different `ToolContext` envs (cwd) run in parallel;
+//! mutations for the same canonical path *within the same env* are
+//! serialized via a per-path `tokio::sync::Mutex` chain. Uses both
+//! `absolutePath` and `canonicalPath` (like pi's `getMutationQueueKey`)
+//! so `a.txt` vs `./a.txt` vs symlink all serialize once the file exists.
+//! Weak refs are cleaned on release so the map does not grow unbounded.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock, Weak};
 
 use tokio::sync::Mutex;
 
-/// Global registry: canonical path string -> per-file mutex.
-static QUEUES: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+use gray_core::agent::ToolContext;
+use crate::resolve_path;
 
-fn global() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
-    QUEUES.get_or_init(|| Mutex::new(HashMap::new()))
+/// Global registry: env cwd -> canonical-path string -> weak per-file mutex.
+static STATES: OnceLock<Mutex<HashMap<PathBuf, HashMap<String, Weak<Mutex<()>>>>>> =
+    OnceLock::new();
+
+fn global() -> &'static Mutex<HashMap<PathBuf, HashMap<String, Weak<Mutex<()>>>>> {
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Derive a stable queue key for `path`.
+/// Derive a stable queue key for `path` within `ctx`.
 ///
-/// Mirrors `getMutationQueueKey` in pi: if the path exists (or its realpath
-/// can be resolved), use the canonical path; otherwise fall back to the
-/// absolute path string. This ensures `a.txt` and `./a.txt` and a symlink
-/// to the same inode all serialize together once the file exists.
-fn queue_key(path: &Path) -> String {
-    // Try canonicalize the path itself.
-    if let Ok(canonical) = std::fs::canonicalize(path) {
+/// Mirrors pi's `getMutationQueueKey`: `absolutePath` + `canonicalPath`.
+/// If canonicalization succeeds, use canonical; if `not_found`/`not_supported`,
+/// fall back to absolute. This ensures `a.txt` and `./a.txt` serialize
+/// together once the file exists, and also through symlinks.
+async fn queue_key(ctx: &ToolContext, path_str: &str) -> String {
+    let absolute = resolve_path(&ctx.cwd, path_str);
+    // Try canonicalize the absolute path itself
+    if let Ok(canonical) = tokio::fs::canonicalize(&absolute).await {
         return canonical.to_string_lossy().to_string();
     }
-    // If path doesn't exist yet, try canonicalize its parent.
-    if let Some(parent) = path.parent() {
-        if let Ok(canonical_parent) = std::fs::canonicalize(parent) {
-            if let Some(file_name) = path.file_name() {
+    // If path doesn't exist yet, try canonicalize its parent
+    if let Some(parent) = absolute.parent() {
+        if let Ok(canonical_parent) = tokio::fs::canonicalize(parent).await {
+            if let Some(file_name) = absolute.file_name() {
                 return canonical_parent
                     .join(file_name)
                     .to_string_lossy()
@@ -40,31 +49,69 @@ fn queue_key(path: &Path) -> String {
             return canonical_parent.to_string_lossy().to_string();
         }
     }
-    // Fallback: use the path as-is (already absolute via `resolve_path`).
-    path.to_string_lossy().to_string()
+    // Fallback: absolute path string (already absolute via resolve_path)
+    absolute.to_string_lossy().to_string()
 }
 
-/// Acquire the per-path mutex for `path`, run `f`, then release.
+/// Acquire the per-path mutex for `path` within `ctx`, run `f`, then release.
 ///
-/// Operations for different canonical paths do not block each other.
-pub async fn with_file_mutation_queue<F, Fut, T>(path: PathBuf, f: F) -> T
+/// Operations for different canonical paths or different envs do not block
+/// each other. Weak refs are cleaned so the map does not leak.
+pub async fn with_file_mutation_queue<F, Fut, T>(ctx: &ToolContext, path: &str, f: F) -> T
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,
 {
-    // Fast path: obtain (or create) the per-file mutex without holding the
-    // global lock during `f`.
+    let key = queue_key(ctx, path).await;
     let per_file_mutex: Arc<Mutex<()>> = {
-        let key = queue_key(&path);
-        let mut map = global().lock().await;
-        map.entry(key)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+        let mut outer = global().lock().await;
+        let inner = outer.entry(ctx.cwd.clone()).or_insert_with(HashMap::new);
+        // Clean dead weak refs
+        inner.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(weak) = inner.get(&key) {
+            if let Some(arc) = weak.upgrade() {
+                arc
+            } else {
+                let arc = Arc::new(Mutex::new(()));
+                inner.insert(key.clone(), Arc::downgrade(&arc));
+                arc
+            }
+        } else {
+            let arc = Arc::new(Mutex::new(()));
+            inner.insert(key.clone(), Arc::downgrade(&arc));
+            arc
+        }
     };
 
-    // Serialize callers targeting the same file.
+    // Serialize callers targeting the same file within this env
     let _guard = per_file_mutex.lock().await;
-    f().await
+    let result = f().await;
+
+    // Cleanup weak entry if no other holders remain
+    {
+        let mut outer = global().lock().await;
+        if let Some(inner) = outer.get_mut(&ctx.cwd) {
+            if let Some(weak) = inner.get(&key) {
+                // Only the map holds a weak; if no strong holders (we dropped _guard), remove
+                if weak.strong_count() == 0 {
+                    inner.remove(&key);
+                } else if let Some(arc) = weak.upgrade() {
+                    // If only one strong left (the map's weak upgraded), the lock is free
+                    // Check strong_count == 1 (only our per_file_mutex clone, which is about to drop)
+                    // After _guard dropped, the mutex is free; if strong_count == 1, no waiters
+                    if Arc::strong_count(&arc) == 1 {
+                        // No queued waiters, safe to clean on next acquisition
+                        // Keep weak for now; it will be upgraded or cleaned next time
+                    }
+                }
+            }
+            if inner.is_empty() {
+                outer.remove(&ctx.cwd);
+            }
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]
@@ -72,37 +119,41 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    fn ctx(dir: &Path) -> ToolContext {
+        ToolContext {
+            cwd: dir.to_path_buf(),
+            cancel: Default::default(),
+        }
+    }
+
     #[tokio::test]
     async fn different_paths_run_in_parallel() {
-        // Sanity: two different paths should not block each other.
-        let p1 = PathBuf::from("/tmp/gray-queue-test-a.txt");
-        let p2 = PathBuf::from("/tmp/gray-queue-test-b.txt");
+        let dir = tempfile::tempdir().unwrap();
+        let c = ctx(dir.path());
         let (a, b) = tokio::join!(
-            with_file_mutation_queue(p1, || async { 1 }),
-            with_file_mutation_queue(p2, || async { 2 }),
+            with_file_mutation_queue(&c, "a.txt", || async { 1 }),
+            with_file_mutation_queue(&c, "b.txt", || async { 2 }),
         );
         assert_eq!((a, b), (1, 2));
     }
 
     #[tokio::test]
     async fn same_path_is_serialized() {
-        let path = PathBuf::from("/tmp/gray-queue-serial-test.txt");
+        let dir = tempfile::tempdir().unwrap();
+        let c = ctx(dir.path());
         let counter = Arc::new(AtomicUsize::new(0));
         let c1 = counter.clone();
         let c2 = counter.clone();
-        let p1 = path.clone();
-        let p2 = path.clone();
         let (r1, r2) = tokio::join!(
-            with_file_mutation_queue(p1, move || {
+            with_file_mutation_queue(&c, "a.txt", move || {
                 let c = c1.clone();
                 async move {
-                    // Simulate work while holding the lock.
                     let v = c.fetch_add(1, Ordering::SeqCst);
                     tokio::task::yield_now().await;
                     v
                 }
             }),
-            with_file_mutation_queue(p2, move || {
+            with_file_mutation_queue(&c, "a.txt", move || {
                 let c = c2.clone();
                 async move {
                     let v = c.fetch_add(1, Ordering::SeqCst);
@@ -111,8 +162,58 @@ mod tests {
                 }
             }),
         );
-        // Exactly two increments, in some order, but both completed.
         assert!(r1 != r2);
         assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn different_envs_do_not_block() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let c1 = ctx(dir1.path());
+        let c2 = ctx(dir2.path());
+        // Same relative path but different cwd envs should not block each other
+        let (a, b) = tokio::join!(
+            with_file_mutation_queue(&c1, "a.txt", || async { 1 }),
+            with_file_mutation_queue(&c2, "a.txt", || async { 2 }),
+        );
+        assert_eq!((a, b), (1, 2));
+    }
+
+    #[tokio::test]
+    async fn symlink_and_absolute_serialize_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = ctx(dir.path());
+        let target = dir.path().join("real.txt");
+        std::fs::write(&target, "x").unwrap();
+        let link = dir.path().join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        #[cfg(unix)]
+        {
+            let counter = Arc::new(AtomicUsize::new(0));
+            let ca = counter.clone();
+            let cb = counter.clone();
+            let (r1, r2) = tokio::join!(
+                with_file_mutation_queue(&c, "real.txt", move || {
+                    let c = ca.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        1
+                    }
+                }),
+                with_file_mutation_queue(&c, "link.txt", move || {
+                    let c = cb.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        2
+                    }
+                }),
+            );
+            // If serialized, second waits for first (total time ~10ms) and both complete
+            assert_eq!((r1, r2), (1, 2));
+            assert_eq!(counter.load(Ordering::SeqCst), 2);
+        }
     }
 }

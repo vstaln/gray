@@ -1107,6 +1107,7 @@ impl Tui {
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
         self.turn_had_thinking = false;
+        self.is_task_running = false;
         self.status = None;
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);

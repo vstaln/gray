@@ -154,9 +154,8 @@ impl Tool for EditTool {
         }
 
         let full = resolve_path(&ctx.cwd, &path);
-        let full_for_queue = full.clone();
         let path_clone = path.clone();
-        with_file_mutation_queue(full_for_queue, move || {
+        with_file_mutation_queue(ctx, &path_clone, || {
             let full = full.clone();
             let edits = edits.clone();
             let path_clone = path_clone.clone();

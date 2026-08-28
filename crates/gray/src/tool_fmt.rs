@@ -418,6 +418,16 @@ pub fn render_diff_hunks(
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+        // top separator for diff block
+        if !hunk.is_empty() {
+            // determine bg for separator: use Insert bg if any Insert, else Delete bg, else None
+            let sep_bg = hunk.iter().find_map(|l| match l.tag {
+                DiffTag::Insert => Some(DIFF_INSERT_BG),
+                DiffTag::Delete => Some(DIFF_DELETE_BG),
+                DiffTag::Equal => None,
+            });
+            lines.push(separator_line(term_w, sep_bg));
+        }
         let overhead = 2 + gutter_width + 3;
         let content_w = term_w.saturating_sub(overhead + 2).max(20);
         let wrap_text = |t: &str| -> Vec<String> {
@@ -506,16 +516,49 @@ pub fn render_diff_hunks(
                     }
                 };
                 spans.extend(content_spans);
-                let mut line_obj = Line::from(spans);
-                if let Some(bg) = bg_color {
-                    line_obj.style = Style::default().bg(bg);
-                }
+                let base_line = Line::from(spans);
+                let line_obj = if let Some(bg) = bg_color {
+                    bg_line(base_line.style(Style::default().bg(bg)), bg, term_w)
+                } else {
+                    base_line
+                };
                 lines.push(line_obj);
+            }
+            // bottom separator for this hunk
+            if let Some(bg) = hunk.iter().find_map(|l| match l.tag {
+                DiffTag::Insert => Some(DIFF_INSERT_BG),
+                DiffTag::Delete => Some(DIFF_DELETE_BG),
+                DiffTag::Equal => None,
+            }) {
+                lines.push(separator_line(term_w, Some(bg)));
+            } else {
+                lines.push(separator_line(term_w, None));
             }
         }
     }
 
     lines
+}
+
+fn separator_line(term_w: usize, bg: Option<Color>) -> Line<'static> {
+    let ch = "─";
+    let mut line_str = ch.repeat(term_w);
+    // truncate to term_w chars if needed
+    if line_str.chars().count() > term_w {
+        line_str = line_str.chars().take(term_w).collect();
+    }
+    let style = if let Some(bg) = bg { Style::default().fg(DIM_COLOR).bg(bg) } else { Style::default().fg(DIM_COLOR) };
+    Line::from(Span::styled(line_str, style))
+}
+
+fn bg_line(mut line: Line<'static>, bg: Color, term_w: usize) -> Line<'static> {
+    let w = line.width();
+    if w < term_w {
+        let pad = " ".repeat(term_w - w);
+        line.spans.push(Span::styled(pad, Style::default().bg(bg)));
+    }
+    line.style = Style::default().bg(bg);
+    line
 }
 
 /// Renders a newly created / written code block with line numbers and syntax highlighting.
@@ -533,6 +576,7 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
 
     let bg = Color::Rgb(30, 30, 30);
     let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+    lines.push(separator_line(term_w, Some(bg)));
     // gutter: "  " (2) + gutter_width + " | " (3) = overhead
     let overhead = 2 + gutter_width + 3;
     let content_w = term_w.saturating_sub(overhead + 2).max(20);
@@ -586,7 +630,8 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
             }
             let content_spans = render_content_spans(chunk, highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
             spans.extend(content_spans);
-            lines.push(Line::from(spans).style(Style::default().bg(bg)));
+            let line = bg_line(Line::from(spans).style(Style::default().bg(bg)), bg, term_w);
+            lines.push(line);
         }
     };
     if total <= max_lines_to_show {
@@ -600,14 +645,15 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
             push_wrapped(&mut lines, idx + 1, line_text, &mut highlighter);
         }
         let omitted = total.saturating_sub(HEAD + TAIL);
-        lines.push(Line::from(vec![
+        lines.push(bg_line(Line::from(vec![
             Span::styled("  ", Style::default().bg(bg)),
             Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).bg(bg).add_modifier(Modifier::ITALIC)),
-        ]).style(Style::default().bg(bg)));
+        ]).style(Style::default().bg(bg)), bg, term_w));
         for (idx, line_text) in raw_lines.iter().skip(total - TAIL).enumerate() {
             push_wrapped(&mut lines, total - TAIL + idx + 1, line_text, &mut highlighter);
         }
     }
+    lines.push(separator_line(term_w, Some(bg)));
 
     lines
 }
@@ -696,32 +742,35 @@ pub fn format_tool_result_lines_with_context(
     let mut lines = Vec::new();
 
     let bg = Color::Rgb(30, 30, 30);
+    let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+    lines.push(separator_line(term_w, Some(bg)));
     if total <= MAX_TOTAL_LINES {
         for l in raw_lines {
-            lines.push(Line::from(vec![
+            lines.push(bg_line(Line::from(vec![
                 Span::styled("  ", Style::default().bg(bg)),
                 Span::styled(l.to_string(), Style::default().fg(text_dim).bg(bg)),
-            ]).style(Style::default().bg(bg)));
+            ]).style(Style::default().bg(bg)), bg, term_w));
         }
     } else {
         for l in raw_lines.iter().take(MAX_HEAD_LINES) {
-            lines.push(Line::from(vec![
+            lines.push(bg_line(Line::from(vec![
                 Span::styled("  ", Style::default().bg(bg)),
                 Span::styled((*l).to_string(), Style::default().fg(text_dim).bg(bg)),
-            ]).style(Style::default().bg(bg)));
+            ]).style(Style::default().bg(bg)), bg, term_w));
         }
         let omitted = total.saturating_sub(MAX_HEAD_LINES + MAX_TAIL_LINES);
-        lines.push(Line::from(vec![
+        lines.push(bg_line(Line::from(vec![
             Span::styled("  ", Style::default().bg(bg)),
             Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).bg(bg).add_modifier(Modifier::ITALIC)),
-        ]).style(Style::default().bg(bg)));
+        ]).style(Style::default().bg(bg)), bg, term_w));
         for l in raw_lines.iter().skip(total - MAX_TAIL_LINES) {
-            lines.push(Line::from(vec![
+            lines.push(bg_line(Line::from(vec![
                 Span::styled("  ", Style::default().bg(bg)),
                 Span::styled((*l).to_string(), Style::default().fg(text_dim).bg(bg)),
-            ]).style(Style::default().bg(bg)));
+            ]).style(Style::default().bg(bg)), bg, term_w));
         }
     }
+    lines.push(separator_line(term_w, Some(bg)));
     lines
 }
 

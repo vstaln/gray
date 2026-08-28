@@ -91,9 +91,11 @@ impl Tool for WriteTool {
             .to_string();
 
         let full = resolve_path(&ctx.cwd, &path);
-        with_file_mutation_queue(full.clone(), || {
+        let path_clone = path.clone();
+        with_file_mutation_queue(ctx, &path, || {
             let full = full.clone();
             let content = content.clone();
+            let path_clone = path_clone.clone();
             async move {
                 if let Some(parent) = full.parent()
                     && let Err(e) = tokio::fs::create_dir_all(parent).await
@@ -105,7 +107,7 @@ impl Tool for WriteTool {
                 match tokio::fs::write(&full, content.as_bytes()).await {
                     Ok(()) => {
                         if existed && !old.is_empty() {
-                            let patch = crate::edit_diff::generate_unified_patch(&path, &old, &content, 3);
+                            let patch = crate::edit_diff::generate_unified_patch(&path_clone, &old, &content, 3);
                             if patch.is_empty() { finish(format!("wrote {} bytes to {} (no change)", content.len(), full.display())) }
                             else { finish(patch) }
                         } else {
