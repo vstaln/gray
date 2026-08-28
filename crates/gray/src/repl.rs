@@ -540,11 +540,7 @@ async fn handle_compact(
 
 fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
-        println!(
-            "\x1b[2mTo resume: gray resume {}  •  gray --session {}  •  /resume inside gray\x1b[0m",
-            state.session_id.as_str(),
-            state.session_id.as_str()
-        );
+        println!("\x1b[2mTo resume: gray resume {}\x1b[0m", state.session_id.as_str());
         let _ = std::io::stdout().flush();
     }
 }
