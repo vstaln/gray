@@ -715,9 +715,6 @@ pub async fn run_repl_mode(
         }
         print!("\r\n");
     } else if !interactive {
-        // In the interactive composer the banner is inserted into scrollback
-        // below (a direct print here gets scrolled off by the viewport
-        // anchoring in Tui::new).
         crate::tui::print_logo();
         print!("\r\n");
         print!(
@@ -1130,7 +1127,7 @@ pub async fn run_repl_mode(
                                         } else {
                                             String::new()
                                         };
-                                        t.push_dim(format!(
+                                        t.push_usage(format!(
                                             "• {} tok{think}{cached}",
                                             fmt_usage(usage.total())
                                         ));

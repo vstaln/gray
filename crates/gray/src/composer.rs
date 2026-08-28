@@ -21,8 +21,6 @@ use ratatui::Terminal;
 use crate::repl::completion_matches;
 
 const VIEWPORT_H: u16 = 12;
-const BOT_PREFIX_FIRST: &str = "• ";
-const BOT_PREFIX_REST: &str = "  ";
 const PANEL_ROWS: usize = 8;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -195,6 +193,7 @@ pub struct Tui {
     truecolor: bool,
     thinking: bool,
     hide_thinking: bool,
+    pending_tokens: Option<String>,
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: String,
@@ -204,9 +203,6 @@ pub struct Tui {
     cwd: String,
     thinking_effort: String,
     pub transcript: Vec<Line<'static>>,
-    bot_buffer: Option<String>,
-    bot_emitted: usize,
-    bot_prefix_first: bool,
 }
 
 fn thinking_style() -> Style {
@@ -303,6 +299,7 @@ impl Tui {
             truecolor: true,
             thinking: false,
             hide_thinking: true,
+            pending_tokens: None,
             history: Vec::new(),
             history_idx: None,
             draft: String::new(),
@@ -312,9 +309,6 @@ impl Tui {
             cwd,
             thinking_effort: "high".to_string(),
             transcript: welcome_lines,
-            bot_buffer: None,
-            bot_emitted: 0,
-            bot_prefix_first: true,
         })
     }
 
@@ -640,9 +634,6 @@ impl Tui {
 
     pub fn begin_turn(&mut self, label: &str) {
         self.status = Some((Instant::now(), label.to_string()));
-        self.bot_buffer = Some(String::new());
-        self.bot_emitted = 0;
-        self.bot_prefix_first = true;
         let _ = self.draw();
     }
     pub fn set_status(&mut self, label: Option<&str>) {
@@ -651,46 +642,51 @@ impl Tui {
     }
     pub fn end_turn(&mut self) {
         self.status = None;
-        if let Some(buf) = self.bot_buffer.take() {
-            let _w = self.width().saturating_sub(BOT_PREFIX_FIRST.len()).max(20);
-            let style = gray_markdown::gray_markdown_style().adapt();
-            let (out, _) = gray_markdown::render_markdown_ratatui_full(&buf, style, true, None);
-            let lines = out.lines;
-            let new_lines = if lines.len() > self.bot_emitted { lines[self.bot_emitted..].to_vec() } else { Vec::new() };
-            for line in new_lines {
-                let prefix = if self.bot_prefix_first { BOT_PREFIX_FIRST } else { BOT_PREFIX_REST };
-                self.bot_prefix_first = false;
-                let styled = if line.spans.is_empty() {
-                    Line::from(vec![Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)), Span::raw("")])
-                } else {
-                    let mut spans = vec![Span::styled(prefix, Style::default().add_modifier(Modifier::DIM))];
-                    spans.extend(line.spans.clone());
-                    Line::from(spans)
-                };
-                self.push_line_spans(styled);
-            }
-            self.bot_emitted = 0;
-            self.bot_prefix_first = true;
-        }
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
             let style = if self.thinking { thinking_style() } else { Style::default() };
-            self.push_line_styled(rest, style);
+            for line in rest.split('\n') {
+                if !line.is_empty() {
+                    self.push_line_styled(line.to_string(), style);
+                }
+            }
+        }
+        if let Some(tok) = self.pending_tokens.take() {
+            self.push_dim(tok);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }
-    pub fn stream(&mut self, chunk: &str) {
-        if self.bot_buffer.is_some() {
-            self.stream_text(chunk);
-            return;
+
+    pub fn push_usage(&mut self, tok_line: String) {
+        if !self.pending.is_empty() {
+            for line in std::mem::take(&mut self.pending).split('\n') {
+                if !line.is_empty() {
+                    let style = if self.thinking { thinking_style() } else { Style::default() };
+                    self.push_line_styled(line.to_string(), style);
+                }
+            }
         }
+        if self.transcript_in_response() {
+            self.pending_tokens = Some(tok_line);
+        } else {
+            self.push_dim(tok_line);
+        }
+    }
+
+    fn transcript_in_response(&self) -> bool {
+        self.transcript.last().is_some_and(|l| l.width() > 0)
+    }
+    pub fn stream(&mut self, chunk: &str) {
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
-            let line = line.trim_end_matches('\n').to_string();
+            let trimmed = line.trim_end_matches('\n');
+            if trimmed.is_empty() && self.transcript.last().is_some_and(|l| l.width() == 0) {
+                continue;
+            }
             let style = if self.thinking { thinking_style() } else { Style::default() };
-            self.push_line_styled(line, style);
+            self.push_line_styled(trimmed.to_string(), style);
         }
         let _ = self.draw();
     }
@@ -703,42 +699,13 @@ impl Tui {
             }
         }
         if !self.hide_thinking {
-            if self.bot_buffer.is_some() {
-                self.stream_text(chunk);
-            } else {
-                self.stream(chunk);
-            }
+            self.stream(chunk);
         }
     }
     pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
     pub fn stream_text(&mut self, chunk: &str) {
         self.end_thinking_run(true);
         self.set_status(Some("Working"));
-        if self.bot_buffer.is_some() {
-            let _w = self.width().saturating_sub(BOT_PREFIX_FIRST.len()).max(20);
-            let buf_mut = self.bot_buffer.as_mut().unwrap();
-            buf_mut.push_str(chunk);
-            let style = gray_markdown::gray_markdown_style().adapt();
-            let snapshot = buf_mut.clone();
-            let (out, _) = gray_markdown::render_markdown_ratatui_full(&snapshot, style, true, None);
-            let lines = out.lines;
-            let new_slice = if lines.len() > self.bot_emitted { lines[self.bot_emitted..].to_vec() } else { Vec::new() };
-            for line in new_slice {
-                let prefix = if self.bot_prefix_first { BOT_PREFIX_FIRST } else { BOT_PREFIX_REST };
-                self.bot_prefix_first = false;
-                let styled = if line.spans.is_empty() {
-                    Line::from(vec![Span::styled(prefix, Style::default().add_modifier(Modifier::DIM)), Span::raw("")])
-                } else {
-                    let mut spans = vec![Span::styled(prefix, Style::default().add_modifier(Modifier::DIM))];
-                    spans.extend(line.spans.clone());
-                    Line::from(spans)
-                };
-                self.push_line_spans(styled);
-            }
-            self.bot_emitted = lines.len();
-            let _ = self.draw();
-            return;
-        }
         self.stream(chunk);
     }
     pub fn end_thinking(&mut self) {
@@ -761,9 +728,12 @@ impl Tui {
         }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(Line::from("")).render(buf.area, buf);
-        });
+        let last_blank = self.transcript.last().is_some_and(|l| l.width() == 0);
+        if !last_blank {
+            let _ = self.terminal.insert_before(1, |buf| {
+                Paragraph::new(Line::from("")).render(buf.area, buf);
+            });
+        }
 
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
