@@ -530,10 +530,10 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                 let backdrop_bg = Color::Rgb(10, 10, 10);
                 frame.render_widget(Block::default().style(Style::default().bg(backdrop_bg)), area);
 
-                let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                let modal_h = 18.min(area.height.saturating_sub(2)).max(10);
-                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
+                let modal_w = 68.min(area.width.saturating_sub(4)).max(42).min(area.width);
+                let modal_h = 18.min(area.height.saturating_sub(2)).max(10).min(area.height);
+                let modal_x = area.x + (area.width.saturating_sub(modal_w)) / 2;
+                let modal_y = area.y + area.height.saturating_sub(modal_h + 1);
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                 match &mut state {
@@ -670,10 +670,10 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                         existing_key,
                         status_msg,
                     } => {
-                        let dialog_w = 64.min(area.width.saturating_sub(4)).max(40);
-                        let dialog_h = 10.min(area.height.saturating_sub(2)).max(8);
-                        let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
-                        let dialog_y = (area.height.saturating_sub(dialog_h)) / 2;
+                        let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
+                        let dialog_h = 10.min(area.height.saturating_sub(2)).max(8).min(area.height);
+                        let dialog_x = area.x + (area.width.saturating_sub(dialog_w)) / 2;
+                        let dialog_y = area.y + area.height.saturating_sub(dialog_h + 1);
                         let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
 
                         frame.render_widget(Clear, dialog_rect);
@@ -751,10 +751,10 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                             })
                             .collect();
 
-                        let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                        let modal_h = 20.min(area.height.saturating_sub(2)).max(12);
-                        let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                        let modal_y = (area.height.saturating_sub(modal_h)) / 2;
+                        let modal_w = 68.min(area.width.saturating_sub(4)).max(42).min(area.width);
+                        let modal_h = 20.min(area.height.saturating_sub(2)).max(12).min(area.height);
+                        let modal_x = area.x + (area.width.saturating_sub(modal_w)) / 2;
+                        let modal_y = area.y + area.height.saturating_sub(modal_h + 1);
                         let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                         frame.render_widget(Clear, modal_rect);
@@ -1198,10 +1198,10 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
                 let backdrop_bg = Color::Rgb(10, 10, 10);
                 frame.render_widget(Block::default().style(Style::default().bg(backdrop_bg)), area);
 
-                let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                let modal_h = 16.min(area.height.saturating_sub(2)).max(10);
-                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
+                let modal_w = 68.min(area.width.saturating_sub(4)).max(42).min(area.width);
+                let modal_h = 16.min(area.height.saturating_sub(2)).max(10).min(area.height);
+                let modal_x = area.x + (area.width.saturating_sub(modal_w)) / 2;
+                let modal_y = area.y + area.height.saturating_sub(modal_h + 1);
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                 frame.render_widget(Clear, modal_rect);
