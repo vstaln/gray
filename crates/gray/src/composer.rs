@@ -20,7 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 9;
+const VIEWPORT_H: u16 = 8;
 const PANEL_ROWS: usize = 4;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -236,15 +236,7 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        crossterm::execute!(
-            std::io::stdout(),
-            crossterm::cursor::MoveTo(0, rows.saturating_sub(1))
-        )?;
-        for _ in 0..VIEWPORT_H {
-            write!(std::io::stdout(), "\r\n")?;
-        }
-        let _ = std::io::stdout().flush();
+        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
@@ -389,22 +381,13 @@ impl Tui {
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
             let status_h: u16 = if has_status { 1 } else { 0 };
-            let footer_h: u16 = 1;
 
-            // Anchor all composer elements to the bottom of the viewport (codex-style)
-            let footer_y = (area.y + area.height).saturating_sub(footer_h);
-            let status_y = footer_y.saturating_sub(status_h);
-            let attach_y = status_y.saturating_sub(attach_h);
-            let panel_y = attach_y.saturating_sub(panel_h);
-            let box_y = panel_y.saturating_sub(box_h);
-
-            // Clear any blank space above box_y within the inline viewport
-            if box_y > area.y {
-                frame.render_widget(
-                    ratatui::widgets::Clear,
-                    Rect::new(area.x, area.y, area.width, box_y - area.y),
-                );
-            }
+            // Render top-down starting right at area.y to eliminate any empty gap
+            let box_y = area.y;
+            let panel_y = box_y + box_h;
+            let attach_y = panel_y + panel_h;
+            let status_y = attach_y + attach_h;
+            let footer_y = status_y + status_h;
 
             let rendered_box_h = box_h.min((area.y + area.height).saturating_sub(box_y));
             if rendered_box_h > 0 {
@@ -472,6 +455,15 @@ impl Tui {
             footer_spans.extend(right_parts);
             if footer_y < area.y + area.height {
                 frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
+            }
+
+            // Clear any leftover rows below footer_y within the viewport
+            let used_bottom = footer_y + 1;
+            if used_bottom < area.y + area.height {
+                frame.render_widget(
+                    ratatui::widgets::Clear,
+                    Rect::new(area.x, used_bottom, area.width, (area.y + area.height) - used_bottom),
+                );
             }
 
             let (cursor_line_idx, cursor_col) = {
@@ -749,22 +741,16 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
+        let mut spans = vec![
+            Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
+            Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ];
+        if let Some(d) = detail {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
+        }
         let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(Line::from("")).render(buf.area, buf);
-        });
-        let _ = self.terminal.insert_before(1, |buf| {
-            let mut spans = vec![
-                Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
-                Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            ];
-            if let Some(d) = detail {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
-            }
             Paragraph::new(Line::from(spans)).render(buf.area, buf);
-        });
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(Line::from("")).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }
