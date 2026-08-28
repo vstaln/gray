@@ -449,7 +449,7 @@ impl Tui {
             let footer_y = status_y + status_h;
 
             let cwd_display = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
-            let model_display = self.model_name.clone();
+            let model_display = crate::setup::friendly_model_name(&self.model_name);
             let effort_display = &self.thinking_effort;
             let right_parts = if model_display.is_empty() {
                 vec![Span::styled(effort_display.clone(), Style::default().fg(Color::Rgb(108, 108, 108)))]
@@ -628,6 +628,10 @@ impl Tui {
     }
 
     pub fn begin_turn(&mut self, label: &str) { self.status = Some((Instant::now(), label.to_string())); let _ = self.draw(); }
+    pub fn set_status(&mut self, label: Option<&str>) {
+        self.status = label.map(|l| (Instant::now(), l.to_string()));
+        let _ = self.draw();
+    }
     pub fn end_turn(&mut self) {
         self.status = None;
         if !self.pending.is_empty() { let rest = std::mem::take(&mut self.pending); let style = if self.thinking { thinking_style() } else { Style::default() }; self.push_line_styled(rest, style); }

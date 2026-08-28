@@ -154,6 +154,40 @@ impl Agent {
         &self.messages
     }
 
+    /// Updates or replaces the accumulated conversation messages (e.g. after compaction).
+    pub fn set_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+    }
+
+    /// Clears all accumulated conversation messages (e.g. on `/new`).
+    pub fn clear_messages(&mut self) {
+        self.messages.clear();
+    }
+
+    /// Reference to the underlying LLM provider.
+    pub fn provider(&self) -> &dyn Provider {
+        &*self.provider
+    }
+
+    /// Single-turn text completion with optional system prompt (used for compaction & summarization).
+    pub async fn complete_prompt(&self, prompt: &str, system: Option<&str>) -> Result<String, CoreError> {
+        let req = ChatRequest {
+            system: system.map(|s| s.to_string()),
+            messages: vec![Message::user(prompt)],
+            tools: Vec::new(),
+        };
+        let mut stream = self.provider.stream(req);
+        let mut result = String::new();
+        while let Some(event) = stream.next().await {
+            match event? {
+                StreamEvent::TextDelta { delta } => result.push_str(&delta),
+                StreamEvent::MessageComplete { .. } => break,
+                _ => {}
+            }
+        }
+        Ok(result)
+    }
+
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///

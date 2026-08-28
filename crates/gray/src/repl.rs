@@ -19,6 +19,8 @@ use std::sync::Mutex as StdMutex;
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "connect a provider & setup API key"),
     ("new", "start a fresh conversation"),
+    ("compact", "compress conversation context into a structured summary"),
+    ("compress", "alias for /compact"),
     ("model", "switch or pick a model"),
     ("provider", "configure provider (API key, accounts, free tier)"),
     ("key", "add or update a provider API key (input hidden)"),
@@ -166,6 +168,8 @@ pub enum ReplCommand {
     Key(Option<String>),
     /// Start a fresh conversation (`/new`).
     New,
+    /// Compress conversation context window (`/compact` or `/compress [instructions]`).
+    Compact(Option<String>),
     /// Toggle hiding thinking blocks (`/thinking`).
     Thinking,
     /// Print the command list (`/help`).
@@ -206,6 +210,14 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Reset)
     } else if trimmed == "/new" {
         ReplCommand::New
+    } else if trimmed == "/compact" || trimmed == "/compress" {
+        ReplCommand::Compact(None)
+    } else if let Some(rest) = trimmed.strip_prefix("/compact ") {
+        let arg = rest.trim();
+        ReplCommand::Compact((!arg.is_empty()).then(|| arg.to_string()))
+    } else if let Some(rest) = trimmed.strip_prefix("/compress ") {
+        let arg = rest.trim();
+        ReplCommand::Compact((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed == "/thinking" {
         ReplCommand::Thinking
     } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" {
@@ -360,6 +372,91 @@ async fn handle_model(
                 shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
             } else {
                 println!("model error: {e}");
+            }
+        }
+    }
+}
+
+/// Handles the `/compact` / `/compress` command family.
+async fn handle_compact(
+    config: &Config,
+    cwd: &Path,
+    custom_instructions: Option<String>,
+    agent: &mut Option<Agent>,
+    session_state: &mut Option<SessionState>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    if agent.is_none() {
+        reload_agent(agent, config, cwd).await;
+    }
+    let Some(ag) = agent.as_mut() else {
+        if let Some(shared) = tui {
+            shared.lock().expect("tui lock").push_dim("╰ error: agent could not be initialized".to_string());
+        } else {
+            println!("error: agent could not be initialized");
+        }
+        return;
+    };
+
+    let messages = ag.messages().to_vec();
+    if messages.is_empty() {
+        if let Some(shared) = tui {
+            shared.lock().expect("tui lock").push_dim("╰ nothing to compact (conversation is empty)".to_string());
+        } else {
+            println!("nothing to compact (conversation is empty)");
+        }
+        return;
+    }
+
+    if let Some(shared) = tui {
+        shared.lock().expect("tui lock").set_status(Some("Compacting conversation context"));
+    }
+
+    let transcript = crate::compact::serialize_conversation(&messages);
+    let prompt = crate::compact::build_summarization_prompt(&transcript, custom_instructions.as_deref());
+
+    let summary_res = ag.complete_prompt(&prompt, Some(crate::compact::SUMMARIZATION_SYSTEM_PROMPT)).await;
+
+    if let Some(shared) = tui {
+        shared.lock().expect("tui lock").set_status(None);
+    }
+
+    match summary_res {
+        Ok(summary) => {
+            let summary_trimmed = summary.trim().to_string();
+            let msg_count = messages.len();
+
+            let summary_user = Message::user(format!(
+                "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
+                summary_trimmed
+            ));
+            let summary_asst = Message::assistant(
+                "Understood. I have reviewed the conversation summary and context, and I am ready to continue."
+            );
+
+            let new_messages = vec![summary_user.clone(), summary_asst.clone()];
+            ag.set_messages(new_messages);
+
+            // Record to session storage if active
+            if let Some(state) = session_state {
+                let _ = state.store.append(&state.session_id, &summary_user).await;
+                let _ = state.store.append(&state.session_id, &summary_asst).await;
+            }
+
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(format!(
+                    "╰ compressed context ({} turns -> structured summary)",
+                    msg_count
+                ));
+            } else {
+                println!("compressed context ({} turns -> structured summary)", msg_count);
+            }
+        }
+        Err(e) => {
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(format!("╰ compaction failed: {e}"));
+            } else {
+                println!("compaction failed: {e}");
             }
         }
     }
@@ -623,7 +720,49 @@ pub async fn run_repl_mode(
             ReplCommand::New => {
                 agent = None;
                 session_state = None;
-                println!("started a fresh conversation");
+                if let Some(root) = default_root() {
+                    let store = JsonlSessionStore::new(root);
+                    let session_id = SessionId::generate();
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let meta = SessionMeta::new(
+                        session_id.clone(),
+                        timestamp,
+                        cwd.to_path_buf(),
+                        config.model.clone().unwrap_or_else(|| "unset".into()),
+                    );
+                    store.create(meta).await;
+                    let short_id = session_id.as_str().split('-').next().unwrap_or("new").to_string();
+                    session_state = Some(SessionState { store, session_id });
+                    reload_agent(&mut agent, config, &cwd).await;
+                    if let Some((shared, _)) = &tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        t.push_dim(format!("╰ started fresh conversation ({short_id})"));
+                    } else {
+                        println!("started fresh conversation ({short_id})");
+                    }
+                } else {
+                    reload_agent(&mut agent, config, &cwd).await;
+                    if let Some((shared, _)) = &tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        t.push_dim("╰ started fresh conversation".to_string());
+                    } else {
+                        println!("started fresh conversation");
+                    }
+                }
+                continue;
+            }
+            ReplCommand::Compact(instructions) => {
+                handle_compact(
+                    config,
+                    &cwd,
+                    instructions,
+                    &mut agent,
+                    &mut session_state,
+                    tui.as_ref().map(|(s, _)| s),
+                ).await;
                 continue;
             }
             ReplCommand::Thinking => {
@@ -920,6 +1059,22 @@ mod tests {
             ReplCommand::Unknown("/custom_cmd".to_string())
         );
         assert_eq!(parse_command("/"), ReplCommand::Unknown("/".to_string()));
+    }
+
+    #[test]
+    fn parse_command_identifies_new_and_compact() {
+        assert_eq!(parse_command("/new"), ReplCommand::New);
+        assert_eq!(parse_command("  /new  "), ReplCommand::New);
+        assert_eq!(parse_command("/compact"), ReplCommand::Compact(None));
+        assert_eq!(parse_command("/compress"), ReplCommand::Compact(None));
+        assert_eq!(
+            parse_command("/compact focus on auth"),
+            ReplCommand::Compact(Some("focus on auth".into()))
+        );
+        assert_eq!(
+            parse_command("/compress remember the db port"),
+            ReplCommand::Compact(Some("remember the db port".into()))
+        );
     }
 
     #[test]

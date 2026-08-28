@@ -326,6 +326,57 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     items
 }
 
+/// Converts a raw model ID to a friendly human-readable display name.
+pub fn friendly_model_name(model_id: &str) -> String {
+    if model_id.is_empty() {
+        return String::new();
+    }
+    match model_id {
+        "anthropic/claude-3.7-sonnet" | "claude-3-7-sonnet-20250219" | "claude-3.7-sonnet" => "Claude 3.7 Sonnet".into(),
+        "anthropic/claude-3.7-sonnet:thinking" => "Claude 3.7 Sonnet (Thinking)".into(),
+        "anthropic/claude-3.5-sonnet" | "claude-3-5-sonnet-20241022" | "claude-3.5-sonnet" => "Claude 3.5 Sonnet".into(),
+        "anthropic/claude-3.5-haiku" | "claude-3-5-haiku-20241022" | "claude-3.5-haiku" => "Claude 3.5 Haiku".into(),
+        "anthropic/claude-3-opus" | "claude-3-opus-20240229" => "Claude 3 Opus".into(),
+        "openai/gpt-4.5-preview" | "gpt-4.5-preview" => "GPT-4.5 Preview".into(),
+        "openai/gpt-4o" | "gpt-4o" => "GPT-4o".into(),
+        "openai/gpt-4o-mini" | "gpt-4o-mini" => "GPT-4o Mini".into(),
+        "openai/o1" | "o1" => "o1".into(),
+        "openai/o3-mini" | "o3-mini" => "o3-mini".into(),
+        "deepseek/deepseek-r1" | "deepseek-reasoner" => "DeepSeek R1".into(),
+        "deepseek/deepseek-chat" | "deepseek-chat" => "DeepSeek V3".into(),
+        "google/gemini-2.5-pro" | "gemini-2.5-pro" => "Gemini 2.5 Pro".into(),
+        "google/gemini-2.5-flash" | "gemini-2.5-flash" => "Gemini 2.5 Flash".into(),
+        "google/gemini-2.0-flash-001" | "google/gemini-2.0-flash" | "gemini-2.0-flash" => "Gemini 2.0 Flash".into(),
+        "meta-llama/llama-3.3-70b-instruct" => "Llama 3.3 70B".into(),
+        "qwen/qwen-2.5-coder-32b-instruct" => "Qwen 2.5 Coder 32B".into(),
+        "x-ai/grok-2-1212" | "grok-2" => "Grok 2".into(),
+        "mistralai/mistral-large-2411" => "Mistral Large".into(),
+        other => {
+            if let Ok(catalog) = load_catalog() {
+                for provider in catalog.values() {
+                    for m in &provider.models {
+                        if m.id == other {
+                            return m.name.clone();
+                        }
+                    }
+                }
+            }
+            let name = other.split('/').last().unwrap_or(other);
+            let words: Vec<String> = name
+                .split('-')
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().chain(c).collect(),
+                    }
+                })
+                .collect();
+            words.join(" ")
+        }
+    }
+}
+
 /// Returns the models list for a provider (checking catalog + curated popular models).
 pub fn get_provider_models(provider_id: &str, catalog: &Catalog) -> Vec<(String, String)> {
     let mut list = Vec::new();
@@ -337,23 +388,26 @@ pub fn get_provider_models(provider_id: &str, catalog: &Catalog) -> Vec<(String,
 
     match provider_id {
         "openrouter" => {
-            let mut top = vec![
+            vec![
                 ("anthropic/claude-3.7-sonnet".into(), "Claude 3.7 Sonnet".into()),
+                ("anthropic/claude-3.7-sonnet:thinking".into(), "Claude 3.7 Sonnet (Thinking)".into()),
                 ("anthropic/claude-3.5-sonnet".into(), "Claude 3.5 Sonnet".into()),
+                ("anthropic/claude-3.5-haiku".into(), "Claude 3.5 Haiku".into()),
                 ("openai/gpt-4.5-preview".into(), "GPT-4.5 Preview".into()),
                 ("openai/gpt-4o".into(), "GPT-4o".into()),
+                ("openai/gpt-4o-mini".into(), "GPT-4o Mini".into()),
+                ("openai/o3-mini".into(), "o3-mini".into()),
+                ("openai/o1".into(), "o1".into()),
                 ("deepseek/deepseek-r1".into(), "DeepSeek R1".into()),
                 ("deepseek/deepseek-chat".into(), "DeepSeek V3".into()),
                 ("google/gemini-2.5-pro".into(), "Gemini 2.5 Pro".into()),
+                ("google/gemini-2.5-flash".into(), "Gemini 2.5 Flash".into()),
                 ("google/gemini-2.0-flash-001".into(), "Gemini 2.0 Flash".into()),
                 ("meta-llama/llama-3.3-70b-instruct".into(), "Llama 3.3 70B".into()),
-            ];
-            for (id, name) in list {
-                if !top.iter().any(|(t_id, _)| t_id == &id) {
-                    top.push((id, name));
-                }
-            }
-            top
+                ("qwen/qwen-2.5-coder-32b-instruct".into(), "Qwen 2.5 Coder 32B".into()),
+                ("x-ai/grok-2-1212".into(), "Grok 2".into()),
+                ("mistralai/mistral-large-2411".into(), "Mistral Large".into()),
+            ]
         }
         "anthropic" => {
             if list.is_empty() {
@@ -803,13 +857,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
 
                                 let check_glyph = if is_current { "✓ " } else { "  " };
 
+                                let display_name = if m_name.is_empty() { m_id.as_str() } else { m_name.as_str() };
                                 let sub = if m_name.is_empty() || m_name == m_id {
                                     String::new()
                                 } else {
-                                    format!(" {m_name}")
+                                    format!(" {}", m_id)
                                 };
 
-                                let raw_content = format!(" {check_glyph}{}{sub}", m_id);
+                                let raw_content = format!(" {check_glyph}{}{sub}", display_name);
                                 let fill = (inner.width as usize).saturating_sub(raw_content.chars().count());
                                 let full_row_str = format!("{}{}", raw_content, " ".repeat(fill));
 
@@ -824,10 +879,10 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                                     } else {
                                         Span::styled("   ", Style::default().bg(box_bg))
                                     };
-                                    let id_span = Span::styled(m_id.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg));
+                                    let name_span = Span::styled(display_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg));
                                     let sub_span = Span::styled(sub, Style::default().fg(Color::Rgb(130, 130, 130)).bg(box_bg));
                                     let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(box_bg));
-                                    Line::from(vec![check_span, id_span, sub_span, pad_span])
+                                    Line::from(vec![check_span, name_span, sub_span, pad_span])
                                 };
 
                                 frame.render_widget(
