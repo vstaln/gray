@@ -239,7 +239,7 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
+
         let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
@@ -390,12 +390,22 @@ impl Tui {
             let has_status = self.status.is_some();
             let status_h: u16 = if has_status { 1 } else { 0 };
 
-            // Render top-down starting right at area.y to eliminate any empty gap
-            let box_y = area.y;
+            // Top: status/thinking, then input box, then slash panel. Status
+            // belongs at the top so it never sits between the input and the
+            // viewport edge — it reads as a header, not a footer.
+            let status_y = area.y;
+            let box_y = status_y + status_h;
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
-            let status_y = attach_y + attach_h;
-            let footer_y = status_y + status_h;
+            let footer_y = attach_y + attach_h;
+
+            if let Some((started, label)) = &self.status {
+                if area.y < area.y + area.height {
+                    let text = format!("\u{2022} {label}\u{2026} {}s (ctrl-c to cancel)", started.elapsed().as_secs());
+                    let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+                }
+            }
 
             let rendered_box_h = box_h.min((area.y + area.height).saturating_sub(box_y));
             if rendered_box_h > 0 {
@@ -435,14 +445,6 @@ impl Tui {
             if has_attach && attach_y < area.y + area.height {
                 let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
                 frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
-            }
-
-            if let Some((started, label)) = &self.status {
-                if status_y < area.y + area.height {
-                    let text = format!("\u{2022} {label}\u{2026} {}s (ctrl-c to cancel)", started.elapsed().as_secs());
-                    let spans = shimmer_spans(&text, started.elapsed(), self.truecolor);
-                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
-                }
             }
 
             let cwd_display = if self.cwd.is_empty() { std::env::current_dir().map(|p| p.display().to_string()).unwrap_or_default() } else { self.cwd.clone() };
@@ -510,9 +512,8 @@ impl Tui {
     }
 
     pub fn read_line(&mut self) -> anyhow::Result<Option<String>> {
-        use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
+        use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
         crossterm::terminal::enable_raw_mode()?;
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
         let _ = self.terminal.clear();
         loop {
@@ -525,43 +526,6 @@ impl Tui {
             if !poll(Duration::from_millis(250))? { continue; }
             match read()? {
                 Event::Resize(_, _) => {}
-                Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollUp, .. }) => {
-                    if !self.matches.is_empty() {
-                        self.sel = self.sel.saturating_sub(1);
-                    } else if self.history_idx.is_some() {
-                        let idx = self.history_idx.unwrap();
-                        if idx > 0 {
-                            self.history_idx = Some(idx - 1);
-                            let h = self.history[idx - 1].clone();
-                            self.textarea.set_text(&h);
-                            self.textarea.move_to_end();
-                        }
-                    } else if !self.history.is_empty() {
-                        self.history_idx = Some(self.history.len() - 1);
-                        self.draft = self.textarea.text().to_string();
-                        let h = self.history.last().unwrap().clone();
-                        self.textarea.set_text(&h);
-                        self.textarea.move_to_end();
-                    }
-                }
-                Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, .. }) => {
-                    if !self.matches.is_empty() {
-                        self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1));
-                    } else if self.history_idx.is_some() {
-                        let idx = self.history_idx.unwrap();
-                        if idx + 1 >= self.history.len() {
-                            self.textarea.set_text(&self.draft);
-                            self.textarea.move_to_end();
-                            self.history_idx = None;
-                        } else {
-                            self.history_idx = Some(idx + 1);
-                            let h = self.history[idx + 1].clone();
-                            self.textarea.set_text(&h);
-                            self.textarea.move_to_end();
-                        }
-                    }
-                }
-                Event::Mouse(_) => {}
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
@@ -946,7 +910,6 @@ impl Tui {
     pub fn tick_status(&mut self) { let _ = self.draw(); }
     pub fn shutdown(&mut self) {
         let _ = self.terminal.clear();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             std::io::stdout(),
@@ -960,7 +923,6 @@ impl Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
