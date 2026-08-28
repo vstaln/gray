@@ -469,7 +469,7 @@ pub fn get_provider_models_with_live(
 /// peach selection highlight, and in-modal API key entry.
 pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
@@ -507,10 +507,16 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
 
     enable_raw_mode()?;
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
 
+    let inline_h = 18u16;
     let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::with_options(
+        backend,
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(inline_h),
+        },
+    )?;
 
     let box_bg = Color::Rgb(22, 22, 22);
     let input_bg = Color::Rgb(32, 32, 32);
@@ -523,9 +529,15 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
 
             terminal.draw(|frame| {
                 let area = frame.area();
-                if area.width < 20 || area.height < 10 {
+                if area.width < 20 || area.height < 6 {
                     return;
                 }
+
+                let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
+                let modal_h = area.height;
+                let modal_x = (area.width.saturating_sub(modal_w)) / 2;
+                let modal_y = area.y;
+                let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                 match &mut state {
                     ModalState::Selecting => {
@@ -539,12 +551,6 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                                     || item.sublabel.to_lowercase().contains(&f)
                             })
                             .collect();
-
-                        let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                        let modal_h = 20.min(area.height.saturating_sub(2)).max(12);
-                        let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                        let modal_y = (area.height.saturating_sub(modal_h)) / 2;
-                        let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                         // Clear popup background
                         frame.render_widget(Clear, modal_rect);
@@ -1110,8 +1116,14 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
         }
     })();
 
+    let _ = terminal.clear();
     disable_raw_mode()?;
-    crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::Show,
+        crossterm::cursor::MoveToColumn(0),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+    )?;
     let _ = std::io::stdout().flush();
 
     result
@@ -1119,7 +1131,7 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
 
 pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
@@ -1157,10 +1169,16 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
 
     enable_raw_mode()?;
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
 
+    let inline_h = 16u16;
     let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::with_options(
+        backend,
+        ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Inline(inline_h),
+        },
+    )?;
 
     let box_bg = Color::Rgb(22, 22, 22);
     let accent_peach = Color::Rgb(246, 173, 126);
@@ -1182,14 +1200,14 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
 
             terminal.draw(|frame| {
                 let area = frame.area();
-                if area.width < 20 || area.height < 10 {
+                if area.width < 20 || area.height < 6 {
                     return;
                 }
 
                 let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                let modal_h = 20.min(area.height.saturating_sub(2)).max(12);
+                let modal_h = area.height;
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = (area.height.saturating_sub(modal_h)) / 2;
+                let modal_y = area.y;
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                 frame.render_widget(Clear, modal_rect);
@@ -1263,13 +1281,14 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
 
                         let check_glyph = if is_current { "✓ " } else { "  " };
 
+                        let display_name = if m_name.is_empty() { m_id.as_str() } else { m_name.as_str() };
                         let sub = if m_name.is_empty() || m_name == m_id {
                             String::new()
                         } else {
-                            format!(" {m_name}")
+                            format!(" {}", m_id)
                         };
 
-                        let raw_content = format!(" {check_glyph}{}{sub}", m_id);
+                        let raw_content = format!(" {check_glyph}{}{sub}", display_name);
                         let fill = (inner.width as usize).saturating_sub(raw_content.chars().count());
                         let full_row_str = format!("{}{}", raw_content, " ".repeat(fill));
 
@@ -1284,10 +1303,10 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
                             } else {
                                 Span::styled("   ", Style::default().bg(box_bg))
                             };
-                            let id_span = Span::styled(m_id.as_str(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg));
+                            let name_span = Span::styled(display_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg));
                             let sub_span = Span::styled(sub, Style::default().fg(Color::Rgb(130, 130, 130)).bg(box_bg));
                             let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(box_bg));
-                            Line::from(vec![check_span, id_span, sub_span, pad_span])
+                            Line::from(vec![check_span, name_span, sub_span, pad_span])
                         };
 
                         frame.render_widget(
@@ -1384,8 +1403,14 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
         }
     })();
 
+    let _ = terminal.clear();
     disable_raw_mode()?;
-    crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::cursor::Show,
+        crossterm::cursor::MoveToColumn(0),
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+    )?;
     let _ = std::io::stdout().flush();
 
     result
