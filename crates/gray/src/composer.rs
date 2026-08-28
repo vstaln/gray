@@ -500,12 +500,9 @@ impl Tui {
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
-            let top_gap_h: u16 = 1;
-            let status_h: u16 = if has_status { 2 } else { 0 }; // 1 row status + 1 row gap before composer box
+            let _top_gap_h: u16 = 1;
+            let _status_h: u16 = if has_status { 1 } else { 0 };
 
-            // When slash commands are open (!self.matches.is_empty()):
-            // Composer box moves temporarily to the top of the viewport (area.y) so commands show below it.
-            // When normal/idle:
             let (status_y, box_y, panel_y, attach_y, footer_y) = if !self.matches.is_empty() {
                 let box_y = area.y;
                 let panel_y = box_y + box_h;
@@ -514,15 +511,15 @@ impl Tui {
                 let status_y = area.y;
                 (status_y, box_y, panel_y, attach_y, footer_y)
             } else if has_status {
-                let status_y = area.y + top_gap_h;
-                let box_y = status_y + status_h;
+                let box_y = area.y;
+                let status_y = box_y;
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
                 let footer_y = attach_y + attach_h;
                 (status_y, box_y, panel_y, attach_y, footer_y)
             } else {
+                let box_y = area.y;
                 let status_y = area.y;
-                let box_y = area.y + top_gap_h;
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
                 let footer_y = attach_y + attach_h;
