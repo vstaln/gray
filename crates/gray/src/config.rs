@@ -112,6 +112,7 @@ mod tests {
             api_key: None,
             continue_last: false,
             session: None,
+            command: None,
         }
     }
 

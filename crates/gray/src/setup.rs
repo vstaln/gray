@@ -1773,6 +1773,7 @@ mod tests {
             api_key: Some("k".into()),
             model: Some("m".into()),
             auth_mode: Some("none".into()),
+            thinking_effort: None,
         };
         let j = serde_json::to_string(&cfg).unwrap();
         assert!(j.contains("\"auth_mode\":\"none\""));
@@ -1793,6 +1794,7 @@ mod tests {
             api_key: Some("sk-test".into()),
             model: Some("deepseek-chat".into()),
             auth_mode: Some("api_key".into()),
+            thinking_effort: None,
         };
         save_saved_config_at(&path, &cfg).unwrap();
         let loaded = load_saved_config_at(&path);

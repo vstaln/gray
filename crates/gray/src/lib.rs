@@ -10,6 +10,7 @@ pub mod setup;
 pub mod skills;
 pub mod sys_editor;
 pub mod repl;
+pub mod resume;
 pub mod system_prompt;
 pub mod tool_fmt;
 pub mod tui;
@@ -164,6 +165,30 @@ pub struct Cli {
     /// Resume a specific session by id (see the hint printed on exit)
     #[arg(long, value_name = "ID")]
     pub session: Option<String>,
+
+    /// Resume subcommand (picker by default; see `gray resume --help`)
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+}
+
+/// Subcommands mirroring `codex resume` / `codex fork` ergonomics.
+#[derive(Parser, Debug, Clone)]
+pub enum Commands {
+    /// Resume a previous session (picker by default; use --last for most recent)
+    Resume {
+        /// Session id (UUID or prefix). If omitted, shows picker unless --last.
+        #[arg(value_name = "SESSION_ID")]
+        session_id: Option<String>,
+        /// Resume the most recent session without showing the picker
+        #[arg(long)]
+        last: bool,
+        /// Show all sessions (disables cwd filtering)
+        #[arg(long)]
+        all: bool,
+        /// Optional prompt to send immediately after resuming
+        #[arg(value_name = "PROMPT")]
+        prompt: Option<String>,
+    },
 }
 
 #[cfg(test)]

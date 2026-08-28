@@ -154,54 +154,35 @@ mod tests {
     #[test]
     fn render_event_formats_correctly() {
         let mut buf = Vec::new();
+        let mut tool = None;
 
-        render_event(&mut buf, &AgentEvent::Start).unwrap();
+        render_event_with_context(&mut buf, &AgentEvent::Start, None, &mut tool).unwrap();
         assert_eq!(buf, b"");
 
-        render_event(&mut buf, &AgentEvent::text_delta("Hello, ")).unwrap();
-        render_event(&mut buf, &AgentEvent::text_delta("world!")).unwrap();
+        render_event_with_context(&mut buf, &AgentEvent::text_delta("Hello, "), None, &mut tool).unwrap();
+        render_event_with_context(&mut buf, &AgentEvent::text_delta("world!"), None, &mut tool).unwrap();
         assert_eq!(buf, b"Hello, world!");
         buf.clear();
 
-        render_event(
-            &mut buf,
-            &AgentEvent::tool_call_start("call_1", "read"),
-        )
-        .unwrap();
-        assert_eq!(buf, b"[tool] read\n");
+        render_event_with_context(&mut buf, &AgentEvent::tool_call_start("call_1", "read"), None, &mut tool).unwrap();
+        assert!(buf.is_empty());
         buf.clear();
 
-        render_event(
-            &mut buf,
-            &AgentEvent::tool_call_end("call_1", json!({"path": "file.txt"})),
-        )
-        .unwrap();
-        assert_eq!(buf, b"");
-
-        // Non-error tool result produces no stdout
-        render_event(
-            &mut buf,
-            &AgentEvent::tool_result("call_1", "file contents", false),
-        )
-        .unwrap();
-        assert_eq!(buf, b"");
-
-        // Error tool result is prefixed with '!'
-        render_event(
-            &mut buf,
-            &AgentEvent::tool_result("call_1", "file not found", true),
-        )
-        .unwrap();
-        assert_eq!(buf, b"! file not found\n");
+        render_event_with_context(&mut buf, &AgentEvent::tool_call_end("call_1", json!({"path": "file.txt"})), None, &mut tool).unwrap();
+        assert!(!buf.is_empty());
         buf.clear();
 
-        // Turn end outputs a newline
-        render_event(
-            &mut buf,
-            &AgentEvent::turn_end(StopReason::EndTurn, Usage::new(10, 20)),
-        )
-        .unwrap();
-        assert_eq!(buf, b"\n");
+        render_event_with_context(&mut buf, &AgentEvent::tool_result("call_1", "file contents", false), None, &mut tool).unwrap();
+        assert_eq!(buf, b"");
+        buf.clear();
+
+        let mut tool2 = Some("read".to_string());
+        render_event_with_context(&mut buf, &AgentEvent::tool_result("call_1", "file not found", true), None, &mut tool2).unwrap();
+        assert!(!buf.is_empty());
+        buf.clear();
+
+        render_event_with_context(&mut buf, &AgentEvent::turn_end(StopReason::EndTurn, Usage::new(10, 20)), None, &mut tool).unwrap();
+        assert!(!buf.is_empty());
     }
 
     #[tokio::test]

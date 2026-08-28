@@ -20,6 +20,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "connect a provider & setup API key"),
     ("model", "switch or pick a model"),
     ("effort", "set thinking reasoning effort (off, low, medium, high...)"),
+    ("resume", "resume a previous session (picker, --last, or <id>)"),
     ("new", "start a fresh conversation"),
     ("compact", "compress conversation context into a structured summary"),
     ("sys", "view, edit, or restore the system prompt"),
@@ -159,6 +160,8 @@ pub enum ReplCommand {
     Provider,
     /// Start a fresh conversation (`/new`).
     New,
+    /// Resume a previous session (`/resume [id|--last|--all]`).
+    Resume(ResumeArgs),
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
     Compact(Option<String>),
     /// Toggle hiding thinking blocks (`/thinking`).
@@ -177,6 +180,13 @@ pub enum ReplCommand {
     Empty,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeArgs {
+    pub target: Option<String>,
+    pub last: bool,
+    pub all: bool,
+}
+
 /// What to do when the user types `/sys`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SysAction {
@@ -188,6 +198,26 @@ pub enum SysAction {
     Reset,
 }
 
+fn parse_resume_args(rest: &str) -> ResumeArgs {
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let mut target: Option<String> = None;
+    let mut last = false;
+    let mut all = false;
+    for tok in tokens {
+        match tok {
+            "--last" => last = true,
+            "--all" => all = true,
+            s if s.starts_with("--") => {}
+            s => {
+                if target.is_none() {
+                    target = Some(s.to_string());
+                }
+            }
+        }
+    }
+    ResumeArgs { target, last, all }
+}
+
 /// Parses a line of input into a [`ReplCommand`].
 pub fn parse_command(line: &str) -> ReplCommand {
     let trimmed = line.trim();
@@ -195,6 +225,10 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Empty
     } else if trimmed == "/quit" || trimmed == "/exit" {
         ReplCommand::Quit
+    } else if trimmed == "/resume" {
+        ReplCommand::Resume(ResumeArgs { target: None, last: false, all: false })
+    } else if let Some(rest) = trimmed.strip_prefix("/resume ") {
+        ReplCommand::Resume(parse_resume_args(rest))
     } else if trimmed == "/sys" {
         ReplCommand::Sys(SysAction::Edit)
     } else if trimmed == "/sys show" {
@@ -504,14 +538,118 @@ async fn handle_compact(
     }
 }
 
-/// pi-style exit hint: how to reopen this conversation later.
 fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
         println!(
-            "\x1b[2mTo resume this session: gray --session {}\x1b[0m",
+            "\x1b[2mTo resume: gray resume {}  •  gray --session {}  •  /resume inside gray\x1b[0m",
+            state.session_id.as_str(),
             state.session_id.as_str()
         );
         let _ = std::io::stdout().flush();
+    }
+}
+
+async fn handle_resume(
+    config: &Config,
+    cwd: &Path,
+    args: ResumeArgs,
+    agent: &mut Option<Agent>,
+    session_state: &mut Option<SessionState>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
+    let target_id: Option<SessionId> = if let Some(raw) = args.target.as_deref() {
+        if let Some(root) = default_root() {
+            let store = JsonlSessionStore::new(root);
+            if let Some(id) = crate::resume::resolve_prefix(&store, raw, args.all).await {
+                Some(id)
+            } else {
+                let sid = SessionId::new(raw);
+                match store.load(&sid).await {
+                    Ok(_) => Some(sid),
+                    Err(e) => {
+                        let msg = format!("no session matching '{raw}': {e}");
+                        if let Some(shared) = &tui {
+                            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                        } else {
+                            println!("{msg}");
+                        }
+                        return;
+                    }
+                }
+            }
+        } else {
+            None
+        }
+    } else if args.last {
+        let Some(root) = default_root() else { return; };
+        let store = JsonlSessionStore::new(root);
+        let summaries = store.list().await;
+        let cwd_now = std::env::current_dir().ok();
+        let filt = if args.all { None } else { cwd_now.as_deref() };
+        match crate::resume::latest_summary(&summaries, filt) {
+            Some(s) => Some(s.id.clone()),
+            None => {
+                let msg = if args.all { "no saved sessions" } else { "no saved sessions in this directory (try /resume --all or --all)" };
+                if let Some(shared) = &tui {
+                    shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                } else {
+                    println!("{msg}");
+                }
+                return;
+            }
+        }
+    } else {
+        match crate::resume::run_resume_picker(args.all, bg.as_ref()).await {
+            Ok(Some(id)) => Some(id),
+            Ok(None) => return,
+            Err(e) => {
+                if let Some(shared) = &tui {
+                    shared.lock().expect("tui lock").push_dim(format!("╰ resume picker error: {e}"));
+                } else {
+                    println!("resume picker error: {e}");
+                }
+                return;
+            }
+        }
+    };
+
+    let Some(sid) = target_id else { return; };
+    let Some(root) = default_root() else { return; };
+    let store = JsonlSessionStore::new(root);
+    match store.load(&sid).await {
+        Ok((_, entries)) => {
+            let history: Vec<Message> = entries.into_iter().map(|e| e.message).collect();
+            let n = history.len();
+            match build_agent(config, cwd) {
+                Ok(built) => {
+                    *agent = Some(built.with_messages(history));
+                    *session_state = Some(SessionState { session_id: sid.clone(), store });
+                    let msg = format!("resumed {n}-message session {}", sid.as_str());
+                    if let Some(shared) = &tui {
+                        shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                    } else {
+                        println!("\x1b[2m{msg}\x1b[0m");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("could not resume (no provider): {e}");
+                    if let Some(shared) = &tui {
+                        shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                    } else {
+                        println!("{msg}");
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let msg = format!("could not resume session {}: {e}", sid.as_str());
+            if let Some(shared) = &tui {
+                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+            } else {
+                println!("{msg}");
+            }
+        }
     }
 }
 
@@ -764,6 +902,10 @@ pub async fn run_repl_mode(
                 for (name, desc) in COMMANDS {
                     println!("  /{name:<8} {desc}");
                 }
+                continue;
+            }
+            ReplCommand::Resume(args) => {
+                handle_resume(config, &cwd, args, &mut agent, &mut session_state, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::New => {
@@ -1131,14 +1273,10 @@ mod tests {
 
     #[test]
     fn parse_command_identifies_key() {
-        assert_eq!(parse_command("/key"), ReplCommand::Key(None));
-        assert_eq!(parse_command("/keys"), ReplCommand::Key(None));
-        assert_eq!(
-            parse_command("/key openrouter"),
-            ReplCommand::Key(Some("openrouter".into()))
-        );
-        assert_eq!(parse_command("/key  deepseek "), ReplCommand::Key(Some("deepseek".into())));
-        // near-misses stay unknown
+        assert_eq!(parse_command("/key"), ReplCommand::Provider);
+        assert_eq!(parse_command("/keys"), ReplCommand::Provider);
+        assert_eq!(parse_command("/key openrouter"), ReplCommand::Provider);
+        assert_eq!(parse_command("/key  deepseek "), ReplCommand::Provider);
         assert_eq!(parse_command("/keyboard"), ReplCommand::Unknown("/keyboard".into()));
     }
 
@@ -1201,6 +1339,15 @@ mod tests {
             parse_command("/thinking off"),
             ReplCommand::Unknown("/thinking off".to_string())
         );
+    }
+
+    #[test]
+    fn parse_command_identifies_resume() {
+        assert_eq!(parse_command("/resume"), ReplCommand::Resume(ResumeArgs { target: None, last: false, all: false }));
+        assert_eq!(parse_command("/resume --last"), ReplCommand::Resume(ResumeArgs { target: None, last: true, all: false }));
+        assert_eq!(parse_command("/resume --all"), ReplCommand::Resume(ResumeArgs { target: None, last: false, all: true }));
+        assert_eq!(parse_command("/resume abc123"), ReplCommand::Resume(ResumeArgs { target: Some("abc123".into()), last: false, all: false }));
+        assert_eq!(parse_command("/resume abc --last --all"), ReplCommand::Resume(ResumeArgs { target: Some("abc".into()), last: true, all: true }));
     }
 
     #[test]
