@@ -269,7 +269,7 @@ pub struct Tui {
     history: Vec<String>,
     history_idx: Option<usize>,
     draft: String,
-    pub(crate) attachments: Vec<PathBuf>,
+    pub(crate) attachments: Vec<(String, PathBuf)>,
     pub(crate) pending_pastes: Vec<(String, String)>,
     model_name: String,
     cwd: String,
@@ -676,7 +676,7 @@ impl Tui {
 
             if has_attach && attach_y < area.y + area.height {
                 let mut spans: Vec<Span<'static>> = Vec::new();
-                for (_i, p) in self.attachments.iter().enumerate() {
+                for (_ph, p) in &self.attachments {
                     let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("clipboard").to_string();
                     // blue File badge like opencode
                     spans.push(Span::styled(
@@ -757,11 +757,34 @@ impl Tui {
     }
 
     pub fn attach_image(&mut self, path: PathBuf) {
-        let idx = self.attachments.len() + 1;
+        let mut max_idx = 0;
+        for (ph, _) in &self.attachments {
+            if let Some(num_str) = ph.strip_prefix("[Image #").and_then(|s| s.strip_suffix(']')) {
+                if let Ok(n) = num_str.parse::<usize>() {
+                    max_idx = max_idx.max(n);
+                }
+            }
+        }
+        let text = self.textarea.text().to_string();
+        for cap in text.match_indices("[Image #") {
+            let substr = &text[cap.0..];
+            if let Some(end) = substr.find(']') {
+                let num_str = &substr[8..end];
+                if let Ok(n) = num_str.parse::<usize>() {
+                    max_idx = max_idx.max(n);
+                }
+            }
+        }
+        let idx = max_idx + 1;
         let placeholder = format!("[Image #{idx}]");
         self.textarea.insert_element(&placeholder);
-        self.attachments.push(path);
+        self.attachments.push((placeholder.clone(), path));
         let _ = self.draw();
+    }
+
+    pub(crate) fn sync_attachments(&mut self) {
+        let text = self.textarea.text().to_string();
+        self.attachments.retain(|(ph, _)| text.contains(ph));
     }
 
     pub(crate) fn is_image_path(path: &str) -> bool {
@@ -899,8 +922,8 @@ impl Tui {
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::ALT) => match code {
-                    KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sel = 0; }
-                    KeyCode::Delete => { self.textarea.delete_word_forward(); self.sel = 0; }
+                    KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sync_attachments(); self.sel = 0; }
+                    KeyCode::Delete => { self.textarea.delete_word_forward(); self.sync_attachments(); self.sel = 0; }
                     KeyCode::Char('d') => { self.textarea.delete_word_forward(); self.sel = 0; }
                     KeyCode::Char('b') | KeyCode::Left => self.textarea.move_word_left(),
                     KeyCode::Char('f') | KeyCode::Right => self.textarea.move_word_right(),
@@ -920,8 +943,8 @@ impl Tui {
                         self.try_attach_clipboard_image();
                         self.sel = 0;
                     }
-                    KeyCode::Char('w') | KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sel = 0; }
-                    KeyCode::Delete => { self.textarea.delete_word_forward(); self.sel = 0; }
+                    KeyCode::Char('w') | KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sync_attachments(); self.sel = 0; }
+                    KeyCode::Delete => { self.textarea.delete_word_forward(); self.sync_attachments(); self.sel = 0; }
                     KeyCode::Left => self.textarea.move_word_left(),
                     KeyCode::Right => self.textarea.move_word_right(),
                     KeyCode::Char('j') | KeyCode::Char('m') => { self.textarea.insert_str("\n"); }
@@ -951,7 +974,22 @@ impl Tui {
                             self.history_idx = None;
                             self.draft.clear();
                             self.textarea.set_text("");
-                            let attached = std::mem::take(&mut self.attachments);
+                            let attached_with_ph: Vec<(String, PathBuf)> = std::mem::take(&mut self.attachments);
+                            let attached: Vec<PathBuf> = attached_with_ph.into_iter().map(|(_, p)| p).collect();
+                            // if a turn is running, queue instead of submitting
+                            if self.is_task_running {
+                                self.queued_inputs.push_back((trimmed.clone(), attached.clone()));
+                                let preview = if trimmed.is_empty() { format!("queued {} image(s)", attached.len()) } else { format!("queued: {}", trimmed.chars().take(80).collect::<String>()) };
+                                let preview_line = Line::from(Span::styled(preview, Style::default().add_modifier(Modifier::DIM)));
+                                self.transcript.push(preview_line.clone());
+                                let _ = self.terminal.insert_before(1, |buf| {
+                                    Paragraph::new(preview_line.clone()).render(buf.area, buf);
+                                });
+                                self.matches.clear();
+                                self.sel = 0;
+                                let _ = self.draw();
+                                continue;
+                            }
                             self.matches.clear();
                             self.sel = 0;
                             let is_slash_cmd = trimmed.starts_with('/') && !trimmed.contains('\n');
@@ -983,6 +1021,7 @@ impl Tui {
                             } else {
                                 self.textarea.delete_backward(1);
                             }
+                            self.sync_attachments();
                             self.sel = 0;
                         }
                         KeyCode::Delete => {
@@ -991,6 +1030,7 @@ impl Tui {
                             } else {
                                 self.textarea.delete_forward(1);
                             }
+                            self.sync_attachments();
                             self.sel = 0;
                         }
                         KeyCode::Esc => {

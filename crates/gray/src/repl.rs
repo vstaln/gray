@@ -1393,11 +1393,12 @@ pub async fn run_repl_mode(
                                         let mut text = t.textarea.text().to_string();
                                         for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
                                         text = text.trim().to_string();
-                                        let attached = std::mem::take(&mut t.attachments);
+                                        let attached_with_ph: Vec<(String, std::path::PathBuf)> = std::mem::take(&mut t.attachments);
+                                        let attached: Vec<std::path::PathBuf> = attached_with_ph.into_iter().map(|(_, p)| p).collect();
                                         // clear pending pastes already handled
                                         if text.is_empty() && attached.is_empty() { continue; }
                                         // queue it
-                                        t.queued_inputs.push_back((text.clone(), attached));
+                                        t.queued_inputs.push_back((text.clone(), attached.clone()));
                                         t.textarea.set_text("");
                                         t.pending_pastes.clear();
                                         // show queued preview as dim line in transcript
