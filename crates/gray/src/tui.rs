@@ -7,6 +7,26 @@
 
 use std::io::Write;
 
+pub fn sanitize_user_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next();
+            for t in chars.by_ref() {
+                if ('\x40'..='\x7e').contains(&t) {
+                    break;
+                }
+            }
+        } else if c.is_control() && c != '\n' && c != '\t' {
+            continue;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Strips SGR (and other CSI) escape sequences for width measurement.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

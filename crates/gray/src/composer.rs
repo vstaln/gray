@@ -335,8 +335,6 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            let top_padding = Line::from("").style(Style::default().bg(bg_color));
-            box_lines.push(top_padding.clone());
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
             // 2. Prompt input rows
@@ -377,7 +375,6 @@ impl Tui {
                 }
             }
 
-            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
             box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
             let box_h = box_lines.len().max(1) as u16;
@@ -479,7 +476,7 @@ impl Tui {
                 (before.matches('\n').count(), before[before.rfind('\n').map(|i| i + 1).unwrap_or(0)..].chars().count())
             };
             let cur_x = (area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + 2 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + 1 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())

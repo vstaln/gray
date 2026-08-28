@@ -18,6 +18,7 @@ gray-core = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
+gray-markdown = { path = "../gray-markdown" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }

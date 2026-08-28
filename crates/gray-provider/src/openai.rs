@@ -640,16 +640,33 @@ fn emit_tool_calls_and_completion(
     pending_events: &mut VecDeque<StreamEvent>,
 ) -> Result<(), ProviderError> {
     for (index, (id, name, args)) in std::mem::take(accumulated_tools) {
-        if serde_json::from_str::<Value>(&args).is_err() {
-            return Err(ProviderError::Stream(format!(
-                "tool call at index {index} has malformed JSON arguments"
-            )));
-        }
+        let args_trimmed = args.trim();
+        let args_fixed = if args_trimmed.is_empty() {
+            String::new()
+        } else if serde_json::from_str::<Value>(args_trimmed).is_ok() {
+            args_trimmed.to_string()
+        } else {
+            let repaired = if args_trimmed.starts_with('{') && !args_trimmed.ends_with('}') {
+                format!("{args_trimmed}}}")
+            } else {
+                args_trimmed.to_string()
+            };
+            if serde_json::from_str::<Value>(&repaired).is_ok() {
+                let _ = serde_json::from_str::<Value>(&repaired);
+                repaired
+            } else {
+                log::warn!(target: "gray_provider", "tool call {index} malformed args, forwarding raw: {}", args.chars().take(300).collect::<String>());
+                return Err(ProviderError::Stream(format!(
+                    "tool call at index {index} has malformed JSON arguments: {}",
+                    args.chars().take(500).collect::<String>()
+                )));
+            }
+        };
         pending_events.push_back(StreamEvent::ToolCallDelta {
             index,
             id: if id.is_empty() { None } else { Some(id) },
             name: if name.is_empty() { None } else { Some(name) },
-            arguments_delta: args,
+            arguments_delta: args_fixed,
         });
     }
 
