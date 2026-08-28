@@ -1129,7 +1129,7 @@ pub async fn run_repl_mode(
                                             String::new()
                                         };
                                         t.push_usage(format!(
-                                            "• {} tok{think}{cached}",
+                                            "\u{2b22} {} tok{think}{cached}",
                                             fmt_usage(usage.total())
                                         ));
                                     }
@@ -1170,7 +1170,7 @@ pub async fn run_repl_mode(
                                         } else {
                                             String::new()
                                         };
-                                        println!("\n\x1b[2m• {} tok{think}{cached}\x1b[0m", fmt_usage(usage.total()));
+                                        println!("\n\x1b[2m\u{2b22} {} tok{think}{cached}\x1b[0m", fmt_usage(usage.total()));
                                     }
                                 }
                                 _ => {}

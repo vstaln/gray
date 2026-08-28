@@ -29,7 +29,7 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
 
 /// Formats a tool invocation header line matching Codex/Pi styling for Ratatui.
 pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> Line<'static> {
-    let bullet = Span::styled("• ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD));
+    let bullet = Span::styled("\u{2b22} ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD));
     let peach = Color::Rgb(246, 173, 126);
     let cyan = Color::Rgb(125, 207, 255);
     let dim = Color::Rgb(140, 140, 140);
@@ -229,7 +229,7 @@ pub fn format_tool_result_lines(tool_name: &str, output: &str, is_error: bool) -
 
 /// Plain ANSI string formatting for one-shot / non-TUI output.
 pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> String {
-    let bullet = "\x1b[32m\x1b[1m•\x1b[0m";
+    let bullet = "\x1b[32m\x1b[1m\u{2b22}\x1b[0m";
     let peach = "\x1b[38;2;246;173;126m\x1b[1m";
     let cyan = "\x1b[38;2;125;207;255m\x1b[1m";
     let dim = "\x1b[2m";

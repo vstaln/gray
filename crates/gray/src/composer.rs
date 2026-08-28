@@ -432,7 +432,7 @@ impl Tui {
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
-            let status_h: u16 = if has_status { 1 } else { 0 };
+            let status_h: u16 = if has_status { 3 } else { 0 };
 
             // Top: status/thinking, then input box, then slash panel. Status
             // belongs at the top so it never sits between the input and the
@@ -444,10 +444,11 @@ impl Tui {
             let footer_y = attach_y + attach_h;
 
             if let Some((started, label)) = &self.status {
-                if area.y < area.y + area.height {
-                    let raw = format!("\u{2022} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
+                let status_row = status_y + 1;
+                if status_row < area.y + area.height {
+                    let raw = format!("\u{2b22} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
                     let spans = shimmer_spans(&raw, started.elapsed(), self.truecolor);
-                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+                    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_row, area.width, 1));
                 }
             }
 
@@ -814,6 +815,8 @@ impl Tui {
         }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
+        self.ensure_gap(1);
+
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
         let content_w = w.saturating_sub(2).max(1);
@@ -891,6 +894,7 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
     pub fn push_line_spans(&mut self, line: Line<'static>) {
+        self.ensure_gap(1);
         self.transcript.push(line.clone());
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
@@ -926,6 +930,7 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
+        self.ensure_gap(1);
         let mut spans = vec![
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
             Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),

@@ -70,7 +70,7 @@ pub fn render_event_with_context<W: Write>(
                 } else {
                     String::new()
                 };
-                writeln!(w, "\n\x1b[2m• {} tok{think}{cached}\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
+                writeln!(w, "\n\x1b[2m\u{2b22} {} tok{think}{cached}\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
             } else {
                 writeln!(w)?;
             }
