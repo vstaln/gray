@@ -354,6 +354,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                                 text_parts.push(text);
                             }
                         }
+                        ContentBlock::Image { .. } => {}
                         ContentBlock::Thinking { text } => {
                             if !text.is_empty() {
                                 thinking_parts.push(text);
@@ -425,6 +426,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                 };
 
                 let mut text_parts = Vec::new();
+                let mut image_parts = Vec::new();
                 let mut tool_results = Vec::new();
 
                 for block in msg.content {
@@ -433,6 +435,9 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                             if !text.is_empty() {
                                 text_parts.push(text);
                             }
+                        }
+                        ContentBlock::Image { media_type, data } => {
+                            image_parts.push((media_type, data));
                         }
                         ContentBlock::ToolResult { id, content, is_error: _ } => {
                             tool_results.push((id, content));
@@ -458,10 +463,24 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                     });
                 }
 
-                if !text_parts.is_empty() || messages.is_empty() {
+                let has_images = !image_parts.is_empty();
+                if !text_parts.is_empty() || has_images || messages.is_empty() {
+                    let content = if has_images {
+                        let mut arr = Vec::new();
+                        for text in text_parts {
+                            arr.push(serde_json::json!({"type":"text","text": text}));
+                        }
+                        for (media_type, data) in &image_parts {
+                            let url = format!("data:{media_type};base64,{data}");
+                            arr.push(serde_json::json!({"type":"image_url","image_url":{"url": url}}));
+                        }
+                        Some(Value::Array(arr))
+                    } else {
+                        Some(Value::String(text_parts.join("\n")))
+                    };
                     messages.push(OpenAiMessageRequest {
                         role: role_str.to_string(),
-                        content: Some(Value::String(text_parts.join("\n"))),
+                        content,
                         reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: None,

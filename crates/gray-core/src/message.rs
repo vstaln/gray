@@ -25,6 +25,11 @@ impl std::fmt::Display for Role {
 pub enum ContentBlock {
     /// Plain text content.
     Text { text: String },
+    /// Image content (base64-encoded).
+    Image {
+        media_type: String,
+        data: String,
+    },
     /// A tool invocation requested by the model.
     ToolUse {
         id: String,
@@ -65,6 +70,14 @@ impl ContentBlock {
     /// Creates a new thinking block.
     pub fn thinking(text: impl Into<String>) -> Self {
         Self::Thinking { text: text.into() }
+    }
+
+    /// Creates a new image block (base64 data).
+    pub fn image(media_type: impl Into<String>, data: impl Into<String>) -> Self {
+        Self::Image {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
     }
 
     /// Creates a new tool result block.

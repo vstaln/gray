@@ -119,6 +119,55 @@ pub fn fmt_usage(total: usize) -> String {
     format!("{total}")
 }
 
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+fn media_type_for_path(path: &Path) -> String {
+    match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+        Some("png") => "image/png".to_string(),
+        Some("jpg") | Some("jpeg") => "image/jpeg".to_string(),
+        Some("webp") => "image/webp".to_string(),
+        Some("gif") => "image/gif".to_string(),
+        Some("bmp") => "image/bmp".to_string(),
+        _ => "image/png".to_string(),
+    }
+}
+
+fn build_user_message_with_images(text: &str, image_paths: &[std::path::PathBuf]) -> Message {
+    if image_paths.is_empty() {
+        return Message::user(text);
+    }
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(gray_core::message::ContentBlock::text(text.to_string()));
+    }
+    for path in image_paths {
+        if let Ok(bytes) = std::fs::read(path) {
+            let media_type = media_type_for_path(path);
+            let data = base64_encode(&bytes);
+            blocks.push(gray_core::message::ContentBlock::image(media_type, data));
+        }
+    }
+    if blocks.is_empty() {
+        // image read failed, fallback to text placeholder
+        return Message::user(text);
+    }
+    Message::new(gray_core::message::Role::User, blocks)
+}
+
 /// ANSI dim + italic — pi's styling for rendered thinking blocks
 /// (italic muted color; dim stands in for pi's `thinkingText` theme color).
 pub const THINKING_STYLE: &str = "\x1b[2m\x1b[3m";
@@ -920,17 +969,18 @@ pub async fn run_repl_mode(
     // Default hidden (codex-style) — prevents reasoning spill into transcript (see screenshot).
     let mut hide_thinking = true;
     let mut pending_command: Option<ReplCommand> = None;
+    let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
     loop {
         let cmd = if let Some(c) = pending_command.take() {
             c
         } else {
-            let line = if interactive {
+            let (line_text, images) = if interactive {
                 let (shared, stop) = tui.as_ref().expect("interactive implies tui");
-                let line = {
+                let (txt, imgs) = {
                     let mut t = shared.lock().expect("tui lock");
-                    let l = match t.read_line()? {
-                        Some(l) => l,
+                    let pair = match t.read_line()? {
+                        Some(v) => v,
                         None => {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             t.shutdown();
@@ -941,12 +991,12 @@ pub async fn run_repl_mode(
                     // Quit will shut down immediately after this block;
                     // set the stop flag now while we still hold the lock so
                     // the ticker's try_lock gap can't slip a draw in between.
-                    if matches!(parse_command(&l), ReplCommand::Quit) {
+                    if matches!(parse_command(&pair.0), ReplCommand::Quit) {
                         stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    l
+                    pair
                 };
-                line
+                (txt, imgs)
             } else {
                 print!("\u{203a} ");
                 std::io::stdout().flush()?;
@@ -954,13 +1004,137 @@ pub async fn run_repl_mode(
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     break;
                 }
-                buf.trim().to_string()
+                (buf.trim().to_string(), Vec::new())
             };
-            parse_command(&line)
+            pending_images = images;
+            parse_command(&line_text)
         };
+        // Clear pending images for non-prompt commands (keep for Prompt/Empty+images)
+        if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
+            pending_images.clear();
+        }
 
         match cmd {
-            ReplCommand::Empty => continue,
+            ReplCommand::Empty => {
+                if !pending_images.is_empty() {
+                    // image(s) without text: treat as prompt with images
+                    let images = std::mem::take(&mut pending_images);
+                    let prompt_text = String::new();
+                    // fall through to Prompt handling by constructing message immediately
+                    // reuse Prompt logic inline
+                    if agent.is_none() {
+                        if unconfigured {
+                            let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
+                            match crate::setup::run_provider_menu(config, bg.as_ref()).await {
+                                Ok(true) => {
+                                    unconfigured = false;
+                                    if let Some((shared, _)) = &tui {
+                                        if let Some(m) = &config.model {
+                                            shared.lock().expect("tui lock").set_model(m.clone());
+                                        }
+                                    }
+                                    print!("\r\n");
+                                }
+                                Ok(false) => {
+                                    continue;
+                                }
+                                Err(e) => {
+                                    println!("provider error: {e}");
+                                    continue;
+                                }
+                            }
+                        }
+                        match build_agent(config, &cwd) {
+                            Ok(built) => {
+                                if !pending_history.is_empty() {
+                                    agent = Some(built.with_messages(std::mem::take(&mut pending_history)));
+                                } else {
+                                    agent = Some(built);
+                                }
+                            }
+                            Err(e) => {
+                                println!("{e}");
+                                continue;
+                            }
+                        }
+                    }
+                    let agent = agent.as_mut().expect("agent built above");
+                    let cancel = tokio_util::sync::CancellationToken::new();
+                    *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
+                    let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone() };
+                    let user_msg = build_user_message_with_images(&prompt_text, &images);
+                    let initial_count = agent.messages().len();
+                    let (shared, _) = if interactive { (Some(tui.as_ref().expect("interactive implies tui")), ()) } else { (None, ()) };
+                    let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
+                    if let Some(s) = &tui_stream { s.lock().expect("tui lock").begin_turn("Working"); }
+                    let ticker_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let ticker_stopped = ticker_stop.clone();
+                    let ticker_tui = tui_stream.clone();
+                    let _ticker_task = tokio::spawn(async move {
+                        while !ticker_stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                            if let Some(shared) = &ticker_tui { if let Ok(mut t) = shared.lock() { let _ = t.draw(); } }
+                        }
+                    });
+                    let watch_cancel = cancel.clone();
+                    let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let watcher_stopped = watch_stop.clone();
+                    let _key_watcher = tokio::task::spawn_blocking(move || {
+                        use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+                        loop {
+                            if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                            match poll(std::time::Duration::from_millis(50)) { Ok(true) => {} _ => continue, }
+                            if let Ok(Event::Key(KeyEvent { code, modifiers, kind, .. })) = read() {
+                                if kind == KeyEventKind::Release { continue; }
+                                if code == KeyCode::Esc || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL)) { watch_cancel.cancel(); return; }
+                            }
+                        }
+                    });
+                    let mut current_tool_name: Option<String> = None;
+                    let mut current_tool_args: Option<serde_json::Value> = None;
+                    let mut turn_usage: Option<gray_core::event::Usage> = None;
+                    let run_result = {
+                        let mut on_event = |ev: &gray_core::event::AgentEvent| {
+                            if let Some(shared) = &tui_stream && let Ok(mut t) = shared.lock() {
+                                match ev {
+                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
+                                    gray_core::event::AgentEvent::TextDelta { delta } => t.stream_text(delta),
+                                    gray_core::event::AgentEvent::ToolCallStart { name, .. } => { t.end_thinking(); current_tool_name = Some(name.clone()); current_tool_args = None; }
+                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd)); t.push_line_spans(header); }
+                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !lines.is_empty() { t.push_styled_lines(lines); } }
+                                    gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
+                                    _ => {}
+                                }
+                            } else if !interactive {
+                                match ev {
+                                    gray_core::event::AgentEvent::TextDelta { delta } => print!("{delta}"),
+                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
+                                    gray_core::event::AgentEvent::ToolCallStart { name, .. } => { current_tool_name = Some(name.clone()); current_tool_args = None; }
+                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd))); }
+                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !res.is_empty() { print!("{res}"); } }
+                                    gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); if usage.total() > 0 { println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total())); } }
+                                    _ => {}
+                                }
+                                let _ = std::io::stdout().flush();
+                            }
+                        };
+                        let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
+                        tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
+                    };
+                    TURN_STATE.lock().expect("turn state lock").take();
+                    watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    ticker_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(s) = &tui_stream { s.lock().expect("tui lock").end_turn(); }
+                    match run_result {
+                        Ok(_) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; }
+                        Err(gray_core::error::CoreError::Cancelled) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream("(interrupted)\n"); } } else { println!("(interrupted)"); } }
+                        Err(e) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream(&format!("agent error: {e}\n")); } } else { eprintln!("agent error: {e}"); } }
+                    }
+                    continue;
+                }
+                pending_images.clear();
+                continue;
+            }
             ReplCommand::Quit => {
                 if let Some((shared, stop)) = &tui {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1136,7 +1310,8 @@ pub async fn run_repl_mode(
                     cwd: cwd.clone(),
                     cancel: cancel.clone(),
                 };
-                let user_msg = Message::user(&prompt_text);
+                let images = std::mem::take(&mut pending_images);
+                let user_msg = build_user_message_with_images(&prompt_text, &images);
                 let initial_count = agent.messages().len();
 
                 let (shared, _) = if interactive {

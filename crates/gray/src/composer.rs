@@ -569,7 +569,7 @@ impl Tui {
                 let status_y = area.y;
                 (status_y, box_y, panel_y, attach_y, footer_y)
             } else if has_status {
-                let status_y = area.y;
+                let status_y = area.y + gap_h;
                 let box_y = status_y + status_h + gap_h;
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
@@ -630,8 +630,22 @@ impl Tui {
             }
 
             if has_attach && attach_y < area.y + area.height {
-                let label = self.attachments.iter().enumerate().map(|(i,p)| format!("[Image #{} {}]", i+1, p.display())).collect::<Vec<_>>().join(" ");
-                frame.render_widget(Paragraph::new(Line::from(label.dim())), Rect::new(area.x, attach_y, area.width, 1));
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                for (_i, p) in self.attachments.iter().enumerate() {
+                    let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("clipboard").to_string();
+                    // blue File badge like opencode
+                    spans.push(Span::styled(
+                        " File ",
+                        Style::default().fg(Color::White).bg(Color::Rgb(59, 130, 246)).add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        fname,
+                        Style::default().fg(Color::Rgb(180, 180, 180)).bg(Color::Rgb(38, 38, 38)),
+                    ));
+                    spans.push(Span::raw("  "));
+                }
+                frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, attach_y, area.width, 1));
             }
 
             let (max_tokens, max_label) = crate::setup::model_context_info(&self.model_name);
@@ -720,7 +734,7 @@ impl Tui {
         true
     }
 
-    pub fn read_line(&mut self) -> anyhow::Result<Option<String>> {
+    pub fn read_line(&mut self) -> anyhow::Result<Option<(String, Vec<PathBuf>)>> {
         use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
@@ -803,14 +817,19 @@ impl Tui {
                             self.history_idx = None;
                             self.draft.clear();
                             self.textarea.set_text("");
-                            self.attachments.clear();
+                            let attached = std::mem::take(&mut self.attachments);
                             self.matches.clear();
                             self.sel = 0;
                             let is_slash_cmd = trimmed.starts_with('/') && !trimmed.contains('\n');
                             if !is_slash_cmd {
                                 self.push_user_prompt(&trimmed);
+                                // also show attached file names inline if any
+                                if !attached.is_empty() {
+                                    let names = attached.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
+                                    self.push_dim(format!("↳ attached: {names}"));
+                                }
                             }
-                            return Ok(Some(trimmed));
+                            return Ok(Some((trimmed, attached)));
                         }
                         KeyCode::Tab => {
                             if let Some((name, _)) = self.matches.get(self.sel) {
