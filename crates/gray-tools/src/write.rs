@@ -7,7 +7,7 @@ use serde_json::json;
 use serde_json::Value;
 
 use crate::file_mutation_queue::with_file_mutation_queue;
-use crate::{fail, finish, get_str, resolve_path, Tool};
+use crate::{fail, finish, resolve_path, Tool};
 
 pub const WRITE_SNIPPET: &str = "Create or overwrite files";
 pub const WRITE_GUIDELINES: &[&str] = &["Use write only for new files or complete rewrites."];

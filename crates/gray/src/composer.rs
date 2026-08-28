@@ -20,7 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 12;
+const VIEWPORT_H: u16 = 5;
 const PANEL_ROWS: usize = 8;
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
