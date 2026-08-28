@@ -143,77 +143,87 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
     }
 }
 
+fn diff_lines(output: &str, is_error: bool) -> Vec<Line<'static>> {
+    let pipe_dim = Color::Rgb(110, 110, 110);
+    let text_dim = Color::Rgb(160, 160, 160);
+    let add_bg = Color::Rgb(22, 55, 22);
+    let add_fg = Color::Rgb(120, 220, 120);
+    let del_bg = Color::Rgb(55, 22, 22);
+    let del_fg = Color::Rgb(240, 120, 120);
+    let hunk_fg = Color::Rgb(125, 207, 255);
+    let mut lines = Vec::new();
+    let mut in_diff = false;
+    for raw in output.lines() {
+        if is_error {
+            lines.push(Line::from(vec![Span::styled(format!("  {raw}"), Style::default().fg(Color::Rgb(239, 68, 68)))]));
+            continue;
+        }
+        if raw.starts_with("@@ ") {
+            in_diff = true;
+            lines.push(Line::from(vec![Span::styled(format!("  {raw}"), Style::default().fg(hunk_fg).add_modifier(Modifier::DIM))]));
+        } else if in_diff && raw.starts_with('+') && !raw.starts_with("+++") {
+            lines.push(Line::from(vec![Span::styled(format!("  {raw}"), Style::default().fg(add_fg).bg(add_bg))]));
+        } else if in_diff && raw.starts_with('-') && !raw.starts_with("---") {
+            lines.push(Line::from(vec![Span::styled(format!("  {raw}"), Style::default().fg(del_fg).bg(del_bg))]));
+        } else if in_diff && (raw.starts_with("--- ") || raw.starts_with("+++ ")) {
+            lines.push(Line::from(vec![Span::styled(format!("  {raw}"), Style::default().fg(pipe_dim).add_modifier(Modifier::DIM))]));
+        } else if in_diff && raw.starts_with(' ') {
+            lines.push(Line::from(vec![Span::styled(format!("  {raw}"), Style::default().fg(text_dim))]));
+        } else {
+            in_diff = false;
+            if raw.trim().is_empty() { continue; }
+            lines.push(Line::from(vec![Span::styled(format!("  └ {}", raw), Style::default().fg(text_dim))]));
+        }
+    }
+    lines
+}
+
 /// Formats tool output lines with Codex/Pi angle-pipe `  └ ` indentation and ellipsis for Ratatui.
 pub fn format_tool_result_lines(tool_name: &str, output: &str, is_error: bool) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
     if is_error {
         let trimmed = output.trim();
-        if !trimmed.is_empty() {
-            let err_lines: Vec<&str> = trimmed.lines().collect();
-            for (i, l) in err_lines.iter().take(8).enumerate() {
-                let prefix = if i == 0 { "  ✗ " } else { "    " };
-                lines.push(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(Color::Rgb(239, 68, 68)).add_modifier(Modifier::BOLD)),
-                    Span::styled((*l).to_string(), Style::default().fg(Color::Rgb(239, 68, 68))),
-                ]));
-            }
+        if trimmed.is_empty() { return Vec::new(); }
+        let mut lines = Vec::new();
+        for (i, l) in trimmed.lines().take(8).enumerate() {
+            let prefix = if i == 0 { "  ✗ " } else { "    " };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Rgb(239, 68, 68)).add_modifier(Modifier::BOLD)),
+                Span::styled((*l).to_string(), Style::default().fg(Color::Rgb(239, 68, 68))),
+            ]));
         }
         return lines;
     }
-
-    let show_output = match tool_name {
-        "bash" | "grep" | "find" | "ls" => true,
-        "edit" => true,
-        _ => false,
-    };
-
-    if !show_output {
-        return lines;
+    if output.contains("@@ ") || output.contains("\n+ ") || output.contains("\n- ") {
+        return diff_lines(output, false);
     }
-
+    let show_output = matches!(tool_name, "bash" | "grep" | "find" | "ls" | "edit" | "write");
+    if !show_output { return Vec::new(); }
     let trimmed = output.trim();
-    if trimmed.is_empty() {
-        return lines;
-    }
-
+    if trimmed.is_empty() { return Vec::new(); }
     const MAX_HEAD_LINES: usize = 6;
     const MAX_TAIL_LINES: usize = 4;
     const MAX_TOTAL_LINES: usize = MAX_HEAD_LINES + MAX_TAIL_LINES + 2;
-
     let raw_lines: Vec<&str> = trimmed.lines().collect();
     let total = raw_lines.len();
-
     let text_dim = Color::Rgb(160, 160, 160);
     let pipe_dim = Color::Rgb(110, 110, 110);
-
+    let mut lines = Vec::new();
     if total <= MAX_TOTAL_LINES {
         for (i, l) in raw_lines.iter().enumerate() {
             let prefix = if i == 0 { "  └ " } else { "    " };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(pipe_dim)),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(prefix, Style::default().fg(pipe_dim)), Span::styled((*l).to_string(), Style::default().fg(text_dim))]));
         }
     } else {
         for (i, l) in raw_lines.iter().take(MAX_HEAD_LINES).enumerate() {
             let prefix = if i == 0 { "  └ " } else { "    " };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(pipe_dim)),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(prefix, Style::default().fg(pipe_dim)), Span::styled((*l).to_string(), Style::default().fg(text_dim))]));
         }
         let omitted = total.saturating_sub(MAX_HEAD_LINES + MAX_TAIL_LINES);
-        lines.push(Line::from(vec![
-            Span::styled(format!("    … +{omitted} lines"), Style::default().fg(pipe_dim).add_modifier(Modifier::ITALIC)),
-        ]));
+        lines.push(Line::from(vec![Span::styled(format!("    … +{omitted} lines"), Style::default().fg(pipe_dim).add_modifier(Modifier::ITALIC))]));
         for l in raw_lines.iter().skip(total - MAX_TAIL_LINES) {
-            lines.push(Line::from(vec![
-                Span::styled("    ", Style::default().fg(pipe_dim)),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
-            ]));
+            lines.push(Line::from(vec![Span::styled("    ", Style::default().fg(pipe_dim)), Span::styled((*l).to_string(), Style::default().fg(text_dim))]));
         }
     }
-
     lines
 }
 
@@ -286,10 +296,19 @@ pub fn format_tool_result_plain(tool_name: &str, output: &str, is_error: bool) -
     let mut out = String::new();
     for l in lines {
         let mut line_str = String::new();
-        for span in l.spans {
-            line_str.push_str(&span.content);
+        for span in &l.spans {
+            let fg = span.style.fg.map(|c| match c {
+                Color::Rgb(r, g, b) => format!("\x1b[38;2;{r};{g};{b}m"),
+                Color::Red => "\x1b[31m".to_string(),
+                _ => String::new(),
+            }).unwrap_or_default();
+            let bg = span.style.bg.map(|c| match c {
+                Color::Rgb(r, g, b) => format!("\x1b[48;2;{r};{g};{b}m"),
+                _ => String::new(),
+            }).unwrap_or_default();
+            line_str.push_str(&format!("{fg}{bg}{}\x1b[0m", span.content));
         }
-        out.push_str(&format!("  \x1b[2m{line_str}\x1b[0m\n"));
+        out.push_str(&format!("{line_str}\n"));
     }
     out
 }

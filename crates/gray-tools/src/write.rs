@@ -69,8 +69,18 @@ impl Tool for WriteTool {
                 {
                     return fail(format!("write failed for {}: {e}", full.display()));
                 }
+                let existed = tokio::fs::metadata(&full).await.is_ok();
+                let old = if existed { tokio::fs::read_to_string(&full).await.unwrap_or_default() } else { String::new() };
                 match tokio::fs::write(&full, content.as_bytes()).await {
-                    Ok(()) => finish(format!("wrote {} bytes to {}", content.len(), full.display())),
+                    Ok(()) => {
+                        if existed && !old.is_empty() {
+                            let patch = crate::edit_diff::generate_unified_patch(&path, &old, &content, 3);
+                            if patch.is_empty() { finish(format!("wrote {} bytes to {} (no change)", content.len(), full.display())) }
+                            else { finish(format!("wrote {} bytes to {}\n{}", content.len(), full.display(), patch)) }
+                        } else {
+                            finish(format!("wrote {} bytes to {}", content.len(), full.display()))
+                        }
+                    }
                     Err(e) => fail(format!("write failed for {}: {e}", full.display())),
                 }
             }
