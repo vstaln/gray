@@ -497,18 +497,19 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
     let gutter_width = total.to_string().len().max(3);
     let mut lines = Vec::new();
 
+    let bg = Color::Rgb(30, 30, 30);
     if total <= max_lines_to_show {
         for (idx, line_text) in raw_lines.iter().enumerate() {
             let line_num = idx + 1;
             let mut spans = Vec::new();
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("  ", Style::default().bg(bg)));
             spans.push(Span::styled(
                 format!("{:>width$} | ", line_num, width = gutter_width),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(DIFF_GUTTER_FG).bg(bg),
             ));
-            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, None);
+            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
             spans.extend(content_spans);
-            lines.push(Line::from(spans));
+            lines.push(Line::from(spans).style(Style::default().bg(bg)));
         }
     } else {
         const HEAD: usize = 18;
@@ -516,31 +517,31 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
         for (idx, line_text) in raw_lines.iter().take(HEAD).enumerate() {
             let line_num = idx + 1;
             let mut spans = Vec::new();
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("  ", Style::default().bg(bg)));
             spans.push(Span::styled(
                 format!("{:>width$} | ", line_num, width = gutter_width),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(DIFF_GUTTER_FG).bg(bg),
             ));
-            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, None);
+            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
             spans.extend(content_spans);
-            lines.push(Line::from(spans));
+            lines.push(Line::from(spans).style(Style::default().bg(bg)));
         }
         let omitted = total.saturating_sub(HEAD + TAIL);
         lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
-        ]));
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).bg(bg).add_modifier(Modifier::ITALIC)),
+        ]).style(Style::default().bg(bg)));
         for (idx, line_text) in raw_lines.iter().skip(total - TAIL).enumerate() {
             let line_num = total - TAIL + idx + 1;
             let mut spans = Vec::new();
-            spans.push(Span::raw("  "));
+            spans.push(Span::styled("  ", Style::default().bg(bg)));
             spans.push(Span::styled(
                 format!("{:>width$} | ", line_num, width = gutter_width),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(DIFF_GUTTER_FG).bg(bg),
             ));
-            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, None);
+            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
             spans.extend(content_spans);
-            lines.push(Line::from(spans));
+            lines.push(Line::from(spans).style(Style::default().bg(bg)));
         }
     }
 
@@ -630,30 +631,31 @@ pub fn format_tool_result_lines_with_context(
     let text_dim = Color::Rgb(160, 160, 160);
     let mut lines = Vec::new();
 
+    let bg = Color::Rgb(30, 30, 30);
     if total <= MAX_TOTAL_LINES {
         for l in raw_lines {
             lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(l.to_string(), Style::default().fg(text_dim)),
-            ]));
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(l.to_string(), Style::default().fg(text_dim).bg(bg)),
+            ]).style(Style::default().bg(bg)));
         }
     } else {
         for l in raw_lines.iter().take(MAX_HEAD_LINES) {
             lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
-            ]));
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled((*l).to_string(), Style::default().fg(text_dim).bg(bg)),
+            ]).style(Style::default().bg(bg)));
         }
         let omitted = total.saturating_sub(MAX_HEAD_LINES + MAX_TAIL_LINES);
         lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
-        ]));
+            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).bg(bg).add_modifier(Modifier::ITALIC)),
+        ]).style(Style::default().bg(bg)));
         for l in raw_lines.iter().skip(total - MAX_TAIL_LINES) {
             lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
-            ]));
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled((*l).to_string(), Style::default().fg(text_dim).bg(bg)),
+            ]).style(Style::default().bg(bg)));
         }
     }
     lines

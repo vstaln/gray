@@ -275,6 +275,7 @@ pub struct Tui {
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
     pub latest_usage: Option<gray_core::event::Usage>,
+    pub cumulative_usage: Option<gray_core::event::Usage>,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
@@ -442,6 +443,7 @@ impl Tui {
             transcript: welcome_lines,
             last_width: cols,
             latest_usage: None,
+            cumulative_usage: None,
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
             committed_markdown_lines: 0,
             pending_resize: None,
@@ -451,8 +453,22 @@ impl Tui {
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
-    pub fn set_usage(&mut self, usage: gray_core::event::Usage) { self.latest_usage = Some(usage); }
-    pub fn reset_usage(&mut self) { self.latest_usage = None; }
+    pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
+        self.latest_usage = Some(usage);
+        self.cumulative_usage = Some(match self.cumulative_usage {
+            Some(prev) => gray_core::event::Usage {
+                input_tokens: prev.input_tokens + usage.input_tokens,
+                output_tokens: prev.output_tokens + usage.output_tokens,
+                reasoning_tokens: prev.reasoning_tokens + usage.reasoning_tokens,
+                cached_tokens: prev.cached_tokens + usage.cached_tokens,
+            },
+            None => usage,
+        });
+    }
+    pub fn reset_usage(&mut self) {
+        self.latest_usage = None;
+        self.cumulative_usage = None;
+    }
 
     pub(crate) fn width(&self) -> usize { self.last_width.max(20) as usize }
 
@@ -671,7 +687,7 @@ impl Tui {
             }
 
             let (max_tokens, max_label) = crate::setup::model_context_info(&self.model_name);
-            let (used_tokens, hit_rate) = if let Some(u) = self.latest_usage {
+            let (used_tokens, hit_rate) = if let Some(u) = self.cumulative_usage.or(self.latest_usage) {
                 (u.total(), u.cache_hit_rate() * 100.0)
             } else {
                 (0, 0.0)
@@ -1424,7 +1440,7 @@ impl Tui {
         }
     }
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
-        let (used_tokens, cache_hit_rate) = if let Some(u) = self.latest_usage {
+        let (used_tokens, cache_hit_rate) = if let Some(u) = self.cumulative_usage.or(self.latest_usage) {
             (u.total(), u.cache_hit_rate())
         } else {
             (0, 0.0)
