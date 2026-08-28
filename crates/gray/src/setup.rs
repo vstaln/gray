@@ -509,14 +509,8 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
     let mut stdout_handle = std::io::stdout();
     crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
 
-    let inline_h = 18u16;
     let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::with_options(
-        backend,
-        ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Inline(inline_h),
-        },
-    )?;
+    let mut terminal = Terminal::new(backend)?;
 
     let box_bg = Color::Rgb(22, 22, 22);
     let input_bg = Color::Rgb(32, 32, 32);
@@ -534,9 +528,9 @@ pub fn run_connect_modal(config: &mut Config) -> anyhow::Result<bool> {
                 }
 
                 let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                let modal_h = area.height;
+                let modal_h = 18.min(area.height.saturating_sub(2)).max(10);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = area.y;
+                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                 match &mut state {
@@ -1171,14 +1165,8 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
     let mut stdout_handle = std::io::stdout();
     crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
 
-    let inline_h = 16u16;
     let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::with_options(
-        backend,
-        ratatui::TerminalOptions {
-            viewport: ratatui::Viewport::Inline(inline_h),
-        },
-    )?;
+    let mut terminal = Terminal::new(backend)?;
 
     let box_bg = Color::Rgb(22, 22, 22);
     let accent_peach = Color::Rgb(246, 173, 126);
@@ -1205,9 +1193,9 @@ pub fn run_model_modal(config: &mut Config) -> anyhow::Result<bool> {
                 }
 
                 let modal_w = 68.min(area.width.saturating_sub(4)).max(42);
-                let modal_h = area.height;
+                let modal_h = 16.min(area.height.saturating_sub(2)).max(10);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
-                let modal_y = area.y;
+                let modal_y = (area.height.saturating_sub(modal_h)) / 3;
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
 
                 frame.render_widget(Clear, modal_rect);

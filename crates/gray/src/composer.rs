@@ -661,6 +661,11 @@ impl Tui {
         if spacer { self.push_line(String::new()); }
     }
     pub fn push_user_prompt(&mut self, text: &str) {
+        // 1-line gap between messages (Codex style)
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(Line::from("")).render(buf.area, buf);
+        });
+
         let w = self.width().max(20);
         let content_w = w.saturating_sub(4).max(1);
 
