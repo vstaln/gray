@@ -238,6 +238,53 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
     }).collect()
 }
 
+fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
+    if line.width() <= max_w {
+        return vec![line];
+    }
+    let mut result = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_w = 0usize;
+
+    for span in line.spans {
+        let span_w = span.width();
+        if current_w + span_w <= max_w {
+            current_w += span_w;
+            current_spans.push(span);
+        } else {
+            let chars: Vec<char> = span.content.chars().collect();
+            let style = span.style;
+            let mut i = 0;
+            while i < chars.len() {
+                let avail = max_w.saturating_sub(current_w);
+                if avail == 0 {
+                    if !current_spans.is_empty() {
+                        result.push(Line::from(std::mem::take(&mut current_spans)));
+                    }
+                    current_w = 0;
+                    continue;
+                }
+                let take = avail.min(chars.len() - i);
+                let chunk: String = chars[i..i + take].iter().collect();
+                current_spans.push(Span::styled(chunk, style));
+                current_w += take;
+                i += take;
+                if current_w >= max_w {
+                    result.push(Line::from(std::mem::take(&mut current_spans)));
+                    current_w = 0;
+                }
+            }
+        }
+    }
+    if !current_spans.is_empty() {
+        result.push(Line::from(current_spans));
+    }
+    if result.is_empty() {
+        result.push(Line::from(""));
+    }
+    result
+}
+
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
@@ -765,6 +812,7 @@ impl Tui {
         self.pending_tokens = Some(tok_line);
     }
 
+    #[allow(dead_code)]
     fn transcript_in_response(&self) -> bool {
         self.transcript.last().is_some_and(|l| l.width() > 0)
     }
