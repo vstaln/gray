@@ -379,6 +379,7 @@ impl Tui {
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) { self.latest_usage = Some(usage); }
+    pub fn reset_usage(&mut self) { self.latest_usage = None; }
 
     fn width(&self) -> usize { self.last_width.max(20) as usize }
 
@@ -397,7 +398,7 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
+            box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
             // 2. Prompt input rows
             let prompt_arrow = "❯ ";
@@ -410,7 +411,8 @@ impl Tui {
             if text.is_empty() {
                 box_lines.push(Line::from(vec![
                     arrow_span.clone(),
-                ]).style(Style::default().bg(bg_color)));
+                    Span::styled(" ".repeat(w.saturating_sub(2)), Style::default().bg(bg_color)),
+                ]));
                 cur_row = 0;
                 cur_col = 0;
             } else {
@@ -431,7 +433,10 @@ impl Tui {
                     let has_cursor = !cursor_found && (cursor <= line_end_bytes || i == lines_raw.len() - 1);
 
                     if raw_line.is_empty() {
-                        box_lines.push(Line::from(vec![prefix_span]).style(Style::default().bg(bg_color)));
+                        box_lines.push(Line::from(vec![
+                            prefix_span,
+                            Span::styled(" ".repeat(w.saturating_sub(2)), Style::default().bg(bg_color)),
+                        ]));
                         if has_cursor {
                             cur_row = row_count;
                             cur_col = 0;
@@ -445,17 +450,21 @@ impl Tui {
                         for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
                             let s: String = chunk.iter().collect();
                             let chunk_byte_len: usize = chunk.iter().map(|c| c.len_utf8()).sum();
+                            let s_len = chunk.len();
+                            let pad_len = w.saturating_sub(2 + s_len);
 
                             if chunk_idx == 0 {
                                 box_lines.push(Line::from(vec![
                                     prefix_span.clone(),
                                     Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                                ]).style(Style::default().bg(bg_color)));
+                                    Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                                ]));
                             } else {
                                 box_lines.push(Line::from(vec![
                                     Span::styled("  ", Style::default().bg(bg_color)),
                                     Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                                ]).style(Style::default().bg(bg_color)));
+                                    Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                                ]));
                             }
 
                             if has_cursor && !cursor_found {
@@ -484,7 +493,7 @@ impl Tui {
                 }
             }
 
-            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
+            box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
             let box_h = box_lines.len().max(1) as u16;
             let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
@@ -901,7 +910,7 @@ impl Tui {
         let text_primary = Color::Rgb(225, 225, 225);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from("").style(Style::default().bg(bg_color)));
+        lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
         let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
@@ -913,27 +922,34 @@ impl Tui {
                 Span::styled("  ", Style::default().bg(bg_color))
             };
             if raw_line.is_empty() {
-                lines.push(Line::from(vec![prefix_span]).style(Style::default().bg(bg_color)));
+                lines.push(Line::from(vec![
+                    prefix_span,
+                    Span::styled(" ".repeat(w.saturating_sub(2)), Style::default().bg(bg_color)),
+                ]));
             } else {
                 let chars: Vec<char> = raw_line.chars().collect();
                 for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
                     let s: String = chunk.iter().collect();
+                    let s_len = chunk.len();
+                    let pad_len = w.saturating_sub(2 + s_len);
                     if chunk_idx == 0 {
                         lines.push(Line::from(vec![
                             prefix_span.clone(),
                             Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                        ]).style(Style::default().bg(bg_color)));
+                            Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                        ]));
                     } else {
                         lines.push(Line::from(vec![
                             Span::styled("  ", Style::default().bg(bg_color)),
                             Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                        ]).style(Style::default().bg(bg_color)));
+                            Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                        ]));
                     }
                 }
             }
         }
 
-        lines.push(Line::from("").style(Style::default().bg(bg_color)));
+        lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
         let height = lines.len() as u16;
         let block = Block::default().style(Style::default().bg(bg_color));

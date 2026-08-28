@@ -154,8 +154,8 @@ pub enum ReplCommand {
     Sys(SysAction),
     /// Open the provider selection menu (`/connect` or `/provider`).
     Provider,
-    /// Start a fresh conversation (`/new`).
-    New,
+    /// Start a fresh conversation (`/new` or `/clear [prompt]`).
+    New(Option<String>),
     /// Resume a previous session (`/resume [id|--last|--all]`).
     Resume(ResumeArgs),
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
@@ -231,8 +231,17 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Sys(SysAction::Show)
     } else if trimmed == "/sys reset" {
         ReplCommand::Sys(SysAction::Reset)
-    } else if trimmed == "/new" {
-        ReplCommand::New
+    } else if trimmed == "/new" || trimmed == "/clear" || trimmed == "/reset" {
+        ReplCommand::New(None)
+    } else if let Some(rest) = trimmed.strip_prefix("/new ") {
+        let arg = rest.trim();
+        ReplCommand::New((!arg.is_empty()).then(|| arg.to_string()))
+    } else if let Some(rest) = trimmed.strip_prefix("/clear ") {
+        let arg = rest.trim();
+        ReplCommand::New((!arg.is_empty()).then(|| arg.to_string()))
+    } else if let Some(rest) = trimmed.strip_prefix("/reset ") {
+        let arg = rest.trim();
+        ReplCommand::New((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed == "/compact" || trimmed == "/compress" {
         ReplCommand::Compact(None)
     } else if let Some(rest) = trimmed.strip_prefix("/compact ") {
@@ -924,9 +933,11 @@ pub async fn run_repl_mode(
                 handle_resume(config, &cwd, args, &mut agent, &mut session_state, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
-            ReplCommand::New => {
-                agent = None;
+            ReplCommand::New(initial_prompt) => {
+                pending_history.clear();
+                agent = build_agent(config, &cwd).ok();
                 session_state = None;
+                let mut short_id = String::new();
                 if let Some(root) = default_root() {
                     let store = JsonlSessionStore::new(root);
                     let session_id = SessionId::generate();
@@ -941,23 +952,30 @@ pub async fn run_repl_mode(
                         config.model.clone().unwrap_or_else(|| "unset".into()),
                     );
                     store.create(meta).await;
-                    let short_id = session_id.as_str().split('-').next().unwrap_or("new").to_string();
+                    short_id = session_id.as_str().split('-').next().unwrap_or("new").to_string();
                     session_state = Some(SessionState { store, session_id });
-                    reload_agent(&mut agent, config, &cwd).await;
-                    if let Some((shared, _)) = &tui {
-                        let mut t = shared.lock().expect("tui lock");
-                        t.push_action("New conversation started", Some(&format!("({short_id})")));
+                }
+
+                if let Some((shared, _)) = &tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.reset_usage();
+                    let detail = if !short_id.is_empty() {
+                        Some(format!("({short_id})"))
                     } else {
-                        println!("✓ New conversation started ({short_id})");
-                    }
+                        None
+                    };
+                    t.push_action("New conversation started", detail.as_deref());
                 } else {
-                    reload_agent(&mut agent, config, &cwd).await;
-                    if let Some((shared, _)) = &tui {
-                        let mut t = shared.lock().expect("tui lock");
-                        t.push_action("New conversation started", None);
+                    if !short_id.is_empty() {
+                        println!("✓ New conversation started ({short_id})");
                     } else {
                         println!("✓ New conversation started");
                     }
+                }
+
+                if let Some(prompt_text) = initial_prompt {
+                    let _ = prompt_text;
+                    // Prompt will continue on next turn
                 }
                 continue;
             }
@@ -1324,8 +1342,10 @@ mod tests {
 
     #[test]
     fn parse_command_identifies_new_and_compact() {
-        assert_eq!(parse_command("/new"), ReplCommand::New);
-        assert_eq!(parse_command("  /new  "), ReplCommand::New);
+        assert_eq!(parse_command("/new"), ReplCommand::New(None));
+        assert_eq!(parse_command("  /new  "), ReplCommand::New(None));
+        assert_eq!(parse_command("/clear"), ReplCommand::New(None));
+        assert_eq!(parse_command("/new make a snake game"), ReplCommand::New(Some("make a snake game".into())));
         assert_eq!(parse_command("/compact"), ReplCommand::Compact(None));
         assert_eq!(parse_command("/compress"), ReplCommand::Compact(None));
         assert_eq!(
