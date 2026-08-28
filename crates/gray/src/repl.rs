@@ -945,22 +945,97 @@ pub async fn run_repl_mode(
                     }
                 });
 
+                let mut current_tool_name: Option<String> = None;
                 let run_result = {
                     let mut on_event = |ev: &AgentEvent| {
                         if let Some(shared) = &tui_stream
                             && let Ok(mut t) = shared.lock()
                         {
-                            // Thinking/text get composer-level styling (ANSI
-                            // would be stripped by stream()); any other event
-                            // closes the thinking run first.
                             match ev {
                                 AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
                                 AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                other => {
+                                AgentEvent::ToolCallStart { name, .. } => {
                                     t.end_thinking();
-                                    t.stream(&crate::repl::fmt_event(other));
+                                    current_tool_name = Some(name.clone());
                                 }
+                                AgentEvent::ToolCallEnd { args, .. } => {
+                                    t.end_thinking();
+                                    let name = current_tool_name.as_deref().unwrap_or("tool");
+                                    let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd));
+                                    t.push_line_spans(header);
+                                }
+                                AgentEvent::ToolResult { output, is_error, .. } => {
+                                    let name = current_tool_name.take().unwrap_or_default();
+                                    let lines = crate::tool_fmt::format_tool_result_lines(&name, output, *is_error);
+                                    if !lines.is_empty() {
+                                        t.push_styled_lines(lines);
+                                    }
+                                }
+                                AgentEvent::TurnEnd { usage, .. } => {
+                                    t.end_thinking();
+                                    if usage.total() > 0 {
+                                        let cached = if usage.cached_tokens > 0 {
+                                            format!(
+                                                " · {} cached ({:.0}%)",
+                                                fmt_usage(usage.cached_tokens),
+                                                usage.cache_hit_rate() * 100.0
+                                            )
+                                        } else {
+                                            String::new()
+                                        };
+                                        let think = if usage.reasoning_tokens > 0 {
+                                            format!(" · {} think", fmt_usage(usage.reasoning_tokens))
+                                        } else {
+                                            String::new()
+                                        };
+                                        t.push_dim(format!(
+                                            "• {} tok{think}{cached}",
+                                            fmt_usage(usage.total())
+                                        ));
+                                    }
+                                }
+                                _ => {}
                             }
+                        } else if !interactive {
+                            match ev {
+                                AgentEvent::TextDelta { delta } => print!("{delta}"),
+                                AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
+                                AgentEvent::ToolCallStart { name, .. } => {
+                                    current_tool_name = Some(name.clone());
+                                }
+                                AgentEvent::ToolCallEnd { args, .. } => {
+                                    let name = current_tool_name.as_deref().unwrap_or("tool");
+                                    println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd)));
+                                }
+                                AgentEvent::ToolResult { output, is_error, .. } => {
+                                    let name = current_tool_name.take().unwrap_or_default();
+                                    let res = crate::tool_fmt::format_tool_result_plain(&name, output, *is_error);
+                                    if !res.is_empty() {
+                                        print!("{res}");
+                                    }
+                                }
+                                AgentEvent::TurnEnd { usage, .. } => {
+                                    if usage.total() > 0 {
+                                        let cached = if usage.cached_tokens > 0 {
+                                            format!(
+                                                " · {} cached ({:.0}%)",
+                                                fmt_usage(usage.cached_tokens),
+                                                usage.cache_hit_rate() * 100.0
+                                            )
+                                        } else {
+                                            String::new()
+                                        };
+                                        let think = if usage.reasoning_tokens > 0 {
+                                            format!(" · {} think", fmt_usage(usage.reasoning_tokens))
+                                        } else {
+                                            String::new()
+                                        };
+                                        println!("\n\x1b[2m• {} tok{think}{cached}\x1b[0m", fmt_usage(usage.total()));
+                                    }
+                                }
+                                _ => {}
+                            }
+                            let _ = std::io::stdout().flush();
                         }
                     };
                     let mut run_future =

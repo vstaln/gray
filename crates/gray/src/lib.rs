@@ -11,6 +11,7 @@ pub mod skills;
 pub mod sys_editor;
 pub mod repl;
 pub mod system_prompt;
+pub mod tool_fmt;
 pub mod tui;
 
 use std::path::{Path, PathBuf};

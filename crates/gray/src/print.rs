@@ -15,6 +15,17 @@ use crate::config::Config;
 
 /// Renders a single AgentEvent to a writer according to CLI display conventions.
 pub fn render_event<W: Write>(w: &mut W, event: &AgentEvent) -> std::io::Result<()> {
+    let mut current_tool = None;
+    render_event_with_context(w, event, None, &mut current_tool)
+}
+
+/// Renders a single AgentEvent with active tool tracking and CWD context.
+pub fn render_event_with_context<W: Write>(
+    w: &mut W,
+    event: &AgentEvent,
+    cwd: Option<&Path>,
+    current_tool: &mut Option<String>,
+) -> std::io::Result<()> {
     match event {
         AgentEvent::Start => Ok(()),
         AgentEvent::TextDelta { delta } => {
@@ -27,19 +38,42 @@ pub fn render_event<W: Write>(w: &mut W, event: &AgentEvent) -> std::io::Result<
             w.flush()
         }
         AgentEvent::ToolCallStart { name, .. } => {
-            writeln!(w, "[tool] {name}")?;
-            w.flush()
-        }
-        AgentEvent::ToolCallEnd { .. } => Ok(()),
-        AgentEvent::ToolResult { output, is_error, .. } => {
-            if *is_error {
-                writeln!(w, "! {output}")?;
-                w.flush()?;
-            }
+            *current_tool = Some(name.clone());
             Ok(())
         }
-        AgentEvent::TurnEnd { .. } => {
-            writeln!(w)?;
+        AgentEvent::ToolCallEnd { args, .. } => {
+            let name = current_tool.as_deref().unwrap_or("tool");
+            writeln!(w, "\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, cwd))?;
+            w.flush()
+        }
+        AgentEvent::ToolResult { output, is_error, .. } => {
+            let name = current_tool.take().unwrap_or_default();
+            let res = crate::tool_fmt::format_tool_result_plain(&name, output, *is_error);
+            if !res.is_empty() {
+                write!(w, "{res}")?;
+            }
+            w.flush()
+        }
+        AgentEvent::TurnEnd { usage, .. } => {
+            if usage.total() > 0 {
+                let cached = if usage.cached_tokens > 0 {
+                    format!(
+                        " · {} cached ({:.0}%)",
+                        crate::repl::fmt_usage(usage.cached_tokens),
+                        usage.cache_hit_rate() * 100.0
+                    )
+                } else {
+                    String::new()
+                };
+                let think = if usage.reasoning_tokens > 0 {
+                    format!(" · {} think", crate::repl::fmt_usage(usage.reasoning_tokens))
+                } else {
+                    String::new()
+                };
+                writeln!(w, "\n\x1b[2m• {} tok{think}{cached}\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
+            } else {
+                writeln!(w)?;
+            }
             w.flush()
         }
     }
@@ -60,8 +94,9 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     // Stream events live so piped output isn't all-or-nothing.
     let result = {
         let stdout = std::io::stdout();
+        let mut current_tool = None;
         let mut on_event = |ev: &AgentEvent| {
-            if let Err(e) = render_event(&mut stdout.lock(), ev) {
+            if let Err(e) = render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut current_tool) {
                 eprintln!("render error: {e}");
             }
         };

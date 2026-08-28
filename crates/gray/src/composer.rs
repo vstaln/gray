@@ -758,6 +758,22 @@ impl Tui {
         if height == 0 { let _ = self.terminal.insert_before(1, |buf| { Paragraph::new(Line::from("")).render(buf.area, buf); }); }
         let _ = std::io::stdout().flush();
     }
+    pub fn push_line_spans(&mut self, line: Line<'static>) {
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(line).render(buf.area, buf);
+        });
+        let _ = std::io::stdout().flush();
+    }
+    pub fn push_styled_lines(&mut self, lines: Vec<Line<'static>>) {
+        let count = lines.len() as u16;
+        if count == 0 {
+            return;
+        }
+        let _ = self.terminal.insert_before(count, |buf| {
+            Paragraph::new(lines).render(buf.area, buf);
+        });
+        let _ = std::io::stdout().flush();
+    }
     pub fn push_dim(&mut self, line: String) {
         let _ = self.terminal.insert_before(1, |buf| {
             Paragraph::new(Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)))).render(buf.area, buf);
