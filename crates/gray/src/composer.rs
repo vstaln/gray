@@ -559,29 +559,23 @@ impl Tui {
             let has_attach = !self.attachments.is_empty();
             let attach_h: u16 = if has_attach { 1 } else { 0 };
             let has_status = self.status.is_some();
-            let _top_gap_h: u16 = 1;
-            let _status_h: u16 = if has_status { 1 } else { 0 };
 
+            let gap_h: u16 = 1;
+            let status_h: u16 = if has_status { 1 } else { 0 };
             let (status_y, box_y, panel_y, attach_y, footer_y) = if !self.matches.is_empty() {
-                let box_y = area.y;
+                let box_y = area.y + gap_h;
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
                 let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
-                let status_y = area.y;
-                (status_y, box_y, panel_y, attach_y, footer_y)
-            } else if has_status {
-                let box_y = area.y;
-                let status_y = box_y;
-                let panel_y = box_y + box_h;
-                let attach_y = panel_y + panel_h;
-                let footer_y = attach_y + attach_h;
+                let status_y = area.y + gap_h;
                 (status_y, box_y, panel_y, attach_y, footer_y)
             } else {
-                let box_y = area.y;
-                let status_y = area.y;
+                let footer_y = area.y + area.height.saturating_sub(1);
+                let panel_y_base = area.y + area.height.saturating_sub(1 + gap_h + 1);
+                let box_y = panel_y_base.saturating_sub(box_h + panel_h + attach_h);
+                let status_y = box_y.saturating_sub(status_h + gap_h);
                 let panel_y = box_y + box_h;
                 let attach_y = panel_y + panel_h;
-                let footer_y = attach_y + attach_h;
                 (status_y, box_y, panel_y, attach_y, footer_y)
             };
 
@@ -732,14 +726,21 @@ impl Tui {
             } else { Vec::new() };
             if self.sel >= self.matches.len() { self.sel = self.matches.len().saturating_sub(1); }
             self.draw()?;
-            if let Some((cols, at)) = self.pending_resize && at.elapsed() >= RESIZE_DEBOUNCE {
-                self.pending_resize = None;
-                self.last_width = cols;
-                self.draw()?;
+            if let Some((cols, at)) = self.pending_resize {
+                if let Some(elapsed) = Instant::now().checked_duration_since(at) {
+                    if elapsed >= RESIZE_DEBOUNCE {
+                        self.pending_resize = None;
+                        self.last_width = cols;
+                        self.draw()?;
+                    }
+                } else {
+                    self.pending_resize = None;
+                }
             }
             let timeout = self.pending_resize.map(|(_, at)| {
-                let e = at.elapsed();
-                if e >= RESIZE_DEBOUNCE { Duration::from_millis(0) } else { RESIZE_DEBOUNCE - e }
+                if let Some(e) = Instant::now().checked_duration_since(at) {
+                    if e >= RESIZE_DEBOUNCE { Duration::from_millis(0) } else { RESIZE_DEBOUNCE - e }
+                } else { Duration::from_millis(0) }
             }).unwrap_or(Duration::from_millis(250));
             if !poll(timeout)? { continue; }
             match read()? {
@@ -1270,11 +1271,17 @@ impl Tui {
         }
     }
     pub fn tick_status(&mut self) {
-        if let Some((cols, at)) = self.pending_resize && at.elapsed() >= RESIZE_DEBOUNCE {
-            self.pending_resize = None;
-            self.last_width = cols;
-        } else if self.pending_resize.is_some() {
-            return;
+        if let Some((cols, at)) = self.pending_resize {
+            if let Some(elapsed) = Instant::now().checked_duration_since(at) {
+                if elapsed >= RESIZE_DEBOUNCE {
+                    self.pending_resize = None;
+                    self.last_width = cols;
+                } else {
+                    return;
+                }
+            } else {
+                self.pending_resize = None;
+            }
         } else if let Ok((cols, _)) = crossterm::terminal::size() && cols != self.last_width {
             self.pending_resize = Some((cols, Instant::now()));
             return;

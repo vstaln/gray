@@ -110,8 +110,9 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
         for block in &msg.content {
             if let ContentBlock::ToolResult { id, content, is_error } = block {
                 let text = content.as_str();
-                let truncated = if text.len() > MAX_TOOL_CHARS {
-                    format!("{}... [truncated]", &text[..MAX_TOOL_CHARS])
+                let truncated = if text.chars().count() > MAX_TOOL_CHARS {
+                    let s: String = text.chars().take(MAX_TOOL_CHARS).collect();
+                    format!("{s}... [truncated]")
                 } else {
                     text.to_string()
                 };

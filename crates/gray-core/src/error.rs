@@ -10,9 +10,11 @@ pub enum CoreError {
     Provider(String),
 
     #[error("Tool execution error: {0}")]
+    #[allow(dead_code)]
     ToolExecution(String),
 
     #[error("Invalid message state: {0}")]
+    #[allow(dead_code)]
     InvalidState(String),
 
     #[error("Max turns exceeded ({0})")]
