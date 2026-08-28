@@ -18,6 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
 
+use gray_markdown::HyperlinkTarget;
+
 use crate::repl::completion_matches;
 
 const VIEWPORT_H: u16 = 7;
@@ -1081,7 +1083,8 @@ impl Tui {
         ).finish_into_output(Some(gray_markdown::get_syntect()));
         if output.lines.len() > self.committed_markdown_lines {
             let remaining_lines: Vec<Line<'static>> = output.lines[self.committed_markdown_lines..].to_vec();
-            self.push_styled_lines(remaining_lines);
+            let offset = self.committed_markdown_lines;
+            self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
         }
         self.committed_markdown_lines = 0;
 
@@ -1173,8 +1176,10 @@ impl Tui {
         if frozen_len > self.committed_markdown_lines {
             let view = self.markdown_renderer.view();
             let new_lines: Vec<Line<'static>> = view.lines[self.committed_markdown_lines..frozen_len].to_vec();
+            let hyperlinks = view.hyperlinks.to_vec();
+            let offset = self.committed_markdown_lines;
             self.committed_markdown_lines = frozen_len;
-            self.push_styled_lines(new_lines);
+            self.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
         }
         let _ = self.draw();
     }
@@ -1299,16 +1304,62 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
     pub fn push_styled_lines(&mut self, lines: Vec<Line<'static>>) {
+        self.push_styled_lines_with_hyperlinks(lines, &[], 0);
+    }
+
+    pub fn push_styled_lines_with_hyperlinks(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        hyperlinks: &[HyperlinkTarget],
+        line_offset: usize,
+    ) {
         if lines.is_empty() {
             return;
         }
         let w = self.width().max(10);
-        for line in lines {
-            let wrapped = wrap_styled_line(line, w.saturating_sub(1));
+        // Group hyperlinks by line for quick lookup
+        use std::collections::HashMap;
+        let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
+        for h in hyperlinks {
+            by_line.entry(h.line_index).or_default().push(h);
+        }
+        for (idx, line) in lines.into_iter().enumerate() {
+            let line_idx = line_offset + idx;
+            let line_hyperlinks = by_line.get(&line_idx).cloned().unwrap_or_default();
+            // Don't wrap lines that contain hyperlinks — keep OSC hyperlink intact on one row
+            let wrapped = if !line_hyperlinks.is_empty() {
+                vec![line]
+            } else {
+                wrap_styled_line(line, w.saturating_sub(1))
+            };
             for l in wrapped {
                 self.transcript.push(l.clone());
+                let line_hyperlinks_cloned = line_hyperlinks.clone();
                 let _ = self.terminal.insert_before(1, |buf| {
-                    Paragraph::new(l).render(buf.area, buf);
+                    Paragraph::new(l.clone()).render(buf.area, buf);
+                    // Mark hyperlink cells with OSC 8 so file/web links are clickable
+                    // ponytail: buffer-level OSC, zero-width, preserves wrapping geometry
+                    for h in &line_hyperlinks_cloned {
+                        for col in h.column_range.clone() {
+                            if col >= buf.area.width as usize {
+                                continue;
+                            }
+                            let x = buf.area.x + col as u16;
+                            let y = buf.area.y;
+                            // Skip out-of-bounds
+                            if x >= buf.area.x + buf.area.width || y >= buf.area.y + buf.area.height {
+                                continue;
+                            }
+                            let cell = &mut buf[(x, y)];
+                            if cell.symbol().trim().is_empty() {
+                                continue;
+                            }
+                            let sym = cell.symbol().to_string();
+                            // Use BEL terminator \x07 for wider compatibility (kitty/ghostty/wezterm)
+                            let new_sym = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", h.url, sym);
+                            cell.set_symbol(&new_sym);
+                        }
+                    }
                 });
             }
         }
@@ -1404,7 +1455,7 @@ impl Tui {
                                         true,
                                         Some(gray_markdown::get_syntect()),
                                     );
-                                    self.push_styled_lines(output.lines);
+                                    self.push_styled_lines_with_hyperlinks(output.lines, &output.hyperlinks, 0);
                                 }
                             }
                             gray_core::ContentBlock::ToolUse { id, name, args } => {
