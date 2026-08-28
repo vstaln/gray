@@ -19,24 +19,43 @@ use std::sync::Mutex as StdMutex;
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "connect a provider & setup API key"),
     ("model", "switch or pick a model"),
-    ("effort", "set thinking reasoning effort (off, low, medium, high...)"),
+    ("thinking", "set reasoning effort (off, minimal, low, medium, high, xhigh, max) — /effort is alias"),
     ("resume", "resume a previous conversation"),
     ("new", "start a fresh conversation"),
     ("compact", "compress conversation context into a structured summary"),
     ("sys", "view, edit, or restore the system prompt"),
-    ("thinking", "toggle hiding reasoning (shows a Thinking… label)"),
     ("help", "print the command list"),
     ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
+];
+
+const ALIASES: &[(&str, &str)] = &[
+    ("clear", "new"),
+    ("reset", "new"),
+    ("exit", "quit"),
+    ("keys", "connect"),
+    ("key", "connect"),
+    ("providers", "connect"),
+    ("provider", "connect"),
+    ("login", "connect"),
+    ("effort", "thinking"),
+    ("compress", "compact"),
 ];
 
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
 pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
-    let mut matches: Vec<(&'static str, &'static str)> = COMMANDS
-        .iter()
-        .filter(|(n, desc)| n.to_lowercase().contains(&f) || desc.to_lowercase().contains(&f))
-        .copied()
-        .collect();
+    let mut matches: Vec<(&'static str, &'static str)> = Vec::new();
+
+    for &(name, desc) in COMMANDS {
+        let is_match = f.is_empty()
+            || name.to_lowercase().contains(&f)
+            || desc.to_lowercase().contains(&f)
+            || ALIASES.iter().any(|(alias, target)| *target == name && alias.contains(&f));
+
+        if is_match {
+            matches.push((name, desc));
+        }
+    }
 
     matches.sort_by_key(|(n, _)| {
         let nl = n.to_lowercase();
@@ -44,8 +63,12 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
             0
         } else if nl.starts_with(&f) {
             1
-        } else {
+        } else if ALIASES.iter().any(|(alias, target)| *target == *n && *alias == f) {
             2
+        } else if ALIASES.iter().any(|(alias, target)| *target == *n && alias.starts_with(&f)) {
+            3
+        } else {
+            4
         }
     });
 
@@ -160,14 +183,12 @@ pub enum ReplCommand {
     Resume(ResumeArgs),
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
     Compact(Option<String>),
-    /// Toggle hiding thinking blocks (`/thinking`).
-    Thinking,
+    /// Set reasoning effort (`/thinking [level]` or `/effort [level]`; bare toggles hide/show).
+    Thinking(Option<String>),
     /// Print the command list (`/help`).
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
-    /// Open the thinking effort picker (`/effort`) or set directly (`/effort high`).
-    Effort(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Regular user prompt to feed to the agent.
@@ -250,13 +271,14 @@ pub fn parse_command(line: &str) -> ReplCommand {
     } else if let Some(rest) = trimmed.strip_prefix("/compress ") {
         let arg = rest.trim();
         ReplCommand::Compact((!arg.is_empty()).then(|| arg.to_string()))
-    } else if trimmed == "/thinking" {
-        ReplCommand::Thinking
-    } else if trimmed == "/effort" {
-        ReplCommand::Effort(None)
+    } else if trimmed == "/thinking" || trimmed == "/effort" {
+        ReplCommand::Thinking(None)
+    } else if let Some(rest) = trimmed.strip_prefix("/thinking ") {
+        let arg = rest.trim();
+        ReplCommand::Thinking((!arg.is_empty()).then(|| arg.to_string()))
     } else if let Some(rest) = trimmed.strip_prefix("/effort ") {
         let arg = rest.trim();
-        ReplCommand::Effort((!arg.is_empty()).then(|| arg.to_string()))
+        ReplCommand::Thinking((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" || trimmed == "/key" || trimmed == "/keys" || trimmed.starts_with("/key ") {
         ReplCommand::Provider
     } else if trimmed == "/help" {
@@ -423,34 +445,46 @@ async fn handle_model(
     }
 }
 
-/// Handles `/effort`: interactive picker (no arg) or direct set (`/effort high`).
-/// Switching persists to ~/.gray/config.json and updates the live TUI footer.
-async fn handle_effort(
+/// Handles `/thinking` / `/effort`: direct set (`/thinking high`), toggle visibility (bare `/thinking`), or picker.
+async fn handle_thinking(
     config: &mut Config,
     cwd: &Path,
     direct: Option<String>,
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
+    hide_thinking: &mut bool,
 ) {
     if let Some(eff) = direct {
         let eff_clean = eff.to_lowercase();
-        config.thinking_effort = Some(eff_clean.clone());
-        if let Ok(path) = crate::setup::saved_config_path() {
-            let mut saved = crate::setup::load_saved_config_at(&path);
-            saved.thinking_effort = Some(eff_clean.clone());
-            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        if eff_clean == "off" || crate::setup::THINKING_LEVELS.iter().any(|(l, _)| *l == eff_clean) {
+            config.thinking_effort = Some(eff_clean.clone());
+            if let Ok(path) = crate::setup::saved_config_path() {
+                let mut saved = crate::setup::load_saved_config_at(&path);
+                saved.thinking_effort = Some(eff_clean.clone());
+                let _ = crate::setup::save_saved_config_at(&path, &saved);
+            }
+            *hide_thinking = eff_clean == "off";
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                t.set_thinking_effort(eff_clean.clone());
+                t.set_hide_thinking(*hide_thinking);
+                t.push_action("Thinking effort set to", Some(&eff_clean));
+            } else {
+                println!("✓ Thinking effort set to {eff_clean}");
+            }
+            reload_agent(agent, config, cwd).await;
+            return;
         }
+        let msg = format!("unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max");
         if let Some(shared) = tui {
-            let mut t = shared.lock().expect("tui lock");
-            t.set_thinking_effort(eff_clean.clone());
-            t.push_action("Thinking effort set to", Some(&eff_clean));
+            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
         } else {
-            println!("✓ Thinking effort set to {eff_clean}");
+            println!("{msg}");
         }
-        reload_agent(agent, config, cwd).await;
         return;
     }
 
+    let has_explicit_level = config.thinking_effort.is_some();
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
     match crate::setup::run_effort_menu(config, bg.as_ref()).await {
         Ok(true) => {
@@ -458,12 +492,27 @@ async fn handle_effort(
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(eff) = &config.thinking_effort {
                     t.set_thinking_effort(eff.clone());
+                    *hide_thinking = eff == "off";
+                    t.set_hide_thinking(*hide_thinking);
                     t.push_action("Thinking effort set to", Some(eff));
                 }
             }
             reload_agent(agent, config, cwd).await;
         }
-        Ok(false) => {}
+        Ok(false) => {
+            if !has_explicit_level {
+                *hide_thinking = !*hide_thinking;
+                let (msg, eff) = if *hide_thinking { ("thinking hidden — /thinking to show", "off") } else { ("thinking shown", "high") };
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.set_hide_thinking(*hide_thinking);
+                    t.set_thinking_effort(eff.to_string());
+                    t.push_dim(format!("╰ {msg}"));
+                } else {
+                    println!("{msg}");
+                }
+            }
+        }
         Err(e) => {
             if let Some(shared) = tui {
                 shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
@@ -918,10 +967,6 @@ pub async fn run_repl_mode(
                 handle_model(config, &cwd, direct, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
-            ReplCommand::Effort(direct) => {
-                handle_effort(config, &cwd, direct, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
-                continue;
-            }
             ReplCommand::Help => {
                 println!("{}", crate::rule("commands"));
                 for (name, desc) in COMMANDS {
@@ -990,21 +1035,8 @@ pub async fn run_repl_mode(
                 ).await;
                 continue;
             }
-            ReplCommand::Thinking => {
-                hide_thinking = !hide_thinking;
-                let (msg, effort) = if hide_thinking {
-                    ("thinking hidden — /thinking to show it again", "off")
-                } else {
-                    ("thinking shown", "high")
-                };
-                if let Some((shared, _)) = &tui {
-                    let mut t = shared.lock().expect("tui lock");
-                    t.set_hide_thinking(hide_thinking);
-                    t.set_thinking_effort(effort.to_string());
-                    t.push_dim(format!("╰ {msg}"));
-                } else {
-                    println!("{msg}");
-                }
+            ReplCommand::Thinking(level) => {
+                handle_thinking(config, &cwd, level, &mut agent, tui.as_ref().map(|(s, _)| s), &mut hide_thinking).await;
                 continue;
             }
             ReplCommand::Provider => {
@@ -1360,13 +1392,13 @@ mod tests {
 
     #[test]
     fn parse_command_identifies_thinking_toggle() {
-        assert_eq!(parse_command("/thinking"), ReplCommand::Thinking);
-        assert_eq!(parse_command("  /thinking  "), ReplCommand::Thinking);
-        // near-misses stay unknown
-        assert_eq!(
-            parse_command("/thinking off"),
-            ReplCommand::Unknown("/thinking off".to_string())
-        );
+        assert_eq!(parse_command("/thinking"), ReplCommand::Thinking(None));
+        assert_eq!(parse_command("  /thinking  "), ReplCommand::Thinking(None));
+        assert_eq!(parse_command("/thinking off"), ReplCommand::Thinking(Some("off".into())));
+        assert_eq!(parse_command("/thinking high"), ReplCommand::Thinking(Some("high".into())));
+        assert_eq!(parse_command("/effort"), ReplCommand::Thinking(None));
+        assert_eq!(parse_command("/effort high"), ReplCommand::Thinking(Some("high".into())));
+        assert_eq!(parse_command("/effort low"), ReplCommand::Thinking(Some("low".into())));
     }
 
     #[test]

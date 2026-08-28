@@ -20,8 +20,8 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 5;
-const PANEL_ROWS: usize = 8;
+const VIEWPORT_H: u16 = 10;
+const PANEL_ROWS: usize = 6;
 const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -398,9 +398,7 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
-
-            // 2. Prompt input rows
+            // Prompt input rows
             let prompt_arrow = "❯ ";
             let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
@@ -493,20 +491,30 @@ impl Tui {
                 }
             }
 
-            box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
-
             let box_h = box_lines.len().max(1) as u16;
             let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
             let has_attach = !self.attachments.is_empty();
-            let _attach_h: u16 = if has_attach { 1 } else { 0 };
+            let attach_h: u16 = if has_attach { 1 } else { 0 };
 
-            // Status indicator is rendered at the top row of the viewport (area.y) when active.
-            // When inactive, row area.y is a blank 1-row gap above the composer box.
-            let status_y = area.y;
-            let box_y = status_y + 1;
-            let panel_y = box_y + box_h;
-            let attach_y = panel_y + panel_h;
-            let footer_y = area.y + area.height.saturating_sub(1);
+            // When slash commands are open (!self.matches.is_empty()):
+            // Composer box moves temporarily to the top of the viewport (area.y) so commands show below it.
+            // When normal/idle:
+            // Composer box and footer are anchored flush to the bottom of the viewport.
+            let (status_y, box_y, panel_y, attach_y, footer_y) = if !self.matches.is_empty() {
+                let box_y = area.y;
+                let panel_y = box_y + box_h;
+                let attach_y = panel_y + panel_h;
+                let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
+                let status_y = area.y;
+                (status_y, box_y, panel_y, attach_y, footer_y)
+            } else {
+                let footer_y = area.y + area.height.saturating_sub(1);
+                let attach_y = footer_y.saturating_sub(attach_h);
+                let panel_y = attach_y.saturating_sub(panel_h);
+                let box_y = panel_y.saturating_sub(box_h);
+                let status_y = box_y.saturating_sub(1);
+                (status_y, box_y, panel_y, attach_y, footer_y)
+            };
 
             if let Some((started, label)) = &self.status {
                 if status_y < area.y + area.height {
@@ -615,7 +623,7 @@ impl Tui {
             }
 
             let cur_x = (area.x + 2 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + 1 + cur_row as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())
