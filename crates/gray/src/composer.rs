@@ -20,7 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 5;
+const VIEWPORT_H: u16 = 12;
 const BOT_PREFIX_FIRST: &str = "• ";
 const BOT_PREFIX_REST: &str = "  ";
 const PANEL_ROWS: usize = 8;
