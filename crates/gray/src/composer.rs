@@ -20,8 +20,8 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 8;
-const PANEL_ROWS: usize = 4;
+const VIEWPORT_H: u16 = 5;
+const PANEL_ROWS: usize = 3;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -236,6 +236,7 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
         let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
@@ -502,8 +503,9 @@ impl Tui {
     }
 
     pub fn read_line(&mut self) -> anyhow::Result<Option<String>> {
-        use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+        use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
         crossterm::terminal::enable_raw_mode()?;
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
         let _ = self.terminal.clear();
         loop {
@@ -516,6 +518,43 @@ impl Tui {
             if !poll(Duration::from_millis(250))? { continue; }
             match read()? {
                 Event::Resize(_, _) => {}
+                Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollUp, .. }) => {
+                    if !self.matches.is_empty() {
+                        self.sel = self.sel.saturating_sub(1);
+                    } else if self.history_idx.is_some() {
+                        let idx = self.history_idx.unwrap();
+                        if idx > 0 {
+                            self.history_idx = Some(idx - 1);
+                            let h = self.history[idx - 1].clone();
+                            self.textarea.set_text(&h);
+                            self.textarea.move_to_end();
+                        }
+                    } else if !self.history.is_empty() {
+                        self.history_idx = Some(self.history.len() - 1);
+                        self.draft = self.textarea.text().to_string();
+                        let h = self.history.last().unwrap().clone();
+                        self.textarea.set_text(&h);
+                        self.textarea.move_to_end();
+                    }
+                }
+                Event::Mouse(MouseEvent { kind: MouseEventKind::ScrollDown, .. }) => {
+                    if !self.matches.is_empty() {
+                        self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1));
+                    } else if self.history_idx.is_some() {
+                        let idx = self.history_idx.unwrap();
+                        if idx + 1 >= self.history.len() {
+                            self.textarea.set_text(&self.draft);
+                            self.textarea.move_to_end();
+                            self.history_idx = None;
+                        } else {
+                            self.history_idx = Some(idx + 1);
+                            let h = self.history[idx + 1].clone();
+                            self.textarea.set_text(&h);
+                            self.textarea.move_to_end();
+                        }
+                    }
+                }
+                Event::Mouse(_) => {}
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
@@ -797,6 +836,7 @@ impl Tui {
     pub fn tick_status(&mut self) { let _ = self.draw(); }
     pub fn shutdown(&mut self) {
         let _ = self.terminal.clear();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             std::io::stdout(),
@@ -805,6 +845,14 @@ impl Tui {
             crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
         );
         let _ = std::io::stdout().flush();
+    }
+}
+
+impl Drop for Tui {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }
 
