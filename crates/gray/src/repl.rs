@@ -1369,6 +1369,11 @@ pub async fn run_repl_mode(
                                 if !t.is_task_running {
                                     continue;
                                 }
+                                if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('v') | KeyCode::Char('V')) {
+                                    t.try_attach_clipboard_image();
+                                    let _ = t.draw();
+                                    continue;
+                                }
                                 match code {
                                     KeyCode::Left => {
                                         t.textarea.move_left();

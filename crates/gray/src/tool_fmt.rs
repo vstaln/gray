@@ -418,8 +418,6 @@ pub fn render_diff_hunks(
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
 
-        let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(40);
-
         for line in hunk {
             let mut spans = Vec::new();
 
@@ -455,7 +453,7 @@ pub fn render_diff_hunks(
             };
 
             let gutter_str = format!("{:>width$} | {sign} ", num, width = gutter_width);
-            spans.push(Span::styled(gutter_str.clone(), gutter_style));
+            spans.push(Span::styled(gutter_str, gutter_style));
 
             let text = &line.text;
             let content_spans = match line.tag {
@@ -475,15 +473,11 @@ pub fn render_diff_hunks(
             };
             spans.extend(content_spans);
 
+            let mut line_obj = Line::from(spans);
             if let Some(bg) = bg_color {
-                let used_w = 2 + gutter_str.chars().count() + text.chars().count();
-                let pad_w = term_w.saturating_sub(used_w);
-                if pad_w > 0 {
-                    spans.push(Span::styled(" ".repeat(pad_w), Style::default().bg(bg)));
-                }
+                line_obj.style = Style::default().bg(bg);
             }
-
-            lines.push(Line::from(spans));
+            lines.push(line_obj);
         }
     }
 

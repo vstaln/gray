@@ -308,12 +308,18 @@ fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'st
 }
 
 fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
+    // Don't wrap diff lines with background - they need continuous bg, wrapping breaks it into zigzags
+    let has_bg = line.style.bg.is_some() || line.spans.iter().any(|s| s.style.bg.is_some());
+    if has_bg {
+        return vec![line];
+    }
     if line.width() <= max_w {
         return vec![line];
     }
     let mut result = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
     let mut current_w = 0usize;
+    let line_style = line.style;
 
     for span in line.spans {
         let span_w = span.width();
@@ -328,7 +334,7 @@ fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
                 let avail = max_w.saturating_sub(current_w);
                 if avail == 0 {
                     if !current_spans.is_empty() {
-                        result.push(Line::from(std::mem::take(&mut current_spans)));
+                        result.push(Line::from(std::mem::take(&mut current_spans)).style(line_style));
                     }
                     current_w = 0;
                     continue;
@@ -339,17 +345,17 @@ fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
                 current_w += take;
                 i += take;
                 if current_w >= max_w {
-                    result.push(Line::from(std::mem::take(&mut current_spans)));
+                    result.push(Line::from(std::mem::take(&mut current_spans)).style(line_style));
                     current_w = 0;
                 }
             }
         }
     }
     if !current_spans.is_empty() {
-        result.push(Line::from(current_spans));
+        result.push(Line::from(current_spans).style(line_style));
     }
     if result.is_empty() {
-        result.push(Line::from(""));
+        result.push(Line::from("").style(line_style));
     }
     result
 }
@@ -766,6 +772,53 @@ impl Tui {
         false
     }
 
+    pub(crate) fn try_attach_clipboard_image(&mut self) -> bool {
+        // Try via arboard (cross-platform)
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            if let Ok(img) = clipboard.get_image() {
+                let w = img.width as u32;
+                let h = img.height as u32;
+                if let Some(rgba) = image::RgbaImage::from_raw(w, h, img.bytes.into_owned()) {
+                    if let Ok(mut tmp) = tempfile::Builder::new().suffix(".png").tempfile() {
+                        if image::DynamicImage::ImageRgba8(rgba).write_to(&mut tmp, image::ImageFormat::Png).is_ok() {
+                            if let Ok((_file, path)) = tmp.keep() {
+                                self.attach_image(path);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            // Fallback: clipboard text that is image path
+            if let Ok(text) = clipboard.get_text() {
+                if Self::is_image_path(&text) {
+                    self.attach_image(PathBuf::from(text.trim()));
+                    return true;
+                }
+            }
+        }
+        // Fallback for Wayland/X11 without arboard display: try wl-paste / xclip
+        for (cmd, args) in [("wl-paste", vec!["--type", "image/png"]), ("xclip", vec!["-selection", "clipboard", "-t", "image/png", "-o"])] {
+            if let Ok(out) = std::process::Command::new(cmd).args(&args).output() {
+                if !out.stdout.is_empty() && out.status.success() {
+                    if let Ok(mut tmp) = tempfile::Builder::new().suffix(".png").tempfile() {
+                        if std::io::Write::write_all(&mut tmp, &out.stdout).is_ok() {
+                            if let Ok((_file, path)) = tmp.keep() {
+                                if image::open(&path).is_ok() {
+                                    self.attach_image(path);
+                                    return true;
+                                } else {
+                                    let _ = std::fs::remove_file(&path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         const THRESHOLD: usize = 1000;
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
@@ -839,6 +892,10 @@ impl Tui {
                     KeyCode::Char('k') => {
                         let cur = self.textarea.cursor();
                         self.textarea.replace_range(cur..usize::MAX, "");
+                    }
+                    KeyCode::Char('v') | KeyCode::Char('V') => {
+                        self.try_attach_clipboard_image();
+                        self.sel = 0;
                     }
                     KeyCode::Char('w') | KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sel = 0; }
                     KeyCode::Delete => { self.textarea.delete_word_forward(); self.sel = 0; }

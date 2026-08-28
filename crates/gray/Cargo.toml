@@ -31,6 +31,9 @@ tokio-util = { workspace = true }
 reqwest = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
+arboard = { workspace = true }
+image = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
