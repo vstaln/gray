@@ -417,67 +417,101 @@ pub fn render_diff_hunks(
 
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
+        let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+        let overhead = 2 + gutter_width + 3;
+        let content_w = term_w.saturating_sub(overhead + 2).max(20);
+        let wrap_text = |t: &str| -> Vec<String> {
+            if t.is_empty() { return vec![String::new()]; }
+            let mut out = Vec::new();
+            let mut cur = String::new();
+            let mut cur_w = 0usize;
+            let push_cur = |out: &mut Vec<String>, cur: &mut String, cur_w: &mut usize| {
+                if !cur.is_empty() { out.push(std::mem::take(cur)); *cur_w = 0; }
+            };
+            for word in t.split_whitespace() {
+                let wlen = word.chars().count();
+                if wlen > content_w {
+                    push_cur(&mut out, &mut cur, &mut cur_w);
+                    let chars: Vec<char> = word.chars().collect();
+                    for chunk in chars.chunks(content_w) {
+                        out.push(chunk.iter().collect());
+                    }
+                    continue;
+                }
+                if cur_w != 0 && cur_w + 1 + wlen > content_w {
+                    out.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                }
+                if cur_w != 0 { cur.push(' '); cur_w += 1; }
+                cur.push_str(word);
+                cur_w += wlen;
+            }
+            if !cur.is_empty() || out.is_empty() { out.push(cur); }
+            out
+        };
 
         for line in hunk {
-            let mut spans = Vec::new();
-
             let bg_color = match line.tag {
                 DiffTag::Equal => None,
                 DiffTag::Delete => Some(DIFF_DELETE_BG),
                 DiffTag::Insert => Some(DIFF_INSERT_BG),
             };
-
             let prefix_style = if let Some(bg) = bg_color {
                 Style::default().bg(bg)
             } else {
                 Style::default()
             };
-            spans.push(Span::styled("  ", prefix_style));
-
             let gutter_style = match line.tag {
                 DiffTag::Equal => Style::default().fg(DIFF_GUTTER_FG),
                 DiffTag::Delete => Style::default().fg(DIFF_DELETE_FG).bg(DIFF_DELETE_BG),
                 DiffTag::Insert => Style::default().fg(DIFF_INSERT_FG).bg(DIFF_INSERT_BG),
             };
-
             let num = match line.tag {
                 DiffTag::Equal => line.ln,
                 DiffTag::Delete => line.lo,
                 DiffTag::Insert => line.ln,
             };
-
             let sign = match line.tag {
                 DiffTag::Equal => " ",
                 DiffTag::Delete => "-",
                 DiffTag::Insert => "+",
             };
-
             let gutter_str = format!("{:>width$} | {sign} ", num, width = gutter_width);
-            spans.push(Span::styled(gutter_str, gutter_style));
-
             let text = &line.text;
-            let content_spans = match line.tag {
-                DiffTag::Delete => {
-                    render_content_spans(text, &mut old_highlighter, syntect, DIFF_DELETE_FG, bg_color)
+            let chunks = wrap_text(text);
+            for (ci, chunk) in chunks.iter().enumerate() {
+                let mut spans = Vec::new();
+                spans.push(Span::styled("  ", prefix_style.clone()));
+                if ci == 0 {
+                    spans.push(Span::styled(gutter_str.clone(), gutter_style.clone()));
+                } else {
+                    // continuation: keep same gutter style but empty number
+                    let cont_gutter = format!("{:>width$} | ", "", width = gutter_width);
+                    spans.push(Span::styled(cont_gutter, gutter_style.clone()));
                 }
-                DiffTag::Insert => {
-                    render_content_spans(text, &mut new_highlighter, syntect, DIFF_INSERT_FG, bg_color)
-                }
-                DiffTag::Equal => {
-                    let s = render_content_spans(text, &mut new_highlighter, syntect, DIFF_EQUAL_FG, None);
-                    if let Some(hl) = old_highlighter.as_mut() {
-                        let _ = hl.highlight_line(&format!("{text}\n"), &syntect.syntax_set);
+                let content_spans = match line.tag {
+                    DiffTag::Delete => {
+                        render_content_spans(chunk, &mut old_highlighter, syntect, DIFF_DELETE_FG, bg_color)
                     }
-                    s
+                    DiffTag::Insert => {
+                        render_content_spans(chunk, &mut new_highlighter, syntect, DIFF_INSERT_FG, bg_color)
+                    }
+                    DiffTag::Equal => {
+                        let s = render_content_spans(chunk, &mut new_highlighter, syntect, DIFF_EQUAL_FG, None);
+                        // keep old_highlighter in sync for Equal lines (advance even for wrapped chunks)
+                        if let Some(hl) = old_highlighter.as_mut() {
+                            let _ = hl.highlight_line(&format!("{chunk}\n"), &syntect.syntax_set);
+                        }
+                        s
+                    }
+                };
+                spans.extend(content_spans);
+                let mut line_obj = Line::from(spans);
+                if let Some(bg) = bg_color {
+                    line_obj.style = Style::default().bg(bg);
                 }
-            };
-            spans.extend(content_spans);
-
-            let mut line_obj = Line::from(spans);
-            if let Some(bg) = bg_color {
-                line_obj.style = Style::default().bg(bg);
+                lines.push(line_obj);
             }
-            lines.push(line_obj);
         }
     }
 
@@ -498,33 +532,72 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
     let mut lines = Vec::new();
 
     let bg = Color::Rgb(30, 30, 30);
-    if total <= max_lines_to_show {
-        for (idx, line_text) in raw_lines.iter().enumerate() {
-            let line_num = idx + 1;
+    let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+    // gutter: "  " (2) + gutter_width + " | " (3) = overhead
+    let overhead = 2 + gutter_width + 3;
+    let content_w = term_w.saturating_sub(overhead + 2).max(20);
+    let wrap_text = |text: &str| -> Vec<String> {
+        if text.is_empty() { return vec![String::new()]; }
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut cur_w = 0usize;
+        let push_cur = |out: &mut Vec<String>, cur: &mut String, cur_w: &mut usize| {
+            if !cur.is_empty() { out.push(std::mem::take(cur)); *cur_w = 0; }
+        };
+        for word in text.split_whitespace() {
+            let wlen = word.chars().count();
+            if wlen > content_w {
+                // word itself longer than line, split it
+                push_cur(&mut out, &mut cur, &mut cur_w);
+                let chars: Vec<char> = word.chars().collect();
+                for chunk in chars.chunks(content_w) {
+                    let s: String = chunk.iter().collect();
+                    out.push(s);
+                }
+                continue;
+            }
+            if cur_w != 0 && cur_w + 1 + wlen > content_w {
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            if cur_w != 0 { cur.push(' '); cur_w += 1; }
+            cur.push_str(word);
+            cur_w += wlen;
+        }
+        if !cur.is_empty() || out.is_empty() { out.push(cur); }
+        if out.is_empty() { out.push(String::new()); }
+        out
+    };
+    let push_wrapped = |lines: &mut Vec<Line<'static>>, line_num: usize, text: &str, highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>| {
+        let chunks = wrap_text(text);
+        for (ci, chunk) in chunks.iter().enumerate() {
             let mut spans = Vec::new();
             spans.push(Span::styled("  ", Style::default().bg(bg)));
-            spans.push(Span::styled(
-                format!("{:>width$} | ", line_num, width = gutter_width),
-                Style::default().fg(DIFF_GUTTER_FG).bg(bg),
-            ));
-            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
+            if ci == 0 {
+                spans.push(Span::styled(
+                    format!("{:>width$} | ", line_num, width = gutter_width),
+                    Style::default().fg(DIFF_GUTTER_FG).bg(bg),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!("{:>width$} | ", "", width = gutter_width),
+                    Style::default().fg(DIFF_GUTTER_FG).bg(bg),
+                ));
+            }
+            let content_spans = render_content_spans(chunk, highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
             spans.extend(content_spans);
             lines.push(Line::from(spans).style(Style::default().bg(bg)));
+        }
+    };
+    if total <= max_lines_to_show {
+        for (idx, line_text) in raw_lines.iter().enumerate() {
+            push_wrapped(&mut lines, idx + 1, line_text, &mut highlighter);
         }
     } else {
         const HEAD: usize = 18;
         const TAIL: usize = 6;
         for (idx, line_text) in raw_lines.iter().take(HEAD).enumerate() {
-            let line_num = idx + 1;
-            let mut spans = Vec::new();
-            spans.push(Span::styled("  ", Style::default().bg(bg)));
-            spans.push(Span::styled(
-                format!("{:>width$} | ", line_num, width = gutter_width),
-                Style::default().fg(DIFF_GUTTER_FG).bg(bg),
-            ));
-            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
-            spans.extend(content_spans);
-            lines.push(Line::from(spans).style(Style::default().bg(bg)));
+            push_wrapped(&mut lines, idx + 1, line_text, &mut highlighter);
         }
         let omitted = total.saturating_sub(HEAD + TAIL);
         lines.push(Line::from(vec![
@@ -532,16 +605,7 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
             Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).bg(bg).add_modifier(Modifier::ITALIC)),
         ]).style(Style::default().bg(bg)));
         for (idx, line_text) in raw_lines.iter().skip(total - TAIL).enumerate() {
-            let line_num = total - TAIL + idx + 1;
-            let mut spans = Vec::new();
-            spans.push(Span::styled("  ", Style::default().bg(bg)));
-            spans.push(Span::styled(
-                format!("{:>width$} | ", line_num, width = gutter_width),
-                Style::default().fg(DIFF_GUTTER_FG).bg(bg),
-            ));
-            let content_spans = render_content_spans(line_text, &mut highlighter, syntect, DIFF_EQUAL_FG, Some(bg));
-            spans.extend(content_spans);
-            lines.push(Line::from(spans).style(Style::default().bg(bg)));
+            push_wrapped(&mut lines, total - TAIL + idx + 1, line_text, &mut highlighter);
         }
     }
 

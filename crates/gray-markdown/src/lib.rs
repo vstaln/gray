@@ -116,12 +116,17 @@ pub fn render_markdown_ratatui_with_buffers_width(
     // Mirror `StreamingMarkdownRenderer::finish()`: detect plain URLs
     // so a one-shot full render produces the same hyperlinks a
     // `push_and_render` + `finish()` sequence would.
-    let (extra_links, _post_scan_next_id) =
+    let (extra_links, next_id) =
         url_scan::detect_plain_urls(&output.lines, &output.hyperlinks, next_link_id);
     output.hyperlinks.extend(extra_links);
+    let (file_links, _post_scan_next_id) =
+        url_scan::detect_file_paths(&output.lines, &output.hyperlinks, next_id);
+    output.hyperlinks.extend(file_links);
     output
         .hyperlinks
         .sort_by_key(|h| (h.line_index, h.column_range.start));
+    // Make file/web links always underlined (cyan) no matter what — patch line styles
+    url_scan::apply_link_styling(&mut output.lines, &output.hyperlinks);
     (output, checkpoint)
 }
 

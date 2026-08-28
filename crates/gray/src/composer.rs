@@ -314,6 +314,11 @@ fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
     if has_bg {
         return vec![line];
     }
+    // Don't wrap lines with OSC 8 hyperlinks — splitting would break the hyperlink
+    // ponytail: keep hyperlink intact on one line; terminal will soft-wrap if needed
+    if line.spans.iter().any(|s| s.content.contains("\x1b]8;;")) {
+        return vec![line];
+    }
     if line.width() <= max_w {
         return vec![line];
     }

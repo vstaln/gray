@@ -415,6 +415,13 @@ impl StreamingMarkdownRenderer {
             tail_next_link_id,
         );
         self.output.hyperlinks.extend(extra_links);
+        let (file_links, post_scan_next_id) = crate::url_scan::detect_file_paths_with_offset(
+            &self.output.lines[frozen_lines..],
+            frozen_lines,
+            &self.output.hyperlinks,
+            post_scan_next_id,
+        );
+        self.output.hyperlinks.extend(file_links);
 
         // Sort hyperlinks by (line_index, column_range.start) so downstream
         // consumers (`map_hyperlinks_to_overlay`, link map builders) see a
@@ -422,6 +429,8 @@ impl StreamingMarkdownRenderer {
         self.output
             .hyperlinks
             .sort_by_key(|h| (h.line_index, h.column_range.start));
+        // Make file/web links always underlined (cyan) no matter what
+        crate::url_scan::apply_link_styling(&mut self.output.lines, &self.output.hyperlinks);
 
         // If checkpoint found, update frozen state.
         // The checkpoint's source_bytes is relative to the tail we rendered,
@@ -551,12 +560,19 @@ impl StreamingMarkdownRenderer {
             full_next_link_id,
         );
         self.output.hyperlinks.extend(extra_links);
+        let (file_links, post_scan_next_id) = crate::url_scan::detect_file_paths(
+            &self.output.lines,
+            &self.output.hyperlinks,
+            post_scan_next_id,
+        );
+        self.output.hyperlinks.extend(file_links);
 
         // Sort hyperlinks by (line_index, column_range.start) so downstream
         // consumers see a well-ordered list.
         self.output
             .hyperlinks
             .sort_by_key(|h| (h.line_index, h.column_range.start));
+        crate::url_scan::apply_link_styling(&mut self.output.lines, &self.output.hyperlinks);
 
         // Mark everything as frozen (streaming is complete)
         self.frozen = FrozenState {
