@@ -20,7 +20,7 @@ use ratatui::Terminal;
 
 use crate::repl::completion_matches;
 
-const VIEWPORT_H: u16 = 6;
+const VIEWPORT_H: u16 = 9;
 const PANEL_ROWS: usize = 4;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -339,7 +339,10 @@ impl Tui {
 
             let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-            // Prompt input rows
+            // 1. Top margin row (colored row, no symbols)
+            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
+
+            // 2. Prompt input rows
             let prompt_arrow = "❯ ";
             let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
@@ -377,7 +380,11 @@ impl Tui {
                 }
             }
 
-            let box_y = area.y;
+            // 3. Bottom margin row (colored row, no symbols)
+            box_lines.push(Line::from("").style(Style::default().bg(bg_color)));
+
+            // Exactly 1 line tall gap between scrollback history and the active prompt box
+            let box_y = area.y + 1;
             let box_h = box_lines.len().max(1) as u16;
 
             let rendered_box_h = box_h.min((area.y + area.height).saturating_sub(box_y));
@@ -467,7 +474,7 @@ impl Tui {
                 (before.matches('\n').count(), before[before.rfind('\n').map(|i| i + 1).unwrap_or(0)..].chars().count())
             };
             let cur_x = (area.x + 3 + cursor_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + 1 + cursor_line_idx as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         })?;
         Ok(())
@@ -658,6 +665,8 @@ impl Tui {
         let text_primary = Color::Rgb(225, 225, 225);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        // 1. Top margin row (colored row, no symbols)
+        lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
         let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
@@ -688,6 +697,9 @@ impl Tui {
                 }
             }
         }
+
+        // 3. Bottom margin row (colored row, no symbols)
+        lines.push(Line::from("").style(Style::default().bg(bg_color)));
 
         let height = lines.len() as u16;
         let block = Block::default()
