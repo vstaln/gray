@@ -142,6 +142,70 @@ impl TextArea {
         for _ in 0..n { target = self.next_boundary(target); if target >= self.text.len() { break; } }
         self.replace_range(self.cursor..target, "");
     }
+    fn prev_word_boundary(&self, pos: usize) -> usize {
+        if pos == 0 { return 0; }
+        for el in &self.elements {
+            if pos > el.range.start && pos <= el.range.end { return el.range.start; }
+        }
+        let text_before = &self.text[..pos];
+        let mut chars = text_before.char_indices().rev().peekable();
+        while let Some(&(_, ch)) = chars.peek() {
+            if ch.is_whitespace() { chars.next(); } else { break; }
+        }
+        if let Some(&(_, first_ch)) = chars.peek() {
+            let is_word_char = first_ch.is_alphanumeric() || first_ch == '_';
+            while let Some(&(idx, ch)) = chars.peek() {
+                if !ch.is_whitespace() && ((ch.is_alphanumeric() || ch == '_') == is_word_char) {
+                    chars.next();
+                } else {
+                    return idx + ch.len_utf8();
+                }
+            }
+        }
+        0
+    }
+    fn next_word_boundary(&self, pos: usize) -> usize {
+        if pos >= self.text.len() { return self.text.len(); }
+        for el in &self.elements {
+            if pos >= el.range.start && pos < el.range.end { return el.range.end; }
+        }
+        let text_after = &self.text[pos..];
+        let mut chars = text_after.char_indices().peekable();
+        while let Some(&(_, ch)) = chars.peek() {
+            if ch.is_whitespace() { chars.next(); } else { break; }
+        }
+        if let Some(&(_, first_ch)) = chars.peek() {
+            let is_word_char = first_ch.is_alphanumeric() || first_ch == '_';
+            while let Some(&(idx, ch)) = chars.peek() {
+                if !ch.is_whitespace() && ((ch.is_alphanumeric() || ch == '_') == is_word_char) {
+                    chars.next();
+                } else {
+                    return pos + idx;
+                }
+            }
+        }
+        self.text.len()
+    }
+    fn delete_word_backward(&mut self) {
+        let target = self.prev_word_boundary(self.cursor);
+        if target < self.cursor {
+            self.replace_range(target..self.cursor, "");
+        }
+    }
+    fn delete_word_forward(&mut self) {
+        let target = self.next_word_boundary(self.cursor);
+        if target > self.cursor {
+            self.replace_range(self.cursor..target, "");
+        }
+    }
+    fn move_word_left(&mut self) {
+        let target = self.prev_word_boundary(self.cursor);
+        self.set_cursor(target);
+    }
+    fn move_word_right(&mut self) {
+        let target = self.next_word_boundary(self.cursor);
+        self.set_cursor(target);
+    }
     fn replace_range(&mut self, range: std::ops::Range<usize>, s: &str) {
         let start = range.start.min(self.text.len());
         let end = range.end.min(self.text.len());
@@ -689,6 +753,14 @@ impl Tui {
                 }
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
+                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::ALT) => match code {
+                    KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sel = 0; }
+                    KeyCode::Delete => { self.textarea.delete_word_forward(); self.sel = 0; }
+                    KeyCode::Char('d') => { self.textarea.delete_word_forward(); self.sel = 0; }
+                    KeyCode::Char('b') | KeyCode::Left => self.textarea.move_word_left(),
+                    KeyCode::Char('f') | KeyCode::Right => self.textarea.move_word_right(),
+                    _ => {}
+                },
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
                     KeyCode::Char('p') => self.sel = self.sel.saturating_sub(1),
                     KeyCode::Char('n') => self.sel = (self.sel + 1).min(self.matches.len().saturating_sub(1)),
@@ -699,7 +771,10 @@ impl Tui {
                         let cur = self.textarea.cursor();
                         self.textarea.replace_range(cur..usize::MAX, "");
                     }
-                    KeyCode::Char('w') => { self.textarea.delete_backward(1); }
+                    KeyCode::Char('w') | KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sel = 0; }
+                    KeyCode::Delete => { self.textarea.delete_word_forward(); self.sel = 0; }
+                    KeyCode::Left => self.textarea.move_word_left(),
+                    KeyCode::Right => self.textarea.move_word_right(),
                     KeyCode::Char('j') | KeyCode::Char('m') => { self.textarea.insert_str("\n"); }
                     _ => {}
                 },
@@ -749,11 +824,19 @@ impl Tui {
                             self.sel = 0;
                         }
                         KeyCode::Backspace => {
-                            self.textarea.delete_backward(1);
+                            if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                self.textarea.delete_word_backward();
+                            } else {
+                                self.textarea.delete_backward(1);
+                            }
                             self.sel = 0;
                         }
                         KeyCode::Delete => {
-                            self.textarea.delete_forward(1);
+                            if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                self.textarea.delete_word_forward();
+                            } else {
+                                self.textarea.delete_forward(1);
+                            }
                             self.sel = 0;
                         }
                         KeyCode::Esc => {
@@ -762,8 +845,20 @@ impl Tui {
                             self.history_idx = None;
                             self.sel = 0;
                         }
-                        KeyCode::Left => self.textarea.move_left(),
-                        KeyCode::Right => self.textarea.move_right(),
+                        KeyCode::Left => {
+                            if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                self.textarea.move_word_left();
+                            } else {
+                                self.textarea.move_left();
+                            }
+                        }
+                        KeyCode::Right => {
+                            if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                self.textarea.move_word_right();
+                            } else {
+                                self.textarea.move_right();
+                            }
+                        }
                         KeyCode::Up => {
                             if !self.matches.is_empty() {
                                 self.sel = self.sel.saturating_sub(1);
