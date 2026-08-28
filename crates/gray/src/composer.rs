@@ -489,17 +489,15 @@ impl Tui {
             let box_h = box_lines.len().max(1) as u16;
             let panel_h: u16 = self.matches.len().min(PANEL_ROWS) as u16;
             let has_attach = !self.attachments.is_empty();
-            let attach_h: u16 = if has_attach { 1 } else { 0 };
-            let has_status = self.status.is_some();
-            let status_h: u16 = if has_status { 2 } else { 0 };
+            let _attach_h: u16 = if has_attach { 1 } else { 0 };
 
-            // Top: 1-row gap margin so composer box / status NEVER touches scrollback content above it.
-            let top_gap_h: u16 = 1;
-            let status_y = area.y + top_gap_h;
-            let box_y = status_y + status_h;
+            // Status indicator is rendered at the top row of the viewport (area.y) when active.
+            // When inactive, row area.y is a blank 1-row gap above the composer box.
+            let status_y = area.y;
+            let box_y = status_y + 1;
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
-            let footer_y = attach_y + attach_h;
+            let footer_y = area.y + area.height.saturating_sub(1);
 
             if let Some((started, label)) = &self.status {
                 if status_y < area.y + area.height {
