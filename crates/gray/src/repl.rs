@@ -1092,20 +1092,26 @@ pub async fn run_repl_mode(
                         if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
                             return;
                         }
-                        match poll(std::time::Duration::from_millis(100)) {
+                        match poll(std::time::Duration::from_millis(50)) {
                             Ok(true) => {}
                             _ => continue,
                         }
                         if let Ok(Event::Key(KeyEvent {
-                            code: KeyCode::Char('c'),
+                            code,
                             modifiers,
-                            kind: KeyEventKind::Press,
+                            kind,
                             ..
                         })) = read()
-                            && modifiers.contains(KeyModifiers::CONTROL)
                         {
-                            watch_cancel.cancel();
-                            return;
+                            if kind == KeyEventKind::Release {
+                                continue;
+                            }
+                            if code == KeyCode::Esc
+                                || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
+                            {
+                                watch_cancel.cancel();
+                                return;
+                            }
                         }
                     }
                 });

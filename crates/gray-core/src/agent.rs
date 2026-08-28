@@ -260,7 +260,25 @@ impl Agent {
             let (stop_reason, usage) = {
                 let mut stream = self.provider.stream(req);
                 loop {
-                    match stream.next().await {
+                    let next_event = tokio::select! {
+                        ev = stream.next() => ev,
+                        _ = ctx.cancel.cancelled() => {
+                            if !text_parts.is_empty() && pending.is_empty() {
+                                let mut content = Vec::new();
+                                let thinking = thinking_parts.concat();
+                                if !thinking.is_empty() {
+                                    content.push(ContentBlock::Thinking { text: thinking });
+                                }
+                                content.push(ContentBlock::Text { text: text_parts.concat() });
+                                self.messages.push(Message {
+                                    role: Role::Assistant,
+                                    content,
+                                });
+                            }
+                            return Err(CoreError::Cancelled);
+                        }
+                    };
+                    match next_event {
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
                             emit!(AgentEvent::text_delta(delta.clone()));
                             text_parts.push(delta);
@@ -369,10 +387,16 @@ impl Agent {
             }
 
             for (id, name, args) in tool_uses {
+                if ctx.cancel.is_cancelled() {
+                    return Err(CoreError::Cancelled);
+                }
                 emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
-                let output = self.executor.execute(&ctx, &name, args).await;
+                let output = tokio::select! {
+                    out = self.executor.execute(&ctx, &name, args) => out,
+                    _ = ctx.cancel.cancelled() => return Err(CoreError::Cancelled),
+                };
 
                 emit!(AgentEvent::tool_result(
                     id.clone(),

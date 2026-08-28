@@ -503,8 +503,10 @@ impl Tui {
 
             if let Some((started, label)) = &self.status {
                 if status_y < area.y + area.height {
-                    let raw = format!("\u{2b21} {label}\u{2026} {}s (esc to interrupt)", started.elapsed().as_secs());
-                    let spans = shimmer_spans(&raw, started.elapsed(), self.truecolor);
+                    let label_text = format!("\u{2b21} {label}\u{2026}");
+                    let mut spans = shimmer_spans(&label_text, started.elapsed(), self.truecolor);
+                    let suffix = format!(" {}s (esc to interrupt)", started.elapsed().as_secs());
+                    spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
                     frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
                 }
             }

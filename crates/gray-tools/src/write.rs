@@ -29,9 +29,24 @@ impl Tool for WriteTool {
                         "type": "string",
                         "description": "File path (absolute or relative to cwd)"
                     },
-                    "content": {"type": "string", "description": "Full file contents"}
+                    "file_path": {
+                        "type": "string",
+                        "description": "Alias for path"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full file contents (default: empty string)"
+                    },
+                    "contents": {
+                        "type": "string",
+                        "description": "Alias for content"
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Alias for content"
+                    }
                 },
-                "required": ["path", "content"]
+                "required": ["path"]
             }),
         )
     }
@@ -50,14 +65,30 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = match get_str(&args, "path") {
-            Ok(p) => p,
-            Err(e) => return e,
+        let path = args.get("path")
+            .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("filePath"))
+            .or_else(|| args.get("file"))
+            .or_else(|| args.get("filename"))
+            .or_else(|| args.get("target"))
+            .or_else(|| args.get("destination"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let path = match path {
+            Some(p) => p,
+            None => return fail("missing required argument 'path'".to_string()),
         };
-        let content = match get_str(&args, "content") {
-            Ok(c) => c,
-            Err(e) => return e,
-        };
+
+        let content = args.get("content")
+            .or_else(|| args.get("contents"))
+            .or_else(|| args.get("text"))
+            .or_else(|| args.get("code"))
+            .or_else(|| args.get("body"))
+            .or_else(|| args.get("data"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
         let full = resolve_path(&ctx.cwd, &path);
         with_file_mutation_queue(full.clone(), || {
