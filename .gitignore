@@ -1,2 +1,26 @@
-/target
-reference/
+/target/
+# local reference clones (never commit)
+/reference/
+/references/
+/port/
+
+# local gray state (fallback when $HOME unset)
+.gray/
+
+# opencode / tooling
+.commandcode/
+
+# secrets
+.env
+
+# build artifacts that should never be committed
+dist/dl/
+
+# rust / editor / os
+**/*.rs.bk
+*.pdb
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
