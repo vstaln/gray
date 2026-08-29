@@ -2,6 +2,7 @@
 //! catalog (models.dev snapshot), persisting
 //! to ~/.gray/config.json. Flow: nothing forced at boot; the
 //! picker appears the moment credentials are actually needed.
+// ponytail: 3 modals (connect/model/effort) share 80% render + nav logic (662+287+163 lines); extract generic list_picker when adding fourth modal.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

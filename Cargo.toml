@@ -20,6 +20,7 @@ gray-core = { path = "crates/gray-core" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-session = { path = "crates/gray-session" }
+# ponytail: gray-cron/webhook deferred — add back when cron/webhook ships, with chrono/cron/axum deps
 
 # External dependencies
 tokio = { version = "1", features = ["full"] }

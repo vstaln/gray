@@ -3,6 +3,7 @@
 //! Handles PKCE authorization code flow, endpoint discovery, local callback
 //! listener on loopback port 56121, secure permissioned auth storage (`~/.gray/auth.json`),
 //! and token refresh. Hand-rolled SHA-256 and base64url encoding to avoid external crypto deps.
+// ponytail: 80-line SHA256 + 90-line b64url hand-roll avoids sha2/base64 deps; swap to crates if OAuth expands beyond PKCE.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};

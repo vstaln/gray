@@ -1,4 +1,5 @@
 //! Interactive REPL mode for Gray.
+// ponytail: 2 turn loops (~400 lines) + 3 provider blocks duplicated; extract ensure_provider + run_turn when adding streaming resume.
 
 use std::io::Write;
 use std::path::Path;
