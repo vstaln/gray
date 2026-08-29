@@ -117,6 +117,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn ctx(dir: &Path) -> ToolContext {

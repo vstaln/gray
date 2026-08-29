@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/gray",
     "crates/gray-core",
+    "crates/gray-cron",
     "crates/gray-markdown",
     "crates/gray-provider",
     "crates/gray-session",
@@ -17,10 +18,10 @@ license = "MIT"
 [workspace.dependencies]
 # Workspace crates
 gray-core = { path = "crates/gray-core" }
+gray-cron = { path = "crates/gray-cron" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-session = { path = "crates/gray-session" }
-# ponytail: gray-cron/webhook deferred — add back when cron/webhook ships, with chrono/cron/axum deps
 
 # External dependencies
 tokio = { version = "1", features = ["full"] }
@@ -41,4 +42,7 @@ ratatui = "0.29"
 arboard = "3"
 image = "0.25"
 tempfile = "3"
+chrono = { version = "0.4", features = ["serde"] }
+cron = "0.12"
+fs2 = "0.4"
 

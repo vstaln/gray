@@ -14,8 +14,18 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut config = Config::resolve(&cli)?;
     gray::oauth::apply_saved_oauth(&mut config).await;
-    if let Some(gray::Commands::Resume { session_id, last, all, prompt }) = cli.command {
-        return run_resume_subcommand(&mut config, session_id.as_deref(), last, all, prompt.as_deref()).await;
+    if let Some(cmd) = cli.command {
+        match cmd {
+            gray::Commands::Resume { session_id, last, all, prompt } => {
+                return run_resume_subcommand(&mut config, session_id.as_deref(), last, all, prompt.as_deref()).await;
+            }
+            gray::Commands::Cron { cmd } => {
+                return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
+            }
+            gray::Commands::Cronjobs { cmd } => {
+                return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
+            }
+        }
     }
     if let Some(prompt) = cli.print.as_deref() {
         run_print_mode(&config, prompt).await?;

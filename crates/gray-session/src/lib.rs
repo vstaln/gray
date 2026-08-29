@@ -787,6 +787,7 @@ mod tests {
             parent_id: Some(0),
             timestamp: 1001,
             message: Message::assistant("world"),
+            usage: None,
         };
         let valid_json = serde_json::to_string(&valid_entry).unwrap();
         f.write_all(format!("{}\n", valid_json).as_bytes())

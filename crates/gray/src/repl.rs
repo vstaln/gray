@@ -25,6 +25,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("resume", "resume a previous conversation"),
     ("new", "start a fresh conversation"),
     ("compact", "compress conversation context into a structured summary"),
+    ("cron", "manage cron jobs — /cron list, /cron create --schedule \"every 30m\" --prompt \"...\""),
     ("sys", "view, edit, or restore the system prompt"),
     ("help", "print the command list"),
     ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
@@ -252,6 +253,8 @@ pub enum ReplCommand {
     Model(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
+    /// Cron jobs: /cron, /cron list, /cron create --schedule ... --prompt ...
+    Cron(String),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
     /// Blank line, should be ignored.
@@ -347,6 +350,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
     } else if let Some(rest) = trimmed.strip_prefix("/model") {
         let arg = rest.trim();
         ReplCommand::Model((!arg.is_empty()).then(|| arg.to_string()))
+    } else if trimmed.starts_with("/cron") {
+        ReplCommand::Cron(trimmed.to_string())
     } else if trimmed.starts_with('/') {
         ReplCommand::Unknown(trimmed.to_string())
     } else {
@@ -667,6 +672,110 @@ async fn handle_compact(
             }
         }
     }
+}
+
+async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+    let trimmed = raw.trim();
+    // Strip leading "/cron" and trim
+    let args_str = trimmed.strip_prefix("/cron").unwrap_or("").trim();
+    if args_str.is_empty() || args_str == "list" {
+        let jobs = gray_cron::list_jobs();
+        let msg = if jobs.is_empty() {
+            "no cron jobs — create one with: /cron create --schedule \"every 30m\" --prompt \"...\"".to_string()
+        } else {
+            let mut out = format!("{:<10} {:<20} {:<16} {}\n", "ID", "NAME", "SCHEDULE", "NEXT RUN");
+            out.push_str(&"-".repeat(70));
+            out.push('\n');
+            for j in jobs {
+                let next = j.next_run.map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "-".to_string());
+                out.push_str(&format!("{:<10} {:<20} {:<16} {}\n", j.id, j.name, j.schedule, next));
+            }
+            out
+        };
+        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(msg); } else { println!("{msg}"); }
+        return;
+    }
+    if args_str.starts_with("create") {
+        // Very simple parse: --schedule <val> --prompt <val> [--name <val>]
+        // Supports quoted values via trimming quotes
+        fn extract_flag(s: &str, flag: &str) -> Option<String> {
+            let pat = format!("{flag} ");
+            let start = s.find(&pat)? + pat.len();
+            let rest = &s[start..].trim_start();
+            if rest.starts_with('"') || rest.starts_with('\'') {
+                let q = rest.chars().next().unwrap();
+                let end = rest[1..].find(q)? + 1;
+                Some(rest[1..end].to_string())
+            } else {
+                let end = rest.find(" --").unwrap_or(rest.len());
+                Some(rest[..end].trim().to_string())
+            }
+        }
+        let schedule = extract_flag(args_str, "--schedule");
+        let prompt = extract_flag(args_str, "--prompt");
+        let name = extract_flag(args_str, "--name");
+        match (schedule, prompt) {
+            (Some(s), Some(p)) => {
+                let n = name.unwrap_or_else(|| format!("job-{}", &p.chars().take(12).collect::<String>()));
+                match gray_cron::parse_schedule(&s) {
+                    Ok(_) => match gray_cron::create_job(n.clone(), s.clone(), p.clone()) {
+                        Ok(job) => {
+                            let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
+                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                        }
+                        Err(e) => {
+                            let msg = format!("failed: {e}");
+                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                        }
+                    },
+                    Err(e) => {
+                        let msg = format!("invalid schedule: {e}");
+                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    }
+                }
+            }
+            _ => {
+                let msg = "usage: /cron create --schedule \"every 30m\" --prompt \"...\" [--name myjob]  (or \"0 * * * *\" cron)";
+                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            }
+        }
+        return;
+    }
+    if let Some(id) = args_str.strip_prefix("remove ").map(|s| s.trim()) {
+        if id.is_empty() {
+            let msg = "usage: /cron remove <id|name>";
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        } else {
+            match gray_cron::remove_job(id) {
+                Ok(true) => {
+                    let msg = format!("removed {id}");
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                }
+                Ok(false) => {
+                    let msg = format!("no job found for '{id}'");
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                }
+                Err(e) => {
+                    let msg = format!("error: {e}");
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                }
+            }
+        }
+        return;
+    }
+    if let Some(id) = args_str.strip_prefix("show ").map(|s| s.trim()) {
+        if let Some(j) = gray_cron::find_job(id) {
+            let msg = serde_json::to_string_pretty(&j).unwrap_or_else(|_| format!("{j:?}"));
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(msg); } else { println!("{msg}"); }
+        } else {
+            let msg = format!("no job found for '{id}'");
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        }
+        return;
+    }
+    // Fallback help
+    let msg = "cron: /cron list | /cron create --schedule \"every 10m\" --prompt \"...\" | /cron remove <id> | /cron show <id>  (cron: \"0 * * * *\")";
+    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
 }
 
 fn print_exit_hint(session_state: &Option<SessionState>) {
@@ -1295,6 +1404,10 @@ pub async fn run_repl_mode(
                         }
                     }
                 }
+                continue;
+            }
+            ReplCommand::Cron(raw) => {
+                handle_cron(&raw, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Unknown(_) => {

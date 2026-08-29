@@ -3,6 +3,7 @@
 pub mod compact;
 pub mod composer;
 pub mod config;
+pub mod cron_cli;
 pub mod logging;
 pub mod oauth;
 pub mod print;
@@ -188,6 +189,17 @@ pub enum Commands {
         /// Optional prompt to send immediately after resuming
         #[arg(value_name = "PROMPT")]
         prompt: Option<String>,
+    },
+    /// Manage cron jobs (schedule recurring prompts)
+    Cron {
+        #[command(subcommand)]
+        cmd: Option<crate::cron_cli::CronCmd>,
+    },
+    /// Alias for `cron`
+    #[command(hide = true)]
+    Cronjobs {
+        #[command(subcommand)]
+        cmd: Option<crate::cron_cli::CronCmd>,
     },
 }
 

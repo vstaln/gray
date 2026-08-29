@@ -17,6 +17,7 @@ path = "src/main.rs"
 gray-core = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
+gray-cron = { workspace = true }
 gray-session = { workspace = true }
 gray-markdown = { path = "../gray-markdown" }
 anyhow = { workspace = true }
@@ -29,6 +30,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
+chrono = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
 arboard = { workspace = true }
