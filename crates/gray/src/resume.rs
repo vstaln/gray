@@ -199,7 +199,10 @@ fn run_picker_sync(
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let bg_snapshot = bg.cloned().unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
 
-    enable_raw_mode()?;
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw {
+        enable_raw_mode()?;
+    }
     let mut stdout_handle = std::io::stdout();
     crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
     let backend = CrosstermBackend::new(stdout_handle);
@@ -459,12 +462,14 @@ fn run_picker_sync(
     })();
 
     let _ = terminal.clear();
-    disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
         LeaveAlternateScreen,
         crossterm::cursor::Show,
     )?;
+    if !was_raw {
+        let _ = disable_raw_mode();
+    }
     let _ = std::io::stdout().flush();
     result
 }

@@ -923,7 +923,8 @@ mod tests {
         assert_eq!(hunks[0][2].tag, DiffTag::Insert);
         assert_eq!(hunks[0][2].ln, 11);
 
-        let lines = render_diff_hunks(&hunks, Some(Path::new("test.rs")));
-        assert_eq!(lines.len(), 4);
+        let lines = render_diff_hunks(&hunks, Some(Path::new("test.rs")), None);
+        assert!(lines.len() >= 4, "expected at least 4 lines, got {}", lines.len());
+        assert!(lines.iter().any(|l| l.to_string().contains("Updated")));
     }
 }

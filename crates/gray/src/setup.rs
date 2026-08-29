@@ -809,7 +809,10 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
     let mut state = ModalState::Selecting;
     let mut connected_name: Option<(String, String)> = None;
 
-    enable_raw_mode()?;
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw {
+        enable_raw_mode()?;
+    }
     let mut stdout_handle = std::io::stdout();
     crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
 
@@ -1419,12 +1422,14 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
     })();
 
     let _ = terminal.clear();
-    disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
         LeaveAlternateScreen,
         crossterm::cursor::Show,
     )?;
+    if !was_raw {
+        let _ = disable_raw_mode();
+    }
     let _ = std::io::stdout().flush();
 
     result
@@ -1468,7 +1473,10 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
 
     let models = get_provider_models_with_live(&item_id, &config.base_url, config.api_key.as_deref(), &catalog);
 
-    enable_raw_mode()?;
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw {
+        enable_raw_mode()?;
+    }
     let mut stdout_handle = std::io::stdout();
     crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
 
@@ -1703,12 +1711,14 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
     })();
 
     let _ = terminal.clear();
-    disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
         LeaveAlternateScreen,
         crossterm::cursor::Show,
     )?;
+    if !was_raw {
+        let _ = disable_raw_mode();
+    }
     let _ = std::io::stdout().flush();
 
     result
@@ -1738,7 +1748,10 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
     use std::io::Write as _;
     use std::time::Duration;
 
-    enable_raw_mode()?;
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw {
+        enable_raw_mode()?;
+    }
     let mut stdout_handle = std::io::stdout();
     crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
 
@@ -1875,12 +1888,14 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
     })();
 
     let _ = terminal.clear();
-    disable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
         LeaveAlternateScreen,
         crossterm::cursor::Show,
     )?;
+    if !was_raw {
+        let _ = disable_raw_mode();
+    }
     let _ = std::io::stdout().flush();
 
     result

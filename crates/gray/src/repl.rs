@@ -1040,17 +1040,40 @@ pub async fn run_repl_mode(
                                 Ok(true) => {
                                     unconfigured = false;
                                     if let Some((shared, _)) = &tui {
+                                        let mut t = shared.lock().expect("tui lock");
                                         if let Some(m) = &config.model {
-                                            shared.lock().expect("tui lock").set_model(m.clone());
+                                            t.set_model(m.clone());
                                         }
+                                        let model_str = config.model.as_deref().unwrap_or("default");
+                                        let prov_name = crate::setup::load_catalog()
+                                            .ok()
+                                            .and_then(|c| {
+                                                c.values()
+                                                    .find(|p| p.base_url == config.base_url)
+                                                    .map(|p| p.name.clone())
+                                            })
+                                            .unwrap_or_else(|| "provider".to_string());
+                                        t.push_dim(format!(
+                                            "╰ connected to {prov_name} · {model_str}"
+                                        ));
+                                        let _ = t.draw();
                                     }
-                                    print!("\r\n");
                                 }
                                 Ok(false) => {
+                                    if let Some((shared, _)) = &tui {
+                                        let _ = shared.lock().expect("tui lock").draw();
+                                    }
                                     continue;
                                 }
                                 Err(e) => {
-                                    println!("provider error: {e}");
+                                    if let Some((shared, _)) = &tui {
+                                        shared
+                                            .lock()
+                                            .expect("tui lock")
+                                            .push_dim(format!("╰ provider error: {e}"));
+                                    } else {
+                                        println!("provider error: {e}");
+                                    }
                                     continue;
                                 }
                             }
@@ -1285,17 +1308,40 @@ pub async fn run_repl_mode(
                             Ok(true) => {
                                 unconfigured = false;
                                 if let Some((shared, _)) = &tui {
+                                    let mut t = shared.lock().expect("tui lock");
                                     if let Some(m) = &config.model {
-                                        shared.lock().expect("tui lock").set_model(m.clone());
+                                        t.set_model(m.clone());
                                     }
+                                    let model_str = config.model.as_deref().unwrap_or("default");
+                                    let prov_name = crate::setup::load_catalog()
+                                        .ok()
+                                        .and_then(|c| {
+                                            c.values()
+                                                .find(|p| p.base_url == config.base_url)
+                                                .map(|p| p.name.clone())
+                                        })
+                                        .unwrap_or_else(|| "provider".to_string());
+                                    t.push_dim(format!(
+                                        "╰ connected to {prov_name} · {model_str}"
+                                    ));
+                                    let _ = t.draw();
                                 }
-                                print!("\r\n");
                             }
                             Ok(false) => {
+                                if let Some((shared, _)) = &tui {
+                                    let _ = shared.lock().expect("tui lock").draw();
+                                }
                                 continue;
                             }
                             Err(e) => {
-                                println!("provider error: {e}");
+                                if let Some((shared, _)) = &tui {
+                                    shared
+                                        .lock()
+                                        .expect("tui lock")
+                                        .push_dim(format!("╰ provider error: {e}"));
+                                } else {
+                                    println!("provider error: {e}");
+                                }
                                 continue;
                             }
                         }
@@ -1596,6 +1642,7 @@ mod tests {
 
     #[test]
     fn latest_summary_picks_max_started_at() {
+        use crate::resume::latest_summary;
         use gray_session::{SessionId, SessionSummary};
         let mk = |id: &str, t: u64| SessionSummary {
             id: SessionId::new(id),
@@ -1604,8 +1651,8 @@ mod tests {
             first_user_text: None,
         };
         let v = vec![mk("a", 5), mk("b", 99), mk("c", 1)];
-        assert_eq!(latest_summary(&v).unwrap().id.as_str(), "b");
-        assert!(latest_summary(&[]).is_none());
+        assert_eq!(latest_summary(&v, None).unwrap().id.as_str(), "b");
+        assert!(latest_summary(&[] as &[SessionSummary], None).is_none());
     }
 
     #[test]
@@ -1726,9 +1773,9 @@ mod tests {
         assert_eq!(fmt_usage(0), "0");
         assert_eq!(fmt_usage(500), "500");
         assert_eq!(fmt_usage(999), "999");
-        assert_eq!(fmt_usage(1000), "1000");
-        assert_eq!(fmt_usage(1200), "1200");
-        assert_eq!(fmt_usage(10500), "10500");
+        assert_eq!(fmt_usage(1000), "1,000");
+        assert_eq!(fmt_usage(1200), "1,200");
+        assert_eq!(fmt_usage(10500), "10,500");
     }
 
     #[test]
@@ -1806,7 +1853,7 @@ mod tests {
         );
         assert_eq!(
             fmt_event(&AgentEvent::turn_end(StopReason::EndTurn, Usage::new(400, 800))),
-            "\n\x1b[2m· 1.2k tok\x1b[0m\n"
+            "\n\x1b[2m· 1,200 tok\x1b[0m\n"
         );
     }
 
