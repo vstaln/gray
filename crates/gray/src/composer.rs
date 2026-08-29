@@ -950,7 +950,7 @@ impl Tui {
                     KeyCode::Char('j') | KeyCode::Char('m') => { self.textarea.insert_str("\n"); }
                     _ => {}
                 },
-                Event::Key(KeyEvent { code, kind: KeyEventKind::Press, modifiers, .. }) => {
+                Event::Key(KeyEvent { code, kind, modifiers, .. }) if kind == KeyEventKind::Press || kind == KeyEventKind::Repeat => {
                     match code {
                         KeyCode::Enter => {
                             let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
@@ -1036,8 +1036,10 @@ impl Tui {
                         KeyCode::Esc => {
                             self.textarea.set_text("");
                             self.attachments.clear();
+                            self.pending_pastes.clear();
                             self.history_idx = None;
                             self.sel = 0;
+                            let _ = self.draw();
                         }
                         KeyCode::Left => {
                             if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
