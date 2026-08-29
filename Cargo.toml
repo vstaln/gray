@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["crates/gray*"]
+members = [
+    "crates/gray",
+    "crates/gray-core",
+    "crates/gray-markdown",
+    "crates/gray-provider",
+    "crates/gray-session",
+    "crates/gray-tools",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,8 +20,6 @@ gray-core = { path = "crates/gray-core" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-session = { path = "crates/gray-session" }
-gray-cron = { path = "crates/gray-cron" }
-gray-webhook = { path = "crates/gray-webhook" }
 
 # External dependencies
 tokio = { version = "1", features = ["full"] }
@@ -35,13 +40,4 @@ ratatui = "0.29"
 arboard = "3"
 image = "0.25"
 tempfile = "3"
-chrono = { version = "0.4", features = ["serde"] }
-cron = "0.12"
-fs2 = "0.4"
-axum = "0.7"
-hmac = "0.12"
-sha2 = "0.10"
-base64 = "0.22"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
 
