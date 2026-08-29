@@ -921,6 +921,19 @@ impl Tui {
                 }
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code: KeyCode::Char('d'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) && self.textarea.is_empty() => return Ok(None),
+                Event::Key(KeyEvent { code: KeyCode::Esc, kind, .. }) if kind == KeyEventKind::Press || kind == KeyEventKind::Repeat => {
+                    if !self.matches.is_empty() {
+                        self.matches.clear();
+                        self.sel = 0;
+                    } else {
+                        self.textarea.set_text("");
+                        self.attachments.clear();
+                        self.pending_pastes.clear();
+                        self.history_idx = None;
+                        self.sel = 0;
+                    }
+                    let _ = self.draw();
+                }
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::ALT) => match code {
                     KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sync_attachments(); self.sel = 0; }
                     KeyCode::Delete => { self.textarea.delete_word_forward(); self.sync_attachments(); self.sel = 0; }
@@ -1034,11 +1047,16 @@ impl Tui {
                             self.sel = 0;
                         }
                         KeyCode::Esc => {
-                            self.textarea.set_text("");
-                            self.attachments.clear();
-                            self.pending_pastes.clear();
-                            self.history_idx = None;
-                            self.sel = 0;
+                            if !self.matches.is_empty() {
+                                self.matches.clear();
+                                self.sel = 0;
+                            } else {
+                                self.textarea.set_text("");
+                                self.attachments.clear();
+                                self.pending_pastes.clear();
+                                self.history_idx = None;
+                                self.sel = 0;
+                            }
                             let _ = self.draw();
                         }
                         KeyCode::Left => {

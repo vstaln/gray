@@ -15,12 +15,13 @@
   h1 { font-size:56px; font-weight:400; letter-spacing:-1px; }
   h1 span { color:var(--accent); }
   .tag { color:var(--dim); margin:8px 0 40px; }
-  h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px; color:var(--dim); margin:36px 0 12px; font-weight:400;}
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px; color:var(--dim); margin:36px 0 12px; font-weight:400; }
   pre, code { background:#1a1918; border-radius:6px; }
   pre { padding:16px 20px; overflow-x:auto; margin:8px 0; border-left:2px solid var(--accent); }
   code { padding:2px 6px; }
   .muted { color:var(--dim); font-size:14px; }
   a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
   table { width:100%; border-collapse:collapse; margin-top:8px; }
   td { padding:4px 0; vertical-align:top; }
   td:first-child { color:var(--accent); width:130px; }
@@ -30,30 +31,32 @@
   <h1>gray<span>.</span></h1>
   <p class="tag">a minimal agent harness. one binary. your machine, your keys.</p>
 
-  <h2>Install — Linux / WSL / macOS*</h2>
-  <pre>curl -fsSL https://gray.alignment.id/install.sh | sh</pre>
+  <h2>Install — Linux / macOS / WSL</h2>
+  <pre>curl -fsSL https://gray.alignment.id/install.sh | sh              # stable
+curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # beta (every push to main)</pre>
 
   <h2>Install — Windows (PowerShell)</h2>
   <pre>iwr https://gray.alignment.id/install.ps1 -UseBasicParsing | iex</pre>
-  <p class="muted">*macOS build coming soon — build from source in the meantime.</p>
+  <p class="muted">Windows runs through WSL — the script checks and guides you.</p>
 
   <h2>Run</h2>
-  <pre>export GRAY_API_KEY=sk-or-...        # openrouter.ai · deepseek.com · any OpenAI-compatible
-export GRAY_MODEL=deepseek/deepseek-chat
-gray                                  # interactive REPL
-gray --print "explain this repo"      # one-shot</pre>
+  <pre>gray                                  # interactive REPL — no setup forced
+gray -p "explain this repo"             # one-shot (also --print)
+gray -c                                 # resume last session
+echo "hi" | gray -p "summarize"</pre>
+  <p class="muted">First run drops you at the prompt. <code>/provider</code> picks a provider (free tier / API key / OAuth / local), <code>/model</code> picks a model. Env still works: <code>GRAY_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GRAY_MODEL</code>.</p>
 
   <h2>What it is</h2>
   <table>
-    <tr><td>loop</td><td>ReAct tool loop — streams, calls tools, feeds results back</td></tr>
-    <tr><td>tools</td><td>bash · read · write · edit</td></tr>
-    <tr><td>sessions</td><td>JSONL on your disk, resume-ready</td></tr>
-    <tr><td>size</td><td>one 6.5&nbsp;MB binary · no runtime · no node_modules</td></tr>
-    <tr><td>prompt</td><td>identity + engineering conventions, ~700 tokens total</td></tr>
+    <tr><td>loop</td><td>ReAct tool loop — streams text, calls tools, feeds results back</td></tr>
+    <tr><td>tools</td><td>bash · read · write · edit · grep · find · ls</td></tr>
+    <tr><td>sessions</td><td>JSONL on disk (<code>~/.gray/sessions</code>), <code>gray -c</code> to resume</td></tr>
+    <tr><td>size</td><td>one binary · no runtime · no node_modules</td></tr>
+    <tr><td>prompt</td><td>minimal — identity + guidelines, editable at <code>~/.gray/sys.md</code> (<code>/sys</code>)</td></tr>
   </table>
 
   <h2>Links</h2>
-  <p><a href="https://github.com/vstaln/gray">github.com/vstaln/gray</a> — source, MIT-spirited docs, design spec.</p>
+  <p><a href="https://github.com/vstaln/gray">github.com/vstaln/gray</a> — source, docs, MIT.</p>
   <p class="muted" style="margin-top:48px">one binary · your machine · your keys</p>
 </body>
 </html>
