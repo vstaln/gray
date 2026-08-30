@@ -59,7 +59,6 @@ pub struct Tui {
     pub is_task_running: bool,
     pub queued_inputs: std::collections::VecDeque<(String, Vec<PathBuf>)>,
     pending: String,
-    pub(crate) pending_partial_displayed: bool,
     truecolor: bool,
     thinking: bool,
     hide_thinking: bool,
@@ -78,7 +77,6 @@ pub struct Tui {
     pub cumulative_usage: Option<gray_core::event::Usage>,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
-    pub(crate) markdown_partial_displayed: bool,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     // Cron ticking UI — next due job for footer clock
     pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
@@ -153,7 +151,6 @@ impl Tui {
             is_task_running: false,
             queued_inputs: std::collections::VecDeque::new(),
             pending: String::new(),
-            pending_partial_displayed: false,
             truecolor: true,
             thinking: false,
             hide_thinking: false,
@@ -172,7 +169,6 @@ impl Tui {
             cumulative_usage: None,
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
             committed_markdown_lines: 0,
-            markdown_partial_displayed: false,
             pending_resize: None,
             next_cron: None,
             last_cron_tick: None,
@@ -262,25 +258,13 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         if !self.pending.is_empty() {
-            if self.pending_partial_displayed {
-                // Already displayed live as partial, avoid duplicate push
-                self.pending.clear();
-                self.pending_partial_displayed = false;
-            } else {
-                let rest = std::mem::take(&mut self.pending);
-                let style = if self.thinking { thinking_style() } else { Style::default() };
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.push_line_styled(line.to_string(), style);
-                    }
+            let rest = std::mem::take(&mut self.pending);
+            let style = if self.thinking { thinking_style() } else { Style::default() };
+            for line in rest.split('\n') {
+                if !line.is_empty() {
+                    self.push_line_styled(line.to_string(), style);
                 }
             }
-        } else if self.pending_partial_displayed {
-            self.pending_partial_displayed = false;
-        }
-        if self.markdown_partial_displayed && !self.transcript.is_empty() {
-            self.transcript.pop();
-            self.markdown_partial_displayed = false;
         }
         let output = std::mem::replace(
             &mut self.markdown_renderer,
@@ -292,7 +276,6 @@ impl Tui {
             self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
         }
         self.committed_markdown_lines = 0;
-        self.markdown_partial_displayed = false;
 
         let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
