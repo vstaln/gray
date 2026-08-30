@@ -1,11 +1,13 @@
 use chrono::{DateTime, Utc};
 use std::str::FromStr;
 
-/// Parsed schedule — either a cron expression (5 fields) or a simple interval.
+/// Parsed schedule — stolen from hermes-rs/crates/hermes-cron/src/jobs.rs:387
+/// Kinds: Cron (recurring), Interval (recurring every X), Once (one-shot at time)
 #[derive(Debug, Clone)]
 pub enum Schedule {
     Cron(cron::Schedule),
     Interval(std::time::Duration),
+    Once(DateTime<Utc>),
 }
 
 impl Schedule {
@@ -13,9 +15,23 @@ impl Schedule {
         match self {
             Schedule::Cron(s) => s.after(&after).next(),
             Schedule::Interval(d) => Some(after + chrono::Duration::from_std(*d).ok()?),
+            Schedule::Once(at) => {
+                if *at > after {
+                    Some(*at)
+                } else {
+                    // hermes ONESHOT_GRACE_SECONDS=120: keep due for 2m past time
+                    let grace = chrono::Duration::seconds(120);
+                    if *at + grace >= after {
+                        Some(*at)
+                    } else {
+                        None
+                    }
+                }
+            }
         }
     }
 
+    /// Human display — hermes ParsedSchedule.display
     pub fn display(&self) -> String {
         match self {
             Schedule::Cron(s) => s.to_string(),
@@ -29,18 +45,87 @@ impl Schedule {
                     format!("every {}s", secs)
                 }
             }
+            Schedule::Once(at) => format!("once at {}", at.format("%Y-%m-%d %H:%M UTC")),
         }
+    }
+
+    pub fn is_once(&self) -> bool {
+        matches!(self, Schedule::Once(_))
     }
 }
 
-/// Parse a schedule string.
+/// Parse a schedule string — hermes/jobs.rs:545 but Gray keeps bare "10m" as Interval for compat
 ///
-/// Supports:
-/// - cron: "0 * * * *", "0 0 * * *", "*/5 * * * *"
-/// - interval: "every 10m", "every 1h", "every 30s", "every 2h30m" (simple)
+/// Supports (hermes compatible):
+/// - cron: "0 * * * *", "0 9 * * *" (5 fields, prepends sec 0)
+/// - interval: "every 10m", "every 1h" (recurring)
+/// - once: "in 10m", "once in 30m", "2026-02-03T14:00", "2026-02-03 14:30" (one-shot)
+/// - bare "10m" → Interval (Gray compat, hermes would be Once)
 pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
     let trimmed = s.trim();
-    // Try cron first if it looks like 5 fields (add seconds)
+    let lower = trimmed.to_lowercase();
+
+    // "in 10m" / "in 2h" / "once in 10m" → Once (AI self-scheduling)
+    if let Some(rest) = lower.strip_prefix("in ") {
+        let dur = parse_duration(rest.trim())?;
+        if dur.as_secs() == 0 {
+            anyhow::bail!("interval must be > 0");
+        }
+        let at = Utc::now() + chrono::Duration::from_std(dur).unwrap_or(chrono::Duration::seconds(0));
+        return Ok(Schedule::Once(at));
+    }
+    if let Some(rest) = lower.strip_prefix("once in ") {
+        let dur = parse_duration(rest.trim())?;
+        if dur.as_secs() == 0 {
+            anyhow::bail!("interval must be > 0");
+        }
+        let at = Utc::now() + chrono::Duration::from_std(dur).unwrap_or(chrono::Duration::seconds(0));
+        return Ok(Schedule::Once(at));
+    }
+    if lower.starts_with("once at ") {
+        let ts = trimmed[8..].trim();
+        if let Some(dt) = parse_timestamp(ts) {
+            return Ok(Schedule::Once(dt));
+        }
+    }
+
+    // ISO timestamp like "2026-02-03T14:00" or "2026-02-03 14:30" → Once
+    if looks_like_timestamp(trimmed) {
+        if let Some(dt) = parse_timestamp(trimmed) {
+            return Ok(Schedule::Once(dt));
+        }
+    }
+
+    // Try cron first if it looks like 5 fields (hermes cron gate: first 5 fields digit/*-,/)
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if (5..=6).contains(&parts.len())
+        && parts[..5].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || "*-/,".contains(c)))
+    {
+        let cron_candidate = if parts.len() == 5 {
+            format!("0 {trimmed}")
+        } else {
+            trimmed.to_string()
+        };
+        if let Ok(sched) = cron::Schedule::from_str(&cron_candidate) {
+            return Ok(Schedule::Cron(sched));
+        }
+    }
+
+    // Interval: "every <duration>"
+    if let Some(rest) = lower.strip_prefix("every ") {
+        let dur = parse_duration(rest.trim())?;
+        if dur.as_secs() == 0 {
+            anyhow::bail!("interval must be > 0");
+        }
+        return Ok(Schedule::Interval(dur));
+    }
+    // Bare duration like "10m" → Interval (Gray compat)
+    if let Ok(dur) = parse_duration(trimmed) {
+        if dur.as_secs() > 0 {
+            return Ok(Schedule::Interval(dur));
+        }
+    }
+    // Fallback cron try
     let cron_candidate = if trimmed.split_whitespace().count() == 5 {
         format!("0 {trimmed}")
     } else {
@@ -49,36 +134,44 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
     if let Ok(sched) = cron::Schedule::from_str(&cron_candidate) {
         return Ok(Schedule::Cron(sched));
     }
-    // Try interval: "every <duration>"
-    if let Some(rest) = trimmed.strip_prefix("every ") {
-        let dur = parse_duration(rest.trim())?;
-        if dur.as_secs() == 0 {
-            anyhow::bail!("interval must be > 0");
-        }
-        return Ok(Schedule::Interval(dur));
-    }
-    // Also allow bare duration like "10m"
-    if let Ok(dur) = parse_duration(trimmed) {
-        if dur.as_secs() > 0 {
-            return Ok(Schedule::Interval(dur));
-        }
-    }
-    // Fallback: try cron with seconds prepended if needed
-    let with_secs = if trimmed.split_whitespace().count() == 5 {
-        format!("0 {trimmed}")
-    } else {
-        trimmed.to_string()
-    };
-    if let Ok(sched) = cron::Schedule::from_str(&with_secs) {
-        return Ok(Schedule::Cron(sched));
-    }
     if let Ok(sched) = cron::Schedule::from_str(trimmed) {
         return Ok(Schedule::Cron(sched));
     }
     anyhow::bail!(
-        "invalid schedule '{}' — use cron '0 * * * *' or 'every 10m' / 'every 1h'",
+        "invalid schedule '{}' — use cron '0 * * * *', 'every 10m', 'in 10m', or '2026-02-03T14:00'",
         s
     )
+}
+
+fn looks_like_timestamp(s: &str) -> bool {
+    s.contains('T')
+        || s.get(..10)
+            .is_some_and(|p| chrono::NaiveDate::parse_from_str(p, "%Y-%m-%d").is_ok())
+}
+
+fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone};
+    let s = s.replace('Z', "+00:00");
+    if let Ok(dt) = DateTime::parse_from_rfc3339(&s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    for fmt in [
+        "%Y-%m-%dT%H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+    ] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(&s, fmt) {
+            return Some(Utc.from_utc_datetime(&naive));
+        }
+    }
+    if let Ok(d) = NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d") {
+        if let Some(ndt) = d.and_hms_opt(0, 0, 0) {
+            return Some(Utc.from_utc_datetime(&ndt));
+        }
+    }
+    None
 }
 
 fn parse_duration(s: &str) -> anyhow::Result<std::time::Duration> {
@@ -114,7 +207,30 @@ fn parse_duration(s: &str) -> anyhow::Result<std::time::Duration> {
 
 pub fn compute_next_run(schedule_str: &str, from: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let sched = parse_schedule(schedule_str).ok()?;
+    // For Once, next_after handles grace; but hermes semantics: Once only fires once — if from >= run_at + grace, None
+    // So just delegate to sched.next_after
     sched.next_after(from)
+}
+
+/// Hermes compat: compute next run from stored schedule string + last_run
+/// Used by store.rs for updating next_run after a fire
+pub fn compute_next_run_after(schedule_str: &str, last_run: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+    let sched = parse_schedule(schedule_str).ok()?;
+    match &sched {
+        Schedule::Once(at) => {
+            // Once only fires once — if already run, no next
+            if last_run.is_some() {
+                return None;
+            }
+            // Check grace: if at is past + 120s, don't schedule
+            let now = Utc::now();
+            if *at < now - chrono::Duration::seconds(120) {
+                return None;
+            }
+            Some(*at)
+        }
+        _ => sched.next_after(last_run.unwrap_or_else(Utc::now)),
+    }
 }
 
 #[cfg(test)]
@@ -133,10 +249,28 @@ mod tests {
         assert!(matches!(s2, Schedule::Interval(d) if d.as_secs() == 3600));
     }
     #[test]
+    fn parses_once_in() {
+        let s = parse_schedule("in 10m").unwrap();
+        assert!(matches!(s, Schedule::Once(_)));
+        let s2 = parse_schedule("once in 1h").unwrap();
+        assert!(matches!(s2, Schedule::Once(_)));
+        let s3 = parse_schedule("2026-02-03T14:00:00Z").unwrap();
+        assert!(matches!(s3, Schedule::Once(_)));
+    }
+    #[test]
     fn next_run_interval() {
         let s = parse_schedule("every 10m").unwrap();
         let now = Utc::now();
         let next = s.next_after(now).unwrap();
         assert!(next > now);
+    }
+    #[test]
+    fn once_grace() {
+        let past = Utc::now() - chrono::Duration::seconds(300);
+        let s = Schedule::Once(past);
+        assert!(s.next_after(Utc::now()).is_none()); // past grace
+        let near = Utc::now() + chrono::Duration::seconds(60);
+        let s2 = Schedule::Once(near);
+        assert!(s2.next_after(Utc::now()).is_some());
     }
 }

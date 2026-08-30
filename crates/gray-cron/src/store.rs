@@ -366,7 +366,10 @@ pub fn list_jobs() -> Vec<CronJob> {
 }
 
 pub fn create_job(name: String, schedule: String, prompt: String) -> anyhow::Result<CronJob> {
-    crate::schedule::parse_schedule(&schedule)?;
+    let sched = crate::schedule::parse_schedule(&schedule)?;
+    if sched.is_once() && sched.next_after(Utc::now()).is_none() {
+        anyhow::bail!("one-shot time is in the past (beyond 2m grace) — use a future time like 'in 10m' or '2026-09-01T14:00'");
+    }
     let store = CronStorePaths::active();
     with_jobs_lock(&store, || {
         let mut jobs = load_jobs_inner(&store);
@@ -401,7 +404,15 @@ pub fn update_job_run(id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
         let mut jobs = load_jobs_inner(&store);
         if let Some(job) = jobs.iter_mut().find(|j| j.id == id) {
             job.last_run = Some(now);
-            job.next_run = crate::schedule::compute_next_run(&job.schedule, now);
+            // Herme s once logic: no next after first fire
+            let is_once = crate::schedule::parse_schedule(&job.schedule)
+                .map(|s| s.is_once())
+                .unwrap_or(false);
+            if is_once {
+                job.next_run = None;
+            } else {
+                job.next_run = crate::schedule::compute_next_run(&job.schedule, now);
+            }
         }
         save_jobs_inner(&store, jobs, &[], false)?;
         Ok(())
