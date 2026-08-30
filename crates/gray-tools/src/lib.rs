@@ -6,6 +6,7 @@
 //! annotation; error outputs are additionally hard-capped at 2 KiB.
 
 pub mod bash;
+pub mod cron_tool;
 pub mod edit;
 pub mod edit_diff;
 pub mod find;
@@ -25,6 +26,7 @@ use gray_core::message::ToolDef;
 use serde_json::Value;
 
 pub use bash::BashTool;
+pub use cron_tool::CronTool;
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
@@ -79,13 +81,14 @@ impl Registry {
         Self::default()
     }
 
-    /// Coding bundle: read + bash + edit + write (mirrors pi's `createCodingTools`).
+    /// Coding bundle: read + bash + edit + write + cron (mirrors pi's `createCodingTools`).
     pub fn coding() -> Self {
         let mut reg = Self::new();
         reg.register(Box::new(BashTool));
         reg.register(Box::new(ReadTool));
         reg.register(Box::new(WriteTool));
         reg.register(Box::new(EditTool));
+        reg.register(Box::new(CronTool));
         reg
     }
 
@@ -446,7 +449,7 @@ mod tests {
         use gray_core::agent::ToolContext;
         let dir = tempfile::tempdir().unwrap();
         let reg = Registry::builtin();
-        assert_eq!(reg.len(), 4);
+        assert_eq!(reg.len(), 5);
         let ctx = ToolContext {
             cwd: dir.path().to_path_buf(),
             cancel: Default::default(),
@@ -462,7 +465,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.path().join("a.txt")).unwrap(), "hi");
         assert_eq!(
             reg.defs().iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
-            vec!["bash", "read", "write", "edit"]
+            vec!["bash", "read", "write", "edit", "schedule_task"]
         );
         assert!(reg.get("read").is_some());
         assert!(reg.get("nope").is_none());

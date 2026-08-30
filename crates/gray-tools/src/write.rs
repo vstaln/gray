@@ -168,8 +168,9 @@ mod tests {
     async fn missing_arguments_are_errors() {
         let dir = tempfile::tempdir().unwrap();
         let c = ctx(dir.path());
+        // content is optional (defaults to ""), only path is required
         let out = WriteTool.execute(&c, json!({"path": "a.txt"})).await;
-        assert!(out.is_error);
+        assert!(!out.is_error, "write with only path should succeed (empty file): {}", out.content);
         let out = WriteTool.execute(&c, json!({"content": "x"})).await;
         assert!(out.is_error);
     }
