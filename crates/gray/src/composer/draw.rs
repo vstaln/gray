@@ -159,13 +159,21 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
         let box_h = box_lines.len().max(1) as u16;
-        let panel_h: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
         let has_attach = !tui.attachments.is_empty();
         let attach_h: u16 = if has_attach { 1 } else { 0 };
         let has_status = tui.status.is_some();
 
         let gap_h: u16 = 1;
         let status_h: u16 = if has_status { 1 } else { 0 };
+
+        let avail_panel_h = (area.height.saturating_sub(box_h + attach_h + 1) as usize).min(PANEL_ROWS);
+        let visible_count = if !tui.matches.is_empty() {
+            tui.matches.len().min(avail_panel_h)
+        } else {
+            0
+        };
+        let panel_h: u16 = visible_count as u16;
+
         let (status_y, box_y, panel_y, attach_y, footer_y) = if !tui.matches.is_empty() {
             let box_y = area.y;
             let panel_y = box_y + box_h;
@@ -214,9 +222,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        if !tui.matches.is_empty() {
-            let start = tui.sel.saturating_sub(PANEL_ROWS.saturating_sub(1)).min(tui.sel);
-            let visible_count = tui.matches.len().min(PANEL_ROWS);
+        if !tui.matches.is_empty() && visible_count > 0 {
+            let start = tui.sel.saturating_sub(visible_count.saturating_sub(1)).min(tui.sel);
             for (i, (name, desc)) in tui.matches.iter().enumerate().skip(start).take(visible_count) {
                 let y = (i - start) as u16;
                 let item_y = panel_y + y;
@@ -226,18 +233,30 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 let is_sel = i == tui.sel;
                 let cmd_str = format!(" /{name} ");
                 let desc_str = format!(" {desc} ");
+                let used_len = cmd_str.chars().count() + desc_str.chars().count();
+                let pad_len = w.saturating_sub(used_len);
+                let line_bg = if is_sel {
+                    Color::Rgb(246, 173, 126)
+                } else {
+                    Color::Rgb(28, 28, 28)
+                };
                 let line = if is_sel {
                     Line::from(vec![
-                        Span::styled(cmd_str, Style::default().fg(Color::Black).bg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
-                        Span::styled(desc_str, Style::default().fg(Color::Rgb(40, 40, 40)).bg(Color::Rgb(246, 173, 126))),
+                        Span::styled(cmd_str, Style::default().fg(Color::Black).bg(line_bg).add_modifier(Modifier::BOLD)),
+                        Span::styled(desc_str, Style::default().fg(Color::Rgb(40, 40, 40)).bg(line_bg)),
+                        Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
                     ])
                 } else {
                     Line::from(vec![
-                        Span::styled(cmd_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(Color::Rgb(28, 28, 28))),
-                        Span::styled(desc_str, Style::default().fg(Color::Rgb(140, 140, 140)).bg(Color::Rgb(28, 28, 28))),
+                        Span::styled(cmd_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(line_bg)),
+                        Span::styled(desc_str, Style::default().fg(Color::Rgb(140, 140, 140)).bg(line_bg)),
+                        Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
                     ])
                 };
-                frame.render_widget(Paragraph::new(line), Rect::new(area.x, item_y, area.width, 1));
+                frame.render_widget(
+                    Paragraph::new(line).block(Block::default().style(Style::default().bg(line_bg))),
+                    Rect::new(area.x, item_y, area.width, 1),
+                );
             }
         }
 
