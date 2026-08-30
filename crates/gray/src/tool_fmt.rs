@@ -651,7 +651,7 @@ pub fn format_tool_result_lines_with_context(
         }
         let mut lines = Vec::new();
         for (i, l) in trimmed.lines().take(8).enumerate() {
-            let prefix = if i == 0 { "  ✗ " } else { "    " };
+            let prefix = if i == 0 { " ✗ " } else { "   " };
             lines.push(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(DIFF_DELETE_FG).add_modifier(Modifier::BOLD)),
                 Span::styled((*l).to_string(), Style::default().fg(DIFF_DELETE_FG)),
@@ -721,34 +721,34 @@ pub fn format_tool_result_lines_with_context(
 
     let bg = Color::Rgb(30, 30, 30);
     let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-    lines.push(bg_line(Line::from(Span::styled("  ", Style::default().bg(bg))), bg, term_w));
+    lines.push(bg_line(Line::from(Span::styled(" ", Style::default().bg(bg))), bg, term_w));
     if total <= MAX_TOTAL_LINES {
         for l in raw_lines {
             lines.push(bg_line(Line::from(vec![
-                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(" ", Style::default().bg(bg)),
                 Span::styled(l.to_string(), Style::default().fg(text_dim).bg(bg)),
             ]).style(Style::default().bg(bg)), bg, term_w));
         }
     } else {
         for l in raw_lines.iter().take(MAX_HEAD_LINES) {
             lines.push(bg_line(Line::from(vec![
-                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(" ", Style::default().bg(bg)),
                 Span::styled((*l).to_string(), Style::default().fg(text_dim).bg(bg)),
             ]).style(Style::default().bg(bg)), bg, term_w));
         }
         let omitted = total.saturating_sub(MAX_HEAD_LINES + MAX_TAIL_LINES);
         lines.push(bg_line(Line::from(vec![
-            Span::styled("  ", Style::default().bg(bg)),
+            Span::styled(" ", Style::default().bg(bg)),
             Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).bg(bg).add_modifier(Modifier::ITALIC)),
         ]).style(Style::default().bg(bg)), bg, term_w));
         for l in raw_lines.iter().skip(total - MAX_TAIL_LINES) {
             lines.push(bg_line(Line::from(vec![
-                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(" ", Style::default().bg(bg)),
                 Span::styled((*l).to_string(), Style::default().fg(text_dim).bg(bg)),
             ]).style(Style::default().bg(bg)), bg, term_w));
         }
     }
-    lines.push(bg_line(Line::from(Span::styled("  ", Style::default().bg(bg))), bg, term_w));
+    lines.push(bg_line(Line::from(Span::styled(" ", Style::default().bg(bg))), bg, term_w));
     lines
 }
 

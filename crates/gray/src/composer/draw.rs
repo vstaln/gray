@@ -52,7 +52,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let area = frame.area();
 
         let text = tui.textarea.text().to_string();
-        let content_w = w.saturating_sub(6).max(1);
+        let content_w = w.saturating_sub(4).max(1);
 
         // Neutral Gray palette (no blue)
         let bg_color = Color::Rgb(22, 22, 22);
@@ -64,7 +64,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
         // Prompt input rows
-        let prompt_arrow = "  ❯ ";
+        let prompt_arrow = " ❯ ";
         let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
         let mut cur_row = 0usize;
@@ -74,7 +74,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         if text.is_empty() {
             box_lines.push(Line::from(vec![
                 arrow_span.clone(),
-                Span::styled(" ".repeat(w.saturating_sub(4)), Style::default().bg(bg_color)),
+                Span::styled(" ".repeat(w.saturating_sub(3)), Style::default().bg(bg_color)),
             ]));
             cur_row = 0;
             cur_col = 0;
@@ -88,7 +88,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 let prefix_span = if i == 0 {
                     arrow_span.clone()
                 } else {
-                    Span::styled("    ", Style::default().bg(bg_color))
+                    Span::styled("   ", Style::default().bg(bg_color))
                 };
 
                 let line_len_bytes = raw_line.len();
@@ -98,7 +98,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 if raw_line.is_empty() {
                     box_lines.push(Line::from(vec![
                         prefix_span,
-                        Span::styled(" ".repeat(w.saturating_sub(4)), Style::default().bg(bg_color)),
+                        Span::styled(" ".repeat(w.saturating_sub(3)), Style::default().bg(bg_color)),
                     ]));
                     if has_cursor {
                         cur_row = row_count;
@@ -114,7 +114,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         let s: String = chunk.iter().collect();
                         let chunk_byte_len: usize = chunk.iter().map(|c| c.len_utf8()).sum();
                         let s_len = chunk.len();
-                        let pad_len = w.saturating_sub(4 + s_len);
+                        let pad_len = w.saturating_sub(3 + s_len);
 
                         if chunk_idx == 0 {
                             box_lines.push(Line::from(vec![
@@ -124,7 +124,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                             ]));
                         } else {
                             box_lines.push(Line::from(vec![
-                                Span::styled("    ", Style::default().bg(bg_color)),
+                                Span::styled("   ", Style::default().bg(bg_color)),
                                 Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
                                 Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                             ]));
@@ -199,7 +199,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         if let Some((started, label)) = &tui.status {
             if status_y < area.y + area.height {
-                let label_text = format!("  \u{2b21} {label}\u{2026}");
+                let label_text = format!(" \u{2b21} {label}\u{2026}");
                 let mut spans = shimmer_spans(&label_text, started.elapsed(), tui.truecolor);
                 let elapsed = started.elapsed();
                 let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
@@ -331,7 +331,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         });
         let cron_len = cron_display.as_ref().map(|(s,_)| s.chars().count() + 3).unwrap_or(0);
         let right_len = if model_display.is_empty() { effort_display.chars().count() } else { model_display.chars().count() + 3 + effort_display.chars().count() };
-        let left_len = 2 + ctx_display.chars().count() + 3 + cache_display.chars().count() + cron_len;
+        let left_len = 1 + ctx_display.chars().count() + 3 + cache_display.chars().count() + cron_len;
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
@@ -341,7 +341,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
 
         let mut footer_spans = vec![
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(ctx_display, Style::default().fg(Color::Rgb(108, 108, 108))),
             Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))),
             Span::styled(cache_display, Style::default().fg(cache_color)),
@@ -365,7 +365,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        let cur_x = (area.x + 4 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
+        let cur_x = (area.x + 3 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
         let cur_y = (box_y + 1 + cur_row as u16).min(area.y + area.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cur_x, cur_y));
     })?;
