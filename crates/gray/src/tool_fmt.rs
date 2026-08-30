@@ -721,6 +721,7 @@ pub fn format_tool_result_lines_with_context(
 
     let bg = Color::Rgb(30, 30, 30);
     let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+    lines.push(bg_line(Line::from(Span::styled("  ", Style::default().bg(bg))), bg, term_w));
     if total <= MAX_TOTAL_LINES {
         for l in raw_lines {
             lines.push(bg_line(Line::from(vec![
@@ -747,6 +748,7 @@ pub fn format_tool_result_lines_with_context(
             ]).style(Style::default().bg(bg)), bg, term_w));
         }
     }
+    lines.push(bg_line(Line::from(Span::styled("  ", Style::default().bg(bg))), bg, term_w));
     lines
 }
 

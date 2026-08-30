@@ -183,8 +183,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else if has_status {
             let status_y = area.y;
-            let box_y = status_y + status_h;
-            // ensure exactly 1 row separation before prompt is handled by status being 1 row; box_lines top padding already provides the prompt border
+            let box_y = (status_y + status_h + 1).min(area.y + area.height.saturating_sub(box_h));
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
             let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));

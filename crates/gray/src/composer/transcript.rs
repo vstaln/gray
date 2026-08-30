@@ -311,6 +311,7 @@ impl Tui {
         let toks = (chunk.chars().count() + 3) / 4;
         self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
+        self.ensure_gap(1);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
             self.set_status(Some("Working"));
         }
@@ -388,6 +389,7 @@ impl Tui {
         self.transcript.extend(lines);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
+        self.ensure_gap(1);
     }
 
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
