@@ -524,16 +524,16 @@ pub fn render_diff_hunks(
                 };
                 lines.push(line_obj);
             }
-            // bottom separator for this hunk
-            if let Some(bg) = hunk.iter().find_map(|l| match l.tag {
-                DiffTag::Insert => Some(DIFF_INSERT_BG),
-                DiffTag::Delete => Some(DIFF_DELETE_BG),
-                DiffTag::Equal => None,
-            }) {
-                lines.push(separator_line(term_w, Some(bg)));
-            } else {
-                lines.push(separator_line(term_w, None));
-            }
+        }
+        // bottom separator for this hunk (once per hunk, not per line)
+        if let Some(bg) = hunk.iter().find_map(|l| match l.tag {
+            DiffTag::Insert => Some(DIFF_INSERT_BG),
+            DiffTag::Delete => Some(DIFF_DELETE_BG),
+            DiffTag::Equal => None,
+        }) {
+            lines.push(separator_line(term_w, Some(bg)));
+        } else {
+            lines.push(separator_line(term_w, None));
         }
     }
 
