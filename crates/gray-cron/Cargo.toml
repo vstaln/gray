@@ -16,3 +16,4 @@ log = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tempfile = { workspace = true }
+serde_yaml = "0.9"

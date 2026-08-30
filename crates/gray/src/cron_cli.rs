@@ -74,15 +74,26 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
             }
         }
         CronCmd::Run => {
+            use gray_cron::Scheduler;
+            use std::sync::Arc;
             println!("gray cron daemon running — checking every 60s (Ctrl-C to stop)...");
-            // Simple blocking loop; in real use you'd spawn this via `gray cron run &` or systemd
+            let scheduler = Scheduler::from_active();
+            let guard = Arc::new(gray_cron::InflightGuard::new());
             loop {
-                let jobs = gray_cron::list_jobs();
-                let due = gray_cron::due_jobs(&jobs);
-                for job in due {
-                    println!("→ running cron job {} (\"{}\"): {}", job.id, job.name, job.prompt);
-                    let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
-                    // TODO: actually spawn an agent run for the prompt when daemon is wired to gray-core
+                match scheduler.scan_due_jobs() {
+                    Ok(due) => {
+                        for job in due {
+                            if !guard.try_register_running_job(&job.id) {
+                                continue;
+                            }
+                            println!("→ running cron job {} (\"{}\"): {}", job.id, job.name, job.prompt);
+                            let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
+                            // Daemon headless: for now log + update; REPL background will run Agent.
+                            // One-shot jobs: next_run=None after update, so they won't refire.
+                            guard.release_running_job(&job.id);
+                        }
+                    }
+                    Err(e) => eprintln!("cron scan failed: {e}"),
                 }
                 std::thread::sleep(std::time::Duration::from_secs(60));
             }

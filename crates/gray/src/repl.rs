@@ -1086,6 +1086,43 @@ pub async fn run_repl_mode(
         (shared, stop)
     });
 
+    // Cron background — stolen from hermes Scheduler tick (Step 3)
+    // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward), deduped by InflightGuard.
+    // For now logs + updates next_run + pushes dim; Agent run will be added when session wiring lands.
+    {
+        let cron_tui = tui.clone();
+        let cron_cwd = cwd.clone();
+        let cron_config = config.clone();
+        tokio::spawn(async move {
+            use gray_cron::Scheduler;
+            use std::sync::Arc;
+            let scheduler = Scheduler::from_active();
+            let guard = Arc::new(gray_cron::InflightGuard::new());
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            // First tick immediate is at creation; skip it
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let due = match scheduler.scan_due_jobs() {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                for job in due {
+                    if !guard.try_register_running_job(&job.id) {
+                        continue;
+                    }
+                    let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
+                    if let Some((shared, _)) = cron_tui.as_ref() {
+                        if let Ok(mut t) = shared.try_lock() {
+                            t.push_dim(format!("⏰ cron '{}' due: {}", job.name, job.prompt));
+                        }
+                    }
+                    guard.release_running_job(&job.id);
+                }
+            }
+        });
+    }
+
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Default hidden (codex-style) — prevents reasoning spill into transcript (see screenshot).
     let mut hide_thinking = false;
