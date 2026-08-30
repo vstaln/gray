@@ -738,10 +738,6 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
 
     let transcript = &bg.transcript;
     if transcript.len() <= transcript_avail_h {
-        let top_pad = transcript_avail_h.saturating_sub(transcript.len());
-        for _ in 0..top_pad {
-            full_screen_lines.push(Line::from(""));
-        }
         for l in transcript {
             full_screen_lines.push(dim_line(l));
         }
@@ -815,12 +811,8 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    let use_alt = !was_raw;
-    if use_alt {
-        crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
-    } else {
-        crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
-    }
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    let _ = crossterm::terminal::size();
 
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -1428,17 +1420,15 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
     })();
 
     let _ = terminal.clear();
-    if use_alt {
-        crossterm::execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::cursor::Show,
-        )?;
-    } else {
-        crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
-    }
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::cursor::Show,
+    );
     if !was_raw {
         let _ = disable_raw_mode();
+    } else {
+        let _ = enable_raw_mode();
     }
     let _ = std::io::stdout().flush();
 
@@ -1488,12 +1478,8 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    let use_alt = !was_raw;
-    if use_alt {
-        crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
-    } else {
-        crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
-    }
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    let _ = crossterm::terminal::size();
 
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -1726,17 +1712,15 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
     })();
 
     let _ = terminal.clear();
-    if use_alt {
-        crossterm::execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::cursor::Show,
-        )?;
-    } else {
-        crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
-    }
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::cursor::Show,
+    );
     if !was_raw {
         let _ = disable_raw_mode();
+    } else {
+        let _ = enable_raw_mode();
     }
     let _ = std::io::stdout().flush();
 
@@ -1772,12 +1756,8 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    let use_alt = !was_raw;
-    if use_alt {
-        crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
-    } else {
-        crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
-    }
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    let _ = crossterm::terminal::size();
 
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -1912,17 +1892,15 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
     })();
 
     let _ = terminal.clear();
-    if use_alt {
-        crossterm::execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::cursor::Show,
-        )?;
-    } else {
-        crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
-    }
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::cursor::Show,
+    );
     if !was_raw {
         let _ = disable_raw_mode();
+    } else {
+        let _ = enable_raw_mode();
     }
     let _ = std::io::stdout().flush();
 

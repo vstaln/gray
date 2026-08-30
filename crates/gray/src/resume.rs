@@ -204,12 +204,8 @@ fn run_picker_sync(
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    let use_alt = !was_raw;
-    if use_alt {
-        crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
-    } else {
-        crossterm::execute!(stdout_handle, crossterm::cursor::Hide)?;
-    }
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
@@ -467,17 +463,15 @@ fn run_picker_sync(
     })();
 
     let _ = terminal.clear();
-    if use_alt {
-        crossterm::execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::cursor::Show,
-        )?;
-    } else {
-        crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
-    }
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        LeaveAlternateScreen,
+        crossterm::cursor::Show,
+    );
     if !was_raw {
         let _ = disable_raw_mode();
+    } else {
+        let _ = enable_raw_mode();
     }
     let _ = std::io::stdout().flush();
     result
