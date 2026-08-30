@@ -276,6 +276,12 @@ impl Tui {
     }
 
     pub fn stream(&mut self, chunk: &str) {
+        // If previous partial was displayed, remove it so new extended partial replaces it in transcript
+        // (terminal scrollback duplicate is tolerated for ponytail live preview)
+        if self.pending_partial_displayed && !self.transcript.is_empty() {
+            self.transcript.pop();
+            self.pending_partial_displayed = false;
+        }
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
@@ -285,6 +291,12 @@ impl Tui {
             }
             let style = if self.thinking { thinking_style() } else { Style::default() };
             self.push_line_styled(trimmed.to_string(), style);
+        }
+        // Live partial: show remaining pending without waiting for \n
+        if !self.pending.is_empty() {
+            let style = if self.thinking { thinking_style() } else { Style::default() };
+            self.push_line_styled(self.pending.clone(), style);
+            self.pending_partial_displayed = true;
         }
         let _ = self.draw();
     }
@@ -315,6 +327,11 @@ impl Tui {
         }
         let clean = strip_ansi(chunk);
         self.markdown_renderer.push_and_render(&clean, Some(gray_markdown::get_syntect()));
+        // Remove previous markdown partial preview before pushing new content
+        if self.markdown_partial_displayed && !self.transcript.is_empty() {
+            self.transcript.pop();
+            self.markdown_partial_displayed = false;
+        }
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
             let view = self.markdown_renderer.view();
@@ -323,6 +340,16 @@ impl Tui {
             let offset = self.committed_markdown_lines;
             self.committed_markdown_lines = frozen_len;
             self.push_styled_lines_with_hyperlinks(new_lines, &hyperlinks, offset);
+        }
+        // Live unfrozen line preview: show current incomplete markdown line immediately
+        let view = self.markdown_renderer.view();
+        if view.lines.len() > frozen_len {
+            let partial_line = view.lines[frozen_len].clone();
+            // Filter hyperlinks for this line only
+            let partial_hls: Vec<HyperlinkTarget> = view.hyperlinks.iter().filter(|h| h.line_index == frozen_len).cloned().collect();
+            // Clone offset is frozen_len for this single line
+            self.push_styled_lines_with_hyperlinks(vec![partial_line], &partial_hls, frozen_len);
+            self.markdown_partial_displayed = true;
         }
         let _ = self.draw();
     }
@@ -337,8 +364,17 @@ impl Tui {
         self.thinking = false;
         if !self.hide_thinking {
             if !self.pending.is_empty() {
-                let rest = std::mem::take(&mut self.pending);
-                self.push_line_styled(rest, thinking_style());
+                if self.pending_partial_displayed {
+                    // Already live-displayed as partial, just clear and reset flag (avoid duplicate)
+                    self.pending.clear();
+                    self.pending_partial_displayed = false;
+                } else {
+                    let rest = std::mem::take(&mut self.pending);
+                    self.push_line_styled(rest, thinking_style());
+                }
+            } else if self.pending_partial_displayed {
+                // Edge: pending was empty but flag still set (shouldn't happen), clear flag
+                self.pending_partial_displayed = false;
             }
             if spacer {
                 if self.transcript.last().map(|l| l.width() != 0).unwrap_or(true) {
@@ -347,6 +383,7 @@ impl Tui {
             }
         } else {
             self.pending.clear();
+            self.pending_partial_displayed = false;
         }
     }
 

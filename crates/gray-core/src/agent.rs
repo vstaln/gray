@@ -263,6 +263,8 @@ impl Agent {
             let mut text_parts: Vec<String> = Vec::new();
             let mut thinking_parts: Vec<String> = Vec::new();
             let mut pending: Vec<PendingToolCall> = Vec::new();
+            let mut pending_emitted_start: Vec<bool> = Vec::new();
+            // ponytail: emit ToolCallStart live as soon as name is known, so UI doesn't wait 50s for MessageComplete
             let (stop_reason, usage) = {
                 let mut stream = self.provider.stream(req);
                 loop {
@@ -304,15 +306,25 @@ impl Agent {
                             }
                             while pending.len() <= index {
                                 pending.push(PendingToolCall::default());
+                                pending_emitted_start.push(false);
                             }
                             let slot = &mut pending[index];
+                            let was_unnamed = slot.name.is_none();
                             if slot.id.is_none() {
                                 slot.id = id;
                             }
                             if slot.name.is_none() {
-                                slot.name = name;
+                                slot.name = name.clone();
                             }
                             slot.arguments.push_str(&arguments_delta);
+                            // Live emit: as soon as we know the tool name, tell the UI
+                            // so it can show "Preparing tool: bash…" instead of "Thinking... 53s".
+                            if was_unnamed && slot.name.is_some() && !pending_emitted_start[index] {
+                                let live_id = slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
+                                let live_name = slot.name.clone().unwrap_or_default();
+                                emit!(AgentEvent::tool_call_start(live_id, live_name));
+                                pending_emitted_start[index] = true;
+                            }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
                             break (stop_reason.unwrap_or(StopReason::EndTurn), usage.unwrap_or_default());
@@ -412,11 +424,13 @@ impl Agent {
                 }
             }
 
-            for (id, name, args) in tool_uses {
+            for (idx, (id, name, args)) in tool_uses.into_iter().enumerate() {
                 if ctx.cancel.is_cancelled() {
                     return Err(CoreError::Cancelled);
                 }
-                emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
+                if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
+                    emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
+                }
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
                 let output = tokio::select! {

@@ -1931,11 +1931,13 @@ pub async fn run_repl_mode(
                                 AgentEvent::TextDelta { delta } => t.stream_text(delta),
                                 AgentEvent::ToolCallStart { name, .. } => {
                                     t.end_thinking();
+                                    t.set_status(Some(&format!("Calling tool: {}", name)));
                                     current_tool_name = Some(name.clone());
                                     current_tool_args = None;
                                 }
                                 AgentEvent::ToolCallEnd { args, .. } => {
                                     t.end_thinking();
+                                    t.set_status(Some("Working"));
                                     let name = current_tool_name.as_deref().unwrap_or("tool");
                                     current_tool_args = Some(args.clone());
                                     let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd));
