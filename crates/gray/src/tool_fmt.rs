@@ -418,16 +418,6 @@ pub fn render_diff_hunks(
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-        // top separator for diff block
-        if !hunk.is_empty() {
-            // determine bg for separator: use Insert bg if any Insert, else Delete bg, else None
-            let sep_bg = hunk.iter().find_map(|l| match l.tag {
-                DiffTag::Insert => Some(DIFF_INSERT_BG),
-                DiffTag::Delete => Some(DIFF_DELETE_BG),
-                DiffTag::Equal => None,
-            });
-            lines.push(separator_line(term_w, sep_bg));
-        }
         let overhead = 2 + gutter_width + 3;
         let content_w = term_w.saturating_sub(overhead + 2).max(20);
         let wrap_text = |t: &str| -> Vec<String> {
@@ -524,16 +514,6 @@ pub fn render_diff_hunks(
                 };
                 lines.push(line_obj);
             }
-        }
-        // bottom separator for this hunk (once per hunk, not per line)
-        if let Some(bg) = hunk.iter().find_map(|l| match l.tag {
-            DiffTag::Insert => Some(DIFF_INSERT_BG),
-            DiffTag::Delete => Some(DIFF_DELETE_BG),
-            DiffTag::Equal => None,
-        }) {
-            lines.push(separator_line(term_w, Some(bg)));
-        } else {
-            lines.push(separator_line(term_w, None));
         }
     }
 
