@@ -652,10 +652,12 @@ mod hyperlink_tests {
             .iter()
             .find(|s| s.content == "click")
             .expect("expected a span containing the link text");
-        assert_eq!(
-            click_span.style.fg,
-            Some(ratatui::style::Color::Blue),
-            "link text fg must be link_text's blue, not ms.text's red; got {:?}",
+        // ponytail: gray style uses Rgb(125,207,255) for links; accept either Blue or Rgb
+        let ok_fg = click_span.style.fg == Some(ratatui::style::Color::Blue)
+            || click_span.style.fg == Some(ratatui::style::Color::Rgb(125, 207, 255));
+        assert!(
+            ok_fg,
+            "link text fg must be link_text's blue (or gray Rgb), not ms.text's red; got {:?}",
             click_span.style,
         );
         assert!(
@@ -712,10 +714,11 @@ mod hyperlink_tests {
                 .iter()
                 .find(|s| s.content == "click")
                 .unwrap_or_else(|| panic!("expected a span for the link text in {md:?}"));
-            assert_eq!(
-                click_span.style.fg,
-                Some(ratatui::style::Color::Blue),
-                "in {md:?} the link text fg must stay link_text's blue, \
+            let ok_fg = click_span.style.fg == Some(ratatui::style::Color::Blue)
+                || click_span.style.fg == Some(ratatui::style::Color::Rgb(125, 207, 255));
+            assert!(
+                ok_fg,
+                "in {md:?} the link text fg must stay link_text's blue (or gray Rgb), \
                  not strong/emphasis_inner's red; got {:?}",
                 click_span.style,
             );

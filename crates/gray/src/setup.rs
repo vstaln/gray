@@ -703,13 +703,8 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         Line::from("").style(Style::default().bg(box_bg)),
     ];
 
-    let (max_tokens, max_label) = model_context_info(&bg.model_name);
-    let pct = if max_tokens > 0 {
-        (bg.used_tokens as f64 / max_tokens as f64 * 100.0).min(100.0)
-    } else {
-        0.0
-    };
-    let ctx_display = format!("{pct:.1}%/{max_label}");
+    let (_, max_label) = model_context_info(&bg.model_name);
+    let ctx_display = format!("{}/{}", format_context_length(bg.used_tokens), max_label);
     let cache_display = format!("{:.1}% cache", bg.cache_hit_rate * 100.0);
 
     let model_display = friendly_model_name(&bg.model_name);
@@ -1010,7 +1005,7 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                         // Input Box (inset colored block)
                         let input_content = if key_buf.is_empty() {
                             if existing_key.is_some() {
-                                Line::from(Span::styled(" (stored key exists \u{2014} press Enter to keep)", Style::default().fg(Color::Rgb(140, 140, 140)).bg(input_bg)))
+                                Line::from(Span::styled(" (stored key exists \u{2014} paste new key or Enter to update)", Style::default().fg(Color::Rgb(140, 140, 140)).bg(input_bg)))
                             } else {
                                 Line::from(vec![
                                     Span::styled(" Paste or type API key...", Style::default().fg(Color::Rgb(110, 110, 110)).bg(input_bg)),
@@ -1035,10 +1030,11 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                         };
                         frame.render_widget(Paragraph::new(note_line), Rect::new(inner.x, inner.y + 5, inner.width, 1));
 
-                        // Footer buttons (enter submit - no brackets)
+                        // Footer buttons (enter update / submit - no brackets)
+                        let action_label = if existing_key.is_some() { "update" } else { "submit" };
                         let footer = Line::from(vec![
                             Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
-                            Span::styled("submit", Style::default().fg(text_dim).bg(box_bg)),
+                            Span::styled(action_label, Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
                     }

@@ -295,7 +295,10 @@ impl Tui {
             self.turn_had_thinking = true;
             self.set_status(Some("Thinking"));
             if !self.hide_thinking {
-                self.push_line(String::new());
+                // avoid stacking blank if transcript already ends with blank
+                if self.transcript.last().map(|l| l.width() != 0).unwrap_or(true) {
+                    self.push_line(String::new());
+                }
             }
         }
         if !self.hide_thinking {
@@ -338,7 +341,9 @@ impl Tui {
                 self.push_line_styled(rest, thinking_style());
             }
             if spacer {
-                self.push_line(String::new());
+                if self.transcript.last().map(|l| l.width() != 0).unwrap_or(true) {
+                    self.push_line(String::new());
+                }
             }
         } else {
             self.pending.clear();

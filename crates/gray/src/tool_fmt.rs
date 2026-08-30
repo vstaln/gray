@@ -556,7 +556,6 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
 
     let bg = Color::Rgb(30, 30, 30);
     let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-    lines.push(separator_line(term_w, Some(bg)));
     // gutter: "  " (2) + gutter_width + " | " (3) = overhead
     let overhead = 2 + gutter_width + 3;
     let content_w = term_w.saturating_sub(overhead + 2).max(20);
@@ -633,7 +632,6 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
             push_wrapped(&mut lines, total - TAIL + idx + 1, line_text, &mut highlighter);
         }
     }
-    lines.push(separator_line(term_w, Some(bg)));
 
     lines
 }
@@ -723,7 +721,6 @@ pub fn format_tool_result_lines_with_context(
 
     let bg = Color::Rgb(30, 30, 30);
     let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-    lines.push(separator_line(term_w, Some(bg)));
     if total <= MAX_TOTAL_LINES {
         for l in raw_lines {
             lines.push(bg_line(Line::from(vec![
@@ -750,7 +747,6 @@ pub fn format_tool_result_lines_with_context(
             ]).style(Style::default().bg(bg)), bg, term_w));
         }
     }
-    lines.push(separator_line(term_w, Some(bg)));
     lines
 }
 
