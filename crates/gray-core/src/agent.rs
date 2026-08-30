@@ -91,7 +91,7 @@ use crate::event::{AgentEvent, StopReason, Usage};
 use crate::message::{ContentBlock, Message, Role, ToolDef};
 
 /// Default upper bound on agentic turns per `run` call.
-const DEFAULT_MAX_TURNS: usize = 16;
+const DEFAULT_MAX_TURNS: usize = 64;
 
 /// The agent loop: drives a conversation against a [`Provider`], executing
 /// tool calls through a [`ToolExecutor`] until the model stops requesting

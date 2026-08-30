@@ -18,6 +18,8 @@ pub struct Config {
     pub api_key: Option<String>,
     /// Thinking / reasoning effort level ("off", "minimal", "low", "medium", "high", "xhigh", "max").
     pub thinking_effort: Option<String>,
+    /// Max agent turns per run (default 64, override via GRAY_MAX_TURNS).
+    pub max_turns: Option<usize>,
 }
 
 impl Config {
@@ -87,11 +89,16 @@ impl Config {
             .filter(|s| !s.is_empty())
             .or(saved.thinking_effort);
 
+        let max_turns = env("GRAY_MAX_TURNS")
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .or(saved.max_turns);
+
         let config = Self {
             model,
             base_url,
             api_key,
             thinking_effort,
+            max_turns,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"));
         Ok(config)

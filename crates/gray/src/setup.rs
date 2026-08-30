@@ -75,6 +75,9 @@ pub struct SavedConfig {
     /// Thinking / reasoning effort: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_effort: Option<String>,
+    /// Max agent turns per run (default 64).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<usize>,
 }
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
@@ -1980,6 +1983,7 @@ mod tests {
             model: Some("m".into()),
             auth_mode: Some("none".into()),
             thinking_effort: None,
+            max_turns: None,
         };
         let j = serde_json::to_string(&cfg).unwrap();
         assert!(j.contains("\"auth_mode\":\"none\""));
@@ -2001,6 +2005,7 @@ mod tests {
             model: Some("deepseek-chat".into()),
             auth_mode: Some("api_key".into()),
             thinking_effort: None,
+            max_turns: None,
         };
         save_saved_config_at(&path, &cfg).unwrap();
         let loaded = load_saved_config_at(&path);
