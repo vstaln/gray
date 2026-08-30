@@ -16,6 +16,12 @@ pub enum CronCmd {
         #[arg(long)] prompt: String,
         #[arg(long)] name: Option<String>,
     },
+    /// Shorthand: gray cron add "check inbox every 30m" / "remind me in 10m"
+    Add {
+        /// Human input like "check inbox every 30m" — schedule auto-extracted
+        input: String,
+        #[arg(long)] name: Option<String>,
+    },
     /// Remove a job by id or name
     Remove { id: String },
     /// Show a job
@@ -56,6 +62,16 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
                 job.id,
                 job.name,
                 job.schedule,
+                job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string())
+            );
+        }
+        CronCmd::Add { input, name } => {
+            let (schedule, prompt) = gray_cron::schedule::split_human_input(&input)
+                .ok_or_else(|| anyhow::anyhow!("could not parse schedule from '{input}' — try 'check inbox every 30m' or 'remind me in 10m' or cron '0 9 * * *'"))?;
+            let n = name.clone().unwrap_or_else(|| format!("job-{}", &prompt.chars().take(12).collect::<String>()));
+            let job = gray_cron::create_job(n.clone(), schedule.clone(), prompt.clone())?;
+            println!("created cron job {} (\"{}\") — schedule: {} — next: {}",
+                job.id, job.name, job.schedule,
                 job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string())
             );
         }

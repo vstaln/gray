@@ -233,6 +233,43 @@ pub fn compute_next_run_after(schedule_str: &str, last_run: Option<DateTime<Utc>
     }
 }
 
+/// Human shorthand — hermes habit style: "check inbox every 30m" → (schedule, prompt)
+/// Tries trailing " every ..." or " in ..." or cron at end, else prompt+schedule split.
+pub fn split_human_input(input: &str) -> Option<(String, String)> {
+    let trimmed = input.trim();
+    // Try " ... every 30m" at end
+    for marker in [" every ", " in ", " at "] {
+        if let Some(idx) = trimmed.to_lowercase().rfind(marker) {
+            let prompt = trimmed[..idx].trim();
+            let sched_str = trimmed[idx + 1..].trim(); // keep "every ..." without leading space
+            // For "in ", need to keep "in ..."
+            let sched_candidate = if marker == " in " {
+                format!("in {}", &trimmed[idx + 4..].trim())
+            } else if marker == " at " {
+                trimmed[idx + 1..].trim().to_string()
+            } else {
+                sched_str.to_string()
+            };
+            if parse_schedule(&sched_candidate).is_ok() && !prompt.is_empty() {
+                return Some((sched_candidate, prompt.to_string()));
+            }
+        }
+    }
+    // Try last 5 tokens as cron
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() >= 6 {
+        let cron_candidate = parts[parts.len() - 5..].join(" ");
+        if parse_schedule(&cron_candidate).is_ok() {
+            let prompt = parts[..parts.len() - 5].join(" ");
+            if !prompt.is_empty() {
+                return Some((cron_candidate, prompt));
+            }
+        }
+    }
+    // Try whole input as schedule? then prompt empty → need prompt
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +309,14 @@ mod tests {
         let near = Utc::now() + chrono::Duration::seconds(60);
         let s2 = Schedule::Once(near);
         assert!(s2.next_after(Utc::now()).is_some());
+    }
+    #[test]
+    fn human_split() {
+        let (s, p) = split_human_input("check inbox every 30m").unwrap();
+        assert_eq!(s, "every 30m");
+        assert_eq!(p, "check inbox");
+        let (s2, p2) = split_human_input("remind me in 10m").unwrap();
+        assert_eq!(s2, "in 10m");
+        assert_eq!(p2, "remind me");
     }
 }

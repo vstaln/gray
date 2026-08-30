@@ -695,6 +695,34 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
         if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(msg); } else { println!("{msg}"); }
         return;
     }
+    if args_str.starts_with("add ") {
+        let input = args_str.strip_prefix("add ").unwrap().trim().trim_matches(|c| c == '"' || c == '\'');
+        if input.is_empty() {
+            let msg = "usage: /cron add \"check inbox every 30m\"  — schedule auto-extracted";
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            return;
+        }
+        match gray_cron::schedule::split_human_input(input) {
+            Some((sched, prompt)) => {
+                let name = format!("job-{}", &prompt.chars().take(12).collect::<String>());
+                match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
+                    Ok(job) => {
+                        let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
+                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    }
+                    Err(e) => {
+                        let msg = format!("failed: {e}");
+                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    }
+                }
+            }
+            None => {
+                let msg = format!("could not parse schedule from '{input}' — try 'check inbox every 30m' or 'remind me in 10m'");
+                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            }
+        }
+        return;
+    }
     if args_str.starts_with("create") {
         // Very simple parse: --schedule <val> --prompt <val> [--name <val>]
         // Supports quoted values via trimming quotes
@@ -735,7 +763,26 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 }
             }
             _ => {
-                let msg = "usage: /cron create --schedule \"every 30m\" --prompt \"...\" [--name myjob]  (or \"0 * * * *\" cron)";
+                // Try human shorthand: "/cron create check inbox every 30m"
+                let raw = args_str.strip_prefix("create").unwrap().trim().trim_matches(|c| c == '"' || c == '\'');
+                if !raw.is_empty() && !raw.starts_with("--") {
+                    if let Some((sched, prompt)) = gray_cron::schedule::split_human_input(raw) {
+                        let name = format!("job-{}", &prompt.chars().take(12).collect::<String>());
+                        match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
+                            Ok(job) => {
+                                let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
+                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                                return;
+                            }
+                            Err(e) => {
+                                let msg = format!("failed: {e}");
+                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                                return;
+                            }
+                        }
+                    }
+                }
+                let msg = "usage: /cron create --schedule \"every 30m\" --prompt \"...\" [--name myjob]  or /cron add \"check inbox every 30m\"  or /cron create \"check inbox every 30m\"";
                 if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
             }
         }
@@ -774,7 +821,7 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
         return;
     }
     // Fallback help
-    let msg = "cron: /cron list | /cron create --schedule \"every 10m\" --prompt \"...\" | /cron remove <id> | /cron show <id>  (cron: \"0 * * * *\")";
+    let msg = "cron: /cron list | /cron add \"check inbox every 30m\" | /cron create --schedule \"every 10m\" --prompt \"...\" | /cron remove <id> | /cron show <id>  (also \"in 10m\", \"0 9 * * *\")";
     if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
 }
 
