@@ -1,43 +1,113 @@
 use serde::{Deserialize, Serialize};
 
-/// Token usage summary for a turn or response.
+/// Token usage summary for a turn or response — opencode v2 style.
+///
+/// Inclusive totals: `input_tokens`+`output_tokens` include cache/reasoning.
+/// Breakdown (non-overlapping): `non_cached_input_tokens + cache_read + cache_write = input_tokens`,
+/// `reasoning_tokens ≤ output_tokens`. Mirrors `LLM.Usage` in opencode `packages/llm/src/schema/events.ts:51`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Usage {
+    /// Inclusive prompt tokens (includes cached reads/writes).
     #[serde(default)]
     pub input_tokens: usize,
+    /// Inclusive output tokens (includes reasoning).
     #[serde(default)]
     pub output_tokens: usize,
     /// Tokens the model spent on reasoning / chain-of-thought (subset of
     /// `output_tokens` when reported). 0 when the provider doesn't say.
     #[serde(default)]
     pub reasoning_tokens: usize,
-    /// Prompt tokens served from Anthropic cache (via `cache_control`).
+    /// Legacy: cache hits (equals `cache_read_input_tokens` for compat).
     #[serde(default)]
     pub cached_tokens: usize,
+    /// Fresh prompt tokens (input - read - write).
+    #[serde(default)]
+    pub non_cached_input_tokens: usize,
+    /// Input tokens served from cache (Anthropic `cache_read_input_tokens` / OpenAI `prompt_tokens_details.cached_tokens`).
+    #[serde(default)]
+    pub cache_read_input_tokens: usize,
+    /// Input tokens written to cache (Anthropic `cache_creation_input_tokens`).
+    #[serde(default)]
+    pub cache_write_input_tokens: usize,
+    /// Provider total if supplied, else `input+output`.
+    #[serde(default)]
+    pub total_tokens: usize,
 }
 
 impl Usage {
-    /// Creates a new usage record.
+    /// Creates a new usage record (inclusive).
     pub fn new(input_tokens: usize, output_tokens: usize) -> Self {
         Self {
             input_tokens,
             output_tokens,
             reasoning_tokens: 0,
             cached_tokens: 0,
+            non_cached_input_tokens: input_tokens,
+            cache_read_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            total_tokens: input_tokens + output_tokens,
         }
     }
 
-    /// Computes the total tokens consumed.
-    pub fn total(&self) -> usize {
-        self.input_tokens + self.output_tokens
+    /// Visible output tokens = output - reasoning, clamped to 0 (opencode `visibleOutputTokens`).
+    pub fn visible_output_tokens(&self) -> usize {
+        self.output_tokens.saturating_sub(self.reasoning_tokens)
     }
 
-    /// Cache hit rate for prompt tokens (0.0–1.0).
+    /// Computes the total tokens consumed — prefers provider `total_tokens` if set.
+    pub fn total(&self) -> usize {
+        if self.total_tokens != 0 {
+            self.total_tokens
+        } else {
+            self.input_tokens + self.output_tokens
+        }
+    }
+
+    /// Cache hit rate for prompt tokens (0.0–1.0) — uses cache_read.
     pub fn cache_hit_rate(&self) -> f64 {
         if self.input_tokens == 0 {
             0.0
         } else {
-            self.cached_tokens as f64 / self.input_tokens as f64
+            self.cache_read_input_tokens.max(self.cached_tokens) as f64 / self.input_tokens as f64
+        }
+    }
+
+    /// Clamped subtract: max(0, total - sub) like opencode `ProviderShared.subtractTokens`.
+    pub fn subtract_tokens(total: Option<usize>, sub: Option<usize>) -> Option<usize> {
+        match (total, sub) {
+            (None, _) => None,
+            (Some(t), None) => Some(t),
+            (Some(t), Some(s)) => Some(t.saturating_sub(s)),
+        }
+    }
+
+    /// Sum optional tokens, None only if all None (opencode `sumTokens`).
+    pub fn sum_tokens(vals: &[Option<usize>]) -> Option<usize> {
+        if vals.iter().all(|v| v.is_none()) {
+            None
+        } else {
+            Some(vals.iter().map(|v| v.unwrap_or(0)).sum())
+        }
+    }
+
+    /// Normalize after filling breakdown fields — ensures invariants and legacy alias.
+    pub fn normalize(&mut self) {
+        // legacy alias
+        if self.cached_tokens == 0 && self.cache_read_input_tokens != 0 {
+            self.cached_tokens = self.cache_read_input_tokens;
+        } else if self.cache_read_input_tokens == 0 && self.cached_tokens != 0 {
+            self.cache_read_input_tokens = self.cached_tokens;
+        }
+        // derive non_cached if not set but input + caches known
+        if self.non_cached_input_tokens == 0 && self.input_tokens != 0 {
+            let known = self.cache_read_input_tokens + self.cache_write_input_tokens;
+            if known <= self.input_tokens {
+                self.non_cached_input_tokens = self.input_tokens - known;
+            }
+        }
+        // derive total if not set
+        if self.total_tokens == 0 && (self.input_tokens != 0 || self.output_tokens != 0) {
+            self.total_tokens = self.input_tokens + self.output_tokens;
         }
     }
 }

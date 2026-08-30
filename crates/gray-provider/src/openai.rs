@@ -247,18 +247,32 @@ struct OpenAiUsageChunk {
     /// Some providers (OpenRouter) also surface cached_tokens at top level
     #[serde(default)]
     cached_tokens: usize,
+    /// Anthropic native breakdown (when not via OpenAI compat)
+    #[serde(default, alias = "cache_creation_input_tokens", alias = "cacheCreationInputTokens")]
+    cache_creation_input_tokens: usize,
+    #[serde(default, alias = "cache_read_input_tokens", alias = "cacheReadInputTokens")]
+    cache_read_input_tokens: usize,
+    /// Provider total if supplied (OpenAI `total_tokens`, Anthropic not)
+    #[serde(default, alias = "total_tokens", alias = "totalTokens")]
+    total_tokens: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiCompletionDetails {
     #[serde(default)]
     reasoning_tokens: usize,
+    #[serde(default, alias = "reasoningTokens")]
+    reasoningTokens: usize,
 }
 
 #[derive(Debug, Deserialize)]
 struct OpenAiPromptDetails {
     #[serde(default)]
     cached_tokens: usize,
+    #[serde(default, alias = "cache_creation_tokens", alias = "cacheCreationTokens")]
+    cache_creation_tokens: usize,
+    #[serde(default, alias = "cache_read_tokens", alias = "cacheReadTokens")]
+    cache_read_tokens: usize,
 }
 
 /// Anthropic prompt-caching: put an ephemeral cache breakpoint on the
@@ -529,17 +543,60 @@ fn map_finish_reason(reason: &str) -> Option<StopReason> {
 }
 
 fn map_usage(u: &OpenAiUsageChunk) -> Usage {
-    let mut usage = Usage::new(u.prompt_tokens, u.completion_tokens);
+    // Opencode v2 logic: inclusive totals + non-overlapping breakdown with clamping.
+    // OpenAI: prompt_tokens is inclusive, cached is subset -> non_cached = subtract(inclusive, cached)
+    // Anthropic: prompt_tokens is non-cached only, plus read/write -> inclusive = sum(non_cached, read, write)
+    let mut reasoning = 0usize;
     if let Some(details) = &u.completion_tokens_details {
-        usage.reasoning_tokens = details.reasoning_tokens;
+        reasoning = details.reasoning_tokens.max(details.reasoningTokens);
     }
+
+    // Extract cache fields from all possible shapes
+    let mut cache_read = 0usize;
+    let mut cache_write = 0usize;
     if let Some(details) = &u.prompt_tokens_details {
-        usage.cached_tokens = details.cached_tokens;
+        cache_read = details.cached_tokens.max(details.cache_read_tokens);
+        cache_write = details.cache_creation_tokens;
     }
-    // fallback for providers that put cached_tokens at top level
-    if usage.cached_tokens == 0 {
-        usage.cached_tokens = u.cached_tokens;
+    // Top-level fallbacks (Anthropic native or OpenRouter)
+    if cache_read == 0 {
+        cache_read = u.cached_tokens.max(u.cache_read_input_tokens);
+    } else if u.cache_read_input_tokens != 0 {
+        cache_read = cache_read.max(u.cache_read_input_tokens);
     }
+    if cache_write == 0 {
+        cache_write = u.cache_creation_input_tokens;
+    }
+
+    let is_anthropic_shape = u.cache_creation_input_tokens != 0 || u.cache_read_input_tokens != 0;
+
+    let (input_inclusive, non_cached) = if is_anthropic_shape {
+        // Anthropic: prompt_tokens = non-cached only
+        let inclusive = u.prompt_tokens + cache_read + cache_write;
+        (inclusive, u.prompt_tokens)
+    } else {
+        // OpenAI: prompt_tokens is inclusive
+        let non_cached = u.prompt_tokens.saturating_sub(cache_read + cache_write);
+        (u.prompt_tokens, non_cached)
+    };
+
+    let total = if u.total_tokens != 0 {
+        u.total_tokens
+    } else {
+        input_inclusive + u.completion_tokens
+    };
+
+    let mut usage = Usage {
+        input_tokens: input_inclusive,
+        output_tokens: u.completion_tokens,
+        reasoning_tokens: reasoning,
+        cached_tokens: cache_read,
+        non_cached_input_tokens: non_cached,
+        cache_read_input_tokens: cache_read,
+        cache_write_input_tokens: cache_write,
+        total_tokens: total,
+    };
+    usage.normalize();
     usage
 }
 
@@ -1037,7 +1094,14 @@ mod tests {
                 StreamEvent::TextDelta { delta: "answer".to_string() },
                 StreamEvent::message_complete(
                     Some(StopReason::EndTurn),
-                    Some(Usage { input_tokens: 10, output_tokens: 30, reasoning_tokens: 21, ..Default::default() }),
+                    Some(Usage {
+                        input_tokens: 10,
+                        output_tokens: 30,
+                        reasoning_tokens: 21,
+                        non_cached_input_tokens: 10,
+                        total_tokens: 40,
+                        ..Default::default()
+                    }),
                 ),
             ]
         );

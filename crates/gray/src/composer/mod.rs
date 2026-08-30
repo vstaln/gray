@@ -191,12 +191,20 @@ impl Tui {
         self.latest_usage = Some(usage);
         self.live_streamed_tokens = 0;
         self.cumulative_usage = Some(match self.cumulative_usage {
-            Some(prev) => gray_core::event::Usage {
-                input_tokens: prev.input_tokens + usage.input_tokens,
-                output_tokens: prev.output_tokens + usage.output_tokens,
-                reasoning_tokens: prev.reasoning_tokens + usage.reasoning_tokens,
-                cached_tokens: prev.cached_tokens + usage.cached_tokens,
-            },
+            Some(prev) => {
+                let mut u = gray_core::event::Usage {
+                    input_tokens: prev.input_tokens + usage.input_tokens,
+                    output_tokens: prev.output_tokens + usage.output_tokens,
+                    reasoning_tokens: prev.reasoning_tokens + usage.reasoning_tokens,
+                    cached_tokens: prev.cached_tokens + usage.cached_tokens,
+                    non_cached_input_tokens: prev.non_cached_input_tokens + usage.non_cached_input_tokens,
+                    cache_read_input_tokens: prev.cache_read_input_tokens + usage.cache_read_input_tokens,
+                    cache_write_input_tokens: prev.cache_write_input_tokens + usage.cache_write_input_tokens,
+                    total_tokens: prev.total_tokens + usage.total_tokens,
+                };
+                u.normalize();
+                u
+            }
             None => usage,
         });
     }
