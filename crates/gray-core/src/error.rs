@@ -18,7 +18,11 @@ pub enum CoreError {
     InvalidState(String),
 
     #[error("Max turns exceeded ({0})")]
+    #[deprecated(note = "turn limit removed; use LoopDetected instead")]
     MaxTurnsExceeded(usize),
+
+    #[error("Tool loop detected: {0}")]
+    LoopDetected(String),
 
     #[error("Operation cancelled")]
     Cancelled,

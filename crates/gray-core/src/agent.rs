@@ -90,12 +90,15 @@ use futures::StreamExt as _;
 use crate::event::{AgentEvent, StopReason, Usage};
 use crate::message::{ContentBlock, Message, Role, ToolDef};
 
-/// Default upper bound on agentic turns per `run` call.
-const DEFAULT_MAX_TURNS: usize = 64;
-
 /// The agent loop: drives a conversation against a [`Provider`], executing
 /// tool calls through a [`ToolExecutor`] until the model stops requesting
-/// tools, the turn budget is exhausted, or cancellation fires.
+/// tools or cancellation fires.
+///
+/// There is no fixed turn limit — the loop is model-driven. It terminates
+/// when a turn ends without tool calls (`TurnEnd`) or when cancellation
+/// fires. A lightweight stall guard (3 identical consecutive tool calls)
+/// aborts runaway loops without an arbitrary round cap; provider context
+/// errors and user cancellation remain the other natural bounds.
 ///
 /// `run` is in *collecting* form: it buffers all [`AgentEvent`]s and returns
 /// them once the run finishes, rather than invoking a callback or yielding
@@ -109,7 +112,6 @@ pub struct Agent {
     system: String,
     tools: Vec<ToolDef>,
     messages: Vec<Message>,
-    max_turns: usize,
 }
 
 impl Agent {
@@ -121,7 +123,6 @@ impl Agent {
             system: String::new(),
             tools: Vec::new(),
             messages: Vec::new(),
-            max_turns: DEFAULT_MAX_TURNS,
         }
     }
 
@@ -137,9 +138,10 @@ impl Agent {
         self
     }
 
-    /// Caps how many request/response rounds a single `run` may perform.
-    pub fn with_max_turns(mut self, max_turns: usize) -> Self {
-        self.max_turns = max_turns;
+    /// Deprecated: turn limit removed — loop is model-driven with stall
+    /// detection. Kept for API compatibility; no effect.
+    #[deprecated(note = "max_turns removed; loop is now unbounded with stall detection")]
+    pub fn with_max_turns(self, _max_turns: usize) -> Self {
         self
     }
 
@@ -195,10 +197,11 @@ impl Agent {
     /// forwarding `TextDelta`s in arrival order, finalize the assistant
     /// message, then execute any requested tools sequentially and feed their
     /// outputs back as tool-result messages. Stops when a turn ends without
-    /// tool calls (`TurnEnd`), when cancellation fires between turns
-    /// ([`CoreError::Cancelled`]), or when `max_turns` rounds are exhausted
-    /// ([`CoreError::MaxTurnsExceeded`]). Tool failures are *not* errors:
-    /// they become `is_error` tool results so the model can recover.
+    /// tool calls (`TurnEnd`) or when cancellation fires
+    /// ([`CoreError::Cancelled`]). A stall guard aborts 3 identical
+    /// consecutive tool calls as [`CoreError::LoopDetected`]. Tool failures
+    /// are *not* errors: they become `is_error` tool results so the model can
+    /// recover.
     pub async fn run(&mut self, input: Message, ctx: ToolContext) -> Result<Vec<AgentEvent>, CoreError> {
         self.run_inner(input, ctx, None).await
     }
@@ -221,8 +224,11 @@ impl Agent {
         ctx: ToolContext,
         mut sink: Option<&mut dyn FnMut(&AgentEvent)>,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        log::info!(target: "gray_agent", "agent run start ({} messages, max {} turns)", self.messages.len() + 1, self.max_turns);
+        log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len() + 1);
         let mut events = Vec::new();
+        // Stall guard: 3 identical consecutive tool calls → LoopDetected.
+        let mut last_sig: Option<String> = None;
+        let mut repeat: usize = 0;
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -237,7 +243,7 @@ impl Agent {
         self.messages.push(input);
         let mut total_usage = Usage::default();
 
-        for _round in 0..self.max_turns {
+        loop {
             // Cancellation is honored between turns, never mid-stream: a
             // half-finished assistant message would leave the transcript
             // inconsistent for the provider.
@@ -386,6 +392,26 @@ impl Agent {
                 return Ok(events);
             }
 
+            // Stall guard: abort if the same tool+args repeats 3 times consecutively.
+            {
+                let sig = tool_uses
+                    .iter()
+                    .map(|(_, n, a)| format!("{n}:{a}"))
+                    .collect::<Vec<_>>()
+                    .join("|");
+                if last_sig.as_deref() == Some(&sig) {
+                    repeat += 1;
+                } else {
+                    last_sig = Some(sig.clone());
+                    repeat = 1;
+                }
+                if repeat >= 3 {
+                    return Err(CoreError::LoopDetected(format!(
+                        "same tool call 3× in a row: {sig}"
+                    )));
+                }
+            }
+
             for (id, name, args) in tool_uses {
                 if ctx.cancel.is_cancelled() {
                     return Err(CoreError::Cancelled);
@@ -413,8 +439,6 @@ impl Agent {
                 });
             }
         }
-
-        Err(CoreError::MaxTurnsExceeded(self.max_turns))
     }
 }
 
@@ -663,22 +687,44 @@ mod agent_tests {
     }
 
     #[tokio::test]
-    async fn max_turns_guard_stops_runloop_with_error() {
-        // Every turn demands another tool call; budget of 2 must cut it off.
+    async fn loop_guard_stops_identical_consecutive_tool_calls() {
+        // Same tool+args 3× in a row → LoopDetected (replaces arbitrary max_turns).
         let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), tool_script("c3")]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
-            .with_tools(vec![tool_def()])
-            .with_max_turns(2);
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
             .run(Message::user("loop forever"), ToolContext::default())
             .await
-            .expect_err("should exceed turn budget");
+            .expect_err("should detect loop");
 
-        assert!(matches!(err, CoreError::MaxTurnsExceeded(2)), "got {err:?}");
-        // Exactly two rounds executed, each leaving assistant + result pairs.
-        assert_eq!(agent.messages().len(), 1 + 2 * 2);
+        assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
+        // 3rd identical turn aborting before tool result: 1 user + 2 full rounds + 3rd assistant = 6
+        assert_eq!(agent.messages().len(), 1 + 2 * 2 + 1);
+    }
+
+    #[tokio::test]
+    async fn max_turns_guard_stops_runloop_with_error() {
+        // Deprecated API is now a no-op — loop is unbounded with stall detection.
+        // Keep test for compat: with_max_turns does not enforce a turn limit.
+        let provider = FakeProvider::new(vec![
+            tool_script("c1"),
+            vec![
+                StreamEvent::text_delta("done"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+        ]);
+        let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+        #[allow(deprecated)]
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+            .with_tools(vec![tool_def()])
+            .with_max_turns(2);
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("with_max_turns is now no-op, should succeed");
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
     }
 
     #[tokio::test]

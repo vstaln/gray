@@ -127,12 +127,9 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     let registry = Registry::builtin();
     let tool_defs = registry.defs();
 
-    let mut agent = Agent::new(Box::new(provider), Box::new(registry))
+    let agent = Agent::new(Box::new(provider), Box::new(registry))
         .with_system(system_prompt)
         .with_tools(tool_defs);
-    if let Some(n) = config.max_turns {
-        agent = agent.with_max_turns(n);
-    }
 
     Ok(agent)
 }
