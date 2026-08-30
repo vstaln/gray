@@ -290,12 +290,14 @@ impl Tui {
     }
 
     pub fn stream_thinking(&mut self, chunk: &str) {
+        let toks = (chunk.chars().count() + 3) / 4;
+        self.live_streamed_tokens += toks.max(1);
         if !self.thinking {
             self.thinking = true;
             self.turn_had_thinking = true;
             self.set_status(Some("Thinking"));
             if !self.hide_thinking {
-                self.push_line(String::new());
+                self.ensure_gap(1);
             }
         }
         if !self.hide_thinking {
@@ -306,6 +308,8 @@ impl Tui {
     pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
 
     pub fn stream_text(&mut self, chunk: &str) {
+        let toks = (chunk.chars().count() + 3) / 4;
+        self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
             self.set_status(Some("Working"));
@@ -325,7 +329,7 @@ impl Tui {
     }
 
     pub fn end_thinking(&mut self) {
-        self.end_thinking_run(false);
+        self.end_thinking_run(true);
         let _ = self.draw();
     }
 
@@ -338,7 +342,7 @@ impl Tui {
                 self.push_line_styled(rest, thinking_style());
             }
             if spacer {
-                self.push_line(String::new());
+                self.ensure_gap(1);
             }
         } else {
             self.pending.clear();

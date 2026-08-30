@@ -78,6 +78,7 @@ pub struct Tui {
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
+    pub(crate) live_streamed_tokens: usize,
     // Cron ticking UI — next due job for footer clock
     pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
     pub(crate) last_cron_tick: Option<Instant>,
@@ -170,6 +171,7 @@ impl Tui {
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
             committed_markdown_lines: 0,
             pending_resize: None,
+            live_streamed_tokens: 0,
             next_cron: None,
             last_cron_tick: None,
         })
@@ -187,6 +189,7 @@ impl Tui {
     }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
+        self.live_streamed_tokens = 0;
         self.cumulative_usage = Some(match self.cumulative_usage {
             Some(prev) => gray_core::event::Usage {
                 input_tokens: prev.input_tokens + usage.input_tokens,
@@ -200,6 +203,7 @@ impl Tui {
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
         self.cumulative_usage = None;
+        self.live_streamed_tokens = 0;
     }
 
     pub(crate) fn width(&self) -> usize { self.last_width.max(20) as usize }
@@ -242,6 +246,7 @@ impl Tui {
             self.turn_started = Some(now);
             self.turn_had_thinking = false;
         }
+        self.live_streamed_tokens = 0;
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
@@ -257,7 +262,10 @@ impl Tui {
         self.turn_had_thinking = false;
         self.is_task_running = false;
         self.status = None;
-        if !self.pending.is_empty() {
+        self.live_streamed_tokens = 0;
+        if self.thinking {
+            self.end_thinking_run(true);
+        } else if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
             let style = if self.thinking { thinking_style() } else { Style::default() };
             for line in rest.split('\n') {

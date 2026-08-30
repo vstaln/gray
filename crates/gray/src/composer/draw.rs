@@ -204,7 +204,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 let mut spans = shimmer_spans(&label_text, started.elapsed(), tui.truecolor);
                 let elapsed = started.elapsed();
                 let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
-                let tok_suffix = if let Some(u) = tui.latest_usage {
+                let tok_suffix = if tui.is_task_running {
+                    let base = tui.latest_usage.map(|u| u.total()).unwrap_or(0);
+                    let live = base + tui.live_streamed_tokens;
+                    if live > 0 {
+                        format!(" · {} tok", crate::repl::fmt_usage(live))
+                    } else {
+                        String::new()
+                    }
+                } else if let Some(u) = tui.latest_usage {
                     format!(" · {} tok", crate::repl::fmt_usage(u.total()))
                 } else {
                     String::new()
