@@ -353,28 +353,28 @@ impl Tui {
         self.ensure_gap(1);
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
-        let content_w = w.saturating_sub(2).max(1);
+        let content_w = w.saturating_sub(6).max(1);
         let bg_color = Color::Rgb(22, 22, 22);
         let prompt_color = Color::Rgb(180, 180, 180);
         let text_primary = Color::Rgb(225, 225, 225);
         let mut lines: Vec<Line<'static>> = Vec::new();
         lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
-        let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
+        let arrow_span = Span::styled("  ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
         let lines_raw: Vec<&str> = sanitized.split('\n').collect();
         for (i, raw_line) in lines_raw.iter().enumerate() {
-            let prefix_span = if i == 0 { arrow_span.clone() } else { Span::styled("  ", Style::default().bg(bg_color)) };
+            let prefix_span = if i == 0 { arrow_span.clone() } else { Span::styled("    ", Style::default().bg(bg_color)) };
             if raw_line.is_empty() {
-                lines.push(Line::from(vec![ prefix_span, Span::styled(" ".repeat(w.saturating_sub(2)), Style::default().bg(bg_color)) ]));
+                lines.push(Line::from(vec![ prefix_span, Span::styled(" ".repeat(w.saturating_sub(4)), Style::default().bg(bg_color)) ]));
             } else {
                 let chars: Vec<char> = raw_line.chars().collect();
                 for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
                     let s: String = chunk.iter().collect();
                     let s_len = chunk.len();
-                    let pad_len = w.saturating_sub(2 + s_len);
+                    let pad_len = w.saturating_sub(4 + s_len);
                     if chunk_idx == 0 {
                         lines.push(Line::from(vec![ prefix_span.clone(), Span::styled(s, Style::default().fg(text_primary).bg(bg_color)), Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)) ]));
                     } else {
-                        lines.push(Line::from(vec![ Span::styled("  ", Style::default().bg(bg_color)), Span::styled(s, Style::default().fg(text_primary).bg(bg_color)), Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)) ]));
+                        lines.push(Line::from(vec![ Span::styled("    ", Style::default().bg(bg_color)), Span::styled(s, Style::default().fg(text_primary).bg(bg_color)), Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)) ]));
                     }
                 }
             }
@@ -394,7 +394,7 @@ impl Tui {
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
         let w = self.width().max(10);
-        let max_w = w.saturating_sub(1).max(1);
+        let max_w = w.saturating_sub(4).max(1);
         let chars: Vec<char> = line.chars().collect();
         let mut lines: Vec<Line<'static>> = Vec::new();
         if chars.is_empty() {
@@ -402,7 +402,10 @@ impl Tui {
         } else {
             for chunk in chars.chunks(max_w) {
                 let text: String = chunk.iter().collect();
-                lines.push(Line::from(Span::styled(text, style)));
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(text, style),
+                ]));
             }
         }
         let h = lines.len() as u16;
@@ -417,12 +420,20 @@ impl Tui {
     pub fn push_line_spans(&mut self, line: Line<'static>) {
         self.ensure_gap(1);
         let w = self.width().max(10);
-        let wrapped = wrap_styled_line(line, w.saturating_sub(1));
-        let h = wrapped.len() as u16;
-        self.transcript.extend(wrapped.clone());
+        let max_w = w.saturating_sub(4).max(1);
+        let wrapped = wrap_styled_line(line, max_w);
+        let mut padded_wrapped = Vec::with_capacity(wrapped.len());
+        for mut l in wrapped {
+            if !l.spans.is_empty() {
+                l.spans.insert(0, Span::raw("  "));
+            }
+            padded_wrapped.push(l);
+        }
+        let h = padded_wrapped.len() as u16;
+        self.transcript.extend(padded_wrapped.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = self.terminal.insert_before(h, |buf| {
-            Paragraph::new(wrapped.clone()).render(buf.area, buf);
+            Paragraph::new(padded_wrapped.clone()).render(buf.area, buf);
         });
         let _ = std::io::stdout().flush();
     }
@@ -439,6 +450,7 @@ impl Tui {
     ) {
         if lines.is_empty() { return; }
         let w = self.width().max(10);
+        let max_w = w.saturating_sub(4).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
         for h in hyperlinks {
             by_line.entry(h.line_index).or_default().push(h);
@@ -448,11 +460,12 @@ impl Tui {
         for (idx, line) in lines.into_iter().enumerate() {
             let line_idx = line_offset + idx;
             let line_hyperlinks = by_line.get(&line_idx).cloned().unwrap_or_default();
-            let wrapped = if !line_hyperlinks.is_empty() { vec![line] } else { wrap_styled_line(line, w.saturating_sub(1)) };
-            for l in wrapped {
-                // clone hyperlinks for this original line to each wrapped piece? For simplicity, keep same hyperlinks for first piece only.
-                // To preserve original behavior, hyperlinks only apply to unwrapped lines; wrapped hyperlinks are not wrapped, so fine.
+            let wrapped = if !line_hyperlinks.is_empty() { vec![line] } else { wrap_styled_line(line, max_w) };
+            for mut l in wrapped {
                 let hl_owned: Vec<HyperlinkTarget> = line_hyperlinks.iter().map(|h| (*h).clone()).collect();
+                if !l.spans.is_empty() {
+                    l.spans.insert(0, Span::raw("  "));
+                }
                 all_wrapped.push((l, hl_owned));
             }
         }
@@ -469,8 +482,9 @@ impl Tui {
                 Paragraph::new(line.clone()).render(row_area, buf);
                 for h in hls {
                     for col in h.column_range.clone() {
-                        if col >= area.width as usize { continue; }
-                        let x = area.x + col as u16;
+                        let padded_col = col + 2;
+                        if padded_col >= area.width as usize { continue; }
+                        let x = area.x + padded_col as u16;
                         let y = area.y + i as u16;
                         if x >= area.x + area.width || y >= area.y + area.height { continue; }
                         let cell = &mut buf[(x, y)];
@@ -487,7 +501,10 @@ impl Tui {
 
     pub fn push_dim(&mut self, line: String) {
         self.ensure_gap(1);
-        let styled = Line::from(Span::styled(line, Style::new().add_modifier(Modifier::DIM)));
+        let styled = Line::from(vec![
+            Span::raw("  "),
+            Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
+        ]);
         self.transcript.push(styled.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = self.terminal.insert_before(1, |buf| {
@@ -499,6 +516,7 @@ impl Tui {
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
         self.ensure_gap(1);
         let mut spans = vec![
+            Span::raw("  "),
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
             Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         ];
