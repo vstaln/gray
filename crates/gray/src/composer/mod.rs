@@ -4,7 +4,7 @@
 //! panel, status, `›` input — while transcript goes into scrollback via
 //! `Terminal::insert_before`. Multiline, attachments, slash popup and
 //! history are replicated from `codex-rs/tui/src/bottom_pane/chat_composer.rs`
-//! and `textarea.rs` (ponytail minimal: one-file adaptation, stdlib only).
+//! and `textarea.rs` (one-file adaptation, stdlib only).
 
 use std::io::{Stdout, Write};
 use std::path::{Path, PathBuf};

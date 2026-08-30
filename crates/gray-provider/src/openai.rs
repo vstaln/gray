@@ -80,7 +80,7 @@ impl OpenAiProviderBuilder {
         let base_url = Url::parse(&base_url_str)
             .map_err(|e| format!("invalid base_url '{base_url_str}': {e}"))?;
 
-        // ponytail: default client when the caller doesn't inject one — with a
+        // default client when the caller doesn't inject one — with a
         // 120s idle-read timeout so a stalled server (finish_reason then silence,
         // hung proxy) can't freeze a turn forever. Total timeout stays off:
         // long generations are legal.
@@ -810,7 +810,7 @@ fn stream_unfold_step(
 
                                             if let Some(tool_calls) = choice.delta.tool_calls {
                                                 for tc in tool_calls {
-                                                    // ponytail: cap wire-controlled indices so a broken/
+                                                    // cap wire-controlled indices so a broken/
                                                     // hostile server can't balloon memory; raise if real
                                                     // turns ever need more concurrent tool calls.
                                                     if tc.index >= MAX_TOOL_CALL_INDEX {

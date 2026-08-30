@@ -294,7 +294,7 @@ impl Agent {
                             thinking_parts.push(delta);
                         }
                         Some(Ok(StreamEvent::ToolCallDelta { index, id, name, arguments_delta })) => {
-                            // ponytail: cap wire-controlled indices — a hostile/broken server
+                            // cap wire-controlled indices — a hostile/broken server
                             // sending index = 2^40 would otherwise allocate gigabytes here.
                             const MAX_TOOL_CALL_INDEX: usize = 4096;
                             if index > MAX_TOOL_CALL_INDEX {

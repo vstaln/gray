@@ -3,7 +3,7 @@
 //! Renders `graph`/`flowchart`, `sequenceDiagram`, and `stateDiagram` blocks
 //! as Unicode box-drawing art; unsupported diagram types fall back to the raw
 //! source in a framed box.
-// ponytail: 5237 lines vendored from xai-grok-markdown, fallback box suffices for CLI; feature-gate or delete when binary size matters.
+// 5237 lines vendored from xai-grok-markdown, fallback box suffices for CLI; feature-gate or delete when binary size matters.
 
 use std::collections::HashMap;
 

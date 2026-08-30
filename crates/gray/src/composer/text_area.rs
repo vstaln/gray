@@ -3,7 +3,7 @@
 // stdlib. Full codex TextArea is 4518 lines with vim/kill-ring/unicode-
 // segmentation; this keeps the essential multiline + atomic-element contract
 // (cursor byte-boundary, wrap-aware up/down, element-shift on insert).
-// ponytail: O(n) scan, no grapheme crate, word wrap via char count.
+// O(n) scan, no grapheme crate, word wrap via char count.
 // Upgrade path: vendor full `textarea.rs` + `textarea/wrapping.rs` when
 // unicode-width or vim bindings matter.
 // ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ impl TextArea {
     pub(crate) fn move_right(&mut self) { self.cursor = self.next_boundary(self.cursor); self.preferred_col = None; }
     // --- WrapCache + preferred_col helpers ---
     fn char_width(c: char) -> usize {
-        // ponytail: simple width, 1 for most, 2 for CJK wide. Upgrade to unicode-width crate if needed.
+        // simple width, 1 for most, 2 for CJK wide. Upgrade to unicode-width crate if needed.
         match c {
             // CJK Unified Ideographs and wide ranges (approx)
             '\u{1100}'..='\u{115F}' | '\u{2E80}'..='\u{A4CF}' | '\u{AC00}'..='\u{D7A3}' | '\u{F900}'..='\u{FAFF}' | '\u{FF01}'..='\u{FF60}' => 2,
@@ -298,7 +298,7 @@ impl TextArea {
         lines
     }
     fn rebuild_wrap_cache(&mut self) {
-        // ponytail: logical lines as WrapCache; upgrade to word-wrap at terminal width when needed
+        // logical lines as WrapCache; upgrade to word-wrap at terminal width when needed
         // width 0 means logical-only, no visual wrapping
         let lines = self.compute_logical_lines();
         self.wrap_cache = Some(WrapCache { width: 0, lines });

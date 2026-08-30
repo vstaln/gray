@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-30
 **Path:** Bounded→Architectural (upgrade on choosing B faithful clone)
-**Choice:** A' — Grok-lean internal split now, crates gated for later (addresses ponytail + fidelity + migration critiques)
+**Choice:** A' — Grok-lean internal split now, crates gated for later (addresses fidelity + migration critiques)
 **File in scope:** `crates/gray/src/composer.rs:1-1700` (1700 LOC, 15% of `crates/gray/src`)
 
 ## 1. Context
@@ -35,7 +35,7 @@ via `mod composer;` auto-resolving to `composer/mod.rs`. Zero `install target/re
 
 ## 3. Components & Moves
 
-* `text_area.rs` ← `52-252` `TextElement/TextArea` verbatim + `wrap_styled_line:313-369` replaced by Grok `xai-ratatui-textarea/src/wrapping.rs:173` `word_wrap_line` (word-wrap, `unicode_width`, `slice_line_spans` style preservation). Add `WrapCache + preferred_col` for `move_up/down:230-251` (fix `chars().count()` bug). Keep `ponytail: O(n) scan, no grapheme crate` ceiling.
+* `text_area.rs` ← `52-252` `TextElement/TextArea` verbatim + `wrap_styled_line:313-369` replaced by Grok `xai-ratatui-textarea/src/wrapping.rs:173` `word_wrap_line` (word-wrap, `unicode_width`, `slice_line_spans` style preservation). Add `WrapCache + preferred_col` for `move_up/down:230-251` (fix `chars().count()` bug). Keep `O(n) scan, no grapheme crate` ceiling.
 * `draw.rs` ← `286-312` `thinking_style/shimmer_spans` + `482-757` `draw()`. Change: compute `panel_h` then `viewport.set_height(base + panel_h)` before `terminal.draw()` (Grok `terminal.rs:888-942` pattern) instead of fixed `VIEWPORT_H=7:25` overflow. Footer `696-742` (`ctx/cache/model/effort`) stays here; hyperlinks rendered via viewport link table not `Cell.symbol:1431` OSC injection.
 * `input.rs` ← `785-930` `is_image_path/try_attach_*/attach_image/sync_attachments/handle_paste` + `887-1120` `read_line`. Keep key priority order but split `handle_key_event_without_popup` (Codex `chat_composer.rs:892` pattern) so `matches:257 sel` popup short-circuits word moves. Owns `history:269/draft` navigation.
 * `transcript.rs` ← `1197-1622` `ensure_gap, stream/stream_thinking/stream_text/end_thinking_run, push_user_prompt/box_lines, push_line_styled/push_styled_lines_with_hyperlinks, push_dim/push_action, replay_session_history`. Batch `insert_before(height, |buf| render)` via `scrollback.emit_to_scrollback` (one call per markdown batch, not per `chars.chunks` line: `1352`). Keep `markdown_renderer:281 + committed_markdown_lines:282` invariant.

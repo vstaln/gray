@@ -89,7 +89,7 @@ fn ensure_dirs(store: &CronStorePaths) {
 
 // ---------------------------------------------------------------------------
 // Locking — stolen from hermes-rs/crates/hermes-cron/src/jobs.rs:130-252
-// ponytail: trimmed to GRAY_HOME only, no fire-fence (added in Step 3)
+// trimmed to GRAY_HOME only, no fire-fence (added in Step 3)
 // ---------------------------------------------------------------------------
 
 fn job_lock_registry() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {

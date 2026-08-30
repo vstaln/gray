@@ -25,7 +25,7 @@ fn strip_ansi(s: &str) -> String {
 }
 
 // word-aware char width helper
-// ponytail: simple width, 1 for most, 2 for CJK/emoji. Upgrade to unicode-width crate if needed.
+// simple width, 1 for most, 2 for CJK/emoji. Upgrade to unicode-width crate if needed.
 fn char_width(c: char) -> usize {
     match c {
         '\u{1100}'..='\u{115F}' | '\u{2E80}'..='\u{A4CF}' | '\u{AC00}'..='\u{D7A3}' | '\u{F900}'..='\u{FAFF}' | '\u{FF01}'..='\u{FF60}' => 2,

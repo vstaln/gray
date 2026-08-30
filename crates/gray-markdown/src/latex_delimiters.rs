@@ -1,6 +1,6 @@
 //! Streaming normalization of LaTeX math delimiters into the canonical
 //! `$...$` / `$$...$$` forms that `pulldown-cmark`'s math extension understands.
-// ponytail: 1305 lines for \( \) → $ normalization + streaming edge; simple str::replace suffices for batch, feature-gate when size matters.
+// 1305 lines for \( \) → $ normalization + streaming edge; simple str::replace suffices for batch, feature-gate when size matters.
 //!
 //! Models overwhelmingly emit the backslash delimiter forms (`\(...\)`,
 //! `\[...\]`) and sometimes `\begin{equation}...\end{equation}`. `pulldown-cmark`

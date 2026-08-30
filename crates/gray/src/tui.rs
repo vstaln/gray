@@ -49,7 +49,7 @@ pub(crate) fn strip_ansi(s: &str) -> String {
 }
 
 /// Display width in chars, ANSI-aware.
-/// ponytail: char count, not unicode display width — wide glyphs may overflow; swap in unicode-width if that matters.
+/// char count, not unicode display width — wide glyphs may overflow; swap in unicode-width if that matters.
 pub fn visible_width(s: &str) -> usize {
     strip_ansi(s).chars().count()
 }
