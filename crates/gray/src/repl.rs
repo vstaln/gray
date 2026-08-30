@@ -709,6 +709,12 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                     Ok(job) => {
                         let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
                         if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                        if let Some(shared) = tui {
+                            let jobs = gray_cron::list_jobs();
+                            if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
+                                if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
+                            }
+                        }
                     }
                     Err(e) => {
                         let msg = format!("failed: {e}");
@@ -750,6 +756,12 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                         Ok(job) => {
                             let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
                             if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                            if let Some(shared) = tui {
+                                let jobs = gray_cron::list_jobs();
+                                if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
+                                    if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
+                                }
+                            }
                         }
                         Err(e) => {
                             let msg = format!("failed: {e}");
@@ -772,6 +784,12 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                             Ok(job) => {
                                 let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
                                 if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                                if let Some(shared) = tui {
+                                    let jobs = gray_cron::list_jobs();
+                                    if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
+                                        if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
+                                    }
+                                }
                                 return;
                             }
                             Err(e) => {
@@ -797,6 +815,12 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 Ok(true) => {
                     let msg = format!("removed {id}");
                     if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui {
+                        let jobs = gray_cron::list_jobs();
+                        if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
+                            if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
+                        } else if let Ok(mut t) = shared.try_lock() { t.set_next_cron(None, None); }
+                    }
                 }
                 Ok(false) => {
                     let msg = format!("no job found for '{id}'");
@@ -1135,24 +1159,43 @@ pub async fn run_repl_mode(
 
     // Cron background — stolen from hermes Scheduler tick (Step 3)
     // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward), deduped by InflightGuard.
-    // For now logs + updates next_run + pushes dim; Agent run will be added when session wiring lands.
+    // Footer clock ticks every second via tick_status when next_cron is set.
     {
         let cron_tui = tui.clone();
-        let cron_cwd = cwd.clone();
-        let cron_config = config.clone();
         tokio::spawn(async move {
             use gray_cron::Scheduler;
             use std::sync::Arc;
             let scheduler = Scheduler::from_active();
             let guard = Arc::new(gray_cron::InflightGuard::new());
+            // helper to push next due to footer clock
+            let update_footer = |tui_opt: &Option<(crate::composer::SharedTui, std::sync::Arc<std::sync::atomic::AtomicBool>)>| {
+                if let Some((shared, _)) = tui_opt {
+                    let jobs = gray_cron::list_jobs();
+                    let next = jobs
+                        .iter()
+                        .filter(|j| j.enabled && j.next_run.is_some())
+                        .min_by_key(|j| j.next_run)
+                        .cloned();
+                    if let Ok(mut t) = shared.try_lock() {
+                        if let Some(j) = next {
+                            t.set_next_cron(Some(j.name.clone()), j.next_run);
+                        } else {
+                            t.set_next_cron(None, None);
+                        }
+                    }
+                }
+            };
+            update_footer(&cron_tui);
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-            // First tick immediate is at creation; skip it
             interval.tick().await;
             loop {
                 interval.tick().await;
                 let due = match scheduler.scan_due_jobs() {
                     Ok(d) => d,
-                    Err(_) => continue,
+                    Err(_) => {
+                        update_footer(&cron_tui);
+                        continue;
+                    }
                 };
                 for job in due {
                     if !guard.try_register_running_job(&job.id) {
@@ -1166,6 +1209,7 @@ pub async fn run_repl_mode(
                     }
                     guard.release_running_job(&job.id);
                 }
+                update_footer(&cron_tui);
             }
         });
     }
@@ -1591,9 +1635,22 @@ pub async fn run_repl_mode(
                                 if kind == KeyEventKind::Release {
                                     continue;
                                 }
-                                if code == KeyCode::Esc
-                                    || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL))
-                                {
+                                // Ctrl+C always cancels turn
+                                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                                    watch_cancel.cancel();
+                                    return;
+                                }
+                                // Esc: dismiss popup if open, else cancel turn
+                                if code == KeyCode::Esc {
+                                    if let Some(shared) = watcher_tui.as_ref()
+                                        && let Ok(mut t) = shared.try_lock()
+                                        && !t.matches.is_empty()
+                                    {
+                                        t.matches.clear();
+                                        t.sel = 0;
+                                        let _ = t.draw();
+                                        continue;
+                                    }
                                     watch_cancel.cancel();
                                     return;
                                 }
@@ -1605,8 +1662,120 @@ pub async fn run_repl_mode(
                                 }
                                 if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('v') | KeyCode::Char('V')) {
                                     t.try_attach_clipboard_image();
+                                    // sync matches after clipboard attach may insert placeholder
+                                    let cur_text = t.textarea.text().to_string();
+                                    t.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
+                                        crate::repl::completion_matches(&cur_text[1..])
+                                    } else { Vec::new() };
+                                    if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
                                     let _ = t.draw();
                                     continue;
+                                }
+                                // Helper to sync matches after text change
+                                let sync_matches = |t: &mut crate::composer::Tui| {
+                                    let cur_text = t.textarea.text().to_string();
+                                    t.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
+                                        crate::repl::completion_matches(&cur_text[1..])
+                                    } else { Vec::new() };
+                                    if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
+                                };
+                                // Ctrl editing keys (must check before generic Char handling)
+                                if modifiers.contains(KeyModifiers::CONTROL) {
+                                    match code {
+                                        KeyCode::Char('p') => {
+                                            if !t.matches.is_empty() {
+                                                t.sel = t.sel.saturating_sub(1);
+                                                let _ = t.draw();
+                                            } else {
+                                                // treat as Up history? ignore during task running
+                                                let _ = t.draw();
+                                            }
+                                            continue;
+                                        }
+                                        KeyCode::Char('n') => {
+                                            if !t.matches.is_empty() {
+                                                t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
+                                                let _ = t.draw();
+                                            }
+                                            continue;
+                                        }
+                                        KeyCode::Char('u') => { t.textarea.set_text(""); t.history_idx = None; sync_matches(&mut t); let _ = t.draw(); continue; }
+                                        KeyCode::Char('a') => { t.textarea.set_cursor(0); let _ = t.draw(); continue; }
+                                        KeyCode::Char('e') => { t.textarea.move_to_end(); let _ = t.draw(); continue; }
+                                        KeyCode::Char('k') => { let cur = t.textarea.cursor(); t.textarea.replace_range(cur..usize::MAX, ""); sync_matches(&mut t); let _ = t.draw(); continue; }
+                                        KeyCode::Char('w') | KeyCode::Backspace => {
+                                            // when popup open, dismiss? mimic input.rs popup swallows word deletes
+                                            if !t.matches.is_empty() {
+                                                t.textarea.delete_word_backward();
+                                                t.sync_attachments();
+                                                sync_matches(&mut t);
+                                                let _ = t.draw();
+                                                continue;
+                                            }
+                                            t.textarea.delete_word_backward();
+                                            t.sync_attachments();
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Delete => {
+                                            t.textarea.delete_word_forward();
+                                            t.sync_attachments();
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Left => { if !t.matches.is_empty() { t.sel = t.sel.saturating_sub(1); let _ = t.draw(); } else { t.textarea.move_word_left(); let _ = t.draw(); } continue; }
+                                        KeyCode::Right => { if !t.matches.is_empty() { t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1)); let _ = t.draw(); } else { t.textarea.move_word_right(); let _ = t.draw(); } continue; }
+                                        _ => {}
+                                    }
+                                }
+                                // Alt editing keys
+                                if modifiers.contains(KeyModifiers::ALT) {
+                                    match code {
+                                        KeyCode::Backspace => { t.textarea.delete_word_backward(); t.sync_attachments(); sync_matches(&mut t); let _ = t.draw(); continue; }
+                                        KeyCode::Delete => { t.textarea.delete_word_forward(); t.sync_attachments(); sync_matches(&mut t); let _ = t.draw(); continue; }
+                                        KeyCode::Char('d') => { t.textarea.delete_word_forward(); sync_matches(&mut t); let _ = t.draw(); continue; }
+                                        KeyCode::Char('b') | KeyCode::Left => { t.textarea.move_word_left(); let _ = t.draw(); continue; }
+                                        KeyCode::Char('f') | KeyCode::Right => { t.textarea.move_word_right(); let _ = t.draw(); continue; }
+                                        _ => {}
+                                    }
+                                }
+                                // Popup navigation when matches present
+                                if !t.matches.is_empty() {
+                                    match code {
+                                        KeyCode::Up => { t.sel = t.sel.saturating_sub(1); let _ = t.draw(); continue; }
+                                        KeyCode::Down => { t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1)); let _ = t.draw(); continue; }
+                                        KeyCode::Tab => {
+                                            if let Some((name, _)) = t.matches.get(t.sel).cloned() {
+                                                t.textarea.set_text(&format!("/{name} "));
+                                                t.textarea.move_to_end();
+                                                sync_matches(&mut t);
+                                            }
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Enter => {
+                                            let cur_text = t.textarea.text().to_string();
+                                            if let Some((name, _)) = t.matches.get(t.sel).cloned() {
+                                                if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
+                                                    t.textarea.set_text(&format!("/{name} "));
+                                                    t.textarea.move_to_end();
+                                                    sync_matches(&mut t);
+                                                    let _ = t.draw();
+                                                    continue;
+                                                }
+                                            }
+                                            // if already completed, fall through to queue logic below
+                                        }
+                                        KeyCode::Esc => {
+                                            t.matches.clear();
+                                            t.sel = 0;
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        _ => {}
+                                    }
                                 }
                                 match code {
                                     KeyCode::Left => {
@@ -1617,12 +1786,54 @@ pub async fn run_repl_mode(
                                         t.textarea.move_right();
                                         let _ = t.draw();
                                     }
+                                    KeyCode::Up => {
+                                        if !t.matches.is_empty() {
+                                            t.sel = t.sel.saturating_sub(1);
+                                            let _ = t.draw();
+                                        } else {
+                                            t.textarea.move_up();
+                                            let _ = t.draw();
+                                        }
+                                    }
+                                    KeyCode::Down => {
+                                        if !t.matches.is_empty() {
+                                            t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
+                                            let _ = t.draw();
+                                        } else {
+                                            t.textarea.move_down();
+                                            let _ = t.draw();
+                                        }
+                                    }
+                                    KeyCode::Tab => {
+                                        if !t.matches.is_empty() {
+                                            if let Some((name, _)) = t.matches.get(t.sel).cloned() {
+                                                t.textarea.set_text(&format!("/{name} "));
+                                                t.textarea.move_to_end();
+                                                sync_matches(&mut t);
+                                            }
+                                            let _ = t.draw();
+                                        }
+                                    }
                                     KeyCode::Enter => {
                                         let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
                                         if is_newline {
                                             t.textarea.insert_str("\n");
+                                            sync_matches(&mut t);
                                             let _ = t.draw();
                                             continue;
+                                        }
+                                        // if popup open and selection not yet applied, complete first
+                                        if !t.matches.is_empty() {
+                                            if let Some((name, _)) = t.matches.get(t.sel).cloned() {
+                                                let cur_text = t.textarea.text().to_string();
+                                                if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
+                                                    t.textarea.set_text(&format!("/{name} "));
+                                                    t.textarea.move_to_end();
+                                                    sync_matches(&mut t);
+                                                    let _ = t.draw();
+                                                    continue;
+                                                }
+                                            }
                                         }
                                         let mut text = t.textarea.text().to_string();
                                         for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
@@ -1635,6 +1846,8 @@ pub async fn run_repl_mode(
                                         t.queued_inputs.push_back((text.clone(), attached.clone()));
                                         t.textarea.set_text("");
                                         t.pending_pastes.clear();
+                                        t.matches.clear();
+                                        t.sel = 0;
                                         // show queued preview as dim line in transcript
                                         let preview = if text.is_empty() { format!("queued {} image(s)", t.queued_inputs.back().map(|(_, imgs)| imgs.len()).unwrap_or(0)) } else { format!("queued: {}", text.chars().take(80).collect::<String>()) };
                                         let preview_line = ratatui::text::Line::from(ratatui::text::Span::styled(preview, ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::DIM)));
@@ -1646,23 +1859,44 @@ pub async fn run_repl_mode(
                                     }
                                     KeyCode::Char(c) => {
                                         t.textarea.insert_str(&c.to_string());
+                                        sync_matches(&mut t);
                                         let _ = t.draw();
                                     }
                                     KeyCode::Backspace => {
-                                        t.textarea.delete_backward(1);
+                                        if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                            t.textarea.delete_word_backward();
+                                        } else {
+                                            t.textarea.delete_backward(1);
+                                        }
+                                        t.sync_attachments();
+                                        sync_matches(&mut t);
                                         let _ = t.draw();
                                     }
                                     KeyCode::Delete => {
-                                        t.textarea.delete_forward(1);
+                                        if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                            t.textarea.delete_word_forward();
+                                        } else {
+                                            t.textarea.delete_forward(1);
+                                        }
+                                        t.sync_attachments();
+                                        sync_matches(&mut t);
                                         let _ = t.draw();
                                     }
-                                    KeyCode::Up => {
-                                        t.textarea.move_up();
-                                        let _ = t.draw();
-                                    }
-                                    KeyCode::Down => {
-                                        t.textarea.move_down();
-                                        let _ = t.draw();
+                                    KeyCode::Esc => {
+                                        if !t.matches.is_empty() {
+                                            t.matches.clear();
+                                            t.sel = 0;
+                                            let _ = t.draw();
+                                        } else {
+                                            t.textarea.set_text("");
+                                            t.attachments.clear();
+                                            t.pending_pastes.clear();
+                                            t.history_idx = None;
+                                            t.sel = 0;
+                                            t.matches.clear();
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                        }
                                     }
                                     _ => {}
                                 }
@@ -1672,6 +1906,12 @@ pub async fn run_repl_mode(
                                 let Ok(mut t) = shared.try_lock() else { continue; };
                                 if !t.is_task_running { continue; }
                                 t.handle_paste(data);
+                                let cur_text = t.textarea.text().to_string();
+                                t.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
+                                    crate::repl::completion_matches(&cur_text[1..])
+                                } else { Vec::new() };
+                                if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
+                                let _ = t.draw();
                             }
                             _ => {}
                         }

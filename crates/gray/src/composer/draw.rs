@@ -163,7 +163,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let attach_h: u16 = if has_attach { 1 } else { 0 };
         let has_status = tui.status.is_some();
 
-        let gap_h: u16 = 1;
         let status_h: u16 = if has_status { 1 } else { 0 };
 
         let avail_panel_h = (area.height.saturating_sub(box_h + attach_h + 1) as usize).min(PANEL_ROWS);
@@ -176,14 +175,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let (status_y, box_y, panel_y, attach_y, footer_y) = if !tui.matches.is_empty() {
             let box_y = area.y;
-            let panel_y = box_y + box_h;
+            // Omit bottom padding row of prompt box when autocomplete open: panel directly below prompt
+            let panel_y = box_y + box_h.saturating_sub(1);
             let attach_y = panel_y + panel_h;
             let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
             let status_y = area.y;
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else if has_status {
-            let status_y = area.y + gap_h;
-            let box_y = status_y + status_h + gap_h;
+            let status_y = area.y;
+            let box_y = status_y + status_h;
+            // ensure exactly 1 row separation before prompt is handled by status being 1 row; box_lines top padding already provides the prompt border
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
             let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
@@ -279,18 +280,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, attach_y, area.width, 1));
         }
 
-        let (max_tokens, max_label) = crate::setup::model_context_info(&tui.model_name);
+        let (_, max_label) = crate::setup::model_context_info(&tui.model_name);
         let (used_tokens, hit_rate) = if let Some(u) = tui.cumulative_usage.or(tui.latest_usage) {
             (u.total(), u.cache_hit_rate() * 100.0)
         } else {
             (0, 0.0)
         };
-        let pct = if max_tokens > 0 {
-            (used_tokens as f64 / max_tokens as f64 * 100.0).min(100.0)
-        } else {
-            0.0
-        };
-        let ctx_display = format!("{pct:.1}%/{max_label}");
+        let ctx_display = format!("{}/{}", crate::setup::format_context_length(used_tokens), max_label);
         let cache_display = format!("{hit_rate:.1}% cache");
 
         let model_display = crate::setup::friendly_model_name(&tui.model_name);
@@ -304,8 +300,31 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Span::styled(effort_display.clone(), Style::default().fg(Color::Rgb(108, 108, 108))),
             ]
         };
+        // Cron ticking clock — hermes-style next due countdown, ticks via tick_status
+        let cron_display: Option<(String, Color)> = tui.next_cron.as_ref().and_then(|(name, next)| {
+            let now = chrono::Utc::now();
+            let secs = (*next - now).num_seconds();
+            if secs < -120 {
+                None // past grace, stale
+            } else if secs <= 0 {
+                Some((format!("⏰ {name} due!"), Color::Rgb(246, 173, 126)))
+            } else if secs < 60 {
+                Some((format!("⏰ {name} {secs}s"), Color::Rgb(246, 173, 126)))
+            } else if secs < 3600 {
+                let m = secs / 60;
+                let s = secs % 60;
+                Some((format!("⏰ {name} {m}m {s}s"), Color::Rgb(180, 160, 130)))
+            } else if secs < 86400 {
+                let h = secs / 3600;
+                let m = (secs % 3600) / 60;
+                Some((format!("⏰ {name} {h}h {m}m"), Color::Rgb(140, 140, 140)))
+            } else {
+                None // far future, don't clutter footer
+            }
+        });
+        let cron_len = cron_display.as_ref().map(|(s,_)| s.chars().count() + 3).unwrap_or(0);
         let right_len = if model_display.is_empty() { effort_display.chars().count() } else { model_display.chars().count() + 3 + effort_display.chars().count() };
-        let left_len = 2 + ctx_display.chars().count() + 3 + cache_display.chars().count();
+        let left_len = 2 + ctx_display.chars().count() + 3 + cache_display.chars().count() + cron_len;
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
@@ -319,8 +338,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             Span::styled(ctx_display, Style::default().fg(Color::Rgb(108, 108, 108))),
             Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))),
             Span::styled(cache_display, Style::default().fg(cache_color)),
-            Span::raw(" ".repeat(pad_len)),
         ];
+        if let Some((cron_str, cron_color)) = cron_display {
+            footer_spans.push(Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))));
+            footer_spans.push(Span::styled(cron_str, Style::default().fg(cron_color).add_modifier(Modifier::BOLD)));
+        }
+        footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {
             frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));

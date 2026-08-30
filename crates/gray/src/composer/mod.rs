@@ -51,8 +51,8 @@ pub(crate) use text_area::{TextArea, TextElement};
 pub struct Tui {
     pub(crate) terminal: Term,
     pub(crate) textarea: TextArea,
-    matches: Vec<(&'static str, &'static str)>,
-    sel: usize,
+    pub(crate) matches: Vec<(&'static str, &'static str)>,
+    pub(crate) sel: usize,
     status: Option<(Instant, String)>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
@@ -63,9 +63,9 @@ pub struct Tui {
     thinking: bool,
     hide_thinking: bool,
     pending_tokens: Option<String>,
-    history: Vec<String>,
-    history_idx: Option<usize>,
-    draft: String,
+    pub(crate) history: Vec<String>,
+    pub(crate) history_idx: Option<usize>,
+    pub(crate) draft: String,
     pub(crate) attachments: Vec<(String, PathBuf)>,
     pub(crate) pending_pastes: Vec<(String, String)>,
     model_name: String,
@@ -78,6 +78,9 @@ pub struct Tui {
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
+    // Cron ticking UI — next due job for footer clock
+    pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
+    pub(crate) last_cron_tick: Option<Instant>,
 }
 
 
@@ -167,12 +170,21 @@ impl Tui {
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
             committed_markdown_lines: 0,
             pending_resize: None,
+            next_cron: None,
+            last_cron_tick: None,
         })
     }
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
+    pub fn set_next_cron(&mut self, name: Option<String>, next: Option<chrono::DateTime<chrono::Utc>>) {
+        match (name, next) {
+            (Some(n), Some(t)) => self.next_cron = Some((n, t)),
+            _ => self.next_cron = None,
+        }
+        let _ = self.draw();
+    }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.cumulative_usage = Some(match self.cumulative_usage {
@@ -316,11 +328,21 @@ impl Tui {
         }
     }
     pub fn tick_status(&mut self) {
-        // The ticker exists for the live turn status. Repainting an idle
-        // composer (or one hidden behind a modal) competes for stdout and
-        // continually resets the native input caret.
-        if self.status.is_none() {
+        // Cron ticking clock — needs repaint even when idle, once per second
+        let needs_cron_tick = if let Some((_, next)) = &self.next_cron {
+            let now = chrono::Utc::now();
+            let secs = (*next - now).num_seconds();
+            // tick every second when due within 1h, else every 5s
+            let interval = if secs.abs() < 3600 { Duration::from_secs(1) } else { Duration::from_secs(5) };
+            self.last_cron_tick.map(|t| t.elapsed() >= interval).unwrap_or(true)
+        } else {
+            false
+        };
+        if self.status.is_none() && !needs_cron_tick {
             return;
+        }
+        if needs_cron_tick {
+            self.last_cron_tick = Some(Instant::now());
         }
         if let Some((cols, at)) = self.pending_resize {
             if let Some(elapsed) = Instant::now().checked_duration_since(at) {
