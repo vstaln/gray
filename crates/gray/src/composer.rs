@@ -888,33 +888,45 @@ impl Tui {
         use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
+        // Ratatui shows and repositions the native cursor after every frame.
+        // Do not repaint on poll timeouts: repeated cursor repositioning resets
+        // the terminal emulator's blink timer and makes the caret look broken.
+        let mut needs_draw = true;
         loop {
-            let cur_text = self.textarea.text().to_string();
-            self.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
-                completion_matches(&cur_text[1..])
-            } else { Vec::new() };
-            if self.sel >= self.matches.len() { self.sel = self.matches.len().saturating_sub(1); }
-            self.draw()?;
             if let Some((cols, at)) = self.pending_resize {
                 if let Some(elapsed) = Instant::now().checked_duration_since(at) {
                     if elapsed >= RESIZE_DEBOUNCE {
                         self.pending_resize = None;
                         self.last_width = cols;
-                        self.draw()?;
+                        needs_draw = true;
                     }
                 } else {
                     self.pending_resize = None;
                 }
             }
+
+            if needs_draw {
+                let cur_text = self.textarea.text().to_string();
+                self.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
+                    completion_matches(&cur_text[1..])
+                } else { Vec::new() };
+                if self.sel >= self.matches.len() { self.sel = self.matches.len().saturating_sub(1); }
+                self.draw()?;
+                needs_draw = false;
+            }
+
             let timeout = self.pending_resize.map(|(_, at)| {
                 if let Some(e) = Instant::now().checked_duration_since(at) {
                     if e >= RESIZE_DEBOUNCE { Duration::from_millis(0) } else { RESIZE_DEBOUNCE - e }
                 } else { Duration::from_millis(0) }
             }).unwrap_or(Duration::from_millis(250));
             if !poll(timeout)? { continue; }
+            needs_draw = true;
             match read()? {
                 Event::Resize(cols, _) => {
                     self.pending_resize = Some((cols, Instant::now()));
+                    // Wait for the resize debounce window before repainting.
+                    needs_draw = false;
                 }
                 Event::Paste(data) => {
                     self.handle_paste(data);
@@ -932,7 +944,6 @@ impl Tui {
                         self.history_idx = None;
                         self.sel = 0;
                     }
-                    let _ = self.draw();
                 }
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::ALT) => match code {
                     KeyCode::Backspace => { self.textarea.delete_word_backward(); self.sync_attachments(); self.sel = 0; }
@@ -968,6 +979,7 @@ impl Tui {
                         KeyCode::Enter => {
                             let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
                             if is_newline { self.textarea.insert_str("\n"); continue; }
+                            let cur_text = self.textarea.text().to_string();
                             if !self.matches.is_empty() && let Some((name, _)) = self.matches.get(self.sel) {
                                 if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
                                     self.textarea.set_text(&format!("/{name} "));
@@ -1057,7 +1069,6 @@ impl Tui {
                                 self.history_idx = None;
                                 self.sel = 0;
                             }
-                            let _ = self.draw();
                         }
                         KeyCode::Left => {
                             if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
@@ -1573,6 +1584,12 @@ impl Tui {
         }
     }
     pub fn tick_status(&mut self) {
+        // The ticker exists for the live turn status. Repainting an idle
+        // composer (or one hidden behind a modal) competes for stdout and
+        // continually resets the native input caret.
+        if self.status.is_none() {
+            return;
+        }
         if let Some((cols, at)) = self.pending_resize {
             if let Some(elapsed) = Instant::now().checked_duration_since(at) {
                 if elapsed >= RESIZE_DEBOUNCE {

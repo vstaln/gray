@@ -1211,15 +1211,6 @@ pub async fn run_repl_mode(
                     let (shared, _) = if interactive { (Some(tui.as_ref().expect("interactive implies tui")), ()) } else { (None, ()) };
                     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
                     if let Some(s) = &tui_stream { s.lock().expect("tui lock").begin_turn("Working"); }
-                    let ticker_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                    let ticker_stopped = ticker_stop.clone();
-                    let ticker_tui = tui_stream.clone();
-                    let _ticker_task = tokio::spawn(async move {
-                        while !ticker_stopped.load(std::sync::atomic::Ordering::Relaxed) {
-                            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                            if let Some(shared) = &ticker_tui { if let Ok(mut t) = shared.lock() { let _ = t.draw(); } }
-                        }
-                    });
                     let watch_cancel = cancel.clone();
                     let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let watcher_stopped = watch_stop.clone();
@@ -1267,7 +1258,6 @@ pub async fn run_repl_mode(
                     };
                     TURN_STATE.lock().expect("turn state lock").take();
                     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    ticker_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     if let Some(s) = &tui_stream { s.lock().expect("tui lock").end_turn(); }
                     match run_result {
                         Ok(_) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; }
