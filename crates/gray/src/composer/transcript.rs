@@ -262,9 +262,18 @@ impl Tui {
     }
 
     #[allow(dead_code)]
-    #[allow(dead_code)]
-    pub(crate) fn ensure_gap(&mut self, _n: usize) {
-        // NUKED: was double-counting with markdown's own blank separators. Grok has no ensure_gap — keep stub for compat.
+    pub(crate) fn ensure_gap(&mut self, n: usize) {
+        let trailing = self.transcript.iter().rev().take_while(|l| {
+            l.width() == 0 || l.spans.iter().all(|s| s.content.trim().is_empty())
+        }).count();
+        let need = n.saturating_sub(trailing);
+        if need == 0 { return; }
+        let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
+        let h = need as u16;
+        let _ = self.terminal.insert_before(h, |buf| {
+            Paragraph::new(lines.clone()).render(buf.area, buf);
+        });
+        self.transcript.extend(lines);
     }
 
     pub fn stream(&mut self, chunk: &str) {
@@ -289,7 +298,7 @@ impl Tui {
             self.turn_had_thinking = true;
             self.set_status(Some("Thinking"));
             if !self.hide_thinking {
-                
+                self.ensure_gap(1);
             }
         }
         if !self.hide_thinking {
@@ -341,8 +350,7 @@ impl Tui {
     }
 
     pub fn push_user_prompt(&mut self, text: &str) {
-        // Grok-style: exactly one blank line between blocks. ensure_gap is the single owner.
-        
+        self.ensure_gap(1);
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
         let content_w = w.saturating_sub(4).max(1);
@@ -411,7 +419,7 @@ impl Tui {
     }
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
-        
+        self.ensure_gap(1);
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let wrapped = wrap_styled_line(line, max_w);
@@ -442,9 +450,10 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() { return; }
-        // NUKED: zero gaps — strip all blank lines from markdown batch.
+        // Grok single-gap: strip markdown's own blanks, gap owned here.
         let lines: Vec<Line<'static>> = lines.into_iter().filter(|l| l.width() != 0).collect();
         if lines.is_empty() { return; }
+        self.ensure_gap(1);
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
@@ -496,7 +505,7 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
-        
+        self.ensure_gap(1);
         let styled = Line::from(vec![
             Span::raw(" "),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
@@ -510,7 +519,7 @@ impl Tui {
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
-        
+        self.ensure_gap(1);
         let mut spans = vec![
             Span::raw(" "),
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
