@@ -1357,29 +1357,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         }
     }
 
-    /// Render a mermaid code block into a [`MermaidReplace`]; `true` if drawn.
-    fn try_push_mermaid(&mut self, text: &str, range: &Range<usize>) -> bool {
-        let line_style = self.ms.rule.style_into();
-        let styles = crate::mermaid::MermaidStyles {
-            border: line_style,
-            node_text: self.ms.text.style_into(),
-            edge: line_style,
-            edge_label: self.ms.emphasis_inner.style_into(),
-            title: self.ms.strong_inner.style_into(),
-        };
-        match crate::mermaid::render(text, &styles, self.max_table_width) {
-            Some(art) => {
-                self.buffers
-                    .mermaid_replaces
-                    .push(crate::buffers::MermaidReplace {
-                        lines: art.plain_lines,
-                        styled_lines: art.styled_lines,
-                        range: range.clone(),
-                    });
-                true
-            }
-            None => false,
-        }
+    fn try_push_mermaid(&mut self, _text: &str, _range: &Range<usize>) -> bool {
+        false
     }
 
     /// Apply inline-code styling to a code/math span: dim the delimiters,

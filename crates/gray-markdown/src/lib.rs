@@ -33,7 +33,6 @@ mod hyperlinks;
 mod latex;
 mod latex_delimiters;
 pub mod markdown_core;
-mod mermaid;
 mod open_code_highlighter;
 mod output;
 mod parse;

@@ -502,11 +502,10 @@ mod code_block_span_tests {
         assert_eq!(cbs[0].info, "mermaid");
         // `body` is the verbatim diagram source, independent of rendering.
         assert_eq!(cbs[0].body, "flowchart TD\n  A --> B\n");
-        // The fence is rendered inline: the spanned output lines are the diagram
-        // art, not the verbatim source.
+        // Without mermaid rendering, the fence renders as regular code block source.
         assert!(!cbs[0].output_line_range.is_empty());
         let rendered = body_lines(&lines, &cbs[0]).join("\n");
-        assert_ne!(rendered, "flowchart TD\n  A --> B");
+        assert_eq!(rendered, "flowchart TD\n  A --> B");
     }
 
     #[test]
