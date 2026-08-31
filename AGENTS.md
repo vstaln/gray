@@ -6,7 +6,7 @@
 - Token footer logic: `gray-core` → `gray` via `AgentEvent::TurnEnd` → `tui.push_usage()` coalesced — don't duplicate gap logic.
 
 ## When the user asks to "reference codex / pi / grok / prime-agent / whatever"
-- They mean: **look at the local reference at `reference/` (canonical) or `references/`** (alt) and copy/steal the relevant pattern into gray.
+- They mean: **look at the local reference at `reference/` and copy/steal the relevant pattern into gray.
 - Layout:
   - `reference/openai/codex` — Codex RS TUI (`codex-rs/tui`)
   - `reference/pi-mono` — pi `packages/agent` + `packages/ai` (TypeScript agent loop)

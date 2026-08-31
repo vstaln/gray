@@ -1,7 +1,6 @@
 /target/
 # local reference clones (never commit)
 /reference/
-/references/
 /port/
 
 # local gray state (fallback when $HOME unset)
