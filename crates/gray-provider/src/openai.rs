@@ -86,7 +86,7 @@ impl OpenAiProviderBuilder {
         // long generations are legal.
         let http = self.http.unwrap_or_else(|| {
             reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(30))
+                .connect_timeout(Duration::from_secs(10))
                 .read_timeout(Duration::from_secs(120))
                 .build()
                 .expect("reqwest client with timeouts")
@@ -649,10 +649,24 @@ async fn send_request_with_retries(
                     _ => ProviderError::Stream(msg),
                 }
             }
-            Err(e) => ProviderError::Stream(e.to_string()),
+            Err(e) => {
+                if e.is_connect() {
+                    ProviderError::Connection(e.to_string())
+                } else if e.is_timeout() {
+                    ProviderError::Timeout(e.to_string())
+                } else {
+                    ProviderError::Stream(e.to_string())
+                }
+            }
         };
 
-        let is_retryable = matches!(err, ProviderError::RateLimited(_) | ProviderError::Stream(_));
+        let is_retryable = matches!(
+            err,
+            ProviderError::RateLimited(_)
+                | ProviderError::Stream(_)
+                | ProviderError::Timeout(_)
+                | ProviderError::Connection(_)
+        );
         if !is_retryable || attempt == MAX_ATTEMPTS {
             log::warn!(target: "gray_provider", "request error after attempt {attempt}: {err}");
             return Err(err);

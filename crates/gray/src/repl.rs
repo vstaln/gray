@@ -132,6 +132,21 @@ pub fn fmt_usage(total: usize) -> String {
     out.chars().rev().collect()
 }
 
+/// Formats a [`CoreError`] for REPL display.
+/// Connection/timeout failures get a friendly, actionable message with the
+/// provider's `base_url`; all other errors fall back to the generic prefix.
+pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
+    match e {
+        CoreError::Connection(detail) => format!(
+            "✗ Connection failed: Unable to reach {base_url} ({detail})\n  Please check your internet connection or run /connect to configure provider settings."
+        ),
+        CoreError::Timeout(detail) => format!(
+            "✗ Connection failed: Unable to reach {base_url} (request timed out: {detail})\n  Please check your internet connection or run /connect to configure provider settings."
+        ),
+        _ => format!("agent error: {e}"),
+    }
+}
+
 fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
@@ -1364,12 +1379,23 @@ pub async fn run_repl_mode(
                     let watch_cancel = cancel.clone();
                     let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let watcher_stopped = watch_stop.clone();
+                    let watcher_tui = tui_stream.clone();
                     let _key_watcher = tokio::task::spawn_blocking(move || {
                         use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
                         loop {
                             if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) { return; }
                             match poll(std::time::Duration::from_millis(50)) { Ok(true) => {} _ => continue, }
-                            if let Ok(Event::Key(KeyEvent { code, modifiers, kind, .. })) = read() {
+                            let Ok(event) = read() else { continue; };
+                            if let Event::Resize(cols, _) = event {
+                                if let Some(shared) = watcher_tui.as_ref() {
+                                    if let Ok(mut t) = shared.try_lock() {
+                                        t.last_width = cols;
+                                        let _ = t.draw();
+                                    }
+                                }
+                                continue;
+                            }
+                            if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = event {
                                 if kind == KeyEventKind::Release { continue; }
                                 if code == KeyCode::Esc || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL)) { watch_cancel.cancel(); return; }
                             }
@@ -1412,7 +1438,11 @@ pub async fn run_repl_mode(
                     match run_result {
                         Ok(_) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; }
                         Err(gray_core::error::CoreError::Cancelled) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream("(interrupted)\n"); } } else { println!("(interrupted)"); } }
-                        Err(e) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream(&format!("agent error: {e}\n")); } } else { eprintln!("agent error: {e}"); } }
+                        Err(e) => {
+                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                            let msg = format_core_error(&e, &config.base_url);
+                            if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream(&format!("{msg}\n")); } } else { eprintln!("{msg}"); }
+                        }
                     }
                     continue;
                 }
@@ -1666,6 +1696,14 @@ pub async fn run_repl_mode(
                         }
                         let Ok(event) = read() else { continue; };
                         match event {
+                            Event::Resize(cols, _) => {
+                                if let Some(shared) = watcher_tui.as_ref() {
+                                    if let Ok(mut t) = shared.try_lock() {
+                                        t.last_width = cols;
+                                        let _ = t.draw();
+                                    }
+                                }
+                            }
                             Event::Key(KeyEvent { code, modifiers, kind, .. }) => {
                                 if kind == KeyEventKind::Release {
                                     continue;
@@ -2064,14 +2102,15 @@ pub async fn run_repl_mode(
                     }
                     Err(e) => {
                         persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                        let msg = format_core_error(&e, &config.base_url);
                         if interactive {
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");
                                 t.end_thinking();
-                                t.stream(&format!("agent error: {e}\n"));
+                                t.stream(&format!("{msg}\n"));
                             }
                         } else {
-                            eprintln!("agent error: {e}");
+                            eprintln!("{msg}");
                         }
                     }
                 }

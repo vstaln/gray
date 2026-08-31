@@ -24,6 +24,7 @@ use crate::repl::completion_matches;
 
 pub(crate) const VIEWPORT_H: u16 = 7;
 pub(crate) const PANEL_ROWS: usize = 6;
+#[allow(dead_code)]
 pub(crate) const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -348,32 +349,29 @@ impl Tui {
         let needs_cron_tick = if let Some((_, next)) = &self.next_cron {
             let now = chrono::Utc::now();
             let secs = (*next - now).num_seconds();
-            // tick every second when due within 1h, else every 5s
             let interval = if secs.abs() < 3600 { Duration::from_secs(1) } else { Duration::from_secs(5) };
             self.last_cron_tick.map(|t| t.elapsed() >= interval).unwrap_or(true)
         } else {
             false
         };
-        if self.status.is_none() && !needs_cron_tick {
+        // Handle resize immediately — no debounce, no early return without draw.
+        let mut resized = false;
+        if let Some((cols, _)) = self.pending_resize.take() {
+            if cols != self.last_width {
+                self.last_width = cols;
+                resized = true;
+            }
+        } else if let Ok((cols, _)) = crossterm::terminal::size() {
+            if cols != self.last_width {
+                self.last_width = cols;
+                resized = true;
+            }
+        }
+        if self.status.is_none() && !needs_cron_tick && !resized {
             return;
         }
         if needs_cron_tick {
             self.last_cron_tick = Some(Instant::now());
-        }
-        if let Some((cols, at)) = self.pending_resize {
-            if let Some(elapsed) = Instant::now().checked_duration_since(at) {
-                if elapsed >= RESIZE_DEBOUNCE {
-                    self.pending_resize = None;
-                    self.last_width = cols;
-                } else {
-                    return;
-                }
-            } else {
-                self.pending_resize = None;
-            }
-        } else if let Ok((cols, _)) = crossterm::terminal::size() && cols != self.last_width {
-            self.pending_resize = Some((cols, Instant::now()));
-            return;
         }
         let _ = self.draw();
     }

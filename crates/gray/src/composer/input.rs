@@ -3,7 +3,7 @@
 //! This module owns attachment helpers and key-dispatch with popup short-circuit.
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -306,16 +306,9 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
 
     let mut needs_draw = true;
     loop {
-        if let Some((cols, at)) = tui.pending_resize {
-            if let Some(elapsed) = Instant::now().checked_duration_since(at) {
-                if elapsed >= super::RESIZE_DEBOUNCE {
-                    tui.pending_resize = None;
-                    tui.last_width = cols;
-                    needs_draw = true;
-                }
-            } else {
-                tui.pending_resize = None;
-            }
+        if let Some((cols, _)) = tui.pending_resize.take() {
+            tui.last_width = cols;
+            needs_draw = true;
         }
 
         if needs_draw {
@@ -328,17 +321,14 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
             needs_draw = false;
         }
 
-        let timeout = tui.pending_resize.map(|(_, at)| {
-            if let Some(e) = Instant::now().checked_duration_since(at) {
-                if e >= super::RESIZE_DEBOUNCE { Duration::from_millis(0) } else { super::RESIZE_DEBOUNCE - e }
-            } else { Duration::from_millis(0) }
-        }).unwrap_or(Duration::from_millis(250));
+        let timeout = Duration::from_millis(250);
         if !poll(timeout)? { continue; }
         needs_draw = true;
         match read()? {
             Event::Resize(cols, _) => {
-                tui.pending_resize = Some((cols, Instant::now()));
-                needs_draw = false;
+                tui.last_width = cols;
+                tui.pending_resize = None;
+                needs_draw = true;
             }
             Event::Paste(data) => {
                 handle_paste(tui, data);

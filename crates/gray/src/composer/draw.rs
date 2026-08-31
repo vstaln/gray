@@ -40,16 +40,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // Stock ratatui 0.29 has no set_viewport_height; grok's fork adds it.
     // We keep the calculation for fidelity and future crate-gated migration.
     {
-        let panel_h: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
-        let needed_h = VIEWPORT_H + panel_h + if tui.attachments.is_empty() { 0 } else { 1 } + 1;
+        let _panel_h: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
+        let _needed_h = VIEWPORT_H + _panel_h + if tui.attachments.is_empty() { 0 } else { 1 } + 1;
         // On grok's xai-ratatui-inline this would be:
-        // if needed_h != tui.terminal.viewport_area().height { tui.terminal.set_viewport_height(needed_h)?; }
-        let _ = needed_h;
+        // if _needed_h != tui.terminal.viewport_area().height { tui.terminal.set_viewport_height(_needed_h)?; }
     }
 
-    let w = tui.width();
     tui.terminal.draw(|frame| {
         let area = frame.area();
+        let w = area.width as usize;
 
         let text = tui.textarea.text().to_string();
         let content_w = w.saturating_sub(4).max(1);

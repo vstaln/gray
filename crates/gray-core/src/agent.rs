@@ -22,6 +22,10 @@ pub enum ProviderError {
     Auth(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("connection failed: {0}")]
+    Connection(String),
+    #[error("request timed out: {0}")]
+    Timeout(String),
     #[error("stream broken: {0}")]
     Stream(String),
 }
@@ -81,7 +85,11 @@ pub type ProviderStream = BoxStream<'static, Result<StreamEvent, ProviderError>>
 
 impl From<ProviderError> for CoreError {
     fn from(e: ProviderError) -> Self {
-        CoreError::Provider(e.to_string())
+        match e {
+            ProviderError::Connection(msg) => CoreError::Connection(msg),
+            ProviderError::Timeout(msg) => CoreError::Timeout(msg),
+            other => CoreError::Provider(other.to_string()),
+        }
     }
 }
 

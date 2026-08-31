@@ -9,6 +9,12 @@ pub enum CoreError {
     #[error("Provider error: {0}")]
     Provider(String),
 
+    #[error("Connection failed: {0}")]
+    Connection(String),
+
+    #[error("Request timed out: {0}")]
+    Timeout(String),
+
     #[error("Tool execution error: {0}")]
     #[allow(dead_code)]
     ToolExecution(String),
