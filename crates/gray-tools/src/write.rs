@@ -6,7 +6,6 @@ use gray_core::message::ToolDef;
 use serde_json::json;
 use serde_json::Value;
 
-use crate::file_mutation_queue::with_file_mutation_queue;
 use crate::{fail, finish, resolve_path, Tool};
 
 pub const WRITE_SNIPPET: &str = "Create or overwrite files";
@@ -91,34 +90,25 @@ impl Tool for WriteTool {
             .to_string();
 
         let full = resolve_path(&ctx.cwd, &path);
-        let path_clone = path.clone();
-        with_file_mutation_queue(ctx, &path, || {
-            let full = full.clone();
-            let content = content.clone();
-            let path_clone = path_clone.clone();
-            async move {
-                if let Some(parent) = full.parent()
-                    && let Err(e) = tokio::fs::create_dir_all(parent).await
-                {
-                    return fail(format!("write failed for {}: {e}", full.display()));
-                }
-                let existed = tokio::fs::metadata(&full).await.is_ok();
-                let old = if existed { tokio::fs::read_to_string(&full).await.unwrap_or_default() } else { String::new() };
-                match tokio::fs::write(&full, content.as_bytes()).await {
-                    Ok(()) => {
-                        if existed && !old.is_empty() {
-                            let patch = crate::edit_diff::generate_unified_patch(&path_clone, &old, &content, 3);
-                            if patch.is_empty() { finish(format!("wrote {} bytes to {} (no change)", content.len(), full.display())) }
-                            else { finish(patch) }
-                        } else {
-                            finish(format!("wrote {} bytes to {}", content.len(), full.display()))
-                        }
-                    }
-                    Err(e) => fail(format!("write failed for {}: {e}", full.display())),
+        if let Some(parent) = full.parent()
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return fail(format!("write failed for {}: {e}", full.display()));
+        }
+        let existed = tokio::fs::metadata(&full).await.is_ok();
+        let old = if existed { tokio::fs::read_to_string(&full).await.unwrap_or_default() } else { String::new() };
+        match tokio::fs::write(&full, content.as_bytes()).await {
+            Ok(()) => {
+                if existed && !old.is_empty() {
+                    let patch = crate::edit_diff::generate_unified_patch(&path, &old, &content, 3);
+                    if patch.is_empty() { finish(format!("wrote {} bytes to {} (no change)", content.len(), full.display())) }
+                    else { finish(patch) }
+                } else {
+                    finish(format!("wrote {} bytes to {}", content.len(), full.display()))
                 }
             }
-        })
-        .await
+            Err(e) => fail(format!("write failed for {}: {e}", full.display())),
+        }
     }
 }
 

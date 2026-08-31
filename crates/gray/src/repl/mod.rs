@@ -972,8 +972,7 @@ pub async fn run_repl_mode(
     // task refreshes the elapsed-seconds status while turns run.
     let tui = interactive.then(|| {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-        let shared = crate::composer::SharedTui(
-            std::sync::Arc::new(std::sync::Mutex::new({
+        let shared = std::sync::Arc::new(std::sync::Mutex::new({
                 let mut t = crate::composer::Tui::new().expect("composer init");
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
@@ -992,8 +991,7 @@ pub async fn run_repl_mode(
                     t.push_dim(format!("⚠ {w}"));
                 }
                 t
-            })),
-        );
+            }));
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let ticker_stop = stop.clone();
         let ticker_tui = shared.clone();
@@ -1252,7 +1250,7 @@ pub async fn run_repl_mode(
                             if let Event::Resize(cols, _) = event {
                                 if let Some(shared) = watcher_tui.as_ref() {
                                     if let Ok(mut t) = shared.try_lock() {
-                                        t.pending_resize = Some((cols, std::time::Instant::now() + crate::composer::RESIZE_DEBOUNCE));
+                                        t.pending_resize = Some((cols, std::time::Instant::now() + std::time::Duration::from_millis(75)));
                                     }
                                 }
                                 continue;
@@ -1565,7 +1563,7 @@ pub async fn run_repl_mode(
                             Event::Resize(cols, _) => {
                                 if let Some(shared) = watcher_tui.as_ref() {
                                     if let Ok(mut t) = shared.try_lock() {
-                                        t.pending_resize = Some((cols, std::time::Instant::now() + crate::composer::RESIZE_DEBOUNCE));
+                                        t.pending_resize = Some((cols, std::time::Instant::now() + std::time::Duration::from_millis(75)));
                                     }
                                 }
                             }

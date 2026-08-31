@@ -336,7 +336,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
         needs_draw = true;
         match read()? {
             Event::Resize(cols, _) => {
-                tui.pending_resize = Some((cols, std::time::Instant::now() + super::RESIZE_DEBOUNCE));
+                tui.pending_resize = Some((cols, std::time::Instant::now() + std::time::Duration::from_millis(75)));
                 needs_draw = false;
             }
             Event::Paste(data) => {

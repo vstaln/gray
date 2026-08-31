@@ -7,26 +7,6 @@
 
 use std::io::Write;
 
-pub fn sanitize_user_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            chars.next();
-            for t in chars.by_ref() {
-                if ('\x40'..='\x7e').contains(&t) {
-                    break;
-                }
-            }
-        } else if c.is_control() && c != '\n' && c != '\t' {
-            continue;
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
 /// Strips SGR (and other CSI) escape sequences for width measurement.
 pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -48,10 +28,15 @@ pub(crate) fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Display width in chars, ANSI-aware.
-/// char count, not unicode display width — wide glyphs may overflow; swap in unicode-width if that matters.
+pub fn sanitize_user_text(text: &str) -> String {
+    strip_ansi(text)
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
+        .collect()
+}
+
 pub fn visible_width(s: &str) -> usize {
-    strip_ansi(s).chars().count()
+    unicode_width::UnicodeWidthStr::width(strip_ansi(s).as_str())
 }
 
 /// Greedy word-wrap to at most `width` visible chars per line. ANSI spans may

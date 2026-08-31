@@ -24,27 +24,16 @@ use crate::repl::completion_matches;
 
 pub(crate) const VIEWPORT_H: u16 = 7;
 pub(crate) const PANEL_ROWS: usize = 6;
-#[allow(dead_code)]
-pub(crate) const RESIZE_DEBOUNCE: Duration = Duration::from_millis(75);
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
 mod draw;
 pub(crate) use draw::{shimmer_spans, thinking_style};
 mod transcript;
-pub(crate) use transcript::{batch_insert_before, word_wrap_line, wrap_styled_line};
+pub(crate) use transcript::{word_wrap_line, wrap_styled_line};
 mod input;
 
-/// Shared handle: main thread drives prompts/streaming, ticker refreshes elapsed.
-#[derive(Clone)]
-pub struct SharedTui(pub Arc<std::sync::Mutex<Tui>>);
-
-impl std::ops::Deref for SharedTui {
-    type Target = Arc<std::sync::Mutex<Tui>>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
 mod text_area;
 pub(crate) use text_area::{TextArea, TextElement};
@@ -366,7 +355,7 @@ impl Tui {
             }
         } else if let Ok((cols, _)) = crossterm::terminal::size() {
             if cols != self.last_width {
-                self.pending_resize = Some((cols, Instant::now() + RESIZE_DEBOUNCE));
+                self.pending_resize = Some((cols, Instant::now() + Duration::from_millis(75)));
                 if !needs_cron_tick && self.status.is_none() {
                     return;
                 }
@@ -400,9 +389,5 @@ impl Drop for Tui {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
-}
-
-fn strip_ansi(s: &str) -> String {
-    crate::tui::strip_ansi(s)
 }
 

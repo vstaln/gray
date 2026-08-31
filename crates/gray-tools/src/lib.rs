@@ -13,7 +13,6 @@ pub mod edit_diff;
 pub mod find;
 pub mod grep;
 pub mod ls;
-pub mod file_mutation_queue;
 pub mod read;
 pub mod truncate;
 pub mod write;
@@ -82,8 +81,7 @@ impl Registry {
         Self::default()
     }
 
-    /// Coding bundle: read + bash + edit + write + cron (mirrors pi's `createCodingTools`).
-    pub fn coding() -> Self {
+    pub fn builtin() -> Self {
         let mut reg = Self::new();
         reg.register(Box::new(BashTool));
         reg.register(Box::new(ReadTool));
@@ -97,34 +95,6 @@ impl Registry {
             let cfg = DelegateConfig::default();
             reg.register(Box::new(DelegateTool::with_global_state(cfg)));
         }
-        reg
-    }
-
-    /// Alias for [`Self::coding`] — kept for backwards compatibility.
-    pub fn builtin() -> Self {
-        Self::coding()
-    }
-
-    /// Read-only bundle: read + grep + find + ls (mirrors pi's `createReadOnlyTools`).
-    pub fn readonly() -> Self {
-        let mut reg = Self::new();
-        reg.register(Box::new(ReadTool));
-        reg.register(Box::new(GrepTool));
-        reg.register(Box::new(FindTool));
-        reg.register(Box::new(LsTool));
-        reg
-    }
-
-    /// All tools bundle: coding + read-only (mirrors pi's `createAllTools` sans powershell).
-    pub fn all() -> Self {
-        let mut reg = Self::new();
-        reg.register(Box::new(BashTool));
-        reg.register(Box::new(ReadTool));
-        reg.register(Box::new(WriteTool));
-        reg.register(Box::new(EditTool));
-        reg.register(Box::new(GrepTool));
-        reg.register(Box::new(FindTool));
-        reg.register(Box::new(LsTool));
         reg
     }
 
@@ -296,7 +266,7 @@ fn annotation(notes: &[String]) -> String {
     format!("[truncated {}]", notes.join(" / "))
 }
 
-fn floor_char_boundary(s: &str, index: usize) -> usize {
+pub(crate) fn floor_char_boundary(s: &str, index: usize) -> usize {
     if index >= s.len() {
         return s.len();
     }
@@ -307,7 +277,7 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
-fn ceil_char_boundary(s: &str, index: usize) -> usize {
+pub(crate) fn ceil_char_boundary(s: &str, index: usize) -> usize {
     if index >= s.len() {
         return s.len();
     }

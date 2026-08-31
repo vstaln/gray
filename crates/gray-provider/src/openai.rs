@@ -326,6 +326,26 @@ fn apply_anthropic_cache_control(
     }
 }
 
+fn image_data_url(media_type: &str, data: &str) -> String {
+    format!("data:{media_type};base64,{data}")
+}
+
+fn filter_valid_tools(tools: Vec<gray_core::message::ToolDef>) -> Vec<gray_core::message::ToolDef> {
+    tools.into_iter().filter(|t| {
+        if t.name.trim().is_empty() {
+            log::warn!(target: "gray_provider", "dropping tool def with empty name");
+            false
+        } else { true }
+    }).collect()
+}
+
+fn is_valid_tool_name(name: &str, id: &str) -> bool {
+    if name.trim().is_empty() {
+        log::warn!(target: "gray_provider", "dropping assistant tool call {id} with empty name");
+        false
+    } else { true }
+}
+
 fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
     let mut messages = Vec::new();
 
@@ -364,6 +384,9 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                             }
                         }
                         ContentBlock::ToolUse { id, name, args } => {
+                            if !is_valid_tool_name(&name, &id) {
+                                continue;
+                            }
                             tool_calls.push(OpenAiToolCallRequest {
                                 id,
                                 call_type: "function".to_string(),
@@ -474,7 +497,7 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                             arr.push(serde_json::json!({"type":"text","text": text}));
                         }
                         for (media_type, data) in &image_parts {
-                            let url = format!("data:{media_type};base64,{data}");
+                            let url = image_data_url(media_type, data);
                             arr.push(serde_json::json!({"type":"image_url","image_url":{"url": url}}));
                         }
                         Some(Value::Array(arr))
@@ -494,9 +517,8 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
         }
     }
 
-    // 3. Map tools
-    let mut tools: Vec<OpenAiToolDefRequest> = req
-        .tools
+    // 3. Map tools — drop empty names that would trigger 400 `name` must be non-empty
+    let mut tools: Vec<OpenAiToolDefRequest> = filter_valid_tools(req.tools)
         .into_iter()
         .map(|tool| OpenAiToolDefRequest {
             tool_type: "function".to_string(),
@@ -646,7 +668,7 @@ fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
                         }
                         ContentBlock::Image { media_type, data } => {
                             // Responses supports image input as content part; send as data URL text placeholder
-                            let url = format!("data:{media_type};base64,{data}");
+                            let url = image_data_url(&media_type, &data);
                             if !text_parts.is_empty() {
                                 input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
                                 text_parts.clear();
@@ -661,6 +683,9 @@ fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
                             input.push(serde_json::json!({"type":"function_call_output","call_id": id, "output": content}));
                         }
                         ContentBlock::ToolUse { id, name, args } => {
+                            if !is_valid_tool_name(&name, &id) {
+                                continue;
+                            }
                             if !text_parts.is_empty() {
                                 input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
                                 text_parts.clear();
@@ -695,6 +720,9 @@ fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
                     input.push(serde_json::json!({"role":"assistant","content": text_parts.join("\n")}));
                 }
                 for (id, name, args) in tool_uses {
+                    if !is_valid_tool_name(&name, &id) {
+                        continue;
+                    }
                     input.push(serde_json::json!({"type":"function_call","call_id": id, "name": name, "arguments": args.to_string()}));
                 }
                 for (id, content) in tool_results {
@@ -706,8 +734,7 @@ fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
     if input.is_empty() {
         input.push(serde_json::json!({"role":"user","content":""}));
     }
-    let tools = req
-        .tools
+    let tools: Vec<ResponsesTool> = filter_valid_tools(req.tools)
         .into_iter()
         .map(|t| ResponsesTool {
             tool_type: "function".to_string(),
@@ -768,11 +795,11 @@ pub(crate) fn is_retryable_error(err: &ProviderError) -> bool {
     )
 }
 
-async fn send_responses_with_retries(
+async fn send_json_with_retries(
     client: &reqwest::Client,
     url: &Url,
     api_key: &str,
-    body: &ResponsesRequest,
+    body: &Value,
     initial_backoff: Duration,
 ) -> Result<reqwest::Response, ProviderError> {
     for attempt in 1..=MAX_ATTEMPTS {
@@ -784,66 +811,6 @@ async fn send_responses_with_retries(
                 .header("Authorization", format!("Bearer {api_key}"))
         };
         let req = base.header("Content-Type", "application/json").json(body);
-        let res_result = req.send().await;
-        log::debug!(target: "gray_provider", "responses request sent to {url} (attempt {attempt})");
-        let err = match res_result {
-            Ok(res) => {
-                let status = res.status();
-                if status.is_success() {
-                    return Ok(res);
-                }
-                let cf_ray = res
-                    .headers()
-                    .get("cf-ray")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let req_id = res
-                    .headers()
-                    .get("x-request-id")
-                    .or_else(|| res.headers().get("request-id"))
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let text = res.text().await.unwrap_or_default();
-                let snippet: String = text.chars().take(500).collect();
-                classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref())
-            }
-            Err(e) => {
-                if e.is_connect() { ProviderError::Connection(e.to_string()) } else if e.is_timeout() { ProviderError::Timeout(e.to_string()) } else { ProviderError::Stream(e.to_string()) }
-            }
-        };
-        let is_retryable = is_retryable_error(&err);
-        if !is_retryable || attempt == MAX_ATTEMPTS {
-            log::warn!(target: "gray_provider", "responses request error after attempt {attempt}: {err}");
-            return Err(err);
-        }
-        log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
-        let exp_factor = 1u64 << (attempt - 1);
-        let backoff_ms = (initial_backoff.as_millis() as u64).saturating_mul(exp_factor);
-        let max_jitter = backoff_ms / 2;
-        let jitter_ms = if max_jitter > 0 { let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0); nanos % (max_jitter + 1) } else { 0 };
-        tokio::time::sleep(Duration::from_millis(backoff_ms + jitter_ms)).await;
-    }
-    Err(ProviderError::Stream("maximum retry attempts exceeded".to_string()))
-}
-
-async fn send_request_with_retries(
-    client: &reqwest::Client,
-    url: &Url,
-    api_key: &str,
-    body: &OpenAiChatRequest,
-    initial_backoff: Duration,
-) -> Result<reqwest::Response, ProviderError> {
-    for attempt in 1..=MAX_ATTEMPTS {
-        // Empty key means keyless upstream: send no auth header at all.
-        let base = if api_key.is_empty() {
-            client.post(url.clone())
-        } else {
-            client
-                .post(url.clone())
-                .header("Authorization", format!("Bearer {api_key}"))
-        };
-        let req = base.header("Content-Type", "application/json").json(body);
-
         let res_result = req.send().await;
         log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
         let err = match res_result {
@@ -852,7 +819,6 @@ async fn send_request_with_retries(
                 if status.is_success() {
                     return Ok(res);
                 }
-
                 let cf_ray = res
                     .headers()
                     .get("cf-ray")
@@ -878,18 +844,15 @@ async fn send_request_with_retries(
                 }
             }
         };
-
         let is_retryable = is_retryable_error(&err);
         if !is_retryable || attempt == MAX_ATTEMPTS {
             log::warn!(target: "gray_provider", "request error after attempt {attempt}: {err}");
             return Err(err);
         }
         log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
-
         let exp_factor = 1u64 << (attempt - 1);
         let backoff_ms = (initial_backoff.as_millis() as u64).saturating_mul(exp_factor);
         let max_jitter = backoff_ms / 2;
-        // Jitter from system-time nanos; no external RNG dependency.
         let jitter_ms = if max_jitter > 0 {
             let nanos = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -901,8 +864,29 @@ async fn send_request_with_retries(
         };
         tokio::time::sleep(Duration::from_millis(backoff_ms + jitter_ms)).await;
     }
-
     Err(ProviderError::Stream("maximum retry attempts exceeded".to_string()))
+}
+
+async fn send_responses_with_retries(
+    client: &reqwest::Client,
+    url: &Url,
+    api_key: &str,
+    body: &ResponsesRequest,
+    initial_backoff: Duration,
+) -> Result<reqwest::Response, ProviderError> {
+    let body_value = serde_json::to_value(body).expect("ResponsesRequest serialization");
+    send_json_with_retries(client, url, api_key, &body_value, initial_backoff).await
+}
+
+async fn send_request_with_retries(
+    client: &reqwest::Client,
+    url: &Url,
+    api_key: &str,
+    body: &OpenAiChatRequest,
+    initial_backoff: Duration,
+) -> Result<reqwest::Response, ProviderError> {
+    let body_value = serde_json::to_value(body).expect("OpenAiChatRequest serialization");
+    send_json_with_retries(client, url, api_key, &body_value, initial_backoff).await
 }
 
 type BoxedEventStream = BoxStream<
@@ -949,6 +933,29 @@ enum StreamState {
     Done,
 }
 
+fn normalize_tool_args(args: &str, index: usize) -> Result<String, ProviderError> {
+    let trimmed = args.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    if serde_json::from_str::<Value>(trimmed).is_ok() {
+        return Ok(trimmed.to_string());
+    }
+    let repaired = if trimmed.starts_with('{') && !trimmed.ends_with('}') {
+        format!("{trimmed}}}")
+    } else {
+        trimmed.to_string()
+    };
+    if serde_json::from_str::<Value>(&repaired).is_ok() {
+        return Ok(repaired);
+    }
+    log::warn!(target: "gray_provider", "tool call {index} malformed args: {}", args.chars().take(300).collect::<String>());
+    Err(ProviderError::Stream(format!(
+        "tool call at index {index} has malformed JSON arguments: {}",
+        args.chars().take(500).collect::<String>()
+    )))
+}
+
 /// Drains accumulated tool-call fragments and queues the completion event.
 ///
 /// Argument fragments are joined and parsed exactly once here; malformed
@@ -960,28 +967,7 @@ fn emit_tool_calls_and_completion(
     pending_events: &mut VecDeque<StreamEvent>,
 ) -> Result<(), ProviderError> {
     for (index, (id, name, args)) in std::mem::take(accumulated_tools) {
-        let args_trimmed = args.trim();
-        let args_fixed = if args_trimmed.is_empty() {
-            String::new()
-        } else if serde_json::from_str::<Value>(args_trimmed).is_ok() {
-            args_trimmed.to_string()
-        } else {
-            let repaired = if args_trimmed.starts_with('{') && !args_trimmed.ends_with('}') {
-                format!("{args_trimmed}}}")
-            } else {
-                args_trimmed.to_string()
-            };
-            if serde_json::from_str::<Value>(&repaired).is_ok() {
-                let _ = serde_json::from_str::<Value>(&repaired);
-                repaired
-            } else {
-                log::warn!(target: "gray_provider", "tool call {index} malformed args, forwarding raw: {}", args.chars().take(300).collect::<String>());
-                return Err(ProviderError::Stream(format!(
-                    "tool call at index {index} has malformed JSON arguments: {}",
-                    args.chars().take(500).collect::<String>()
-                )));
-            }
-        };
+        let args_fixed = normalize_tool_args(&args, index)?;
         pending_events.push_back(StreamEvent::ToolCallDelta {
             index,
             id: if id.is_empty() { None } else { Some(id) },
@@ -1010,27 +996,7 @@ fn emit_responses_tool_calls_and_completion(
     }
     index_to_call_id.clear();
     for (idx, (call_id, name, args)) in ordered {
-        let args_trimmed = args.trim();
-        let args_fixed = if args_trimmed.is_empty() {
-            String::new()
-        } else if serde_json::from_str::<Value>(args_trimmed).is_ok() {
-            args_trimmed.to_string()
-        } else {
-            let repaired = if args_trimmed.starts_with('{') && !args_trimmed.ends_with('}') {
-                format!("{args_trimmed}}}")
-            } else {
-                args_trimmed.to_string()
-            };
-            if serde_json::from_str::<Value>(&repaired).is_ok() {
-                repaired
-            } else {
-                log::warn!(target: "gray_provider", "responses tool call {idx} malformed args, forwarding raw: {}", args.chars().take(300).collect::<String>());
-                return Err(ProviderError::Stream(format!(
-                    "tool call at index {idx} has malformed JSON arguments: {}",
-                    args.chars().take(500).collect::<String>()
-                )));
-            }
-        };
+        let args_fixed = normalize_tool_args(&args, idx)?;
         pending_events.push_back(StreamEvent::ToolCallDelta {
             index: idx,
             id: if call_id.is_empty() { None } else { Some(call_id) },

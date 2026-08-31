@@ -388,9 +388,14 @@ impl Agent {
                 content.push(ContentBlock::Text { text });
             }
             for (index, call) in pending.iter().enumerate() {
+                let name = call.name.clone().unwrap_or_default();
+                if name.trim().is_empty() {
+                    log::warn!(target: "gray_agent", "dropping tool call index {index} with empty name (args: {})", call.arguments.chars().take(200).collect::<String>());
+                    continue;
+                }
                 content.push(ContentBlock::ToolUse {
                     id: call.id.clone().unwrap_or_else(|| format!("call_{index}")),
-                    name: call.name.clone().unwrap_or_default(),
+                    name,
                     args: call.parsed_args(),
                 });
             }

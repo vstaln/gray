@@ -5,16 +5,10 @@ use std::ops::Range;
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use std::io::Stdout;
 
 use gray_markdown::HyperlinkTarget;
 
 use super::Tui;
-use super::{PANEL_ROWS, VIEWPORT_H};
-
-type Term = Terminal<CrosstermBackend<Stdout>>;
 
 fn thinking_style() -> Style {
     Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
@@ -24,18 +18,8 @@ fn strip_ansi(s: &str) -> String {
     crate::tui::strip_ansi(s)
 }
 
-// word-aware char width helper
-// simple width, 1 for most, 2 for CJK/emoji. Upgrade to unicode-width crate if needed.
-fn char_width(c: char) -> usize {
-    match c {
-        '\u{1100}'..='\u{115F}' | '\u{2E80}'..='\u{A4CF}' | '\u{AC00}'..='\u{D7A3}' | '\u{F900}'..='\u{FAFF}' | '\u{FF01}'..='\u{FF60}' => 2,
-        // emoji wide approximations
-        '\u{1F300}'..='\u{1FAFF}' | '\u{2600}'..='\u{27BF}' => 2,
-        _ => 1,
-    }
-}
 fn str_display_width(s: &str) -> usize {
-    s.chars().map(char_width).sum()
+    crate::tui::visible_width(s)
 }
 
 fn slice_line_spans<'a>(
@@ -64,17 +48,6 @@ fn slice_line_spans<'a>(
         if e >= end_byte { break; }
     }
     Line { style: original.style, alignment: original.alignment, spans: acc }
-}
-
-/// Batch insert helper: insert multiple lines at once into scrollback + transcript.
-/// Preserves original per-line behavior but via single insert_before(height).
-pub(crate) fn batch_insert_before(term: &mut Term, lines: Vec<Line<'static>>) {
-    if lines.is_empty() { return; }
-    let h = lines.len() as u16;
-    let _ = term.insert_before(h, |buf| {
-        // Render all lines at once; Paragraph handles multi-line rendering
-        Paragraph::new(lines.clone()).render(buf.area, buf);
-    });
 }
 
 /// Word-aware wrapping: preserves styles, respects has_bg and hyperlink guards,
@@ -256,16 +229,6 @@ pub(crate) fn word_wrap_line(line: Line<'static>, max_w: usize) -> Vec<Line<'sta
 // Tui transcript methods (batch insert_before)
 // ---------------------------------------------------------------------------
 impl Tui {
-    #[allow(dead_code)]
-    pub(crate) fn transcript_in_response(&self) -> bool {
-        self.transcript.last().is_some_and(|l| l.width() > 0)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn ensure_gap(&mut self, _n: usize) {
-        // NUKED to zero — will re-add Grok's gap logic selectively
-    }
-
     pub fn stream(&mut self, chunk: &str) {
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {

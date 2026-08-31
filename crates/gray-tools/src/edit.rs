@@ -7,7 +7,6 @@ use crate::edit_diff::{
     apply_edits_to_normalized_content, detect_line_ending,
     normalize_to_lf, restore_line_endings, split_bom, Edit,
 };
-use crate::file_mutation_queue::with_file_mutation_queue;
 use crate::{fail, get_opt_bool, resolve_path, Tool};
 
 pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
@@ -154,50 +153,42 @@ impl Tool for EditTool {
         }
 
         let full = resolve_path(&ctx.cwd, &path);
-        let path_clone = path.clone();
-        with_file_mutation_queue(ctx, &path_clone, || {
-            let full = full.clone();
-            let edits = edits.clone();
-            let path_clone = path_clone.clone();
-            async move {
-                if replace_all && edits.len() == 1 {
-                    let content = match tokio::fs::read_to_string(&full).await {
-                        Ok(c) => c, Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
-                    };
-                    let old = &edits[0].old_text;
-                    let new = &edits[0].new_text;
-                    let matches = content.matches(old.as_str()).count();
-                    if matches == 0 {
-                        return fail(format!("edit failed for {}: old_text not found in file", full.display()));
-                    }
-                    let updated = content.replace(old.as_str(), new.as_str());
-                    if let Err(e) = tokio::fs::write(&full, updated.as_bytes()).await {
-                        return fail(format!("edit failed for {}: {e}", full.display()));
-                    }
-                    return ToolOutput::ok(format!("edited {}: {} occurrence(s) replaced", full.display(), matches));
-                }
-
-                let raw = match tokio::fs::read_to_string(&full).await {
-                    Ok(c) => c, Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
-                };
-                let bom = split_bom(&raw);
-                let ending = detect_line_ending(&bom.text);
-                let normalized = normalize_to_lf(&bom.text);
-                let applied = match apply_edits_to_normalized_content(&normalized, &edits, &path_clone) {
-                    Ok(r) => r, Err(msg) => return fail(format!("edit failed for {}: {msg}", full.display())),
-                };
-                let final_content = bom.bom + &restore_line_endings(&applied.new_content, ending);
-                if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
-                    return fail(format!("edit failed for {}: {e}", full.display()));
-                }
-                let patch = crate::edit_diff::generate_unified_patch(&path_clone, &applied.base_content, &applied.new_content, 3);
-                if patch.is_empty() {
-                    ToolOutput::ok(format!("Successfully replaced {} block(s) in {}.", edits.len(), path_clone))
-                } else {
-                    ToolOutput::ok(patch)
-                }
+        if replace_all && edits.len() == 1 {
+            let content = match tokio::fs::read_to_string(&full).await {
+                Ok(c) => c, Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
+            };
+            let old = &edits[0].old_text;
+            let new = &edits[0].new_text;
+            let matches = content.matches(old.as_str()).count();
+            if matches == 0 {
+                return fail(format!("edit failed for {}: old_text not found in file", full.display()));
             }
-        }).await
+            let updated = content.replace(old.as_str(), new.as_str());
+            if let Err(e) = tokio::fs::write(&full, updated.as_bytes()).await {
+                return fail(format!("edit failed for {}: {e}", full.display()));
+            }
+            return ToolOutput::ok(format!("edited {}: {} occurrence(s) replaced", full.display(), matches));
+        }
+
+        let raw = match tokio::fs::read_to_string(&full).await {
+            Ok(c) => c, Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
+        };
+        let bom = split_bom(&raw);
+        let ending = detect_line_ending(&bom.text);
+        let normalized = normalize_to_lf(&bom.text);
+        let applied = match apply_edits_to_normalized_content(&normalized, &edits, &path) {
+            Ok(r) => r, Err(msg) => return fail(format!("edit failed for {}: {msg}", full.display())),
+        };
+        let final_content = bom.bom + &restore_line_endings(&applied.new_content, ending);
+        if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
+            return fail(format!("edit failed for {}: {e}", full.display()));
+        }
+        let patch = crate::edit_diff::generate_unified_patch(&path, &applied.base_content, &applied.new_content, 3);
+        if patch.is_empty() {
+            ToolOutput::ok(format!("Successfully replaced {} block(s) in {}.", edits.len(), path))
+        } else {
+            ToolOutput::ok(patch)
+        }
     }
 }
 

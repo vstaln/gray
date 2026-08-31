@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
+
 const MAX_NAME_LENGTH: usize = 64;
 const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const IGNORE_FILE_NAMES: &[&str] = &[".gitignore", ".ignore", ".fdignore"];
@@ -122,80 +124,61 @@ fn find_git_root(start: &Path) -> Option<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Ignore handling — literal port of prefixIgnorePattern + addIgnoreRules
-// Uses simple Vec<String> matcher; if `ignore` crate is present the caller
-// could swap this, but we implement gitignore semantics inline to avoid
-// extra deps (task allows simple filter fallback).
+// Ignore handling — delegates to `ignore` crate's GitignoreBuilder.
+// Patterns are prefixed to `root_dir` in add_ignore_rules so a single
+// builder rooted at root_dir suffices. Negation (!), dir-suffix (/),
+// and globs (*, **, ?) are handled by the crate.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct IgnoreMatcher {
-    patterns: Vec<String>,
+    builder: GitignoreBuilder,
+    built: Option<Gitignore>,
+}
+
+impl Default for IgnoreMatcher {
+    fn default() -> Self {
+        Self {
+            builder: GitignoreBuilder::new(""),
+            built: None,
+        }
+    }
 }
 
 impl IgnoreMatcher {
-    fn add(&mut self, patterns: Vec<String>) {
-        self.patterns.extend(patterns);
-    }
-
-    /// Very small gitignore matcher: supports `*`, `**`, `?`, `!` negation,
-    /// and directory-suffix `/`. Good enough for the task's requirements.
-    fn ignores(&self, rel_posix: &str) -> bool {
-        let mut ignored = false;
-        for pat in &self.patterns {
-            let (negated, raw) = if pat.starts_with('!') {
-                (true, &pat[1..])
-            } else {
-                (false, pat.as_str())
-            };
-            if raw.is_empty() {
-                continue;
-            }
-            if glob_match(raw, rel_posix) {
-                ignored = !negated;
-            }
+    fn new(root: &Path) -> Self {
+        Self {
+            builder: GitignoreBuilder::new(root),
+            built: None,
         }
-        ignored
     }
-}
 
-fn glob_match(pattern: &str, path: &str) -> bool {
-    // Normalize: strip trailing slash handling already done by caller
-    // Simple implementation using recursive matching for * / **.
-    match_pattern(pattern.as_bytes(), path.as_bytes())
-}
+    fn add(&mut self, patterns: Vec<String>) {
+        for pat in patterns {
+            let _ = self.builder.add_line(None, &pat);
+        }
+        self.built = None;
+    }
 
-fn match_pattern(pat: &[u8], text: &[u8]) -> bool {
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star_pi, mut star_ti): (Option<usize>, Option<usize>) = (None, None);
-    while ti < text.len() {
-        if pi < pat.len() && (pat[pi] == b'?' || pat[pi] == text[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < pat.len() && pat[pi] == b'*' {
-            // handle ** (match across /) and * (match within segment — we treat both as *)
-            // collapse consecutive stars
-            while pi < pat.len() && pat[pi] == b'*' {
-                pi += 1;
-            }
-            if pi == pat.len() {
-                return true;
-            }
-            star_pi = Some(pi);
-            star_ti = Some(ti);
-        } else if let (Some(sp), Some(st)) = (star_pi, star_ti) {
-            // backtrack: consume one more char with star
-            pi = sp;
-            ti = st + 1;
-            star_ti = Some(ti);
-        } else {
+    fn ignores(&mut self, rel_posix: &str) -> bool {
+        if rel_posix.is_empty() {
             return false;
         }
+        let is_dir = rel_posix.ends_with('/');
+        let path_str = if is_dir {
+            &rel_posix[..rel_posix.len() - 1]
+        } else {
+            rel_posix
+        };
+        if self.built.is_none() {
+            self.built = Some(self.builder.build().unwrap_or_else(|_| Gitignore::empty()));
+        }
+        let gi = self.built.as_ref().unwrap();
+        if gi.is_empty() {
+            return false;
+        }
+        matches!(gi.matched(Path::new(path_str), is_dir), ignore::Match::Ignore(_))
     }
-    while pi < pat.len() && pat[pi] == b'*' {
-        pi += 1;
-    }
-    pi == pat.len()
 }
 
 fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
@@ -580,7 +563,7 @@ fn load_skills_from_dir_internal(
 
 pub fn load_skills_from_dir(dir: &Path, source: &str) -> LoadSkillsResult {
     let root = dir.to_path_buf();
-    let mut matcher = IgnoreMatcher::default();
+    let mut matcher = IgnoreMatcher::new(&root);
     load_skills_from_dir_internal(dir, source, true, &mut matcher, &root)
 }
 

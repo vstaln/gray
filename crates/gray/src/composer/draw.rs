@@ -5,13 +5,14 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
-use super::{PANEL_ROWS, VIEWPORT_H, Tui};
+use super::{PANEL_ROWS, Tui};
 
 pub(crate) fn thinking_style() -> Style {
     Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
 }
 
 pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'static>> {
+    // ponytail: per-char cosine shimmer kept; replace with Style::default().add_modifier(Modifier::DIM) if perf matters
     use ratatui::style::Color;
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() { return Vec::new(); }
@@ -35,17 +36,6 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> V
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
-    // Viewport height growth (Grok xai-ratatui-inline/src/terminal.rs:888 pattern internal)
-    // Compute needed viewport height including panel + attachments + footer.
-    // Stock ratatui 0.29 has no set_viewport_height; grok's fork adds it.
-    // We keep the calculation for fidelity and future crate-gated migration.
-    {
-        let _panel_h: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
-        let _needed_h = VIEWPORT_H + _panel_h + if tui.attachments.is_empty() { 0 } else { 1 } + 1;
-        // On grok's xai-ratatui-inline this would be:
-        // if _needed_h != tui.terminal.viewport_area().height { tui.terminal.set_viewport_height(_needed_h)?; }
-    }
-
     tui.terminal.draw(|frame| {
         let area = frame.area();
         let w = area.width as usize;
