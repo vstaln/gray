@@ -29,7 +29,7 @@
 </head>
 <body>
   <h1>gray<span>.</span></h1>
-  <p class="tag">a minimal agent harness. one binary. your machine, your keys.</p>
+  <p class="tag">a minimal agent harness.</p>
 
   <h2>Install — Linux / macOS / WSL</h2>
   <pre>curl -fsSL https://gray.alignment.id/install.sh | sh              # stable
@@ -40,10 +40,7 @@ curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # beta (every 
   <p class="muted">Windows runs through WSL — the script checks and guides you.</p>
 
   <h2>Run</h2>
-  <pre>gray                                  # interactive REPL — no setup forced
-gray -p "explain this repo"             # one-shot (also --print)
-gray -c                                 # resume last session
-echo "hi" | gray -p "summarize"</pre>
+  <pre>gray                                  # interactive REPL — no setup forced</pre>
   <p class="muted">First run drops you at the prompt. <code>/provider</code> picks a provider (free tier / API key / OAuth / local), <code>/model</code> picks a model. Env still works: <code>GRAY_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>GRAY_MODEL</code>.</p>
 
   <h2>What it is</h2>
@@ -57,6 +54,5 @@ echo "hi" | gray -p "summarize"</pre>
 
   <h2>Links</h2>
   <p><a href="https://github.com/vstaln/gray">github.com/vstaln/gray</a> — source, docs, MIT.</p>
-  <p class="muted" style="margin-top:48px">one binary · your machine · your keys</p>
 </body>
 </html>
