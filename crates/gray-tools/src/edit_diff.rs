@@ -533,139 +533,6 @@ fn lcs_diff(old_lines: &[String], new_lines: &[String]) -> Vec<DiffOp> {
     ops
 }
 
-/// Result of [`generate_diff_string`].
-#[derive(Debug, Clone)]
-pub struct DiffStringResult {
-    pub diff: String,
-    pub first_changed_line: Option<usize>,
-}
-
-/// Generate a display-oriented diff string with line numbers and `context` lines
-/// of context, mirroring `generateDiffString` in `edit-diff.ts`.
-///
-/// Also returns `firstChangedLine` (1-based, in the new file) for editor navigation.
-pub fn generate_diff_string(
-    old_content: &str,
-    new_content: &str,
-    context_lines: usize,
-) -> DiffStringResult {
-    let old_lines: Vec<String> = old_content.split('\n').map(|s| s.to_string()).collect();
-    let new_lines: Vec<String> = new_content.split('\n').map(|s| s.to_string()).collect();
-    let max_line = old_lines.len().max(new_lines.len()).max(1);
-    let width = max_line.to_string().len();
-
-    let ops = lcs_diff(&old_lines, &new_lines);
-
-    // Build hunk-like display: we have flat ops; we need to emit context with collapsing.
-    // For simplicity, produce a full numbered diff without collapsing, but cap context collapsing
-    // similarly to the TS implementation: only show `context` lines around changes, collapse the rest.
-    // Easiest: first collect output segments with their kind, then collapse long equal runs.
-
-    #[derive(Debug, Clone)]
-    struct Seg {
-        kind: char, // ' ', '+', '-'
-        num: usize, // line number (old for ' -', new for '+', old for ' ')
-        text: String,
-    }
-
-    let mut segs: Vec<Seg> = Vec::new();
-    let (mut old_no, mut new_no) = (1usize, 1usize);
-    let mut first_changed: Option<usize> = None;
-    for op in &ops {
-        match op {
-            DiffOp::Equal(t) => {
-                segs.push(Seg {
-                    kind: ' ',
-                    num: old_no,
-                    text: t.clone(),
-                });
-                old_no += 1;
-                new_no += 1;
-            }
-            DiffOp::Delete(t) => {
-                if first_changed.is_none() {
-                    first_changed = Some(new_no);
-                }
-                segs.push(Seg {
-                    kind: '-',
-                    num: old_no,
-                    text: t.clone(),
-                });
-                old_no += 1;
-            }
-            DiffOp::Insert(t) => {
-                if first_changed.is_none() {
-                    first_changed = Some(new_no);
-                }
-                segs.push(Seg {
-                    kind: '+',
-                    num: new_no,
-                    text: t.clone(),
-                });
-                new_no += 1;
-            }
-        }
-    }
-
-    // Collapse long equal runs: keep `context` before/after each change block.
-    let mut out: Vec<String> = Vec::new();
-    // Identify change indices
-    let is_change = |s: &Seg| s.kind != ' ';
-    // Find segments that are near changes
-    let mut keep = vec![false; segs.len()];
-    for (idx, seg) in segs.iter().enumerate() {
-        if is_change(seg) {
-            let start = idx.saturating_sub(context_lines);
-            let end = (idx + context_lines + 1).min(segs.len());
-            for k in start..end {
-                keep[k] = true;
-            }
-        }
-    }
-    // If no changes, keep nothing (diff empty)
-    if !segs.iter().any(|s| is_change(s)) {
-        return DiffStringResult {
-            diff: String::new(),
-            first_changed_line: None,
-        };
-    }
-    // If no change-adjacent logic triggered (shouldn't happen), keep all
-    if !keep.iter().any(|&k| k) {
-        for k in 0..segs.len() {
-            keep[k] = true;
-        }
-    }
-
-    let mut i = 0;
-    while i < segs.len() {
-        if keep[i] {
-            let s = &segs[i];
-            let num_str = format!("{:>width$}", s.num, width = width);
-            out.push(format!("{}{} {}", s.kind, num_str, s.text));
-            i += 1;
-        } else {
-            // Skipped run
-            let mut j = i;
-            while j < segs.len() && !keep[j] {
-                j += 1;
-            }
-            let pad = " ".repeat(width);
-            out.push(format!(" {pad} ..."));
-            i = j;
-        }
-    }
-
-    DiffStringResult {
-        diff: out.join("\n"),
-        first_changed_line: first_changed,
-    }
-}
-
-/// Convenience wrapper with default 4 lines of context, matching TS defaults.
-pub fn generate_diff_string_default(old_content: &str, new_content: &str) -> DiffStringResult {
-    generate_diff_string(old_content, new_content, 4)
-}
-
 /// Generate a standard unified patch, mirroring `generateUnifiedPatch`.
 ///
 /// Uses the `diff` crate semantics: header `--- path` / `+++ path` and
@@ -743,17 +610,12 @@ pub fn generate_unified_patch(
     out.push_str(&format!("--- {path}\n"));
     out.push_str(&format!("+++ {path}\n"));
 
-    // Compute line numbers per hunk
+    // Compute hunk headers in one pass (no second lcs_diff).
     let mut old_line = 1usize;
     let mut new_line = 1usize;
-    // We need to track global position to compute hunk headers.
-    // Simpler: recompute per hunk by scanning all ops up to hunk start.
-    // Instead, walk hunks sequentially using running counters and counting equals.
-    let all_old: Vec<String> = old_content.split('\n').map(|s| s.to_string()).collect();
-    let all_new: Vec<String> = new_content.split('\n').map(|s| s.to_string()).collect();
-    let all_ops = lcs_diff(&all_old, &all_new);
-    // Map hunk contents back to positions by scanning all_ops
     let mut op_idx = 0usize;
+    // Need full ops to advance gap counters between hunks
+    let all_ops = lcs_diff(&old_lines, &new_lines);
     for hunk in hunks {
         // Advance op_idx to start of hunk
         while op_idx < all_ops.len() {
@@ -834,7 +696,7 @@ pub fn generate_unified_patch(
 }
 
 pub fn generate_unified_patch_default(path: &str, old_content: &str, new_content: &str) -> String {
-    generate_unified_patch(path, old_content, new_content, 4)
+    generate_unified_patch(path, old_content, new_content, 3)
 }
 
 #[cfg(test)]
@@ -928,13 +790,6 @@ mod tests {
         }];
         let err = apply_edits_to_normalized_content(content, &edits, "a.txt").unwrap_err();
         assert!(err.contains("Could not find"), "{err}");
-    }
-
-    #[test]
-    fn diff_string_has_first_changed_line() {
-        let r = generate_diff_string("a\nb\nc\n", "a\nB\nc\n", 4);
-        assert!(r.diff.contains("-"), "{}", r.diff);
-        assert_eq!(r.first_changed_line, Some(2));
     }
 
     #[test]

@@ -137,9 +137,16 @@ impl OpenAiProvider {
 struct OpenAiChatRequest {
     model: String,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAiStreamOptions>,
     messages: Vec<OpenAiMessageRequest>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefRequest>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiStreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -178,6 +185,8 @@ struct OpenAiToolDefRequest {
     #[serde(rename = "type")]
     tool_type: String,
     function: OpenAiFunctionDefRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -244,9 +253,11 @@ struct OpenAiUsageChunk {
     completion_tokens_details: Option<OpenAiCompletionDetails>,
     #[serde(default)]
     prompt_tokens_details: Option<OpenAiPromptDetails>,
-    /// Some providers (OpenRouter) also surface cached_tokens at top level
-    #[serde(default)]
+    /// DeepSeek / OpenRouter / Kimi top-level fields
+    #[serde(default, alias = "prompt_cache_hit_tokens", alias = "promptCacheHitTokens")]
     cached_tokens: usize,
+    #[serde(default, alias = "prompt_cache_miss_tokens", alias = "promptCacheMissTokens")]
+    prompt_cache_miss_tokens: usize,
     /// Anthropic native breakdown (when not via OpenAI compat)
     #[serde(default, alias = "cache_creation_input_tokens", alias = "cacheCreationInputTokens")]
     cache_creation_input_tokens: usize,
@@ -275,64 +286,40 @@ struct OpenAiPromptDetails {
     cache_read_tokens: usize,
 }
 
-/// Anthropic prompt-caching: put an ephemeral cache breakpoint on the
-/// last message so the prefix (system + history) can be cached. Copied
-/// from mini-swe-agent's `cache_control.py` (MIT) — they show it cuts
-/// input cost/latency for long trajectories.
-///
-/// Only for Anthropic-family models (Claude etc.) — other providers
-/// ignore the field, Anthropic via OpenRouter honors it.
-fn set_cache_control(messages: &mut [OpenAiMessageRequest]) {
-    // clear any stale marks first (idempotent on retry)
+fn is_anthropic_model(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    lower.contains("claude") || lower.contains("anthropic")
+}
+
+/// Anthropic prompt-caching: matching Pi's applyAnthropicCacheControl.
+/// Attaches cache_control breakpoints to:
+/// 1. System prompt
+/// 2. Last tool definition
+/// 3. Last conversation message
+fn apply_anthropic_cache_control(
+    messages: &mut [OpenAiMessageRequest],
+    tools: &mut [OpenAiToolDefRequest],
+) {
+    let cache_control = serde_json::json!({"type": "ephemeral"});
+
+    // 1. Add cache control to system prompt
     for m in messages.iter_mut() {
-        m.cache_control = None;
-        if let Some(Value::Array(arr)) = &mut m.content {
-            if arr.len() == 1 {
-                if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
-                    obj.remove("cache_control");
-                }
-            }
+        if m.role == "system" || m.role == "developer" {
+            m.cache_control = Some(cache_control.clone());
+            break;
         }
     }
-    let Some(last) = messages.last_mut() else {
-        return;
-    };
-    // assistant with only tool_use has no content → top-level cache_control
-    if last.content.is_none() {
-        last.cache_control = Some(serde_json::json!({"type": "ephemeral"}));
-        return;
+
+    // 2. Add cache control to last tool
+    if let Some(last_tool) = tools.last_mut() {
+        last_tool.cache_control = Some(cache_control.clone());
     }
-    if let Some(content) = &mut last.content {
-        match content {
-            Value::String(s) => {
-                let text = std::mem::take(s);
-                // empty string still needs a list wrapper to attach cache_control
-                *content = serde_json::json!([{
-                    "type": "text",
-                    "text": text,
-                    "cache_control": {"type": "ephemeral"}
-                }]);
-                if last.role == "tool" {
-                    if let Value::Array(arr) = content {
-                        if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
-                            obj.remove("cache_control");
-                        }
-                    }
-                    last.cache_control = Some(serde_json::json!({"type": "ephemeral"}));
-                }
-            }
-            Value::Array(arr) => {
-                if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
-                    obj.insert("cache_control".to_string(), serde_json::json!({"type": "ephemeral"}));
-                }
-                if last.role == "tool" {
-                    if let Some(obj) = arr.get_mut(0).and_then(Value::as_object_mut) {
-                        obj.remove("cache_control");
-                    }
-                    last.cache_control = Some(serde_json::json!({"type": "ephemeral"}));
-                }
-            }
-            _ => {}
+
+    // 3. Add cache control to last conversation message
+    for m in messages.iter_mut().rev() {
+        if m.role == "user" || m.role == "assistant" || m.role == "tool" {
+            m.cache_control = Some(cache_control.clone());
+            break;
         }
     }
 }
@@ -505,12 +492,8 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
         }
     }
 
-    // Anthropic prompt caching — always set, non-Anthropic providers ignore it
-    // (mini-swe-agent's default_end does the same when enabled)
-    set_cache_control(&mut messages);
-
     // 3. Map tools
-    let tools = req
+    let mut tools: Vec<OpenAiToolDefRequest> = req
         .tools
         .into_iter()
         .map(|tool| OpenAiToolDefRequest {
@@ -520,12 +503,19 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
                 description: tool.description,
                 parameters: tool.parameters,
             },
+            cache_control: None,
         })
         .collect();
+
+    // Anthropic prompt caching (Pi-matching): only applied for Anthropic/Claude models
+    if is_anthropic_model(model) {
+        apply_anthropic_cache_control(&mut messages, &mut tools);
+    }
 
     OpenAiChatRequest {
         model: model.to_string(),
         stream: true,
+        stream_options: Some(OpenAiStreamOptions { include_usage: true }),
         messages,
         tools,
     }

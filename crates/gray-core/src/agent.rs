@@ -371,10 +371,7 @@ impl Agent {
             total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
             total_usage.cache_write_input_tokens += usage.cache_write_input_tokens;
             total_usage.total_tokens += usage.total_tokens;
-            // Keep legacy alias in sync
-            if usage.cache_read_input_tokens != 0 {
-                total_usage.cached_tokens = total_usage.cache_read_input_tokens;
-            }
+            total_usage.normalize();
 
             // Finalize the assistant message exactly as streamed.
             // Reasoning precedes text, mirroring the provider's emission order
