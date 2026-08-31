@@ -263,7 +263,9 @@ impl Tui {
 
     #[allow(dead_code)]
     pub(crate) fn ensure_gap(&mut self, n: usize) {
-        let trailing = self.transcript.iter().rev().take_while(|l| l.width() == 0).count();
+        let trailing = self.transcript.iter().rev().take_while(|l| {
+            l.width() == 0 || l.spans.iter().all(|s| s.content.trim().is_empty())
+        }).count();
         let need = n.saturating_sub(trailing);
         if need == 0 { return; }
         // batch insert
@@ -279,8 +281,8 @@ impl Tui {
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
-            let trimmed = line.trim_end_matches('\n');
-            if trimmed.is_empty() && self.transcript.last().is_some_and(|l| l.width() == 0) {
+            let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+            if trimmed.is_empty() && self.transcript.last().is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty())) {
                 continue;
             }
             let style = if self.thinking { thinking_style() } else { Style::default() };
@@ -311,7 +313,6 @@ impl Tui {
         let toks = (chunk.chars().count() + 3) / 4;
         self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
-        self.ensure_gap(1);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
             self.set_status(Some("Working"));
         }
