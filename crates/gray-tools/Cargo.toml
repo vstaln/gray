@@ -6,15 +6,18 @@ edition.workspace = true
 [dependencies]
 gray-core = { workspace = true }
 gray-cron = { workspace = true }
+gray-session = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+anyhow = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tempfile = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

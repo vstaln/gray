@@ -26,6 +26,8 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("new", "new conversation"),
     ("compact", "summarize context"),
     ("cron", "cron jobs"),
+    ("proxy", "local proxy"),
+    ("portal", "portal status"),
     ("sys", "edit system prompt"),
     ("help", "show commands"),
     ("quit", "exit"),
@@ -42,6 +44,7 @@ const ALIASES: &[(&str, &str)] = &[
     ("login", "connect"),
     ("effort", "thinking"),
     ("compress", "compact"),
+    ("portal", "proxy"),
 ];
 
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
@@ -166,6 +169,16 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
             } else if lower.contains("bad request") || detail.contains(" 400") {
                 format!(
                     "✗ Bad request: {detail}\n  Check model/provider settings via /model or /connect."
+                )
+            } else if lower.contains("server error")
+                || lower.contains("status 5")
+                || lower.contains("500 internal server error")
+                || lower.contains("502")
+                || lower.contains("503")
+                || lower.contains("504")
+            {
+                format!(
+                    "✗ Provider server error: {detail}\n  Upstream model or provider ({base_url}) encountered a server error. Run /model to switch to another model or try again later."
                 )
             } else {
                 // Steal codex's UnexpectedResponseError display: keep status+body but add provider hint
@@ -301,6 +314,8 @@ pub enum ReplCommand {
     Unknown(String),
     /// Cron jobs: /cron, /cron list, /cron create --schedule ... --prompt ...
     Cron(String),
+    /// Local proxy: /proxy start|stop|status, /portal alias
+    Proxy(String),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
     /// Blank line, should be ignored.
@@ -398,6 +413,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         ReplCommand::Model((!arg.is_empty()).then(|| arg.to_string()))
     } else if trimmed.starts_with("/cron") {
         ReplCommand::Cron(trimmed.to_string())
+    } else if trimmed.starts_with("/proxy") || trimmed.starts_with("/portal") {
+        ReplCommand::Proxy(trimmed.to_string())
     } else if trimmed.starts_with('/') {
         ReplCommand::Unknown(trimmed.to_string())
     } else {
@@ -939,6 +956,105 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     // Fallback help
     let msg = "cron: /cron list | /cron add \"check inbox every 30m\" | /cron create --schedule \"every 10m\" --prompt \"...\" | /cron remove <id> | /cron show <id>  (also \"in 10m\", \"0 9 * * *\")";
     if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+}
+
+static PROXY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::new(None);
+
+async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::SharedTui>) {
+    let lower = raw.to_ascii_lowercase();
+    // parse optional port and provider
+    let mut port: u16 = 8645;
+    let mut provider: Option<String> = None;
+    for tok in raw.split_whitespace().skip(1) {
+        if let Ok(p) = tok.parse::<u16>() {
+            port = p;
+        } else if tok.starts_with("--provider=") {
+            provider = Some(tok.trim_start_matches("--provider=").to_string());
+        } else if tok == "--provider" {
+            // next token is provider – handled via provider variable on next iteration not needed for minimal
+        } else if matches!(tok.to_ascii_lowercase().as_str(), "xai" | "codex" | "openai" | "openrouter" | "grok") {
+            provider = Some(tok.to_string());
+        } else if tok.starts_with("--port=") {
+            if let Ok(p) = tok.trim_start_matches("--port=").parse::<u16>() {
+                port = p;
+            }
+        }
+    }
+    // also support --port 8645 form
+    let parts: Vec<&str> = raw.split_whitespace().collect();
+    for i in 0..parts.len() {
+        if parts[i] == "--port" && i + 1 < parts.len() {
+            if let Ok(p) = parts[i + 1].parse::<u16>() {
+                port = p;
+            }
+        }
+        if parts[i] == "--provider" && i + 1 < parts.len() {
+            provider = Some(parts[i + 1].to_string());
+        }
+    }
+
+    if lower.contains("stop") {
+        let mut g = PROXY_HANDLE.lock().ok();
+        if let Some(h) = g.as_mut().and_then(|g| g.take()) {
+            h.abort();
+            let msg = "proxy stopped";
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        } else {
+            let msg = "proxy not running";
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        }
+        return;
+    }
+    if lower.contains("start") {
+        // already running?
+        if PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
+            let msg = "proxy already running";
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            return;
+        }
+        let adapter: std::sync::Arc<dyn crate::proxy::UpstreamAdapter> = if let Some(p) = provider.as_deref() {
+            match crate::proxy::get_adapter(p) {
+                Ok(a) => a,
+                Err(e) => {
+                    let msg = format!("proxy: {e}");
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
+                    return;
+                }
+            }
+        } else {
+            crate::proxy::default_adapter(config)
+        };
+        if !adapter.is_authenticated() {
+            let msg = format!("Not logged into {}. Run /connect first.", adapter.display());
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
+            return;
+        }
+        let host = "127.0.0.1".to_string();
+        let display = adapter.display().to_string();
+        let h = tokio::spawn(async move {
+            let _ = crate::proxy::run_server(adapter, &host, port).await;
+        });
+        *PROXY_HANDLE.lock().unwrap() = Some(h);
+        let msg = format!("proxy: http://127.0.0.1:{port}/v1 → {display} ✓");
+        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        return;
+    }
+    // status (default)
+    let mut out = String::from("proxy status:\n");
+    for name in ["openrouter", "xai", "codex"] {
+        if let Ok(a) = crate::proxy::get_adapter(name) {
+            if a.is_authenticated() {
+                out.push_str(&format!("  [{:8}] {} — ready\n", name, a.display()));
+            } else {
+                out.push_str(&format!("  [{:8}] {} — not logged in\n", name, a.display()));
+            }
+        }
+    }
+    let running = PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
+    if running {
+        out.push_str("  (running on 127.0.0.1:8645)\n");
+    }
+    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(out.trim_end().to_string()); } else { println!("{out}"); }
 }
 
 fn print_exit_hint(session_state: &Option<SessionState>) {
@@ -1699,6 +1815,10 @@ pub async fn run_repl_mode(
             }
             ReplCommand::Cron(raw) => {
                 handle_cron(&raw, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
+            ReplCommand::Proxy(raw) => {
+                handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Unknown(_) => {

@@ -288,6 +288,11 @@ fn is_anthropic_model(model: &str) -> bool {
     lower.contains("claude") || lower.contains("anthropic")
 }
 
+fn is_muse_model(model: &str) -> bool {
+    let lower = model.to_lowercase();
+    lower.contains("muse") || lower.contains("spark") || lower.contains("glimmer")
+}
+
 /// Anthropic prompt-caching: matching Pi's applyAnthropicCacheControl.
 /// Attaches cache_control breakpoints to:
 /// 1. System prompt
@@ -594,6 +599,193 @@ fn chat_completions_url(base_url: &Url) -> Result<Url, ProviderError> {
         .map_err(|e| ProviderError::BadRequest(format!("invalid base URL '{base_url}': {e}")))
 }
 
+fn responses_url(base_url: &Url) -> Result<Url, ProviderError> {
+    let mut url_str = base_url.as_str().trim_end_matches('/').to_string();
+    url_str.push_str("/responses");
+    Url::parse(&url_str)
+        .map_err(|e| ProviderError::BadRequest(format!("invalid base URL '{base_url}': {e}")))
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesRequest {
+    model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instructions: Option<String>,
+    input: Vec<Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<ResponsesTool>,
+    stream: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ResponsesTool {
+    #[serde(rename = "type")]
+    tool_type: String,
+    name: String,
+    description: String,
+    parameters: Value,
+}
+
+fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
+    let instructions = req.system;
+    let mut input: Vec<Value> = Vec::new();
+    for msg in req.messages {
+        match msg.role {
+            Role::User | Role::System => {
+                let role_str = match msg.role {
+                    Role::System => "system",
+                    _ => "user",
+                };
+                let mut text_parts: Vec<String> = Vec::new();
+                for block in msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                text_parts.push(text);
+                            }
+                        }
+                        ContentBlock::Image { media_type, data } => {
+                            // Responses supports image input as content part; send as data URL text placeholder
+                            let url = format!("data:{media_type};base64,{data}");
+                            if !text_parts.is_empty() {
+                                input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
+                                text_parts.clear();
+                            }
+                            input.push(serde_json::json!({"role": "user", "content": [{"type":"input_image","image_url": url}]}));
+                        }
+                        ContentBlock::ToolResult { id, content, is_error: _ } => {
+                            if !text_parts.is_empty() {
+                                input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
+                                text_parts.clear();
+                            }
+                            input.push(serde_json::json!({"type":"function_call_output","call_id": id, "output": content}));
+                        }
+                        ContentBlock::ToolUse { id, name, args } => {
+                            if !text_parts.is_empty() {
+                                input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
+                                text_parts.clear();
+                            }
+                            input.push(serde_json::json!({"type":"function_call","call_id": id, "name": name, "arguments": args.to_string()}));
+                        }
+                        ContentBlock::Thinking { .. } => {}
+                    }
+                }
+                if !text_parts.is_empty() {
+                    input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
+                }
+            }
+            Role::Assistant => {
+                let mut text_parts: Vec<String> = Vec::new();
+                let mut tool_uses: Vec<(String, String, Value)> = Vec::new();
+                let mut tool_results: Vec<(String, String)> = Vec::new();
+                for block in msg.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            if !text.is_empty() {
+                                text_parts.push(text);
+                            }
+                        }
+                        ContentBlock::Image { .. } => {}
+                        ContentBlock::Thinking { .. } => {}
+                        ContentBlock::ToolUse { id, name, args } => tool_uses.push((id, name, args)),
+                        ContentBlock::ToolResult { id, content, is_error: _ } => tool_results.push((id, content)),
+                    }
+                }
+                if !text_parts.is_empty() {
+                    input.push(serde_json::json!({"role":"assistant","content": text_parts.join("\n")}));
+                }
+                for (id, name, args) in tool_uses {
+                    input.push(serde_json::json!({"type":"function_call","call_id": id, "name": name, "arguments": args.to_string()}));
+                }
+                for (id, content) in tool_results {
+                    input.push(serde_json::json!({"type":"function_call_output","call_id": id, "output": content}));
+                }
+            }
+        }
+    }
+    if input.is_empty() {
+        input.push(serde_json::json!({"role":"user","content":""}));
+    }
+    let tools = req
+        .tools
+        .into_iter()
+        .map(|t| ResponsesTool {
+            tool_type: "function".to_string(),
+            name: t.name,
+            description: t.description,
+            parameters: t.parameters,
+        })
+        .collect();
+    ResponsesRequest {
+        model: model.to_string(),
+        instructions,
+        input,
+        tools,
+        stream: true,
+    }
+}
+
+async fn send_responses_with_retries(
+    client: &reqwest::Client,
+    url: &Url,
+    api_key: &str,
+    body: &ResponsesRequest,
+    initial_backoff: Duration,
+) -> Result<reqwest::Response, ProviderError> {
+    for attempt in 1..=MAX_ATTEMPTS {
+        let base = if api_key.is_empty() {
+            client.post(url.clone())
+        } else {
+            client
+                .post(url.clone())
+                .header("Authorization", format!("Bearer {api_key}"))
+        };
+        let req = base.header("Content-Type", "application/json").json(body);
+        let res_result = req.send().await;
+        log::debug!(target: "gray_provider", "responses request sent to {url} (attempt {attempt})");
+        let err = match res_result {
+            Ok(res) => {
+                let status = res.status();
+                if status.is_success() {
+                    return Ok(res);
+                }
+                let cf_ray = res.headers().get("cf-ray").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                let req_id = res.headers().get("x-request-id").or_else(|| res.headers().get("request-id")).and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                let text = res.text().await.unwrap_or_default();
+                let snippet: String = text.chars().take(500).collect();
+                let mut msg = if snippet.is_empty() { format!("status {status}") } else { format!("status {status}: {snippet}") };
+                if let Some(ray) = cf_ray.as_deref() { msg.push_str(&format!(", cf-ray: {ray}")); }
+                if let Some(rid) = req_id.as_deref() { msg.push_str(&format!(", request-id: {rid}")); }
+                let lower = snippet.to_lowercase();
+                let is_unsupported_model = lower.contains("not supported") || lower.contains("unsupported") || lower.contains("model not found") || lower.contains("unknown model");
+                match status.as_u16() {
+                    401 | 403 => ProviderError::Auth(msg),
+                    429 => ProviderError::RateLimited(msg),
+                    400 | 404 => ProviderError::BadRequest(msg),
+                    500..=599 if is_unsupported_model => ProviderError::BadRequest(msg),
+                    500..=599 => ProviderError::ServerError(msg),
+                    _ => ProviderError::Stream(msg),
+                }
+            }
+            Err(e) => {
+                if e.is_connect() { ProviderError::Connection(e.to_string()) } else if e.is_timeout() { ProviderError::Timeout(e.to_string()) } else { ProviderError::Stream(e.to_string()) }
+            }
+        };
+        let is_retryable = matches!(err, ProviderError::RateLimited(_) | ProviderError::ServerError(_) | ProviderError::Stream(_) | ProviderError::Timeout(_) | ProviderError::Connection(_));
+        if !is_retryable || attempt == MAX_ATTEMPTS {
+            log::warn!(target: "gray_provider", "responses request error after attempt {attempt}: {err}");
+            return Err(err);
+        }
+        log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
+        let exp_factor = 1u64 << (attempt - 1);
+        let backoff_ms = (initial_backoff.as_millis() as u64).saturating_mul(exp_factor);
+        let max_jitter = backoff_ms / 2;
+        let jitter_ms = if max_jitter > 0 { let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0); nanos % (max_jitter + 1) } else { 0 };
+        tokio::time::sleep(Duration::from_millis(backoff_ms + jitter_ms)).await;
+    }
+    Err(ProviderError::Stream("maximum retry attempts exceeded".to_string()))
+}
+
 async fn send_request_with_retries(
     client: &reqwest::Client,
     url: &Url,
@@ -658,6 +850,7 @@ async fn send_request_with_retries(
                     429 => ProviderError::RateLimited(msg),
                     400 | 404 => ProviderError::BadRequest(msg),
                     500..=599 if is_unsupported_model => ProviderError::BadRequest(msg),
+                    500..=599 => ProviderError::ServerError(msg),
                     _ => ProviderError::Stream(msg),
                 }
             }
@@ -675,6 +868,7 @@ async fn send_request_with_retries(
         let is_retryable = matches!(
             err,
             ProviderError::RateLimited(_)
+                | ProviderError::ServerError(_)
                 | ProviderError::Stream(_)
                 | ProviderError::Timeout(_)
                 | ProviderError::Connection(_)
@@ -720,10 +914,27 @@ enum StreamState {
         body: OpenAiChatRequest,
         initial_backoff: Duration,
     },
+    ResponsesInit {
+        client: reqwest::Client,
+        url: Url,
+        api_key: String,
+        body: ResponsesRequest,
+        initial_backoff: Duration,
+    },
     Streaming {
         event_stream: BoxedEventStream,
         accumulated_tools: BTreeMap<usize, (String, String, String)>,
         last_finish_reason: Option<StopReason>,
+        last_usage: Option<Usage>,
+        pending_events: VecDeque<StreamEvent>,
+        completed: bool,
+    },
+    ResponsesStreaming {
+        event_stream: BoxedEventStream,
+        // keyed by call_id -> (index, name, args)
+        tools_by_call_id: BTreeMap<String, (usize, String, String)>,
+        // index -> call_id for ordering at completion
+        index_to_call_id: BTreeMap<usize, String>,
         last_usage: Option<Usage>,
         pending_events: VecDeque<StreamEvent>,
         completed: bool,
@@ -776,6 +987,56 @@ fn emit_tool_calls_and_completion(
         stop_reason,
         usage,
     });
+    Ok(())
+}
+
+fn emit_responses_tool_calls_and_completion(
+    tools_by_call_id: &mut BTreeMap<String, (usize, String, String)>,
+    index_to_call_id: &mut BTreeMap<usize, String>,
+    usage: Option<Usage>,
+    pending_events: &mut VecDeque<StreamEvent>,
+) -> Result<(), ProviderError> {
+    // Emit in index order for deterministic tool ordering
+    let mut ordered: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
+    for (call_id, (idx, name, args)) in std::mem::take(tools_by_call_id) {
+        ordered.insert(idx, (call_id, name, args));
+    }
+    index_to_call_id.clear();
+    for (idx, (call_id, name, args)) in ordered {
+        let args_trimmed = args.trim();
+        let args_fixed = if args_trimmed.is_empty() {
+            String::new()
+        } else if serde_json::from_str::<Value>(args_trimmed).is_ok() {
+            args_trimmed.to_string()
+        } else {
+            let repaired = if args_trimmed.starts_with('{') && !args_trimmed.ends_with('}') {
+                format!("{args_trimmed}}}")
+            } else {
+                args_trimmed.to_string()
+            };
+            if serde_json::from_str::<Value>(&repaired).is_ok() {
+                repaired
+            } else {
+                log::warn!(target: "gray_provider", "responses tool call {idx} malformed args, forwarding raw: {}", args.chars().take(300).collect::<String>());
+                return Err(ProviderError::Stream(format!(
+                    "tool call at index {idx} has malformed JSON arguments: {}",
+                    args.chars().take(500).collect::<String>()
+                )));
+            }
+        };
+        pending_events.push_back(StreamEvent::ToolCallDelta {
+            index: idx,
+            id: if call_id.is_empty() { None } else { Some(call_id) },
+            name: if name.is_empty() { None } else { Some(name) },
+            arguments_delta: args_fixed,
+        });
+    }
+    let stop_reason = if pending_events.iter().any(|e| matches!(e, StreamEvent::ToolCallDelta { .. })) {
+        Some(StopReason::ToolUse)
+    } else {
+        Some(StopReason::EndTurn)
+    };
+    pending_events.push_back(StreamEvent::MessageComplete { stop_reason, usage });
     Ok(())
 }
 

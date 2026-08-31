@@ -10,6 +10,7 @@ pub mod print;
 pub mod setup;
 pub mod skills;
 pub mod sys_editor;
+pub mod proxy;
 pub mod repl;
 pub mod resume;
 pub mod system_prompt;
@@ -200,6 +201,17 @@ pub enum Commands {
     Cronjobs {
         #[command(subcommand)]
         cmd: Option<crate::cron_cli::CronCmd>,
+    },
+    /// Local OpenAI-compatible proxy (port 8645)
+    Proxy {
+        #[command(subcommand)]
+        cmd: Option<crate::proxy::ProxyCmd>,
+    },
+    /// Alias for proxy (portal)
+    #[command(name = "portal", hide = true)]
+    Portal {
+        #[command(subcommand)]
+        cmd: Option<crate::proxy::ProxyCmd>,
     },
 }
 

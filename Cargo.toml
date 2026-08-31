@@ -45,4 +45,8 @@ tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"
 fs2 = "0.4"
+axum = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.6", features = ["limit", "cors"] }
+tower = { version = "0.5" }
+rusqlite = { version = "0.31", features = ["bundled"] }
 

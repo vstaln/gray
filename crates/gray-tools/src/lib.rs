@@ -7,6 +7,7 @@
 
 pub mod bash;
 pub mod cron_tool;
+pub mod delegate;
 pub mod edit;
 pub mod edit_diff;
 pub mod find;
@@ -89,6 +90,14 @@ impl Registry {
         reg.register(Box::new(WriteTool));
         reg.register(Box::new(EditTool));
         reg.register(Box::new(CronTool));
+        // ponytail: delegate_task global semaphore, per-account caps if throughput matters
+        {
+            use gray_core::delegation::{DelegateConfig, DelegationState};
+            use crate::delegate::DelegateTool;
+            let cfg = DelegateConfig::default();
+            let state = DelegationState::new(cfg.max_concurrent_children);
+            reg.register(Box::new(DelegateTool::new(cfg, state)));
+        }
         reg
     }
 

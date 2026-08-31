@@ -26,6 +26,8 @@ pub enum ProviderError {
     Connection(String),
     #[error("request timed out: {0}")]
     Timeout(String),
+    #[error("server error: {0}")]
+    ServerError(String),
     #[error("stream broken: {0}")]
     Stream(String),
 }

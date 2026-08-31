@@ -25,6 +25,9 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Cronjobs { cmd } => {
                 return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
             }
+            gray::Commands::Proxy { cmd } | gray::Commands::Portal { cmd } => {
+                return gray::proxy::run_cli(cmd, &config).await;
+            }
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
