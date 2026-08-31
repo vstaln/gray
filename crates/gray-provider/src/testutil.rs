@@ -65,3 +65,21 @@ pub fn tool_call_chunk(
         ]
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn sse_helpers_roundtrip() {
+        assert_eq!(sse_done(), "data: [DONE]\n\n");
+        let v = text_delta_chunk("hi", None);
+        let frame = sse_json(&v);
+        assert!(frame.starts_with("data: "));
+        assert!(frame.ends_with("\n\n"));
+    }
+    #[test]
+    fn tool_call_chunk_builds_valid_json() {
+        let v = tool_call_chunk(0, Some("call_1"), Some("lookup"), Some(r#"{"q":"x"}"#), None);
+        assert_eq!(v["choices"][0]["delta"]["tool_calls"][0]["id"], "call_1");
+    }
+}

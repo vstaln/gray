@@ -213,5 +213,22 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<crate::proxy::ProxyCmd>,
     },
+    /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
+    Gateway {
+        #[command(subcommand)]
+        cmd: Option<GatewayCmd>,
+    },
+}
+
+#[derive(Parser, Debug, Clone)]
+pub enum GatewayCmd {
+    /// Run the gateway daemon (foreground)
+    Run,
+    /// Show gateway status
+    Status,
+    /// Install systemd user service (gray-gateway.service)
+    Install,
+    /// Uninstall systemd service
+    Uninstall,
 }
 

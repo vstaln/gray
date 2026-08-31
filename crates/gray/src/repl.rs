@@ -534,24 +534,6 @@ async fn handle_model(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if let Some(m) = direct {
-        // ponytail: validate against live /models (steal codex registry check) — warn don't block (allows ollama custom)
-        let validation_warn = (|| {
-            let catalog = crate::setup::load_catalog().ok()?;
-            let (pid, _) = catalog.iter().find(|(_, p)| p.base_url == config.base_url)?;
-            let live = crate::setup::get_provider_models_with_live(pid, &config.base_url, config.api_key.as_deref(), &catalog);
-            if live.is_empty() {
-                return None;
-            }
-            let found = live.iter().any(|(id, _)| id.eq_ignore_ascii_case(&m));
-            if found {
-                None
-            } else {
-                Some(format!(
-                    "model '{m}' not listed for {} — may cause 400/500. Try /model to pick valid.",
-                    config.base_url
-                ))
-            }
-        })();
         config.model = Some(m.clone());
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);
@@ -562,14 +544,8 @@ async fn handle_model(
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
             t.push_action("Model set to", Some(&m));
-            if let Some(w) = validation_warn.as_deref() {
-                t.push_dim(format!("⚠ {w}"));
-            }
         } else {
             println!("✓ Model set to {m}");
-            if let Some(w) = validation_warn.as_deref() {
-                println!("\x1b[33m⚠ {w}\x1b[0m");
-            }
         }
         reload_agent(agent, config, cwd).await;
         return;
@@ -2364,4 +2340,36 @@ pub async fn run_repl_mode(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_core_error;
+    use gray_core::error::CoreError;
+
+    #[test]
+    fn format_core_error_includes_provider_hint_and_cf_ray() {
+        let base = "https://opencode.ai/zen/go/v1";
+        let detail = "status 422: boom, cf-ray: abc123-sjc";
+        let e = CoreError::Provider(detail.to_string());
+        let out = format_core_error(&e, base);
+        assert!(
+            out.contains("Provider: https://opencode.ai/zen/go/v1 — try /model"),
+            "missing provider hint, got: {out}"
+        );
+        assert!(out.contains("cf-ray: abc123-sjc"), "missing cf-ray, got: {out}");
+    }
+
+    #[test]
+    fn format_core_error_plain_no_cf_ray_noise() {
+        let base = "https://opencode.ai/zen/go/v1";
+        let detail = "status 422: boom";
+        let e = CoreError::Provider(detail.to_string());
+        let out = format_core_error(&e, base);
+        assert!(
+            out.contains("Provider: https://opencode.ai/zen/go/v1 — try /model"),
+            "missing provider hint, got: {out}"
+        );
+        assert!(!out.contains("cf-ray"), "should not contain cf-ray, got: {out}");
+    }
 }

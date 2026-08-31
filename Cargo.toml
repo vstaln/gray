@@ -4,6 +4,7 @@ members = [
     "crates/gray",
     "crates/gray-core",
     "crates/gray-cron",
+    "crates/gray-gateway",
     "crates/gray-markdown",
     "crates/gray-provider",
     "crates/gray-session",
@@ -18,6 +19,7 @@ license = "MIT"
 [workspace.dependencies]
 # Workspace crates
 gray-core = { path = "crates/gray-core" }
+gray-gateway = { path = "crates/gray-gateway" }
 gray-cron = { path = "crates/gray-cron" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }

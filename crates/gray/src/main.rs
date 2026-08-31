@@ -28,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Proxy { cmd } | gray::Commands::Portal { cmd } => {
                 return gray::proxy::run_cli(cmd, &config).await;
             }
+            gray::Commands::Gateway { cmd } => {
+                return run_gateway(cmd).await;
+            }
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
@@ -85,6 +88,16 @@ async fn run_resume_subcommand(
         let _ = p;
     }
     Ok(())
+}
+
+async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
+    use gray::GatewayCmd;
+    match cmd {
+        None | Some(GatewayCmd::Status) => gray_gateway::systemd::status(),
+        Some(GatewayCmd::Run) => gray_gateway::daemon::run_gateway().await,
+        Some(GatewayCmd::Install) => gray_gateway::systemd::install(),
+        Some(GatewayCmd::Uninstall) => gray_gateway::systemd::uninstall(),
+    }
 }
 
 /// Log panics (payload + location) before the default hook prints to stderr,

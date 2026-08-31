@@ -1056,6 +1056,7 @@ dependencies = [
  "futures",
  "gray-core",
  "gray-cron",
+ "gray-gateway",
  "gray-markdown",
  "gray-provider",
  "gray-session",
@@ -1104,6 +1105,23 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "gray-gateway"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "futures",
+ "gray-core",
+ "gray-session",
+ "log",
+ "serde",
+ "serde_json",
  "tokio",
  "uuid",
 ]

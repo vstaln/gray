@@ -183,7 +183,6 @@ pub struct ConnectItem {
     pub sublabel: String,
     pub category: &'static str,
     pub base_url: String,
-    pub default_model: String,
     pub env_key: String,
     pub no_auth: bool,
 }
@@ -192,22 +191,22 @@ pub struct ConnectItem {
 /// Popular section on top, followed by all catalog providers under Providers.
 pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
-        ("openai", "OpenAI", "(ChatGPT Plus/Pro or API key)", "https://api.openai.com/v1", "gpt-4o", "OPENAI_API_KEY", false),
-        ("anthropic", "Anthropic", "(API key)", "https://api.anthropic.com/v1", "claude-3-7-sonnet-20250219", "ANTHROPIC_API_KEY", false),
-        ("google", "Google", "(Gemini API key)", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", "GEMINI_API_KEY", false),
-        ("openrouter", "OpenRouter", "(Access 300+ models)", "https://openrouter.ai/api/v1", "anthropic/claude-3.7-sonnet", "OPENROUTER_API_KEY", false),
-        ("deepseek", "DeepSeek", "", "https://api.deepseek.com", "deepseek-chat", "DEEPSEEK_API_KEY", false),
-        ("groq", "Groq", "(Fast inference)", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", "GROQ_API_KEY", false),
-        ("ollama", "Ollama", "(Local http://localhost:11434)", "http://localhost:11434/v1", "llama3", "", true),
-        ("github-copilot", "GitHub Copilot", "", "https://api.githubcopilot.com", "gpt-4o", "COPILOT_API_KEY", false),
-        ("xai", "xAI (Grok)", "(Grok API key)", "https://api.x.ai/v1", "grok-2-latest", "XAI_API_KEY", false),
-        ("mistral", "Mistral", "(API key)", "https://api.mistral.ai/v1", "mistral-large-latest", "MISTRAL_API_KEY", false),
+        ("openai", "OpenAI", "(ChatGPT Plus/Pro or API key)", "https://api.openai.com/v1", "OPENAI_API_KEY", false),
+        ("anthropic", "Anthropic", "(API key)", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", false),
+        ("google", "Google", "(Gemini API key)", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false),
+        ("openrouter", "OpenRouter", "(Access 300+ models)", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", false),
+        ("deepseek", "DeepSeek", "", "https://api.deepseek.com", "DEEPSEEK_API_KEY", false),
+        ("groq", "Groq", "(Fast inference)", "https://api.groq.com/openai/v1", "GROQ_API_KEY", false),
+        ("ollama", "Ollama", "(Local http://localhost:11434)", "http://localhost:11434/v1", "", true),
+        ("github-copilot", "GitHub Copilot", "", "https://api.githubcopilot.com", "COPILOT_API_KEY", false),
+        ("xai", "xAI (Grok)", "(Grok API key)", "https://api.x.ai/v1", "XAI_API_KEY", false),
+        ("mistral", "Mistral", "(API key)", "https://api.mistral.ai/v1", "MISTRAL_API_KEY", false),
     ];
 
     let mut items = Vec::new();
     let mut popular_ids = std::collections::HashSet::new();
 
-    for (id, name, sublabel, base_url, def_model, env_k, no_auth) in popular_defs {
+    for (id, name, sublabel, base_url, env_k, no_auth) in popular_defs {
         popular_ids.insert(id.to_string());
         let (url, env) = if let Some(p) = catalog.get(id) {
             let e = env_hint(p);
@@ -221,7 +220,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             sublabel: sublabel.to_string(),
             category: "Popular",
             base_url: url.to_string(),
-            default_model: def_model.to_string(),
             env_key: env,
             no_auth,
         });
@@ -235,11 +233,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
         if popular_ids.contains(id) {
             continue;
         }
-        let model = p.models.iter()
-            .find(|m| m.id.contains("claude") || m.id.contains("gpt-4") || m.id.contains("gemini") || m.id.contains("deepseek"))
-            .or_else(|| p.models.first())
-            .map(|m| m.id.clone())
-            .unwrap_or_else(|| "default".to_string());
 
         items.push(ConnectItem {
             id: id.clone(),
@@ -247,7 +240,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             sublabel: String::new(),
             category: "Providers",
             base_url: p.base_url.clone(),
-            default_model: model,
             env_key: env_hint(p),
             no_auth: p.no_auth,
         });
@@ -261,23 +253,22 @@ pub fn friendly_model_name(model_id: &str) -> String {
     if model_id.is_empty() {
         return String::new();
     }
-    if let Ok(catalog) = load_catalog() {
-        for provider in catalog.values() {
-            for m in &provider.models {
-                if m.id == model_id {
-                    return m.name.clone();
-                }
-            }
-        }
-    }
     let name = model_id.split('/').last().unwrap_or(model_id);
     let words: Vec<String> = name
-        .split('-')
+        .split(['-', '_', ':'])
+        .filter(|w| !w.is_empty())
         .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().chain(c).collect(),
+            let lower = w.to_lowercase();
+            if lower == "gpt" || lower == "glm" || lower == "ai" || lower == "api" {
+                w.to_uppercase()
+            } else if lower.starts_with('v') && lower.len() > 1 && lower[1..].chars().all(|c| c.is_ascii_digit() || c == '.') {
+                format!("v{}", &lower[1..])
+            } else {
+                let mut c = w.chars();
+                match c.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().chain(c).collect(),
+                }
             }
         })
         .collect();
@@ -285,14 +276,8 @@ pub fn friendly_model_name(model_id: &str) -> String {
 }
 
 /// Returns the models list for a provider from the catalog.
-pub fn get_provider_models(provider_id: &str, catalog: &Catalog) -> Vec<(String, String)> {
-    let mut list = Vec::new();
-    if let Some(p) = catalog.get(provider_id) {
-        for m in &p.models {
-            list.push((m.id.clone(), m.name.clone()));
-        }
-    }
-    list
+pub fn get_provider_models(_provider_id: &str, _catalog: &Catalog) -> Vec<(String, String)> {
+    Vec::new()
 }
 
 /// Dynamically queries the provider's live /models endpoint (e.g. OpenAI, OpenRouter, Ollama, vLLM, LMStudio, etc.).
@@ -304,7 +289,8 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
             s.spawn(move || {
                 handle.block_on(async move {
                     let client = match reqwest::Client::builder()
-                        .timeout(std::time::Duration::from_millis(2500))
+                        .timeout(std::time::Duration::from_millis(3000))
+                        .user_agent("gray/0.1.0")
                         .build()
                     {
                         Ok(c) => c,
@@ -315,12 +301,16 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                     let endpoints = if trimmed_base.contains("openrouter.ai") {
                         vec!["https://openrouter.ai/api/v1/models".to_string()]
                     } else if trimmed_base.ends_with("/v1") {
-                        vec![format!("{trimmed_base}/models")]
+                        vec![
+                            format!("{trimmed_base}/models"),
+                            format!("{trimmed_base}/tags"),
+                        ]
                     } else {
                         vec![
                             format!("{trimmed_base}/models"),
                             format!("{trimmed_base}/v1/models"),
                             format!("{trimmed_base}/api/tags"),
+                            format!("{trimmed_base}/api/v1/models"),
                         ]
                     };
 
@@ -340,34 +330,32 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                             if resp.status().is_success() {
                                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                                     let mut models = Vec::new();
-                                    if let Some(data) = json.get("data").and_then(|d| d.as_array()) {
-                                        for item in data {
-                                            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                    let items_opt = if let Some(arr) = json.as_array() {
+                                        Some(arr)
+                                    } else if let Some(arr) = json.get("data").and_then(|d| d.as_array()) {
+                                        Some(arr)
+                                    } else if let Some(arr) = json.get("models").and_then(|m| m.as_array()) {
+                                        Some(arr)
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(items) = items_opt {
+                                        for item in items {
+                                            let id = item.get("id")
+                                                .or_else(|| item.get("name"))
+                                                .or_else(|| item.get("model"))
+                                                .and_then(|v| v.as_str());
+                                            if let Some(id_str) = id {
                                                 let name = item.get("name")
+                                                    .or_else(|| item.get("display_name"))
                                                     .and_then(|n| n.as_str())
                                                     .map(|s| s.to_string())
-                                                    .unwrap_or_else(|| friendly_model_name(id));
+                                                    .unwrap_or_else(|| friendly_model_name(id_str));
                                                 if let Some(len) = extract_context_length_from_json(item) {
-                                                    cache_model_context(id, len);
+                                                    cache_model_context(id_str, len);
                                                 }
-                                                models.push((id.to_string(), name));
-                                            }
-                                        }
-                                    }
-                                    if models.is_empty() {
-                                        if let Some(items) = json.get("models").and_then(|m| m.as_array()) {
-                                            for item in items {
-                                                if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
-                                                    if let Some(len) = extract_context_length_from_json(item) {
-                                                        cache_model_context(name, len);
-                                                    }
-                                                    models.push((name.to_string(), friendly_model_name(name)));
-                                                } else if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
-                                                    if let Some(len) = extract_context_length_from_json(item) {
-                                                        cache_model_context(id, len);
-                                                    }
-                                                    models.push((id.to_string(), friendly_model_name(id)));
-                                                }
+                                                models.push((id_str.to_string(), name));
                                             }
                                         }
                                     }
@@ -388,19 +376,14 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
     }
 }
 
-/// Returns the models list for a provider (checking live endpoint first, falling back to catalog).
+/// Returns the models list for a provider dynamically from live endpoint.
 pub fn get_provider_models_with_live(
-    provider_id: &str,
+    _provider_id: &str,
     base_url: &str,
     api_key: Option<&str>,
-    catalog: &Catalog,
+    _catalog: &Catalog,
 ) -> Vec<(String, String)> {
-    let live = fetch_live_provider_models(base_url, api_key);
-    if !live.is_empty() {
-        live
-    } else {
-        get_provider_models(provider_id, catalog)
-    }
+    fetch_live_provider_models(base_url, api_key)
 }
 
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, usize>>> = std::sync::OnceLock::new();
@@ -1343,13 +1326,15 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                 saved.api_key = config.api_key.clone();
                                 saved.auth_mode = Some("api_key".into());
                                 if is_switching {
-                                    saved.model = Some(item.default_model.clone());
+                                    let models = get_provider_models_with_live(&item.id, &item.base_url, Some(&final_key), &catalog);
+                                    saved.model = models.first().map(|(id, _)| id.clone());
                                     config.model = saved.model.clone();
                                 } else if saved.model.is_none() {
                                     if let Some(m) = &config.model {
                                         saved.model = Some(m.clone());
                                     } else {
-                                        saved.model = Some(item.default_model.clone());
+                                        let models = get_provider_models_with_live(&item.id, &item.base_url, Some(&final_key), &catalog);
+                                        saved.model = models.first().map(|(id, _)| id.clone());
                                         config.model = saved.model.clone();
                                     }
                                 } else {
@@ -1440,8 +1425,6 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                     m_id.clone()
                                 } else if !m_filter.is_empty() {
                                     m_filter.trim().to_string()
-                                } else if !item.default_model.is_empty() {
-                                    item.default_model.clone()
                                 } else {
                                     "default".to_string()
                                 };
@@ -1503,11 +1486,10 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
         Err(_) => BTreeMap::new(),
     };
 
-    let (item_id, item_name, default_model) = if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == config.base_url) {
-        let dm = p.models.first().map(|m| m.id.clone()).unwrap_or_default();
-        (pid.clone(), p.name.clone(), dm)
+    let (item_id, item_name) = if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == config.base_url) {
+        (pid.clone(), p.name.clone())
     } else {
-        ("custom".to_string(), "Custom".to_string(), String::new())
+        ("custom".to_string(), "Custom".to_string())
     };
 
     let item = ConnectItem {
@@ -1515,7 +1497,6 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
         name: item_name.clone(),
         sublabel: String::new(),
         base_url: config.base_url.clone(),
-        default_model,
         category: "Providers",
         env_key: String::new(),
         no_auth: false,
@@ -1738,8 +1719,6 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
                             m_id.clone()
                         } else if !filter.is_empty() {
                             filter.trim().to_string()
-                        } else if !item.default_model.is_empty() {
-                            item.default_model.clone()
                         } else {
                             "default".to_string()
                         };

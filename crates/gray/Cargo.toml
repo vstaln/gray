@@ -41,6 +41,7 @@ tower-http = { workspace = true }
 tower = { version = "0.5" }
 async-trait = { workspace = true }
 rusqlite = { workspace = true }
+gray-gateway = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }

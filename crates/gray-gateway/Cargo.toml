@@ -1,0 +1,19 @@
+[package]
+name = "gray-gateway"
+version.workspace = true
+edition.workspace = true
+description = "gray gateway daemon for Telegram/Discord/Slack"
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+gray-core = { workspace = true }
+gray-session = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }

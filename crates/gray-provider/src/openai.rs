@@ -725,6 +725,49 @@ fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
     }
 }
 
+pub(crate) fn classify_http_error(
+    status: reqwest::StatusCode,
+    snippet: &str,
+    cf_ray: Option<&str>,
+    req_id: Option<&str>,
+) -> ProviderError {
+    let mut msg = if snippet.is_empty() {
+        format!("status {status}")
+    } else {
+        format!("status {status}: {snippet}")
+    };
+    if let Some(ray) = cf_ray {
+        msg.push_str(&format!(", cf-ray: {ray}"));
+    }
+    if let Some(rid) = req_id {
+        msg.push_str(&format!(", request-id: {rid}"));
+    }
+    let lower = snippet.to_lowercase();
+    let is_unsupported = lower.contains("not supported")
+        || lower.contains("unsupported")
+        || lower.contains("model not found")
+        || lower.contains("unknown model");
+    match status.as_u16() {
+        401 | 403 => ProviderError::Auth(msg),
+        429 => ProviderError::RateLimited(msg),
+        400 | 404 => ProviderError::BadRequest(msg),
+        500..=599 if is_unsupported => ProviderError::BadRequest(msg),
+        500..=599 => ProviderError::ServerError(msg),
+        _ => ProviderError::Stream(msg),
+    }
+}
+
+pub(crate) fn is_retryable_error(err: &ProviderError) -> bool {
+    matches!(
+        err,
+        ProviderError::RateLimited(_)
+            | ProviderError::ServerError(_)
+            | ProviderError::Stream(_)
+            | ProviderError::Timeout(_)
+            | ProviderError::Connection(_)
+    )
+}
+
 async fn send_responses_with_retries(
     client: &reqwest::Client,
     url: &Url,
@@ -749,29 +792,26 @@ async fn send_responses_with_retries(
                 if status.is_success() {
                     return Ok(res);
                 }
-                let cf_ray = res.headers().get("cf-ray").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-                let req_id = res.headers().get("x-request-id").or_else(|| res.headers().get("request-id")).and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                let cf_ray = res
+                    .headers()
+                    .get("cf-ray")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let req_id = res
+                    .headers()
+                    .get("x-request-id")
+                    .or_else(|| res.headers().get("request-id"))
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
                 let text = res.text().await.unwrap_or_default();
                 let snippet: String = text.chars().take(500).collect();
-                let mut msg = if snippet.is_empty() { format!("status {status}") } else { format!("status {status}: {snippet}") };
-                if let Some(ray) = cf_ray.as_deref() { msg.push_str(&format!(", cf-ray: {ray}")); }
-                if let Some(rid) = req_id.as_deref() { msg.push_str(&format!(", request-id: {rid}")); }
-                let lower = snippet.to_lowercase();
-                let is_unsupported_model = lower.contains("not supported") || lower.contains("unsupported") || lower.contains("model not found") || lower.contains("unknown model");
-                match status.as_u16() {
-                    401 | 403 => ProviderError::Auth(msg),
-                    429 => ProviderError::RateLimited(msg),
-                    400 | 404 => ProviderError::BadRequest(msg),
-                    500..=599 if is_unsupported_model => ProviderError::BadRequest(msg),
-                    500..=599 => ProviderError::ServerError(msg),
-                    _ => ProviderError::Stream(msg),
-                }
+                classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref())
             }
             Err(e) => {
                 if e.is_connect() { ProviderError::Connection(e.to_string()) } else if e.is_timeout() { ProviderError::Timeout(e.to_string()) } else { ProviderError::Stream(e.to_string()) }
             }
         };
-        let is_retryable = matches!(err, ProviderError::RateLimited(_) | ProviderError::ServerError(_) | ProviderError::Stream(_) | ProviderError::Timeout(_) | ProviderError::Connection(_));
+        let is_retryable = is_retryable_error(&err);
         if !is_retryable || attempt == MAX_ATTEMPTS {
             log::warn!(target: "gray_provider", "responses request error after attempt {attempt}: {err}");
             return Err(err);
@@ -813,7 +853,6 @@ async fn send_request_with_retries(
                     return Ok(res);
                 }
 
-                // Steal from codex: surface cf-ray / request-id and classify unsupported-model 5xx as BadRequest (not retryable)
                 let cf_ray = res
                     .headers()
                     .get("cf-ray")
@@ -827,32 +866,7 @@ async fn send_request_with_retries(
                     .map(|s| s.to_string());
                 let text = res.text().await.unwrap_or_default();
                 let snippet: String = text.chars().take(500).collect();
-                let mut msg = if snippet.is_empty() {
-                    format!("status {status}")
-                } else {
-                    format!("status {status}: {snippet}")
-                };
-                if let Some(ray) = cf_ray.as_deref() {
-                    msg.push_str(&format!(", cf-ray: {ray}"));
-                }
-                if let Some(rid) = req_id.as_deref() {
-                    msg.push_str(&format!(", request-id: {rid}"));
-                }
-                // codex maps UnexpectedStatus with body extraction; gray minimal: detect model-not-supported on 5xx
-                let lower = snippet.to_lowercase();
-                let is_unsupported_model = lower.contains("not supported")
-                    || lower.contains("unsupported")
-                    || lower.contains("model not found")
-                    || lower.contains("unknown model");
-
-                match status.as_u16() {
-                    401 | 403 => ProviderError::Auth(msg),
-                    429 => ProviderError::RateLimited(msg),
-                    400 | 404 => ProviderError::BadRequest(msg),
-                    500..=599 if is_unsupported_model => ProviderError::BadRequest(msg),
-                    500..=599 => ProviderError::ServerError(msg),
-                    _ => ProviderError::Stream(msg),
-                }
+                classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref())
             }
             Err(e) => {
                 if e.is_connect() {
@@ -865,14 +879,7 @@ async fn send_request_with_retries(
             }
         };
 
-        let is_retryable = matches!(
-            err,
-            ProviderError::RateLimited(_)
-                | ProviderError::ServerError(_)
-                | ProviderError::Stream(_)
-                | ProviderError::Timeout(_)
-                | ProviderError::Connection(_)
-        );
+        let is_retryable = is_retryable_error(&err);
         if !is_retryable || attempt == MAX_ATTEMPTS {
             log::warn!(target: "gray_provider", "request error after attempt {attempt}: {err}");
             return Err(err);
@@ -1074,6 +1081,18 @@ fn stream_unfold_step(
                         }
                     }
                 }
+                StreamState::ResponsesInit { client, url, api_key, body, initial_backoff } => {
+                    match send_responses_with_retries(&client, &url, &api_key, &body, initial_backoff).await {
+                        Ok(response) => {
+                            let event_stream: BoxedEventStream = response.bytes_stream().eventsource().boxed();
+                            state = StreamState::ResponsesStreaming { event_stream, tools_by_call_id: BTreeMap::new(), index_to_call_id: BTreeMap::new(), last_usage: None, pending_events: VecDeque::new(), completed: false };
+                        }
+                        Err(err) => {
+                            log::error!(target: "gray_provider", "responses request failed: {err}");
+                            return Some((Err(err), StreamState::Done));
+                        }
+                    }
+                }
                 StreamState::Streaming {
                     mut event_stream,
                     mut accumulated_tools,
@@ -1240,6 +1259,202 @@ fn stream_unfold_step(
                         }
                     }
                 }
+                StreamState::ResponsesStreaming {
+                    mut event_stream,
+                    mut tools_by_call_id,
+                    mut index_to_call_id,
+                    mut last_usage,
+                    mut pending_events,
+                    mut completed,
+                } => {
+                    if let Some(event) = pending_events.pop_front() {
+                        return Some((
+                            Ok(event),
+                            StreamState::ResponsesStreaming {
+                                event_stream,
+                                tools_by_call_id,
+                                index_to_call_id,
+                                last_usage,
+                                pending_events,
+                                completed,
+                            },
+                        ));
+                    }
+                    if completed {
+                        return None;
+                    }
+                    match event_stream.next().await {
+                        Some(Ok(sse_event)) => {
+                            let data = sse_event.data.trim();
+                            if data.is_empty() {
+                                state = StreamState::ResponsesStreaming {
+                                    event_stream,
+                                    tools_by_call_id,
+                                    index_to_call_id,
+                                    last_usage,
+                                    pending_events,
+                                    completed,
+                                };
+                                continue;
+                            }
+                            let value: Value = match serde_json::from_str(data) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    return Some((
+                                        Err(ProviderError::Stream(format!("failed to parse Responses SSE chunk: {e}: {data}"))),
+                                        StreamState::Done,
+                                    ));
+                                }
+                            };
+                            let typ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            match typ {
+                                "response.output_text.delta" => {
+                                    if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                                        if !delta.is_empty() {
+                                            pending_events.push_back(StreamEvent::TextDelta { delta: delta.to_string() });
+                                        }
+                                    }
+                                }
+                                "response.reasoning_text.delta"
+                                | "response.reasoning_summary_text.delta" => {
+                                    if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                                        if !delta.is_empty() {
+                                            pending_events.push_back(StreamEvent::ThinkingDelta { delta: delta.to_string() });
+                                        }
+                                    }
+                                }
+                                "response.output_item.added" => {
+                                    if let Some(item) = value.get("item") {
+                                        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        if item_type == "function_call" {
+                                            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                            let item_id = item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| call_id.clone());
+                                            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                            if !call_id.is_empty() && !tools_by_call_id.contains_key(&call_id) {
+                                                let idx = tools_by_call_id.len();
+                                                tools_by_call_id.insert(call_id.clone(), (idx, name.clone(), String::new()));
+                                                index_to_call_id.insert(idx, call_id.clone());
+                                                if item_id != call_id && !item_id.is_empty() {
+                                                    tools_by_call_id.insert(item_id.clone(), (idx, name, String::new()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                "response.function_call_arguments.delta" => {
+                                    let item_id = value.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                                    let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
+                                    if !delta.is_empty() && !item_id.is_empty() {
+                                        if let Some(entry) = tools_by_call_id.get_mut(item_id) {
+                                            entry.2.push_str(delta);
+                                        } else {
+                                            let idx = tools_by_call_id.len();
+                                            tools_by_call_id.insert(item_id.to_string(), (idx, String::new(), delta.to_string()));
+                                            index_to_call_id.insert(idx, item_id.to_string());
+                                        }
+                                    }
+                                }
+                                "response.function_call_arguments.done" => {
+                                    if let Some(args) = value.get("arguments").and_then(|v| v.as_str()) {
+                                        let item_id = value.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                                        if !item_id.is_empty() {
+                                            if let Some(entry) = tools_by_call_id.get_mut(item_id) {
+                                                if entry.2.is_empty() { entry.2 = args.to_string(); }
+                                            }
+                                        }
+                                        if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
+                                            if let Some(entry) = tools_by_call_id.get_mut(item_id) {
+                                                if entry.1.is_empty() { entry.1 = name.to_string(); }
+                                            }
+                                        }
+                                    }
+                                }
+                                "response.completed" => {
+                                    if !completed {
+                                        completed = true;
+                                        let usage_val = value.get("response").and_then(|r| r.get("usage")).or_else(|| value.get("usage"));
+                                        if let Some(uval) = usage_val {
+                                            if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(uval.clone()) {
+                                                last_usage = Some(map_usage(&u));
+                                            } else {
+                                                let input = uval.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                                let output = uval.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                                let cached = uval.get("input_tokens_details").and_then(|d| d.get("cached_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                                let reasoning = uval.get("output_tokens_details").and_then(|d| d.get("reasoning_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                                                let total = uval.get("total_tokens").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(input + output);
+                                                let mut usage = Usage { input_tokens: input, output_tokens: output, reasoning_tokens: reasoning, cached_tokens: cached, non_cached_input_tokens: input.saturating_sub(cached), cache_read_input_tokens: cached, cache_write_input_tokens: 0, total_tokens: total };
+                                                usage.normalize();
+                                                last_usage = Some(usage);
+                                            }
+                                        }
+                                        let mut dedup: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
+                                        for (k, (idx, name, args)) in std::mem::take(&mut tools_by_call_id) {
+                                            let entry = dedup.entry(idx).or_insert((k.clone(), String::new(), String::new()));
+                                            if !name.is_empty() { entry.1 = name; }
+                                            if !args.is_empty() { entry.2 = args.clone(); }
+                                            if entry.0.is_empty() || k.starts_with("call_") { entry.0 = k; }
+                                        }
+                                        for (idx, (call_id, name, args)) in dedup {
+                                            tools_by_call_id.insert(call_id.clone(), (idx, name, args));
+                                        }
+                                        index_to_call_id.clear();
+                                        for (call_id, (idx, _, _)) in &tools_by_call_id {
+                                            index_to_call_id.insert(*idx, call_id.clone());
+                                        }
+                                        if let Err(err) = emit_responses_tool_calls_and_completion(&mut tools_by_call_id, &mut index_to_call_id, last_usage.clone(), &mut pending_events) {
+                                            return Some((Err(err), StreamState::Done));
+                                        }
+                                    }
+                                }
+                                "ping" | "response.created" | "response.in_progress" | "response.content_part.added" | "response.content_part.done" | "response.output_text.done" | "response.output_item.done" | "response.reasoning_text.done" => {}
+                                _ => {
+                                    if let Some(uval) = value.get("response").and_then(|r| r.get("usage")).or_else(|| value.get("usage")) {
+                                        if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(uval.clone()) {
+                                            last_usage = Some(map_usage(&u));
+                                        }
+                                    }
+                                }
+                            }
+                            state = StreamState::ResponsesStreaming {
+                                event_stream,
+                                tools_by_call_id,
+                                index_to_call_id,
+                                last_usage,
+                                pending_events,
+                                completed,
+                            };
+                        }
+                        Some(Err(err)) => {
+                            log::error!(target: "gray_provider", "responses stream error: {err}");
+                            return Some((Err(ProviderError::Stream(err.to_string())), StreamState::Done));
+                        }
+                        None => {
+                            if !completed {
+                                completed = true;
+                                let mut dedup: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
+                                for (k, (idx, name, args)) in std::mem::take(&mut tools_by_call_id) {
+                                    if !dedup.contains_key(&idx) { dedup.insert(idx, (k, name, args)); }
+                                }
+                                for (idx, (call_id, name, args)) in dedup { tools_by_call_id.insert(call_id.clone(), (idx, name, args)); }
+                                index_to_call_id.clear();
+                                for (call_id, (idx, _, _)) in &tools_by_call_id { index_to_call_id.insert(*idx, call_id.clone()); }
+                                if let Err(err) = emit_responses_tool_calls_and_completion(&mut tools_by_call_id, &mut index_to_call_id, last_usage.clone(), &mut pending_events) {
+                                    return Some((Err(err), StreamState::Done));
+                                }
+                                state = StreamState::ResponsesStreaming {
+                                    event_stream,
+                                    tools_by_call_id,
+                                    index_to_call_id,
+                                    last_usage,
+                                    pending_events,
+                                    completed,
+                                };
+                            } else {
+                                return None;
+                            }
+                        }
+                    }
+                }
                 StreamState::Done => {
                     return None;
                 }
@@ -1254,6 +1469,22 @@ impl Provider for OpenAiProvider {
         &self,
         req: ChatRequest,
     ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
+        if is_muse_model(&self.model) && self.base_url.as_str().contains("opencode.ai/zen") {
+            let url = match responses_url(&self.base_url) {
+                Ok(u) => u,
+                Err(e) => return stream::once(async move { Err(e) }).boxed(),
+            };
+            let body = map_chat_to_responses(req, &self.model);
+            log::debug!(target: "gray_provider", "using Responses API for model {}", self.model);
+            let init_state = StreamState::ResponsesInit {
+                client: self.http.clone(),
+                url,
+                api_key: self.api_key.clone(),
+                body,
+                initial_backoff: self.initial_backoff,
+            };
+            return stream::unfold(init_state, stream_unfold_step).boxed();
+        }
         let url = match chat_completions_url(&self.base_url) {
             Ok(u) => u,
             Err(e) => return stream::once(async move { Err(e) }).boxed(),
@@ -1269,6 +1500,52 @@ impl Provider for OpenAiProvider {
         };
 
         stream::unfold(init_state, stream_unfold_step).boxed()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_model_500_maps_to_bad_request_and_preserves_cf_ray() {
+        let err = classify_http_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "Model not supported: xyz",
+            Some("abc123-ray"),
+            Some("req-1"),
+        );
+        assert!(matches!(err, ProviderError::BadRequest(_)));
+        assert!(!is_retryable_error(&err));
+        let msg = err.to_string();
+        assert!(msg.contains("cf-ray: abc123-ray"), "{msg}");
+        assert!(msg.contains("request-id: req-1"), "{msg}");
+    }
+
+    #[test]
+    fn rate_limited_429_is_retryable() {
+        let err = classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "rate limit", None, None);
+        assert!(matches!(err, ProviderError::RateLimited(_)));
+        assert!(is_retryable_error(&err));
+    }
+
+    #[test]
+    fn auth_401_insufficient_balance_is_not_retryable() {
+        let err = classify_http_error(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "insufficient balance or invalid api key",
+            None,
+            None,
+        );
+        assert!(matches!(err, ProviderError::Auth(_)));
+        assert!(!is_retryable_error(&err));
+    }
+
+    #[test]
+    fn plain_500_without_model_hint_is_server_error_retryable() {
+        let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "internal error", None, None);
+        assert!(matches!(err, ProviderError::ServerError(_)));
+        assert!(is_retryable_error(&err));
     }
 }
 
