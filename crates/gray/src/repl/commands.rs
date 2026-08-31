@@ -137,63 +137,59 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
 
 /// Parses a line of input into a [`ReplCommand`].
 pub fn parse_command(line: &str) -> ReplCommand {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        ReplCommand::Empty
-    } else if trimmed == "/quit" || trimmed == "/exit" {
-        ReplCommand::Quit
-    } else if trimmed == "/resume" {
-        ReplCommand::Resume(ResumeArgs { target: None, last: false, all: false })
-    } else if let Some(rest) = trimmed.strip_prefix("/resume ") {
-        ReplCommand::Resume(parse_resume_args(rest))
-    } else if trimmed == "/sys" {
-        ReplCommand::Sys(SysAction::Edit)
-    } else if trimmed == "/sys show" {
-        ReplCommand::Sys(SysAction::Show)
-    } else if trimmed == "/sys reset" {
-        ReplCommand::Sys(SysAction::Reset)
-    } else if trimmed == "/new" || trimmed == "/clear" || trimmed == "/reset" {
-        ReplCommand::New(None)
-    } else if let Some(rest) = trimmed.strip_prefix("/new ") {
-        let arg = rest.trim();
-        ReplCommand::New((!arg.is_empty()).then(|| arg.to_string()))
-    } else if let Some(rest) = trimmed.strip_prefix("/clear ") {
-        let arg = rest.trim();
-        ReplCommand::New((!arg.is_empty()).then(|| arg.to_string()))
-    } else if let Some(rest) = trimmed.strip_prefix("/reset ") {
-        let arg = rest.trim();
-        ReplCommand::New((!arg.is_empty()).then(|| arg.to_string()))
-    } else if trimmed == "/compact" || trimmed == "/compress" {
-        ReplCommand::Compact(None)
-    } else if let Some(rest) = trimmed.strip_prefix("/compact ") {
-        let arg = rest.trim();
-        ReplCommand::Compact((!arg.is_empty()).then(|| arg.to_string()))
-    } else if let Some(rest) = trimmed.strip_prefix("/compress ") {
-        let arg = rest.trim();
-        ReplCommand::Compact((!arg.is_empty()).then(|| arg.to_string()))
-    } else if trimmed == "/thinking" || trimmed == "/effort" {
-        ReplCommand::Thinking(None)
-    } else if let Some(rest) = trimmed.strip_prefix("/thinking ") {
-        let arg = rest.trim();
-        ReplCommand::Thinking((!arg.is_empty()).then(|| arg.to_string()))
-    } else if let Some(rest) = trimmed.strip_prefix("/effort ") {
-        let arg = rest.trim();
-        ReplCommand::Thinking((!arg.is_empty()).then(|| arg.to_string()))
-    } else if trimmed == "/connect" || trimmed == "/provider" || trimmed == "/providers" || trimmed == "/login" || trimmed == "/key" || trimmed == "/keys" || trimmed.starts_with("/key ") {
-        ReplCommand::Provider
-    } else if trimmed == "/help" {
-        ReplCommand::Help
-    } else if let Some(rest) = trimmed.strip_prefix("/model") {
-        let arg = rest.trim();
-        ReplCommand::Model((!arg.is_empty()).then(|| arg.to_string()))
-    } else if trimmed.starts_with("/cron") {
-        ReplCommand::Cron(trimmed.to_string())
-    } else if trimmed.starts_with("/proxy") || trimmed.starts_with("/portal") {
-        ReplCommand::Proxy(trimmed.to_string())
-    } else if trimmed.starts_with('/') {
-        ReplCommand::Unknown(trimmed.to_string())
-    } else {
-        ReplCommand::Prompt(trimmed.to_string())
+    let t = line.trim();
+    if t.is_empty() {
+        return ReplCommand::Empty;
+    }
+    let (cmd, rest) = match t.split_once(' ') {
+        Some((c, r)) => (c, r.trim()),
+        None => (t, ""),
+    };
+    let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
+
+    match cmd {
+        "/quit" | "/exit" => ReplCommand::Quit,
+        "/resume" => ReplCommand::Resume(if rest.is_empty() {
+            ResumeArgs { target: None, last: false, all: false }
+        } else {
+            parse_resume_args(rest)
+        }),
+        "/sys" => match rest {
+            "" => ReplCommand::Sys(SysAction::Edit),
+            "show" => ReplCommand::Sys(SysAction::Show),
+            "reset" => ReplCommand::Sys(SysAction::Reset),
+            _ => ReplCommand::Unknown(t.to_string()),
+        },
+        "/new" | "/clear" | "/reset" => ReplCommand::New(opt(rest)),
+        "/compact" | "/compress" => ReplCommand::Compact(opt(rest)),
+        "/thinking" | "/effort" => ReplCommand::Thinking(opt(rest)),
+        "/help" => ReplCommand::Help,
+        _ => {
+            // preserve original edge cases: bare aliases exact, "/key foo" is Provider but "/keys foo" is Unknown, "/model*" prefix without space
+            if t == "/connect"
+                || t == "/provider"
+                || t == "/providers"
+                || t == "/login"
+                || t == "/key"
+                || t == "/keys"
+                || t.starts_with("/key ")
+            {
+                return ReplCommand::Provider;
+            }
+            if t.starts_with("/model") {
+                return ReplCommand::Model(opt(t[6..].trim()));
+            }
+            if t.starts_with("/cron") {
+                return ReplCommand::Cron(t.to_string());
+            }
+            if t.starts_with("/proxy") || t.starts_with("/portal") {
+                return ReplCommand::Proxy(t.to_string());
+            }
+            if t.starts_with('/') {
+                return ReplCommand::Unknown(t.to_string());
+            }
+            ReplCommand::Prompt(t.to_string())
+        }
     }
 }
 
