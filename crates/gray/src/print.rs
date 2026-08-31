@@ -97,10 +97,10 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
                 eprintln!("render error: {e}");
             }
         };
-        agent
-            .run_streaming(user_msg, ctx, &mut on_event)
-            .await
-            .map_err(|e| anyhow::anyhow!("agent execution failed: {e}"))?
+        agent.run_streaming(user_msg, ctx, &mut on_event).await.map_err(|e| {
+            let msg = crate::repl::format_core_error(&e, &config.base_url);
+            anyhow::anyhow!(msg)
+        })?
     };
     drop(result);
 

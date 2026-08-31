@@ -19,16 +19,16 @@ use ratatui::widgets::Widget;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 pub(crate) const COMMANDS: &[(&str, &str)] = &[
-    ("connect", "connect a provider & setup API key"),
-    ("model", "switch or pick a model"),
-    ("thinking", "set reasoning effort (off, minimal, low, medium, high, xhigh, max) — /effort is alias"),
-    ("resume", "resume a previous conversation"),
-    ("new", "start a fresh conversation"),
-    ("compact", "compress conversation context into a structured summary"),
-    ("cron", "manage cron jobs — /cron list, /cron create --schedule \"every 30m\" --prompt \"...\""),
-    ("sys", "view, edit, or restore the system prompt"),
-    ("help", "print the command list"),
-    ("quit", "exit (Ctrl-C exits at the prompt, cancels mid-turn)"),
+    ("connect", "setup provider & API key"),
+    ("model", "switch model"),
+    ("thinking", "reasoning effort"),
+    ("resume", "resume conversation"),
+    ("new", "new conversation"),
+    ("compact", "summarize context"),
+    ("cron", "cron jobs"),
+    ("sys", "edit system prompt"),
+    ("help", "show commands"),
+    ("quit", "exit"),
 ];
 
 const ALIASES: &[(&str, &str)] = &[
@@ -143,6 +143,37 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
         CoreError::Timeout(detail) => format!(
             "✗ Connection failed: Unable to reach {base_url} (request timed out: {detail})\n  Please check your internet connection or run /connect to configure provider settings."
         ),
+        CoreError::Provider(detail) => {
+            let lower = detail.to_lowercase();
+            if lower.contains("not supported")
+                || lower.contains("unsupported")
+                || lower.contains("model not found")
+                || lower.contains("unknown model")
+                || detail.contains(" 404")
+                || detail.contains("status 404")
+            {
+                format!(
+                    "✗ Bad request: {detail}\n  Model may not be supported on {base_url}. Run /model to pick a valid model or /connect to change provider."
+                )
+            } else if lower.contains("auth") || detail.contains(" 401") || detail.contains(" 403") || lower.contains("unauthorized") {
+                format!(
+                    "✗ Auth failed: {detail}\n  Check API key or run /connect to reconfigure provider."
+                )
+            } else if lower.contains("rate") || detail.contains(" 429") {
+                format!(
+                    "✗ Rate limited: {detail}\n  Try again later or switch model via /model."
+                )
+            } else if lower.contains("bad request") || detail.contains(" 400") {
+                format!(
+                    "✗ Bad request: {detail}\n  Check model/provider settings via /model or /connect."
+                )
+            } else {
+                // Steal codex's UnexpectedResponseError display: keep status+body but add provider hint
+                format!(
+                    "✗ Provider error: {detail}\n  Provider: {base_url} — try /model or /connect if this persists."
+                )
+            }
+        }
         _ => format!("agent error: {e}"),
     }
 }
@@ -286,7 +317,7 @@ pub struct ResumeArgs {
 /// What to do when the user types `/sys`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SysAction {
-    /// Edit `~/.gray/sys.md` in `$EDITOR`.
+    /// Edit `~/.gray/AGENTS.md` in `$EDITOR`.
     Edit,
     /// Print the current prompt file contents and path.
     Show,
@@ -486,6 +517,24 @@ async fn handle_model(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if let Some(m) = direct {
+        // ponytail: validate against live /models (steal codex registry check) — warn don't block (allows ollama custom)
+        let validation_warn = (|| {
+            let catalog = crate::setup::load_catalog().ok()?;
+            let (pid, _) = catalog.iter().find(|(_, p)| p.base_url == config.base_url)?;
+            let live = crate::setup::get_provider_models_with_live(pid, &config.base_url, config.api_key.as_deref(), &catalog);
+            if live.is_empty() {
+                return None;
+            }
+            let found = live.iter().any(|(id, _)| id.eq_ignore_ascii_case(&m));
+            if found {
+                None
+            } else {
+                Some(format!(
+                    "model '{m}' not listed for {} — may cause 400/500. Try /model to pick valid.",
+                    config.base_url
+                ))
+            }
+        })();
         config.model = Some(m.clone());
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);
@@ -496,8 +545,14 @@ async fn handle_model(
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
             t.push_action("Model set to", Some(&m));
+            if let Some(w) = validation_warn.as_deref() {
+                t.push_dim(format!("⚠ {w}"));
+            }
         } else {
             println!("✓ Model set to {m}");
+            if let Some(w) = validation_warn.as_deref() {
+                println!("\x1b[33m⚠ {w}\x1b[0m");
+            }
         }
         reload_agent(agent, config, cwd).await;
         return;
@@ -962,9 +1017,22 @@ async fn handle_resume(
     let Some(root) = default_root() else { return; };
     let store = JsonlSessionStore::new(root);
     match store.load(&sid).await {
-        Ok((_meta, entries)) => {
+        Ok((meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
+            // ponytail: warn on model drift (like codex session UsesThreadId check)
+            let drift_warn = if !meta.model.is_empty()
+                && config.model.as_deref() != Some(meta.model.as_str())
+            {
+                Some(format!(
+                    "session was {} but now {} — mismatch caused prior 500 (try /model {})",
+                    meta.model,
+                    config.model.as_deref().unwrap_or("unset"),
+                    meta.model
+                ))
+            } else {
+                None
+            };
             match build_agent(config, cwd) {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
@@ -973,8 +1041,14 @@ async fn handle_resume(
                         let mut t = shared.lock().expect("tui lock");
                         t.replay_session_history(&entries, cwd);
                         t.push_dim(format!("\u{2b22} Resumed session {} ({n} messages)", sid.as_str()));
+                        if let Some(w) = drift_warn.as_deref() {
+                            t.push_dim(format!("⚠ {w}"));
+                        }
                     } else {
                         println!("\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m", sid.as_str());
+                        if let Some(w) = drift_warn.as_deref() {
+                            println!("\x1b[33m⚠ {w}\x1b[0m");
+                        }
                     }
                 }
                 Err(e) => {
@@ -1085,6 +1159,8 @@ pub async fn run_repl_mode(
     let mut session_state: Option<SessionState> = None;
     let mut pending_history: Vec<Message> = Vec::new();
     let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
+    #[allow(unused_assignments)]
+    let mut resume_model_warn: Option<String> = None;
 
     // `--session <id>`: reopen that exact session.
     if let Some(id) = session_id
@@ -1096,6 +1172,17 @@ pub async fn run_repl_mode(
             Ok((meta, entries)) => {
                 if config.model.is_none() && !meta.model.is_empty() {
                     config.model = Some(meta.model.clone());
+                } else if !meta.model.is_empty()
+                    && config.model.as_deref() != Some(meta.model.as_str())
+                {
+                    // ponytail: warn but don't auto-switch — user may have intentionally changed provider
+                    resume_model_warn = Some(format!(
+                        "session was {} but now {} — mismatch caused prior 500 (try /model {})",
+                        meta.model,
+                        config.model.as_deref().unwrap_or("unset"),
+                        meta.model
+                    ));
+                    log::warn!(target: "gray_session", "resume model mismatch: {}", resume_model_warn.as_deref().unwrap_or(""));
                 }
                 let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                 pending_history = history.clone();
@@ -1127,6 +1214,16 @@ pub async fn run_repl_mode(
                 Ok((meta, entries)) => {
                     if config.model.is_none() && !meta.model.is_empty() {
                         config.model = Some(meta.model.clone());
+                    } else if !meta.model.is_empty()
+                        && config.model.as_deref() != Some(meta.model.as_str())
+                    {
+                        resume_model_warn = Some(format!(
+                            "session was {} but now {} — mismatch caused prior 500 (try /model {})",
+                            meta.model,
+                            config.model.as_deref().unwrap_or("unset"),
+                            meta.model
+                        ));
+                        log::warn!(target: "gray_session", "resume model mismatch: {}", resume_model_warn.as_deref().unwrap_or(""));
                     }
                     let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                     pending_history = history.clone();
@@ -1141,6 +1238,12 @@ pub async fn run_repl_mode(
                 }
                 Err(e) => println!("could not resume: {e}"),
             }
+        }
+    }
+
+    if let Some(w) = resume_model_warn.as_deref() {
+        if !interactive {
+            println!("\x1b[33m⚠ {w}\x1b[0m");
         }
     }
 
@@ -1163,6 +1266,11 @@ pub async fn run_repl_mode(
                 if let Some((ref sid, ref entries)) = resumed_session_info {
                     t.replay_session_history(entries, &cwd);
                     t.push_dim(format!("\u{2b22} Resumed session {} ({} messages)", sid.as_str(), entries.len()));
+                    if let Some(w) = resume_model_warn.as_deref() {
+                        t.push_dim(format!("⚠ {w}"));
+                    }
+                } else if let Some(w) = resume_model_warn.as_deref() {
+                    t.push_dim(format!("⚠ {w}"));
                 }
                 t
             })),
@@ -2137,4 +2245,3 @@ pub async fn run_repl_mode(
 
     Ok(())
 }
-

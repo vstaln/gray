@@ -256,8 +256,7 @@ struct OpenAiUsageChunk {
     /// DeepSeek / OpenRouter / Kimi top-level fields
     #[serde(default, alias = "prompt_cache_hit_tokens", alias = "promptCacheHitTokens")]
     cached_tokens: usize,
-    #[serde(default, alias = "prompt_cache_miss_tokens", alias = "promptCacheMissTokens")]
-    prompt_cache_miss_tokens: usize,
+
     /// Anthropic native breakdown (when not via OpenAI compat)
     #[serde(default, alias = "cache_creation_input_tokens", alias = "cacheCreationInputTokens")]
     cache_creation_input_tokens: usize,
@@ -270,10 +269,8 @@ struct OpenAiUsageChunk {
 
 #[derive(Debug, Deserialize)]
 struct OpenAiCompletionDetails {
-    #[serde(default)]
-    reasoning_tokens: usize,
     #[serde(default, alias = "reasoningTokens")]
-    reasoningTokens: usize,
+    reasoning_tokens: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -538,7 +535,7 @@ fn map_usage(u: &OpenAiUsageChunk) -> Usage {
     // Anthropic: prompt_tokens is non-cached only, plus read/write -> inclusive = sum(non_cached, read, write)
     let mut reasoning = 0usize;
     if let Some(details) = &u.completion_tokens_details {
-        reasoning = details.reasoning_tokens.max(details.reasoningTokens);
+        reasoning = details.reasoning_tokens;
     }
 
     // Extract cache fields from all possible shapes
@@ -624,18 +621,43 @@ async fn send_request_with_retries(
                     return Ok(res);
                 }
 
+                // Steal from codex: surface cf-ray / request-id and classify unsupported-model 5xx as BadRequest (not retryable)
+                let cf_ray = res
+                    .headers()
+                    .get("cf-ray")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+                let req_id = res
+                    .headers()
+                    .get("x-request-id")
+                    .or_else(|| res.headers().get("request-id"))
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
                 let text = res.text().await.unwrap_or_default();
                 let snippet: String = text.chars().take(500).collect();
-                let msg = if snippet.is_empty() {
+                let mut msg = if snippet.is_empty() {
                     format!("status {status}")
                 } else {
                     format!("status {status}: {snippet}")
                 };
+                if let Some(ray) = cf_ray.as_deref() {
+                    msg.push_str(&format!(", cf-ray: {ray}"));
+                }
+                if let Some(rid) = req_id.as_deref() {
+                    msg.push_str(&format!(", request-id: {rid}"));
+                }
+                // codex maps UnexpectedStatus with body extraction; gray minimal: detect model-not-supported on 5xx
+                let lower = snippet.to_lowercase();
+                let is_unsupported_model = lower.contains("not supported")
+                    || lower.contains("unsupported")
+                    || lower.contains("model not found")
+                    || lower.contains("unknown model");
 
                 match status.as_u16() {
                     401 | 403 => ProviderError::Auth(msg),
                     429 => ProviderError::RateLimited(msg),
-                    400 => ProviderError::BadRequest(msg),
+                    400 | 404 => ProviderError::BadRequest(msg),
+                    500..=599 if is_unsupported_model => ProviderError::BadRequest(msg),
                     _ => ProviderError::Stream(msg),
                 }
             }
