@@ -22,7 +22,7 @@ use gray_markdown::HyperlinkTarget;
 
 use crate::repl::completion_matches;
 
-pub(crate) const VIEWPORT_H: u16 = 7;
+pub(crate) const VIEWPORT_H: u16 = 8;
 pub(crate) const PANEL_ROWS: usize = 6;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;

@@ -154,7 +154,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let status_h: u16 = if has_status { 1 } else { 0 };
 
-        let avail_panel_h = (area.height.saturating_sub(box_h + attach_h + 1) as usize).min(PANEL_ROWS);
+        // Reserve 1 top pad (idle) + 1 bottom pad + 1 footer + 1 gap(box-footer) for panel budgeting
+        let top_pad: u16 = if has_status || !tui.matches.is_empty() { 0 } else { 1 };
+        let reserved = top_pad + 1 + 1 + 1 + attach_h; // top + bottom + footer + gap + attachments
+        let avail_panel_h = (area.height.saturating_sub(box_h + reserved) as usize).min(PANEL_ROWS);
         let visible_count = if !tui.matches.is_empty() {
             tui.matches.len().min(avail_panel_h)
         } else {
@@ -167,22 +170,23 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             // Omit bottom padding row of prompt box when autocomplete open: panel directly below prompt
             let panel_y = box_y + box_h.saturating_sub(1);
             let attach_y = panel_y + panel_h;
-            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(2));
+            let footer_y = area.y + area.height.saturating_sub(2);
             let status_y = area.y;
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else if has_status {
             let status_y = area.y;
             let box_y = (status_y + status_h + 1).min(area.y + area.height.saturating_sub(box_h + 2));
-            let panel_y = box_y + box_h;
+            // box -> gap(1) -> panel -> attach -> gap(1) -> footer(1) -> bottom pad(1)
+            let panel_y = box_y + box_h + 1;
             let attach_y = panel_y + panel_h;
-            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(2));
+            let footer_y = area.y + area.height.saturating_sub(2);
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else {
-            let box_y = area.y;
             let status_y = area.y;
-            let panel_y = box_y + box_h;
+            let box_y = area.y + 1;
+            let panel_y = box_y + box_h + 1;
             let attach_y = panel_y + panel_h;
-            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(2));
+            let footer_y = area.y + area.height.saturating_sub(2);
             (status_y, box_y, panel_y, attach_y, footer_y)
         };
 
