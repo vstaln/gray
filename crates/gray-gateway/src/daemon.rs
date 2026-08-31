@@ -175,7 +175,16 @@ struct SavedConfig { base_url: Option<String>, api_key: Option<String>, model: O
 
 fn load_system_prompt() -> String {
     let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map(|b| std::path::PathBuf::from(b).join("sys.md")).unwrap_or_else(|_| std::path::PathBuf::from("sys.md"));
-    std::fs::read_to_string(&base).unwrap_or_else(|_| include_str!("../../gray/assets/SYS.md").to_string())
+    std::fs::read_to_string(&base).unwrap_or_else(|_| r#"You are gray, a minimal agent running on the user's machine.
+You help by using tools: read files, run commands, edit code, search.
+
+Guidelines:
+- Be concise.
+- Read surrounding code, types, and tests before changing anything; match existing patterns.
+- Give error and edge cases the same care as happy paths; fix root causes.
+- Verify by building and testing; only claim what you actually ran.
+- When referencing files or URLs in responses, format them with absolute paths or file:// links (e.g. file:///path/to/file or [label](file:///path/to/file)) and standard web URLs so they are clickable in the terminal.
+- Keep going until done or truly blocked. A failed tool call means try differently, not give up."#.to_string())
 }
 
 fn now_millis() -> u64 { std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
