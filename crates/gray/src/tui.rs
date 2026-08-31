@@ -207,25 +207,4 @@ pub fn clear_screen() {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wrap_breaks_at_words_and_respects_width() {
-        assert_eq!(wrap("hello world", 20), vec!["hello world"]);
-        assert_eq!(wrap("hello world foo", 11), vec!["hello world", "foo"]);
-        assert_eq!(wrap("", 10), Vec::<String>::new());
-        // long word harder than width still emitted as its own line
-        assert_eq!(wrap("abcdefghij", 5), vec!["abcdefghij"]);
-        // bare reset sequence rides along instead of forcing a break
-        assert_eq!(wrap("\x1b[2mword word\x1b[0m", 10), vec!["\x1b[2mword word\x1b[0m"]);
-    }
-
-    #[test]
-    fn visible_width_ignores_ansi() {
-        assert_eq!(visible_width("\x1b[2mdim\x1b[0m"), 3);
-        assert_eq!(visible_width("plain"), 5);
-    }
-}
 

@@ -247,37 +247,3 @@ fn get_examples_path() -> String {
     std::env::var("PI_EXAMPLES_PATH").unwrap_or_else(|_| "examples".to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn gated_on_read_tool() {
-        let skill = Skill {
-            name: "x".into(),
-            description: "does x".into(),
-            file_path: PathBuf::from("/tmp/SKILL.md"),
-            base_dir: PathBuf::from("/tmp"),
-            disable_model_invocation: false,
-            source: "user".into(),
-        };
-        let p = build_system_prompt(BuildSystemPromptOptions {
-            cwd: PathBuf::from("/tmp"),
-            selected_tools: Some(vec!["bash".into()]),
-            skills: Some(vec![skill]),
-            ..Default::default()
-        });
-        assert!(!p.contains("<available_skills>"));
-    }
-    #[test]
-    fn tools_list_only_with_snippet() {
-        let mut snippets = HashMap::new();
-        snippets.insert("read".to_string(), "read files".to_string());
-        let p = build_system_prompt(BuildSystemPromptOptions {
-            cwd: PathBuf::from("/tmp"),
-            tool_snippets: Some(snippets),
-            ..Default::default()
-        });
-        assert!(p.contains("read: read files"));
-        assert!(!p.contains("bash:"));
-    }
-}

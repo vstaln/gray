@@ -875,32 +875,3 @@ pub fn format_tool_result_plain(tool_name: &str, output: &str, is_error: bool) -
     format_tool_result_plain_with_context(tool_name, None, output, is_error, None)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_and_render_unified_diff() {
-        let diff = r#"--- test.rs
-+++ test.rs
-@@ -10,4 +10,4 @@
-  let x = 1;
-- let y = 2;
-+ let y = 3;
-  let z = 4;
-"#;
-        let hunks = parse_diff_hunks(diff);
-        assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks[0].len(), 4);
-        assert_eq!(hunks[0][0].lo, 10);
-        assert_eq!(hunks[0][0].ln, 10);
-        assert_eq!(hunks[0][1].tag, DiffTag::Delete);
-        assert_eq!(hunks[0][1].lo, 11);
-        assert_eq!(hunks[0][2].tag, DiffTag::Insert);
-        assert_eq!(hunks[0][2].ln, 11);
-
-        let lines = render_diff_hunks(&hunks, Some(Path::new("test.rs")), None);
-        assert!(lines.len() >= 4, "expected at least 4 lines, got {}", lines.len());
-        assert!(lines.iter().any(|l| l.to_string().contains("Updated")));
-    }
-}

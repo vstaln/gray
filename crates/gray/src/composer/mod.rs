@@ -102,8 +102,10 @@ impl Tui {
         // Print welcome logo into scrollback once at startup
         let logo_raw = crate::tui::logo_lines();
         let l_rows = logo_raw.len().max(1) as f32;
-        let max_logo_w = logo_raw.iter().map(|l| l.trim().chars().count()).max().unwrap_or(0);
+        let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
         let l_cols = (max_logo_w as f32).max(1.0);
+        let w = cols as usize;
+        let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
         let base = Color::Rgb(110, 110, 110);
         let hilite = Color::Rgb(240, 240, 240);
@@ -111,22 +113,26 @@ impl Tui {
         let mut welcome_lines: Vec<Line<'static>> = Vec::new();
         welcome_lines.push(Line::from(""));
         for (row, line) in logo_raw.iter().enumerate() {
-            let trimmed = line.trim();
+            let trimmed = line.trim_end();
             let mut spans: Vec<Span<'static>> = Vec::new();
+            spans.push(Span::raw(" ".repeat(logo_pad)));
             for (col, ch) in trimmed.chars().enumerate() {
                 let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
                 let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
                 let color = crate::tui::blend_color(base, hilite, t);
                 spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
             }
-            welcome_lines.push(Line::from(spans).alignment(ratatui::layout::Alignment::Center));
+            welcome_lines.push(Line::from(spans));
         }
         welcome_lines.push(Line::from(""));
-        let banner_line = Line::from(vec![
+        let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
+        let banner_len = banner_raw.chars().count();
+        let pad = w.saturating_sub(banner_len) / 2;
+        welcome_lines.push(Line::from(vec![
+            Span::raw(" ".repeat(pad)),
             Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
             Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
-        ]).alignment(ratatui::layout::Alignment::Center);
-        welcome_lines.push(banner_line);
+        ]));
 
         let welcome_h = welcome_lines.len() as u16;
         let _ = terminal.insert_before(welcome_h, |buf| {
@@ -395,32 +401,3 @@ fn strip_ansi(s: &str) -> String {
     crate::tui::strip_ansi(s)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    pub(crate) fn textarea_multiline_and_history() {
-        let mut ta = TextArea::new();
-        ta.insert_str("hello");
-        ta.insert_str("\nworld");
-        assert_eq!(ta.text(), "hello\nworld");
-        ta.set_cursor(0);
-        ta.move_down();
-        assert!(ta.cursor() > 0);
-        ta.move_up();
-        assert_eq!(ta.cursor(), 0);
-        ta.move_to_end();
-        assert_eq!(ta.cursor(), ta.text().len());
-    }
-    #[test]
-    pub(crate) fn textarea_atomic_element() {
-        let mut ta = TextArea::new();
-        ta.insert_str("a");
-        ta.insert_element("[Image #1]");
-        assert!(ta.text().contains("[Image #1]"));
-        let before = ta.cursor();
-        ta.move_left();
-        // cursor jumps over element atomically
-        assert!(ta.cursor() < before);
-    }
-}

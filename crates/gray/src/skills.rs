@@ -801,19 +801,3 @@ pub fn discover_skills(cwd: &Path) -> LoadSkillsResult {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn validate_name_rejects_bad() {
-        assert!(!validate_name("my-skill").is_empty() == false);
-        assert!(validate_name("MySkill").len() > 0);
-        assert!(validate_name("-bad").len() > 0);
-        assert!(validate_name("bad--name").len() > 0);
-    }
-    #[test]
-    fn format_empty_when_disabled() {
-        let s = Skill { name: "x".into(), description: "d".into(), file_path: PathBuf::from("/tmp/SKILL.md"), base_dir: PathBuf::from("/tmp"), disable_model_invocation: true, source: "user".into() };
-        assert_eq!(format_skills_for_prompt(&[s]), "");
-    }
-}

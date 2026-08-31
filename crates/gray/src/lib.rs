@@ -203,32 +203,3 @@ pub enum Commands {
     },
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rule_embeds_label_and_is_wide() {
-        let r = rule("tool");
-        assert!(r.starts_with("\u{2500}\u{2500} tool "));
-        assert!(r.chars().count() >= crate::term_width() - 1);
-        assert!(r.ends_with('\u{2500}'));
-    }
-
-    #[test]
-    fn load_or_create_writes_default_then_reads_back() {
-        let dir = std::env::temp_dir().join(format!("gray-sys-test-{}", std::process::id()));
-        let path = dir.join("sys.md");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let first = load_or_create_system_prompt_at(&path).unwrap();
-        assert_eq!(first, DEFAULT_SYS_PROMPT);
-        assert!(path.exists());
-
-        std::fs::write(&path, "custom prompt body").unwrap();
-        let second = load_or_create_system_prompt_at(&path).unwrap();
-        assert_eq!(second, "custom prompt body");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}

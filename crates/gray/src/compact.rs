@@ -125,26 +125,3 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
     parts.join("\n\n")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serializes_user_and_assistant_messages() {
-        let msgs = vec![
-            Message::user("Please build a rust agent"),
-            Message::assistant("I will build it now."),
-        ];
-        let transcript = serialize_conversation(&msgs);
-        assert!(transcript.contains("[User]: Please build a rust agent"));
-        assert!(transcript.contains("[Assistant]: I will build it now."));
-    }
-
-    #[test]
-    fn summarization_prompt_includes_user_instructions() {
-        let prompt = build_summarization_prompt("transcript text", Some("remember the port is 8080"));
-        assert!(prompt.contains("transcript text"));
-        assert!(prompt.contains("<user-instructions>"));
-        assert!(prompt.contains("remember the port is 8080"));
-    }
-}

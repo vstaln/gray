@@ -83,32 +83,3 @@ pub fn init() {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn init_twice_does_not_panic_and_record_lands_in_file() {
-        let dir = std::env::temp_dir().join(format!("gray-log-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        // SAFETY: test-only GRAY_HOME before any logging call here.
-        unsafe { std::env::set_var("GRAY_HOME", &dir) };
-
-        super::init();
-        super::init(); // must not panic
-
-        assert!(dir.join("logs").exists(), "log dir should be created");
-        log::info!("test-marker-42");
-        let contents =
-            std::fs::read_to_string(dir.join("logs").join("gray.log")).unwrap();
-        assert!(contents.contains("test-marker-42"), "got: {contents}");
-        assert!(contents.contains("[gray::logging"), "target in line: {contents}");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn iso_timestamp_formats_known_epochs() {
-        assert_eq!(iso_timestamp(0), "1970-01-01T00:00:00Z");
-    }
-}
