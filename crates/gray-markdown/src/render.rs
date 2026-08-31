@@ -193,7 +193,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         let capacity = self.buffers.highlights.len() * 2
             + self.buffers.replaces.len() * 2
             + self.buffers.table_replaces.len() * 2
-            + self.buffers.mermaid_replaces.len() * 2;
+            ; // mermaid removed
         events.reserve(capacity);
 
         for (i, hl) in self.buffers.highlights.iter().enumerate() {
@@ -238,20 +238,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                 is_end: true,
             });
         }
-        for (i, m) in self.buffers.mermaid_replaces.iter().enumerate() {
-            events.push(RenderEvent {
-                pos: m.range.start,
-                kind: RenderEventKind::Mermaid,
-                index: i,
-                is_end: false,
-            });
-            events.push(RenderEvent {
-                pos: m.range.end,
-                kind: RenderEventKind::Mermaid,
-                index: i,
-                is_end: true,
-            });
-        }
+        // mermaid removed: fences render as code blocks
         events.sort_unstable();
     }
 
@@ -303,7 +290,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         let mut last_pos = 0;
         let mut replace: Option<usize> = None;
         let mut table_replace: Option<usize> = None;
-        let mut mermaid_replace: Option<usize> = None;
         let mut current = (0..0, Style::new());
 
         fn push(
@@ -341,7 +327,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         for ev in &events {
             if replace.is_none()
                 && table_replace.is_none()
-                && mermaid_replace.is_none()
+               
                 && ev.pos > last_pos
             {
                 let should_skip =
@@ -452,31 +438,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                         current.0 = trepl.range.end..trepl.range.end;
                     }
                 }
-                RenderEventKind::Mermaid => {
-                    if ev.is_end && mermaid_replace == Some(ev.index) {
-                        mermaid_replace = None;
-                    } else if !ev.is_end && mermaid_replace.is_none() && pretty {
-                        mermaid_replace = Some(ev.index);
-                        push(
-                            &mut out,
-                            &mut current,
-                            view_text,
-                            ev.pos..ev.pos,
-                            Style::new(),
-                            &mut source_map,
-                            &mut rendered_offset,
-                        );
-
-                        let mrepl = &self.buffers.mermaid_replaces[ev.index];
-                        for line in &mrepl.lines {
-                            out.push_str(line);
-                            out.push('\n');
-                            rendered_offset += line.len() + 1;
-                        }
-                        last_pos = mrepl.range.end;
-                        current.0 = mrepl.range.end..mrepl.range.end;
-                    }
-                }
                 RenderEventKind::Highlight => {
                     if ev.is_end {
                         hl_ids.remove(&ev.index);
@@ -529,7 +490,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         let mut last_pos = 0;
         let mut replace: Option<usize> = None;
         let mut table_replace: Option<usize> = None;
-        let mut mermaid_replace: Option<usize> = None;
         let mut skip_leading_newline = false;
         let mut in_hidden_code_block = false;
         let mut next_link_idx: usize = 0;
@@ -571,7 +531,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         for ev in &render_events {
             if replace.is_none()
                 && table_replace.is_none()
-                && mermaid_replace.is_none()
+               
                 && ev.pos > last_pos
             {
                 // Check if we need to split text processing at the checkpoint boundary.
@@ -903,42 +863,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             count_newlines_in_range(trepl.range.start, trepl.range.end, self.text);
                         current_source_line = table_start_source_line + newlines_in_table;
                         last_line_count_pos = trepl.range.end;
-
-                        if checkpoint_output_lines.is_none()
-                            && let Some((_, cp_byte)) = checkpoint_info
-                            && last_pos >= cp_byte
-                        {
-                            checkpoint_output_lines = Some(lines.len());
-                        }
-                    }
-                }
-                RenderEventKind::Mermaid => {
-                    if ev.is_end && mermaid_replace == Some(ev.index) {
-                        mermaid_replace = None;
-                    } else if !ev.is_end && mermaid_replace.is_none() && pretty {
-                        mermaid_replace = Some(ev.index);
-                        let mrepl = &self.buffers.mermaid_replaces[ev.index];
-
-                        if mrepl.range.start > last_line_count_pos {
-                            current_source_line += count_newlines_in_range(
-                                last_line_count_pos,
-                                mrepl.range.start,
-                                self.text,
-                            );
-                        }
-                        let start_source_line = current_source_line;
-
-                        for styled_line in &mrepl.styled_lines {
-                            line_source_map.push(start_source_line);
-                            lines.push(styled_line.clone());
-                        }
-                        cur_col_in_line = 0;
-
-                        last_pos = mrepl.range.end;
-                        let newlines =
-                            count_newlines_in_range(mrepl.range.start, mrepl.range.end, self.text);
-                        current_source_line = start_source_line + newlines;
-                        last_line_count_pos = mrepl.range.end;
 
                         if checkpoint_output_lines.is_none()
                             && let Some((_, cp_byte)) = checkpoint_info

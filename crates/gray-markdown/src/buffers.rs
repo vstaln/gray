@@ -234,17 +234,6 @@ pub struct TableReplace {
     pub hyperlinks: Vec<TableHyperlink>,
 }
 
-/// Rendered Mermaid diagram replacement for pretty mode rendering.
-#[derive(Debug, Clone)]
-pub struct MermaidReplace {
-    /// Plain lines for ANSI rendering.
-    pub lines: Vec<String>,
-    /// Styled lines for ratatui rendering.
-    pub styled_lines: Vec<Line<'static>>,
-    /// Source byte range this replaces.
-    pub range: Range<usize>,
-}
-
 /// Calculate the display width of a string (accounting for Unicode).
 pub fn unicode_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
@@ -284,7 +273,6 @@ pub enum RenderEventKind {
     Highlight = 0,
     Replace = 1,
     Table = 2,
-    Mermaid = 3,
 }
 
 /// Render event: marks where a highlight/replace/table starts or ends.
@@ -322,7 +310,6 @@ pub struct MarkdownBuffers {
     pub transforms: Vec<Transform>,
     pub untagged_code_ranges: Vec<Range<usize>>,
     pub table_replaces: Vec<TableReplace>,
-    pub mermaid_replaces: Vec<MermaidReplace>,
     pub link_targets: Vec<LinkTarget>,
     /// Closed fenced code blocks, in document order (see [`CodeBlockMeta`]).
     pub code_blocks: Vec<CodeBlockMeta>,
@@ -341,7 +328,6 @@ impl MarkdownBuffers {
             transforms: Vec::new(),
             untagged_code_ranges: Vec::new(),
             table_replaces: Vec::new(),
-            mermaid_replaces: Vec::new(),
             link_targets: Vec::new(),
             code_blocks: Vec::new(),
             render_events: Vec::new(),
@@ -357,7 +343,6 @@ impl MarkdownBuffers {
         self.transforms.clear();
         self.untagged_code_ranges.clear();
         self.table_replaces.clear();
-        self.mermaid_replaces.clear();
         self.link_targets.clear();
         self.code_blocks.clear();
         self.render_events.clear();
