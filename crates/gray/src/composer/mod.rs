@@ -22,8 +22,9 @@ use gray_markdown::HyperlinkTarget;
 
 use crate::repl::completion_matches;
 
-pub(crate) const VIEWPORT_H: u16 = 9;
 pub(crate) const PANEL_ROWS: usize = 6;
+/// Initial dock height: input box (3 rows incl. internal margins) + footer.
+const DOCK_H0: u16 = 4;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -72,6 +73,9 @@ pub struct Tui {
     // Cron ticking UI — next due job for footer clock
     pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
     pub(crate) last_cron_tick: Option<Instant>,
+    /// Current inline-viewport height (the dock). Kept exact so the dock hugs
+    /// its content like pi's VStack dock: no slack rows anywhere.
+    pub(crate) viewport_h: u16,
 }
 
 
@@ -80,11 +84,23 @@ impl Tui {
         crossterm::terminal::enable_raw_mode()?;
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
-        let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        // Pin the dock to the screen bottom from birth (pi dock): park the cursor
+        // at the new top and clear the rows the dock will occupy so no shell
+        // leftovers survive underneath. ratatui anchors Inline viewports on the
+        // cursor row at construction, so this yields an exactly bottom-pinned area.
+        let h0 = DOCK_H0.min(rows.max(1));
+        let top0 = rows.saturating_sub(h0);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::cursor::MoveTo(0, top0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+            crossterm::cursor::MoveTo(0, top0),
+        );
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+                viewport: ratatui::Viewport::Inline(h0),
             },
         )?;
 
@@ -164,7 +180,53 @@ impl Tui {
             live_streamed_tokens: 0,
             next_cron: None,
             last_cron_tick: None,
+            viewport_h: h0,
         })
+    }
+
+    /// Resize the bottom dock to exactly `h` rows, keeping it pinned to the
+    /// screen bottom (pi dock behavior: VStack with gap 0, intrinsic heights).
+    ///
+    /// ratatui cannot change an Inline viewport's height in place, so the
+    /// Terminal is recreated. Growing first scrolls the screen up so the
+    /// transcript rows the dock takes over are preserved in scrollback;
+    /// shrinking wipes the freed rows (the transcript can't be restored —
+    /// the next `insert_before` scrolls the blank away; a 1-row separator
+    /// between turns is the accepted cost).
+    // ponytail: recreate-on-change flickers the dock region like insert_before
+    // already does without `scrolling-regions`; a custom Terminal (codex-rs
+    // style) is the upgrade path if that ever matters.
+    pub(crate) fn repin_viewport(&mut self, h: u16) {
+        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let h = h.clamp(1, rows);
+        if h == self.viewport_h {
+            return;
+        }
+        let old_top = rows.saturating_sub(self.viewport_h.min(rows));
+        let new_top = rows - h;
+        let mut out = std::io::stdout();
+        if h > self.viewport_h {
+            let _ = crossterm::execute!(
+                out,
+                crossterm::terminal::ScrollUp(h - self.viewport_h)
+            );
+        }
+        let _ = crossterm::execute!(
+            out,
+            crossterm::cursor::MoveTo(0, old_top.min(new_top)),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+            crossterm::cursor::MoveTo(0, new_top),
+        );
+        let term = Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(h),
+            },
+        );
+        if let Ok(term) = term {
+            self.terminal = term;
+            self.viewport_h = h;
+        }
     }
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
