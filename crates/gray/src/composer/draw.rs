@@ -180,9 +180,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             (status_y, box_y, panel_y, attach_y)
         } else {
             let status_y = area.y + 1;
-            let box_y = area.y + 1; // after top pad
+            // idle: hug the box against the footer (seam + footer + attach reserved below),
+            // leftover viewport slack goes above as transcript separation, not a dead gap
+            let box_y = (area.y + area.height.saturating_sub(box_h + 3 + attach_h)).max(area.y + 1);
             let panel_y = box_y + box_h + 1;
-            let attach_y = panel_y + panel_h;
+            let attach_y = footer_y.saturating_sub(1);
             (status_y, box_y, panel_y, attach_y)
         };
         // clear top/bottom pad rows
