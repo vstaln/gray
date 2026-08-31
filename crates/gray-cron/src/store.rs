@@ -214,6 +214,8 @@ fn peek_jobs_unlocked(store: &CronStorePaths) -> Option<Vec<CronJob>> {
 
 fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
     ensure_dirs(store);
+    // one-time auto-migrate legacy daily wall-clock crons stored as UTC before fix (e.g. 45 19 * * * → 45 17 * * * for UTC+2)
+    let _ = maybe_migrate_legacy_crons(store);
     let data = match std::fs::read_to_string(&store.jobs_file) {
         Ok(d) => d,
         Err(_) => return Vec::new(),
@@ -405,6 +407,71 @@ fn normalize_daily_cron_to_utc(s: &str) -> String {
     let utc_hour = (utc_mins / 60) as u32;
     let utc_min = (utc_mins % 60) as u32;
     format!("{utc_min} {utc_hour} * * *")
+}
+
+fn maybe_migrate_legacy_crons(store: &CronStorePaths) -> anyhow::Result<()> {
+    let sentinel = store.cron_dir.join(".wallclock_migrated");
+    if sentinel.exists() {
+        return Ok(());
+    }
+    let data = match std::fs::read_to_string(&store.jobs_file) {
+        Ok(d) => d,
+        Err(_) => {
+            let _ = std::fs::write(&sentinel, "1");
+            return Ok(());
+        }
+    };
+    if data.trim().is_empty() {
+        let _ = std::fs::write(&sentinel, "1");
+        return Ok(());
+    }
+    let mut jobs: Vec<CronJob> = match serde_json::from_str::<Vec<CronJob>>(&data) {
+        Ok(j) => j,
+        Err(_) => {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(arr) = v.get("jobs").and_then(|j| j.as_array()) {
+                    arr.iter().filter_map(|x| serde_json::from_value(x.clone()).ok()).collect()
+                } else {
+                    let _ = std::fs::write(&sentinel, "1");
+                    return Ok(());
+                }
+            } else {
+                let _ = std::fs::write(&sentinel, "1");
+                return Ok(());
+            }
+        }
+    };
+    let mut changed = false;
+    for job in jobs.iter_mut() {
+        let parts: Vec<&str> = job.schedule.split_whitespace().collect();
+        if parts.len() != 5 || parts[2] != "*" || parts[3] != "*" || parts[4] != "*" {
+            continue;
+        }
+        if parts[0].parse::<u32>().is_err() || parts[1].parse::<u32>().is_err() {
+            continue;
+        }
+        let migrated = normalize_daily_cron_to_utc(&job.schedule);
+        if migrated != job.schedule {
+            log::info!("migrating cron '{}' {} -> {}", job.name, job.schedule, migrated);
+            job.schedule = migrated;
+            job.next_run = crate::schedule::compute_next_run(&job.schedule, Utc::now());
+            changed = true;
+        }
+    }
+    if changed {
+        let body = serde_json::to_string_pretty(&jobs)?;
+        let tmp = tempfile::Builder::new().prefix(".jobs_").suffix(".tmp").tempfile_in(&store.cron_dir)?;
+        {
+            use std::io::Write;
+            let mut f = tmp.as_file();
+            f.write_all(body.as_bytes())?;
+            f.flush()?;
+            f.sync_all()?;
+        }
+        tmp.persist(&store.jobs_file)?;
+    }
+    let _ = std::fs::write(&sentinel, "1");
+    Ok(())
 }
 
 pub fn remove_job(id: &str) -> anyhow::Result<bool> {
