@@ -837,4 +837,22 @@ mod agent_tests {
         assert_eq!(agent.messages()[2], Message::user("second question"));
         assert_eq!(agent.messages()[3], Message::assistant("hello again"));
     }
+
+    #[tokio::test]
+    async fn malformed_tool_args_degrade_to_string_payload() {
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::tool_call_delta(0, Some("c1".into()), Some(TOOL_NAME.into()), "not-json{{"),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+            ],
+            vec![
+                StreamEvent::text_delta("ok"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+        ]);
+        let mut agent = Agent::new(Box::new(provider), Box::new(FakeExecutor::new(ToolOutput::ok("ok"))))
+            .with_tools(vec![tool_def()]);
+        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCallEnd { args: serde_json::Value::String(s), .. } if s == "not-json{{")));
+    }
 }

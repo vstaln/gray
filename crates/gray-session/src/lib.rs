@@ -543,3 +543,23 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn load_ignores_torn_final_line_but_preserves_prior_entries() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await;
+        store.append(&id, &Message::user("hello")).await.unwrap();
+        let path = store.session_path(&id);
+        let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
+        raw.push_str("{torn\n");
+        tokio::fs::write(&path, raw).await.unwrap();
+        let (_, entries) = store.load(&id).await.unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+}
+

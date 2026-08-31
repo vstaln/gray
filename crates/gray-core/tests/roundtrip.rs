@@ -190,3 +190,12 @@ fn test_stream_events_roundtrip_integration() {
 
     assert_eq!(events, deserialized);
 }
+
+#[test]
+fn test_thinking_block_roundtrips_losslessly() {
+    let msg = Message::new(Role::Assistant, vec![ContentBlock::Thinking { text: "private".into() }, ContentBlock::text("visible")]);
+    let req = ChatRequest::new(vec![msg.clone()]);
+    let json = serde_json::to_string(&req).unwrap();
+    let back: ChatRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.messages[0], msg);
+}
