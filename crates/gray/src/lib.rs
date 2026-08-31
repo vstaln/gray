@@ -42,16 +42,34 @@ Guidelines:
 - When referencing files or URLs in responses, format them with absolute paths or file:// links (e.g. file:///path/to/file or [label](file:///path/to/file)) and standard web URLs so they are clickable in the terminal.
 - Keep going until done or truly blocked. A failed tool call means try differently, not give up."#;
 
-/// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `sys.md`.
+/// Resolves the user's system-prompt file path (`$GRAY_HOME` or `$HOME/.gray`) + `AGENTS.md`.
+///
+/// Single editable system prompt — users add to this one file. Migrates legacy `sys.md` if present.
 pub fn sys_prompt_path() -> anyhow::Result<PathBuf> {
     let base = std::env::var("GRAY_HOME")
         .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
         .map_err(|_| anyhow::anyhow!("cannot resolve home: set HOME or GRAY_HOME"))?;
-    Ok(PathBuf::from(base).join("sys.md"))
+    Ok(PathBuf::from(base).join("AGENTS.md"))
 }
 
 /// Loads the system prompt from `path`, writing the embedded default there first if absent.
+/// If `AGENTS.md` is missing but legacy `sys.md` exists, migrates it.
 pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
+    if let Ok(body) = std::fs::read_to_string(path) {
+        return Ok(body);
+    }
+    // Migrate legacy sys.md -> AGENTS.md (one-time)
+    if path.file_name().is_some_and(|n| n == "AGENTS.md") {
+        if let Some(parent) = path.parent() {
+            let legacy = parent.join("sys.md");
+            if let Ok(body) = std::fs::read_to_string(&legacy) {
+                if !body.trim().is_empty() {
+                    let _ = std::fs::write(path, &body);
+                    return Ok(body);
+                }
+            }
+        }
+    }
     match std::fs::read_to_string(path) {
         Ok(body) => Ok(body),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

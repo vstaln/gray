@@ -174,7 +174,16 @@ fn load_saved_config() -> Option<SavedConfig> {
 struct SavedConfig { base_url: Option<String>, api_key: Option<String>, model: Option<String> }
 
 fn load_system_prompt() -> String {
-    let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map(|b| std::path::PathBuf::from(b).join("sys.md")).unwrap_or_else(|_| std::path::PathBuf::from("sys.md"));
+    let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map(|b| std::path::PathBuf::from(b).join("AGENTS.md")).unwrap_or_else(|_| std::path::PathBuf::from("AGENTS.md"));
+    // migrate legacy sys.md if needed (same one-time path as lib.rs)
+    if !base.exists() {
+        if let Some(parent) = base.parent() {
+            let legacy = parent.join("sys.md");
+            if let Ok(body) = std::fs::read_to_string(&legacy) {
+                let _ = std::fs::write(&base, &body);
+            }
+        }
+    }
     std::fs::read_to_string(&base).unwrap_or_else(|_| r#"You are gray, a minimal agent running on the user's machine.
 You help by using tools: read files, run commands, edit code, search.
 
