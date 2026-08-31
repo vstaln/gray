@@ -442,7 +442,9 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() { return; }
-        // Nuke: no ensure_gap — markdown's own blank lines are the gaps (Grok truth).
+        // NUKED: zero gaps — strip all blank lines from markdown batch.
+        let lines: Vec<Line<'static>> = lines.into_iter().filter(|l| l.width() != 0).collect();
+        if lines.is_empty() { return; }
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
