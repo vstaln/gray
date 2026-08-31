@@ -354,17 +354,22 @@ impl Tui {
         } else {
             false
         };
-        // Handle resize immediately — no debounce, no early return without draw.
+        // Reference: codex screen_size.rs + transcript_reflow.rs — trailing 75ms debounce.
         let mut resized = false;
-        if let Some((cols, _)) = self.pending_resize.take() {
-            if cols != self.last_width {
-                self.last_width = cols;
-                resized = true;
+        if let Some((cols, deadline)) = self.pending_resize {
+            if Instant::now() >= deadline {
+                self.pending_resize = None;
+                if cols != self.last_width {
+                    self.last_width = cols;
+                    resized = true;
+                }
             }
         } else if let Ok((cols, _)) = crossterm::terminal::size() {
             if cols != self.last_width {
-                self.last_width = cols;
-                resized = true;
+                self.pending_resize = Some((cols, Instant::now() + RESIZE_DEBOUNCE));
+                if !needs_cron_tick && self.status.is_none() {
+                    return;
+                }
             }
         }
         if self.status.is_none() && !needs_cron_tick && !resized {

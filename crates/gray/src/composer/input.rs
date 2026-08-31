@@ -306,9 +306,14 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
 
     let mut needs_draw = true;
     loop {
-        if let Some((cols, _)) = tui.pending_resize.take() {
-            tui.last_width = cols;
-            needs_draw = true;
+        if let Some((cols, deadline)) = tui.pending_resize {
+            if std::time::Instant::now() >= deadline {
+                tui.pending_resize = None;
+                if cols != tui.last_width {
+                    tui.last_width = cols;
+                    needs_draw = true;
+                }
+            }
         }
 
         if needs_draw {
@@ -321,14 +326,18 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
             needs_draw = false;
         }
 
-        let timeout = Duration::from_millis(250);
+        let timeout = if let Some((_, deadline)) = tui.pending_resize {
+            let now = std::time::Instant::now();
+            if deadline > now { deadline - now } else { Duration::from_millis(0) }
+        } else {
+            Duration::from_millis(250)
+        };
         if !poll(timeout)? { continue; }
         needs_draw = true;
         match read()? {
             Event::Resize(cols, _) => {
-                tui.last_width = cols;
-                tui.pending_resize = None;
-                needs_draw = true;
+                tui.pending_resize = Some((cols, std::time::Instant::now() + super::RESIZE_DEBOUNCE));
+                needs_draw = false;
             }
             Event::Paste(data) => {
                 handle_paste(tui, data);

@@ -1485,10 +1485,9 @@ pub async fn run_repl_mode(
                         }
                     }
                 } else {
-                    for ev in events {
-                        if let Some((shared, _)) = tui.as_ref() {
-                            if let Ok(mut t) = shared.try_lock() { t.push_dim(format!("↯ background {} done (no agent): {}", ev.subagent_id, ev.goal)); }
-                        } else {
+                    // suppress orphan display in TUI (no agent yet) — keep stdout for non-interactive
+                    if tui.is_none() {
+                        for ev in events {
                             println!("↯ background {} done: {}", ev.delegation_id, ev.output);
                         }
                     }
@@ -1626,8 +1625,7 @@ pub async fn run_repl_mode(
                             if let Event::Resize(cols, _) = event {
                                 if let Some(shared) = watcher_tui.as_ref() {
                                     if let Ok(mut t) = shared.try_lock() {
-                                        t.last_width = cols;
-                                        let _ = t.draw();
+                                        t.pending_resize = Some((cols, std::time::Instant::now() + crate::composer::RESIZE_DEBOUNCE));
                                     }
                                 }
                                 continue;
@@ -1940,8 +1938,7 @@ pub async fn run_repl_mode(
                             Event::Resize(cols, _) => {
                                 if let Some(shared) = watcher_tui.as_ref() {
                                     if let Ok(mut t) = shared.try_lock() {
-                                        t.last_width = cols;
-                                        let _ = t.draw();
+                                        t.pending_resize = Some((cols, std::time::Instant::now() + crate::composer::RESIZE_DEBOUNCE));
                                     }
                                 }
                             }
