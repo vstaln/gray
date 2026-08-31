@@ -1271,7 +1271,7 @@ pub async fn run_repl_mode(
                                     gray_core::event::AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
                                     gray_core::event::AgentEvent::TextDelta { delta } => t.stream_text(delta),
                                     gray_core::event::AgentEvent::ToolCallStart { name, .. } => { t.end_thinking(); current_tool_name = Some(name.clone()); current_tool_args = None; }
-                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd)); t.push_line_spans(header); }
+                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); if name != "write" { let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd)); t.push_line_spans(header); } }
                                     gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !lines.is_empty() { t.push_styled_lines(lines); } }
                                     gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
                                     _ => {}
@@ -1876,8 +1876,10 @@ pub async fn run_repl_mode(
                                     t.set_status(Some("Working"));
                                     let name = current_tool_name.as_deref().unwrap_or("tool");
                                     current_tool_args = Some(args.clone());
-                                    let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd));
-                                    t.push_line_spans(header);
+                                    if name != "write" {
+                                        let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd));
+                                        t.push_line_spans(header);
+                                    }
                                 }
                                 AgentEvent::ToolResult { output, is_error, .. } => {
                                     let name = current_tool_name.take().unwrap_or_default();
