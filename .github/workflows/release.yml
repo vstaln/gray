@@ -117,3 +117,22 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
           ssh-keyscan -H 168.110.210.65 >> ~/.ssh/known_hosts 2>/dev/null
           DEPLOY_KEY=~/.config/gray-deploy/key scripts/deploy.sh "$TAR"
+
+  deploy-site:
+    needs: build-deploy
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deploy site to gray.alignment.id
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        shell: bash
+        run: |
+          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
+          mkdir -p ~/.ssh ~/.config/gray-deploy
+          install -m 600 /dev/null ~/.config/gray-deploy/key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
+          ssh-keyscan -H 168.110.210.65 >> ~/.ssh/known_hosts 2>/dev/null
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes dist/index.html dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/index.html /var/www/gray/index.html && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/index.html /tmp/install.sh /tmp/install.ps1 && echo '✓ site live: https://gray.alignment.id'"
