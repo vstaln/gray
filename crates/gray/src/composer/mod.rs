@@ -22,7 +22,7 @@ use gray_markdown::HyperlinkTarget;
 
 use crate::repl::completion_matches;
 
-pub(crate) const VIEWPORT_H: u16 = 8;
+pub(crate) const VIEWPORT_H: u16 = 7;
 pub(crate) const PANEL_ROWS: usize = 6;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
@@ -309,7 +309,7 @@ impl Tui {
         } else if let Some(tok) = pending_tok {
             self.push_dim(tok);
         }
-        self.ensure_gap(1);
+        // pi-style: viewport box internal padding is the seam gap; no extra blank stacking
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }

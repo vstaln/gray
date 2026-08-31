@@ -560,7 +560,7 @@ impl Tui {
         if let Some(last_usage) = entries.iter().rev().find_map(|e| e.usage) {
             self.set_usage(last_usage);
         }
-        self.ensure_gap(1);
+        // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
     }
 }
 
