@@ -1271,8 +1271,22 @@ pub async fn run_repl_mode(
                                     gray_core::event::AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
                                     gray_core::event::AgentEvent::TextDelta { delta } => t.stream_text(delta),
                                     gray_core::event::AgentEvent::ToolCallStart { name, .. } => { t.end_thinking(); current_tool_name = Some(name.clone()); current_tool_args = None; }
-                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); if name != "write" { let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd)); t.push_line_spans(header); } }
-                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !lines.is_empty() { t.push_styled_lines(lines); } }
+                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); current_tool_args = Some(args.clone()); }
+                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if lines.is_empty() { if let Some(a) = args.as_ref() { let h = crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd)); t.push_line_spans(h); } } else { // unite header + body in one box
+                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                        // give header same bg as body so it appears as first line of the box
+                                        let bg = ratatui::style::Color::Rgb(30,30,30);
+                                        let term_w = crossterm::terminal::size().map(|(w,_)| w as usize).unwrap_or(120).max(60);
+                                        let mut hdr = header;
+                                        hdr.style = ratatui::style::Style::default().bg(bg);
+                                        for s in hdr.spans.iter_mut() { s.style = s.style.bg(bg); }
+                                        // pad to full width
+                                        let w = hdr.width();
+                                        if w < term_w { hdr.spans.push(ratatui::text::Span::styled(" ".repeat(term_w - w), ratatui::style::Style::default().bg(bg))); }
+                                        let mut combined = vec![hdr];
+                                        combined.extend(lines);
+                                        t.push_styled_lines(combined);
+                                    } }
                                     gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
                                     _ => {}
                                 }
@@ -1874,19 +1888,26 @@ pub async fn run_repl_mode(
                                 AgentEvent::ToolCallEnd { args, .. } => {
                                     t.end_thinking();
                                     t.set_status(Some("Working"));
-                                    let name = current_tool_name.as_deref().unwrap_or("tool");
                                     current_tool_args = Some(args.clone());
-                                    if name != "write" {
-                                        let header = crate::tool_fmt::format_tool_call_header(name, args, Some(&cwd));
-                                        t.push_line_spans(header);
-                                    }
                                 }
                                 AgentEvent::ToolResult { output, is_error, .. } => {
                                     let name = current_tool_name.take().unwrap_or_default();
                                     let args = current_tool_args.take();
                                     let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                    if !lines.is_empty() {
-                                        t.push_styled_lines(lines);
+                                    if lines.is_empty() {
+                                        if let Some(a) = args.as_ref() { let h = crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd)); t.push_line_spans(h); }
+                                    } else {
+                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                        let bg = ratatui::style::Color::Rgb(30,30,30);
+                                        let term_w = crossterm::terminal::size().map(|(w,_)| w as usize).unwrap_or(120).max(60);
+                                        let mut hdr = header;
+                                        hdr.style = ratatui::style::Style::default().bg(bg);
+                                        for s in hdr.spans.iter_mut() { s.style = s.style.bg(bg); }
+                                        let w = hdr.width();
+                                        if w < term_w { hdr.spans.push(ratatui::text::Span::styled(" ".repeat(term_w - w), ratatui::style::Style::default().bg(bg))); }
+                                        let mut combined = vec![hdr];
+                                        combined.extend(lines);
+                                        t.push_styled_lines(combined);
                                     }
                                 }
                                 AgentEvent::TurnEnd { usage, .. } => {

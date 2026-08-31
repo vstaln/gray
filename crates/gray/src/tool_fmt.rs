@@ -689,26 +689,10 @@ pub fn format_tool_result_lines_with_context(
                 return render_diff_hunks(&hunks, file_path, cwd);
             }
         }
-        // If a file was written/created, display header + code block united in one box
+        // If a file was written/created, display the written code block with line numbers & syntax highlighting
         let content = args.map(arg_content).unwrap_or("");
         if !content.is_empty() {
-            let bg = Color::Rgb(30, 30, 30);
-            let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-            let mut lines = Vec::new();
-            // header encased in same box
-            let path_str = args.map(arg_path).unwrap_or("");
-            let short = shorten_path(path_str, cwd);
-            let count = content.lines().count();
-            let header = Line::from(vec![
-                Span::styled("  ", Style::default().bg(bg)),
-                Span::styled("⬢ ", Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::BOLD).bg(bg)),
-                Span::styled("Wrote ", Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD).bg(bg)),
-                Span::styled(short, Style::default().fg(PATH_COLOR).add_modifier(Modifier::BOLD | Modifier::UNDERLINED).bg(bg)),
-                Span::styled(format!(" ({count} lines)"), Style::default().fg(DIM_COLOR).bg(bg)),
-            ]);
-            lines.push(bg_line(header.style(Style::default().bg(bg)), bg, term_w));
-            lines.extend(render_code_block(content, file_path));
-            return lines;
+            return render_code_block(content, file_path);
         }
         return Vec::new();
     }
