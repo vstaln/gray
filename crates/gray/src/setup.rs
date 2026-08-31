@@ -60,6 +60,24 @@ fn env_hint(p: &CatalogProvider) -> String {
     }
 }
 
+/// Pretty masked display for an existing key: `sk-••••Jh8a` (prettier dots, last 4 visible).
+pub fn mask_key_pretty(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 4 {
+        return "•".repeat(chars.len());
+    }
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
+    if chars.len() <= 8 {
+        return format!("{}{suffix}", "•".repeat(chars.len() - 4));
+    }
+    let prefix: String = if key.starts_with("sk-") {
+        chars[..3].iter().collect()
+    } else {
+        chars[..2.min(chars.len())].iter().collect()
+    };
+    format!("{prefix}{}{suffix}", "•".repeat(4))
+}
+
 /// On-disk configuration, kept deliberately tiny.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedConfig {
@@ -1004,8 +1022,18 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
 
                         // Input Box (inset colored block)
                         let input_content = if key_buf.is_empty() {
-                            if existing_key.is_some() {
-                                Line::from(Span::styled(" (stored key exists \u{2014} paste new key or Enter to update)", Style::default().fg(Color::Rgb(140, 140, 140)).bg(input_bg)))
+                            if let Some(existing) = existing_key.as_ref() {
+                                let masked = mask_key_pretty(existing);
+                                Line::from(vec![
+                                    Span::styled(
+                                        format!(" {masked}"),
+                                        Style::default().fg(Color::Rgb(210, 210, 210)).bg(input_bg),
+                                    ),
+                                    Span::styled(
+                                        "  \u{00b7} Enter to keep, paste to replace",
+                                        Style::default().fg(Color::Rgb(110, 110, 110)).bg(input_bg),
+                                    ),
+                                ])
                             } else {
                                 Line::from(vec![
                                     Span::styled(" Paste or type API key...", Style::default().fg(Color::Rgb(110, 110, 110)).bg(input_bg)),
