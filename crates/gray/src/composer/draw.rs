@@ -181,8 +181,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let status_y = area.y;
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else if has_status {
-            let status_y = area.y;
-            let box_y = (status_y + status_h + 1).min(area.y + area.height.saturating_sub(box_h));
+            let status_y = area.y + 1;
+            let box_y = (status_y + status_h).min(area.y + area.height.saturating_sub(box_h));
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
             let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
@@ -364,9 +364,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        let cur_x = (area.x + 3 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
-        let cur_y = (box_y + 1 + cur_row as u16).min(area.y + area.height.saturating_sub(1));
-        frame.set_cursor_position(Position::new(cur_x, cur_y));
+        if tui.status.is_none() && !tui.is_task_running {
+            let cur_x = (area.x + 3 + cur_col as u16).min(area.x + area.width.saturating_sub(1));
+            let cur_y = (box_y + 1 + cur_row as u16).min(area.y + area.height.saturating_sub(1));
+            frame.set_cursor_position(Position::new(cur_x, cur_y));
+        }
     })?;
     Ok(())
 }
