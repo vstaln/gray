@@ -366,6 +366,8 @@ pub fn list_jobs() -> Vec<CronJob> {
 }
 
 pub fn create_job(name: String, schedule: String, prompt: String) -> anyhow::Result<CronJob> {
+    // Daily wall-clock cron "M H * * *" → interpret H:M as local time, store as UTC
+    let schedule = normalize_daily_cron_to_utc(&schedule);
     let sched = crate::schedule::parse_schedule(&schedule)?;
     if sched.is_once() && sched.next_after(Utc::now()).is_none() {
         anyhow::bail!("one-shot time is in the past (beyond 2m grace) — use a future time like 'in 10m' or '2026-09-01T14:00'");
@@ -378,6 +380,31 @@ pub fn create_job(name: String, schedule: String, prompt: String) -> anyhow::Res
         save_jobs_inner(&store, jobs, &[], false)?;
         Ok(job) as anyhow::Result<CronJob>
     })
+}
+
+fn normalize_daily_cron_to_utc(s: &str) -> String {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 5 {
+        return s.to_string();
+    }
+    // only simple daily "M H * * *" with numeric M/H
+    if parts[2] != "*" || parts[3] != "*" || parts[4] != "*" {
+        return s.to_string();
+    }
+    let (Ok(min), Ok(hour)) = (parts[0].parse::<u32>(), parts[1].parse::<u32>()) else {
+        return s.to_string();
+    };
+    if min >= 60 || hour >= 24 {
+        return s.to_string();
+    }
+    // Convert local wall time H:M to UTC
+    let offset_secs = chrono::Local::now().offset().local_minus_utc();
+    let local_mins = (hour as i32) * 60 + min as i32;
+    let mut utc_mins = local_mins - offset_secs / 60;
+    utc_mins = ((utc_mins % 1440) + 1440) % 1440;
+    let utc_hour = (utc_mins / 60) as u32;
+    let utc_min = (utc_mins % 60) as u32;
+    format!("{utc_min} {utc_hour} * * *")
 }
 
 pub fn remove_job(id: &str) -> anyhow::Result<bool> {

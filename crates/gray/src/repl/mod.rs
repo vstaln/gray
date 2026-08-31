@@ -1048,7 +1048,7 @@ pub async fn run_repl_mode(
                 }
             };
             update_footer(&cron_tui);
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
             interval.tick().await;
             loop {
                 interval.tick().await;
