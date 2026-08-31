@@ -9,6 +9,8 @@
 
 # opencode / tooling
 .commandcode/
+.superpowers/
+.sdd/
 
 # secrets
 .env
