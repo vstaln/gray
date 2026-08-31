@@ -167,22 +167,22 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             // Omit bottom padding row of prompt box when autocomplete open: panel directly below prompt
             let panel_y = box_y + box_h.saturating_sub(1);
             let attach_y = panel_y + panel_h;
-            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
+            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(2));
             let status_y = area.y;
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else if has_status {
-            let status_y = area.y + 1;
-            let box_y = (status_y + status_h).min(area.y + area.height.saturating_sub(box_h));
+            let status_y = area.y;
+            let box_y = (status_y + status_h + 1).min(area.y + area.height.saturating_sub(box_h + 2));
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
-            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
+            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(2));
             (status_y, box_y, panel_y, attach_y, footer_y)
         } else {
             let box_y = area.y;
             let status_y = area.y;
             let panel_y = box_y + box_h;
             let attach_y = panel_y + panel_h;
-            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(1));
+            let footer_y = (attach_y + attach_h).min(area.y + area.height.saturating_sub(2));
             (status_y, box_y, panel_y, attach_y, footer_y)
         };
 
