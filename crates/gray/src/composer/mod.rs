@@ -368,6 +368,9 @@ impl Tui {
         if needs_cron_tick {
             self.last_cron_tick = Some(Instant::now());
         }
+        if resized {
+            let _ = self.terminal.clear();
+        }
         let _ = self.draw();
     }
     pub fn shutdown(&mut self) {
