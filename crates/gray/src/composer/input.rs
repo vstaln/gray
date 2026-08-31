@@ -121,14 +121,30 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
 }
 
 pub(crate) fn handle_paste(tui: &mut Tui, pasted: String) -> bool {
-    const THRESHOLD: usize = 1000;
     let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
     if try_attach_image_paste(tui, &pasted) {
         return true;
     }
     let n = pasted.chars().count();
-    if n > THRESHOLD {
-        let placeholder = format!("[Pasted Content {n} chars]");
+    let line_count = pasted.split('\n').count();
+    // match reference/prime-agent: collapse if >10 lines or >1000 chars
+    if line_count > 10 || n > 1000 {
+        let max_id = tui
+            .pending_pastes
+            .iter()
+            .filter_map(|(ph, _)| {
+                ph.strip_prefix("[paste #")
+                    .and_then(|s| s.split([' ', ']']).next())
+                    .and_then(|num| num.parse::<usize>().ok())
+            })
+            .max()
+            .unwrap_or(0);
+        let id = max_id + 1;
+        let placeholder = if line_count > 10 {
+            format!("[paste #{id} +{line_count} lines]")
+        } else {
+            format!("[paste #{id} {n} chars]")
+        };
         tui.textarea.insert_element(&placeholder);
         tui.pending_pastes.push((placeholder, pasted));
     } else {
