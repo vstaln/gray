@@ -154,9 +154,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let status_h: u16 = if has_status { 1 } else { 0 };
 
-        // pi-style: box owns its padding (top/bottom bg lines), no external top/bottom margin.
-        // Layout: status(0/1)+gap(1 if status)+box(3)+gap1+footer1 fits in VIEWPORT_H=7
-        let reserved = 1 + 1 + attach_h; // gap(box-footer) + footer + attachments; top pad is box internal
+        // box owns internal padding; viewport adds single external top/bottom blank lines
+        // idle: top1+box3+gap1+footer1+bottom1=7; streaming: top1+status1+gap1+box3+gap1+footer1+bottom1=9 => VIEWPORT_H=9
+        let reserved = 4 + attach_h + if has_status { 2 } else { 0 }; // top+gap(box-footer)+footer+bottom + (status+gap)
         let avail_panel_h = (area.height.saturating_sub(box_h + reserved) as usize).min(PANEL_ROWS);
         let visible_count = if !tui.matches.is_empty() {
             tui.matches.len().min(avail_panel_h)
@@ -165,30 +165,29 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
         let panel_h: u16 = visible_count as u16;
 
-        let (status_y, box_y, panel_y, attach_y, footer_y) = if !tui.matches.is_empty() {
-            let box_y = area.y;
-            // Omit bottom padding row of prompt box when autocomplete open: panel directly below prompt
-            let panel_y = box_y + box_h.saturating_sub(1);
+        let footer_y = area.y + area.height.saturating_sub(2); // leave bottom pad row empty
+        let (status_y, box_y, panel_y, attach_y) = if !tui.matches.is_empty() {
+            let box_y = area.y + 1; // after top pad
+            let panel_y = box_y + box_h.saturating_sub(1); // omit bottom bg line when autocomplete open
             let attach_y = panel_y + panel_h;
-            let footer_y = area.y + area.height.saturating_sub(1);
-            let status_y = area.y;
-            (status_y, box_y, panel_y, attach_y, footer_y)
+            let status_y = area.y + 1;
+            (status_y, box_y, panel_y, attach_y)
         } else if has_status {
-            let status_y = area.y;
+            let status_y = area.y + 1; // top pad at area.y
             let box_y = (status_y + status_h + 1).min(area.y + area.height.saturating_sub(box_h + 2));
-            // box -> gap(1) -> panel -> attach -> gap(1) -> footer(1) (no extra bottom pad)
             let panel_y = box_y + box_h + 1;
             let attach_y = panel_y + panel_h;
-            let footer_y = area.y + area.height.saturating_sub(1);
-            (status_y, box_y, panel_y, attach_y, footer_y)
+            (status_y, box_y, panel_y, attach_y)
         } else {
-            let status_y = area.y;
-            let box_y = area.y;
+            let status_y = area.y + 1;
+            let box_y = area.y + 1; // after top pad
             let panel_y = box_y + box_h + 1;
             let attach_y = panel_y + panel_h;
-            let footer_y = area.y + area.height.saturating_sub(1);
-            (status_y, box_y, panel_y, attach_y, footer_y)
+            (status_y, box_y, panel_y, attach_y)
         };
+        // clear top/bottom pad rows
+        frame.render_widget(Paragraph::new(Line::from("")), Rect::new(area.x, area.y, area.width, 1));
+        frame.render_widget(ratatui::widgets::Clear, Rect::new(area.x, area.y + area.height.saturating_sub(1), area.width, 1));
 
         if let Some((started, label)) = &tui.status {
             if status_y < area.y + area.height {
