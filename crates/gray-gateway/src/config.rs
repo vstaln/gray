@@ -43,12 +43,12 @@ pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
 }
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else { return GatewayConfig::default(); };
-    std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(&path).ok().and_then(|s| serde_yaml::from_str(&s).ok()).unwrap_or_default()
 }
 pub fn save_gateway_config(cfg: &GatewayConfig) -> anyhow::Result<()> {
     let path = gray_gateway_path()?;
     if let Some(p) = path.parent() { std::fs::create_dir_all(p)?; }
-    let s = serde_json::to_string_pretty(cfg)?;
+    let s = serde_yaml::to_string(cfg)?;
     std::fs::write(&path, s)?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?; }
     Ok(())

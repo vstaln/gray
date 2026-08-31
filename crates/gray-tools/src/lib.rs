@@ -92,11 +92,10 @@ impl Registry {
         reg.register(Box::new(CronTool));
         // ponytail: delegate_task global semaphore, per-account caps if throughput matters
         {
-            use gray_core::delegation::{DelegateConfig, DelegationState};
+            use gray_core::delegation::DelegateConfig;
             use crate::delegate::DelegateTool;
             let cfg = DelegateConfig::default();
-            let state = DelegationState::new(cfg.max_concurrent_children);
-            reg.register(Box::new(DelegateTool::new(cfg, state)));
+            reg.register(Box::new(DelegateTool::with_global_state(cfg)));
         }
         reg
     }

@@ -1458,6 +1458,43 @@ pub async fn run_repl_mode(
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
     loop {
+        // ponytail: drain completion_queue between turns — never mid-turn (prompt-cache invariant)
+        {
+            let state = gray_core::delegation::global_delegation_state();
+            let events = state.try_drain();
+            if !events.is_empty() {
+                for ev in &events {
+                    let _ = gray_core::delegation::persist_completion(&ev.delegation_id, "delivered");
+                }
+                if let Some(ag) = agent.as_mut() {
+                    for ev in events {
+                        let forged_text = format!("[background {} — {}]\n{}", ev.delegation_id, ev.goal, ev.output);
+                        let msg = Message::user(forged_text);
+                        let mut msgs = ag.messages().to_vec();
+                        msgs.push(msg.clone());
+                        ag.set_messages(msgs);
+                        if let Some(sess) = &mut session_state {
+                            let _ = sess.store.append(&sess.session_id, &msg).await;
+                        }
+                        if let Some((shared, _)) = tui.as_ref() {
+                            if let Ok(mut t) = shared.try_lock() {
+                                t.push_dim(format!("↯ background {} completed: {}", ev.subagent_id, ev.goal));
+                            }
+                        } else {
+                            println!("↯ background {} completed: {}", ev.subagent_id, ev.goal);
+                        }
+                    }
+                } else {
+                    for ev in events {
+                        if let Some((shared, _)) = tui.as_ref() {
+                            if let Ok(mut t) = shared.try_lock() { t.push_dim(format!("↯ background {} done (no agent): {}", ev.subagent_id, ev.goal)); }
+                        } else {
+                            println!("↯ background {} done: {}", ev.delegation_id, ev.output);
+                        }
+                    }
+                }
+            }
+        }
         let cmd = if let Some(c) = pending_command.take() {
             c
         } else {

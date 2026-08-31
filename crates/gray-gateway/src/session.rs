@@ -70,4 +70,54 @@ pub fn shared_store() -> Arc<dyn GatewaySessionStore> {
         let src = SessionSource{ platform: Platform::Telegram, chat_id: "123".to_string(), chat_type: "dm".to_string(), user_id: Some("u1".to_string()), thread_id: None, scope_id: None, message_id: None };
         assert_eq!(build_session_key(&src, true, false), "gray:main:telegram:dm:123");
     }
+
+    #[test] fn key_group_per_user() {
+        let src = SessionSource{ platform: Platform::Telegram, chat_id: "456".to_string(), chat_type: "group".to_string(), user_id: Some("u42".to_string()), thread_id: None, scope_id: None, message_id: None };
+        // group_per_user true => user appended
+        assert_eq!(build_session_key(&src, true, false), "gray:main:telegram:group:456:u42");
+        // group_per_user false => no user
+        assert_eq!(build_session_key(&src, false, false), "gray:main:telegram:group:456");
+    }
+
+    #[test] fn key_thread_per_user() {
+        let src = SessionSource{ platform: Platform::Discord, chat_id: "chan1".to_string(), chat_type: "channel".to_string(), user_id: Some("u9".to_string()), thread_id: Some("t1".to_string()), scope_id: None, message_id: None };
+        assert_eq!(build_session_key(&src, true, true), "gray:main:discord:channel:chan1:thread_t1:u9");
+        assert_eq!(build_session_key(&src, true, false), "gray:main:discord:channel:chan1:thread_t1");
+    }
+
+    #[test] fn key_with_scope() {
+        let src = SessionSource{ platform: Platform::Slack, chat_id: "C123".to_string(), chat_type: "channel".to_string(), user_id: Some("U1".to_string()), thread_id: None, scope_id: Some("T9".to_string()), message_id: None };
+        assert_eq!(build_session_key(&src, true, false), "gray:main:slack:channel:T9:C123:U1");
+        // dm ignores user even with scope
+        let dm = SessionSource{ platform: Platform::Slack, chat_id: "D123".to_string(), chat_type: "dm".to_string(), user_id: Some("U1".to_string()), thread_id: None, scope_id: Some("T9".to_string()), message_id: None };
+        assert_eq!(build_session_key(&dm, true, true), "gray:main:slack:dm:T9:D123");
+    }
+
+    #[test] fn store_get_or_create_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.json");
+        let store = FileGatewayStore::new(path.clone());
+        let src = SessionSource{ platform: Platform::Telegram, chat_id: "1".to_string(), chat_type: "dm".to_string(), user_id: None, thread_id: None, scope_id: None, message_id: None };
+        let key = build_session_key(&src, true, false);
+        let id1 = store.get_or_create(&key, &src);
+        let id2 = store.get_or_create(&key, &src);
+        assert_eq!(id1, id2);
+        assert_eq!(store.get(&key), Some(id1.clone()));
+        // persisted file exists
+        assert!(path.exists());
+    }
+
+    #[test] fn integration_truncate_and_key() {
+        // ensure truncate does not affect session key (keys are not truncated)
+        let long_chat = "a".repeat(5000);
+        let src = SessionSource{ platform: Platform::Telegram, chat_id: long_chat.clone(), chat_type: "group".to_string(), user_id: Some("u1".to_string()), thread_id: None, scope_id: None, message_id: None };
+        let key = build_session_key(&src, true, false);
+        assert!(key.contains(&long_chat));
+        // but outgoing message would be truncated/split
+        let msg = "b".repeat(5000);
+        let truncated = crate::platform::truncate_message(&msg, 4096);
+        assert!(crate::platform::utf16_len(&truncated) <= 4096);
+        let chunks = crate::platform::split_message(&msg, 4096);
+        assert!(chunks.len() >= 2);
+    }
 }

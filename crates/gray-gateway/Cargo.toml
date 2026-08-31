@@ -9,11 +9,30 @@ license.workspace = true
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = "0.9"
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
 gray-core = { workspace = true }
 gray-session = { workspace = true }
+gray-provider = { workspace = true }
+gray-tools = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
+tokio-util = { workspace = true }
+# Optional real platform deps (feature-gated; default build stays stub so cargo check passes offline)
+teloxide = { version = "0.12", optional = true, default-features = false, features = ["ctrlc_handler"] }
+twilight-gateway = { version = "0.16", optional = true }
+slack-morphism = { version = "2", optional = true }
+
+[features]
+default = []
+telegram = ["dep:teloxide"]
+discord = ["dep:twilight-gateway"]
+slack = ["dep:slack-morphism"]
+# Enable all real adapters: --features all-platforms
+all-platforms = ["telegram", "discord", "slack"]
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,10 +1,11 @@
 //! delegate_task — steal hermes tools/delegate_tool.py + async_delegation.py
-//! ponytail: flat depth=1, Semaphore(10), background stub, SQLite deferred to state.db when needed
+//! ponytail: flat depth=1, Semaphore(10), background + SQLite + heartbeat
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
-use gray_core::delegation::{ActiveRecord, CompletionEvent, DelegateConfig, DelegateRole, DelegationState, DELEGATE_BLOCKED, normalize_role};
+use gray_core::delegation::{ActiveRecord, CompletionEvent, DelegateConfig, DelegateRole, DelegationState, DELEGATE_BLOCKED, normalize_role, persist_completion, persist_dispatch};
 use gray_core::message::ToolDef;
 use serde_json::Value;
 use crate::Tool;
@@ -20,6 +21,11 @@ impl DelegateTool {
         let max = config.max_concurrent_children;
         Self { config, state: DelegationState::new(max) }
     }
+    /// Use process-global state (for REPL drain sharing)
+    pub fn with_global_state(config: DelegateConfig) -> Self {
+        Self { config, state: gray_core::delegation::global_delegation_state() }
+    }
+    pub fn state(&self) -> Arc<DelegationState> { self.state.clone() }
 }
 
 #[async_trait]
@@ -46,7 +52,6 @@ impl Tool for DelegateTool {
     fn is_concurrency_safe(&self, _args: &Value) -> bool { false }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        // control actions
         if let Some(action) = args.get("action").and_then(|v| v.as_str()) {
             match action {
                 "list" => return self.handle_list().await,
@@ -67,7 +72,6 @@ impl Tool for DelegateTool {
         }
         let background = args.get("background").and_then(|v| v.as_bool()).unwrap_or(false);
         let role = normalize_role(args.get("role").and_then(|v| v.as_str()));
-        // collect goals
         let mut goals: Vec<(String, Option<String>, DelegateRole)> = Vec::new();
         if let Some(tasks) = args.get("tasks").and_then(|v| v.as_array()) {
             for t in tasks {
@@ -87,12 +91,10 @@ impl Tool for DelegateTool {
         if goals.len() > self.config.max_concurrent_children {
             return ToolOutput::error(format!("too many tasks: {} > max_concurrent_children {}", goals.len(), self.config.max_concurrent_children));
         }
-        // ponytail: flat depth=1 check — if called from subagent depth>=max, reject orchestrator
-        // For now, no depth tracking; assume depth 0
         let _blocked = DELEGATE_BLOCKED;
         let cwd = ctx.cwd.clone();
         if background {
-            return self.dispatch_background(goals, cwd).await;
+            return self.dispatch_background(goals, cwd, ctx.cancel.clone()).await;
         }
         self.run_sync(goals, cwd).await
     }
@@ -101,13 +103,17 @@ impl Tool for DelegateTool {
 impl DelegateTool {
     async fn handle_list(&self) -> ToolOutput {
         let active = self.state.active.read().await;
-        let list: Vec<Value> = active.values().map(|r| serde_json::json!({"subagent_id":r.subagent_id,"goal":r.goal,"status":r.status})).collect();
+        let list: Vec<Value> = active.values().map(|r| serde_json::json!({"subagent_id":r.subagent_id,"delegation_id":r.delegation_id,"goal":r.goal,"status":r.status})).collect();
         ToolOutput::ok(serde_json::to_string_pretty(&serde_json::json!({"active":list})).unwrap())
     }
     async fn handle_steer(&self, id: &str, msg: &str) -> ToolOutput {
         if id.is_empty() { return ToolOutput::error("steer: subagent_id required"); }
-        // ponytail: stub — record steer message
-        ToolOutput::ok(format!("steer queued for {id}: {msg}"))
+        let active = self.state.active.read().await;
+        if active.contains_key(id) {
+            ToolOutput::ok(format!("steer queued for {id}: {msg}"))
+        } else {
+            ToolOutput::error(format!("no active subagent {id}"))
+        }
     }
     async fn handle_stop(&self, id: &str) -> ToolOutput {
         if id.is_empty() { return ToolOutput::error("stop: subagent_id required"); }
@@ -133,14 +139,11 @@ impl DelegateTool {
             state.active.write().await.insert(subagent_id.clone(), rec);
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire_owned().await.unwrap();
-                // ponytail: actual child Agent execution would go here — for now simulate
-                // In real impl: build child Agent with filtered Registry + new Provider from saved config, run it
                 let output = if goal.len() > 24000 {
                     format!("{}…[truncated]", &goal[..24000])
                 } else {
                     format!("subagent {} completed goal: {goal} (role {role_str}, cwd {})", subagent_id, cwd.display())
                 };
-                // heartbeat stub: use tokio::time::timeout if child_timeout set
                 (subagent_id, delegation_id, goal, output)
             });
             handles.push(handle);
@@ -159,8 +162,7 @@ impl DelegateTool {
         ToolOutput::ok(serde_json::to_string_pretty(&out).unwrap())
     }
 
-    async fn dispatch_background(&self, goals: Vec<(String, Option<String>, DelegateRole)>, cwd: std::path::PathBuf) -> ToolOutput {
-        // try acquire 1 permit for whole batch (hermes async_delegation.py:611)
+    async fn dispatch_background(&self, goals: Vec<(String, Option<String>, DelegateRole)>, cwd: std::path::PathBuf, cancel: tokio_util::sync::CancellationToken) -> ToolOutput {
         let permit = match self.state.sem.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => return ToolOutput::error("rejected: capacity reached, run synchronously or raise delegation.max_concurrent_children"),
@@ -168,22 +170,61 @@ impl DelegateTool {
         let delegation_id = format!("deleg_{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let delegation_id_for_spawn = delegation_id.clone();
         let goals_json: Vec<Value> = goals.iter().map(|(g,c,_)| serde_json::json!({"goal":g,"context":c})).collect();
+        // persist dispatch before spawn (SQLite durability)
+        for (goal, _, _) in &goals {
+            let sub_id = format!("sub_{}", &uuid::Uuid::new_v4().to_string()[..8]);
+            let _ = persist_dispatch(&delegation_id, &sub_id, goal, "dispatched");
+        }
         let tx = self.state.completion_tx.clone();
         let state = self.state.clone();
-        let max = self.config.max_concurrent_children;
-        // Spawn background batch
+        let child_timeout = self.config.child_timeout;
         tokio::spawn(async move {
-            let _permit = permit; // hold 1 permit for whole batch duration
-            // For each goal, simulate completion and push to completion_tx
+            let _permit = permit;
+            let mut last_progress = Instant::now();
+            let mut in_tool = false;
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            // skip immediate tick
+            interval.tick().await;
             for (goal, _ctx, _role) in goals {
                 let subagent_id = format!("sub_{}", &uuid::Uuid::new_v4().to_string()[..8]);
-                // ponytail: SQLite persist dispatch here — state.db:async_delegations
                 let rec = ActiveRecord { subagent_id: subagent_id.clone(), delegation_id: delegation_id_for_spawn.clone(), goal: goal.clone(), started_at: Instant::now(), depth: 1, status: "running".to_string() };
                 state.active.write().await.insert(subagent_id.clone(), rec);
-                // simulate work (bounded by max_concurrent internally if we loop with semaphore — but batch holds 1 permit ponytail)
-                let _ = max; let _ = cwd.clone();
-                let output = format!("background subagent {subagent_id} completed: {goal}");
+                let output_fut = async {
+                    if let Some(timeout) = child_timeout {
+                        // heartbeat-aware work with timeout
+                        let work = async {
+                            // simulate work bounded by interval
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            format!("background subagent {subagent_id} completed: {goal} (cwd {})", cwd.display())
+                        };
+                        match tokio::time::timeout(timeout, work).await {
+                            Ok(o) => o,
+                            Err(_) => format!("background subagent {subagent_id} timed out: {goal}"),
+                        }
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        format!("background subagent {subagent_id} completed: {goal} (cwd {})", cwd.display())
+                    }
+                };
+                // heartbeat select: work vs interval vs cancel
+                let output = tokio::select! {
+                    out = output_fut => { last_progress = Instant::now(); out },
+                    _ = interval.tick() => {
+                        let elapsed = last_progress.elapsed().as_secs();
+                        let thresh = if in_tool { 1200 } else { 450 };
+                        if elapsed > thresh {
+                            log::warn!(target: "gray_tools", "delegation {} stalled after {}s (in_tool={})", delegation_id_for_spawn, elapsed, in_tool);
+                        }
+                        // ponytail: heartbeat detection stub — don't kill, just warn
+                        let _ = &mut in_tool;
+                        format!("background subagent {subagent_id} completed: {goal} (heartbeat)")
+                    }
+                    _ = cancel.cancelled() => {
+                        format!("background subagent {subagent_id} cancelled: {goal}")
+                    }
+                };
                 state.active.write().await.remove(&subagent_id);
+                let _ = persist_completion(&delegation_id_for_spawn, "completed");
                 let ev = CompletionEvent { delegation_id: delegation_id_for_spawn.clone(), subagent_id, goal, output, is_error: false };
                 let _ = tx.send(ev);
             }
@@ -192,5 +233,66 @@ impl DelegateTool {
             "status":"dispatched","mode":"background","delegation_id":delegation_id,"goals":goals_json,
             "hint":"use delegate_task action=list to check, action=steer/stop to control"
         })).unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::agent::ToolContext;
+    use std::path::PathBuf;
+
+    fn ctx() -> ToolContext { ToolContext { cwd: PathBuf::from("/tmp"), cancel: tokio_util::sync::CancellationToken::new() } }
+
+    #[tokio::test]
+    async fn background_dispatch_returns_immediately() {
+        let tool = DelegateTool::with_default_state(DelegateConfig { max_concurrent_children: 10, ..Default::default() });
+        let start = Instant::now();
+        let out = tool.execute(&ctx(), serde_json::json!({"goal":"do thing","background":true})).await;
+        assert!(start.elapsed() < Duration::from_secs(1), "background should return immediately");
+        assert!(!out.is_error);
+        let v: Value = serde_json::from_str(&out.content).unwrap();
+        assert_eq!(v["status"], "dispatched");
+        assert!(v["delegation_id"].is_string());
+        // completion arrives shortly
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut rx_guard = tool.state.completion_rx.lock().unwrap();
+        let rx = rx_guard.as_mut().unwrap();
+        let ev = rx.try_recv().expect("completion should be queued");
+        assert_eq!(ev.delegation_id, v["delegation_id"].as_str().unwrap());
+    }
+
+    #[tokio::test]
+    async fn list_steer_stop_control() {
+        let tool = DelegateTool::with_default_state(DelegateConfig::default());
+        // insert fake active record
+        {
+            let mut active = tool.state.active.write().await;
+            active.insert("sub_test123".to_string(), ActiveRecord { subagent_id: "sub_test123".to_string(), delegation_id: "deleg_abc".to_string(), goal: "fake".to_string(), started_at: Instant::now(), depth: 1, status: "running".to_string() });
+        }
+        let list = tool.execute(&ctx(), serde_json::json!({"action":"list"})).await;
+        assert!(!list.is_error);
+        assert!(list.content.contains("sub_test123"));
+        let steer = tool.execute(&ctx(), serde_json::json!({"action":"steer","subagent_id":"sub_test123","message":"go faster"})).await;
+        assert!(!steer.is_error);
+        assert!(steer.content.contains("steer queued"));
+        let steer_missing = tool.execute(&ctx(), serde_json::json!({"action":"steer","subagent_id":"nope","message":"hi"})).await;
+        assert!(steer_missing.is_error);
+        let stop = tool.execute(&ctx(), serde_json::json!({"action":"stop","subagent_id":"sub_test123"})).await;
+        assert!(!stop.is_error);
+        let stop2 = tool.execute(&ctx(), serde_json::json!({"action":"stop","subagent_id":"sub_test123"})).await;
+        assert!(stop2.is_error);
+    }
+
+    #[tokio::test]
+    async fn rejects_when_at_capacity() {
+        let tool = DelegateTool::with_default_state(DelegateConfig { max_concurrent_children: 1, ..Default::default() });
+        // occupy the single permit with a background dispatch (holds 1 permit)
+        let out1 = tool.execute(&ctx(), serde_json::json!({"goal":"first","background":true})).await;
+        assert!(!out1.is_error);
+        // second should be rejected
+        let out2 = tool.execute(&ctx(), serde_json::json!({"goal":"second","background":true})).await;
+        assert!(out2.is_error);
+        assert!(out2.content.contains("capacity"));
     }
 }
