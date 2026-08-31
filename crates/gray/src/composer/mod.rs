@@ -309,6 +309,7 @@ impl Tui {
         } else if let Some(tok) = pending_tok {
             self.push_dim(tok);
         }
+        self.ensure_gap(1);
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }

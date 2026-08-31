@@ -229,6 +229,20 @@ pub(crate) fn word_wrap_line(line: Line<'static>, max_w: usize) -> Vec<Line<'sta
 // Tui transcript methods (batch insert_before)
 // ---------------------------------------------------------------------------
 impl Tui {
+    pub(crate) fn ensure_gap(&mut self, n: usize) {
+        let trailing = self.transcript.iter().rev().take_while(|l| {
+            l.width() == 0 || l.spans.iter().all(|s| s.content.trim().is_empty())
+        }).count();
+        let need = n.saturating_sub(trailing);
+        if need == 0 { return; }
+        let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
+        let h = need as u16;
+        let _ = self.terminal.insert_before(h, |buf| {
+            Paragraph::new(lines.clone()).render(buf.area, buf);
+        });
+        self.transcript.extend(lines);
+    }
+
     pub fn stream(&mut self, chunk: &str) {
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
@@ -247,6 +261,7 @@ impl Tui {
         let toks = (chunk.chars().count() + 3) / 4;
         self.live_streamed_tokens += toks.max(1);
         if !self.thinking {
+            self.ensure_gap(1);
             self.thinking = true;
             self.turn_had_thinking = true;
             self.set_status(Some("Thinking"));
@@ -295,15 +310,16 @@ impl Tui {
                 let rest = std::mem::take(&mut self.pending);
                 self.push_line_styled(rest, thinking_style());
             }
-            // spacer removed: next markdown block's ensure_gap owns the gap
-            let _ = spacer;
+            if spacer {
+                self.ensure_gap(1);
+            }
         } else {
             self.pending.clear();
         }
     }
 
     pub fn push_user_prompt(&mut self, text: &str) {
-        
+        self.ensure_gap(1);
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
         let content_w = w.saturating_sub(4).max(1);
@@ -311,8 +327,6 @@ impl Tui {
         let prompt_color = Color::Rgb(180, 180, 180);
         let text_primary = Color::Rgb(225, 225, 225);
         let mut lines: Vec<Line<'static>> = Vec::new();
-        // Grok chrome: accent column at col 0 instead of blank gap
-        let accent = Color::Rgb(120, 120, 120);
         lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
         let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
         let lines_raw: Vec<&str> = sanitized.split('\n').collect();
@@ -343,7 +357,6 @@ impl Tui {
         self.transcript.extend(lines);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
-        // no trailing ensure_gap — next block's ensure_gap owns the gap (Grok: one gap owner)
     }
 
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
@@ -374,7 +387,7 @@ impl Tui {
     }
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
-        
+        self.ensure_gap(1);
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let wrapped = wrap_styled_line(line, max_w);
@@ -405,9 +418,7 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() { return; }
-        // ZERO gaps: strip all blank separator lines
-        let lines: Vec<Line<'static>> = lines.into_iter().filter(|l| l.width() != 0).collect();
-        if lines.is_empty() { return; }
+        self.ensure_gap(1);
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
@@ -459,7 +470,7 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
-        
+        self.ensure_gap(1);
         let styled = Line::from(vec![
             Span::raw(" "),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
@@ -473,7 +484,7 @@ impl Tui {
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
-        
+        self.ensure_gap(1);
         let mut spans = vec![
             Span::raw(" "),
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
@@ -549,6 +560,7 @@ impl Tui {
         if let Some(last_usage) = entries.iter().rev().find_map(|e| e.usage) {
             self.set_usage(last_usage);
         }
+        self.ensure_gap(1);
     }
 }
 
