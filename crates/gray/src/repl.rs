@@ -500,7 +500,19 @@ async fn handle_model(
             }
             reload_agent(agent, config, cwd).await;
         }
-        Ok(false) => {}
+        Ok(false) => {
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                t.textarea.set_text("");
+                t.matches.clear();
+                t.sel = 0;
+                t.history_idx = None;
+                t.draft.clear();
+                t.attachments.clear();
+                t.pending_pastes.clear();
+                let _ = t.draw();
+            }
+        }
         Err(e) => {
             if let Some(shared) = tui {
                 shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
@@ -577,6 +589,16 @@ async fn handle_thinking(
                 } else {
                     println!("{msg}");
                 }
+            } else if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                t.textarea.set_text("");
+                t.matches.clear();
+                t.sel = 0;
+                t.history_idx = None;
+                t.draft.clear();
+                t.attachments.clear();
+                t.pending_pastes.clear();
+                let _ = t.draw();
             }
         }
         Err(e) => {
@@ -1513,7 +1535,20 @@ pub async fn run_repl_mode(
                         }
                         reload_agent(&mut agent, config, &cwd).await;
                     }
-                    Ok(false) => {}
+                    Ok(false) => {
+                        if let Some((shared, _)) = &tui {
+                            let mut t = shared.lock().expect("tui lock");
+                            // ponytail: clear ghost input after modal cancel (aligns with unconfigured draw)
+                            t.textarea.set_text("");
+                            t.matches.clear();
+                            t.sel = 0;
+                            t.history_idx = None;
+                            t.draft.clear();
+                            t.attachments.clear();
+                            t.pending_pastes.clear();
+                            let _ = t.draw();
+                        }
+                    }
                     Err(e) => {
                         if let Some((shared, _)) = &tui {
                             shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));

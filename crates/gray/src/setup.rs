@@ -1303,6 +1303,32 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
 
                             if final_key.is_empty() {
                                 *status_msg = Some("No API key entered — please enter a valid key".into());
+                            } else if existing_key.is_some() {
+                                // ponytail: update skips picker; preserve model if same provider else use default
+                                save_auth_key(&item.id, &final_key)?;
+                                let path = saved_config_path()?;
+                                let mut saved = load_saved_config_at(&path);
+                                let is_switching = saved.base_url.as_deref() != Some(item.base_url.as_str());
+                                config.base_url = item.base_url.clone();
+                                config.api_key = Some(final_key.clone());
+                                saved.base_url = Some(config.base_url.clone());
+                                saved.api_key = config.api_key.clone();
+                                saved.auth_mode = Some("api_key".into());
+                                if is_switching {
+                                    saved.model = Some(item.default_model.clone());
+                                    config.model = saved.model.clone();
+                                } else if saved.model.is_none() {
+                                    if let Some(m) = &config.model {
+                                        saved.model = Some(m.clone());
+                                    } else {
+                                        saved.model = Some(item.default_model.clone());
+                                        config.model = saved.model.clone();
+                                    }
+                                } else {
+                                    config.model = saved.model.clone();
+                                }
+                                save_saved_config_at(&path, &saved)?;
+                                return Ok(true);
                             } else {
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
