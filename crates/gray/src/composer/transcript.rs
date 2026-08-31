@@ -262,19 +262,9 @@ impl Tui {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn ensure_gap(&mut self, n: usize) {
-        let trailing = self.transcript.iter().rev().take_while(|l| {
-            l.width() == 0 || l.spans.iter().all(|s| s.content.trim().is_empty())
-        }).count();
-        let need = n.saturating_sub(trailing);
-        if need == 0 { return; }
-        // batch insert
-        let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
-        let h = need as u16;
-        let _ = self.terminal.insert_before(h, |buf| {
-            Paragraph::new(lines.clone()).render(buf.area, buf);
-        });
-        self.transcript.extend(lines);
+    #[allow(dead_code)]
+    pub(crate) fn ensure_gap(&mut self, _n: usize) {
+        // NUKED: was double-counting with markdown's own blank separators. Grok has no ensure_gap — keep stub for compat.
     }
 
     pub fn stream(&mut self, chunk: &str) {
@@ -299,7 +289,7 @@ impl Tui {
             self.turn_had_thinking = true;
             self.set_status(Some("Thinking"));
             if !self.hide_thinking {
-                self.ensure_gap(1);
+                
             }
         }
         if !self.hide_thinking {
@@ -343,16 +333,16 @@ impl Tui {
                 let rest = std::mem::take(&mut self.pending);
                 self.push_line_styled(rest, thinking_style());
             }
-            if spacer {
-                self.ensure_gap(1);
-            }
+            // spacer removed: next markdown block's ensure_gap owns the gap
+            let _ = spacer;
         } else {
             self.pending.clear();
         }
     }
 
     pub fn push_user_prompt(&mut self, text: &str) {
-        self.ensure_gap(1);
+        // Grok-style: exactly one blank line between blocks. ensure_gap is the single owner.
+        
         let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
         let content_w = w.saturating_sub(4).max(1);
@@ -390,7 +380,7 @@ impl Tui {
         self.transcript.extend(lines);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
-        self.ensure_gap(1);
+        // no trailing ensure_gap — next block's ensure_gap owns the gap (Grok: one gap owner)
     }
 
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
@@ -421,7 +411,7 @@ impl Tui {
     }
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
-        self.ensure_gap(1);
+        
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let wrapped = wrap_styled_line(line, max_w);
@@ -452,6 +442,7 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() { return; }
+        // Nuke: no ensure_gap — markdown's own blank lines are the gaps (Grok truth).
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
@@ -503,7 +494,7 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
-        self.ensure_gap(1);
+        
         let styled = Line::from(vec![
             Span::raw(" "),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
@@ -517,7 +508,7 @@ impl Tui {
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
-        self.ensure_gap(1);
+        
         let mut spans = vec![
             Span::raw(" "),
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
