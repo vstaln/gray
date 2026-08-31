@@ -348,6 +348,8 @@ impl Tui {
         let prompt_color = Color::Rgb(180, 180, 180);
         let text_primary = Color::Rgb(225, 225, 225);
         let mut lines: Vec<Line<'static>> = Vec::new();
+        // Grok chrome: accent column at col 0 instead of blank gap
+        let accent = Color::Rgb(120, 120, 120);
         lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
         let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
         let lines_raw: Vec<&str> = sanitized.split('\n').collect();
