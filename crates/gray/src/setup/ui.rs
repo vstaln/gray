@@ -14,7 +14,8 @@ pub struct BackgroundSnapshot {
 
 impl BackgroundSnapshot {
     pub fn default_initial() -> Self {
-        let welcome_lines = crate::composer::build_welcome_lines();
+        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
+        let welcome_lines = crate::composer::build_welcome_lines(cols as usize);
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();

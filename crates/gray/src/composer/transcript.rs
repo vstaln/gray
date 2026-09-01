@@ -226,13 +226,53 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, span_bounds: Vec<(Rang
     result
 }
 
+pub(crate) fn format_user_prompt_lines(text: &str, w: usize) -> Vec<Line<'static>> {
+    let sanitized = crate::tui::sanitize_user_text(text);
+    let content_w = w.saturating_sub(4).max(1);
+    let bg_color = Color::Rgb(22, 22, 22);
+    let prompt_color = Color::Rgb(180, 180, 180);
+    let text_primary = Color::Rgb(225, 225, 225);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+    let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
+    let lines_raw: Vec<&str> = sanitized.split('\n').collect();
+    for (i, raw_line) in lines_raw.iter().enumerate() {
+        let prefix_span = if i == 0 { arrow_span.clone() } else { Span::styled("   ", Style::default().bg(bg_color)) };
+        if raw_line.is_empty() {
+            lines.push(Line::from(vec![ prefix_span, Span::styled(" ".repeat(w.saturating_sub(3)), Style::default().bg(bg_color)) ]));
+        } else {
+            let chars: Vec<char> = raw_line.chars().collect();
+            for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
+                let s: String = chunk.iter().collect();
+                let s_len = chunk.len();
+                let pad_len = w.saturating_sub(3 + s_len);
+                if chunk_idx == 0 {
+                    lines.push(Line::from(vec![
+                        prefix_span.clone(),
+                        Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                        Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("   ", Style::default().bg(bg_color)),
+                        Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                        Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
+                    ]));
+                }
+            }
+        }
+    }
+    lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+    lines
+}
+
 // ---------------------------------------------------------------------------
 // Tui transcript methods (batch insert_before)
 // ---------------------------------------------------------------------------
 impl Tui {
     pub(crate) fn ensure_gap(&mut self, n: usize) {
         let trailing = self.transcript.iter().rev().take_while(|l| {
-            l.width() == 0 || l.spans.iter().all(|s| s.content.trim().is_empty())
+            l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
         }).count();
         let need = n.saturating_sub(trailing);
         if need == 0 { return; }
@@ -241,6 +281,7 @@ impl Tui {
         let _ = self.terminal.insert_before(h, |buf| {
             Paragraph::new(lines.clone()).render(buf.area, buf);
         });
+        self.history_entries.push(super::TranscriptEntry::Lines(lines.clone()));
         self.transcript.extend(lines);
     }
 
@@ -321,44 +362,14 @@ impl Tui {
 
     pub fn push_user_prompt(&mut self, text: &str) {
         self.ensure_gap(1);
-        let sanitized = crate::tui::sanitize_user_text(text);
         let w = self.width().max(20);
-        let content_w = w.saturating_sub(4).max(1);
-        let bg_color = Color::Rgb(22, 22, 22);
-        let prompt_color = Color::Rgb(180, 180, 180);
-        let text_primary = Color::Rgb(225, 225, 225);
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        lines.push(Line::from(""));
-        let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
-        let lines_raw: Vec<&str> = sanitized.split('\n').collect();
-        for (i, raw_line) in lines_raw.iter().enumerate() {
-            let prefix_span = if i == 0 { arrow_span.clone() } else { Span::styled("   ", Style::default().bg(bg_color)) };
-            if raw_line.is_empty() {
-                lines.push(Line::from(vec![prefix_span]));
-            } else {
-                let chars: Vec<char> = raw_line.chars().collect();
-                for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
-                    let s: String = chunk.iter().collect();
-                    if chunk_idx == 0 {
-                        lines.push(Line::from(vec![
-                            prefix_span.clone(),
-                            Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                        ]));
-                    } else {
-                        lines.push(Line::from(vec![
-                            Span::styled("   ", Style::default().bg(bg_color)),
-                            Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                        ]));
-                    }
-                }
-            }
-        }
-        lines.push(Line::from(""));
+        let lines = format_user_prompt_lines(text, w);
         let height = lines.len() as u16;
-        let block = ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
+        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
         });
+        self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
         self.transcript.extend(lines);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
@@ -383,6 +394,7 @@ impl Tui {
             }
         }
         let h = lines.len() as u16;
+        self.history_entries.push(super::TranscriptEntry::Lines(lines.clone()));
         self.transcript.extend(lines.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = self.terminal.insert_before(h, |buf| {
@@ -404,6 +416,7 @@ impl Tui {
             padded_wrapped.push(l);
         }
         let h = padded_wrapped.len() as u16;
+        self.history_entries.push(super::TranscriptEntry::Lines(padded_wrapped.clone()));
         self.transcript.extend(padded_wrapped.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = self.terminal.insert_before(h, |buf| {
@@ -446,6 +459,7 @@ impl Tui {
         }
         let total_h = all_wrapped.len() as u16;
         let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l,_)| l.clone()).collect();
+        self.history_entries.push(super::TranscriptEntry::Lines(lines_only.clone()));
         self.transcript.extend(lines_only.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         // Batch insert with hyperlink OSC injection per row
@@ -481,6 +495,7 @@ impl Tui {
             left_pad(),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
         ]);
+        self.history_entries.push(super::TranscriptEntry::Lines(vec![styled.clone()]));
         self.transcript.push(styled.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = self.terminal.insert_before(1, |buf| {
@@ -501,6 +516,7 @@ impl Tui {
             spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
         }
         let line = Line::from(spans);
+        self.history_entries.push(super::TranscriptEntry::Lines(vec![line.clone()]));
         self.transcript.push(line.clone());
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = self.terminal.insert_before(1, |buf| {

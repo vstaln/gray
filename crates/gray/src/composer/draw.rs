@@ -153,7 +153,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let ibox = build_input_box(&text, cursor, w);
     let box_h = ibox.lines.len().max(1) as u16;
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
-    let status_h: u16 = u16::from(tui.status.is_some());
+    let status_h: u16 = if tui.status.is_some() { 3 } else { 0 };
 
     // pi dock (VStack, gap 0, intrinsic heights): status + box + panel + attach + footer.
     // The viewport is resized to exactly this so the dock hugs the transcript
@@ -198,7 +198,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             };
             let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y + 1, area.width, 1));
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));

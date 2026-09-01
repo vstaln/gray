@@ -62,6 +62,7 @@ pub struct Tui {
     model_name: String,
     cwd: String,
     thinking_effort: String,
+    pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
     pub latest_usage: Option<gray_core::event::Usage>,
@@ -78,12 +79,19 @@ pub struct Tui {
     pub(crate) viewport_h: u16,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum TranscriptEntry {
+    Welcome,
+    UserPrompt(String),
+    Lines(Vec<Line<'static>>),
+}
 
-pub fn build_welcome_lines() -> Vec<Line<'static>> {
+pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
     let logo_raw = crate::tui::logo_lines();
     let l_rows = logo_raw.len().max(1) as f32;
-    let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
+    let max_logo_w = logo_raw.iter().map(|l| l.trim().chars().count()).max().unwrap_or(0);
     let l_cols = (max_logo_w as f32).max(1.0);
+    let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
     let base = Color::Rgb(110, 110, 110);
     let hilite = Color::Rgb(240, 240, 240);
@@ -91,8 +99,11 @@ pub fn build_welcome_lines() -> Vec<Line<'static>> {
     let mut welcome_lines: Vec<Line<'static>> = Vec::new();
     welcome_lines.push(Line::from(""));
     for (row, line) in logo_raw.iter().enumerate() {
-        let trimmed = line.trim_end();
+        let trimmed = line.trim();
         let mut spans: Vec<Span<'static>> = Vec::new();
+        if logo_pad > 0 {
+            spans.push(Span::raw(" ".repeat(logo_pad)));
+        }
         for (col, ch) in trimmed.chars().enumerate() {
             let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
             let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
@@ -102,8 +113,11 @@ pub fn build_welcome_lines() -> Vec<Line<'static>> {
         welcome_lines.push(Line::from(spans));
     }
     welcome_lines.push(Line::from(""));
+    let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
+    let banner_len = banner_raw.chars().count();
+    let pad = w.saturating_sub(banner_len) / 2;
     welcome_lines.push(Line::from(vec![
-        Span::raw("  "),
+        Span::raw(" ".repeat(pad)),
         Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
         Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
     ]));
@@ -136,7 +150,7 @@ impl Tui {
         )?;
 
         // Print welcome logo into scrollback once at startup
-        let welcome_lines = build_welcome_lines();
+        let welcome_lines = build_welcome_lines(cols as usize);
         let welcome_h = welcome_lines.len() as u16;
         let _ = terminal.insert_before(welcome_h, |buf| {
             Paragraph::new(welcome_lines.clone()).render(buf.area, buf);
@@ -168,6 +182,7 @@ impl Tui {
             model_name: String::new(),
             cwd,
             thinking_effort: "high".to_string(),
+            history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
             latest_usage: None,
@@ -258,6 +273,23 @@ impl Tui {
         ) {
             self.terminal = term;
         }
+
+        let w = new_cols as usize;
+        let mut new_transcript: Vec<Line<'static>> = Vec::new();
+        for entry in &self.history_entries {
+            match entry {
+                TranscriptEntry::Welcome => {
+                    new_transcript.extend(build_welcome_lines(w));
+                }
+                TranscriptEntry::UserPrompt(text) => {
+                    new_transcript.extend(crate::composer::transcript::format_user_prompt_lines(text, w));
+                }
+                TranscriptEntry::Lines(lines) => {
+                    new_transcript.extend(lines.clone());
+                }
+            }
+        }
+        self.transcript = new_transcript;
 
         if !self.transcript.is_empty() {
             let total_h = self.transcript.len() as u16;
