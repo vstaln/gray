@@ -37,7 +37,6 @@ mod open_code_highlighter;
 mod output;
 mod parse;
 mod render;
-mod source_map;
 pub mod streaming;
 pub mod style;
 mod syntax;
@@ -54,7 +53,6 @@ pub use colors::{
 pub use latex_delimiters::{LatexDelimiterNormalizer, normalize_latex_delimiters};
 pub use output::{CodeBlockSpan, HyperlinkTarget, MarkdownRenderOutput, MarkdownRenderView};
 pub use parse::{MarkdownParser, ParsedMarkdown};
-pub use source_map::SourceMap;
 pub use streaming::StreamingMarkdownRenderer;
 pub use style::{MarkdownStyle, TableBorders};
 pub use syntax::{Syntect, get_syntect, syntect_to_ratatui_fg};
@@ -162,20 +160,6 @@ pub(crate) fn render_markdown_ratatui_with_link_id(
     let next_link_id = parsed.next_link_id;
     let (output, checkpoint) = parsed.render_ratatui(pretty);
     (output, checkpoint, next_link_id)
-}
-
-/// Render markdown to an ANSI-styled string.
-pub fn render_markdown(
-    text: &str,
-    ms: MarkdownStyle,
-    pretty: bool,
-    syntect: Option<&Syntect>,
-) -> (String, SourceMap) {
-    let mut buffers = MarkdownBuffers::new();
-    let normalized = latex_delimiters::normalize_latex_delimiters(text);
-    MarkdownParser::new(&normalized, ms, &mut buffers, syntect)
-        .parse()
-        .render_ansi(pretty)
 }
 
 /// Render markdown to ratatui Lines (simple API).

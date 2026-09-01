@@ -22,76 +22,9 @@ use crate::checkpoint::CheckpointKind;
 use crate::latex;
 use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::style::{MarkdownStyle, TableBorders};
+use crate::colors::StyleInto;
 use crate::syntax::{Syntect, syntax_highlight_raw};
 
-/// Trait for converting anstyle to ratatui style.
-trait StyleInto<T> {
-    fn style_into(self) -> T;
-}
-
-impl StyleInto<ratatui::style::Style> for Style {
-    fn style_into(self) -> ratatui::style::Style {
-        use ratatui::style::{Modifier, Style as RStyle};
-
-        let mut style = RStyle::default();
-
-        if let Some(fg) = self.get_fg_color() {
-            style = style.fg(anstyle_to_ratatui_color(fg));
-        }
-        if let Some(bg) = self.get_bg_color() {
-            style = style.bg(anstyle_to_ratatui_color(bg));
-        }
-
-        let effects = self.get_effects();
-        let mut modifiers = Modifier::empty();
-        if effects.contains(anstyle::Effects::BOLD) {
-            modifiers |= Modifier::BOLD;
-        }
-        if effects.contains(anstyle::Effects::DIMMED) {
-            modifiers |= Modifier::DIM;
-        }
-        if effects.contains(anstyle::Effects::ITALIC) {
-            modifiers |= Modifier::ITALIC;
-        }
-        if effects.contains(anstyle::Effects::UNDERLINE) {
-            modifiers |= Modifier::UNDERLINED;
-        }
-        if effects.contains(anstyle::Effects::STRIKETHROUGH) {
-            modifiers |= Modifier::CROSSED_OUT;
-        }
-        if effects.contains(anstyle::Effects::HIDDEN) {
-            modifiers |= Modifier::HIDDEN;
-        }
-
-        style.add_modifier(modifiers)
-    }
-}
-
-fn anstyle_to_ratatui_color(color: anstyle::Color) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    match color {
-        anstyle::Color::Ansi(ansi) => match ansi {
-            anstyle::AnsiColor::Black => Color::Black,
-            anstyle::AnsiColor::Red => Color::Red,
-            anstyle::AnsiColor::Green => Color::Green,
-            anstyle::AnsiColor::Yellow => Color::Yellow,
-            anstyle::AnsiColor::Blue => Color::Blue,
-            anstyle::AnsiColor::Magenta => Color::Magenta,
-            anstyle::AnsiColor::Cyan => Color::Cyan,
-            anstyle::AnsiColor::White => Color::Gray,
-            anstyle::AnsiColor::BrightBlack => Color::DarkGray,
-            anstyle::AnsiColor::BrightRed => Color::LightRed,
-            anstyle::AnsiColor::BrightGreen => Color::LightGreen,
-            anstyle::AnsiColor::BrightYellow => Color::LightYellow,
-            anstyle::AnsiColor::BrightBlue => Color::LightBlue,
-            anstyle::AnsiColor::BrightMagenta => Color::LightMagenta,
-            anstyle::AnsiColor::BrightCyan => Color::LightCyan,
-            anstyle::AnsiColor::BrightWhite => Color::White,
-        },
-        anstyle::Color::Ansi256(idx) => Color::Indexed(idx.index()),
-        anstyle::Color::Rgb(rgb) => Color::Rgb(rgb.0, rgb.1, rgb.2),
-    }
-}
 
 /// Find a substring within a haystack, optionally searching outside or using rfind.
 fn find_substring(
