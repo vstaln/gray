@@ -56,6 +56,9 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
+    // Top padding inside the box
+    box_lines.push(Line::from(""));
+
     // Prompt input rows
     let prompt_arrow = " ❯ ";
     let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
@@ -135,6 +138,9 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
             current_byte_pos = line_end_bytes + 1;
         }
     }
+
+    // Bottom padding inside the box
+    box_lines.push(Line::from(""));
 
     InputBox { lines: box_lines, cur_row, cur_col }
 }
@@ -332,7 +338,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         if tui.status.is_none() && !tui.is_task_running {
             let cur_x = (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y = (box_y + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         }
     })?;

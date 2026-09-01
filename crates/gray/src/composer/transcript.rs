@@ -231,6 +231,7 @@ pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
     let mut lines = Vec::new();
+    lines.push(Line::from(""));
     let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
@@ -244,6 +245,7 @@ pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
             ]));
         }
     }
+    lines.push(Line::from(""));
     lines
 }
 
@@ -359,8 +361,10 @@ impl Tui {
         self.ensure_gap(1);
         let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
         let mut box_lines: Vec<Line<'static>> = Vec::new();
+        box_lines.push(Line::from(""));
         box_lines.push(header);
         box_lines.extend(body);
+        box_lines.push(Line::from(""));
         let height = box_lines.len() as u16;
         let block = ratatui::widgets::Block::default().style(bg_style);
         let _ = self.terminal.insert_before(height, |buf| {
