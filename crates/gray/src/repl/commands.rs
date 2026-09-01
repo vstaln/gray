@@ -9,7 +9,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("cron", "cron jobs"),
     ("proxy", "local proxy"),
     ("portal", "portal status"),
-    ("sys", "edit system prompt"),
+    ("agentsmd", "edit system prompt"),
     ("help", "show commands"),
     ("quit", "exit"),
 ];
@@ -25,6 +25,7 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("login", "connect"),
     ("effort", "thinking"),
     ("compress", "compact"),
+    ("sys", "agentsmd"),
     ("portal", "proxy"),
 ];
 
@@ -68,8 +69,8 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 pub enum ReplCommand {
     /// Exit the REPL cleanly (`/quit` or `/exit`).
     Quit,
-    /// Open the system-prompt file in `$EDITOR` (`/sys`), print it (`/sys show`),
-    /// or restore the default (`/sys reset`).
+    /// Open the system-prompt file in `$EDITOR` (`/agentsmd`), print it (`/agentsmd show`),
+    /// or restore the default (`/agentsmd reset`). `/sys` is an alias.
     Sys(SysAction),
     /// Open the provider selection menu (`/connect` or `/provider`).
     Provider,
@@ -104,7 +105,7 @@ pub struct ResumeArgs {
     pub all: bool,
 }
 
-/// What to do when the user types `/sys`.
+/// What to do when the user types `/agentsmd`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SysAction {
     /// Edit `~/.gray/AGENTS.md` in `$EDITOR`.
@@ -154,7 +155,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         } else {
             parse_resume_args(rest)
         }),
-        "/sys" => match rest {
+        "/agentsmd" | "/sys" => match rest {
             "" => ReplCommand::Sys(SysAction::Edit),
             "show" => ReplCommand::Sys(SysAction::Show),
             "reset" => ReplCommand::Sys(SysAction::Reset),

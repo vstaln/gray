@@ -56,12 +56,22 @@ pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
 pub(crate) use format::{base64_encode, build_user_message_with_images, media_type_for_path, MAX_ERROR_DISPLAY_CHARS, truncate_chars};
 pub(crate) use session::SessionState;
 
-/// Handles the `/sys` command family: edit, show, reset.
+/// Command feedback: through the composer when it owns the terminal, else stdout.
+/// Raw println! while the composer viewport is live collides with the next draw (ghost input).
+fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
+    if let Some(t) = tui {
+        t.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+    } else {
+        println!("{msg}");
+    }
+}
+
+/// Handles the `/agentsmd` command family (alias `/sys`): edit, show, reset.
 async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut Option<Agent>, tui: Option<&crate::composer::SharedTui>) {
     let path = match crate::sys_prompt_path() {
         Ok(p) => p,
         Err(e) => {
-            println!("{e}");
+            say(tui, &format!("{e}"));
             return;
         }
     };
@@ -69,20 +79,17 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
         SysAction::Show => {
             match load_or_create_system_prompt_at(&path) {
                 Ok(body) => {
-                    println!("system prompt: {}", path.display());
-                    println!("---");
-                    println!("{body}");
-                    println!("---");
+                    say(tui, &format!("system prompt: {}\n---\n{body}\n---", path.display()));
                 }
-                Err(e) => println!("failed to read {}: {e}", path.display()),
+                Err(e) => say(tui, &format!("failed to read {}: {e}", path.display())),
             }
         }
         SysAction::Reset => {
             if let Err(e) = std::fs::write(&path, DEFAULT_SYS_PROMPT) {
-                println!("failed to reset {}: {e}", path.display());
+                say(tui, &format!("failed to reset {}: {e}", path.display()));
                 return;
             }
-            println!("system prompt restored to default ({})", path.display());
+            say(tui, &format!("✓ system prompt restored to default ({})", path.display()));
             reload_agent(agent, config, cwd).await;
         }
         SysAction::Edit => {
@@ -90,7 +97,7 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
             let initial = match load_or_create_system_prompt_at(&path) {
                 Ok(b) => b,
                 Err(e) => {
-                    println!("{e}");
+                    say(tui, &format!("{e}"));
                     return;
                 }
             };
@@ -117,17 +124,17 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
             match res {
                 Ok(Some(saved)) => {
                     if let Err(e) = std::fs::write(&path, &saved) {
-                        println!("failed to save {}: {e}", path.display());
+                        say(tui, &format!("failed to save {}: {e}", path.display()));
                         return;
                     }
-                    println!("system prompt saved — applies from your next message");
+                    say(tui, "✓ system prompt saved — applies from your next message");
                     reload_agent(agent, config, cwd).await;
                 }
                 Ok(None) => {
-                    println!("prompt unchanged");
+                    say(tui, "prompt unchanged");
                 }
                 Err(e) => {
-                    println!("editor error: {e}");
+                    say(tui, &format!("editor error: {e}"));
                 }
             }
         }

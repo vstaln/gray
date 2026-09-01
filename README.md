@@ -53,7 +53,7 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/model [id]` | switch or browse models |
 | `/provider` | provider menu: free tier · API key · OAuth · local |
 | `/key [provider]` | add or rotate a key without leaving the chat |
-| `/sys` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
+| `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/help`, `/quit` | you know these |
 
 Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing.

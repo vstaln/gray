@@ -14,6 +14,7 @@ pub mod proxy;
 pub mod repl;
 pub mod resume;
 pub mod system_prompt;
+pub mod update;
 pub mod tool_fmt;
 pub mod tui;
 
@@ -30,7 +31,7 @@ use gray_provider::OpenAiProvider;
 use gray_tools::Registry;
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`
-/// on first run. Edit that file (or use the `/sys` command) to change it.
+/// on first run. Edit that file (or use the `/agentsmd` command) to change it.
 pub const DEFAULT_SYS_PROMPT: &str = r#"You are gray, a minimal agent running on the user's machine.
 You help by using tools: read files, run commands, edit code, search.
 
@@ -149,6 +150,7 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
 
     let provider = OpenAiProvider::builder(api_key, model)
         .base_url(&config.base_url)
+        .reasoning_effort(config.thinking_effort.clone())
         .build()
         .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
 
@@ -245,6 +247,8 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<GatewayCmd>,
     },
+    /// Update gray to the latest release
+    Update,
 }
 
 #[derive(Parser, Debug, Clone)]
