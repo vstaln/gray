@@ -858,8 +858,8 @@ fn map_chat_to_responses(req: ChatRequest, model: &str, session_id: Option<&str>
         .iter()
         .filter(|v| v.get("type").and_then(Value::as_str) == Some("function_call"))
         .filter_map(|v| v.get("call_id").and_then(Value::as_str))
-        .filter(|id| !answered.contains(id.as_str()))
-        .map(str::to_string)
+        .filter(|id| !answered.contains(*id))
+        .map(|id| id.to_string())
         .collect();
     for id in orphan_ids {
         log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned function call {id}");

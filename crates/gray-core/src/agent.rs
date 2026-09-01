@@ -682,9 +682,11 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_1", TOOL_NAME),
+                AgentEvent::StepUsage { usage: Usage::new(10, 5) },
                 AgentEvent::tool_call_end("call_1", serde_json::json!({"q": "x"})),
                 AgentEvent::tool_result("call_1", "result payload", false),
                 AgentEvent::text_delta("all done"),
+                AgentEvent::StepUsage { usage: Usage::new(30, 15) },
                 AgentEvent::turn_end(StopReason::EndTurn, Usage::new(30, 15)),
             ]
         );
@@ -735,9 +737,11 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_err", TOOL_NAME),
+                AgentEvent::StepUsage { usage: Usage::new(10, 5) },
                 AgentEvent::tool_call_end("call_err", serde_json::json!({"q": "x"})),
                 AgentEvent::tool_result("call_err", "disk on fire", true),
                 AgentEvent::text_delta("recovered"),
+                AgentEvent::StepUsage { usage: Usage::new(10, 5) },
                 AgentEvent::turn_end(StopReason::EndTurn, Usage::new(10, 5)),
             ]
         );
@@ -763,8 +767,8 @@ mod agent_tests {
             .expect_err("should detect loop");
 
         assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
-        // 3rd identical turn aborting before tool result: 1 user + 2 full rounds + 3rd assistant = 6
-        assert_eq!(agent.messages().len(), 1 + 2 * 2 + 1);
+        // 3rd identical turn aborting before tool result + synthetic tool_result: 1 user + 2 full rounds + 3rd assistant + 1 synthetic = 7
+        assert_eq!(agent.messages().len(), 1 + 2 * 2 + 2);
     }
 
     #[tokio::test]
