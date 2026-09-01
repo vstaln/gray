@@ -10,6 +10,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("proxy", "share Codex/Grok/OpenRouter via :8645"),
     ("portal", "portal status"),
     ("agentsmd", "edit system prompt"),
+    ("skills", "list skills (/skills:<name> [args] to run one)"),
     ("help", "show commands"),
     ("quit", "exit"),
 ];
@@ -64,6 +65,29 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 }
 
 
+/// Completion for the composer prompt: static commands, or skill names after
+/// `/skills:`. Owned here so every read_loop call site stays in sync.
+pub(crate) fn completion_matches_dyn(cur_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
+    if cur_text.starts_with("/skills:") && !cur_text[8..].contains(char::is_whitespace) {
+        // ponytail: re-walks skill dirs on each keystroke draw — fine for
+        // dozens of skills; cache in Tui if listings ever get large
+        let filter = &cur_text[8..];
+        return crate::skills::discover_skills(cwd)
+            .skills
+            .iter()
+            .filter(|s| s.name.contains(filter))
+            .map(|s| (format!("skills:{}", s.name), s.description.clone()))
+            .collect();
+    }
+    if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
+        return completion_matches(&cur_text[1..])
+            .into_iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+    }
+    Vec::new()
+}
+
 /// Parsed command or input from the REPL prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplCommand {
@@ -92,6 +116,8 @@ pub enum ReplCommand {
     Cron(String),
     /// Local proxy: /proxy start|stop|status, /portal alias
     Proxy(String),
+    /// Skills: /skills lists; /skills:<name> [args] runs a skill
+    Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
     /// Blank line, should be ignored.
@@ -185,6 +211,9 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
             if t.starts_with("/proxy") || t.starts_with("/portal") {
                 return ReplCommand::Proxy(t.to_string());
+            }
+            if t == "/skills" || t.starts_with("/skills:") {
+                return ReplCommand::Skill(t.strip_prefix("/skills:").map(str::to_string));
             }
             if t.starts_with('/') {
                 return ReplCommand::Unknown(t.to_string());

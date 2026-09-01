@@ -92,6 +92,9 @@ impl Registry {
         reg.register(Box::new(SkillTool));
         reg.register(Box::new(WriteTool));
         reg.register(Box::new(EditTool));
+        reg.register(Box::new(GrepTool));
+        reg.register(Box::new(FindTool));
+        reg.register(Box::new(LsTool));
         reg.register(Box::new(CronTool));
         reg.register(Box::new(RequestUserInputTool));
         // ponytail: delegate_task global semaphore, per-account caps if throughput matters

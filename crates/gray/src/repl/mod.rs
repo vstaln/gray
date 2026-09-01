@@ -51,7 +51,7 @@ pub mod format;
 pub mod session;
 
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
-pub(crate) use commands::{ALIASES, COMMANDS, completion_matches, parse_resume_args};
+pub(crate) use commands::{ALIASES, COMMANDS, completion_matches, completion_matches_dyn, parse_resume_args};
 pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
 pub(crate) use format::{base64_encode, build_user_message_with_images, media_type_for_path, MAX_ERROR_DISPLAY_CHARS, truncate_chars};
 pub(crate) use session::SessionState;
@@ -64,6 +64,57 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     } else {
         println!("{msg}");
     }
+}
+
+/// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
+/// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
+/// appended). Bare `/skills` lists available skills. Other commands pass through.
+fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::composer::SharedTui>) -> ReplCommand {
+    let ReplCommand::Skill(payload) = cmd else { return cmd };
+    let discovered = crate::skills::discover_skills(cwd);
+    let Some(rest) = payload else {
+        let listing = discovered
+            .skills
+            .iter()
+            .map(|s| format!("/skills:{} — {}", s.name, s.description))
+            .collect::<Vec<_>>()
+            .join("\n");
+        say(tui, &if listing.is_empty() {
+            "no skills found (looked in ~/.gray/skills, ~/.pi/agent/skills, project .gray/.pi skills)".to_string()
+        } else {
+            listing
+        });
+        return ReplCommand::Empty;
+    };
+    let (name, args) = match rest.split_once(char::is_whitespace) {
+        Some((n, a)) => (n.trim(), Some(a.trim().to_string())),
+        None => (rest.as_str(), None),
+    };
+    let Some(skill) = discovered.skills.iter().find(|s| s.name == name) else {
+        let names = discovered.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", ");
+        say(tui, &format!("no skill '{name}' (available: {})", if names.is_empty() { "(none)" } else { &names }));
+        return ReplCommand::Empty;
+    };
+    let expanded = match std::fs::read_to_string(&skill.file_path) {
+        Ok(content) => {
+            let body = gray_tools::skill::strip_frontmatter(&content);
+            let mut out = format!(
+                "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
+                skill.name,
+                skill.file_path.display(),
+                body
+            );
+            if let Some(a) = args.as_deref().filter(|a| !a.is_empty()) {
+                out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
+            }
+            out
+        }
+        Err(e) => {
+            say(tui, &format!("failed to read {}: {e}", skill.file_path.display()));
+            return ReplCommand::Empty;
+        }
+    };
+    ReplCommand::Prompt(expanded)
 }
 
 /// Handles the `/agentsmd` command family (alias `/sys`): edit, show, reset.
@@ -1214,7 +1265,7 @@ pub async fn run_repl_mode(
                 (buf.trim().to_string(), Vec::new())
             };
             pending_images = images;
-            parse_command(&line_text)
+            expand_skill_command(parse_command(&line_text), cwd.as_path(), tui.as_ref().map(|(s, _)| s))
         };
         // Clear pending images for non-prompt commands (keep for Prompt/Empty+images)
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
@@ -1559,6 +1610,10 @@ pub async fn run_repl_mode(
                 handle_cron(&raw, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
+            ReplCommand::Skill(_) => {
+                // fully expanded into Prompt/Empty by expand_skill_command; defensive no-op
+                continue;
+            }
             ReplCommand::Proxy(raw) => {
                 handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
@@ -1655,7 +1710,8 @@ pub async fn run_repl_mode(
                 let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let watcher_stopped = watch_stop.clone();
                 let watcher_tui = tui_stream.clone();
-                let _key_watcher = tokio::task::spawn_blocking(move || {
+                let cwd_for_watcher = cwd.clone();
+                    let _key_watcher = tokio::task::spawn_blocking(move || {
                     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
                     loop {
                         if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1715,9 +1771,7 @@ pub async fn run_repl_mode(
                                     t.try_attach_clipboard_image();
                                     // sync matches after clipboard attach may insert placeholder
                                     let cur_text = t.textarea.text().to_string();
-                                    t.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
-                                        crate::repl::completion_matches(&cur_text[1..])
-                                    } else { Vec::new() };
+                                    t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
                                     if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
                                     let _ = t.draw();
                                     continue;
@@ -1725,9 +1779,7 @@ pub async fn run_repl_mode(
                                 // Helper to sync matches after text change
                                 let sync_matches = |t: &mut crate::composer::Tui| {
                                     let cur_text = t.textarea.text().to_string();
-                                    t.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
-                                        crate::repl::completion_matches(&cur_text[1..])
-                                    } else { Vec::new() };
+                                    t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
                                     if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
                                 };
                                 // Ctrl editing keys (must check before generic Char handling)
@@ -1893,19 +1945,12 @@ pub async fn run_repl_mode(
                                         let attached: Vec<std::path::PathBuf> = attached_with_ph.into_iter().map(|(_, p)| p).collect();
                                         // clear pending pastes already handled
                                         if text.is_empty() && attached.is_empty() { continue; }
-                                        // queue it
+                                        // queue it — fleeting, not transcript (becomes real prompt when dequeued)
                                         t.queued_inputs.push_back((text.clone(), attached.clone()));
                                         t.textarea.set_text("");
                                         t.pending_pastes.clear();
                                         t.matches.clear();
                                         t.sel = 0;
-                                        // show queued preview as dim line in transcript
-                                        let preview = if text.is_empty() { format!("queued {} image(s)", t.queued_inputs.back().map(|(_, imgs)| imgs.len()).unwrap_or(0)) } else { format!("queued: {}", text.chars().take(80).collect::<String>()) };
-                                        let preview_line = ratatui::text::Line::from(ratatui::text::Span::styled(preview, ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::DIM)));
-                                        t.transcript.push(preview_line.clone());
-                                        let _ = t.terminal.insert_before(1, |buf| {
-                                            ratatui::widgets::Paragraph::new(preview_line.clone()).render(buf.area, buf);
-                                        });
                                         let _ = t.draw();
                                     }
                                     KeyCode::Char(c) => {
@@ -1958,9 +2003,7 @@ pub async fn run_repl_mode(
                                 if !t.is_task_running { continue; }
                                 t.handle_paste(data);
                                 let cur_text = t.textarea.text().to_string();
-                                t.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
-                                    crate::repl::completion_matches(&cur_text[1..])
-                                } else { Vec::new() };
+                                t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
                                 if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
                                 let _ = t.draw();
                             }
@@ -2102,7 +2145,7 @@ pub async fn run_repl_mode(
                                 t.push_dim(format!("↳ queued {names}"));
                             }
                             drop(t);
-                            pending_command = Some(ReplCommand::Prompt(qtext));
+                            pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared)));
                             pending_images = qimages;
                         }
                     }

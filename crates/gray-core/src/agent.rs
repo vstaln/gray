@@ -442,14 +442,16 @@ impl Agent {
                     repeat = 1;
                 }
                 if repeat >= 3 {
+                    answer_pending_tools(self, &tool_uses, 0, "aborted: tool loop detected");
                     return Err(CoreError::LoopDetected(format!(
                         "same tool call 3× in a row: {sig}"
                     )));
                 }
             }
 
-            for (idx, (id, name, args)) in tool_uses.into_iter().enumerate() {
+            for (idx, (id, name, args)) in tool_uses.iter().enumerate() {
                 if ctx.cancel.is_cancelled() {
+                    answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
                     return Err(CoreError::Cancelled);
                 }
                 if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
@@ -458,8 +460,11 @@ impl Agent {
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
                 let output = tokio::select! {
-                    out = self.executor.execute(&ctx, &name, args) => out,
-                    _ = ctx.cancel.cancelled() => return Err(CoreError::Cancelled),
+                    out = self.executor.execute(&ctx, &name, args.clone()) => out,
+                    _ = ctx.cancel.cancelled() => {
+                        answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
+                        return Err(CoreError::Cancelled);
+                    },
                 };
 
                 emit!(AgentEvent::tool_result(
@@ -470,13 +475,34 @@ impl Agent {
                 self.messages.push(Message {
                     role: Role::User,
                     content: vec![ContentBlock::ToolResult {
-                        id,
+                        id: id.clone(),
                         content: output.content,
                         is_error: output.is_error,
                     }],
                 });
             }
         }
+    }
+}
+
+/// Synthetic tool results for calls that never ran (cancellation, loop
+/// abort). History must never contain a `function_call` without its output:
+/// strict providers 400 on the orphan and the session bricks permanently.
+fn answer_pending_tools(
+    agent: &mut Agent,
+    tool_uses: &[(String, String, serde_json::Value)],
+    from_idx: usize,
+    reason: &str,
+) {
+    for (id, _, _) in tool_uses.iter().skip(from_idx) {
+        agent.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                id: id.clone(),
+                content: format!("[{reason}]"),
+                is_error: true,
+            }],
+        });
     }
 }
 
@@ -807,7 +833,7 @@ mod agent_tests {
             .with_tools(vec![tool_def()]);
 
         let err = agent
-            .run(Message::user("go"), ToolContext { cwd: ".".into(), cancel: cancel_token })
+            .run(Message::user("go"), ToolContext { cwd: ".".into(), cancel: cancel_token, questions: None })
             .await
             .expect_err("cancelled run should surface Cancelled");
 

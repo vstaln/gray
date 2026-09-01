@@ -570,6 +570,55 @@ fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str
         apply_anthropic_cache_control(&mut messages, &mut tools);
     }
 
+    // Orphan guard (same class as the Responses mapper): an assistant
+    // tool_call with no following tool result 400s on strict providers —
+    // synthesize a stub result when a non-tool message (or end of history)
+    // arrives with calls still unanswered.
+    let mut fixed: Vec<OpenAiMessageRequest> = Vec::with_capacity(messages.len());
+    let mut outstanding: Vec<String> = Vec::new();
+    let stub = |id: &str| OpenAiMessageRequest {
+        role: "tool".to_string(),
+        content: Some(Value::String(
+            "[no tool output — call was interrupted]".to_string(),
+        )),
+        reasoning_content: None,
+        tool_calls: None,
+        tool_call_id: Some(id.to_string()),
+        cache_control: None,
+    };
+    for m in messages {
+        match m.role.as_str() {
+            "assistant" => {
+                for id in outstanding.drain(..) {
+                    log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned call {id}");
+                    fixed.push(stub(&id));
+                }
+                if let Some(calls) = &m.tool_calls {
+                    outstanding.extend(calls.iter().map(|c| c.id.clone()));
+                }
+                fixed.push(m);
+            }
+            "tool" => {
+                if let Some(id) = &m.tool_call_id {
+                    outstanding.retain(|o| o != id);
+                }
+                fixed.push(m);
+            }
+            _ => {
+                for id in outstanding.drain(..) {
+                    log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned call {id}");
+                    fixed.push(stub(&id));
+                }
+                fixed.push(m);
+            }
+        }
+    }
+    for id in outstanding.drain(..) {
+        log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned call {id}");
+        fixed.push(stub(&id));
+    }
+    let messages = fixed;
+
     let (reasoning_effort_val, reasoning_val, thinking_val) = match reasoning_effort {
         Some("off") => (None, None, Some(serde_json::json!({ "type": "disabled" }))),
         Some(eff) => {
@@ -795,6 +844,30 @@ fn map_chat_to_responses(req: ChatRequest, model: &str, session_id: Option<&str>
     }
     if input.is_empty() {
         input.push(serde_json::json!({"role":"user","content":""}));
+    }
+    // Transcripts can contain a `function_call` whose output never followed
+    // (turn cancelled mid-tool round before this guard existed). Strict
+    // providers 400 on the orphan, bricking the session forever — synthesize
+    // a stub output for any unanswered call.
+    let answered: std::collections::HashSet<&str> = input
+        .iter()
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("function_call_output"))
+        .filter_map(|v| v.get("call_id").and_then(Value::as_str))
+        .collect();
+    let orphan_ids: Vec<String> = input
+        .iter()
+        .filter(|v| v.get("type").and_then(Value::as_str) == Some("function_call"))
+        .filter_map(|v| v.get("call_id").and_then(Value::as_str))
+        .filter(|id| !answered.contains(id.as_str()))
+        .map(str::to_string)
+        .collect();
+    for id in orphan_ids {
+        log::warn!(target: "gray_provider", "synthesizing missing tool output for orphaned function call {id}");
+        input.push(serde_json::json!({
+            "type": "function_call_output",
+            "call_id": id,
+            "output": "[no tool output — call was interrupted]",
+        }));
     }
     let tools: Vec<ResponsesTool> = filter_valid_tools(req.tools)
         .into_iter()

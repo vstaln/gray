@@ -45,7 +45,7 @@ pub use question::ComposerQuestionAsker;
 pub struct Tui {
     pub(crate) terminal: Term,
     pub(crate) textarea: TextArea,
-    pub(crate) matches: Vec<(&'static str, &'static str)>,
+    pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
     turn_started: Option<Instant>,
@@ -256,6 +256,7 @@ impl Tui {
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
+    pub(crate) fn cwd(&self) -> &str { &self.cwd }
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
     pub fn set_next_cron(&mut self, name: Option<String>, next: Option<chrono::DateTime<chrono::Utc>>) {
         match (name, next) {

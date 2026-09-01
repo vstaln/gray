@@ -312,9 +312,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
 
         if needs_draw {
             let cur_text = tui.textarea.text().to_string();
-            tui.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
-                crate::repl::completion_matches(&cur_text[1..])
-            } else { Vec::new() };
+            tui.matches = crate::repl::completion_matches_dyn(&cur_text, std::path::Path::new(&tui.cwd));
             if tui.sel >= tui.matches.len() { tui.sel = tui.matches.len().saturating_sub(1); }
             tui.draw()?;
             needs_draw = false;
@@ -433,12 +431,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         let attached: Vec<PathBuf> = attached_with_ph.into_iter().map(|(_, p)| p).collect();
                         if tui.is_task_running {
                             tui.queued_inputs.push_back((trimmed.clone(), attached.clone()));
-                            let preview = if trimmed.is_empty() { format!("queued {} image(s)", attached.len()) } else { format!("queued: {}", trimmed.chars().take(80).collect::<String>()) };
-                            let preview_line = Line::from(Span::styled(preview, Style::default().add_modifier(Modifier::DIM)));
-                            tui.transcript.push(preview_line.clone());
-                            let _ = tui.terminal.insert_before(1, |buf| {
-                                Paragraph::new(preview_line.clone()).render(buf.area, buf);
-                            });
+                            // ponytail: fleeting — queued preview is not transcript, becomes real prompt when dequeued
                             tui.matches.clear();
                             tui.sel = 0;
                             let _ = tui.draw();
