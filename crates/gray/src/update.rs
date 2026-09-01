@@ -64,8 +64,7 @@ pub async fn startup_check() {
     }
     // ponytail: blocks startup up to ~1.5s waiting for the version check; add a
     // file cache like codex's updates_cache.rs if that ever annoys anyone.
-    let latest = tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await;
-    let Ok(Ok(latest)) = latest else { return };
+    let Ok(Ok(latest)) = tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await else { return };
     if !is_newer(&latest, current) {
         return;
     }
