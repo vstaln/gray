@@ -353,7 +353,12 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
         self.transcript.extend(lines);
-        self.ensure_gap(1);
+        let gap = Line::from("");
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(gap.clone()).render(buf.area, buf);
+        });
+        self.history_entries.push(super::TranscriptEntry::Lines(vec![gap.clone()]));
+        self.transcript.push(gap);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }

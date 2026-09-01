@@ -446,10 +446,8 @@ impl Tui {
             // Codex-style: ✻ Worked for 6s · N tok (dim)
             let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
             self.push_dim(line);
-            self.ensure_gap(1);
         } else if let Some(tok) = pending_tok {
             self.push_dim(tok);
-            self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
