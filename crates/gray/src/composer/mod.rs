@@ -83,6 +83,7 @@ pub struct Tui {
 pub(crate) enum TranscriptEntry {
     Welcome,
     UserPrompt(String),
+    ToolBox(Vec<Line<'static>>),
     Lines(Vec<Line<'static>>),
 }
 
@@ -295,6 +296,14 @@ impl Tui {
                         Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
                     });
                     new_transcript.extend(lines);
+                }
+                TranscriptEntry::ToolBox(lines) => {
+                    let th = lines.len() as u16;
+                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let _ = self.terminal.insert_before(th, |buf| {
+                        Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
+                    });
+                    new_transcript.extend(lines.clone());
                 }
                 TranscriptEntry::Lines(lines) => {
                     let th = lines.len() as u16;

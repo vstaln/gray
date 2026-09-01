@@ -363,6 +363,30 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
 
+    pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
+        self.ensure_gap(1);
+        let mut box_lines: Vec<Line<'static>> = Vec::new();
+        box_lines.push(Line::from(""));
+        box_lines.push(header);
+        box_lines.extend(body);
+        box_lines.push(Line::from(""));
+        let height = box_lines.len() as u16;
+        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let _ = self.terminal.insert_before(height, |buf| {
+            Paragraph::new(box_lines.clone()).block(block).render(buf.area, buf);
+        });
+        self.history_entries.push(super::TranscriptEntry::ToolBox(box_lines.clone()));
+        self.transcript.extend(box_lines);
+        let gap = Line::from("");
+        let _ = self.terminal.insert_before(1, |buf| {
+            Paragraph::new(gap.clone()).render(buf.area, buf);
+        });
+        self.history_entries.push(super::TranscriptEntry::Lines(vec![gap.clone()]));
+        self.transcript.push(gap);
+        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        let _ = std::io::stdout().flush();
+    }
+
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {

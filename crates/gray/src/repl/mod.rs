@@ -1282,9 +1282,7 @@ pub async fn run_repl_mode(
                                         let args = current_tool_args.take();
                                         let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
                                         let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                        let mut combined = vec![header];
-                                        combined.extend(lines);
-                                        t.push_styled_lines(combined);
+                                        t.push_tool_box(header, lines);
                                     }
                                     gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
                                     _ => {}
