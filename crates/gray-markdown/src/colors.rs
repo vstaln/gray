@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use anstyle::{Ansi256Color, AnsiColor, Color, RgbColor};
+use anstyle::{Ansi256Color, AnsiColor, Color, Effects, RgbColor};
 
 /// The level of color support detected for the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]

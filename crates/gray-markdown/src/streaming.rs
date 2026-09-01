@@ -26,9 +26,7 @@
 //! }
 //! ```
 
-#[cfg(test)]
 use crate::open_code_highlighter::OpenCodeHighlighter;
-#[cfg(test)]
 use crate::{
     LatexDelimiterNormalizer, MarkdownBuffers, MarkdownRenderOutput, MarkdownRenderView,
     MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,

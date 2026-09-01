@@ -291,6 +291,7 @@ pub(crate) fn render_records(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::{Style, Stylize};
 
     fn cell(text: &str) -> StyledCell {
         let mut c = StyledCell::new();
