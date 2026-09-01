@@ -158,11 +158,11 @@ pub async fn run_server(a:Arc<dyn UpstreamAdapter>,host:&str,port:u16)->anyhow::
 }
 #[derive(clap::Parser,Debug,Clone)]
 pub enum ProxyCmd{
-    /// Start the proxy server
+    /// Start proxy — interactive picker if no --provider (like /model), or direct with --provider
     Start{#[arg(long)] provider:Option<String>,#[arg(long,default_value="127.0.0.1")] host:String,#[arg(long,default_value_t=8645)] port:u16},
-    /// Show proxy upstream status
+    /// Show proxy status (auth + running)
     Status,
-    /// List available providers
+    /// List available proxy providers
     Providers
 }
 pub async fn run_cli(cmd:Option<ProxyCmd>,cfg:&crate::config::Config)->anyhow::Result<()>{

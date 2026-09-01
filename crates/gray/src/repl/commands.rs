@@ -7,7 +7,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("new", "new conversation"),
     ("compact", "summarize context"),
     ("cron", "cron jobs"),
-    ("proxy", "local proxy"),
+    ("proxy", "share Codex/Grok/OpenRouter via :8645"),
     ("portal", "portal status"),
     ("agentsmd", "edit system prompt"),
     ("help", "show commands"),

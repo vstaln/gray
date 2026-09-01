@@ -572,6 +572,7 @@ static PROXY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::n
 
 async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::SharedTui>) {
     let lower = raw.to_ascii_lowercase();
+    let trimmed = raw.trim().to_ascii_lowercase();
     // parse optional port and provider
     let mut port: u16 = 8645;
     let mut provider: Option<String> = None;
@@ -615,13 +616,44 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         }
         return;
     }
-    if lower.contains("start") {
-        // already running?
-        if PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
-            let msg = "proxy already running";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+
+    // — interactive picker like /model: bare /proxy or /proxy start without provider opens modal
+    let is_start = lower.contains("start");
+    let is_bare = trimmed == "/proxy" || trimmed == "/portal";
+    let needs_picker = is_bare || (is_start && provider.is_none() && !lower.contains("--provider"));
+    if needs_picker {
+        // show picker
+        let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
+        let picked = match crate::setup::run_proxy_menu(config, bg.as_ref()).await {
+            Ok(p) => p,
+            Err(e) => {
+                let msg = format!("proxy picker error: {e}");
+                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
+                return;
+            }
+        };
+        let Some(picked_provider) = picked else {
+            // cancelled — redraw TUI clean
+            if let Some(shared) = tui {
+                if let Ok(mut t) = shared.try_lock() { let _ = t.draw(); }
+            }
             return;
+        };
+        provider = Some(picked_provider);
+        // if already running, restart with new provider
+        if PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
+            if let Some(h) = PROXY_HANDLE.lock().ok().and_then(|mut g| g.take()) {
+                h.abort();
+            }
         }
+        // fall through to start with picked provider
+    } else if is_start && PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
+        let msg = "proxy already running";
+        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        return;
+    }
+
+    if is_start || needs_picker {
         let adapter: std::sync::Arc<dyn crate::proxy::UpstreamAdapter> = if let Some(p) = provider.as_deref() {
             match crate::proxy::get_adapter(p) {
                 Ok(a) => a,
@@ -649,7 +681,7 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
         return;
     }
-    // status (default)
+    // status (default) — explicit /proxy status
     let mut out = String::from("proxy status:\n");
     for name in ["openrouter", "xai", "codex"] {
         if let Ok(a) = crate::proxy::get_adapter(name) {
@@ -663,6 +695,8 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
     let running = PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
     if running {
         out.push_str("  (running on 127.0.0.1:8645)\n");
+    } else {
+        out.push_str("  (not running — run /proxy to start)\n");
     }
     if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(out.trim_end().to_string()); } else { println!("{out}"); }
 }

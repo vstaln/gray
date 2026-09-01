@@ -235,7 +235,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<crate::cron_cli::CronCmd>,
     },
-    /// Local OpenAI-compatible proxy (port 8645)
+    /// Share Codex/Grok/OpenRouter auth via http://127.0.0.1:8645/v1 (any bearer forwarded)
     Proxy {
         #[command(subcommand)]
         cmd: Option<crate::proxy::ProxyCmd>,

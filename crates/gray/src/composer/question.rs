@@ -832,7 +832,7 @@ mod tests {
 
     #[test]
     fn digit_selects_and_advances_then_submits() {
-        let (mut q, rx) = mk(1);
+        let (mut q, mut rx) = mk(1);
         let mut ta = TextArea::new();
         let out = q.on_key(KeyCode::Char('2'), KeyModifiers::NONE, &mut ta);
         match out {
@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn notes_flow_appends_user_note() {
-        let (mut q, rx) = mk(1);
+        let (mut q, mut rx) = mk(1);
         let mut ta = TextArea::new();
         // select option 1 via space, add notes, submit
         q.on_key(KeyCode::Char(' '), KeyModifiers::NONE, &mut ta);
@@ -860,7 +860,7 @@ mod tests {
 
     #[test]
     fn unanswered_submit_opens_confirmation_then_proceeds() {
-        let (mut q, rx) = mk(2);
+        let (mut q, mut rx) = mk(2);
         let mut ta = TextArea::new();
         // q1: select + advance
         q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
@@ -894,8 +894,8 @@ mod tests {
 
     #[test]
     fn queue_promotes_next_request() {
-        let (mut q, rx1) = mk(1);
-        let (tx2, rx2) = oneshot::channel();
+        let (mut q, mut rx1) = mk(1);
+        let (tx2, mut rx2) = oneshot::channel();
         q.queue.push_back(QueuedRequest {
             questions: q.questions.clone(),
             blocking: false,
