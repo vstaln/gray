@@ -86,8 +86,15 @@ pub struct Tui {
 pub(crate) enum TranscriptEntry {
     Welcome,
     UserPrompt(String, Vec<std::path::PathBuf>),
-    ToolBox(Vec<Line<'static>>),
-    Lines(Vec<Line<'static>>),
+    ToolBox {
+        header: Line<'static>,
+        body: Vec<Line<'static>>,
+    },
+    StyledLines {
+        lines: Vec<Line<'static>>,
+        hyperlinks: Vec<HyperlinkTarget>,
+    },
+    Gap(usize),
 }
 
 pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
@@ -213,7 +220,8 @@ impl Tui {
 
         let w = new_cols as usize;
         let mut new_transcript: Vec<Line<'static>> = Vec::new();
-        for entry in &self.history_entries {
+        let entries = std::mem::take(&mut self.history_entries);
+        for entry in &entries {
             match entry {
                 TranscriptEntry::Welcome => {
                     let lines = build_welcome_lines(w);
@@ -232,23 +240,36 @@ impl Tui {
                     });
                     new_transcript.extend(lines);
                 }
-                TranscriptEntry::ToolBox(lines) => {
+                TranscriptEntry::ToolBox { header, body } => {
+                    let lines = crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
                     let th = lines.len() as u16;
                     let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
                     });
-                    new_transcript.extend(lines.clone());
+                    new_transcript.extend(lines);
                 }
-                TranscriptEntry::Lines(lines) => {
-                    let th = lines.len() as u16;
-                    let _ = self.terminal.insert_before(th, |buf| {
-                        Paragraph::new(lines.clone()).render(buf.area, buf);
-                    });
-                    new_transcript.extend(lines.clone());
+                TranscriptEntry::StyledLines { lines, hyperlinks } => {
+                    let lines_only = self.render_and_insert_styled_lines(lines, hyperlinks, w);
+                    new_transcript.extend(lines_only);
+                }
+                TranscriptEntry::Gap(need) => {
+                    let trailing = new_transcript.iter().rev().take_while(|l| {
+                        l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+                    }).count();
+                    let need_actual = need.saturating_sub(trailing);
+                    if need_actual > 0 {
+                        let blank: Vec<Line<'static>> = (0..need_actual).map(|_| Line::from("")).collect();
+                        let th = need_actual as u16;
+                        let _ = self.terminal.insert_before(th, |buf| {
+                            Paragraph::new(blank.clone()).render(buf.area, buf);
+                        });
+                        new_transcript.extend(blank);
+                    }
                 }
             }
         }
+        self.history_entries = entries;
         self.transcript = new_transcript;
 
         let _ = self.draw();

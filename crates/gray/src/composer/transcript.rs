@@ -57,14 +57,9 @@ fn slice_line_spans<'a>(
     Line { style: original.style, alignment: original.alignment, spans: acc }
 }
 
-/// Word-aware wrapping: preserves styles, respects has_bg and hyperlink guards,
+/// Word-aware wrapping: preserves styles, respects hyperlink guards,
 /// splits at word boundaries (space) and falls back to char chunk for long words.
 pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
-    // Don't wrap diff lines with background
-    let has_bg = line.style.bg.is_some() || line.spans.iter().any(|s| s.style.bg.is_some());
-    if has_bg {
-        return vec![line];
-    }
     // Don't wrap lines with OSC 8 hyperlinks
     if line.spans.iter().any(|s| s.content.contains("\x1b]8;;")) {
         return vec![line];
@@ -280,7 +275,7 @@ impl Tui {
         let _ = self.terminal.insert_before(h, |buf| {
             Paragraph::new(lines.clone()).render(buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::Lines(lines.clone()));
+        self.history_entries.push(super::TranscriptEntry::Gap(need));
         self.transcript.extend(lines);
     }
 
@@ -393,57 +388,64 @@ impl Tui {
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
+}
 
-    pub fn push_tool_box(&mut self, mut header: Line<'static>, body: Vec<Line<'static>>) {
-        self.ensure_gap(1);
-        let bg_color = Color::Rgb(22, 22, 22);
-        let bg_style = Style::default().bg(bg_color);
-        let w = self.width().max(10);
-        let max_w = w.saturating_sub(2).max(1);
+pub(crate) fn format_tool_box_lines(
+    header: Line<'static>,
+    body: &[Line<'static>],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let bg_color = Color::Rgb(22, 22, 22);
+    let bg_style = Style::default().bg(bg_color);
+    let max_w = width.saturating_sub(4).max(1);
 
-        header.style = header.style.patch(bg_style);
-        for span in header.spans.iter_mut() {
+    let mut box_lines: Vec<Line<'static>> = Vec::new();
+    box_lines.push(Line::from("").style(bg_style));
+
+    let wrapped_header = wrap_styled_line(header, max_w);
+    for mut l in wrapped_header {
+        l.style = l.style.patch(bg_style);
+        for span in l.spans.iter_mut() {
             span.style = span.style.bg(bg_color);
         }
+        box_lines.push(l);
+    }
 
-        let mut box_lines: Vec<Line<'static>> = Vec::new();
-        box_lines.push(Line::from("").style(bg_style));
-
-        let wrapped_header = wrap_styled_line(header, max_w);
-        for mut l in wrapped_header {
+    for line in body {
+        let mut line = line.clone();
+        for span in line.spans.iter_mut() {
+            if span.content.contains('\t') {
+                let expanded = crate::tool_fmt::expand_tabs(&span.content, 4);
+                *span = Span::styled(expanded, span.style);
+            }
+        }
+        let wrapped_body = wrap_styled_line(line, max_w);
+        for mut l in wrapped_body {
             l.style = l.style.patch(bg_style);
             for span in l.spans.iter_mut() {
                 span.style = span.style.bg(bg_color);
             }
             box_lines.push(l);
         }
+    }
+    box_lines.push(Line::from("").style(bg_style));
+    box_lines
+}
 
-        for line in body {
-            let mut line = line;
-            for span in line.spans.iter_mut() {
-                if span.content.contains('\t') {
-                    let expanded = crate::tool_fmt::expand_tabs(&span.content, 4);
-                    *span = Span::styled(expanded, span.style.bg(bg_color));
-                } else {
-                    span.style = span.style.bg(bg_color);
-                }
-            }
-            let wrapped_body = wrap_styled_line(line, max_w);
-            for mut l in wrapped_body {
-                l.style = l.style.patch(bg_style);
-                for span in l.spans.iter_mut() {
-                    span.style = span.style.bg(bg_color);
-                }
-                box_lines.push(l);
-            }
-        }
-        box_lines.push(Line::from("").style(bg_style));
+impl Tui {
+    pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
+        self.ensure_gap(1);
+        let w = self.width().max(10);
+        let box_lines = format_tool_box_lines(header.clone(), &body, w);
         let height = box_lines.len() as u16;
-        let block = ratatui::widgets::Block::default().style(bg_style);
+        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(box_lines.clone()).block(block).render(buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::ToolBox(box_lines.clone()));
+        self.history_entries.push(super::TranscriptEntry::ToolBox {
+            header,
+            body,
+        });
         self.transcript.extend(box_lines);
         self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
@@ -453,75 +455,34 @@ impl Tui {
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
-        let w = self.width().max(10);
-        let max_w = w.saturating_sub(2).max(1);
-        let chars: Vec<char> = line.chars().collect();
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        if chars.is_empty() {
-            lines.push(Line::from(""));
-        } else {
-            for chunk in chars.chunks(max_w) {
-                let text: String = chunk.iter().collect();
-                lines.push(Line::from(vec![
-                    left_pad(),
-                    Span::styled(text, style),
-                ]));
-            }
-        }
-        let h = lines.len() as u16;
-        self.history_entries.push(super::TranscriptEntry::Lines(lines.clone()));
-        self.transcript.extend(lines.clone());
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
-        let _ = self.terminal.insert_before(h, |buf| {
-            Paragraph::new(lines.clone()).render(buf.area, buf);
-        });
-        let _ = std::io::stdout().flush();
+        let l = Line::from(vec![Span::styled(line, style)]);
+        self.push_styled_lines_with_hyperlinks(vec![l], &[], 0);
     }
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
-        let w = self.width().max(10);
-        let max_w = w.saturating_sub(2).max(1);
-        let wrapped = wrap_styled_line(line, max_w);
-        let mut padded_wrapped = Vec::with_capacity(wrapped.len());
-        for mut l in wrapped {
-            if !l.spans.is_empty() {
-                l.spans.insert(0, left_pad());
-            }
-            padded_wrapped.push(l);
-        }
-        let h = padded_wrapped.len() as u16;
-        self.history_entries.push(super::TranscriptEntry::Lines(padded_wrapped.clone()));
-        self.transcript.extend(padded_wrapped.clone());
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
-        let _ = self.terminal.insert_before(h, |buf| {
-            Paragraph::new(padded_wrapped.clone()).render(buf.area, buf);
-        });
-        let _ = std::io::stdout().flush();
+        self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
     pub fn push_styled_lines(&mut self, lines: Vec<Line<'static>>) {
         self.push_styled_lines_with_hyperlinks(lines, &[], 0);
     }
 
-    pub fn push_styled_lines_with_hyperlinks(
+    pub(crate) fn render_and_insert_styled_lines(
         &mut self,
-        lines: Vec<Line<'static>>,
+        lines: &[Line<'static>],
         hyperlinks: &[HyperlinkTarget],
-        line_offset: usize,
-    ) {
-        if lines.is_empty() { return; }
-        let w = self.width().max(10);
-        let max_w = w.saturating_sub(2).max(1);
+        width: usize,
+    ) -> Vec<Line<'static>> {
+        if lines.is_empty() { return Vec::new(); }
+        let max_w = width.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
         for h in hyperlinks {
             by_line.entry(h.line_index).or_default().push(h);
         }
-        // Build all wrapped lines first plus per-line hyperlink info
         let mut all_wrapped: Vec<(Line<'static>, Vec<HyperlinkTarget>)> = Vec::new();
-        for (idx, line) in lines.into_iter().enumerate() {
-            let line_idx = line_offset + idx;
-            let line_hyperlinks = by_line.get(&line_idx).cloned().unwrap_or_default();
-            let wrapped = if !line_hyperlinks.is_empty() { vec![line] } else { wrap_styled_line(line, max_w) };
+        for (idx, line) in lines.iter().enumerate() {
+            let line_hyperlinks = by_line.get(&idx).cloned().unwrap_or_default();
+            let wrapped = if !line_hyperlinks.is_empty() { vec![line.clone()] } else { wrap_styled_line(line.clone(), max_w) };
             for mut l in wrapped {
                 let hl_owned: Vec<HyperlinkTarget> = line_hyperlinks.iter().map(|h| (*h).clone()).collect();
                 if !l.spans.is_empty() {
@@ -532,15 +493,10 @@ impl Tui {
         }
         let total_h = all_wrapped.len() as u16;
         let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l,_)| l.clone()).collect();
-        self.history_entries.push(super::TranscriptEntry::Lines(lines_only.clone()));
-        self.transcript.extend(lines_only.clone());
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
-        // Batch insert with hyperlink OSC injection per row
         let _ = self.terminal.insert_before(total_h, |buf| {
             let area = buf.area;
             for (i, (line, hls)) in all_wrapped.iter().enumerate() {
                 let row_area = ratatui::layout::Rect { x: area.x, y: area.y + i as u16, width: area.width, height: 1 };
-                // render line at row
                 Paragraph::new(line.clone()).render(row_area, buf);
                 for h in hls {
                     let pad = crate::tui::padding_x(1);
@@ -559,26 +515,36 @@ impl Tui {
                 }
             }
         });
+        lines_only
+    }
+
+    pub fn push_styled_lines_with_hyperlinks(
+        &mut self,
+        lines: Vec<Line<'static>>,
+        hyperlinks: &[HyperlinkTarget],
+        _line_offset: usize,
+    ) {
+        if lines.is_empty() { return; }
+        let w = self.width().max(10);
+        let lines_only = self.render_and_insert_styled_lines(&lines, hyperlinks, w);
+        self.history_entries.push(super::TranscriptEntry::StyledLines {
+            lines,
+            hyperlinks: hyperlinks.to_vec(),
+        });
+        self.transcript.extend(lines_only);
+        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
 
     pub fn push_dim(&mut self, line: String) {
         let styled = Line::from(vec![
-            left_pad(),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
         ]);
-        self.history_entries.push(super::TranscriptEntry::Lines(vec![styled.clone()]));
-        self.transcript.push(styled.clone());
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(styled).render(buf.area, buf);
-        });
-        let _ = std::io::stdout().flush();
+        self.push_styled_lines_with_hyperlinks(vec![styled], &[], 0);
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
         let mut spans = vec![
-            Span::raw(" "),
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
             Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         ];
@@ -587,13 +553,7 @@ impl Tui {
             spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
         }
         let line = Line::from(spans);
-        self.history_entries.push(super::TranscriptEntry::Lines(vec![line.clone()]));
-        self.transcript.push(line.clone());
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(line).render(buf.area, buf);
-        });
-        let _ = std::io::stdout().flush();
+        self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
     /// Replays a previous session's message history into the TUI scrollback.
