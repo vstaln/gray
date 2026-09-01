@@ -56,9 +56,9 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-    // One blank margin row above and below the input rows (plain, no bg) —
-    // the box's own margin, not doubled with any external pad rows.
-    box_lines.push(Line::from(""));
+    // One margin row above and below the input rows, painted with the box bg —
+    // the box reads as one padded surface (matches the user-prompt echo box).
+    box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
     // Prompt input rows
     let prompt_arrow = " ❯ ";
@@ -150,7 +150,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
         }
     }
 
-    box_lines.push(Line::from(""));
+    box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
 
     InputBox { lines: box_lines, cur_row, cur_col }
 }
@@ -214,8 +214,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 {
-            // no bg Block here: margin rows must stay blank, input rows carry
-            // their own full-width bg spans
+            // no bg Block here: margin rows carry their own full-width bg spans
             frame.render_widget(Paragraph::new(ibox.lines), Rect::new(area.x, box_y, area.width, rendered_box_h));
         }
 
