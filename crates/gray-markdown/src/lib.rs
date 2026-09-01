@@ -41,6 +41,7 @@ mod source_map;
 pub mod streaming;
 pub mod style;
 mod syntax;
+mod table_records;
 mod url_scan;
 
 // Re-export public API

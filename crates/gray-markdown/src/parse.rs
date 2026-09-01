@@ -1689,6 +1689,26 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             })
             .collect();
 
+        // Cramped-grid fallback (codex parity): when squeezed columns fragment
+        // tokens or starve expansive cells, render vertical key/value records
+        // instead of a box grid.
+        if crate::table_records::should_render_records(&state.header, &state.rows, &col_widths) {
+            let label_style: ratatui::style::Style = self.ms.rule.style_into().bold();
+            let rec = crate::table_records::render_records(
+                &state.header,
+                &state.rows,
+                self.max_table_width,
+                label_style,
+                border_style,
+            );
+            return FormattedTable {
+                lines: rec.lines,
+                styled_lines: rec.styled_lines,
+                line_source_offsets: rec.line_source_offsets,
+                hyperlinks: Vec::new(),
+            };
+        }
+
         let mut lines = Vec::new();
         let mut styled_lines = Vec::new();
         let mut line_source_offsets: Vec<usize> = Vec::new();
@@ -1820,45 +1840,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
     /// mid-word.  A single word wider than `width` is then hard-split on
     /// grapheme boundaries so no visual line exceeds the column width.
     pub(crate) fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
-        if width == 0 {
-            return vec![String::new()];
-        }
-        let opts = textwrap::Options::new(width)
-            .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit)
-            .word_separator(textwrap::WordSeparator::Custom(cell_word_separator))
-            .break_words(false);
-        let wrapped = textwrap::wrap(text, opts);
-        let mut lines: Vec<String> = Vec::with_capacity(wrapped.len());
-        for cow in wrapped {
-            let line = cow.into_owned();
-            if unicode_display_width(&line) <= width {
-                lines.push(line);
-                continue;
-            }
-            // An unbreakable word survived textwrap wider than the column
-            // (break_words is off, and textwrap's char-based emergency split
-            // can tear grapheme clusters): hard-split on grapheme boundaries
-            // using the same display-width model as the table formatter.
-            let mut piece = String::new();
-            let mut piece_width = 0usize;
-            for grapheme in line.graphemes(true) {
-                let grapheme_width = unicode_display_width(grapheme);
-                if piece_width > 0 && piece_width.saturating_add(grapheme_width) > width {
-                    lines.push(std::mem::take(&mut piece));
-                    piece_width = 0;
-                }
-                piece.push_str(grapheme);
-                piece_width = piece_width.saturating_add(grapheme_width);
-            }
-            if !piece.is_empty() {
-                lines.push(piece);
-            }
-        }
-        if lines.is_empty() {
-            vec![String::new()]
-        } else {
-            lines
-        }
+        wrap_cell_text(text, width)
     }
 
     /// Format a table row that may span multiple visual lines (when cells wrap).
@@ -2071,6 +2053,55 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         }
         line.push(right);
         line
+    }
+}
+
+/// Word-wrap a cell's plain text into lines of at most `width` display columns.
+/// Returns a Vec of Strings, one per visual line (never an empty Vec).
+///
+/// Delegates to `textwrap::wrap` with a custom word separator that allows
+/// line breaks after spaces, punctuation, and symbol characters — but never
+/// mid-word.  A single word wider than `width` is then hard-split on
+/// grapheme boundaries so no visual line exceeds the column width.
+pub(crate) fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![String::new()];
+    }
+    let opts = textwrap::Options::new(width)
+        .wrap_algorithm(textwrap::WrapAlgorithm::FirstFit)
+        .word_separator(textwrap::WordSeparator::Custom(cell_word_separator))
+        .break_words(false);
+    let wrapped = textwrap::wrap(text, opts);
+    let mut lines: Vec<String> = Vec::with_capacity(wrapped.len());
+    for cow in wrapped {
+        let line = cow.into_owned();
+        if unicode_display_width(&line) <= width {
+            lines.push(line);
+            continue;
+        }
+        // An unbreakable word survived textwrap wider than the column
+        // (break_words is off, and textwrap's char-based emergency split
+        // can tear grapheme clusters): hard-split on grapheme boundaries
+        // using the same display-width model as the table formatter.
+        let mut piece = String::new();
+        let mut piece_width = 0usize;
+        for grapheme in line.graphemes(true) {
+            let grapheme_width = unicode_display_width(grapheme);
+            if piece_width > 0 && piece_width.saturating_add(grapheme_width) > width {
+                lines.push(std::mem::take(&mut piece));
+                piece_width = 0;
+            }
+            piece.push_str(grapheme);
+            piece_width = piece_width.saturating_add(grapheme_width);
+        }
+        if !piece.is_empty() {
+            lines.push(piece);
+        }
+    }
+    if lines.is_empty() {
+        vec![String::new()]
+    } else {
+        lines
     }
 }
 
