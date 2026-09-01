@@ -365,20 +365,30 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
 
-    pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
+    pub fn push_tool_box(&mut self, mut header: Line<'static>, body: Vec<Line<'static>>) {
         self.ensure_gap(1);
-        let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
+        let bg_color = Color::Rgb(22, 22, 22);
+        let bg_style = Style::default().bg(bg_color);
+
+        header.style = header.style.patch(bg_style);
+        for span in header.spans.iter_mut() {
+            span.style = span.style.bg(bg_color);
+        }
+
         let mut box_lines: Vec<Line<'static>> = Vec::new();
         box_lines.push(Line::from("").style(bg_style));
-        box_lines.push(header.style(bg_style));
+        box_lines.push(header);
         for mut line in body {
+            line.style = line.style.patch(bg_style);
             for span in line.spans.iter_mut() {
                 if span.content.contains('\t') {
                     let expanded = crate::tool_fmt::expand_tabs(&span.content, 4);
-                    *span = Span::styled(expanded, span.style);
+                    *span = Span::styled(expanded, span.style.bg(bg_color));
+                } else {
+                    span.style = span.style.bg(bg_color);
                 }
             }
-            box_lines.push(line.style(bg_style));
+            box_lines.push(line);
         }
         box_lines.push(Line::from("").style(bg_style));
         let height = box_lines.len() as u16;
