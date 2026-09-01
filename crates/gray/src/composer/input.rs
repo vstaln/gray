@@ -300,22 +300,17 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
 
     let mut needs_draw = true;
     loop {
-        let mut pending_clear = false;
         if let Some((cols, deadline)) = tui.pending_resize {
             if std::time::Instant::now() >= deadline {
                 tui.pending_resize = None;
                 if cols != tui.last_width {
-                    tui.last_width = cols;
-                    needs_draw = true;
-                    pending_clear = true;
+                    tui.reflow_on_resize(cols);
+                    needs_draw = false;
                 }
             }
         }
 
         if needs_draw {
-            if pending_clear {
-                let _ = tui.terminal.clear();
-            }
             let cur_text = tui.textarea.text().to_string();
             tui.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
                 crate::repl::completion_matches(&cur_text[1..])

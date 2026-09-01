@@ -79,6 +79,37 @@ pub struct Tui {
 }
 
 
+pub fn build_welcome_lines() -> Vec<Line<'static>> {
+    let logo_raw = crate::tui::logo_lines();
+    let l_rows = logo_raw.len().max(1) as f32;
+    let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
+    let l_cols = (max_logo_w as f32).max(1.0);
+
+    let base = Color::Rgb(110, 110, 110);
+    let hilite = Color::Rgb(240, 240, 240);
+
+    let mut welcome_lines: Vec<Line<'static>> = Vec::new();
+    welcome_lines.push(Line::from(""));
+    for (row, line) in logo_raw.iter().enumerate() {
+        let trimmed = line.trim_end();
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        for (col, ch) in trimmed.chars().enumerate() {
+            let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
+            let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
+            let color = crate::tui::blend_color(base, hilite, t);
+            spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+        }
+        welcome_lines.push(Line::from(spans));
+    }
+    welcome_lines.push(Line::from(""));
+    welcome_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
+        Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
+    ]));
+    welcome_lines
+}
+
 impl Tui {
     pub fn new() -> anyhow::Result<Self> {
         crossterm::terminal::enable_raw_mode()?;
@@ -105,40 +136,7 @@ impl Tui {
         )?;
 
         // Print welcome logo into scrollback once at startup
-        let logo_raw = crate::tui::logo_lines();
-        let l_rows = logo_raw.len().max(1) as f32;
-        let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
-        let l_cols = (max_logo_w as f32).max(1.0);
-        let w = cols as usize;
-        let logo_pad = w.saturating_sub(max_logo_w) / 2;
-
-        let base = Color::Rgb(110, 110, 110);
-        let hilite = Color::Rgb(240, 240, 240);
-
-        let mut welcome_lines: Vec<Line<'static>> = Vec::new();
-        welcome_lines.push(Line::from(""));
-        for (row, line) in logo_raw.iter().enumerate() {
-            let trimmed = line.trim_end();
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            spans.push(Span::raw(" ".repeat(logo_pad)));
-            for (col, ch) in trimmed.chars().enumerate() {
-                let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
-                let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
-                let color = crate::tui::blend_color(base, hilite, t);
-                spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-            }
-            welcome_lines.push(Line::from(spans));
-        }
-        welcome_lines.push(Line::from(""));
-        let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
-        let banner_len = banner_raw.chars().count();
-        let pad = w.saturating_sub(banner_len) / 2;
-        welcome_lines.push(Line::from(vec![
-            Span::raw(" ".repeat(pad)),
-            Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
-            Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
-        ]));
-
+        let welcome_lines = build_welcome_lines();
         let welcome_h = welcome_lines.len() as u16;
         let _ = terminal.insert_before(welcome_h, |buf| {
             Paragraph::new(welcome_lines.clone()).render(buf.area, buf);
@@ -230,6 +228,46 @@ impl Tui {
             self.terminal = term;
             self.viewport_h = h;
         }
+    }
+
+    /// Codex-style transcript reflow on terminal resize:
+    /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
+    /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
+    pub(crate) fn reflow_on_resize(&mut self, new_cols: u16) {
+        self.last_width = new_cols;
+        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let h = self.viewport_h.clamp(1, rows);
+        let top = rows.saturating_sub(h);
+
+        // Codex-style: reset scroll region, clear visible screen and purge scrollback, home cursor
+        let mut out = std::io::stdout();
+        let _ = write!(out, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
+        let _ = crossterm::execute!(
+            out,
+            crossterm::cursor::MoveTo(0, top),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+            crossterm::cursor::MoveTo(0, top),
+        );
+        let _ = out.flush();
+
+        if let Ok(term) = Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(h),
+            },
+        ) {
+            self.terminal = term;
+        }
+
+        if !self.transcript.is_empty() {
+            let total_h = self.transcript.len() as u16;
+            let lines = self.transcript.clone();
+            let _ = self.terminal.insert_before(total_h, |buf| {
+                Paragraph::new(lines).render(buf.area, buf);
+            });
+        }
+
+        let _ = self.draw();
     }
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
@@ -402,13 +440,12 @@ impl Tui {
             false
         };
         // Reference: codex screen_size.rs + transcript_reflow.rs — trailing 75ms debounce.
-        let mut resized = false;
         if let Some((cols, deadline)) = self.pending_resize {
             if Instant::now() >= deadline {
                 self.pending_resize = None;
                 if cols != self.last_width {
-                    self.last_width = cols;
-                    resized = true;
+                    self.reflow_on_resize(cols);
+                    return;
                 }
             }
         } else if let Ok((cols, _)) = crossterm::terminal::size() {
@@ -419,14 +456,11 @@ impl Tui {
                 }
             }
         }
-        if self.status.is_none() && !needs_cron_tick && !resized {
+        if self.status.is_none() && !needs_cron_tick {
             return;
         }
         if needs_cron_tick {
             self.last_cron_tick = Some(Instant::now());
-        }
-        if resized {
-            let _ = self.terminal.clear();
         }
         let _ = self.draw();
     }

@@ -108,10 +108,10 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
                     let mut t = shared.lock().expect("tui lock");
                     t.pending_resize = None;
                     if let Ok((cols, _)) = crossterm::terminal::size() {
-                        t.last_width = cols;
+                        t.reflow_on_resize(cols);
+                    } else {
+                        let _ = t.draw();
                     }
-                    let _ = t.terminal.clear();
-                    let _ = t.draw();
                 }
             }
             match res {
@@ -1276,7 +1276,7 @@ pub async fn run_repl_mode(
                                         let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
                                         // give header same bg as body so it appears as first line of the box
                                         let bg = ratatui::style::Color::Rgb(30,30,30);
-                                        let term_w = crossterm::terminal::size().map(|(w,_)| w as usize).unwrap_or(120).max(60);
+                                        let term_w = t.width();
                                         let mut hdr = header;
                                         hdr.style = ratatui::style::Style::default().bg(bg);
                                         for s in hdr.spans.iter_mut() { s.style = s.style.bg(bg); }
@@ -1899,7 +1899,7 @@ pub async fn run_repl_mode(
                                     } else {
                                         let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
                                         let bg = ratatui::style::Color::Rgb(30,30,30);
-                                        let term_w = crossterm::terminal::size().map(|(w,_)| w as usize).unwrap_or(120).max(60);
+                                        let term_w = t.width();
                                         let mut hdr = header;
                                         hdr.style = ratatui::style::Style::default().bg(bg);
                                         for s in hdr.spans.iter_mut() { s.style = s.style.bg(bg); }

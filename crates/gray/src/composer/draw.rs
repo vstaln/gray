@@ -56,9 +56,8 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-    // One margin row above and below the input rows, painted with the box bg —
-    // the box reads as one padded surface (matches the user-prompt echo box).
-    box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+    // One margin row above and below the input rows, painted with the box bg
+    box_lines.push(Line::from(""));
 
     // Prompt input rows
     let prompt_arrow = " ❯ ";
@@ -68,10 +67,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     let mut cur_col = 0usize;
 
     if text.is_empty() {
-        box_lines.push(Line::from(vec![
-            arrow_span.clone(),
-            Span::styled(" ".repeat(w.saturating_sub(3)), Style::default().bg(bg_color)),
-        ]));
+        box_lines.push(Line::from(vec![arrow_span.clone()]));
     } else {
         let lines_raw: Vec<&str> = text.split('\n').collect();
         let mut cursor_found = false;
@@ -90,10 +86,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
             let has_cursor = !cursor_found && (cursor <= line_end_bytes || i == lines_raw.len() - 1);
 
             if raw_line.is_empty() {
-                box_lines.push(Line::from(vec![
-                    prefix_span,
-                    Span::styled(" ".repeat(w.saturating_sub(3)), Style::default().bg(bg_color)),
-                ]));
+                box_lines.push(Line::from(vec![prefix_span]));
                 if has_cursor {
                     cur_row = row_count;
                     cur_col = 0;
@@ -107,20 +100,16 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
                 for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
                     let s: String = chunk.iter().collect();
                     let chunk_byte_len: usize = chunk.iter().map(|c| c.len_utf8()).sum();
-                    let s_len = chunk.len();
-                    let pad_len = w.saturating_sub(3 + s_len);
 
                     if chunk_idx == 0 {
                         box_lines.push(Line::from(vec![
                             prefix_span.clone(),
                             Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                            Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                         ]));
                     } else {
                         box_lines.push(Line::from(vec![
                             Span::styled("   ", Style::default().bg(bg_color)),
                             Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                            Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
                         ]));
                     }
 
@@ -150,7 +139,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
         }
     }
 
-    box_lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+    box_lines.push(Line::from(""));
 
     InputBox { lines: box_lines, cur_row, cur_col }
 }
@@ -214,8 +203,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 {
-            // no bg Block here: margin rows carry their own full-width bg spans
-            frame.render_widget(Paragraph::new(ibox.lines), Rect::new(area.x, box_y, area.width, rendered_box_h));
+            let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            frame.render_widget(Paragraph::new(ibox.lines).block(box_block), Rect::new(area.x, box_y, area.width, rendered_box_h));
         }
 
         if visible_count > 0 {

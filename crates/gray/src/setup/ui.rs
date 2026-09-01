@@ -14,45 +14,7 @@ pub struct BackgroundSnapshot {
 
 impl BackgroundSnapshot {
     pub fn default_initial() -> Self {
-        use ratatui::style::{Color, Modifier, Style};
-        use ratatui::text::{Line, Span};
-
-        let (cols, _) = crossterm::terminal::size().unwrap_or((80, 24));
-        let w = cols as usize;
-        let logo_raw = crate::tui::logo_lines();
-        let l_rows = logo_raw.len().max(1) as f32;
-        let max_logo_w = logo_raw.iter().map(|l| l.trim_end().chars().count()).max().unwrap_or(0);
-        let l_cols = (max_logo_w as f32).max(1.0);
-        let logo_pad = w.saturating_sub(max_logo_w) / 2;
-
-        let base = Color::Rgb(110, 110, 110);
-        let hilite = Color::Rgb(240, 240, 240);
-
-        let mut welcome_lines: Vec<Line<'static>> = Vec::new();
-        welcome_lines.push(Line::from(""));
-        for (row, line) in logo_raw.iter().enumerate() {
-            let trimmed = line.trim_end();
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            spans.push(Span::raw(" ".repeat(logo_pad)));
-            for (col, ch) in trimmed.chars().enumerate() {
-                let diag = (col as f32 + (l_rows - 1.0 - row as f32)) / (l_cols + l_rows);
-                let t = (0.15 + 0.85 * diag).clamp(0.0, 1.0);
-                let color = crate::tui::blend_color(base, hilite, t);
-                spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-            }
-            welcome_lines.push(Line::from(spans));
-        }
-        welcome_lines.push(Line::from(""));
-        let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
-        let banner_len = banner_raw.chars().count();
-        let pad = w.saturating_sub(banner_len) / 2;
-        welcome_lines.push(Line::from(vec![
-            Span::raw(" ".repeat(pad)),
-            Span::styled("gray", Style::default().add_modifier(Modifier::BOLD).fg(Color::Rgb(225, 225, 225))),
-            Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
-        ]));
-        welcome_lines.push(Line::from(""));
-
+        let welcome_lines = crate::composer::build_welcome_lines();
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default();
@@ -186,6 +148,10 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         for l in transcript {
             full_screen_lines.push(dim_line(l));
         }
+        let empty_needed = transcript_avail_h.saturating_sub(transcript.len());
+        for _ in 0..empty_needed {
+            full_screen_lines.push(Line::from(""));
+        }
     } else {
         let skip = transcript.len() - transcript_avail_h;
         for l in &transcript[skip..] {
@@ -198,11 +164,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     }
 
     full_screen_lines.push(footer_line);
-
     full_screen_lines.truncate(h);
-    while full_screen_lines.len() < h {
-        full_screen_lines.push(Line::from(""));
-    }
 
     frame.render_widget(
         Paragraph::new(full_screen_lines),
