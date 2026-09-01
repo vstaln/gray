@@ -206,10 +206,13 @@ impl Tui {
         let new_top = rows - h;
         let mut out = std::io::stdout();
         if h > self.viewport_h {
-            let _ = crossterm::execute!(
-                out,
-                crossterm::terminal::ScrollUp(h - self.viewport_h)
-            );
+            // Grow: scroll the screen up by printing LFs at the bottom row.
+            // CSI S (crossterm ScrollUp) is not honored by all terminals
+            // (e.g. Ghostty), which ate the transcript's last row; LF at the
+            // bottom row scrolls universally and spills into scrollback.
+            let _ = crossterm::execute!(out, crossterm::cursor::MoveTo(0, rows - 1));
+            let _ = out.write_all(&vec![b'\n'; (h - self.viewport_h) as usize]);
+            let _ = out.flush();
         }
         let _ = crossterm::execute!(
             out,
