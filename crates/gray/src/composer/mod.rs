@@ -121,6 +121,7 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
         Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
         Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
     ]));
+    welcome_lines.push(Line::from(""));
     welcome_lines
 }
 
@@ -433,10 +434,11 @@ impl Tui {
             // Codex-style: ✻ Worked for 6s · N tok (dim)
             let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
             self.push_dim(line);
+            self.ensure_gap(1);
         } else if let Some(tok) = pending_tok {
             self.push_dim(tok);
+            self.ensure_gap(1);
         }
-        // pi-style: viewport box internal padding is the seam gap; no extra blank stacking
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }

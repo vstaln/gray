@@ -371,6 +371,7 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
         self.transcript.extend(lines);
+        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
@@ -404,7 +405,6 @@ impl Tui {
     }
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
-        self.ensure_gap(1);
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let wrapped = wrap_styled_line(line, max_w);
@@ -436,7 +436,6 @@ impl Tui {
         line_offset: usize,
     ) {
         if lines.is_empty() { return; }
-        self.ensure_gap(1);
         let w = self.width().max(10);
         let max_w = w.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
@@ -490,7 +489,6 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
-        self.ensure_gap(1);
         let styled = Line::from(vec![
             left_pad(),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
@@ -505,7 +503,6 @@ impl Tui {
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
-        self.ensure_gap(1);
         let mut spans = vec![
             Span::raw(" "),
             Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
