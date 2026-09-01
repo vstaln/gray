@@ -211,10 +211,11 @@ impl Agent {
     /// message, then execute any requested tools sequentially and feed their
     /// outputs back as tool-result messages. Stops when a turn ends without
     /// tool calls (`TurnEnd`) or when cancellation fires
-    /// ([`CoreError::Cancelled`]). A stall guard aborts 3 identical
-    /// consecutive tool calls as [`CoreError::LoopDetected`]. Tool failures
-    /// are *not* errors: they become `is_error` tool results so the model can
-    /// recover.
+    /// ([`CoreError::Cancelled`]). Two stall guards abort runaway loops:
+    /// 3 identical consecutive tool calls, or 20 consecutive read-only
+    /// (read/ls/find/grep) rounds with no file changes — nudged at 12.
+    /// Tool failures are *not* errors: they become `is_error` tool results
+    /// so the model can recover.
     pub async fn run(&mut self, input: Message, ctx: ToolContext) -> Result<Vec<AgentEvent>, CoreError> {
         self.run_inner(input, ctx, None).await
     }
@@ -242,6 +243,9 @@ impl Agent {
         // Stall guard: 3 identical consecutive tool calls → LoopDetected.
         let mut last_sig: Option<String> = None;
         let mut repeat: usize = 0;
+        // Exploration-stall guard: consecutive rounds using only read-only
+        // lookup tools — the "keeps re-reading instead of acting" loop.
+        let mut stall_rounds: usize = 0;
         // Forward each event to the optional streaming sink, then collect it.
         macro_rules! emit {
             ($ev:expr) => {{
@@ -452,6 +456,26 @@ impl Agent {
                 }
             }
 
+            // Exploration-stall guard: a round made up entirely of read-only
+            // lookup tools extends the streak; any other tool (bash, write,
+            // edit, questions, …) proves progress and resets it. Nudge once,
+            // then abort — a varied-args read loop never trips the signature
+            // guard above but burns tokens forever otherwise.
+            const STALL_NUDGE_ROUNDS: usize = 12;
+            const STALL_ABORT_ROUNDS: usize = 20;
+            const EXPLORATION_TOOLS: [&str; 4] = ["read", "ls", "find", "grep"];
+            if tool_uses.iter().all(|(_, n, _)| EXPLORATION_TOOLS.contains(&n.as_str())) {
+                stall_rounds += 1;
+            } else {
+                stall_rounds = 0;
+            }
+            if stall_rounds >= STALL_ABORT_ROUNDS {
+                answer_pending_tools(self, &tool_uses, 0, "aborted: exploration stall");
+                return Err(CoreError::LoopDetected(format!(
+                    "exploration stall: {stall_rounds} read-only tool rounds with no file changes"
+                )));
+            }
+
             for (idx, (id, name, args)) in tool_uses.iter().enumerate() {
                 if ctx.cancel.is_cancelled() {
                     answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
@@ -483,6 +507,14 @@ impl Agent {
                         is_error: output.is_error,
                     }],
                 });
+            }
+
+            if stall_rounds == STALL_NUDGE_ROUNDS {
+                log::warn!(target: "gray_agent", "exploration stall: injecting nudge after {stall_rounds} read-only rounds");
+                self.messages.push(Message::user(format!(
+                    "[gray stall guard: {stall_rounds} consecutive exploration tool rounds with no file changes. \
+                     Stop re-reading — either make the edit now, or report your findings and stop exploring.]"
+                )));
             }
         }
     }
@@ -629,6 +661,39 @@ mod agent_tests {
         ]
     }
 
+    fn read_script(id: &str, path: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::text_delta("peeking..."),
+            StreamEvent::tool_call_delta(
+                0,
+                Some(id.to_string()),
+                Some("read".to_string()),
+                &format!(r#"{{"path":"{path}"}}"#),
+            ),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+        ]
+    }
+
+    fn write_script(id: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::text_delta("writing..."),
+            StreamEvent::tool_call_delta(
+                0,
+                Some(id.to_string()),
+                Some("write".to_string()),
+                r#"{"path":"/tmp/x","content":"y"}"#,
+            ),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+        ]
+    }
+
+    fn end_script() -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::text_delta("done"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]
+    }
+
     #[tokio::test]
     async fn reasoning_deltas_stream_and_persist_into_history() {
         let provider = FakeProvider::new(vec![vec![
@@ -772,6 +837,74 @@ mod agent_tests {
         assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
         // 3rd identical turn aborting before tool result + synthetic tool_result: 1 user + 2 full rounds + 3rd assistant + 1 synthetic = 7
         assert_eq!(agent.messages().len(), 1 + 2 * 2 + 2);
+    }
+
+    #[tokio::test]
+    async fn exploration_stall_aborts_varied_read_rounds() {
+        // 25 rounds of `read`, each with a DIFFERENT path: the consecutive-identical
+        // signature guard never trips, so the exploration-stall guard must.
+        let scripts: Vec<Vec<StreamEvent>> = (0..25)
+            .map(|i| read_script(&format!("r{i}"), &format!("/tmp/f{i}.rs")))
+            .collect();
+        let provider = FakeProvider::new(scripts);
+        let executor = FakeExecutor::new(ToolOutput::ok("file body"));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+
+        let err = agent
+            .run(Message::user("explore"), ToolContext::default())
+            .await
+            .expect_err("exploration-only loop should abort");
+
+        assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn exploration_stall_injects_nudge_then_recovers() {
+        // Nudge after 12 exploration-only rounds must land in history without
+        // killing the run — the model can still end the turn cleanly.
+        let mut scripts: Vec<Vec<StreamEvent>> = (0..12)
+            .map(|i| read_script(&format!("r{i}"), &format!("/tmp/f{i}.rs")))
+            .collect();
+        scripts.push(end_script());
+        let provider = FakeProvider::new(scripts);
+        let executor = FakeExecutor::new(ToolOutput::ok("file body"));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+
+        let events = agent
+            .run(Message::user("explore"), ToolContext::default())
+            .await
+            .expect("nudge should not kill the run");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            agent.messages().iter().any(|m| m.text_content().contains("stall guard")),
+            "expected a stall-guard nudge message in history"
+        );
+    }
+
+    #[tokio::test]
+    async fn mutating_tool_resets_exploration_streak() {
+        // 11 reads → 1 write → 11 reads = 23 rounds: without the reset the
+        // streak would pass 20 and abort; with it the run completes.
+        let mut scripts: Vec<Vec<StreamEvent>> = Vec::new();
+        for i in 0..11 {
+            scripts.push(read_script(&format!("a{i}"), &format!("/tmp/a{i}.rs")));
+        }
+        scripts.push(write_script("w1"));
+        for i in 0..11 {
+            scripts.push(read_script(&format!("b{i}"), &format!("/tmp/b{i}.rs")));
+        }
+        scripts.push(end_script());
+        let provider = FakeProvider::new(scripts);
+        let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+
+        let events = agent
+            .run(Message::user("work"), ToolContext::default())
+            .await
+            .expect("a write must reset the stall streak");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
     }
 
     #[tokio::test]
