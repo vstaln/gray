@@ -1026,6 +1026,15 @@ pub async fn run_repl_mode(
         (shared, stop)
     });
 
+    // request_user_input bridge: TUI overlay when interactive, hermes-style
+    // stdin prompts when piped.
+    let question_bridge: gray_core::questions::QuestionBridge = if interactive {
+        let shared = tui.as_ref().map(|(s, _)| s.clone()).expect("interactive implies tui");
+        gray_core::questions::QuestionBridge(std::sync::Arc::new(crate::composer::ComposerQuestionAsker { tui: shared }))
+    } else {
+        gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
+    };
+
     // Cron background — stolen from hermes Scheduler tick (Step 3)
     // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward), deduped by InflightGuard.
     // Footer clock ticks every second via tick_status when next_cron is set.
@@ -1125,6 +1134,16 @@ pub async fn run_repl_mode(
                     }
                 }
             }
+        }
+        // ponytail: late answers from non-blocking request_user_input overwrite a
+        // pending /new prompt if both land at once — rare, last wins.
+        if pending_command.is_none()
+            && let Some((shared, _)) = tui.as_ref()
+            && let Ok(mut t) = shared.try_lock()
+            && !t.pending_question_answers.is_empty()
+        {
+            let texts = std::mem::take(&mut t.pending_question_answers);
+            pending_command = Some(ReplCommand::Prompt(texts.join("\n\n")));
         }
         let cmd = if let Some(c) = pending_command.take() {
             c
@@ -1238,7 +1257,7 @@ pub async fn run_repl_mode(
                     let agent = agent.as_mut().expect("agent built above");
                     let cancel = tokio_util::sync::CancellationToken::new();
                     *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
-                    let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone() };
+                    let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()) };
                     let user_msg = build_user_message_with_images(&prompt_text, &images);
                     let initial_count = agent.messages().len();
                     let (shared, _) = if interactive { (Some(tui.as_ref().expect("interactive implies tui")), ()) } else { (None, ()) };
@@ -1264,7 +1283,16 @@ pub async fn run_repl_mode(
                             }
                             if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = event {
                                 if kind == KeyEventKind::Release { continue; }
-                                if code == KeyCode::Esc || (code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL)) { watch_cancel.cancel(); return; }
+                                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) { watch_cancel.cancel(); return; }
+                                // request_user_input overlay owns the keyboard while active
+                                if let Some(shared) = watcher_tui.as_ref()
+                                    && let Ok(mut t) = shared.try_lock()
+                                    && t.active_question.is_some()
+                                {
+                                    crate::composer::handle_question_key(&mut t, code, modifiers);
+                                    continue;
+                                }
+                                if code == KeyCode::Esc { watch_cancel.cancel(); return; }
                             }
                         }
                     });
@@ -1571,6 +1599,7 @@ pub async fn run_repl_mode(
                 let ctx = ToolContext {
                     cwd: cwd.clone(),
                     cancel: cancel.clone(),
+                    questions: Some(question_bridge.clone()),
                 };
                 let images = std::mem::take(&mut pending_images);
                 let user_msg = build_user_message_with_images(&prompt_text, &images);
@@ -1619,6 +1648,14 @@ pub async fn run_repl_mode(
                                 if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
                                     watch_cancel.cancel();
                                     return;
+                                }
+                                // request_user_input overlay owns the keyboard while active
+                                if let Some(shared) = watcher_tui.as_ref()
+                                    && let Ok(mut t) = shared.try_lock()
+                                    && t.active_question.is_some()
+                                {
+                                    crate::composer::handle_question_key(&mut t, code, modifiers);
+                                    continue;
                                 }
                                 // Esc: dismiss popup if open, else cancel turn
                                 if code == KeyCode::Esc {

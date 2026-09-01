@@ -127,7 +127,7 @@ impl GatewayRunner {
             .with_tools(tool_defs)
             .with_messages(prior_messages);
 
-        let ctx = ToolContext{ cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")), cancel: tokio_util::sync::CancellationToken::new() };
+        let ctx = ToolContext::default();
         let events = agent.run(Message::user(ev.text.clone()), ctx).await
             .map_err(|e| anyhow::anyhow!("agent run: {e}"))?;
 

@@ -84,6 +84,7 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     let ctx = ToolContext {
         cwd: cwd.clone(),
         cancel,
+        questions: None,
     };
 
     let mut agent = build_agent(config, &cwd)?;

@@ -53,11 +53,14 @@ impl ToolOutput {
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancel: CancellationToken,
+    /// Bridge for user-question tools (`request_user_input`); `None` means
+    /// no interactive user is reachable.
+    pub questions: Option<crate::questions::QuestionBridge>,
 }
 
 impl Default for ToolContext {
     fn default() -> Self {
-        Self { cwd: PathBuf::from("."), cancel: CancellationToken::new() }
+        Self { cwd: PathBuf::from("."), cancel: CancellationToken::new(), questions: None }
     }
 }
 

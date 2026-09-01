@@ -155,8 +155,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let cursor = tui.textarea.cursor().min(text.len());
     let ibox = build_input_box(&text, cursor, w);
     let box_h = ibox.lines.len().max(1) as u16;
-    let attach_h: u16 = u16::from(!tui.attachments.is_empty());
-    let status_h: u16 = if tui.status.is_some() { 2 } else { 0 };
+    let question_active = tui.active_question.is_some();
+    // While a question is up it IS the status: hide the shimmer and the
+    // attachments row so the panel gets the whole inline viewport.
+    let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
+    let status_h: u16 = if tui.status.is_some() && !question_active { 2 } else { 0 };
 
     tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -165,7 +168,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let status_y = area.y;
         let box_y = status_y + status_h;
         let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + box_h + attach_h + 1));
-        let visible_count = if tui.matches.is_empty() {
+        let question_lines: Option<Vec<Line<'static>>> = if question_active {
+            tui.active_question
+                .as_ref()
+                .map(|q| super::question::panel_lines(q, w, panel_cap.max(1) as usize))
+        } else {
+            None
+        };
+        let visible_count = if let Some(qlines) = &question_lines {
+            qlines.len().min(panel_cap as usize)
+        } else if tui.matches.is_empty() {
             0
         } else {
             tui.matches.len().min(panel_cap as usize)
@@ -175,7 +187,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
 
-        if let Some((started, label)) = &tui.status {
+        if let Some((started, label)) = &tui.status && !question_active {
             let label_text = format!(" \u{2b21} {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed(), tui.truecolor);
             let elapsed = started.elapsed();
@@ -204,7 +216,18 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             frame.render_widget(Paragraph::new(ibox.lines).block(box_block), Rect::new(area.x, box_y, area.width, rendered_box_h));
         }
 
-        if visible_count > 0 {
+        if let Some(qlines) = &question_lines && visible_count > 0 {
+            for (i, line) in qlines.iter().enumerate().take(visible_count) {
+                let item_y = panel_y + i as u16;
+                if item_y < area.y || item_y >= area.y + area.height {
+                    continue;
+                }
+                frame.render_widget(
+                    Paragraph::new(line.clone()).block(Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)))),
+                    Rect::new(area.x, item_y, area.width, 1),
+                );
+            }
+        } else if visible_count > 0 {
             let start = tui.sel.saturating_sub(visible_count.saturating_sub(1)).min(tui.sel);
             for (i, (name, desc)) in tui.matches.iter().enumerate().skip(start).take(visible_count) {
                 let y = (i - start) as u16;

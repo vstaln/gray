@@ -14,6 +14,7 @@ pub mod find;
 pub mod grep;
 pub mod ls;
 pub mod read;
+pub mod request_user_input;
 pub mod truncate;
 pub mod write;
 
@@ -32,6 +33,7 @@ pub use find::FindTool;
 pub use grep::GrepTool;
 pub use ls::LsTool;
 pub use read::ReadTool;
+pub use request_user_input::{RequestUserInputTool, StdinQuestionAsker};
 pub use write::WriteTool;
 
 /// Maximum number of lines kept in a successful tool output.
@@ -88,6 +90,7 @@ impl Registry {
         reg.register(Box::new(WriteTool));
         reg.register(Box::new(EditTool));
         reg.register(Box::new(CronTool));
+        reg.register(Box::new(RequestUserInputTool));
         // ponytail: delegate_task global semaphore, per-account caps if throughput matters
         {
             use gray_core::delegation::DelegateConfig;

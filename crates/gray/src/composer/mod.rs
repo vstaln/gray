@@ -38,6 +38,10 @@ pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 mod text_area;
 pub(crate) use text_area::{TextArea, TextElement};
 
+mod question;
+pub(crate) use question::{attach_request, handle_question_key, tick_question};
+pub use question::ComposerQuestionAsker;
+
 pub struct Tui {
     pub(crate) terminal: Term,
     pub(crate) textarea: TextArea,
@@ -73,6 +77,9 @@ pub struct Tui {
     // Cron ticking UI — next due job for footer clock
     pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
     pub(crate) last_cron_tick: Option<Instant>,
+    // request_user_input overlay (codex port) + late non-blocking answers
+    pub(crate) active_question: Option<question::QuestionSession>,
+    pub pending_question_answers: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -179,6 +186,8 @@ impl Tui {
             live_streamed_tokens: 0,
             next_cron: None,
             last_cron_tick: None,
+            active_question: None,
+            pending_question_answers: Vec::new(),
         })
     }
 
@@ -346,6 +355,11 @@ impl Tui {
     }
 
     pub fn end_turn(&mut self) {
+        // Question overlay teardown: dropping the session fails any still-
+        // pending askers (queued senders) cleanly; cancelled turns land here.
+        if self.active_question.take().is_some() {
+            self.textarea.set_text("");
+        }
         // capture elapsed before clearing
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
@@ -413,6 +427,10 @@ impl Tui {
         }
     }
     pub fn tick_status(&mut self) {
+        // Non-blocking question countdown rides the same ticker.
+        if self.active_question.is_some() {
+            tick_question(self);
+        }
         // Cron ticking clock — needs repaint even when idle, once per second
         let needs_cron_tick = if let Some((_, next)) = &self.next_cron {
             let now = chrono::Utc::now();
