@@ -185,21 +185,31 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         other => {
-            let args_preview = if let Some(obj) = args.as_object() {
-                obj.iter()
-                    .take(2)
-                    .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or(&v.to_string())))
-                    .collect::<Vec<_>>()
-                    .join(" ")
+            let path = shorten_path(arg_path(args), cwd);
+            if !path.is_empty() {
+                Line::from(vec![
+                    bullet,
+                    Span::styled(other.to_string(), action_style),
+                    Span::raw(" "),
+                    Span::styled(path, path_style),
+                ])
             } else {
-                String::new()
-            };
-            Line::from(vec![
-                bullet,
-                Span::styled(other.to_string(), action_style),
-                Span::raw(" "),
-                Span::styled(args_preview, dim_style),
-            ])
+                let args_preview = if let Some(obj) = args.as_object() {
+                    obj.iter()
+                        .take(2)
+                        .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or(&v.to_string())))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                } else {
+                    String::new()
+                };
+                Line::from(vec![
+                    bullet,
+                    Span::styled(other.to_string(), action_style),
+                    Span::raw(" "),
+                    Span::styled(args_preview, dim_style),
+                ])
+            }
         }
     }
 }
