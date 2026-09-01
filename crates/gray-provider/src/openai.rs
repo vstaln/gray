@@ -695,6 +695,10 @@ struct ResponsesRequest {
     /// Cache-shard affinity (pi sends the session id here).
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
+    /// Server-side retention off (pi parity): with store enabled the backend
+    /// folds generated reasoning into its cached prompt, which breaks the
+    /// exact-prefix match on later turns (measured: turn 3+ misses at 0%).
+    store: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -808,6 +812,7 @@ fn map_chat_to_responses(req: ChatRequest, model: &str, session_id: Option<&str>
         tools,
         stream: true,
         prompt_cache_key: session_id.map(str::to_string),
+        store: false,
     }
 }
 
