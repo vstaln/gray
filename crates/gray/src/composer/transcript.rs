@@ -226,43 +226,26 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, span_bounds: Vec<(Rang
     result
 }
 
-pub(crate) fn format_user_prompt_lines(text: &str, w: usize) -> Vec<Line<'static>> {
+pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
-    let content_w = w.saturating_sub(4).max(1);
-    let bg_color = Color::Rgb(22, 22, 22);
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
-    let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
+    let mut lines = Vec::new();
+    lines.push(Line::from(""));
+    let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
-        let prefix_span = if i == 0 { arrow_span.clone() } else { Span::styled("   ", Style::default().bg(bg_color)) };
+        let prefix = if i == 0 { arrow_span.clone() } else { Span::raw("   ") };
         if raw_line.is_empty() {
-            lines.push(Line::from(vec![ prefix_span, Span::styled(" ".repeat(w.saturating_sub(3)), Style::default().bg(bg_color)) ]));
+            lines.push(Line::from(vec![prefix]));
         } else {
-            let chars: Vec<char> = raw_line.chars().collect();
-            for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
-                let s: String = chunk.iter().collect();
-                let s_len = chunk.len();
-                let pad_len = w.saturating_sub(3 + s_len);
-                if chunk_idx == 0 {
-                    lines.push(Line::from(vec![
-                        prefix_span.clone(),
-                        Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                        Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
-                    ]));
-                } else {
-                    lines.push(Line::from(vec![
-                        Span::styled("   ", Style::default().bg(bg_color)),
-                        Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
-                        Span::styled(" ".repeat(pad_len), Style::default().bg(bg_color)),
-                    ]));
-                }
-            }
+            lines.push(Line::from(vec![
+                prefix,
+                Span::styled((*raw_line).to_string(), Style::default().fg(text_primary)),
+            ]));
         }
     }
-    lines.push(Line::from(vec![Span::styled(" ".repeat(w), Style::default().bg(bg_color))]));
+    lines.push(Line::from(""));
     lines
 }
 
@@ -362,8 +345,7 @@ impl Tui {
 
     pub fn push_user_prompt(&mut self, text: &str) {
         self.ensure_gap(1);
-        let w = self.width().max(20);
-        let lines = format_user_prompt_lines(text, w);
+        let lines = format_user_prompt_lines(text);
         let height = lines.len() as u16;
         let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {

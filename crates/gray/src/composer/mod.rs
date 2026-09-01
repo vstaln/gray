@@ -280,25 +280,32 @@ impl Tui {
         for entry in &self.history_entries {
             match entry {
                 TranscriptEntry::Welcome => {
-                    new_transcript.extend(build_welcome_lines(w));
+                    let lines = build_welcome_lines(w);
+                    let th = lines.len() as u16;
+                    let _ = self.terminal.insert_before(th, |buf| {
+                        Paragraph::new(lines.clone()).render(buf.area, buf);
+                    });
+                    new_transcript.extend(lines);
                 }
                 TranscriptEntry::UserPrompt(text) => {
-                    new_transcript.extend(crate::composer::transcript::format_user_prompt_lines(text, w));
+                    let lines = crate::composer::transcript::format_user_prompt_lines(text);
+                    let th = lines.len() as u16;
+                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let _ = self.terminal.insert_before(th, |buf| {
+                        Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
+                    });
+                    new_transcript.extend(lines);
                 }
                 TranscriptEntry::Lines(lines) => {
+                    let th = lines.len() as u16;
+                    let _ = self.terminal.insert_before(th, |buf| {
+                        Paragraph::new(lines.clone()).render(buf.area, buf);
+                    });
                     new_transcript.extend(lines.clone());
                 }
             }
         }
         self.transcript = new_transcript;
-
-        if !self.transcript.is_empty() {
-            let total_h = self.transcript.len() as u16;
-            let lines = self.transcript.clone();
-            let _ = self.terminal.insert_before(total_h, |buf| {
-                Paragraph::new(lines).render(buf.area, buf);
-            });
-        }
 
         let _ = self.draw();
     }
@@ -381,17 +388,8 @@ impl Tui {
         self.status = label.map(|l| (Instant::now(), l.to_string()));
         let _ = self.draw();
     }
-    pub fn end_turn(&mut self) {
-        // capture elapsed before clearing
-        let elapsed = self.turn_started.take().map(|s| s.elapsed());
-        let had_thinking = self.turn_had_thinking;
-        self.turn_had_thinking = false;
-        self.is_task_running = false;
-        self.status = None;
-        self.live_streamed_tokens = 0;
-        if self.thinking {
-            self.end_thinking_run(true);
-        } else if !self.pending.is_empty() {
+    pub fn flush_markdown(&mut self) {
+        if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
             let style = if self.thinking { thinking_style() } else { Style::default() };
             for line in rest.split('\n') {
@@ -410,6 +408,20 @@ impl Tui {
             self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
         }
         self.committed_markdown_lines = 0;
+    }
+
+    pub fn end_turn(&mut self) {
+        // capture elapsed before clearing
+        let elapsed = self.turn_started.take().map(|s| s.elapsed());
+        let had_thinking = self.turn_had_thinking;
+        self.turn_had_thinking = false;
+        self.is_task_running = false;
+        self.status = None;
+        self.live_streamed_tokens = 0;
+        if self.thinking {
+            self.end_thinking_run(true);
+        }
+        self.flush_markdown();
 
         let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
