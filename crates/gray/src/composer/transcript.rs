@@ -230,22 +230,23 @@ pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
+    let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines = Vec::new();
-    lines.push(Line::from(""));
+    lines.push(Line::from("").style(bg_style));
     let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
         let prefix = if i == 0 { arrow_span.clone() } else { Span::raw("   ") };
         if raw_line.is_empty() {
-            lines.push(Line::from(vec![prefix]));
+            lines.push(Line::from(vec![prefix]).style(bg_style));
         } else {
             lines.push(Line::from(vec![
                 prefix,
                 Span::styled((*raw_line).to_string(), Style::default().fg(text_primary)),
-            ]));
+            ]).style(bg_style));
         }
     }
-    lines.push(Line::from(""));
+    lines.push(Line::from("").style(bg_style));
     lines
 }
 
@@ -283,20 +284,19 @@ impl Tui {
     }
 
     pub fn stream_thinking(&mut self, chunk: &str) {
-        let toks = (chunk.chars().count() + 3) / 4;
-        self.live_streamed_tokens += toks.max(1);
-        if !self.thinking {
-            self.ensure_gap(1);
-            self.thinking = true;
-            self.turn_had_thinking = true;
+        self.turn_had_thinking = true;
+        if self.hide_thinking { return; }
+        if self.status.as_ref().map(|s| s.1.as_str()) != Some("Thinking") {
             self.set_status(Some("Thinking"));
-            if !self.hide_thinking {
-                
-            }
         }
-        if !self.hide_thinking {
-            self.stream(chunk);
+        self.thinking = true;
+        self.pending.push_str(&strip_ansi(chunk));
+        while let Some(idx) = self.pending.find('\n') {
+            let line: String = self.pending.drain(..=idx).collect();
+            let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+            self.push_line_styled(trimmed.to_string(), thinking_style());
         }
+        let _ = self.draw();
     }
 
     pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
@@ -353,36 +353,27 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
         self.transcript.extend(lines);
-        let gap = Line::from("");
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(gap.clone()).render(buf.area, buf);
-        });
-        self.history_entries.push(super::TranscriptEntry::Lines(vec![gap.clone()]));
-        self.transcript.push(gap);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
 
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.ensure_gap(1);
+        let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
         let mut box_lines: Vec<Line<'static>> = Vec::new();
-        box_lines.push(Line::from(""));
-        box_lines.push(header);
-        box_lines.extend(body);
-        box_lines.push(Line::from(""));
+        box_lines.push(Line::from("").style(bg_style));
+        box_lines.push(header.style(bg_style));
+        for line in body {
+            box_lines.push(line.style(bg_style));
+        }
+        box_lines.push(Line::from("").style(bg_style));
         let height = box_lines.len() as u16;
-        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block = ratatui::widgets::Block::default().style(bg_style);
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(box_lines.clone()).block(block).render(buf.area, buf);
         });
         self.history_entries.push(super::TranscriptEntry::ToolBox(box_lines.clone()));
         self.transcript.extend(box_lines);
-        let gap = Line::from("");
-        let _ = self.terminal.insert_before(1, |buf| {
-            Paragraph::new(gap.clone()).render(buf.area, buf);
-        });
-        self.history_entries.push(super::TranscriptEntry::Lines(vec![gap.clone()]));
-        self.transcript.push(gap);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
