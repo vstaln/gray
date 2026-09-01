@@ -23,9 +23,15 @@ pub struct SendResult {
 pub trait BasePlatformAdapter: Send + Sync {
     fn platform(&self) -> Platform;
     fn is_authenticated(&self) -> bool;
-    async fn connect(&mut self) -> anyhow::Result<()>;
-    async fn disconnect(&mut self) -> anyhow::Result<()>;
+    async fn connect(&self) -> anyhow::Result<()>;
+    async fn disconnect(&self) -> anyhow::Result<()>;
     async fn send(&self, chat: &str, text: &str) -> SendResult;
+
+    /// Wire the inbound event channel. Default no-op (stub adapters never receive).
+    fn set_event_tx(&mut self, _tx: tokio::sync::mpsc::UnboundedSender<MessageEvent>) {}
+
+    /// Best-effort typing indicator (Discord typing trigger). Default no-op.
+    async fn send_typing(&self, _chat: &str) {}
 }
 
 /// Count UTF-16 code units (Telegram/Discord limits are in utf16).
