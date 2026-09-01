@@ -319,6 +319,7 @@ impl Tui {
     }
 
     pub fn begin_turn(&mut self, label: &str) {
+        self.ensure_gap(1);
         let now = Instant::now();
         if self.turn_started.is_none() {
             self.turn_started = Some(now);

@@ -153,7 +153,7 @@ async fn handle_proxy(State(a):State<Arc<dyn UpstreamAdapter>>,req:Request)->Res
 pub async fn run_server(a:Arc<dyn UpstreamAdapter>,host:&str,port:u16)->anyhow::Result<()>{
     let addr=format!("{host}:{port}");
     let l=tokio::net::TcpListener::bind(&addr).await?;
-    eprintln!("proxy: listening on http://{addr}/v1 -> {}",a.display());
+    log::info!("proxy: listening on http://{addr}/v1 -> {}",a.display());
     axum::serve(l,router(a)).await?; Ok(())
 }
 #[derive(clap::Parser,Debug,Clone)]
@@ -188,7 +188,6 @@ pub async fn run_cli(cmd:Option<ProxyCmd>,cfg:&crate::config::Config)->anyhow::R
             let a=if let Some(p)=provider{get_adapter(&p)?}else{adapter_from_base(&cfg.base_url)};
             if !a.is_authenticated(){ anyhow::bail!("Not logged into {}. Run /connect first.",a.display()); }
             println!("Listening on http://{host}:{port}/v1 -> {} ✓",a.display());
-            eprintln!("Listening on http://{host}:{port}/v1 -> {}",a.display());
             run_server(a,&host,port).await
         }
     }

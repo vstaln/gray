@@ -370,7 +370,6 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
         self.transcript.extend(lines);
-        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
@@ -607,6 +606,7 @@ impl Tui {
                             gray_core::ContentBlock::Text { text } => {
                                 let clean = strip_ansi(text);
                                 if !clean.trim().is_empty() {
+                                    self.ensure_gap(1);
                                     let (output, _) = gray_markdown::render_markdown_ratatui_full(&clean, gray_markdown::gray_markdown_style(), true, Some(gray_markdown::get_syntect()));
                                     self.push_styled_lines_with_hyperlinks(output.lines, &output.hyperlinks, 0);
                                 }
@@ -614,6 +614,7 @@ impl Tui {
                             gray_core::ContentBlock::ToolUse { id, name, args } => {
                                 tool_calls.insert(id.clone(), (name.clone(), args.clone()));
                                 let header = crate::tool_fmt::format_tool_call_header(name, args, Some(cwd));
+                                self.ensure_gap(1);
                                 self.push_line_spans(header);
                             }
                             _ => {}

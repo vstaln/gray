@@ -409,7 +409,9 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         if !tui.matches.is_empty() {
                             if let Some((name, _)) = tui.matches.get(tui.sel) {
                                 if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
-                                    tui.textarea.set_text(&format!("/{name} "));
+                                    // bare `/skills` opens the interactive skill picker
+                                    let fill = if name == "skills" { "/skills:".to_string() } else { format!("/{name} ") };
+                                    tui.textarea.set_text(&fill);
                                     tui.textarea.move_to_end();
                                     continue;
                                 }
@@ -448,7 +450,8 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                     }
                     KeyCode::Tab => {
                         if let Some((name, _)) = tui.matches.get(tui.sel) {
-                            tui.textarea.set_text(&format!("/{name} "));
+                            let fill = if name == "skills" { "/skills:".to_string() } else { format!("/{name} ") };
+                            tui.textarea.set_text(&fill);
                             tui.textarea.move_to_end();
                         }
                     }

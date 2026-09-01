@@ -60,7 +60,10 @@ pub(crate) use session::SessionState;
 /// Raw println! while the composer viewport is live collides with the next draw (ghost input).
 fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
-        t.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+        let mut t = t.lock().expect("tui lock");
+        for line in msg.split('\n') {
+            t.push_dim(format!("╰ {line}"));
+        }
     } else {
         println!("{msg}");
     }
@@ -1486,9 +1489,17 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Help => {
-                println!("{}", crate::rule("commands"));
-                for (name, desc) in COMMANDS {
-                    println!("  /{name:<8} {desc}");
+                if let Some((shared, _)) = &tui {
+                    let mut out = String::new();
+                    for (name, desc) in COMMANDS {
+                        out.push_str(&format!("  /{name:<10} {desc}\n"));
+                    }
+                    shared.lock().expect("tui lock").push_dim(out.trim_end().to_string());
+                } else {
+                    println!("{}", crate::rule("commands"));
+                    for (name, desc) in COMMANDS {
+                        println!("  /{name:<8} {desc}");
+                    }
                 }
                 continue;
             }
@@ -1618,8 +1629,8 @@ pub async fn run_repl_mode(
                 handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
-            ReplCommand::Unknown(_) => {
-                println!("unknown command");
+            ReplCommand::Unknown(cmd) => {
+                say(tui.as_ref().map(|(s, _)| s), &format!("unknown command '{cmd}' — type /help for available commands"));
                 continue;
             }
             ReplCommand::Prompt(prompt_text) => {
