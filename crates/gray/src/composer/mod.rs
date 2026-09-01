@@ -333,6 +333,9 @@ impl Tui {
             gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
         ).finish_into_output(Some(gray_markdown::get_syntect()));
         if output.lines.len() > self.committed_markdown_lines {
+            if self.committed_markdown_lines == 0 {
+                self.ensure_gap(1);
+            }
             let remaining_lines: Vec<Line<'static>> = output.lines[self.committed_markdown_lines..].to_vec();
             let offset = self.committed_markdown_lines;
             self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);

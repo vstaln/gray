@@ -303,6 +303,9 @@ impl Tui {
             let _ = self.draw();
             return;
         }
+        if !self.thinking {
+            self.ensure_gap(1);
+        }
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Thinking") {
             self.set_status(Some("Thinking"));
         }
@@ -337,6 +340,9 @@ impl Tui {
         self.markdown_renderer.push_and_render(&clean, Some(gray_markdown::get_syntect()));
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
+            if self.committed_markdown_lines == 0 {
+                self.ensure_gap(1);
+            }
             let view = self.markdown_renderer.view();
             let new_lines: Vec<Line<'static>> = view.lines[self.committed_markdown_lines..frozen_len].to_vec();
             let hyperlinks = view.hyperlinks.to_vec();
@@ -599,9 +605,10 @@ impl Tui {
                                 user_text.push_str(text);
                             }
                             gray_core::ContentBlock::ToolResult { id, content, is_error } => {
-                                let (name, args) = tool_calls.get(id).map(|(n, a)| (n.as_str(), Some(a))).unwrap_or(("tool", None));
-                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(name, args, content, *is_error, Some(cwd));
-                                if !lines.is_empty() { self.push_styled_lines(lines); }
+                                let (name, args) = tool_calls.remove(id).map(|(n, a)| (n, Some(a))).unwrap_or_else(|| ("tool".to_string(), None));
+                                let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
+                                self.push_tool_box(header, lines);
                             }
                             _ => {}
                         }
@@ -622,9 +629,6 @@ impl Tui {
                             }
                             gray_core::ContentBlock::ToolUse { id, name, args } => {
                                 tool_calls.insert(id.clone(), (name.clone(), args.clone()));
-                                let header = crate::tool_fmt::format_tool_call_header(name, args, Some(cwd));
-                                self.ensure_gap(1);
-                                self.push_line_spans(header);
                             }
                             _ => {}
                         }
@@ -633,13 +637,18 @@ impl Tui {
                 gray_core::Role::System => {
                     for block in &entry.message.content {
                         if let gray_core::ContentBlock::ToolResult { id, content, is_error } = block {
-                            let (name, args) = tool_calls.get(id).map(|(n, a)| (n.as_str(), Some(a))).unwrap_or(("tool", None));
-                            let lines = crate::tool_fmt::format_tool_result_lines_with_context(name, args, content, *is_error, Some(cwd));
-                            if !lines.is_empty() { self.push_styled_lines(lines); }
+                            let (name, args) = tool_calls.remove(id).map(|(n, a)| (n, Some(a))).unwrap_or_else(|| ("tool".to_string(), None));
+                            let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                            let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
+                            self.push_tool_box(header, lines);
                         }
                     }
                 }
             }
+        }
+        for (_id, (name, args)) in tool_calls {
+            let header = crate::tool_fmt::format_tool_call_header(&name, &args, Some(cwd));
+            self.push_tool_box(header, Vec::new());
         }
         if let Some(last_usage) = entries.iter().rev().find_map(|e| e.usage) {
             self.set_usage(last_usage);
