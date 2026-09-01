@@ -226,10 +226,6 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, span_bounds: Vec<(Rang
     result
 }
 
-pub(crate) fn word_wrap_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
-    wrap_styled_line(line, max_w)
-}
-
 // ---------------------------------------------------------------------------
 // Tui transcript methods (batch insert_before)
 // ---------------------------------------------------------------------------

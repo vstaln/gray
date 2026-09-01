@@ -31,7 +31,7 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 mod draw;
 pub(crate) use draw::{shimmer_spans, thinking_style};
 mod transcript;
-pub(crate) use transcript::{word_wrap_line, wrap_styled_line};
+pub(crate) use transcript::wrap_styled_line;
 mod input;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
@@ -281,14 +281,6 @@ impl Tui {
 
     pub(crate) fn sync_attachments(&mut self) {
         input::sync_attachments(self)
-    }
-
-    pub(crate) fn is_image_path(path: &str) -> bool {
-        input::is_image_path(path)
-    }
-
-    pub(crate) fn try_attach_image_paste(&mut self, pasted: &str) -> bool {
-        input::try_attach_image_paste(self, pasted)
     }
 
     pub(crate) fn try_attach_clipboard_image(&mut self) -> bool {

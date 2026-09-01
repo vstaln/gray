@@ -15,5 +15,3 @@ log = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
 
-[dev-dependencies]
-tokio = { workspace = true }

@@ -18,7 +18,6 @@ pub(crate) struct TextElement {
 
 #[derive(Debug, Clone)]
 struct WrapCache {
-    width: u16,
     lines: Vec<Range<usize>>,
 }
 
@@ -301,7 +300,7 @@ impl TextArea {
         // logical lines as WrapCache; upgrade to word-wrap at terminal width when needed
         // width 0 means logical-only, no visual wrapping
         let lines = self.compute_logical_lines();
-        self.wrap_cache = Some(WrapCache { width: 0, lines });
+        self.wrap_cache = Some(WrapCache { lines });
     }
     pub(crate) fn move_up(&mut self) {
         // WrapCache-aware: try visual lines first if cache present

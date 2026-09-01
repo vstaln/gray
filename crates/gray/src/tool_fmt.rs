@@ -520,17 +520,6 @@ pub fn render_diff_hunks(
     lines
 }
 
-fn separator_line(term_w: usize, bg: Option<Color>) -> Line<'static> {
-    let ch = "─";
-    let mut line_str = ch.repeat(term_w);
-    // truncate to term_w chars if needed
-    if line_str.chars().count() > term_w {
-        line_str = line_str.chars().take(term_w).collect();
-    }
-    let style = if let Some(bg) = bg { Style::default().fg(DIM_COLOR).bg(bg) } else { Style::default().fg(DIM_COLOR) };
-    Line::from(Span::styled(line_str, style))
-}
-
 fn bg_line(mut line: Line<'static>, bg: Color, term_w: usize) -> Line<'static> {
     let w = line.width();
     if w < term_w {

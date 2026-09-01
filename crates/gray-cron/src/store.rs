@@ -72,10 +72,6 @@ fn cron_home() -> PathBuf {
         })
 }
 
-fn jobs_path() -> PathBuf {
-    CronStorePaths::active().jobs_file
-}
-
 fn ensure_dirs(store: &CronStorePaths) {
     let _ = std::fs::create_dir_all(&store.cron_dir);
     #[cfg(unix)]

@@ -286,28 +286,6 @@ pub(crate) fn handle_key_event_without_popup(
     }
 }
 
-/// Unified dispatcher — popup short-circuit first, then non-popup handling.
-pub(crate) fn handle_key_event(
-    tui: &mut Tui,
-    code: crossterm::event::KeyCode,
-    modifiers: crossterm::event::KeyModifiers,
-    kind: crossterm::event::KeyEventKind,
-) -> bool {
-    use crossterm::event::KeyEventKind;
-    if kind != KeyEventKind::Press && kind != KeyEventKind::Repeat {
-        return false;
-    }
-    if handle_popup_key(tui, code, modifiers) {
-        return true;
-    }
-    // If popup is still open and key is not Up/Down/Esc/Enter/Tab, we already short-circuited
-    // via handle_popup_key for word-moves; remaining keys like Char should still insert?
-    // Keep original behavior: when popup open, Up/Down navigate, other keys feed textarea
-    // but we blocked Alt/Ctrl word moves above. For remaining, delegate to without_popup.
-    // However if popup is open, Char input should update matches, so allow it.
-    handle_key_event_without_popup(tui, code, modifiers)
-}
-
 // ---------------------------------------------------------------------------
 // read_line — main loop, verbatim from mod.rs 887-1120 with dispatch split
 // ---------------------------------------------------------------------------
@@ -337,7 +315,6 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
         if needs_draw {
             if pending_clear {
                 let _ = tui.terminal.clear();
-                pending_clear = false;
             }
             let cur_text = tui.textarea.text().to_string();
             tui.matches = if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
