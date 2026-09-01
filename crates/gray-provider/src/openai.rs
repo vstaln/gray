@@ -31,6 +31,9 @@ pub struct OpenAiProvider {
     http: reqwest::Client,
     initial_backoff: Duration,
     reasoning_effort: Option<String>,
+    /// Stable per-process id sent as `prompt_cache_key` (Responses API) so the
+    /// gateway pins one cache shard — pi parity for prompt caching.
+    session_id: Option<String>,
 }
 
 /// Builder for constructing an `OpenAiProvider`.
@@ -42,6 +45,7 @@ pub struct OpenAiProviderBuilder {
     http: Option<reqwest::Client>,
     initial_backoff: Option<Duration>,
     reasoning_effort: Option<String>,
+    session_id: Option<String>,
 }
 
 impl OpenAiProviderBuilder {
@@ -54,7 +58,15 @@ impl OpenAiProviderBuilder {
             http: None,
             initial_backoff: None,
             reasoning_effort: None,
+            session_id: None,
         }
+    }
+
+    /// Sets a stable session id sent as `prompt_cache_key` on the Responses
+    /// API so consecutive requests hit the same cache shard (pi parity).
+    pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
     }
 
     /// Sets the base URL for the OpenAI-compatible API endpoint.
@@ -110,6 +122,7 @@ impl OpenAiProviderBuilder {
                 .initial_backoff
                 .unwrap_or(Duration::from_millis(50)),
             reasoning_effort: self.reasoning_effort,
+            session_id: self.session_id,
         })
     }
 }
@@ -679,6 +692,9 @@ struct ResponsesRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ResponsesTool>,
     stream: bool,
+    /// Cache-shard affinity (pi sends the session id here).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -690,7 +706,7 @@ struct ResponsesTool {
     parameters: Value,
 }
 
-fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
+fn map_chat_to_responses(req: ChatRequest, model: &str, session_id: Option<&str>) -> ResponsesRequest {
     let instructions = req.system;
     let mut input: Vec<Value> = Vec::new();
     for msg in req.messages {
@@ -791,6 +807,7 @@ fn map_chat_to_responses(req: ChatRequest, model: &str) -> ResponsesRequest {
         input,
         tools,
         stream: true,
+        prompt_cache_key: session_id.map(str::to_string),
     }
 }
 
@@ -1484,7 +1501,7 @@ impl Provider for OpenAiProvider {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
             };
-            let body = map_chat_to_responses(req, &self.model);
+            let body = map_chat_to_responses(req, &self.model, self.session_id.as_deref());
             log::debug!(target: "gray_provider", "using Responses API for model {}", self.model);
             let init_state = StreamState::ResponsesInit {
                 client: self.http.clone(),
