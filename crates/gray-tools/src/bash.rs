@@ -168,10 +168,20 @@ impl Tool for BashTool {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .env("DEBIAN_FRONTEND", "noninteractive")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("SUDO_ASKPASS", "/bin/false")
             .kill_on_drop(true);
         #[cfg(unix)]
         {
-            let _ = cmd.process_group(0); // detach from our signal group
+            unsafe {
+                cmd.pre_exec(|| {
+                    // Detach from controlling terminal (setsid) so child processes cannot
+                    // open /dev/tty to block on password prompts or leak onto the TUI.
+                    libc::setsid();
+                    Ok(())
+                });
+            }
         }
 
         let mut child = match cmd.spawn() {

@@ -1542,6 +1542,7 @@ dependencies = [
  "gray-core",
  "gray-cron",
  "gray-session",
+ "libc",
  "log",
  "rusqlite",
  "serde",

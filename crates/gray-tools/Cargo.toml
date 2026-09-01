@@ -19,4 +19,5 @@ tokio-util = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true }
 rusqlite = { workspace = true }
+libc = { workspace = true }
 
