@@ -1305,15 +1305,38 @@ pub async fn run_repl_mode(
                     };
                     TURN_STATE.lock().expect("turn state lock").take();
                     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    if let Some(s) = &tui_stream { s.lock().expect("tui lock").end_turn(); }
                     match run_result {
-                        Ok(_) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; }
-                        Err(gray_core::error::CoreError::Cancelled) => { persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await; if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream("(interrupted)\n"); } } else { println!("(interrupted)"); } }
+                        Ok(_) => {
+                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                        }
+                        Err(gray_core::error::CoreError::Cancelled) => {
+                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                            if interactive {
+                                if let Some((shared, _)) = &tui {
+                                    let mut t = shared.lock().expect("tui lock");
+                                    t.end_thinking();
+                                    t.stream("(interrupted)\n");
+                                }
+                            } else {
+                                println!("(interrupted)");
+                            }
+                        }
                         Err(e) => {
                             persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
                             let msg = format_core_error(&e, &config.base_url);
-                            if interactive { if let Some((shared, _)) = &tui { let mut t = shared.lock().expect("tui lock"); t.end_thinking(); t.stream(&format!("{msg}\n")); } } else { eprintln!("{msg}"); }
+                            if interactive {
+                                if let Some((shared, _)) = &tui {
+                                    let mut t = shared.lock().expect("tui lock");
+                                    t.end_thinking();
+                                    t.stream(&format!("{msg}\n"));
+                                }
+                            } else {
+                                eprintln!("{msg}");
+                            }
                         }
+                    }
+                    if let Some(s) = &tui_stream {
+                        s.lock().expect("tui lock").end_turn();
                     }
                     continue;
                 }
@@ -1963,9 +1986,6 @@ pub async fn run_repl_mode(
                 // signal the watcher to exit; it dies within one 100ms tick.
                 // (Never .await it here without the flag — deadlock.)
                 watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(s) = &tui_stream {
-                    s.lock().expect("tui lock").end_turn();
-                }
 
                 match run_result {
                     Ok(_) => {
@@ -1996,6 +2016,9 @@ pub async fn run_repl_mode(
                             eprintln!("{msg}");
                         }
                     }
+                }
+                if let Some(s) = &tui_stream {
+                    s.lock().expect("tui lock").end_turn();
                 }
                 // if we queued input while working, start it immediately
                 if interactive {
