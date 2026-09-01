@@ -369,6 +369,8 @@ impl Tui {
         self.ensure_gap(1);
         let bg_color = Color::Rgb(22, 22, 22);
         let bg_style = Style::default().bg(bg_color);
+        let w = self.width().max(10);
+        let max_w = w.saturating_sub(2).max(1);
 
         header.style = header.style.patch(bg_style);
         for span in header.spans.iter_mut() {
@@ -377,9 +379,18 @@ impl Tui {
 
         let mut box_lines: Vec<Line<'static>> = Vec::new();
         box_lines.push(Line::from("").style(bg_style));
-        box_lines.push(header);
-        for mut line in body {
-            line.style = line.style.patch(bg_style);
+
+        let wrapped_header = wrap_styled_line(header, max_w);
+        for mut l in wrapped_header {
+            l.style = l.style.patch(bg_style);
+            for span in l.spans.iter_mut() {
+                span.style = span.style.bg(bg_color);
+            }
+            box_lines.push(l);
+        }
+
+        for line in body {
+            let mut line = line;
             for span in line.spans.iter_mut() {
                 if span.content.contains('\t') {
                     let expanded = crate::tool_fmt::expand_tabs(&span.content, 4);
@@ -388,7 +399,14 @@ impl Tui {
                     span.style = span.style.bg(bg_color);
                 }
             }
-            box_lines.push(line);
+            let wrapped_body = wrap_styled_line(line, max_w);
+            for mut l in wrapped_body {
+                l.style = l.style.patch(bg_style);
+                for span in l.spans.iter_mut() {
+                    span.style = span.style.bg(bg_color);
+                }
+                box_lines.push(l);
+            }
         }
         box_lines.push(Line::from("").style(bg_style));
         let height = box_lines.len() as u16;
