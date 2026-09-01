@@ -10,7 +10,7 @@ use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_session::{
-    default_root, JsonlSessionStore, SessionId, SessionMeta, SessionStore,
+    default_root, JsonlSessionStore, SessionId, SessionMeta,
 };
 
 use std::sync::Mutex as StdMutex;
@@ -71,23 +71,53 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 
 /// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). Bare `/skills` lists available skills. Other commands pass through.
+/// appended). Bare `/skills` opens an interactive picker like /resume.
 fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::composer::SharedTui>) -> ReplCommand {
     let ReplCommand::Skill(payload) = cmd else { return cmd };
-    let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
-        let listing = discovered
-            .skills
-            .iter()
-            .map(|s| format!("/skills:{} — {}", s.name, s.description))
-            .collect::<Vec<_>>()
-            .join("\n");
-        say(tui, &if listing.is_empty() {
-            "no skills found (looked in ~/.gray/skills, ~/.pi/agent/skills, project .gray/.pi skills)".to_string()
-        } else {
-            listing
-        });
-        return ReplCommand::Empty;
+        // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
+        // Sync call: we snapshot the background like /resume does, block on picker,
+        // then expand the pick into a Prompt.
+        let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
+        let picked = match crate::setup::run_skills_modal(cwd, bg.as_ref()) {
+            Ok(v) => v,
+            Err(e) => {
+                say(tui, &format!("skills picker error: {e}"));
+                return ReplCommand::Empty;
+            }
+        };
+        let Some((skill, picked_args)) = picked else {
+            // Esc — picker cancelled; redraw TUI clean and swallow command
+            if let Some(shared) = tui {
+                if let Ok(mut t) = shared.try_lock() {
+                    let _ = t.draw();
+                }
+            }
+            return ReplCommand::Empty;
+        };
+        // load skill body and optionally append args part from query
+        let expanded = match std::fs::read_to_string(&skill.file_path) {
+            Ok(content) => {
+                let body = gray_tools::skill::strip_frontmatter(&content);
+                let mut out = format!(
+                    "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
+                    skill.name,
+                    skill.file_path.display(),
+                    body
+                );
+                if !picked_args.trim().is_empty() {
+                    out.push_str(&format!("\n\n**ARGUMENTS:** {}", picked_args.trim()));
+                }
+                out
+            }
+            Err(e) => {
+                say(tui, &format!("failed to read {}: {e}", skill.file_path.display()));
+                return ReplCommand::Empty;
+            }
+        };
+        // surface a dim line like resume does so user sees the pick
+        say(tui, &format!("→ /skills:{} {}", skill.name, if picked_args.trim().is_empty() { String::new() } else { picked_args.trim().to_string() }));
+        return ReplCommand::Prompt(expanded);
     };
     let (name, args) = match rest.split_once(char::is_whitespace) {
         Some((n, a)) => (n.trim(), Some(a.trim().to_string())),
@@ -1185,8 +1215,22 @@ pub async fn run_repl_mode(
     }
 
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
-    // Default hidden (codex-style) — prevents reasoning spill into transcript (see screenshot).
-    let mut hide_thinking = false;
+    // Reasoning is ON by default — user wants to see thinking (high effort).
+    // Bare /thinking toggles visibility; picker sets level persisted to config.
+    let mut hide_thinking = config.thinking_effort.as_deref() == Some("off");
+    // Wire default: if no effort saved yet, enable reasoning so ThinkingDelta
+    // actually streams on openrouter/zen etc. Persist once so future sessions
+    // keep it without relying on this default branch.
+    if config.thinking_effort.is_none() {
+        config.thinking_effort = Some("high".to_string());
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            if saved.thinking_effort.is_none() {
+                saved.thinking_effort = Some("high".to_string());
+                let _ = crate::setup::save_saved_config_at(&path, &saved);
+            }
+        }
+    }
     let mut pending_command: Option<ReplCommand> = None;
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
@@ -2153,23 +2197,7 @@ pub async fn run_repl_mode(
                     if let Some((shared, _)) = &tui {
                         let mut t = shared.lock().expect("tui lock");
                         if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
-                            // show the queued user block now (was only preview before)
-                            let is_slash = qtext.starts_with('/') && !qtext.contains('\n');
-                            if is_slash {
-                                t.ensure_gap(1);
-                                t.push_line_styled(
-                                    format!(" ❯ {qtext}"),
-                                    ratatui::style::Style::default()
-                                        .fg(ratatui::style::Color::Rgb(180, 180, 180))
-                                        .add_modifier(ratatui::style::Modifier::BOLD),
-                                );
-                                if !qimages.is_empty() {
-                                    let names = qimages.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
-                                    t.push_dim(format!("↳ queued {names}"));
-                                }
-                            } else {
-                                t.push_user_prompt(&qtext, &qimages);
-                            }
+                            t.push_user_prompt(&qtext, &qimages);
                             drop(t);
                             pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared)));
                             pending_images = qimages;

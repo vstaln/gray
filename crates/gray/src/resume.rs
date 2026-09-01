@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_session::{JsonlSessionStore, SessionId, SessionSummary, SessionStore};
+use gray_session::{JsonlSessionStore, SessionId, SessionSummary};
 
 fn now_millis() -> u64 {
     SystemTime::now()
