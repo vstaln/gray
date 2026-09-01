@@ -374,6 +374,7 @@ impl Agent {
             total_usage.cache_write_input_tokens += usage.cache_write_input_tokens;
             total_usage.total_tokens += usage.total_tokens;
             total_usage.normalize();
+            emit!(AgentEvent::StepUsage { usage: total_usage });
 
             // Finalize the assistant message exactly as streamed.
             // Reasoning precedes text, mirroring the provider's emission order

@@ -169,6 +169,10 @@ pub enum AgentEvent {
         #[serde(default)]
         is_error: bool,
     },
+    /// Intermediate token usage after a single step in a multi-step turn.
+    StepUsage {
+        usage: Usage,
+    },
     /// Turn finished with a stop reason and token usage.
     TurnEnd {
         stop_reason: StopReason,

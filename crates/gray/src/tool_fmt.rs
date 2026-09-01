@@ -70,6 +70,29 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     path_str.to_string()
 }
 
+/// Expands tabs to spaces with a given tab size (default 4) to ensure
+/// all characters are explicit printable spaces and background styling covers every cell.
+pub fn expand_tabs(s: &str, tab_size: usize) -> String {
+    if !s.contains('\t') {
+        return s.to_string();
+    }
+    let mut result = String::with_capacity(s.len() + 16);
+    let mut col = 0;
+    for ch in s.chars() {
+        if ch == '\t' {
+            let count = tab_size.saturating_sub(col % tab_size).max(1);
+            for _ in 0..count {
+                result.push(' ');
+            }
+            col += count;
+        } else {
+            result.push(ch);
+            col += 1;
+        }
+    }
+    result
+}
+
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
 pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> Line<'static> {
     let bullet = Span::styled("\u{2b22} ", Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::BOLD));
@@ -698,16 +721,18 @@ pub fn format_tool_result_lines_with_context(
 
     if total <= MAX_TOTAL_LINES {
         for l in raw_lines {
+            let expanded = expand_tabs(l, 4);
             lines.push(Line::from(vec![
                 Span::raw(" "),
-                Span::styled(l.to_string(), Style::default().fg(text_dim)),
+                Span::styled(expanded, Style::default().fg(text_dim)),
             ]));
         }
     } else {
         for l in raw_lines.iter().take(MAX_HEAD_LINES) {
+            let expanded = expand_tabs(l, 4);
             lines.push(Line::from(vec![
                 Span::raw(" "),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
+                Span::styled(expanded, Style::default().fg(text_dim)),
             ]));
         }
         let omitted = total.saturating_sub(MAX_HEAD_LINES + MAX_TAIL_LINES);
@@ -716,9 +741,10 @@ pub fn format_tool_result_lines_with_context(
             Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
         ]));
         for l in raw_lines.iter().skip(total - MAX_TAIL_LINES) {
+            let expanded = expand_tabs(l, 4);
             lines.push(Line::from(vec![
                 Span::raw(" "),
-                Span::styled((*l).to_string(), Style::default().fg(text_dim)),
+                Span::styled(expanded, Style::default().fg(text_dim)),
             ]));
         }
     }

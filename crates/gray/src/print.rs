@@ -67,6 +67,7 @@ pub fn render_event_with_context<W: Write>(
             }
             w.flush()
         }
+        AgentEvent::StepUsage { .. } => Ok(()),
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
                 writeln!(w, "\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()))?;

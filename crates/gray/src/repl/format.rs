@@ -141,7 +141,7 @@ pub const THINKING_STYLE: &str = "\x1b[2m\x1b[3m";
 /// Formats an [`AgentEvent`] for display in the interactive REPL.
 pub fn fmt_event(event: &AgentEvent) -> String {
     match event {
-        AgentEvent::Start | AgentEvent::ToolCallEnd { .. } => String::new(),
+        AgentEvent::Start | AgentEvent::ToolCallEnd { .. } | AgentEvent::StepUsage { .. } => String::new(),
         AgentEvent::TextDelta { delta } => delta.clone(),
         AgentEvent::ThinkingDelta { delta } => {
             // Streamed live, dim+italic like pi's rendered thinking blocks.
