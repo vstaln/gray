@@ -14,6 +14,11 @@ fn thinking_style() -> Style {
     Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
 }
 
+/// Left padding, omp-style: routed through the global tight flag.
+fn left_pad() -> Span<'static> {
+    Span::raw(" ".repeat(crate::tui::padding_x(1)))
+}
+
 fn strip_ansi(s: &str) -> String {
     crate::tui::strip_ansi(s)
 }
@@ -372,7 +377,7 @@ impl Tui {
             for chunk in chars.chunks(max_w) {
                 let text: String = chunk.iter().collect();
                 lines.push(Line::from(vec![
-                    Span::raw(" "),
+                    left_pad(),
                     Span::styled(text, style),
                 ]));
             }
@@ -394,7 +399,7 @@ impl Tui {
         let mut padded_wrapped = Vec::with_capacity(wrapped.len());
         for mut l in wrapped {
             if !l.spans.is_empty() {
-                l.spans.insert(0, Span::raw(" "));
+                l.spans.insert(0, left_pad());
             }
             padded_wrapped.push(l);
         }
@@ -434,7 +439,7 @@ impl Tui {
             for mut l in wrapped {
                 let hl_owned: Vec<HyperlinkTarget> = line_hyperlinks.iter().map(|h| (*h).clone()).collect();
                 if !l.spans.is_empty() {
-                    l.spans.insert(0, Span::raw(" "));
+                    l.spans.insert(0, left_pad());
                 }
                 all_wrapped.push((l, hl_owned));
             }
@@ -451,8 +456,9 @@ impl Tui {
                 // render line at row
                 Paragraph::new(line.clone()).render(row_area, buf);
                 for h in hls {
+                    let pad = crate::tui::padding_x(1);
                     for col in h.column_range.clone() {
-                        let padded_col = col + 1;
+                        let padded_col = col + pad;
                         if padded_col >= area.width as usize { continue; }
                         let x = area.x + padded_col as u16;
                         let y = area.y + i as u16;
@@ -472,7 +478,7 @@ impl Tui {
     pub fn push_dim(&mut self, line: String) {
         self.ensure_gap(1);
         let styled = Line::from(vec![
-            Span::raw(" "),
+            left_pad(),
             Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
         ]);
         self.transcript.push(styled.clone());

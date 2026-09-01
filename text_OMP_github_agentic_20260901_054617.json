@@ -1,0 +1,42 @@
+[
+  {
+    "title": "GitHub Agentic Workflows: Agen AI di CI/CD | Code Velocity",
+    "href": "https://www.code-velocity.com/id/github-agentic-workflows",
+    "body": "GitHub Agentic Workflows memungkinkan agen AI mengotomatisasi tugas repositori di dalam GitHub Actions. Mendukung Copilot, Claude Code, dan Codex dalam kontainer terisolasi."
+  },
+  {
+    "title": "GitHub Agentic Workflows are now in public preview. Intelligent...",
+    "href": "https://www.linkedin.com/posts/github_github-agentic-workflows-are-now-in-public-activity-7470885852026593280-fFX6",
+    "body": "GitHub making agentic workflows accessible with guardrails and observability is a smart move, automation without losing control is exactly what teams need to scale safely."
+  },
+  {
+    "title": "GH-600 Practice Tests 2026 GitHub Agentic AI Developer",
+    "href": "https://www.udemy.com/course/gh-600-practice-tests-2026-github-agentic-ai-developer/",
+    "body": "What you'll learnMaster GH-600 agentic AI workflows with realistic GitHub Copilot scenariosSecure agentic workflows with branch protection, CODEOWNERS and rulesets"
+  },
+  {
+    "title": "Using Google Gemini with GitHub Agentic Workflows",
+    "href": "https://github.github.com/gh-aw/engines/gemini/",
+    "body": "GitHub Agentic Workflows (gh-aw) runs the Gemini CLI through GitHub Actions from a Markdown workflow and adds GitHub event triggers, sandbox controls..."
+  },
+  {
+    "title": "GitHub Agentic AI: How to Use Agentic Workflows",
+    "href": "https://www.vidau.ai/github-agentic-ai/",
+    "body": "GitHub agentic AI refers to Copilot-powered agentic workflows that can plan, call tools, and act on your repository using natural language prompts and policy constraints."
+  },
+  {
+    "title": "GitHub Agentic Workflows Moves Into Public Preview – Blog | LinkLoot",
+    "href": "https://linkloot.io/blog/github-agentic-workflows-public-preview",
+    "body": "GitHub Agentic Workflows is now in public preview. The feature lets teams describe repository automations in natural-language Markdown, compile them into GitHub Actions workflows..."
+  },
+  {
+    "title": "GitHub Agentic Workflows...",
+    "href": "https://dev.classmethod.jp/articles/github-gentic-workflows-docs-updater/",
+    "body": "【大阪】Zenn Agentic AI ミニハッカソン with Google Cloud. 開催前2026年9月18日(金) 19:00."
+  },
+  {
+    "title": "GitHub Agentic Chat: Natural Language GitHub Interaction",
+    "href": "https://mcpmarket.com/server/github-agentic-chat",
+    "body": "Interact with GitHub using natural language! GitHub Agentic Chat enables repository search, issue creation, and semantic document search via an MCP server. Extensible & Open Source."
+  }
+]

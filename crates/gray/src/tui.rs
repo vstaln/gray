@@ -39,6 +39,27 @@ pub fn visible_width(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(strip_ansi(s).as_str())
 }
 
+/// omp-style global horizontal padding: every component asks
+/// `padding_x(1)` at render time so `set_tui_tight(true)` compresses
+/// spacing from 1 -> 0 across the whole TUI.
+static TUI_TIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_tui_tight(tight: bool) {
+    TUI_TIGHT.store(tight, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_tui_tight() -> bool {
+    TUI_TIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn padding_x(base: usize) -> usize {
+    if is_tui_tight() {
+        base.saturating_sub(1)
+    } else {
+        base
+    }
+}
+
 /// Greedy word-wrap to at most `width` visible chars per line. ANSI spans may
 /// cross line breaks; callers wrap whole styled strings and re-emit codes per
 /// line only when needed (Text keeps styling by wrapping the raw string).
