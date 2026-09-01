@@ -167,7 +167,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let status_y = area.y;
         let box_y = status_y + status_h;
-        let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + box_h + attach_h + 1));
+        let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + if question_active { 0 } else { box_h } + attach_h + 1));
         let question_lines: Option<Vec<Line<'static>>> = if question_active {
             tui.active_question
                 .as_ref()
@@ -183,7 +183,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             tui.matches.len().min(panel_cap as usize)
         };
         let panel_h = visible_count as u16;
-        let panel_y = box_y + box_h;
+        // Codex parity: while a question is active the question surface REPLACES
+        // the composer — no input box, the panel occupies its slot.
+        let panel_y = if question_active { box_y } else { box_y + box_h };
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
 
@@ -211,7 +213,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
-        if rendered_box_h > 0 {
+        if rendered_box_h > 0 && !question_active {
             let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
             frame.render_widget(Paragraph::new(ibox.lines).block(box_block), Rect::new(area.x, box_y, area.width, rendered_box_h));
         }

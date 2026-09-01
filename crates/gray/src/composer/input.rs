@@ -326,7 +326,17 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
         };
         if !poll(timeout)? { continue; }
         needs_draw = true;
-        match read()? {
+        let ev = read()?;
+        if tui.active_question.is_some() {
+            if let Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) = ev {
+                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                    return Ok(None);
+                }
+                crate::composer::handle_question_key(tui, code, modifiers);
+            }
+            continue;
+        }
+        match ev {
             Event::Resize(cols, _) => {
                 tui.pending_resize = Some((cols, std::time::Instant::now() + std::time::Duration::from_millis(75)));
                 needs_draw = false;
