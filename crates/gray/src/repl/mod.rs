@@ -74,6 +74,7 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 /// appended). Bare `/skills` opens an interactive picker like /resume.
 fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::composer::SharedTui>) -> ReplCommand {
     let ReplCommand::Skill(payload) = cmd else { return cmd };
+    let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
         // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
         // Sync call: we snapshot the background like /resume does, block on picker,

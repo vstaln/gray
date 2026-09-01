@@ -52,7 +52,7 @@ async fn run_resume_subcommand(
     all: bool,
     prompt: Option<&str>,
 ) -> anyhow::Result<()> {
-    use gray_session::{default_root, JsonlSessionStore, SessionStore};
+    use gray_session::{default_root, JsonlSessionStore};
     let Some(root) = default_root() else {
         anyhow::bail!("cannot resolve home");
     };
