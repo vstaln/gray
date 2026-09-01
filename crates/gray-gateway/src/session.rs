@@ -46,7 +46,7 @@ impl FileGatewayStore {
     }
 }
 impl FileGatewayStore {
-    fn get_or_create(&self, key: &str, _src: &SessionSource) -> String {
+    pub fn get_or_create(&self, key: &str, _src: &SessionSource) -> String {
         if let Some(e) = self.map.read().unwrap().get(key) { return e.session_id.clone(); }
         let id = uuid::Uuid::new_v4().to_string();
         let entry = GatewayEntry { session_key: key.to_string(), session_id: id.clone(), updated_at: chrono::Utc::now().timestamp() };
@@ -54,7 +54,7 @@ impl FileGatewayStore {
         self.persist();
         id
     }
-    fn get(&self, key: &str) -> Option<String> { self.map.read().unwrap().get(key).map(|e| e.session_id.clone()) }
+    pub fn get(&self, key: &str) -> Option<String> { self.map.read().unwrap().get(key).map(|e| e.session_id.clone()) }
 }
 pub fn shared_store() -> Arc<FileGatewayStore> {
     let path = FileGatewayStore::default_path().unwrap_or_else(|_| PathBuf::from("/tmp/gray-gateway-sessions.json"));

@@ -277,6 +277,10 @@ impl JsonlSessionStore {
         id
     }
 
+    pub async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId> {
+        self.append_with_usage(id, msg, None).await
+    }
+
     pub async fn append_with_usage(
         &self,
         id: &SessionId,
