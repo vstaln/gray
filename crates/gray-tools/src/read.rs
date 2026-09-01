@@ -53,7 +53,10 @@ impl Tool for ReadTool {
 
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = match get_str(&args, "path") {
+        let path = match get_str(&args, "path")
+            .or_else(|_| get_str(&args, "file_path"))
+            .or_else(|_| get_str(&args, "filePath"))
+        {
             Ok(p) => p,
             Err(e) => return e,
         };

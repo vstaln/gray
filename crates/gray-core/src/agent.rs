@@ -368,14 +368,17 @@ impl Agent {
                     }
                 }
             };
-            total_usage.input_tokens += usage.input_tokens;
+            // ponytail: input/cache are window (last), not sum — summing input double-counts history; zero usage = keep window
+            if usage.input_tokens != 0 || usage.cached_tokens != 0 || usage.non_cached_input_tokens != 0 || usage.cache_read_input_tokens != 0 || usage.cache_write_input_tokens != 0 || usage.total_tokens != 0 {
+                total_usage.input_tokens = usage.input_tokens;
+                total_usage.cached_tokens = usage.cached_tokens;
+                total_usage.non_cached_input_tokens = usage.non_cached_input_tokens;
+                total_usage.cache_read_input_tokens = usage.cache_read_input_tokens;
+                total_usage.cache_write_input_tokens = usage.cache_write_input_tokens;
+            }
             total_usage.output_tokens += usage.output_tokens;
-            total_usage.cached_tokens += usage.cached_tokens;
             total_usage.reasoning_tokens += usage.reasoning_tokens;
-            total_usage.non_cached_input_tokens += usage.non_cached_input_tokens;
-            total_usage.cache_read_input_tokens += usage.cache_read_input_tokens;
-            total_usage.cache_write_input_tokens += usage.cache_write_input_tokens;
-            total_usage.total_tokens += usage.total_tokens;
+            total_usage.total_tokens = 0;
             total_usage.normalize();
             emit!(AgentEvent::StepUsage { usage: total_usage });
 
@@ -686,8 +689,8 @@ mod agent_tests {
                 AgentEvent::tool_call_end("call_1", serde_json::json!({"q": "x"})),
                 AgentEvent::tool_result("call_1", "result payload", false),
                 AgentEvent::text_delta("all done"),
-                AgentEvent::StepUsage { usage: Usage::new(30, 15) },
-                AgentEvent::turn_end(StopReason::EndTurn, Usage::new(30, 15)),
+                AgentEvent::StepUsage { usage: Usage::new(20, 15) },
+                AgentEvent::turn_end(StopReason::EndTurn, Usage::new(20, 15)),
             ]
         );
 
