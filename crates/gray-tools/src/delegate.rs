@@ -242,7 +242,7 @@ mod tests {
     use gray_core::agent::ToolContext;
     use std::path::PathBuf;
 
-    fn ctx() -> ToolContext { ToolContext { cwd: PathBuf::from("/tmp"), cancel: tokio_util::sync::CancellationToken::new() } }
+    fn ctx() -> ToolContext { ToolContext { cwd: PathBuf::from("/tmp"), cancel: tokio_util::sync::CancellationToken::new(), questions: None } }
 
     #[tokio::test]
     async fn background_dispatch_returns_immediately() {
