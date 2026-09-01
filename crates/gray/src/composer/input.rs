@@ -446,13 +446,10 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         }
                         tui.matches.clear();
                         tui.sel = 0;
-                        let is_slash_cmd = trimmed.starts_with('/') && !trimmed.contains('\n');
-                        if !is_slash_cmd {
-                            tui.push_user_prompt(&trimmed);
-                            if !attached.is_empty() {
-                                let names = attached.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
-                                tui.push_dim(format!("↳ attached: {names}"));
-                            }
+                        tui.push_user_prompt(&trimmed);
+                        if !attached.is_empty() {
+                            let names = attached.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
+                            tui.push_dim(format!("↳ attached: {names}"));
                         }
                         return Ok(Some((trimmed, attached)));
                     }
