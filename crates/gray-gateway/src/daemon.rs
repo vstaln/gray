@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use crate::config::{GatewayConfig, Platform, load_gateway_config};
 use crate::platform::{BasePlatformAdapter, MessageEvent, SendResult, truncate_message};
-use crate::session::{build_session_key, shared_store, GatewaySessionStore};
+use crate::session::{build_session_key, shared_store, FileGatewayStore};
 
 use crate::telegram::TelegramAdapter;
 use crate::discord::DiscordAdapter;
 use crate::slack::SlackAdapter;
 
-pub struct GatewayRunner { pub config: GatewayConfig, pub adapters: HashMap<Platform, Box<dyn BasePlatformAdapter>>, pub store: Arc<dyn GatewaySessionStore> }
+pub struct GatewayRunner { pub config: GatewayConfig, pub adapters: HashMap<Platform, Box<dyn BasePlatformAdapter>>, pub store: Arc<FileGatewayStore> }
 
 impl GatewayRunner {
     pub fn from_config(config: GatewayConfig) -> anyhow::Result<Self> {
@@ -87,7 +87,7 @@ impl GatewayRunner {
         use gray_core::Message;
         use gray_core::agent::{Agent, ToolContext};
         use gray_provider::OpenAiProvider;
-        use gray_session::{SessionId, SessionStore, JsonlSessionStore, SessionMeta, default_root};
+        use gray_session::{SessionId, JsonlSessionStore, SessionMeta, default_root};
         use gray_tools::Registry;
 
         // Resolve session history

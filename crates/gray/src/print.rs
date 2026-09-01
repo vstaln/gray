@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gray_core::agent::ToolContext;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-use gray_session::{JsonlSessionStore, SessionId, SessionMeta, SessionStore};
+use gray_session::{JsonlSessionStore, SessionId, SessionMeta};
 
 use crate::build_agent;
 use crate::config::Config;

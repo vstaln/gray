@@ -26,10 +26,6 @@ pub fn build_session_key(src: &SessionSource, group_per_user: bool, thread_per_u
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayEntry { pub session_key: String, pub session_id: String, pub updated_at: i64 }
-pub trait GatewaySessionStore: Send+Sync {
-    fn get_or_create(&self, key: &str, src: &SessionSource) -> String;
-    fn get(&self, key: &str) -> Option<String>;
-}
 pub struct FileGatewayStore { path: PathBuf, map: RwLock<HashMap<String, GatewayEntry>> }
 impl FileGatewayStore {
     pub fn new(path: PathBuf) -> Self {
@@ -49,7 +45,7 @@ impl FileGatewayStore {
         }
     }
 }
-impl GatewaySessionStore for FileGatewayStore {
+impl FileGatewayStore {
     fn get_or_create(&self, key: &str, _src: &SessionSource) -> String {
         if let Some(e) = self.map.read().unwrap().get(key) { return e.session_id.clone(); }
         let id = uuid::Uuid::new_v4().to_string();
@@ -60,7 +56,7 @@ impl GatewaySessionStore for FileGatewayStore {
     }
     fn get(&self, key: &str) -> Option<String> { self.map.read().unwrap().get(key).map(|e| e.session_id.clone()) }
 }
-pub fn shared_store() -> Arc<dyn GatewaySessionStore> {
+pub fn shared_store() -> Arc<FileGatewayStore> {
     let path = FileGatewayStore::default_path().unwrap_or_else(|_| PathBuf::from("/tmp/gray-gateway-sessions.json"));
     Arc::new(FileGatewayStore::new(path))
 }

@@ -158,35 +158,6 @@ pub enum SessionError {
 /// Type alias for results from session operations.
 pub type Result<T> = std::result::Result<T, SessionError>;
 
-/// Asynchronous session persistence store interface.
-#[async_trait::async_trait]
-pub trait SessionStore: Send + Sync {
-    /// Creates a new session file initialized with the metadata header.
-    async fn create(&self, meta: SessionMeta) -> SessionId;
-
-    /// Appends a new message entry to an existing session.
-    async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId> {
-        self.append_with_usage(id, msg, None).await
-    }
-
-    /// Appends a new message entry with optional usage stats.
-    async fn append_with_usage(
-        &self,
-        id: &SessionId,
-        msg: &Message,
-        usage: Option<gray_core::event::Usage>,
-    ) -> Result<SessionEntryId>;
-
-    /// Loads the metadata and all entries for a given session.
-    async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)>;
-
-    /// Lists summaries of all sessions in the store sorted by start time ascending.
-    async fn list(&self) -> Vec<SessionSummary>;
-
-    /// Deletes a session by ID. Idempotent: returns `Ok(())` even if the session file does not exist.
-    async fn delete(&self, id: &SessionId) -> Result<()>;
-}
-
 /// Header metadata stored as the first line of a session `.jsonl` file.
 #[derive(Debug, Serialize, Deserialize)]
 struct Header {
@@ -234,9 +205,8 @@ impl JsonlSessionStore {
     }
 }
 
-#[async_trait::async_trait]
-impl SessionStore for JsonlSessionStore {
-    async fn create(&self, meta: SessionMeta) -> SessionId {
+impl JsonlSessionStore {
+    pub async fn create(&self, meta: SessionMeta) -> SessionId {
         let _guard = self.lock.lock().await;
         let id = meta.id.clone();
         let path = self.session_path(&id);
@@ -307,7 +277,7 @@ impl SessionStore for JsonlSessionStore {
         id
     }
 
-    async fn append_with_usage(
+    pub async fn append_with_usage(
         &self,
         id: &SessionId,
         msg: &Message,
@@ -374,7 +344,7 @@ impl SessionStore for JsonlSessionStore {
         Ok(next_id)
     }
 
-    async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {
+    pub async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {
         let path = self.session_path(id);
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
@@ -441,7 +411,7 @@ impl SessionStore for JsonlSessionStore {
         Ok((meta, entries))
     }
 
-    async fn list(&self) -> Vec<SessionSummary> {
+    pub async fn list(&self) -> Vec<SessionSummary> {
         let mut read_dir = match tokio::fs::read_dir(&self.root_dir).await {
             Ok(rd) => rd,
             Err(e) => {
@@ -516,7 +486,7 @@ impl SessionStore for JsonlSessionStore {
         summaries
     }
 
-    async fn delete(&self, id: &SessionId) -> Result<()> {
+    pub async fn delete(&self, id: &SessionId) -> Result<()> {
         let _guard = self.lock.lock().await;
         let path = self.session_path(id);
         match tokio::fs::remove_file(&path).await {
