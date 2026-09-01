@@ -382,9 +382,11 @@ impl Tui {
             let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
             self.ensure_gap(1);
             self.push_dim(line);
+            self.ensure_gap(1);
         } else if let Some(tok) = pending_tok {
             self.ensure_gap(1);
             self.push_dim(tok);
+            self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();

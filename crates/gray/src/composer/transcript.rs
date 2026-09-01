@@ -230,23 +230,20 @@ pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
-    let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines = Vec::new();
-    lines.push(Line::from("").style(bg_style));
     let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
         let prefix = if i == 0 { arrow_span.clone() } else { Span::raw("   ") };
         if raw_line.is_empty() {
-            lines.push(Line::from(vec![prefix]).style(bg_style));
+            lines.push(Line::from(vec![prefix]));
         } else {
             lines.push(Line::from(vec![
                 prefix,
                 Span::styled((*raw_line).to_string(), Style::default().fg(text_primary)),
-            ]).style(bg_style));
+            ]));
         }
     }
-    lines.push(Line::from("").style(bg_style));
     lines
 }
 
@@ -353,6 +350,7 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
         self.transcript.extend(lines);
+        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
@@ -361,12 +359,8 @@ impl Tui {
         self.ensure_gap(1);
         let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
         let mut box_lines: Vec<Line<'static>> = Vec::new();
-        box_lines.push(Line::from("").style(bg_style));
-        box_lines.push(header.style(bg_style));
-        for line in body {
-            box_lines.push(line.style(bg_style));
-        }
-        box_lines.push(Line::from("").style(bg_style));
+        box_lines.push(header);
+        box_lines.extend(body);
         let height = box_lines.len() as u16;
         let block = ratatui::widgets::Block::default().style(bg_style);
         let _ = self.terminal.insert_before(height, |buf| {
@@ -374,6 +368,7 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::ToolBox(box_lines.clone()));
         self.transcript.extend(box_lines);
+        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
