@@ -64,7 +64,7 @@ pub fn strip_frontmatter(content: &str) -> &str {
             for (i, l) in after.lines().enumerate() {
                 if i == idx {
                     let body = &after[off + l.len()..];
-                    return body.strip_prefix('\n').unwrap_or(body);
+                    return body.trim_start_matches('\n');
                 }
                 off += l.len() + 1;
             }

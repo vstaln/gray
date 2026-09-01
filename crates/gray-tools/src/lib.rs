@@ -15,6 +15,7 @@ pub mod grep;
 pub mod ls;
 pub mod read;
 pub mod request_user_input;
+pub mod skill;
 pub mod truncate;
 pub mod write;
 
@@ -34,6 +35,7 @@ pub use grep::GrepTool;
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use request_user_input::{RequestUserInputTool, StdinQuestionAsker};
+pub use skill::SkillTool;
 pub use write::WriteTool;
 
 /// Maximum number of lines kept in a successful tool output.
@@ -87,6 +89,7 @@ impl Registry {
         let mut reg = Self::new();
         reg.register(Box::new(BashTool));
         reg.register(Box::new(ReadTool));
+        reg.register(Box::new(SkillTool));
         reg.register(Box::new(WriteTool));
         reg.register(Box::new(EditTool));
         reg.register(Box::new(CronTool));
