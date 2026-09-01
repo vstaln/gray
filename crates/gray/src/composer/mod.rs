@@ -228,13 +228,15 @@ impl Tui {
             let _ = crossterm::execute!(out, crossterm::cursor::MoveTo(0, rows - 1));
             let _ = out.write_all(&vec![b'\n'; (h - self.viewport_h) as usize]);
             let _ = out.flush();
+        } else if h < self.viewport_h {
+            // Shrink: clear freed rows from old_top down
+            let _ = crossterm::execute!(
+                out,
+                crossterm::cursor::MoveTo(0, old_top),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
+                crossterm::cursor::MoveTo(0, new_top),
+            );
         }
-        let _ = crossterm::execute!(
-            out,
-            crossterm::cursor::MoveTo(0, old_top.min(new_top)),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
-            crossterm::cursor::MoveTo(0, new_top),
-        );
         let term = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
@@ -454,8 +456,10 @@ impl Tui {
             };
             // Codex-style: ✻ Worked for 6s · N tok (dim)
             let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
+            self.ensure_gap(1);
             self.push_dim(line);
         } else if let Some(tok) = pending_tok {
+            self.ensure_gap(1);
             self.push_dim(tok);
         }
         let _ = std::io::stdout().flush();
