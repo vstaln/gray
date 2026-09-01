@@ -178,6 +178,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                     };
                     let _ = tx.send(ev);
                 }
+                Event::GatewayClose(frame) => log::warn!("[discord] gateway closed: {frame:?}"),
                 _ => {}
             }
         }

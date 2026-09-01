@@ -233,7 +233,7 @@ pub async fn run_gateway() -> anyhow::Result<()> {
     let runner = Arc::new(runner);
     // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
     // dedicated LocalSet thread; spawn_local per event keeps /stop responsive mid-run.
-    let worker = std::thread::spawn(move || {
+    let _worker = std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("gateway runtime");
         rt.block_on(tokio::task::LocalSet::new().run_until(async move {
             while let Some(ev) = rx.recv().await {
@@ -251,8 +251,8 @@ pub async fn run_gateway() -> anyhow::Result<()> {
         tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} }
     }
     #[cfg(not(unix))] { tokio::signal::ctrl_c().await?; }
-    drop(tx);
-    let _ = worker.join();
+    // ponytail: no graceful shutdown — adapters hold event_tx clones so rx never
+    // closes; process exit reaps the worker thread. Add drain if restart-in-process lands.
     Ok(())
 }
 
