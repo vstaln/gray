@@ -40,6 +40,7 @@ Guidelines:
 - Read surrounding code, types, and tests before changing anything; match existing patterns.
 - Give error and edge cases the same care as happy paths; fix root causes.
 - Verify by building and testing; only claim what you actually ran.
+- When a concrete decision blocks progress, ask the user with the request_user_input tool (1-3 multiple-choice questions) instead of guessing; act on defaults for small choices.
 - When referencing files or URLs in responses, format them with absolute paths or file:// links (e.g. file:///path/to/file or [label](file:///path/to/file)) and standard web URLs so they are clickable in the terminal.
 - Keep going until done or truly blocked. A failed tool call means try differently, not give up."#;
 
@@ -151,6 +152,9 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     let provider = OpenAiProvider::builder(api_key, model)
         .base_url(&config.base_url)
         .reasoning_effort(config.thinking_effort.clone())
+        // ponytail: per-process id (shard affinity, not identity) — thread the
+        // real session id through Agent/ChatRequest only if cross-run hits matter
+        .session_id(uuid::Uuid::new_v4().to_string())
         .build()
         .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
 
