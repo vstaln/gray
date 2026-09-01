@@ -228,7 +228,7 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, span_bounds: Vec<(Rang
     result
 }
 
-pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBuf]) -> Vec<Line<'static>> {
+pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBuf], width: usize) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
@@ -237,16 +237,21 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
     let mut lines = Vec::new();
     lines.push(Line::from("").style(bg_style));
     let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
+    let max_w = width.saturating_sub(4).max(1);
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
         let prefix = if i == 0 { arrow_span.clone() } else { Span::raw("   ") };
         if raw_line.is_empty() {
             lines.push(Line::from(vec![prefix]).style(bg_style));
         } else {
-            lines.push(Line::from(vec![
-                prefix,
-                Span::styled((*raw_line).to_string(), Style::default().fg(text_primary)),
-            ]).style(bg_style));
+            let chars: Vec<char> = raw_line.chars().collect();
+            for (ci, chunk) in chars.chunks(max_w).enumerate() {
+                let row_prefix = if ci == 0 { prefix.clone() } else { Span::raw("   ") };
+                lines.push(Line::from(vec![
+                    row_prefix,
+                    Span::styled(chunk.iter().collect::<String>(), Style::default().fg(text_primary)),
+                ]).style(bg_style));
+            }
         }
     }
     if !attached.is_empty() {
@@ -376,7 +381,7 @@ impl Tui {
 
     pub fn push_user_prompt(&mut self, text: &str, attached: &[std::path::PathBuf]) {
         self.ensure_gap(1);
-        let lines = format_user_prompt_lines(text, attached);
+        let lines = format_user_prompt_lines(text, attached, self.width().max(10));
         let height = lines.len() as u16;
         let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {

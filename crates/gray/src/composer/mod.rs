@@ -224,7 +224,7 @@ impl Tui {
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::UserPrompt(text, attached) => {
-                    let lines = crate::composer::transcript::format_user_prompt_lines(text, attached);
+                    let lines = crate::composer::transcript::format_user_prompt_lines(text, attached, w);
                     let th = lines.len() as u16;
                     let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
                     let _ = self.terminal.insert_before(th, |buf| {
