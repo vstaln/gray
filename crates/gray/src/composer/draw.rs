@@ -8,7 +8,9 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use super::{PANEL_ROWS, Tui};
 
 pub(crate) fn thinking_style() -> Style {
-    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+    Style::default()
+        .fg(Color::Rgb(140, 140, 140))
+        .add_modifier(Modifier::ITALIC)
 }
 
 pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'static>> {

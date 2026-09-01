@@ -28,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Proxy { cmd } | gray::Commands::Portal { cmd } => {
                 return gray::proxy::run_cli(cmd, &config).await;
             }
+            gray::Commands::Update => {
+                return gray::update::update_now().await;
+            }
             gray::Commands::Gateway { cmd } => {
                 return run_gateway(cmd).await;
             }
@@ -36,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(prompt) = cli.print.as_deref() {
         run_print_mode(&config, prompt).await?;
     } else {
+        gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
     }
     Ok(())

@@ -11,7 +11,9 @@ use gray_markdown::HyperlinkTarget;
 use super::Tui;
 
 fn thinking_style() -> Style {
-    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+    Style::default()
+        .fg(Color::Rgb(140, 140, 140))
+        .add_modifier(Modifier::ITALIC)
 }
 
 /// Left padding, omp-style: routed through the global tight flag.
@@ -298,10 +300,18 @@ impl Tui {
         }
         self.thinking = true;
         self.pending.push_str(&strip_ansi(chunk));
+        let w = self.width().max(10);
+        let max_w = w.saturating_sub(4).max(1);
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
             self.push_line_styled(trimmed.to_string(), thinking_style());
+        }
+        if self.pending.chars().count() >= max_w {
+            let chars: Vec<char> = self.pending.chars().collect();
+            let line: String = chars[..max_w].iter().collect();
+            self.pending = chars[max_w..].iter().collect();
+            self.push_line_styled(line, thinking_style());
         }
         let _ = self.draw();
     }
@@ -335,7 +345,7 @@ impl Tui {
     }
 
     pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking { return; }
+        if !self.thinking && self.pending.is_empty() { return; }
         self.thinking = false;
         if !self.hide_thinking {
             if !self.pending.is_empty() {

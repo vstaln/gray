@@ -30,6 +30,7 @@ pub struct OpenAiProvider {
     model: String,
     http: reqwest::Client,
     initial_backoff: Duration,
+    reasoning_effort: Option<String>,
 }
 
 /// Builder for constructing an `OpenAiProvider`.
@@ -40,6 +41,7 @@ pub struct OpenAiProviderBuilder {
     model: String,
     http: Option<reqwest::Client>,
     initial_backoff: Option<Duration>,
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAiProviderBuilder {
@@ -51,6 +53,7 @@ impl OpenAiProviderBuilder {
             model: model.into(),
             http: None,
             initial_backoff: None,
+            reasoning_effort: None,
         }
     }
 
@@ -69,6 +72,12 @@ impl OpenAiProviderBuilder {
     /// Sets the initial backoff duration used for retrying rate limits and stream errors.
     pub fn initial_backoff(mut self, backoff: Duration) -> Self {
         self.initial_backoff = Some(backoff);
+        self
+    }
+
+    /// Sets reasoning effort (e.g. "low", "medium", "high", "off").
+    pub fn reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
         self
     }
 
@@ -100,6 +109,7 @@ impl OpenAiProviderBuilder {
             initial_backoff: self
                 .initial_backoff
                 .unwrap_or(Duration::from_millis(50)),
+            reasoning_effort: self.reasoning_effort,
         })
     }
 }
@@ -139,6 +149,12 @@ struct OpenAiChatRequest {
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAiStreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Value>,
     messages: Vec<OpenAiMessageRequest>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAiToolDefRequest>,
@@ -222,6 +238,11 @@ struct OpenAiDeltaChunk {
     /// OpenRouter style (ox-alpha et al.).
     #[serde(default)]
     reasoning: Option<String>,
+    /// Ollama / Gemini / Qwen style.
+    #[serde(default)]
+    thought: Option<String>,
+    #[serde(default)]
+    thoughts: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<OpenAiToolCallChunk>>,
 }
@@ -346,7 +367,7 @@ fn is_valid_tool_name(name: &str, id: &str) -> bool {
     } else { true }
 }
 
-fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
+fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str>) -> OpenAiChatRequest {
     let mut messages = Vec::new();
 
     // 1. Map system prompt
@@ -536,10 +557,31 @@ fn map_chat_request(req: ChatRequest, model: &str) -> OpenAiChatRequest {
         apply_anthropic_cache_control(&mut messages, &mut tools);
     }
 
+    let (reasoning_effort_val, reasoning_val, thinking_val) = match reasoning_effort {
+        Some("off") => (None, None, Some(serde_json::json!({ "type": "disabled" }))),
+        Some(eff) => {
+            let budget = match eff {
+                "low" => 1024,
+                "medium" => 4096,
+                "max" => 32768,
+                _ => 16384, // high / default
+            };
+            (
+                Some(eff.to_string()),
+                Some(serde_json::json!({ "effort": eff })),
+                Some(serde_json::json!({ "type": "enabled", "budget_tokens": budget })),
+            )
+        }
+        None => (None, None, None),
+    };
+
     OpenAiChatRequest {
         model: model.to_string(),
         stream: true,
         stream_options: Some(OpenAiStreamOptions { include_usage: true }),
+        reasoning_effort: reasoning_effort_val,
+        reasoning: reasoning_val,
+        thinking: thinking_val,
         messages,
         tools,
     }
@@ -1126,7 +1168,9 @@ fn stream_unfold_step(
                                             let reasoning = choice
                                                 .delta
                                                 .reasoning_content
-                                                .or(choice.delta.reasoning);
+                                                .or(choice.delta.reasoning)
+                                                .or(choice.delta.thought)
+                                                .or(choice.delta.thoughts);
                                             if let Some(reasoning) = reasoning {
                                                 if !reasoning.is_empty() {
                                                     pending_events.push_back(
@@ -1456,7 +1500,7 @@ impl Provider for OpenAiProvider {
             Err(e) => return stream::once(async move { Err(e) }).boxed(),
         };
 
-        let body = map_chat_request(req, &self.model);
+        let body = map_chat_request(req, &self.model, self.reasoning_effort.as_deref());
         let init_state = StreamState::Init {
             client: self.http.clone(),
             url,
