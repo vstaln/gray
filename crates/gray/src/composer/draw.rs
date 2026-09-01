@@ -145,7 +145,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let w = cols as usize;
 
     let text = tui.textarea.text().to_string();
@@ -153,20 +153,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let ibox = build_input_box(&text, cursor, w);
     let box_h = ibox.lines.len().max(1) as u16;
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
-    let status_h: u16 = u16::from(tui.status.is_some());
-
-    // pi dock (VStack, gap 0, intrinsic heights): status + box + panel + attach + footer.
-    // The viewport is resized to exactly this so the dock hugs the transcript
-    // above and the footer hugs the box — no slack rows anywhere.
-    let fixed_h = status_h + box_h + attach_h + 1;
-    let panel_cap = (PANEL_ROWS as u16).min(rows.saturating_sub(fixed_h));
-    let visible_count = if tui.matches.is_empty() {
-        0
-    } else {
-        tui.matches.len().min(panel_cap as usize)
-    };
-    let panel_h = visible_count as u16;
-    tui.repin_viewport(fixed_h + panel_h);
+    let status_h: u16 = if tui.status.is_some() { 1 } else { 0 };
 
     tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -174,9 +161,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let status_y = area.y;
         let box_y = status_y + status_h;
+        let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + box_h + attach_h + 1));
+        let visible_count = if tui.matches.is_empty() {
+            0
+        } else {
+            tui.matches.len().min(panel_cap as usize)
+        };
+        let panel_h = visible_count as u16;
         let panel_y = box_y + box_h;
-        let footer_y = area.bottom().saturating_sub(1);
-        let attach_y = (panel_y + panel_h).min(footer_y.saturating_sub(attach_h));
+        let attach_y = panel_y + panel_h;
+        let footer_y = attach_y + attach_h;
 
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" \u{2b21} {label}\u{2026}");
@@ -331,6 +325,14 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {
             frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
+        }
+
+        let used_bottom = footer_y + 1;
+        if used_bottom < area.y + area.height {
+            frame.render_widget(
+                ratatui::widgets::Clear,
+                Rect::new(area.x, used_bottom, area.width, (area.y + area.height) - used_bottom),
+            );
         }
 
         if tui.status.is_none() && !tui.is_task_running {

@@ -23,8 +23,7 @@ use gray_markdown::HyperlinkTarget;
 use crate::repl::completion_matches;
 
 pub(crate) const PANEL_ROWS: usize = 6;
-/// Initial dock height: input box (3 rows incl. internal margins) + footer.
-const DOCK_H0: u16 = 4;
+pub(crate) const VIEWPORT_H: u16 = 9;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -74,9 +73,6 @@ pub struct Tui {
     // Cron ticking UI — next due job for footer clock
     pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
     pub(crate) last_cron_tick: Option<Instant>,
-    /// Current inline-viewport height (the dock). Kept exact so the dock hugs
-    /// its content like pi's VStack dock: no slack rows anywhere.
-    pub(crate) viewport_h: u16,
 }
 
 #[derive(Clone, Debug)]
@@ -131,23 +127,11 @@ impl Tui {
         crossterm::terminal::enable_raw_mode()?;
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        // Pin the dock to the screen bottom from birth (pi dock): park the cursor
-        // at the new top and clear the rows the dock will occupy so no shell
-        // leftovers survive underneath. ratatui anchors Inline viewports on the
-        // cursor row at construction, so this yields an exactly bottom-pinned area.
-        let h0 = DOCK_H0.min(rows.max(1));
-        let top0 = rows.saturating_sub(h0);
-        let _ = crossterm::execute!(
-            std::io::stdout(),
-            crossterm::cursor::MoveTo(0, top0),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
-            crossterm::cursor::MoveTo(0, top0),
-        );
+        let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(h0),
+                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
             },
         )?;
 
@@ -183,7 +167,7 @@ impl Tui {
             pending_pastes: Vec::new(),
             model_name: String::new(),
             cwd,
-            thinking_effort: "high".to_string(),
+            thinking_effort: String::new(),
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
@@ -195,58 +179,7 @@ impl Tui {
             live_streamed_tokens: 0,
             next_cron: None,
             last_cron_tick: None,
-            viewport_h: h0,
         })
-    }
-
-    /// Resize the bottom dock to exactly `h` rows, keeping it pinned to the
-    /// screen bottom (pi dock behavior: VStack with gap 0, intrinsic heights).
-    ///
-    /// ratatui cannot change an Inline viewport's height in place, so the
-    /// Terminal is recreated. Growing first scrolls the screen up so the
-    /// transcript rows the dock takes over are preserved in scrollback;
-    /// shrinking wipes the freed rows (the transcript can't be restored —
-    /// the next `insert_before` scrolls the blank away; a 1-row separator
-    /// between turns is the accepted cost).
-    // ponytail: recreate-on-change flickers the dock region like insert_before
-    // already does without `scrolling-regions`; a custom Terminal (codex-rs
-    // style) is the upgrade path if that ever matters.
-    pub(crate) fn repin_viewport(&mut self, h: u16) {
-        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let h = h.clamp(1, rows);
-        if h == self.viewport_h {
-            return;
-        }
-        let old_top = rows.saturating_sub(self.viewport_h.min(rows));
-        let new_top = rows - h;
-        let mut out = std::io::stdout();
-        if h > self.viewport_h {
-            // Grow: scroll the screen up by printing LFs at the bottom row.
-            // CSI S (crossterm ScrollUp) is not honored by all terminals
-            // (e.g. Ghostty), which ate the transcript's last row; LF at the
-            // bottom row scrolls universally and spills into scrollback.
-            let _ = crossterm::execute!(out, crossterm::cursor::MoveTo(0, rows - 1));
-            let _ = out.write_all(&vec![b'\n'; (h - self.viewport_h) as usize]);
-            let _ = out.flush();
-        } else if h < self.viewport_h {
-            // Shrink: clear freed rows from old_top down
-            let _ = crossterm::execute!(
-                out,
-                crossterm::cursor::MoveTo(0, old_top),
-                crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
-                crossterm::cursor::MoveTo(0, new_top),
-            );
-        }
-        let term = Terminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(h),
-            },
-        );
-        if let Ok(term) = term {
-            self.terminal = term;
-            self.viewport_h = h;
-        }
     }
 
     /// Codex-style transcript reflow on terminal resize:
@@ -254,25 +187,16 @@ impl Tui {
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
     pub(crate) fn reflow_on_resize(&mut self, new_cols: u16) {
         self.last_width = new_cols;
-        let (_, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let h = self.viewport_h.clamp(1, rows);
-        let top = rows.saturating_sub(h);
 
         // Codex-style: reset scroll region, clear visible screen and purge scrollback, home cursor
         let mut out = std::io::stdout();
         let _ = write!(out, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
-        let _ = crossterm::execute!(
-            out,
-            crossterm::cursor::MoveTo(0, top),
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
-            crossterm::cursor::MoveTo(0, top),
-        );
         let _ = out.flush();
 
         if let Ok(term) = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(h),
+                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
             },
         ) {
             self.terminal = term;
