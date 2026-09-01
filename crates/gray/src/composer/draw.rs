@@ -193,7 +193,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let elapsed = started.elapsed();
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
             let tok_suffix = if tui.is_task_running {
-                let base = tui.cumulative_usage.or(tui.latest_usage).map(|u| u.total()).unwrap_or(0);
+                let base = tui.latest_usage.or(tui.cumulative_usage).map(|u| u.total()).unwrap_or(0);
                 let live = base + tui.live_streamed_tokens;
                 if live > 0 {
                     format!(" · {} tok", crate::repl::fmt_usage(live))
@@ -285,7 +285,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
 
         let (_, max_label) = crate::setup::model_context_info(&tui.model_name);
-        let (used_tokens, hit_rate) = if let Some(u) = tui.cumulative_usage.or(tui.latest_usage) {
+        let (used_tokens, hit_rate) = if let Some(u) = tui.latest_usage.or(tui.cumulative_usage) {
             (u.total(), u.cache_hit_rate() * 100.0)
         } else {
             (0, 0.0)

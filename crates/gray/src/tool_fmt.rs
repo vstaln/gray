@@ -826,7 +826,12 @@ pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: 
             format!("{bullet} {bold}List{reset} {orange}{}{reset}", shorten_path(raw_path, cwd))
         }
         other => {
-            format!("{bullet} {bold}{other}{reset}")
+            let path = shorten_path(arg_path(args), cwd);
+            if !path.is_empty() {
+                format!("{bullet} {bold}{other}{reset} {orange}{path}{reset}")
+            } else {
+                format!("{bullet} {bold}{other}{reset}")
+            }
         }
     }
 }

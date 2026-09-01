@@ -854,10 +854,12 @@ async fn handle_resume(
                     if let Some(shared) = &tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.replay_session_history(&entries, cwd);
+                        t.ensure_gap(1);
                         t.push_dim(format!("\u{2b22} Resumed session {} ({n} messages)", sid.as_str()));
                         if let Some(w) = drift_warn.as_deref() {
                             t.push_dim(format!("⚠ {w}"));
                         }
+                        t.ensure_gap(1);
                     } else {
                         println!("\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m", sid.as_str());
                         if let Some(w) = drift_warn.as_deref() {
@@ -1078,10 +1080,12 @@ pub async fn run_repl_mode(
                 t.set_cwd(cwd.display().to_string());
                 if let Some((ref sid, ref entries)) = resumed_session_info {
                     t.replay_session_history(entries, &cwd);
+                    t.ensure_gap(1);
                     t.push_dim(format!("\u{2b22} Resumed session {} ({} messages)", sid.as_str(), entries.len()));
                     if let Some(w) = resume_model_warn.as_deref() {
                         t.push_dim(format!("⚠ {w}"));
                     }
+                    t.ensure_gap(1);
                 } else if let Some(w) = resume_model_warn.as_deref() {
                     t.push_dim(format!("⚠ {w}"));
                 }
@@ -1549,7 +1553,7 @@ pub async fn run_repl_mode(
 
                 if let Some(prompt_text) = initial_prompt {
                     if let Some((shared, _)) = &tui {
-                        shared.lock().expect("tui lock").push_user_prompt(&prompt_text);
+                        shared.lock().expect("tui lock").push_user_prompt(&prompt_text, &[]);
                     } else {
                         println!("❯ {prompt_text}");
                     }
@@ -2150,10 +2154,21 @@ pub async fn run_repl_mode(
                         let mut t = shared.lock().expect("tui lock");
                         if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
                             // show the queued user block now (was only preview before)
-                            t.push_user_prompt(&qtext);
-                            if !qimages.is_empty() {
-                                let names = qimages.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
-                                t.push_dim(format!("↳ queued {names}"));
+                            let is_slash = qtext.starts_with('/') && !qtext.contains('\n');
+                            if is_slash {
+                                t.ensure_gap(1);
+                                t.push_line_styled(
+                                    format!(" ❯ {qtext}"),
+                                    ratatui::style::Style::default()
+                                        .fg(ratatui::style::Color::Rgb(180, 180, 180))
+                                        .add_modifier(ratatui::style::Modifier::BOLD),
+                                );
+                                if !qimages.is_empty() {
+                                    let names = qimages.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
+                                    t.push_dim(format!("↳ queued {names}"));
+                                }
+                            } else {
+                                t.push_user_prompt(&qtext, &qimages);
                             }
                             drop(t);
                             pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared)));

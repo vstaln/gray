@@ -85,7 +85,7 @@ pub struct Tui {
 #[derive(Clone, Debug)]
 pub(crate) enum TranscriptEntry {
     Welcome,
-    UserPrompt(String),
+    UserPrompt(String, Vec<std::path::PathBuf>),
     ToolBox(Vec<Line<'static>>),
     Lines(Vec<Line<'static>>),
 }
@@ -223,8 +223,8 @@ impl Tui {
                     });
                     new_transcript.extend(lines);
                 }
-                TranscriptEntry::UserPrompt(text) => {
-                    let lines = crate::composer::transcript::format_user_prompt_lines(text);
+                TranscriptEntry::UserPrompt(text, attached) => {
+                    let lines = crate::composer::transcript::format_user_prompt_lines(text, attached);
                     let th = lines.len() as u16;
                     let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
                     let _ = self.terminal.insert_before(th, |buf| {
@@ -268,23 +268,8 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.live_streamed_tokens = 0;
-        self.cumulative_usage = Some(match self.cumulative_usage {
-            Some(prev) => {
-                let mut u = gray_core::event::Usage {
-                    input_tokens: prev.input_tokens + usage.input_tokens,
-                    output_tokens: prev.output_tokens + usage.output_tokens,
-                    reasoning_tokens: prev.reasoning_tokens + usage.reasoning_tokens,
-                    cached_tokens: prev.cached_tokens + usage.cached_tokens,
-                    non_cached_input_tokens: prev.non_cached_input_tokens + usage.non_cached_input_tokens,
-                    cache_read_input_tokens: prev.cache_read_input_tokens + usage.cache_read_input_tokens,
-                    cache_write_input_tokens: prev.cache_write_input_tokens + usage.cache_write_input_tokens,
-                    total_tokens: prev.total_tokens + usage.total_tokens,
-                };
-                u.normalize();
-                u
-            }
-            None => usage,
-        });
+        // ponytail: was prev+usage summing the window repeatedly → 1.2M/256k; now mirror latest (window)
+        self.cumulative_usage = Some(usage);
     }
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
@@ -319,7 +304,6 @@ impl Tui {
     }
 
     pub fn begin_turn(&mut self, label: &str) {
-        self.ensure_gap(1);
         let now = Instant::now();
         if self.turn_started.is_none() {
             self.turn_started = Some(now);
@@ -413,7 +397,7 @@ impl Tui {
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
-        let (used_tokens, cache_hit_rate) = if let Some(u) = self.cumulative_usage.or(self.latest_usage) {
+        let (used_tokens, cache_hit_rate) = if let Some(u) = self.latest_usage.or(self.cumulative_usage) {
             (u.total(), u.cache_hit_rate())
         } else {
             (0, 0.0)

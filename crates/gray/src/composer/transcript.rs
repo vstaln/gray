@@ -228,10 +228,11 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, span_bounds: Vec<(Rang
     result
 }
 
-pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
+pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBuf]) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
+    let dim_color = Color::Rgb(140, 140, 140);
     let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines = Vec::new();
     lines.push(Line::from("").style(bg_style));
@@ -247,6 +248,13 @@ pub(crate) fn format_user_prompt_lines(text: &str) -> Vec<Line<'static>> {
                 Span::styled((*raw_line).to_string(), Style::default().fg(text_primary)),
             ]).style(bg_style));
         }
+    }
+    if !attached.is_empty() {
+        let names = attached.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(format!("↳ attached: {names}"), Style::default().fg(dim_color)),
+        ]).style(bg_style));
     }
     lines.push(Line::from("").style(bg_style));
     lines
@@ -360,16 +368,17 @@ impl Tui {
         }
     }
 
-    pub fn push_user_prompt(&mut self, text: &str) {
+    pub fn push_user_prompt(&mut self, text: &str, attached: &[std::path::PathBuf]) {
         self.ensure_gap(1);
-        let lines = format_user_prompt_lines(text);
+        let lines = format_user_prompt_lines(text, attached);
         let height = lines.len() as u16;
         let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string()));
+        self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string(), attached.to_vec()));
         self.transcript.extend(lines);
+        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
@@ -597,7 +606,7 @@ impl Tui {
                             _ => {}
                         }
                     }
-                    if !user_text.is_empty() { self.push_user_prompt(&user_text); }
+                    if !user_text.is_empty() { self.push_user_prompt(&user_text, &[]); }
                 }
                 gray_core::Role::Assistant => {
                     for block in &entry.message.content {
