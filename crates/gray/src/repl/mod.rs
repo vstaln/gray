@@ -1900,35 +1900,21 @@ pub async fn run_repl_mode(
                                 AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
                                 AgentEvent::TextDelta { delta } => t.stream_text(delta),
                                 AgentEvent::ToolCallStart { name, .. } => {
+                                    t.flush_markdown();
                                     t.end_thinking();
-                                    t.set_status(Some(&format!("Calling tool: {}", name)));
                                     current_tool_name = Some(name.clone());
                                     current_tool_args = None;
                                 }
                                 AgentEvent::ToolCallEnd { args, .. } => {
                                     t.end_thinking();
-                                    t.set_status(Some("Working"));
                                     current_tool_args = Some(args.clone());
                                 }
                                 AgentEvent::ToolResult { output, is_error, .. } => {
                                     let name = current_tool_name.take().unwrap_or_default();
                                     let args = current_tool_args.take();
                                     let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                    if lines.is_empty() {
-                                        if let Some(a) = args.as_ref() { let h = crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd)); t.push_line_spans(h); }
-                                    } else {
-                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                        let bg = ratatui::style::Color::Rgb(30,30,30);
-                                        let term_w = t.width();
-                                        let mut hdr = header;
-                                        hdr.style = ratatui::style::Style::default().bg(bg);
-                                        for s in hdr.spans.iter_mut() { s.style = s.style.bg(bg); }
-                                        let w = hdr.width();
-                                        if w < term_w { hdr.spans.push(ratatui::text::Span::styled(" ".repeat(term_w - w), ratatui::style::Style::default().bg(bg))); }
-                                        let mut combined = vec![hdr];
-                                        combined.extend(lines);
-                                        t.push_styled_lines(combined);
-                                    }
+                                    let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                    t.push_tool_box(header, lines);
                                 }
                                 AgentEvent::TurnEnd { usage, .. } => {
                                     turn_usage = Some(*usage);
