@@ -159,7 +159,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // While a question is up it IS the status: hide the shimmer and the
     // attachments row so the panel gets the whole inline viewport.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
-    let status_h: u16 = if tui.status.is_some() && !question_active { 2 } else { 0 };
+    let status_h: u16 = if tui.status.is_some() && !question_active { 3 } else { 0 }; // 1 row top padding (seam above status), 1 row status, 1 row bottom padding
 
     tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -207,7 +207,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             };
             let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y + 1, area.width, 1));
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
