@@ -79,6 +79,7 @@ pub fn render_event_with_context<W: Write>(
 
 /// Executes a prompt in one-shot print mode, printing events to stdout and persisting the session.
 pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()> {
+    crate::setup::set_user_context_window(config.context_window);
     let cwd = std::env::current_dir()?;
     let cancel = tokio_util::sync::CancellationToken::new();
     let ctx = ToolContext {

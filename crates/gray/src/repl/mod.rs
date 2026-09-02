@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gray_core::agent::{Agent, ToolContext};
 use gray_core::error::CoreError;
@@ -81,6 +81,18 @@ fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     }
 }
 
+async fn with_modal<T>(tui: Option<&crate::composer::SharedTui>, fut: impl std::future::Future<Output = T>) -> T {
+    let r = fut.await;
+    restore_viewport(tui);
+    r
+}
+
+fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce() -> T) -> T {
+    let r = f();
+    restore_viewport(tui);
+    r
+}
+
 /// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
 /// appended). Bare `/skills` opens an interactive picker like /resume.
@@ -89,27 +101,14 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
         // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() {
-                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-            }
-        }
         let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match crate::setup::run_skills_modal(cwd, bg.as_ref()) {
+        let picked = match with_modal_sync(tui, || crate::setup::run_skills_modal(cwd, bg.as_ref())) {
             Ok(v) => v,
             Err(e) => {
-                if let Some(shared) = tui {
-                    if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                }
-                restore_viewport(tui);
                 say(tui, &format!("skills picker error: {e}"));
                 return ReplCommand::Empty;
             }
         };
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-        }
-        restore_viewport(tui);
         let Some((skill, picked_args)) = picked else {
             // Esc — picker cancelled; viewport already restored
             return ReplCommand::Empty;
@@ -288,19 +287,8 @@ async fn handle_model(
         return;
     }
 
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-        }
-    }
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
-    let result = crate::setup::run_model_menu(config, bg.as_ref()).await;
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.pending_resize = None;
-        }
-    }
-    restore_viewport(tui);
+    let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
             if let Some(shared) = tui {
@@ -376,17 +364,8 @@ async fn handle_thinking(
     }
 
     let has_explicit_level = config.thinking_effort.is_some();
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-        }
-    }
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
-    let result = crate::setup::run_effort_menu(config, bg.as_ref()).await;
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-    }
-    restore_viewport(tui);
+    let result = with_modal(tui, crate::setup::run_effort_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
             if let Some(shared) = tui {
@@ -750,28 +729,15 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
     let needs_picker = is_bare || (is_start && provider.is_none() && !lower.contains("--provider"));
     if needs_picker {
         // show picker
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() {
-                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-            }
-        }
         let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match crate::setup::run_proxy_menu(config, bg.as_ref()).await {
+        let picked = match with_modal(tui, crate::setup::run_proxy_menu(config, bg.as_ref())).await {
             Ok(p) => p,
             Err(e) => {
-                if let Some(shared) = tui {
-                    if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                }
-                restore_viewport(tui);
                 let msg = format!("proxy picker error: {e}");
                 if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
                 return;
             }
         };
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-        }
-        restore_viewport(tui);
         let Some(picked_provider) = picked else {
             // cancelled — viewport already restored
             return;
@@ -896,16 +862,7 @@ async fn handle_resume(
             }
         }
     } else {
-        if let Some(shared) = &tui {
-            if let Ok(mut t) = shared.try_lock() {
-                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-            }
-        }
-        let result = crate::resume::run_resume_picker(args.all, bg.as_ref()).await;
-        if let Some(shared) = &tui {
-            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-        }
-        restore_viewport(tui);
+        let result = with_modal(tui, crate::resume::run_resume_picker(args.all, bg.as_ref())).await;
         match result {
             Ok(Some(id)) => Some(id),
             Ok(None) => return,
@@ -1391,17 +1348,8 @@ pub async fn run_repl_mode(
                     // reuse Prompt logic inline
                     if agent.is_none() {
                         if unconfigured {
-                            if let Some((shared, _)) = tui.as_ref() {
-                                if let Ok(mut t) = shared.try_lock() {
-                                    t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-                                }
-                            }
                             let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                            let result = crate::setup::run_provider_menu(config, bg.as_ref()).await;
-                            if let Some((shared, _)) = tui.as_ref() {
-                                if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                            }
-                            restore_viewport(tui.as_ref().map(|(s, _)| s));
+                            let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
                             match result {
                                 Ok(true) => {
                                     unconfigured = false;
@@ -1689,17 +1637,8 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Provider => {
-                if let Some((shared, _)) = &tui {
-                    if let Ok(mut t) = shared.try_lock() {
-                        t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-                    }
-                }
                 let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                let result = crate::setup::run_provider_menu(config, bg.as_ref()).await;
-                if let Some((shared, _)) = &tui {
-                    if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                }
-                restore_viewport(tui.as_ref().map(|(s, _)| s));
+                let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
                 match result {
                     Ok(true) => {
                         unconfigured = false;
@@ -1762,17 +1701,8 @@ pub async fn run_repl_mode(
             ReplCommand::Prompt(prompt_text) => {
                 if agent.is_none() {
                     if unconfigured {
-                        if let Some((shared, _)) = &tui {
-                            if let Ok(mut t) = shared.try_lock() {
-                                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-                            }
-                        }
                         let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                        let result = crate::setup::run_provider_menu(config, bg.as_ref()).await;
-                        if let Some((shared, _)) = &tui {
-                            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                        }
-                        restore_viewport(tui.as_ref().map(|(s, _)| s));
+                        let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
                         match result {
                             Ok(true) => {
                                 unconfigured = false;

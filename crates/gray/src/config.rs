@@ -18,6 +18,8 @@ pub struct Config {
     pub api_key: Option<String>,
     /// Thinking / reasoning effort level ("off", "minimal", "low", "medium", "high", "xhigh", "max").
     pub thinking_effort: Option<String>,
+    /// User override for context window in tokens. Highest priority (over auto-fetched).
+    pub context_window: Option<usize>,
 }
 
 impl Config {
@@ -87,13 +89,19 @@ impl Config {
             .filter(|s| !s.is_empty())
             .or(saved.thinking_effort);
 
+        let context_window = cli
+            .context_window
+            .or_else(|| env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s)))
+            .or(saved.context_window);
+
         let config = Self {
             model,
             base_url,
             api_key,
             thinking_effort,
+            context_window,
         };
-        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"));
+        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)
     }
 }

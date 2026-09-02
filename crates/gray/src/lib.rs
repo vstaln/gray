@@ -200,9 +200,17 @@ pub struct Cli {
     #[arg(long, value_name = "ID")]
     pub session: Option<String>,
 
+    /// Override model context window in tokens (e.g. 128000 or 128k). Env: GRAY_CONTEXT_WINDOW. Highest priority over auto-fetched provider value.
+    #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
+    pub context_window: Option<usize>,
+
     /// Resume subcommand (picker by default; see `gray resume --help`)
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+fn parse_context_window_cli(s: &str) -> Result<usize, String> {
+    crate::setup::parse_context_window(s).ok_or_else(|| format!("invalid context window '{s}' — use e.g. 128000, 128k, 1m"))
 }
 
 /// Subcommands mirroring `codex resume` / `codex fork` ergonomics.
@@ -265,4 +273,3 @@ pub enum GatewayCmd {
     /// Uninstall systemd service
     Uninstall,
 }
-
