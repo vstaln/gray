@@ -562,39 +562,26 @@ async fn handle_compact(
         return;
     }
 
+    let msg_count = messages.len();
+
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").set_status(Some("Compacting conversation context"));
     }
 
-    let transcript = crate::compact::serialize_conversation(&messages);
-    let prompt = crate::compact::build_summarization_prompt(&transcript, custom_instructions.as_deref());
-
-    let summary_res = ag.complete_prompt(&prompt, Some(crate::compact::SUMMARIZATION_SYSTEM_PROMPT)).await;
+    let compact_res =
+        crate::compact::compact_with_instructions(ag, custom_instructions.as_deref()).await;
 
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").set_status(None);
     }
 
-    match summary_res {
-        Ok(summary) => {
-            let summary_trimmed = summary.trim().to_string();
-            let msg_count = messages.len();
-
-            let summary_user = Message::user(format!(
-                "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
-                summary_trimmed
-            ));
-            let summary_asst = Message::assistant(
-                "Understood. I have reviewed the conversation summary and context, and I am ready to continue."
-            );
-
-            let new_messages = vec![summary_user.clone(), summary_asst.clone()];
-            ag.set_messages(new_messages);
-
-            // Record to session storage if active
+    match compact_res {
+        Ok(true) => {
+            // Record to session storage if active (helper already set_messages)
             if let Some(state) = session_state {
-                let _ = state.store.append(&state.session_id, &summary_user).await;
-                let _ = state.store.append(&state.session_id, &summary_asst).await;
+                for msg in ag.messages().to_vec() {
+                    let _ = state.store.append(&state.session_id, &msg).await;
+                }
             }
 
             if let Some(shared) = tui {
@@ -604,6 +591,13 @@ async fn handle_compact(
                 ));
             } else {
                 println!("compressed context ({} turns -> structured summary)", msg_count);
+            }
+        }
+        Ok(false) => {
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim("╰ nothing to compact (conversation is empty)".to_string());
+            } else {
+                println!("nothing to compact (conversation is empty)");
             }
         }
         Err(e) => {
