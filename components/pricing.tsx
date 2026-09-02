@@ -14,7 +14,7 @@ export function Pricing() {
         <h2 className="display mt-4 text-[clamp(2.5rem,5vw,4.5rem)]">Manage Subscription</h2>
         <p className="mt-5 max-w-[62ch] text-dim">
           The binary is MIT and free forever — every provider, every tool, your own keys. Paid tiers
-          exist only for the things we host for you.
+          exist only for the things we host for you, and are not open for signup yet.
         </p>
 
         <div className="mt-14 grid gap-px border border-ink-700 bg-ink-700 md:grid-cols-3">
@@ -96,17 +96,33 @@ export function Pricing() {
                 ))}
               </ul>
 
-              <Link
-                href={t.href}
-                className={cn(
-                  "eyebrow mt-9 border px-4 py-3 text-center transition-colors",
-                  t.featured
-                    ? "border-ink-950 bg-ink-950 text-sand-300 hover:bg-transparent hover:text-ink-950"
-                    : "border-ink-600 text-paper hover:border-sand-400 hover:bg-sand-400 hover:text-ink-950",
-                )}
-              >
-                {t.cta}
-              </Link>
+              {t.href ? (
+                <Link
+                  href={t.href}
+                  className={cn(
+                    "eyebrow mt-9 border px-4 py-3 text-center transition-colors",
+                    t.featured
+                      ? "border-ink-950 bg-ink-950 text-sand-300 hover:bg-transparent hover:text-ink-950"
+                      : "border-ink-600 text-paper hover:border-sand-400 hover:bg-sand-400 hover:text-ink-950",
+                  )}
+                >
+                  {t.cta}
+                </Link>
+              ) : (
+                // Hosted tiers are announced but not sellable yet — render a
+                // disabled state rather than a link that goes nowhere.
+                <span
+                  aria-disabled="true"
+                  className={cn(
+                    "eyebrow mt-9 border border-dashed px-4 py-3 text-center",
+                    t.featured
+                      ? "border-ink-950/40 text-ink-950/60"
+                      : "border-ink-600 text-dimmer",
+                  )}
+                >
+                  {t.cta}
+                </span>
+              )}
             </article>
           ))}
         </div>
