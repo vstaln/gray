@@ -17,3 +17,35 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --quiet
       - run: cargo clippy --workspace --quiet
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      # the manifest lives in web/, not the repo root — action-setup resolves
+      # `packageManager` from package_json_file, and defaults.run does not
+      # apply to `uses:` steps
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm build
+      # the site is rsynced into the same docroot as the installers, so the
+      # export must never contain a file that would shadow one of them
+      - name: guard installer paths
+        run: |
+          for p in install.sh install.ps1 dl; do
+            if [ -e "out/$p" ]; then
+              echo "::error::export contains out/$p, which would shadow the installer artifact"
+              exit 1
+            fi
+          done

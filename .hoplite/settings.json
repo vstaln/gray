@@ -1,0 +1,26 @@
+{
+	"version": 1,
+	"ports": {
+		"preview": 3000,
+		"additional": {}
+	},
+	"scripts": {
+		"setup": {
+			"enabled": true,
+			"command": "cd web && pnpm install"
+		},
+		"run": {
+			"enabled": true,
+			"command": "cd web && pnpm dev --port 3000 --hostname 0.0.0.0"
+		},
+		"archive": {
+			"enabled": true,
+			"command": null
+		},
+		"check": {
+			"enabled": true,
+			"command": "cd web && pnpm lint && pnpm build"
+		}
+	},
+	"mcpServers": []
+}
