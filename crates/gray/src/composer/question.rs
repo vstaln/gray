@@ -688,7 +688,10 @@ impl gray_core::questions::QuestionAsker for ComposerQuestionAsker {
 /// Builds the panel lines for the inline viewport (draw side). Rows are
 /// capped at `max_rows`; the option window scrolls around the selection.
 pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec<Line<'static>> {
+    let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // top margin — like 4f8cc65 [WORKING WORKING FINAL ULTRA MEGA SUPREME...] padded card box
+    lines.push(Line::from("").style(bg_style));
     if q.confirm_unanswered.is_some() {
         let sel = q.confirm_unanswered.unwrap_or(0);
         lines.push(Line::from(Span::styled(
@@ -704,6 +707,8 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
             let prefix = if i == sel { "›" } else { " " };
             lines.push(option_row(prefix, i + 1, label, Some(desc), i == sel));
         }
+        // bottom margin — like 4f8cc65
+        lines.push(Line::from("").style(bg_style));
         return lines;
     }
 
@@ -723,8 +728,8 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         Line::from(Span::styled(l, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)))
     }));
 
-    // Budget: progress(1) + question + tips(1); the rest goes to options.
-    let budget = max_rows.saturating_sub(2 + q_lines.min(max_rows.saturating_sub(2)));
+    // Budget: top(1) + progress(1) + question + tips(1) + bottom(1); rest goes to options — like 4f8cc65 padded card
+    let budget = max_rows.saturating_sub(4 + q_lines.min(max_rows.saturating_sub(4)));
     let len = q.options_len();
     let sel = q.answers[q.current_idx].selected_idx.unwrap_or(0);
     let visible = budget.min(len).max(1);
@@ -741,6 +746,8 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     }
 
     lines.push(tips_line(q));
+    // bottom margin — like 4f8cc65
+    lines.push(Line::from("").style(bg_style));
     lines
 }
 
