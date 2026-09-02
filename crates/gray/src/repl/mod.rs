@@ -96,7 +96,11 @@ fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce()
 /// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
 /// appended). Bare `/skills` opens an interactive picker like /resume.
-fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::composer::SharedTui>) -> ReplCommand {
+/// With `local` set (Esc mid-turn), the skill is announced but never expanded
+/// into an AI prompt — the turn was cancelled, nothing talks to the model.
+fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::composer::SharedTui>, local: bool) -> ReplCommand {
+    // local: turn was cancelled — run everything as a no-AI no-op
+    let to_prompt = |expanded: String| if local { ReplCommand::Empty } else { ReplCommand::Prompt(expanded) };
     let ReplCommand::Skill(payload) = cmd else { return cmd };
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
@@ -135,7 +139,7 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
         };
         // surface a dim line like resume does so user sees the pick
         say(tui, &format!("→ /skills:{} {}", skill.name, if picked_args.trim().is_empty() { String::new() } else { picked_args.trim().to_string() }));
-        return ReplCommand::Prompt(expanded);
+        return to_prompt(expanded);
     };
     let (name, args) = match rest.split_once(char::is_whitespace) {
         Some((n, a)) => (n.trim(), Some(a.trim().to_string())),
@@ -165,7 +169,7 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
             return ReplCommand::Empty;
         }
     };
-    ReplCommand::Prompt(expanded)
+    to_prompt(expanded)
 }
 
 /// Handles the `/agentsmd` command family (alias `/sys`): edit, show, reset.
@@ -1671,7 +1675,7 @@ pub async fn run_repl_mode(
                 (buf.trim().to_string(), Vec::new())
             };
             pending_images = images;
-            expand_skill_command(parse_command(&line_text), cwd.as_path(), tui.as_ref().map(|(s, _)| s))
+            expand_skill_command(parse_command(&line_text), cwd.as_path(), tui.as_ref().map(|(s, _)| s), false)
         };
         // Clear pending images for non-prompt commands (keep for Prompt/Empty+images)
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
@@ -2203,16 +2207,36 @@ pub async fn run_repl_mode(
                                     crate::composer::handle_question_key(&mut t, code, modifiers);
                                     continue;
                                 }
-                                // Esc: dismiss popup if open, else cancel turn
+                                // Esc: dismiss popup if open; else if the draft is a
+                                // slash command, cancel the turn and run it locally
+                                // (echoed as a sent message, never fed to the AI);
+                                // else plain cancel.
                                 if code == KeyCode::Esc {
                                     if let Some(shared) = watcher_tui.as_ref()
                                         && let Ok(mut t) = shared.try_lock()
-                                        && !t.matches.is_empty()
                                     {
-                                        t.matches.clear();
-                                        t.sel = 0;
-                                        let _ = t.draw();
-                                        continue;
+                                        if !t.matches.is_empty() {
+                                            t.matches.clear();
+                                            t.sel = 0;
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        let mut text = t.textarea.text().to_string();
+                                        for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
+                                        let text = text.trim().to_string();
+                                        if text.starts_with('/') && !text.contains('\n') {
+                                            t.push_user_prompt(&text, &[]);
+                                            t.local_command = Some(text);
+                                            t.textarea.set_text("");
+                                            t.attachments.clear();
+                                            t.pending_pastes.clear();
+                                            t.history_idx = None;
+                                            t.sel = 0;
+                                            t.matches.clear();
+                                            let _ = t.draw();
+                                            watch_cancel.cancel();
+                                            return;
+                                        }
                                     }
                                     watch_cancel.cancel();
                                     return;
@@ -2561,10 +2585,14 @@ pub async fn run_repl_mode(
                 if interactive {
                     if let Some((shared, _)) = &tui {
                         let mut t = shared.lock().expect("tui lock");
-                        if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
+                        if let Some(text) = t.local_command.take() {
+                            // Esc mid-turn: command already echoed; run locally, never to the AI
+                            drop(t);
+                            pending_command = Some(expand_skill_command(parse_command(&text), &cwd, Some(shared), true));
+                        } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
                             t.push_user_prompt(&qtext, &qimages);
                             drop(t);
-                            pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared)));
+                            pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared), false));
                             pending_images = qimages;
                         }
                     }

@@ -49,6 +49,8 @@ pub struct Tui {
     turn_had_thinking: bool,
     pub is_task_running: bool,
     pub queued_inputs: std::collections::VecDeque<(String, Vec<PathBuf>)>,
+    /// Slash command submitted via Esc mid-turn: cancel + run locally, never to the AI.
+    pub local_command: Option<String>,
     pending: String,
     truecolor: bool,
     thinking: bool,
@@ -166,6 +168,7 @@ impl Tui {
             turn_had_thinking: false,
             is_task_running: false,
             queued_inputs: std::collections::VecDeque::new(),
+            local_command: None,
             pending: String::new(),
             truecolor: true,
             thinking: false,

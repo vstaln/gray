@@ -446,22 +446,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         }
                         tui.matches.clear();
                         tui.sel = 0;
-                        let is_slash_cmd = trimmed.starts_with('/') && !trimmed.contains('\n');
-                        if is_slash_cmd {
-                            tui.ensure_gap(1);
-                            tui.push_line_styled(
-                                format!(" ❯ {trimmed}"),
-                                ratatui::style::Style::default()
-                                    .fg(ratatui::style::Color::Rgb(180, 180, 180))
-                                    .add_modifier(ratatui::style::Modifier::BOLD),
-                            );
-                            if !attached.is_empty() {
-                                let names = attached.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
-                                tui.push_dim(format!("↳ attached: {names}"));
-                            }
-                        } else {
-                            tui.push_user_prompt(&trimmed, &attached);
-                        }
+                        tui.push_user_prompt(&trimmed, &attached);
                         return Ok(Some((trimmed, attached)));
                     }
                     KeyCode::Tab => {
