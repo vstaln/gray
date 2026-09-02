@@ -3,11 +3,13 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "setup provider & API key"),
     ("model", "switch model"),
     ("thinking", "reasoning effort"),
+    ("context-window", "set context window (e.g. 128k, auto)"),
     ("resume", "resume conversation"),
     ("new", "new conversation"),
     ("compact", "summarize context"),
     ("cron", "cron jobs"),
     ("proxy", "share Codex/Grok/OpenRouter via :8645"),
+    ("gateway", "messaging gateway (Telegram/Discord/Slack)"),
     ("portal", "portal status"),
     ("agentsmd", "edit system prompt"),
     ("skills", "list skills (/skills:<name> [args] to run one)"),
@@ -28,6 +30,8 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("compress", "compact"),
     ("sys", "agentsmd"),
     ("portal", "proxy"),
+    ("gw", "gateway"),
+    ("context", "context-window"),
 ];
 
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
@@ -108,12 +112,16 @@ pub enum ReplCommand {
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
+    /// Set context window (`/context-window [128k|auto]`).
+    ContextWindow(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Cron jobs: /cron, /cron list, /cron create --schedule ... --prompt ...
     Cron(String),
     /// Local proxy: /proxy start|stop|status, /portal alias
     Proxy(String),
+    /// Messaging gateway: /gateway, /gateway status|run|install (bare opens picker like /proxy)
+    Gateway(String),
     /// Skills: /skills lists; /skills:<name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
@@ -188,6 +196,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         "/new" | "/clear" | "/reset" => ReplCommand::New(opt(rest)),
         "/compact" | "/compress" => ReplCommand::Compact(opt(rest)),
         "/thinking" | "/effort" => ReplCommand::Thinking(opt(rest)),
+        "/context-window" | "/context" => ReplCommand::ContextWindow(opt(rest)),
         "/help" => ReplCommand::Help,
         _ => {
             // preserve original edge cases: bare aliases exact, "/key foo" is Provider but "/keys foo" is Unknown, "/model*" prefix without space
@@ -209,6 +218,9 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
             if t.starts_with("/proxy") || t.starts_with("/portal") {
                 return ReplCommand::Proxy(t.to_string());
+            }
+            if t.starts_with("/gateway") || t.starts_with("/gw") {
+                return ReplCommand::Gateway(t.to_string());
             }
             if t == "/skills" || t.starts_with("/skills:") {
                 return ReplCommand::Skill(t.strip_prefix("/skills:").map(str::to_string));

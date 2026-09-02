@@ -295,7 +295,7 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
 impl Tui {
     pub(crate) fn ensure_gap(&mut self, n: usize) {
         let trailing = self.transcript.iter().rev().take_while(|l| {
-            l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+            l.spans.is_empty() || l.spans.iter().all(|s| s.content.trim().is_empty())
         }).count();
         let need = n.saturating_sub(trailing);
         if need == 0 { return; }

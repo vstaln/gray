@@ -168,6 +168,55 @@ pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
     None
 }
 
+static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> = std::sync::OnceLock::new();
+
+fn user_context_window_cell() -> &'static std::sync::RwLock<Option<usize>> {
+    USER_CONTEXT_WINDOW.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Sets the user-configured global context window override (highest priority).
+/// `None` clears the override (auto-fetch / hardcoded fallback resumes).
+pub fn set_user_context_window(v: Option<usize>) {
+    if let Ok(mut g) = user_context_window_cell().write() {
+        *g = v.filter(|&n| n > 0);
+    }
+}
+
+pub fn get_user_context_window() -> Option<usize> {
+    user_context_window_cell().read().ok().and_then(|g| *g)
+}
+
+/// Parses a human-friendly context window string: `128000`, `128k`, `1m`, `1.5m`, `256k`, etc.
+/// Accepts commas/underscores and is case-insensitive. `k` = 1_000, `m` = 1_000_000.
+pub fn parse_context_window(s: &str) -> Option<usize> {
+    let t = s.trim().to_lowercase().replace([',', '_'], "");
+    if t.is_empty() {
+        return None;
+    }
+    if let Ok(n) = t.parse::<usize>() {
+        if n > 0 {
+            return Some(n);
+        }
+    }
+    if let Some(num) = t.strip_suffix('k') {
+        if let Ok(f) = num.trim().parse::<f64>() {
+            let v = (f * 1_000.0).round() as usize;
+            if v > 0 {
+                return Some(v);
+            }
+        }
+    }
+    if let Some(num) = t.strip_suffix('m') {
+        if let Ok(f) = num.trim().parse::<f64>() {
+            let v = (f * 1_000_000.0).round() as usize;
+            if v > 0 {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
 pub fn extract_context_length_from_json(val: &serde_json::Value) -> Option<usize> {
     const KEYS: &[&str] = &[
         "context_length",
@@ -230,6 +279,11 @@ pub fn format_context_length(tokens: usize) -> String {
 }
 
 pub fn resolve_model_context_length(model_name: &str) -> usize {
+    // 1) explicit user override wins over everything (CLI --context-window / GRAY_CONTEXT_WINDOW / config.json)
+    if let Some(user) = get_user_context_window() {
+        return user;
+    }
+    // 2) auto-fetched provider value (populated by fetch_live_provider_models)
     if let Some(cached) = get_cached_model_context(model_name) {
         return cached;
     }

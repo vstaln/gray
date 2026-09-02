@@ -13,6 +13,7 @@ async fn main() -> anyhow::Result<()> {
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
     let mut config = Config::resolve(&cli)?;
+    gray::setup::set_user_context_window(config.context_window);
     gray::oauth::apply_saved_oauth(&mut config).await;
     if let Some(cmd) = cli.command {
         match cmd {

@@ -10,7 +10,8 @@ pub mod context;
 pub use context::{
     cache_model_context, extract_context_length_from_json, fetch_live_provider_models,
     format_context_length, friendly_model_name, get_cached_model_context, get_provider_models,
-    get_provider_models_with_live, model_context_info, resolve_model_context_length,
+    get_provider_models_with_live, get_user_context_window, model_context_info,
+    parse_context_window, resolve_model_context_length, set_user_context_window,
 };
 
 pub mod ui;

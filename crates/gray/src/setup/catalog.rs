@@ -92,6 +92,10 @@ pub struct SavedConfig {
     /// Thinking / reasoning effort: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_effort: Option<String>,
+    /// User override for model context window in tokens (e.g. 128000). When set,
+    /// it takes precedence over the auto-fetched provider value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<usize>,
 }
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
@@ -246,4 +250,3 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
 
     items
 }
-

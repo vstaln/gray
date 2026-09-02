@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gray_core::agent::{Agent, ToolContext};
 use gray_core::error::CoreError;
@@ -81,6 +81,18 @@ fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     }
 }
 
+async fn with_modal<T>(tui: Option<&crate::composer::SharedTui>, fut: impl std::future::Future<Output = T>) -> T {
+    let r = fut.await;
+    restore_viewport(tui);
+    r
+}
+
+fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce() -> T) -> T {
+    let r = f();
+    restore_viewport(tui);
+    r
+}
+
 /// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
 /// appended). Bare `/skills` opens an interactive picker like /resume.
@@ -89,27 +101,14 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
         // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() {
-                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-            }
-        }
         let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match crate::setup::run_skills_modal(cwd, bg.as_ref()) {
+        let picked = match with_modal_sync(tui, || crate::setup::run_skills_modal(cwd, bg.as_ref())) {
             Ok(v) => v,
             Err(e) => {
-                if let Some(shared) = tui {
-                    if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                }
-                restore_viewport(tui);
                 say(tui, &format!("skills picker error: {e}"));
                 return ReplCommand::Empty;
             }
         };
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-        }
-        restore_viewport(tui);
         let Some((skill, picked_args)) = picked else {
             // Esc — picker cancelled; viewport already restored
             return ReplCommand::Empty;
@@ -284,23 +283,21 @@ async fn handle_model(
         } else {
             println!("✓ Model set to {m}");
         }
+        if crate::setup::get_user_context_window().is_none()
+            && crate::setup::get_cached_model_context(&m).is_none()
+        {
+            let base = config.base_url.clone();
+            let key = config.api_key.clone();
+            tokio::spawn(async move {
+                crate::setup::fetch_live_provider_models(&base, key.as_deref());
+            });
+        }
         reload_agent(agent, config, cwd).await;
         return;
     }
 
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-        }
-    }
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
-    let result = crate::setup::run_model_menu(config, bg.as_ref()).await;
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.pending_resize = None;
-        }
-    }
-    restore_viewport(tui);
+    let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
             if let Some(shared) = tui {
@@ -310,6 +307,17 @@ async fn handle_model(
                     t.push_action("Model set to", Some(m));
                 }
                 let _ = t.draw();
+            }
+            if let Some(m) = config.model.clone() {
+                if crate::setup::get_user_context_window().is_none()
+                    && crate::setup::get_cached_model_context(&m).is_none()
+                {
+                    let base = config.base_url.clone();
+                    let key = config.api_key.clone();
+                    tokio::spawn(async move {
+                        crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                    });
+                }
             }
             reload_agent(agent, config, cwd).await;
         }
@@ -376,17 +384,8 @@ async fn handle_thinking(
     }
 
     let has_explicit_level = config.thinking_effort.is_some();
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-        }
-    }
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
-    let result = crate::setup::run_effort_menu(config, bg.as_ref()).await;
-    if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-    }
-    restore_viewport(tui);
+    let result = with_modal(tui, crate::setup::run_effort_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
             if let Some(shared) = tui {
@@ -435,6 +434,103 @@ async fn handle_thinking(
     }
 }
 
+async fn handle_context_window(
+    config: &mut Config,
+    direct: Option<String>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    let Some(val) = direct else {
+        // show current effective window
+        let model = config.model.as_deref().unwrap_or("");
+        let effective = crate::setup::resolve_model_context_length(model);
+        let user = crate::setup::get_user_context_window();
+        let cached = crate::setup::get_cached_model_context(model);
+        let source = if user.is_some() {
+            "user override"
+        } else if cached.is_some() {
+            "auto-fetched from provider"
+        } else {
+            "hardcoded fallback"
+        };
+        let msg = format!(
+            "context window: {} tokens ({}) — source: {source}\n  set: /context-window 128k  |  clear: /context-window auto",
+            effective,
+            crate::setup::format_context_length(effective)
+        );
+        if let Some(shared) = tui {
+            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+        } else {
+            println!("{msg}");
+        }
+        return;
+    };
+    let lower = val.trim().to_lowercase();
+    if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" || lower.is_empty() {
+        config.context_window = None;
+        crate::setup::set_user_context_window(None);
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            saved.context_window = None;
+            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        }
+        // re-prime cache if model present
+        if let Some(m) = config.model.clone() {
+            if crate::setup::get_cached_model_context(&m).is_none() {
+                let base = config.base_url.clone();
+                let key = config.api_key.clone();
+                tokio::spawn(async move {
+                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                });
+            }
+        }
+        let effective = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
+        let msg = format!(
+            "context window cleared → auto ({} / {})",
+            effective,
+            crate::setup::format_context_length(effective)
+        );
+        if let Some(shared) = tui {
+            let mut t = shared.lock().expect("tui lock");
+            t.push_dim(format!("╰ {msg}"));
+            let _ = t.draw();
+        } else {
+            println!("✓ {msg}");
+        }
+        return;
+    }
+    match crate::setup::parse_context_window(&val) {
+        Some(n) if n > 0 => {
+            config.context_window = Some(n);
+            crate::setup::set_user_context_window(Some(n));
+            if let Ok(path) = crate::setup::saved_config_path() {
+                let mut saved = crate::setup::load_saved_config_at(&path);
+                saved.context_window = Some(n);
+                let _ = crate::setup::save_saved_config_at(&path, &saved);
+            }
+            let msg = format!(
+                "context window set to {} tokens ({}) — overrides auto-fetched value",
+                n,
+                crate::setup::format_context_length(n)
+            );
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                t.push_dim(format!("╰ {msg}"));
+                let _ = t.draw();
+            } else {
+                println!("✓ {msg}");
+            }
+        }
+        _ => {
+            let msg = format!("invalid value '{val}' — use e.g. 128000, 128k, 1m, or 'auto' to clear");
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+            } else {
+                println!("{msg}");
+            }
+        }
+    }
+}
+
 /// Handles the `/compact` / `/compress` command family.
 async fn handle_compact(
     config: &Config,
@@ -466,39 +562,26 @@ async fn handle_compact(
         return;
     }
 
+    let msg_count = messages.len();
+
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").set_status(Some("Compacting conversation context"));
     }
 
-    let transcript = crate::compact::serialize_conversation(&messages);
-    let prompt = crate::compact::build_summarization_prompt(&transcript, custom_instructions.as_deref());
-
-    let summary_res = ag.complete_prompt(&prompt, Some(crate::compact::SUMMARIZATION_SYSTEM_PROMPT)).await;
+    let compact_res =
+        crate::compact::compact_with_instructions(ag, custom_instructions.as_deref()).await;
 
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").set_status(None);
     }
 
-    match summary_res {
-        Ok(summary) => {
-            let summary_trimmed = summary.trim().to_string();
-            let msg_count = messages.len();
-
-            let summary_user = Message::user(format!(
-                "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
-                summary_trimmed
-            ));
-            let summary_asst = Message::assistant(
-                "Understood. I have reviewed the conversation summary and context, and I am ready to continue."
-            );
-
-            let new_messages = vec![summary_user.clone(), summary_asst.clone()];
-            ag.set_messages(new_messages);
-
-            // Record to session storage if active
+    match compact_res {
+        Ok(true) => {
+            // Record to session storage if active (helper already set_messages)
             if let Some(state) = session_state {
-                let _ = state.store.append(&state.session_id, &summary_user).await;
-                let _ = state.store.append(&state.session_id, &summary_asst).await;
+                for msg in ag.messages().to_vec() {
+                    let _ = state.store.append(&state.session_id, &msg).await;
+                }
             }
 
             if let Some(shared) = tui {
@@ -508,6 +591,13 @@ async fn handle_compact(
                 ));
             } else {
                 println!("compressed context ({} turns -> structured summary)", msg_count);
+            }
+        }
+        Ok(false) => {
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim("╰ nothing to compact (conversation is empty)".to_string());
+            } else {
+                println!("nothing to compact (conversation is empty)");
             }
         }
         Err(e) => {
@@ -750,28 +840,15 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
     let needs_picker = is_bare || (is_start && provider.is_none() && !lower.contains("--provider"));
     if needs_picker {
         // show picker
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() {
-                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-            }
-        }
         let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match crate::setup::run_proxy_menu(config, bg.as_ref()).await {
+        let picked = match with_modal(tui, crate::setup::run_proxy_menu(config, bg.as_ref())).await {
             Ok(p) => p,
             Err(e) => {
-                if let Some(shared) = tui {
-                    if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                }
-                restore_viewport(tui);
                 let msg = format!("proxy picker error: {e}");
                 if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
                 return;
             }
         };
-        if let Some(shared) = tui {
-            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-        }
-        restore_viewport(tui);
         let Some(picked_provider) = picked else {
             // cancelled — viewport already restored
             return;
@@ -896,16 +973,7 @@ async fn handle_resume(
             }
         }
     } else {
-        if let Some(shared) = &tui {
-            if let Ok(mut t) = shared.try_lock() {
-                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-            }
-        }
-        let result = crate::resume::run_resume_picker(args.all, bg.as_ref()).await;
-        if let Some(shared) = &tui {
-            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-        }
-        restore_viewport(tui);
+        let result = with_modal(tui, crate::resume::run_resume_picker(args.all, bg.as_ref())).await;
         match result {
             Ok(Some(id)) => Some(id),
             Ok(None) => return,
@@ -1026,6 +1094,207 @@ async fn persist_turn_messages(
     }
 }
 
+async fn ensure_session_state(
+    session_state: &mut Option<SessionState>,
+    config: &Config,
+    cwd: &Path,
+) {
+    if session_state.is_none() {
+        if let Some(root) = default_root() {
+            let store = JsonlSessionStore::new(root);
+            let session_id = SessionId::generate();
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let meta = SessionMeta::new(
+                session_id.clone(),
+                timestamp,
+                cwd.to_path_buf(),
+                config.model.clone().unwrap_or_else(|| "unset".into()),
+            );
+            store.create(meta).await;
+            *session_state = Some(SessionState { store, session_id });
+        }
+    }
+}
+
+fn dispatch_agent_event(
+    ev: &AgentEvent,
+    tui_stream: Option<&crate::composer::SharedTui>,
+    interactive: bool,
+    current_tool_name: &mut Option<String>,
+    current_tool_args: &mut Option<serde_json::Value>,
+    turn_usage: &mut Option<gray_core::event::Usage>,
+    cwd: &Path,
+) {
+    if let Some(shared) = tui_stream {
+        if let Ok(mut t) = shared.lock() {
+            match ev {
+                AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
+                AgentEvent::TextDelta { delta } => t.stream_text(delta),
+                AgentEvent::ToolCallStart { name, .. } => {
+                    t.flush_markdown();
+                    t.end_thinking();
+                    *current_tool_name = Some(name.clone());
+                    *current_tool_args = None;
+                }
+                AgentEvent::ToolCallEnd { args, .. } => {
+                    t.end_thinking();
+                    *current_tool_args = Some(args.clone());
+                }
+                AgentEvent::ToolResult { output, is_error, .. } => {
+                    let name = current_tool_name.take().unwrap_or_default();
+                    let args = current_tool_args.take();
+                    if name != "request_user_input" {
+                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+                            &name,
+                            args.as_ref(),
+                            output,
+                            *is_error,
+                            Some(cwd),
+                        );
+                        let header = args
+                            .as_ref()
+                            .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+                            .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                        t.push_tool_box(header, lines);
+                    }
+                }
+                AgentEvent::StepUsage { usage } => {
+                    t.set_usage(*usage);
+                }
+                AgentEvent::TurnEnd { usage, .. } => {
+                    *turn_usage = Some(*usage);
+                    t.end_thinking();
+                    t.set_usage(*usage);
+                    if usage.total() > 0 {
+                        t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total())));
+                    }
+                }
+                _ => {}
+            }
+            let _ = std::io::stdout().flush();
+            return;
+        }
+    }
+    if !interactive {
+        match ev {
+            AgentEvent::TextDelta { delta } => print!("{delta}"),
+            AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
+            AgentEvent::ToolCallStart { name, .. } => {
+                *current_tool_name = Some(name.clone());
+                *current_tool_args = None;
+            }
+            AgentEvent::ToolCallEnd { args, .. } => {
+                let name = current_tool_name.as_deref().unwrap_or("tool");
+                *current_tool_args = Some(args.clone());
+                if name != "request_user_input" {
+                    println!(
+                        "\n{}",
+                        crate::tool_fmt::format_tool_call_header_plain(name, args, Some(cwd))
+                    );
+                }
+            }
+            AgentEvent::ToolResult { output, is_error, .. } => {
+                let name = current_tool_name.take().unwrap_or_default();
+                let args = current_tool_args.take();
+                let res = crate::tool_fmt::format_tool_result_plain_with_context(
+                    &name,
+                    args.as_ref(),
+                    output,
+                    *is_error,
+                    Some(cwd),
+                );
+                if !res.is_empty() {
+                    print!("{res}");
+                }
+            }
+            AgentEvent::TurnEnd { usage, .. } => {
+                *turn_usage = Some(*usage);
+                if usage.total() > 0 {
+                    println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()));
+                }
+            }
+            _ => {}
+        }
+        let _ = std::io::stdout().flush();
+    }
+}
+
+async fn maybe_threshold_compact(
+    agent: &mut Agent,
+    config: &Config,
+    session_state: &mut Option<SessionState>,
+    cwd: &Path,
+    tui: Option<&crate::composer::SharedTui>,
+    latest: Option<gray_core::event::Usage>,
+    initial_count: &mut usize,
+) {
+    let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
+    let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
+    if !crate::compact::should_compact(tokens, window, &crate::compact::DEFAULT_COMPACTION_SETTINGS) {
+        return;
+    }
+    say(
+        tui,
+        &format!(
+            "auto-compacting {}/{} tokens...",
+            crate::setup::format_context_length(tokens),
+            crate::setup::format_context_length(window)
+        ),
+    );
+    match crate::compact::auto_compact_if_needed(agent, config, latest, "threshold").await {
+        Ok(true) => {
+            ensure_session_state(session_state, config, cwd).await;
+            if let Some(state) = session_state {
+                for msg in agent.messages().to_vec() {
+                    let _ = state.store.append(&state.session_id, &msg).await;
+                }
+            }
+            *initial_count = agent.messages().len();
+        }
+        Ok(false) => {},
+        Err(e) => log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}"),
+    }
+}
+
+async fn maybe_overflow_compact(
+    agent: &mut Agent,
+    config: &Config,
+    session_state: &mut Option<SessionState>,
+    cwd: &Path,
+    tui: Option<&crate::composer::SharedTui>,
+    latest: Option<gray_core::event::Usage>,
+    initial_count: &mut usize,
+    err: &CoreError,
+) -> bool {
+    if !crate::compact::is_context_overflow_error(err) {
+        return false;
+    }
+    say(tui, "context overflow — compacting...");
+    match crate::compact::auto_compact_if_needed(agent, config, latest, "overflow").await {
+        Ok(true) => {
+            ensure_session_state(session_state, config, cwd).await;
+            if let Some(state) = session_state {
+                for msg in agent.messages().to_vec() {
+                    let _ = state.store.append(&state.session_id, &msg).await;
+                }
+            }
+            *initial_count = agent.messages().len();
+            true
+        }
+        Ok(false) => {
+            log::warn!(target: "gray_compact", "overflow auto-compact returned false (nothing to compact)");
+            false
+        }
+        Err(e) => {
+            log::warn!(target: "gray_compact", "overflow auto-compact failed: {e}");
+            false
+        }
+    }
+}
+
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(
     config: &mut Config,
@@ -1041,6 +1310,21 @@ pub async fn run_repl_mode(
     let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
 
+    // context window: user override > auto-fetched provider value > hardcoded fallback
+    crate::setup::set_user_context_window(config.context_window);
+    // auto-fetch provider context window in background if not yet cached and no user override
+    if crate::setup::get_user_context_window().is_none() {
+        if let Some(m) = config.model.clone() {
+            if crate::setup::get_cached_model_context(&m).is_none() {
+                let base = config.base_url.clone();
+                let key = config.api_key.clone();
+                tokio::spawn(async move {
+                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                });
+            }
+        }
+    }
+
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
@@ -1052,6 +1336,19 @@ pub async fn run_repl_mode(
             print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n");
         }
         print!("\r\n");
+        // onboarding may have set model/base_url — re-sync context window override and prime cache
+        crate::setup::set_user_context_window(config.context_window);
+        if crate::setup::get_user_context_window().is_none() {
+            if let Some(m) = config.model.clone() {
+                if crate::setup::get_cached_model_context(&m).is_none() {
+                    let base = config.base_url.clone();
+                    let key = config.api_key.clone();
+                    tokio::spawn(async move {
+                        crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                    });
+                }
+            }
+        }
     } else if !interactive {
         crate::tui::print_logo();
         print!("\r\n");
@@ -1391,17 +1688,8 @@ pub async fn run_repl_mode(
                     // reuse Prompt logic inline
                     if agent.is_none() {
                         if unconfigured {
-                            if let Some((shared, _)) = tui.as_ref() {
-                                if let Ok(mut t) = shared.try_lock() {
-                                    t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-                                }
-                            }
                             let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                            let result = crate::setup::run_provider_menu(config, bg.as_ref()).await;
-                            if let Some((shared, _)) = tui.as_ref() {
-                                if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                            }
-                            restore_viewport(tui.as_ref().map(|(s, _)| s));
+                            let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
                             match result {
                                 Ok(true) => {
                                     unconfigured = false;
@@ -1463,7 +1751,23 @@ pub async fn run_repl_mode(
                     *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
                     let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()) };
                     let user_msg = build_user_message_with_images(&prompt_text, &images);
-                    let initial_count = agent.messages().len();
+                    let user_msg_for_retry = user_msg.clone();
+                    let mut initial_count = agent.messages().len();
+                    {
+                        let latest = tui
+                            .as_ref()
+                            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage));
+                        maybe_threshold_compact(
+                            agent,
+                            config,
+                            &mut session_state,
+                            &cwd,
+                            tui.as_ref().map(|(s, _)| s),
+                            latest,
+                            &mut initial_count,
+                        )
+                        .await;
+                    }
                     let (shared, _) = if interactive { (Some(tui.as_ref().expect("interactive implies tui")), ()) } else { (None, ()) };
                     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
                     if let Some(s) = &tui_stream { s.lock().expect("tui lock").begin_turn("Working"); }
@@ -1503,48 +1807,46 @@ pub async fn run_repl_mode(
                     let mut current_tool_name: Option<String> = None;
                     let mut current_tool_args: Option<serde_json::Value> = None;
                     let mut turn_usage: Option<gray_core::event::Usage> = None;
-                    let run_result = {
+                    let mut run_result = {
                         let mut on_event = |ev: &gray_core::event::AgentEvent| {
-                            if let Some(shared) = &tui_stream && let Ok(mut t) = shared.lock() {
-                                match ev {
-                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                                    gray_core::event::AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                    gray_core::event::AgentEvent::ToolCallStart { name, .. } => {
-                                        t.flush_markdown();
-                                        t.end_thinking();
-                                        current_tool_name = Some(name.clone());
-                                        current_tool_args = None;
-                                    }
-                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); current_tool_args = Some(args.clone()); }
-                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => {
-                                        let name = current_tool_name.take().unwrap_or_default();
-                                        let args = current_tool_args.take();
-                                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                        t.push_tool_box(header, lines);
-                                    }
-                                    gray_core::event::AgentEvent::StepUsage { usage } => {
-                                        t.set_usage(*usage);
-                                    }
-                                    gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
-                                    _ => {}
-                                }
-                            } else if !interactive {
-                                match ev {
-                                    gray_core::event::AgentEvent::TextDelta { delta } => print!("{delta}"),
-                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-                                    gray_core::event::AgentEvent::ToolCallStart { name, .. } => { current_tool_name = Some(name.clone()); current_tool_args = None; }
-                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd))); }
-                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !res.is_empty() { print!("{res}"); } }
-                                    gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); if usage.total() > 0 { println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total())); } }
-                                    _ => {}
-                                }
-                                let _ = std::io::stdout().flush();
-                            }
+                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
                         };
                         let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                         tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
                     };
+                    // overflow recovery (one retry only)
+                    if let Err(ref e) = run_result {
+                        let latest = tui
+                            .as_ref()
+                            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
+                            .or(turn_usage);
+                        if maybe_overflow_compact(
+                            agent,
+                            config,
+                            &mut session_state,
+                            &cwd,
+                            tui.as_ref().map(|(s, _)| s),
+                            latest,
+                            &mut initial_count,
+                            e,
+                        )
+                        .await
+                        {
+                                current_tool_name = None;
+                                current_tool_args = None;
+                                let ctx2 = gray_core::agent::ToolContext {
+                                    cwd: cwd.clone(),
+                                    cancel: cancel.clone(),
+                                    questions: Some(question_bridge.clone()),
+                                };
+                                let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
+                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
+                                };
+                                let mut run_future2 = Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
+                                let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
+                                run_result = retry_res;
+                        }
+                    }
                     TURN_STATE.lock().expect("turn state lock").take();
                     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     match run_result {
@@ -1688,18 +1990,13 @@ pub async fn run_repl_mode(
                 handle_thinking(config, &cwd, level, &mut agent, tui.as_ref().map(|(s, _)| s), &mut hide_thinking).await;
                 continue;
             }
+            ReplCommand::ContextWindow(val) => {
+                handle_context_window(config, val, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
             ReplCommand::Provider => {
-                if let Some((shared, _)) = &tui {
-                    if let Ok(mut t) = shared.try_lock() {
-                        t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-                    }
-                }
                 let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                let result = crate::setup::run_provider_menu(config, bg.as_ref()).await;
-                if let Some((shared, _)) = &tui {
-                    if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                }
-                restore_viewport(tui.as_ref().map(|(s, _)| s));
+                let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
                 match result {
                     Ok(true) => {
                         unconfigured = false;
@@ -1755,6 +2052,11 @@ pub async fn run_repl_mode(
                 handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
+            ReplCommand::Gateway(raw) => {
+                // reuse proxy handler for gateway status — shares same auth surface
+                handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
             ReplCommand::Unknown(cmd) => {
                 say(tui.as_ref().map(|(s, _)| s), &format!("unknown command '{cmd}' — type /help for available commands"));
                 continue;
@@ -1762,17 +2064,8 @@ pub async fn run_repl_mode(
             ReplCommand::Prompt(prompt_text) => {
                 if agent.is_none() {
                     if unconfigured {
-                        if let Some((shared, _)) = &tui {
-                            if let Ok(mut t) = shared.try_lock() {
-                                t.pending_resize = Some((t.last_width, Instant::now() + Duration::from_secs(3600)));
-                            }
-                        }
                         let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                        let result = crate::setup::run_provider_menu(config, bg.as_ref()).await;
-                        if let Some((shared, _)) = &tui {
-                            if let Ok(mut t) = shared.try_lock() { t.pending_resize = None; }
-                        }
-                        restore_viewport(tui.as_ref().map(|(s, _)| s));
+                        let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
                         match result {
                             Ok(true) => {
                                 unconfigured = false;
@@ -1839,7 +2132,23 @@ pub async fn run_repl_mode(
                 };
                 let images = std::mem::take(&mut pending_images);
                 let user_msg = build_user_message_with_images(&prompt_text, &images);
-                let initial_count = agent.messages().len();
+                let user_msg_for_retry = user_msg.clone();
+                let mut initial_count = agent.messages().len();
+                {
+                    let latest = tui
+                        .as_ref()
+                        .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage));
+                    maybe_threshold_compact(
+                        agent,
+                        config,
+                        &mut session_state,
+                        &cwd,
+                        tui.as_ref().map(|(s, _)| s),
+                        latest,
+                        &mut initial_count,
+                    )
+                    .await;
+                }
 
                 let (shared, _) = if interactive {
                     (Some(tui.as_ref().expect("interactive implies tui")), ())
@@ -2162,82 +2471,9 @@ pub async fn run_repl_mode(
                 let mut current_tool_name: Option<String> = None;
                 let mut current_tool_args: Option<serde_json::Value> = None;
                 let mut turn_usage: Option<gray_core::event::Usage> = None;
-                let run_result = {
+                let mut run_result = {
                     let mut on_event = |ev: &AgentEvent| {
-                        if let Some(shared) = &tui_stream
-                            && let Ok(mut t) = shared.lock()
-                        {
-                            match ev {
-                                AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                                AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                AgentEvent::ToolCallStart { name, .. } => {
-                                    t.flush_markdown();
-                                    t.end_thinking();
-                                    current_tool_name = Some(name.clone());
-                                    current_tool_args = None;
-                                }
-                                AgentEvent::ToolCallEnd { args, .. } => {
-                                    t.end_thinking();
-                                    current_tool_args = Some(args.clone());
-                                }
-                                AgentEvent::ToolResult { output, is_error, .. } => {
-                                    let name = current_tool_name.take().unwrap_or_default();
-                                    let args = current_tool_args.take();
-                                    if name != "request_user_input" {
-                                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                        t.push_tool_box(header, lines);
-                                    }
-                                }
-                                AgentEvent::StepUsage { usage } => {
-                                    t.set_usage(*usage);
-                                }
-                                AgentEvent::TurnEnd { usage, .. } => {
-                                    turn_usage = Some(*usage);
-                                    t.end_thinking();
-                                    t.set_usage(*usage);
-                                    if usage.total() > 0 {
-                                        t.push_usage(format!(
-                                            "\u{2b22} {} tok",
-                                            fmt_usage(usage.total())
-                                        ));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        } else if !interactive {
-                            match ev {
-                                AgentEvent::TextDelta { delta } => print!("{delta}"),
-                                AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-                                AgentEvent::ToolCallStart { name, .. } => {
-                                    current_tool_name = Some(name.clone());
-                                    current_tool_args = None;
-                                }
-                                AgentEvent::ToolCallEnd { args, .. } => {
-                                    let name = current_tool_name.as_deref().unwrap_or("tool");
-                                    current_tool_args = Some(args.clone());
-                                    if name != "request_user_input" {
-                                        println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd)));
-                                    }
-                                }
-                                AgentEvent::ToolResult { output, is_error, .. } => {
-                                    let name = current_tool_name.take().unwrap_or_default();
-                                    let args = current_tool_args.take();
-                                    let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                    if !res.is_empty() {
-                                        print!("{res}");
-                                    }
-                                }
-                                AgentEvent::TurnEnd { usage, .. } => {
-                                    turn_usage = Some(*usage);
-                                    if usage.total() > 0 {
-                                        println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", fmt_usage(usage.total()));
-                                    }
-                                }
-                                _ => {}
-                            }
-                            let _ = std::io::stdout().flush();
-                        }
+                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
                     };
                     let mut run_future =
                         Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
@@ -2246,6 +2482,43 @@ pub async fn run_repl_mode(
                         _ = cancel.cancelled() => Err(CoreError::Cancelled),
                     }
                 };
+                // overflow recovery (one retry only)
+                if let Err(ref e) = run_result {
+                    let latest = tui
+                        .as_ref()
+                        .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
+                        .or(turn_usage);
+                    if maybe_overflow_compact(
+                        agent,
+                        config,
+                        &mut session_state,
+                        &cwd,
+                        tui.as_ref().map(|(s, _)| s),
+                        latest,
+                        &mut initial_count,
+                        e,
+                    )
+                    .await
+                    {
+                            current_tool_name = None;
+                            current_tool_args = None;
+                            let ctx2 = ToolContext {
+                                cwd: cwd.clone(),
+                                cancel: cancel.clone(),
+                                questions: Some(question_bridge.clone()),
+                            };
+                            let mut on_event2 = |ev: &AgentEvent| {
+                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
+                            };
+                            let mut run_future2 =
+                                Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
+                            let retry_res = tokio::select! {
+                                res = &mut run_future2 => res,
+                                _ = cancel.cancelled() => Err(CoreError::Cancelled),
+                            };
+                            run_result = retry_res;
+                    }
+                }
                 TURN_STATE.lock().expect("turn state lock").take();
                 // signal the watcher to exit; it dies within one 100ms tick.
                 // (Never .await it here without the flag — deadlock.)
