@@ -53,6 +53,8 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/model [id]` | switch or browse models |
 | `/provider` | provider menu: free tier · API key · OAuth · local |
 | `/key [provider]` | add or rotate a key without leaving the chat |
+| `/compact [instructions]` | summarize context (auto-compacts when near limit) |
+| `/context-window [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
 | `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/help`, `/quit` | you know these |
 
@@ -74,6 +76,12 @@ crates/
 - **Ctrl-C means cancel** mid-turn (first press) and exit at the prompt; interrupted turns still persist what reached memory.
 - **Logs** go to `~/.gray/logs/gray.log` — set `GRAY_LOG=debug` for the firehose.
 
+## Context window & auto-compact
+
+Context window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` > auto-fetched provider value > hardcoded fallback per model. Inspect with `/context-window`, set with `/context-window 128k` (or `1m`, `auto` to clear).
+
+When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray auto-compacts before the next turn by summarizing history into a 2-message summary (same flow as manual `/compact`). On `context_length` / `max_tokens` overflow errors it compacts and retries once. No flag needed — auto is the default; use `/compact` to force a manual summarization.
+
 ## Environment
 
 | var | meaning |
@@ -81,6 +89,7 @@ crates/
 | `GRAY_HOME` | config root (default `~/.gray`) |
 | `GRAY_API_KEY` / `OPENAI_API_KEY` | API key (env beats stored keys) |
 | `GRAY_MODEL`, `GRAY_BASE_URL` | defaults before `~/.gray/config.json` is consulted |
+| `GRAY_CONTEXT_WINDOW` / `--context-window` | override window in tokens — `128000`, `128k`, `1m`, or `auto` to clear |
 | `GRAY_LOG` | log level: `error`…`trace` (default `info`) |
 
 <img src="docs/img/hokusai-kajikazawa.jpg" width="520" alt=""/>
