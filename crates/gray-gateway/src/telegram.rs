@@ -12,7 +12,6 @@ pub const SPLITS_LONG_MESSAGES: bool = true;
 
 pub struct TelegramAdapter {
     token: String,
-    connected: bool,
 }
 
 impl TelegramAdapter {
@@ -23,8 +22,7 @@ impl TelegramAdapter {
         validate_telegram_token(&token)?;
         Ok(Self {
             token,
-            connected: false,
-        })
+                    })
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -63,7 +61,7 @@ impl BasePlatformAdapter for TelegramAdapter {
         self.is_authenticated()
     }
 
-    async fn connect(&mut self) -> anyhow::Result<()> {
+    async fn connect(&self) -> anyhow::Result<()> {
         validate_telegram_token(&self.token)?;
         // Real impl behind feature: init teloxide Bot and start polling.
         #[cfg(feature = "telegram")]
@@ -77,12 +75,10 @@ impl BasePlatformAdapter for TelegramAdapter {
         {
             log::info!("[telegram] stub connect (token {}…)", &self.token[..self.token.len().min(6)]);
         }
-        self.connected = true;
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> anyhow::Result<()> {
-        self.connected = false;
+    async fn disconnect(&self) -> anyhow::Result<()> {
         log::info!("[telegram] disconnected");
         Ok(())
     }

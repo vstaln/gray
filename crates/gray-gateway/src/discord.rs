@@ -1,18 +1,40 @@
-//! Discord adapter (stub by default, real behind `discord` feature).
+//! Discord adapter — stub by default, real gateway+REST behind `discord` feature.
 //!
-//! Enable real gateway: `cargo check -p gray-gateway --features discord`
-//! requires `twilight-gateway`/`twilight-http` (optional). Default stub keeps
-//! `cargo check` passing without those deps.
+//! Enable: `cargo check -p gray-gateway --features discord` (twilight 0.16).
+//! Features (hermes parity): inbound messages via twilight-gateway, replies via
+//! twilight-http with reply-on-first-chunk, persistent typing loop, slash
+//! commands /ask /reset /status /stop.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{split_message, truncate_message, utf16_len, BasePlatformAdapter, SendResult};
+use crate::platform::{split_message, truncate_message, utf16_len, BasePlatformAdapter, MessageEvent, SendResult};
+use crate::session::SessionSource;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use tokio::sync::mpsc::UnboundedSender;
 
 pub const MAX_LENGTH: usize = 2000;
 pub const SPLITS_LONG_MESSAGES: bool = true;
 
+/// Slash commands we register and handle (hermes: /ask /reset /status /stop).
+#[cfg(feature = "discord")]
+const SLASH_COMMANDS: [(&str, &str); 4] = [
+    ("ask", "Send a prompt to gray"),
+    ("reset", "Reset your gray session"),
+    ("status", "Show gray session status"),
+    ("stop", "Stop the running gray agent"),
+];
+
+#[cfg(feature = "discord")]
+type HttpClient = std::sync::Arc<twilight_http::Client>;
+#[cfg(not(feature = "discord"))]
+type HttpClient = ();
+
 pub struct DiscordAdapter {
     token: String,
-    connected: bool,
+    client: Mutex<Option<HttpClient>>,
+    event_tx: Mutex<Option<UnboundedSender<MessageEvent>>>,
+    /// Last inbound message id per channel — reply target for the first chunk (hermes reply_to_mode=first).
+    last_inbound: Mutex<HashMap<String, u64>>,
 }
 
 impl DiscordAdapter {
@@ -21,7 +43,12 @@ impl DiscordAdapter {
             .token
             .ok_or_else(|| anyhow::anyhow!("discord token not set (set platforms.discord.token in gateway.yaml)"))?;
         validate_discord_token(&token)?;
-        Ok(Self { token, connected: false })
+        Ok(Self {
+            token: token.trim().trim_start_matches("Bot ").to_string(),
+            client: Mutex::new(None),
+            event_tx: Mutex::new(None),
+            last_inbound: Mutex::new(HashMap::new()),
+        })
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -44,6 +71,121 @@ pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u64) -> SessionSource {
+    SessionSource {
+        platform: Platform::Discord,
+        chat_id: msg_channel.to_string(),
+        chat_type: if guild.is_some() { "group" } else { "dm" }.to_string(),
+        user_id: Some(user_id.to_string()),
+        thread_id: None, // ponytail: threads key by their own channel id, so no explicit thread tracking needed
+        scope_id: guild.map(|g| g.to_string()),
+        message_id: Some(message_id.to_string()),
+    }
+}
+
+#[cfg(feature = "discord")]
+fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: UnboundedSender<MessageEvent>, last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>) {
+    tokio::spawn(async move {
+        use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
+        use twilight_model::application::interaction::InteractionData;
+
+        let intents = Intents::GUILD_MESSAGES | Intents::DIRECT_MESSAGES | Intents::MESSAGE_CONTENT;
+        let mut shard = Shard::new(ShardId::ONE, token, intents);
+        let mut app_id = None;
+        while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
+            let event = match item {
+                Ok(e) => e,
+                Err(e) => {
+                    log::warn!("[discord] shard event error: {e}");
+                    continue;
+                }
+            };
+            match event {
+                Event::Ready(r) => {
+                    app_id = Some(r.application.id);
+                    // Register global slash commands (hermes _register_slash_commands).
+                    let commands: Vec<twilight_model::application::command::Command> = SLASH_COMMANDS
+                        .iter()
+                        .map(|(name, desc)| {
+                            let b = twilight_util::builder::command::CommandBuilder::new(
+                                *name, *desc, twilight_model::application::command::CommandType::ChatInput);
+                            if *name == "ask" {
+                                b.option(twilight_util::builder::command::StringBuilder::new("prompt", "What to ask gray").required(true)).build()
+                            } else {
+                                b.build()
+                            }
+                        })
+                        .collect();
+                    match http.interaction(r.application.id).set_global_commands(&commands).await {
+                        Ok(_) => log::info!("[discord] registered {} slash commands", commands.len()),
+                        Err(e) => log::warn!("[discord] slash command registration failed: {e}"),
+                    }
+                }
+                Event::MessageCreate(msg) => {
+                    let m = msg.0;
+                    if m.author.bot { continue; }
+                    let content = m.content.clone();
+                    if content.is_empty() { continue; }
+                    let cid = m.channel_id.get();
+                    last_inbound.lock().unwrap().insert(cid.to_string(), m.id.get());
+                    let ev = MessageEvent {
+                        text: content,
+                        message_id: Some(m.id.get().to_string()),
+                        source: source_for(cid, m.guild_id.map(|g| g.get()), m.author.id.get(), m.id.get()),
+                        media_urls: vec![],
+                    };
+                    let _ = tx.send(ev);
+                }
+                Event::InteractionCreate(interaction) => {
+                    let Some(app) = app_id else { continue };
+                    let Some(ref data) = interaction.0.data else { continue };
+                    let InteractionData::ApplicationCommand(cmd) = data else { continue };
+                    let Some(channel_id) = interaction.0.channel.as_ref().map(|c| c.id) else { continue };
+                    let user_id = interaction.0.author_id().map(|u| u.get()).unwrap_or(0);
+                    let name = cmd.name.as_str();
+                    let cid = channel_id.get();
+                    let text = match name {
+                        "ask" => cmd.options.iter()
+                            .find(|o| o.name == "prompt")
+                            .and_then(|o| match &o.value {
+                                twilight_model::application::interaction::application_command::CommandOptionValue::String(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_default(),
+                        other => format!("/{other}"),
+                    };
+                    if text.is_empty() {
+                        log::warn!("[discord] /ask without prompt from {user_id}");
+                        continue;
+                    }
+                    // Ack the interaction so Discord doesn't show "failure" (hermes responds immediately).
+                    use twilight_model::http::interaction::{InteractionResponse, InteractionResponseData, InteractionResponseType};
+                    let resp = InteractionResponse {
+                        kind: InteractionResponseType::ChannelMessageWithSource,
+                        data: Some(InteractionResponseData {
+                            content: if name == "ask" { Some(format!("🤖 {text}")) } else { Some("…".into()) },
+                            ..Default::default()
+                        }),
+                    };
+                    if let Err(e) = http.interaction(app).create_response(interaction.0.id, &interaction.0.token, &resp).await {
+                        log::warn!("[discord] interaction ack failed: {e}");
+                    }
+                    let ev = MessageEvent {
+                        text,
+                        message_id: Some(interaction.0.id.get().to_string()),
+                        source: source_for(cid, interaction.0.guild_id.map(|g| g.get()), user_id, interaction.0.id.get()),
+                        media_urls: vec![],
+                    };
+                    let _ = tx.send(ev);
+                }
+                Event::GatewayClose(frame) => log::warn!("[discord] gateway closed: {frame:?}"),
+                _ => {}
+            }
+        }
+        log::warn!("[discord] shard ended");
+    });
+}
+
 #[async_trait::async_trait]
 impl BasePlatformAdapter for DiscordAdapter {
     fn platform(&self) -> Platform {
@@ -54,24 +196,48 @@ impl BasePlatformAdapter for DiscordAdapter {
         self.is_authenticated()
     }
 
-    async fn connect(&mut self) -> anyhow::Result<()> {
+    async fn connect(&self) -> anyhow::Result<()> {
         validate_discord_token(&self.token)?;
         #[cfg(feature = "discord")]
         {
-            log::info!("[discord] (feature) validated token, connecting gateway");
+            let http = std::sync::Arc::new(twilight_http::Client::new(self.token.clone()));
+            // Validate the token early so misconfigurations fail fast (hermes get_me parity).
+            if let Err(e) = http.current_user().await {
+                anyhow::bail!("discord token rejected: {e}");
+            }
+            *self.client.lock().unwrap() = Some(http.clone());
+            let tx = self.event_tx.lock().unwrap().clone()
+                .ok_or_else(|| anyhow::anyhow!("discord adapter started before set_event_tx"))?;
+            spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())));
+            log::info!("[discord] gateway connected, slash commands registered on Ready");
         }
         #[cfg(not(feature = "discord"))]
         {
             log::info!("[discord] stub connect (token {}…)", &self.token[..self.token.len().min(6)]);
         }
-        self.connected = true;
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> anyhow::Result<()> {
-        self.connected = false;
+    async fn disconnect(&self) -> anyhow::Result<()> {
+        *self.client.lock().unwrap() = None;
         log::info!("[discord] disconnected");
         Ok(())
+    }
+
+    fn set_event_tx(&mut self, tx: UnboundedSender<MessageEvent>) {
+        *self.event_tx.lock().unwrap() = Some(tx);
+    }
+
+    async fn send_typing(&self, chat: &str) {
+        #[cfg(feature = "discord")]
+        {
+            let client = self.client.lock().unwrap().clone();
+            if let (Some(client), Ok(cid)) = (client, chat.parse::<u64>()) {
+                let _ = client.create_typing_trigger(twilight_model::id::Id::new(cid)).await;
+            }
+        }
+        #[cfg(not(feature = "discord"))]
+        let _ = chat;
     }
 
     async fn send(&self, chat: &str, text: &str) -> SendResult {
@@ -95,20 +261,37 @@ impl BasePlatformAdapter for DiscordAdapter {
             vec![text.to_string()]
         };
 
-        for (i, chunk) in chunks.iter().enumerate() {
-            debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
-            #[cfg(feature = "discord")]
-            {
-                let _ = chat;
-                log::debug!("[discord] (feature) send chunk {}/{} to {}: {} chars", i + 1, chunks.len(), chat, chunk.len());
+        #[cfg(feature = "discord")]
+        {
+            let Some(client) = self.client.lock().unwrap().clone() else {
+                return SendResult { success: false, message_id: None, error: Some("discord not connected".into()), retryable: false };
+            };
+            let Ok(cid) = chat.parse::<u64>() else {
+                return SendResult { success: false, message_id: None, error: Some(format!("invalid discord channel id {chat:?}")), retryable: false };
+            };
+            let channel = twilight_model::id::Id::new(cid);
+            let reply_to = self.last_inbound.lock().unwrap().get(chat).copied(); // hermes reply_to_mode=first
+            for (i, chunk) in chunks.iter().enumerate() {
+                debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
+                let create = client.create_message(channel).content(chunk.as_str());
+                let create = if i == 0 {
+                    if let Some(mid) = reply_to { create.reply(twilight_model::id::Id::new(mid)) } else { create }
+                } else { create };
+                if let Err(e) = create.await {
+                    log::warn!("[discord] send chunk {}/{} failed: {e}", i + 1, chunks.len());
+                    return SendResult { success: false, message_id: None, error: Some(format!("discord send: {e}")), retryable: true };
+                }
             }
-            #[cfg(not(feature = "discord"))]
-            {
+            return SendResult { success: true, message_id: None, error: None, retryable: false };
+        }
+        #[cfg(not(feature = "discord"))]
+        {
+            for (i, chunk) in chunks.iter().enumerate() {
+                debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
                 log::info!("[discord] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), &chunk[..chunk.len().min(80)]);
             }
+            SendResult { success: true, message_id: None, error: None, retryable: false }
         }
-
-        SendResult { success: true, message_id: None, error: None, retryable: false }
     }
 }
 

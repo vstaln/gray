@@ -55,6 +55,14 @@ impl FileGatewayStore {
         id
     }
     pub fn get(&self, key: &str) -> Option<String> { self.map.read().unwrap().get(key).map(|e| e.session_id.clone()) }
+    /// /reset: drop the mapping and mint a fresh session id.
+    pub fn reset(&self, key: &str) -> String {
+        let id = uuid::Uuid::new_v4().to_string();
+        let entry = GatewayEntry { session_key: key.to_string(), session_id: id.clone(), updated_at: chrono::Utc::now().timestamp() };
+        self.map.write().unwrap().insert(key.to_string(), entry);
+        self.persist();
+        id
+    }
 }
 pub fn shared_store() -> Arc<FileGatewayStore> {
     let path = FileGatewayStore::default_path().unwrap_or_else(|_| PathBuf::from("/tmp/gray-gateway-sessions.json"));

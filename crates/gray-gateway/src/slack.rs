@@ -17,7 +17,6 @@ pub const SPLITS_LONG_MESSAGES: bool = true;
 pub struct SlackAdapter {
     bot_token: String,
     app_token: Option<String>,
-    connected: bool,
 }
 
 impl SlackAdapter {
@@ -30,7 +29,7 @@ impl SlackAdapter {
         if let Some(ref t) = app_token {
             validate_slack_app_token(t)?;
         }
-        Ok(Self { bot_token, app_token, connected: false })
+        Ok(Self { bot_token, app_token })
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -87,7 +86,7 @@ impl BasePlatformAdapter for SlackAdapter {
         self.is_authenticated()
     }
 
-    async fn connect(&mut self) -> anyhow::Result<()> {
+    async fn connect(&self) -> anyhow::Result<()> {
         validate_slack_bot_token(&self.bot_token)?;
         if let Some(ref t) = self.app_token {
             validate_slack_app_token(t)?;
@@ -100,12 +99,10 @@ impl BasePlatformAdapter for SlackAdapter {
         {
             log::info!("[slack] stub connect bot={}… app_token={}", &self.bot_token[..self.bot_token.len().min(8)], self.has_socket_mode());
         }
-        self.connected = true;
         Ok(())
     }
 
-    async fn disconnect(&mut self) -> anyhow::Result<()> {
-        self.connected = false;
+    async fn disconnect(&self) -> anyhow::Result<()> {
         log::info!("[slack] disconnected");
         Ok(())
     }

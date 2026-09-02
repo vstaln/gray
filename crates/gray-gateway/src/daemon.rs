@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use crate::config::{GatewayConfig, Platform, load_gateway_config};
 use crate::platform::{BasePlatformAdapter, MessageEvent, SendResult, truncate_message};
 use crate::session::{build_session_key, shared_store, FileGatewayStore};
@@ -8,89 +9,107 @@ use crate::telegram::TelegramAdapter;
 use crate::discord::DiscordAdapter;
 use crate::slack::SlackAdapter;
 
-pub struct GatewayRunner { pub config: GatewayConfig, pub adapters: HashMap<Platform, Box<dyn BasePlatformAdapter>>, pub store: Arc<FileGatewayStore> }
+type Adapter = Arc<dyn BasePlatformAdapter>;
+
+pub struct GatewayRunner {
+    pub config: GatewayConfig,
+    pub adapters: HashMap<Platform, Adapter>,
+    pub store: Arc<FileGatewayStore>,
+    /// Per-session cancellation for /stop (hermes parity).
+    cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+}
 
 impl GatewayRunner {
     pub fn from_config(config: GatewayConfig) -> anyhow::Result<Self> {
         let store = shared_store();
-        let mut adapters: HashMap<Platform, Box<dyn BasePlatformAdapter>> = HashMap::new();
+        let mut adapters: HashMap<Platform, Adapter> = HashMap::new();
         for (plat, cfg) in &config.platforms {
             if !cfg.enabled { continue; }
-            let adapter: Box<dyn BasePlatformAdapter> = match plat {
-                Platform::Telegram => Box::new(TelegramAdapter::new(cfg.clone())?),
-                Platform::Discord => Box::new(DiscordAdapter::new(cfg.clone())?),
-                Platform::Slack => Box::new(SlackAdapter::new(cfg.clone())?),
+            let adapter: Adapter = match plat {
+                Platform::Telegram => Arc::new(TelegramAdapter::new(cfg.clone())?),
+                Platform::Discord => Arc::new(DiscordAdapter::new(cfg.clone())?),
+                Platform::Slack => Arc::new(SlackAdapter::new(cfg.clone())?),
             };
             adapters.insert(*plat, adapter);
         }
-        Ok(Self{config, adapters, store})
+        Ok(Self { config, adapters, store, cancel_tokens: Mutex::new(HashMap::new()) })
     }
 
-    pub async fn start(&mut self) -> anyhow::Result<()> {
-        for (plat, adapter) in self.adapters.iter_mut() {
-            let res = tokio::time::timeout(std::time::Duration::from_secs(45), adapter.connect()).await;
-            match res {
-                Ok(Ok(())) => log::info!("gateway {plat} connected"),
-                Ok(Err(e)) => log::warn!("gateway {plat} connect failed: {e}"),
-                Err(_) => log::warn!("gateway {plat} connect timeout 45s"),
-            }
-        }
-        if self.adapters.is_empty() { anyhow::bail!("no gateway platforms enabled — edit ~/.gray/gateway.yaml"); }
-        #[cfg(unix)] {
-            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-            tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} }
-        }
-        #[cfg(not(unix))] { tokio::signal::ctrl_c().await?; }
-        self.stop().await
-    }
-
-    pub async fn stop(&mut self) -> anyhow::Result<()> {
-        for (_, a) in self.adapters.iter_mut() { let _ = a.disconnect().await; }
-        Ok(())
-    }
-
-    /// Handle inbound MessageEvent: resolve session -> run Agent -> send reply with truncation.
+    /// Handle inbound MessageEvent: resolve session -> run Agent -> send reply.
+    /// Intercepts the hermes slash commands /reset /status /stop.
     pub async fn handle_inbound(&self, ev: MessageEvent) -> anyhow::Result<SendResult> {
         let platform = ev.source.platform;
         let chat_id = ev.source.chat_id.clone();
         let key = build_session_key(&ev.source, self.config.group_per_user, self.config.thread_per_user);
-        let sid_str = self.store.get_or_create(&key, &ev.source);
-        log::info!("gateway inbound {platform} chat={chat_id} key={key} sid={sid_str} text_len={}", ev.text.len());
+        log::info!("gateway inbound {platform} chat={chat_id} key={key} text={:?}", &ev.text[..ev.text.len().min(80)]);
 
-        // Session store: load existing messages or create new session file
-        let reply_text = match self.run_agent_for_event(&sid_str, &ev).await {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("gateway agent error: {e}");
-                format!("error: {e}")
+        let reply_text = match ev.text.trim() {
+            "/reset" => {
+                let sid = self.store.reset(&key);
+                format!("Session reset ({sid}).")
+            }
+            "/status" => {
+                let sid = self.store.get(&key).unwrap_or_else(|| "(none yet)".into());
+                format!(
+                    "session {sid}\nmodel {}\ngroup_per_user={}",
+                    self.resolve_model().unwrap_or_else(|| "unconfigured".into()),
+                    self.config.group_per_user
+                )
+            }
+            "/stop" => {
+                let sid = self.store.get(&key).unwrap_or_default();
+                let stopped = self.cancel_tokens.lock().unwrap().get(&sid).map(|t| t.cancel()).is_some();
+                if stopped { "Stop requested~".into() } else { "Nothing running.".into() }
+            }
+            text => {
+                let sid_str = self.store.get_or_create(&key, &ev.source);
+                // Typing indicator while the agent works (hermes persistent typing, 8s loop).
+                let done = Arc::new(tokio::sync::Notify::new());
+                let typing_task = self.adapters.get(&platform).map(|a| {
+                    let (a, chat, d) = (Arc::clone(a), chat_id.clone(), Arc::clone(&done));
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                _ = d.notified() => break,
+                                _ = tokio::time::sleep(Duration::from_secs(8)) => a.send_typing(&chat).await,
+                            }
+                        }
+                    })
+                });
+
+                let result = self.run_agent_for_event(&sid_str, text, &ev).await;
+                done.notify_one();
+                if let Some(t) = typing_task { let _ = t.await; }
+                match result {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::warn!("gateway agent error: {e}");
+                        format!("error: {e}")
+                    }
+                }
             }
         };
 
         let max = match platform { Platform::Telegram => 4096, Platform::Discord => 2000, Platform::Slack => 39000 };
         let truncated = truncate_message(&reply_text, max);
 
-        // Find adapter to send back
         if let Some(adapter) = self.adapters.get(&platform) {
-            // chunk if still over? truncate_message already cuts, but telegram needs split
-            // ponytail: single truncation is enough for daemon wiring
             let res = adapter.send(&chat_id, &truncated).await;
             if !res.success { log::warn!("gateway send failed: {:?}", res.error); }
             Ok(res)
         } else {
             log::warn!("no adapter for {platform}, dropping reply");
-            Ok(SendResult{ success: false, message_id: None, error: Some(format!("no adapter for {platform}")), retryable: false })
+            Ok(SendResult { success: false, message_id: None, error: Some(format!("no adapter for {platform}")), retryable: false })
         }
     }
 
-    async fn run_agent_for_event(&self, sid_str: &str, ev: &MessageEvent) -> anyhow::Result<String> {
+    async fn run_agent_for_event(&self, sid_str: &str, text: &str, _ev: &MessageEvent) -> anyhow::Result<String> {
         use gray_core::Message;
         use gray_core::agent::{Agent, ToolContext};
         use gray_provider::OpenAiProvider;
         use gray_session::{SessionId, JsonlSessionStore, SessionMeta, default_root};
         use gray_tools::Registry;
 
-        // Resolve session history
         let root = default_root().unwrap_or_else(|| std::path::PathBuf::from(".gray/sessions"));
         let store = JsonlSessionStore::new(root);
         let sid = SessionId::new(sid_str.to_string());
@@ -98,7 +117,6 @@ impl GatewayRunner {
         let prior_messages: Vec<Message> = match store.load(&sid).await {
             Ok((_meta, entries)) => entries.into_iter().map(|e| e.message).collect(),
             Err(_) => {
-                // create new session file
                 let model = self.resolve_model().unwrap_or_else(|| "unknown".to_string());
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let meta = SessionMeta::new(sid.clone(), now_millis(), cwd, model);
@@ -107,7 +125,6 @@ impl GatewayRunner {
             }
         };
 
-        // Build Config from GRAY_HOME/config.json + env (mirrors gray::config::Config but local)
         let (base_url, api_key, model) = self.resolve_provider_config();
 
         let model = model.ok_or_else(|| anyhow::anyhow!("no model configured — set ~/.gray/config.json model"))?;
@@ -119,7 +136,6 @@ impl GatewayRunner {
         let registry = Registry::builtin();
         let tool_defs = registry.defs();
 
-        // System prompt: try GRAY_HOME/sys.md else default
         let system = load_system_prompt();
 
         let mut agent = Agent::new(Box::new(provider), Box::new(registry))
@@ -127,23 +143,23 @@ impl GatewayRunner {
             .with_tools(tool_defs)
             .with_messages(prior_messages);
 
-        let ctx = ToolContext::default();
-        let events = agent.run(Message::user(ev.text.clone()), ctx).await
-            .map_err(|e| anyhow::anyhow!("agent run: {e}"))?;
+        // Cancel token registered so /stop can abort the run (hermes parity).
+        let token = tokio_util::sync::CancellationToken::new();
+        self.cancel_tokens.lock().unwrap().insert(sid_str.to_string(), token.clone());
+        let ctx = ToolContext { cancel: token, ..Default::default() };
+        let run = agent.run(Message::user(text.to_string()), ctx).await
+            .map_err(|e| anyhow::anyhow!("agent run: {e}"));
+        self.cancel_tokens.lock().unwrap().remove(sid_str);
+        run?;
 
-        // Extract last assistant text
         let mut reply = String::new();
-        for ev in events.iter().rev() {
-            if let gray_core::event::AgentEvent::TurnEnd{..} = ev { break; }
-        }
-        // simpler: last assistant message
         if let Some(last) = agent.messages().iter().rev().find(|m| m.role == gray_core::Role::Assistant) {
             reply = last.text_content();
         }
         if reply.is_empty() { reply = "(no reply)".to_string(); }
 
         // persist turn
-        let _ = store.append(&sid, &Message::user(ev.text.clone())).await;
+        let _ = store.append(&sid, &Message::user(text.to_string())).await;
         let _ = store.append(&sid, &Message::assistant(reply.clone())).await;
 
         Ok(reply)
@@ -155,7 +171,6 @@ impl GatewayRunner {
     }
 
     fn resolve_provider_config(&self) -> (Option<String>, Option<String>, Option<String>) {
-        // Try env then ~/.gray/config.json
         let saved = load_saved_config();
         let base_url = std::env::var("GRAY_BASE_URL").ok().or(saved.as_ref().and_then(|s| s.base_url.clone()));
         let api_key = std::env::var("GRAY_API_KEY").ok().or_else(|| std::env::var("OPENAI_API_KEY").ok()).or(saved.as_ref().and_then(|s| s.api_key.clone()));
@@ -201,7 +216,44 @@ fn now_millis() -> u64 { std::time::SystemTime::now().duration_since(std::time::
 pub async fn run_gateway() -> anyhow::Result<()> {
     let cfg = load_gateway_config();
     let mut runner = GatewayRunner::from_config(cfg)?;
-    runner.start().await
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageEvent>();
+    for adapter in runner.adapters.values_mut() {
+        if let Some(a) = Arc::get_mut(adapter) { a.set_event_tx(tx.clone()); }
+    }
+    for (plat, adapter) in runner.adapters.iter_mut() {
+        let res = tokio::time::timeout(Duration::from_secs(45), adapter.connect()).await;
+        match res {
+            Ok(Ok(())) => log::info!("gateway {plat} connected"),
+            Ok(Err(e)) => log::warn!("gateway {plat} connect failed: {e}"),
+            Err(_) => log::warn!("gateway {plat} connect timeout 45s"),
+        }
+    }
+    if runner.adapters.is_empty() { anyhow::bail!("no gateway platforms enabled — edit ~/.gray/gateway.yaml"); }
+
+    let runner = Arc::new(runner);
+    // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
+    // dedicated LocalSet thread; spawn_local per event keeps /stop responsive mid-run.
+    let _worker = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("gateway runtime");
+        rt.block_on(tokio::task::LocalSet::new().run_until(async move {
+            while let Some(ev) = rx.recv().await {
+                let r = Arc::clone(&runner);
+                tokio::task::spawn_local(async move {
+                    if let Err(e) = r.handle_inbound(ev).await { log::warn!("gateway handle error: {e}"); }
+                });
+            }
+        }));
+    });
+
+    #[cfg(unix)] {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} }
+    }
+    #[cfg(not(unix))] { tokio::signal::ctrl_c().await?; }
+    // ponytail: no graceful shutdown — adapters hold event_tx clones so rx never
+    // closes; process exit reaps the worker thread. Add drain if restart-in-process lands.
+    Ok(())
 }
 
 #[cfg(test)]
