@@ -833,6 +833,40 @@ fn parse_gateway_args(raw: &str) -> GatewayAction {
     }
 }
 
+/// One human line per known platform: enabled/disabled. `running` is the
+/// in-process daemon state (systemd status is reported separately by callers).
+fn gateway_status_lines(cfg: &gray_gateway::config::GatewayConfig, running: bool) -> Vec<String> {
+    use gray_gateway::config::Platform;
+    let mut lines = vec![format!(
+        "gateway {} — config: {}",
+        if running { "connected (in-process)" } else { "not running" },
+        gray_gateway::config::gray_gateway_path().map(|p| p.display().to_string()).unwrap_or_default(),
+    )];
+    for plat in [Platform::Telegram, Platform::Discord, Platform::Slack] {
+        let state = match cfg.platforms.get(&plat) {
+            Some(pc) if pc.enabled => "enabled",
+            _ => "disabled",
+        };
+        lines.push(format!("  {plat}: {state}"));
+    }
+    lines.push("usage: /gateway connect <telegram|discord|slack> <token> | disconnect <platform> | run | stop | install | uninstall | status".to_string());
+    lines
+}
+
+/// Enables `plat` in `cfg` with `token` (mutates in place; caller saves).
+fn apply_connect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform, token: &str) {
+    let pc = cfg.platforms.entry(plat).or_default();
+    pc.enabled = true;
+    pc.token = Some(token.to_string());
+}
+
+/// Disables `plat` and clears its token.
+fn apply_disconnect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform) {
+    let pc = cfg.platforms.entry(plat).or_default();
+    pc.enabled = false;
+    pc.token = None;
+}
+
 async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::SharedTui>) {
     let lower = raw.to_ascii_lowercase();
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -2704,5 +2738,29 @@ mod tests {
             G::Disconnect(Platform::Slack) => {}
             other => panic!("expected disconnect slack, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn gateway_connect_disconnect_roundtrip() {
+        let mut cfg = gray_gateway::config::GatewayConfig::default();
+        super::apply_connect(&mut cfg, gray_gateway::config::Platform::Telegram, "tok-1");
+        let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
+        assert!(pc.enabled && pc.token.as_deref() == Some("tok-1"));
+        super::apply_disconnect(&mut cfg, gray_gateway::config::Platform::Telegram);
+        let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
+        assert!(!pc.enabled && pc.token.is_none());
+    }
+
+    #[test]
+    fn gateway_status_lines_hide_tokens() {
+        let mut cfg = gray_gateway::config::GatewayConfig::default();
+        super::apply_connect(&mut cfg, gray_gateway::config::Platform::Discord, "secret-token");
+        let lines = super::gateway_status_lines(&cfg, true);
+        let joined = lines.join("\n");
+        assert!(joined.contains("discord"), "should list platform: {joined}");
+        assert!(joined.contains("connected"), "should show in-process running state: {joined}");
+        assert!(!joined.contains("secret-token"), "token must never render: {joined}");
+        let lines = super::gateway_status_lines(&cfg, false);
+        assert!(lines.join("\n").contains("not running"));
     }
 }
