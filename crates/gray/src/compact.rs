@@ -150,6 +150,15 @@ pub fn estimate_tokens(msg: &Message) -> usize {
     (msg.text_content().len() as f64 / 4.0).ceil() as usize
 }
 
+pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
+    if let Some(u) = last {
+        if u.total() > 0 {
+            return u.total();
+        }
+    }
+    messages.iter().map(estimate_tokens).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +177,23 @@ mod tests {
             128_000,
             &CompactionSettings { enabled: false, ..s }
         ));
+    }
+
+    #[test]
+    fn estimate_uses_usage_when_available() {
+        let msgs = vec![Message::user("hi"), Message::assistant("hello")];
+        let usage = Usage {
+            input_tokens: 100000,
+            output_tokens: 10000,
+            ..Default::default()
+        };
+        assert_eq!(estimate_context_tokens(&msgs, Some(usage)), 110000);
+    }
+
+    #[test]
+    fn estimate_falls_back_to_chars() {
+        let msgs = vec![Message::user("a".repeat(400))]; // 100 tokens
+        assert_eq!(estimate_context_tokens(&msgs, None), 100);
     }
 }
 
