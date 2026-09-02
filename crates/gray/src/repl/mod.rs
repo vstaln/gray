@@ -867,6 +867,78 @@ fn apply_disconnect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_ga
     pc.token = None;
 }
 
+static GATEWAY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::new(None);
+
+async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+    match parse_gateway_args(raw) {
+        GatewayAction::Status => {
+            let cfg = gray_gateway::config::load_gateway_config();
+            let running = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
+            for line in gateway_status_lines(&cfg, running) {
+                say(tui, &line);
+            }
+            // systemd state, best-effort (mirrors gray_gateway::systemd::status)
+            if let Ok(out) = std::process::Command::new("systemctl")
+                .args(["--user", "is-active", "gray-gateway.service"])
+                .output()
+            {
+                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                say(tui, &format!("systemd unit: {s}"));
+            }
+        }
+        GatewayAction::Connect(plat, token) => {
+            let mut cfg = gray_gateway::config::load_gateway_config();
+            apply_connect(&mut cfg, plat, &token);
+            match gray_gateway::config::save_gateway_config(&cfg) {
+                Ok(()) => say(tui, &format!("╰ {plat} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)")),
+                Err(e) => say(tui, &format!("gateway config error: {e}")),
+            }
+        }
+        GatewayAction::Disconnect(plat) => {
+            let mut cfg = gray_gateway::config::load_gateway_config();
+            apply_disconnect(&mut cfg, plat);
+            let _ = gray_gateway::config::save_gateway_config(&cfg);
+            say(tui, &format!("╰ {plat} disabled"));
+        }
+        GatewayAction::Run => {
+            let already = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
+            if already {
+                say(tui, "gateway already running");
+                return;
+            }
+            let h = tokio::spawn(async {
+                if let Err(e) = gray_gateway::daemon::run_gateway().await {
+                    log::warn!("gateway exited: {e}");
+                }
+            });
+            *GATEWAY_HANDLE.lock().unwrap() = Some(h);
+            say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
+        }
+        GatewayAction::Stop => {
+            let mut g = GATEWAY_HANDLE.lock().ok();
+            if let Some(h) = g.as_mut().and_then(|g| g.take()) {
+                h.abort();
+                say(tui, "gateway stopped");
+            } else {
+                say(tui, "gateway not running in this session (if installed as a service: /gateway uninstall)");
+            }
+        }
+        GatewayAction::Install => {
+            let _ = with_modal_sync(tui, gray_gateway::systemd::install);
+            say(tui, "gateway installed as systemd user service");
+        }
+        GatewayAction::Uninstall => {
+            let _ = with_modal_sync(tui, gray_gateway::systemd::uninstall);
+            say(tui, "gateway systemd service removed");
+        }
+        GatewayAction::Help => {
+            for line in gateway_status_lines(&gray_gateway::config::load_gateway_config(), false) {
+                say(tui, &line);
+            }
+        }
+    }
+}
+
 async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::SharedTui>) {
     let lower = raw.to_ascii_lowercase();
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -2133,8 +2205,7 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Gateway(raw) => {
-                // reuse proxy handler for gateway status — shares same auth surface
-                handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
+                handle_gateway(&raw, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Unknown(cmd) => {
