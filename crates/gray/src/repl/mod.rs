@@ -1969,7 +1969,7 @@ pub async fn run_repl_mode(
                     if let Some((shared, _)) = &tui {
                         shared.lock().expect("tui lock").push_user_prompt(&prompt_text, &[]);
                     } else {
-                        println!("❯ {prompt_text}");
+                        println!("⬡ {prompt_text}");
                     }
                     pending_command = Some(ReplCommand::Prompt(prompt_text));
                 }
