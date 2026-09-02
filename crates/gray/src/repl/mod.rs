@@ -791,6 +791,48 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
 
 static PROXY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::new(None);
 
+/// What `/gateway ...` should do. Parsed by [`parse_gateway_args`].
+#[derive(Debug, PartialEq)]
+enum GatewayAction {
+    Status,
+    Connect(gray_gateway::config::Platform, String),
+    Disconnect(gray_gateway::config::Platform),
+    Run,
+    Stop,
+    Install,
+    Uninstall,
+    Help,
+}
+
+/// Parses `/gateway [sub] [args]` — bare or unknown subcommands default to
+/// Status/Help so a mistyped command never silently starts or stops anything.
+fn parse_gateway_args(raw: &str) -> GatewayAction {
+    let mut toks = raw.split_whitespace().skip(1); // drop "/gateway"
+    match toks.next().map(|t| t.to_ascii_lowercase()).as_deref() {
+        None | Some("status") => GatewayAction::Status,
+        Some("run") => GatewayAction::Run,
+        Some("stop") => GatewayAction::Stop,
+        Some("install") => GatewayAction::Install,
+        Some("uninstall") => GatewayAction::Uninstall,
+        Some("help") => GatewayAction::Help,
+        Some("connect") => match (toks.next(), toks.next()) {
+            (Some(p), Some(tok)) => match p.parse::<gray_gateway::config::Platform>() {
+                Ok(plat) => GatewayAction::Connect(plat, tok.to_string()),
+                Err(_) => GatewayAction::Help,
+            },
+            _ => GatewayAction::Help,
+        },
+        Some("disconnect") => match toks.next() {
+            Some(p) => match p.parse::<gray_gateway::config::Platform>() {
+                Ok(plat) => GatewayAction::Disconnect(plat),
+                Err(_) => GatewayAction::Help,
+            },
+            None => GatewayAction::Help,
+        },
+        Some(_) => GatewayAction::Help,
+    }
+}
+
 async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::SharedTui>) {
     let lower = raw.to_ascii_lowercase();
     let trimmed = raw.trim().to_ascii_lowercase();
@@ -2633,5 +2675,34 @@ mod tests {
             "missing provider hint, got: {out}"
         );
         assert!(!out.contains("cf-ray"), "should not contain cf-ray, got: {out}");
+    }
+
+    #[test]
+    fn gateway_args_parse_all_actions() {
+        use super::GatewayAction as G;
+        use gray_gateway::config::Platform;
+        assert!(matches!(super::parse_gateway_args("/gateway"), G::Status));
+        assert!(matches!(super::parse_gateway_args("/gateway status"), G::Status));
+        assert!(matches!(super::parse_gateway_args("/gateway run"), G::Run));
+        assert!(matches!(super::parse_gateway_args("/gateway stop"), G::Stop));
+        assert!(matches!(super::parse_gateway_args("/gateway install"), G::Install));
+        assert!(matches!(super::parse_gateway_args("/gateway uninstall"), G::Uninstall));
+        assert!(matches!(super::parse_gateway_args("/gateway bogus"), G::Help));
+        match super::parse_gateway_args("/gateway connect discord abc123") {
+            G::Connect(Platform::Discord, tok) => assert_eq!(tok, "abc123"),
+            other => panic!("expected connect discord, got {other:?}"),
+        }
+        match super::parse_gateway_args("/gateway connect TELEGRAM  123:XYZ extra") {
+            G::Connect(Platform::Telegram, tok) => assert_eq!(tok, "123:XYZ"), // token = first arg after platform
+            other => panic!("expected connect telegram, got {other:?}"),
+        }
+        assert!(matches!(
+            super::parse_gateway_args("/gateway connect slack"), // no token
+            G::Help
+        ));
+        match super::parse_gateway_args("/gateway disconnect slack") {
+            G::Disconnect(Platform::Slack) => {}
+            other => panic!("expected disconnect slack, got {other:?}"),
+        }
     }
 }
