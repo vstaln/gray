@@ -72,7 +72,7 @@ pub fn truncate_message(s: &str, max_utf16: usize) -> String {
 }
 
 /// Split text into chunks each <= max_utf16 (measured in utf16 units).
-/// Keeps char boundaries; does not attempt word wrap (ponytail: simplest).
+/// Keeps char boundaries; does not attempt word wrap.
 pub fn split_message(s: &str, max_utf16: usize) -> Vec<String> {
     if max_utf16 == 0 {
         return vec![];

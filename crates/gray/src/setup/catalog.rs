@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, tui::print_wrapped};
 
 /// Provider entry from the vendored catalog.
 #[derive(Debug, Clone, Deserialize)]

@@ -573,7 +573,6 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                             if final_key.is_empty() {
                                 *status_msg = Some("No API key entered — please enter a valid key".into());
                             } else if existing_key.is_some() {
-                                // ponytail: update skips picker; preserve model if same provider else use default
                                 save_auth_key(&item.id, &final_key)?;
                                 let path = saved_config_path()?;
                                 let mut saved = load_saved_config_at(&path);

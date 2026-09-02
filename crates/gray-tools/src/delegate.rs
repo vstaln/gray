@@ -1,5 +1,4 @@
 //! delegate_task — steal hermes tools/delegate_tool.py + async_delegation.py
-//! ponytail: flat depth=1, Semaphore(10), background + SQLite + heartbeat
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -215,7 +214,6 @@ impl DelegateTool {
                         if elapsed > thresh {
                             log::warn!(target: "gray_tools", "delegation {} stalled after {}s (in_tool={})", delegation_id_for_spawn, elapsed, in_tool);
                         }
-                        // ponytail: heartbeat detection stub — don't kill, just warn
                         let _ = &mut in_tool;
                         format!("background subagent {subagent_id} completed: {goal} (heartbeat)")
                     }

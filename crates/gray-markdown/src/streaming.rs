@@ -60,59 +60,6 @@ pub(crate) struct FrozenState {
 ///
 /// Examples:
 /// - "" → 0
-/// - "hello" → 0
-/// - "hello\n" → 0 (just a line ending)
-/// - "hello\n\n" → 1
-/// - "hello\n\n\n" → 2
-/// - "hello\n  \n" → 1 (whitespace-only line counts as blank)
-#[cfg(test)]
-fn count_trailing_blank_lines(text: &str) -> usize {
-    if text.is_empty() {
-        return 0;
-    }
-
-    let bytes = text.as_bytes();
-    let mut count = 0;
-    let mut pos = bytes.len();
-
-    // Work backwards through the text
-    while pos > 0 {
-        pos -= 1;
-
-        match bytes[pos] {
-            b'\n' => {
-                // Found a newline - check if the line before it is blank
-                // Scan backwards to find start of this line
-                let line_end = pos;
-                let mut line_start = pos;
-                while line_start > 0 && bytes[line_start - 1] != b'\n' {
-                    line_start -= 1;
-                }
-
-                // Check if the line is blank (only whitespace)
-                let line_content = &bytes[line_start..line_end];
-                let is_blank = line_content.iter().all(|&b| b == b' ' || b == b'\t');
-
-                if is_blank {
-                    count += 1;
-                    pos = line_start;
-                } else {
-                    // Found a non-blank line, stop counting
-                    break;
-                }
-            }
-            b' ' | b'\t' => {
-                // Trailing whitespace, continue scanning
-            }
-            _ => {
-                // Non-whitespace character, stop
-                break;
-            }
-        }
-    }
-
-    count
-}
 
 /// Incremental markdown renderer that efficiently handles streaming input.
 ///

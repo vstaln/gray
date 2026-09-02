@@ -34,6 +34,7 @@ pub struct DiscordAdapter {
     client: Mutex<Option<HttpClient>>,
     event_tx: Mutex<Option<UnboundedSender<MessageEvent>>>,
     /// Last inbound message id per channel — reply target for the first chunk (hermes reply_to_mode=first).
+    #[cfg_attr(not(feature = "discord"), allow(dead_code))]
     last_inbound: Mutex<HashMap<String, u64>>,
 }
 
@@ -71,13 +72,15 @@ pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
 fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u64) -> SessionSource {
     SessionSource {
         platform: Platform::Discord,
         chat_id: msg_channel.to_string(),
         chat_type: if guild.is_some() { "group" } else { "dm" }.to_string(),
         user_id: Some(user_id.to_string()),
-        thread_id: None, // ponytail: threads key by their own channel id, so no explicit thread tracking needed
+        // Threads key by their own channel id, so no explicit thread tracking needed.
+        thread_id: None,
         scope_id: guild.map(|g| g.to_string()),
         message_id: Some(message_id.to_string()),
     }

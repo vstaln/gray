@@ -69,8 +69,6 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 /// `/skills:`. Owned here so every read_loop call site stays in sync.
 pub(crate) fn completion_matches_dyn(cur_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
     if cur_text.starts_with("/skills:") && !cur_text[8..].contains(char::is_whitespace) {
-        // ponytail: re-walks skill dirs on each keystroke draw — fine for
-        // dozens of skills; cache in Tui if listings ever get large
         let filter = &cur_text[8..];
         return crate::skills::discover_skills(cwd)
             .skills

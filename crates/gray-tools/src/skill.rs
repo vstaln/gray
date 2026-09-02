@@ -12,7 +12,7 @@ use serde_json::json;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-use crate::{fail, finish, get_str, Tool};
+use crate::{fail, finish, Tool};
 
 pub const SKILL_SNIPPET: &str = "Load a skill's instructions into context";
 
@@ -24,8 +24,6 @@ pub struct SkillTool;
 /// or `~/.gray`, plus `~/.pi/agent` compat) and project `.gray`/`.pi` dirs up to
 /// the git root. First match wins.
 pub fn resolve_skill_name(cwd: &Path, name: &str) -> Option<PathBuf> {
-    // ponytail: flat `<dir>/<name>/SKILL.md` layout only — no recursive walk;
-    // use `path` from the <available_skills> listing for nested skills.
     let mut dirs = Vec::new();
     let home = std::env::var("GRAY_HOME")
         .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))

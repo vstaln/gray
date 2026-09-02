@@ -157,12 +157,6 @@ impl OpenCodeHighlighter {
         Some(lines)
     }
 
-    /// Test-only view of memoized closed-fence body bytes.
-    #[cfg(test)]
-    pub(crate) fn closed_memo_bytes(&self) -> usize {
-        self.closed_memo_bytes
-    }
-
     /// Highlight the open block body `text` (the full body so far, append-only),
     /// reusing persisted syntect state where possible.
     ///

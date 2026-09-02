@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn auto_resolution_times_out_non_blocking_only() {
-        let (mut qb, _rx) = mk(1);
+        let (qb, _rx) = mk(1);
         assert!(!matches!(qb.auto_resolution_timing_at(Instant::now()), AutoResolutionTiming::Due));
         // blocking never auto-resolves
         let (tx, _rx2) = oneshot::channel::<Vec<UserAnswer>>();

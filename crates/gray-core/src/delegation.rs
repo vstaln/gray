@@ -54,8 +54,6 @@ pub struct CompletionEvent {
     pub is_error: bool,
 }
 
-// --- SQLite durability (ponytail: minimal state.db like hermes async_delegations) ---
-
 pub fn state_db_path() -> PathBuf {
     if let Ok(gh) = std::env::var("GRAY_HOME") {
         return PathBuf::from(gh).join("state.db");
@@ -135,7 +133,7 @@ pub fn restore_undelivered(state: &DelegationState) -> usize {
 
 // --- DelegationState ---
 
-/// Shared delegation state — ponytail: global semaphore, per-process.
+/// Shared delegation state (global, per-process).
 pub struct DelegationState {
     pub sem: Arc<Semaphore>,
     pub active: RwLock<HashMap<String, ActiveRecord>>,

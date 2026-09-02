@@ -97,7 +97,6 @@ impl Registry {
         reg.register(Box::new(LsTool));
         reg.register(Box::new(CronTool));
         reg.register(Box::new(RequestUserInputTool));
-        // ponytail: delegate_task global semaphore, per-account caps if throughput matters
         {
             use gray_core::delegation::DelegateConfig;
             use crate::delegate::DelegateTool;

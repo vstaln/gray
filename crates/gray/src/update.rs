@@ -62,15 +62,11 @@ pub async fn startup_check() {
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
     }
-    // ponytail: blocks startup up to ~1.5s waiting for the version check; add a
-    // file cache like codex's updates_cache.rs if that ever annoys anyone.
     let Ok(Ok(latest)) = tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await else { return };
     if !is_newer(&latest, current) {
         return;
     }
     if std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
-        // ponytail: fire-and-forget spawn — installer output is lost; run `gray update`
-        // to see it. Swap for a status line in the TUI if this ever matters.
         let latest = latest.clone();
         tokio::spawn(async move {
             if Command::new("sh").arg("-c").arg(install_command()).output().is_ok_and(|o| o.status.success()) {

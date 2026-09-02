@@ -251,8 +251,6 @@ pub async fn run_gateway() -> anyhow::Result<()> {
         tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} }
     }
     #[cfg(not(unix))] { tokio::signal::ctrl_c().await?; }
-    // ponytail: no graceful shutdown — adapters hold event_tx clones so rx never
-    // closes; process exit reaps the worker thread. Add drain if restart-in-process lands.
     Ok(())
 }
 

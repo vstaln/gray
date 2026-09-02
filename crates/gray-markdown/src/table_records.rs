@@ -3,7 +3,7 @@
 //! (decision heuristics + record layout), adapted to gray's plain-string
 //! table model.
 //!
-//! `# ponytail` ceilings vs the codex original:
+//! Differences vs the codex original:
 //! - cell values render as plain text (codex keeps per-span styles via
 //!   HyperlinkLine remapping) — inline code/links inside record values lose
 //!   their styling;

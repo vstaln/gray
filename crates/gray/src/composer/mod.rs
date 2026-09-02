@@ -7,20 +7,18 @@
 //! and `textarea.rs` (one-file adaptation, stdlib only).
 
 use std::io::{Stdout, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
 
 use gray_markdown::HyperlinkTarget;
 
-use crate::repl::completion_matches;
 
 pub(crate) const PANEL_ROWS: usize = 6;
 pub(crate) const VIEWPORT_H: u16 = 10;
@@ -28,18 +26,17 @@ pub(crate) const VIEWPORT_H: u16 = 10;
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
 mod draw;
-pub(crate) use draw::{shimmer_spans, thinking_style};
+pub(crate) use draw::thinking_style;
 mod transcript;
-pub(crate) use transcript::wrap_styled_line;
 mod input;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
 mod text_area;
-pub(crate) use text_area::{TextArea, TextElement};
+pub(crate) use text_area::TextArea;
 
 mod question;
-pub(crate) use question::{attach_request, handle_question_key, tick_question};
+pub(crate) use question::{handle_question_key, tick_question};
 pub use question::ComposerQuestionAsker;
 
 pub struct Tui {
@@ -277,7 +274,6 @@ impl Tui {
 
     pub fn set_model(&mut self, model: String) { self.model_name = model; }
     pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
-    pub(crate) fn cwd(&self) -> &str { &self.cwd }
     pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
     pub fn set_next_cron(&mut self, name: Option<String>, next: Option<chrono::DateTime<chrono::Utc>>) {
         match (name, next) {
@@ -289,7 +285,6 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.live_streamed_tokens = 0;
-        // ponytail: was prev+usage summing the window repeatedly → 1.2M/256k; now mirror latest (window)
         self.cumulative_usage = Some(usage);
     }
     pub fn reset_usage(&mut self) {

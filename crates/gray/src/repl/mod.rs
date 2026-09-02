@@ -14,7 +14,6 @@ use gray_session::{
 };
 
 use std::sync::Mutex as StdMutex;
-use ratatui::widgets::Widget;
 
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
@@ -51,9 +50,9 @@ pub mod format;
 pub mod session;
 
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
-pub(crate) use commands::{ALIASES, COMMANDS, completion_matches, completion_matches_dyn, parse_resume_args};
+pub(crate) use commands::{COMMANDS, completion_matches_dyn};
 pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
-pub(crate) use format::{base64_encode, build_user_message_with_images, media_type_for_path, MAX_ERROR_DISPLAY_CHARS, truncate_chars};
+pub(crate) use format::build_user_message_with_images;
 pub(crate) use session::SessionState;
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
@@ -865,7 +864,6 @@ async fn handle_resume(
         Ok((meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
-            // ponytail: warn on model drift (like codex session UsesThreadId check)
             let drift_warn = if !meta.model.is_empty()
                 && config.model.as_deref() != Some(meta.model.as_str())
             {
@@ -1022,7 +1020,6 @@ pub async fn run_repl_mode(
                 } else if !meta.model.is_empty()
                     && config.model.as_deref() != Some(meta.model.as_str())
                 {
-                    // ponytail: warn but don't auto-switch — user may have intentionally changed provider
                     resume_model_warn = Some(format!(
                         "session was {} but now {} — mismatch caused prior 500 (try /model {})",
                         meta.model,
@@ -1236,7 +1233,6 @@ pub async fn run_repl_mode(
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
     loop {
-        // ponytail: drain completion_queue between turns — never mid-turn (prompt-cache invariant)
         {
             let state = gray_core::delegation::global_delegation_state();
             let events = state.try_drain();
@@ -1272,8 +1268,6 @@ pub async fn run_repl_mode(
                 }
             }
         }
-        // ponytail: late answers from non-blocking request_user_input overwrite a
-        // pending /new prompt if both land at once — rare, last wins.
         if pending_command.is_none()
             && let Some((shared, _)) = tui.as_ref()
             && let Ok(mut t) = shared.try_lock()
@@ -1645,7 +1639,6 @@ pub async fn run_repl_mode(
                     Ok(false) => {
                         if let Some((shared, _)) = &tui {
                             let mut t = shared.lock().expect("tui lock");
-                            // ponytail: clear ghost input after modal cancel (aligns with unconfigured draw)
                             t.textarea.set_text("");
                             t.matches.clear();
                             t.sel = 0;

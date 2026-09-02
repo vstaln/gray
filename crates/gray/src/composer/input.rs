@@ -5,10 +5,6 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
 
 use super::Tui;
 
@@ -443,7 +439,6 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         let attached: Vec<PathBuf> = attached_with_ph.into_iter().map(|(_, p)| p).collect();
                         if tui.is_task_running {
                             tui.queued_inputs.push_back((trimmed.clone(), attached.clone()));
-                            // ponytail: fleeting — queued preview is not transcript, becomes real prompt when dequeued
                             tui.matches.clear();
                             tui.sel = 0;
                             let _ = tui.draw();

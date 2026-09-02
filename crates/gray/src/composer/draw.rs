@@ -3,7 +3,7 @@ use std::time::Duration;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph};
 
 use super::{PANEL_ROWS, Tui};
 
@@ -14,7 +14,6 @@ pub(crate) fn thinking_style() -> Style {
 }
 
 pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'static>> {
-    // ponytail: per-char cosine shimmer kept; replace with Style::default().add_modifier(Modifier::DIM) if perf matters
     use ratatui::style::Color;
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() { return Vec::new(); }

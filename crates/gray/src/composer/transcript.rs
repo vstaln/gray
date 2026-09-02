@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::ops::Range;
 
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
@@ -102,7 +102,7 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
     }
     if words.is_empty() {
         // line is all spaces? fallback to original char chunk logic
-        return char_chunk_fallback(line, max_w, span_bounds, flat);
+        return char_chunk_fallback(line, max_w, flat);
     }
     // Build wrapped ranges word-aware
     let mut out_ranges: Vec<Range<usize>> = Vec::new();
@@ -179,7 +179,7 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
     result
 }
 
-fn char_chunk_fallback(line: Line<'static>, max_w: usize, span_bounds: Vec<(Range<usize>, Style)>, _flat: String) -> Vec<Line<'static>> {
+fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<Line<'static>> {
     let line_style = line.style;
     let mut result = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();

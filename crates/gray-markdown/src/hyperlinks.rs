@@ -652,7 +652,6 @@ mod hyperlink_tests {
             .iter()
             .find(|s| s.content == "click")
             .expect("expected a span containing the link text");
-        // ponytail: gray style uses Rgb(125,207,255) for links; accept either Blue or Rgb
         let ok_fg = click_span.style.fg == Some(ratatui::style::Color::Blue)
             || click_span.style.fg == Some(ratatui::style::Color::Rgb(125, 207, 255));
         assert!(

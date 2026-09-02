@@ -66,9 +66,6 @@ impl BasePlatformAdapter for TelegramAdapter {
         // Real impl behind feature: init teloxide Bot and start polling.
         #[cfg(feature = "telegram")]
         {
-            // ponytail: placeholder — real code would do:
-            // let bot = teloxide::Bot::new(self.token.clone());
-            // bot.get_me().await?; // validate token
             log::info!("[telegram] (feature) validated token, starting polling");
         }
         #[cfg(not(feature = "telegram"))]

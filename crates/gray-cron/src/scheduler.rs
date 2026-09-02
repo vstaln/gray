@@ -4,9 +4,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 
 use crate::store::{CronJob, CronStorePaths, with_jobs_lock};
 

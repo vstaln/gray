@@ -281,7 +281,6 @@ impl Agent {
             let mut thinking_parts: Vec<String> = Vec::new();
             let mut pending: Vec<PendingToolCall> = Vec::new();
             let mut pending_emitted_start: Vec<bool> = Vec::new();
-            // ponytail: emit ToolCallStart live as soon as name is known, so UI doesn't wait 50s for MessageComplete
             let (stop_reason, usage) = {
                 let mut stream = self.provider.stream(req);
                 loop {
@@ -372,7 +371,6 @@ impl Agent {
                     }
                 }
             };
-            // ponytail: input/cache are window (last), not sum — summing input double-counts history; zero usage = keep window
             if usage.input_tokens != 0 || usage.cached_tokens != 0 || usage.non_cached_input_tokens != 0 || usage.cache_read_input_tokens != 0 || usage.cache_write_input_tokens != 0 || usage.total_tokens != 0 {
                 total_usage.input_tokens = usage.input_tokens;
                 total_usage.cached_tokens = usage.cached_tokens;
