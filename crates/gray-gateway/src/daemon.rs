@@ -213,7 +213,26 @@ Guidelines:
 
 fn now_millis() -> u64 { std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 
+/// CLI entry: run until SIGINT/SIGTERM.
 pub async fn run_gateway() -> anyhow::Result<()> {
+    let token = tokio_util::sync::CancellationToken::new();
+    let res = run_gateway_inner(token.clone()).await;
+    token.cancel();
+    res
+}
+
+/// Like [`run_gateway`], but also exits when `shutdown` resolves (REPL `/gateway stop`).
+pub async fn run_gateway_shutdown(shutdown: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
+    let token = tokio_util::sync::CancellationToken::new();
+    let t = token.clone();
+    let relay = tokio::spawn(async move { let _ = shutdown.await; t.cancel(); });
+    let res = run_gateway_inner(token.clone()).await;
+    token.cancel();
+    let _ = relay.await;
+    res
+}
+
+async fn run_gateway_inner(token: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
     let cfg = load_gateway_config();
     let mut runner = GatewayRunner::from_config(cfg)?;
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageEvent>();
@@ -233,24 +252,47 @@ pub async fn run_gateway() -> anyhow::Result<()> {
     let runner = Arc::new(runner);
     // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
     // dedicated LocalSet thread; spawn_local per event keeps /stop responsive mid-run.
-    let _worker = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("gateway runtime");
-        rt.block_on(tokio::task::LocalSet::new().run_until(async move {
-            while let Some(ev) = rx.recv().await {
-                let r = Arc::clone(&runner);
-                tokio::task::spawn_local(async move {
-                    if let Err(e) = r.handle_inbound(ev).await { log::warn!("gateway handle error: {e}"); }
-                });
-            }
-        }));
-    });
+    // The thread exits when `token` cancels, dropping adapters (closing connections).
+    let _worker = {
+        let token = token.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("gateway runtime");
+            rt.block_on(tokio::task::LocalSet::new().run_until(async move {
+                loop {
+                    tokio::select! {
+                        ev = rx.recv() => match ev {
+                            Some(ev) => {
+                                let r = Arc::clone(&runner);
+                                tokio::task::spawn_local(async move {
+                                    if let Err(e) = r.handle_inbound(ev).await { log::warn!("gateway handle error: {e}"); }
+                                });
+                            }
+                            None => break,
+                        },
+                        _ = token.cancelled() => break,
+                    }
+                }
+            }));
+        })
+    };
 
-    #[cfg(unix)] {
+    #[cfg(unix)]
+    {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        tokio::select! { _ = sigterm.recv() => {}, _ = sigint.recv() => {} }
+        tokio::select! {
+            _ = token.cancelled() => {},
+            _ = sigterm.recv() => {},
+            _ = sigint.recv() => {},
+        }
     }
-    #[cfg(not(unix))] { tokio::signal::ctrl_c().await?; }
+    #[cfg(not(unix))]
+    {
+        tokio::select! {
+            _ = token.cancelled() => {},
+            _ = tokio::signal::ctrl_c() => {},
+        }
+    }
     Ok(())
 }
 

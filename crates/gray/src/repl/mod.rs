@@ -867,7 +867,8 @@ fn apply_disconnect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_ga
     pc.token = None;
 }
 
-static GATEWAY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::new(None);
+type GatewayHandle = (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Sender<()>);
+static GATEWAY_HANDLE: StdMutex<Option<GatewayHandle>> = StdMutex::new(None);
 
 async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     match parse_gateway_args(raw) {
@@ -897,8 +898,10 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
         GatewayAction::Disconnect(plat) => {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_disconnect(&mut cfg, plat);
-            let _ = gray_gateway::config::save_gateway_config(&cfg);
-            say(tui, &format!("╰ {plat} disabled"));
+            match gray_gateway::config::save_gateway_config(&cfg) {
+                Ok(()) => say(tui, &format!("╰ {plat} disabled")),
+                Err(e) => say(tui, &format!("gateway config error: {e}")),
+            }
         }
         GatewayAction::Run => {
             let already = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
@@ -906,17 +909,31 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 say(tui, "gateway already running");
                 return;
             }
-            let h = tokio::spawn(async {
-                if let Err(e) = gray_gateway::daemon::run_gateway().await {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let tui_arc = tui.cloned();
+            let h = tokio::spawn(async move {
+                let res = gray_gateway::daemon::run_gateway_shutdown(rx).await;
+                if let Err(e) = &res {
                     log::warn!("gateway exited: {e}");
                 }
+                GATEWAY_HANDLE.lock().ok().and_then(|mut g| g.take());
+                if let Some(shared) = tui_arc {
+                    if let Ok(mut t) = shared.lock() {
+                        match res {
+                            Ok(()) => t.push_dim("╰ gateway stopped".to_string()),
+                            Err(e) => t.push_dim(format!("╰ gateway exited: {e}")),
+                        }
+                        let _ = t.draw();
+                    }
+                }
             });
-            *GATEWAY_HANDLE.lock().unwrap() = Some(h);
+            *GATEWAY_HANDLE.lock().unwrap() = Some((h, tx));
             say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
         }
         GatewayAction::Stop => {
             let mut g = GATEWAY_HANDLE.lock().ok();
-            if let Some(h) = g.as_mut().and_then(|g| g.take()) {
+            if let Some((h, tx)) = g.as_mut().and_then(|g| g.take()) {
+                let _ = tx.send(());
                 h.abort();
                 say(tui, "gateway stopped");
             } else {
@@ -924,12 +941,16 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             }
         }
         GatewayAction::Install => {
-            let _ = with_modal_sync(tui, gray_gateway::systemd::install);
-            say(tui, "gateway installed as systemd user service");
+            match with_modal_sync(tui, gray_gateway::systemd::install) {
+                Ok(()) => say(tui, "gateway installed as systemd user service"),
+                Err(e) => say(tui, &format!("gateway install failed: {e}")),
+            }
         }
         GatewayAction::Uninstall => {
-            let _ = with_modal_sync(tui, gray_gateway::systemd::uninstall);
-            say(tui, "gateway systemd service removed");
+            match with_modal_sync(tui, gray_gateway::systemd::uninstall) {
+                Ok(()) => say(tui, "gateway systemd service removed"),
+                Err(e) => say(tui, &format!("gateway uninstall failed: {e}")),
+            }
         }
         GatewayAction::Help => {
             for line in gateway_status_lines(&gray_gateway::config::load_gateway_config(), false) {
