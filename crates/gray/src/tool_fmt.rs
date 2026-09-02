@@ -93,6 +93,15 @@ pub fn expand_tabs(s: &str, tab_size: usize) -> String {
     result
 }
 
+fn truncate_cmd(cmd: &str) -> &str {
+    let line = cmd.lines().next().unwrap_or(cmd);
+    if line.len() > 80 {
+        &line[..80]
+    } else {
+        line
+    }
+}
+
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
 pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> Line<'static> {
     let bullet = Span::styled("\u{2b22} ", Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::BOLD));
@@ -103,10 +112,10 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
 
     match name {
         "bash" => {
-            let cmd = args.get("command")
+            let cmd = truncate_cmd(args.get("command")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
-                .trim();
+                .trim());
             Line::from(vec![
                 bullet,
                 Span::styled("Ran ", action_style),
@@ -184,6 +193,51 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
                 Span::styled(shorten_path(raw_path, cwd), path_style),
             ])
         }
+        "request_user_input" => {
+            let q_summary = args.get("questions")
+                .and_then(|q| q.as_array())
+                .and_then(|arr| {
+                    if arr.len() == 1 {
+                        arr[0].get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\""))
+                    } else if arr.len() > 1 {
+                        Some(format!("{} questions", arr.len()))
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| args.get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\"")))
+                .unwrap_or_else(|| "question".to_string());
+            let summary = truncate_cmd(&q_summary);
+            Line::from(vec![
+                bullet,
+                Span::styled("Asked ", action_style),
+                Span::styled(summary.to_string(), cmd_style),
+            ])
+        }
+        "delegate" => {
+            let agent = args.get("agent").or_else(|| args.get("to")).and_then(|v| v.as_str()).unwrap_or("agent");
+            Line::from(vec![
+                bullet,
+                Span::styled("Delegate ", action_style),
+                Span::styled(agent.to_string(), path_style),
+            ])
+        }
+        "skill" => {
+            let skill_name = args.get("name").or_else(|| args.get("skill")).and_then(|v| v.as_str()).unwrap_or("skill");
+            Line::from(vec![
+                bullet,
+                Span::styled("Skill ", action_style),
+                Span::styled(skill_name.to_string(), cmd_style),
+            ])
+        }
+        "cron" => {
+            let sched = args.get("cron").or_else(|| args.get("schedule")).and_then(|v| v.as_str()).unwrap_or("");
+            Line::from(vec![
+                bullet,
+                Span::styled("Cron ", action_style),
+                Span::styled(sched.to_string(), cmd_style),
+            ])
+        }
         other => {
             let path = shorten_path(arg_path(args), cwd);
             if !path.is_empty() {
@@ -197,17 +251,29 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
                 let args_preview = if let Some(obj) = args.as_object() {
                     obj.iter()
                         .take(2)
-                        .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or(&v.to_string())))
+                        .map(|(k, v)| {
+                            let val_str = if let Some(s) = v.as_str() {
+                                truncate_cmd(s).to_string()
+                            } else if let Some(arr) = v.as_array() {
+                                format!("[{} items]", arr.len())
+                            } else if v.is_object() {
+                                "{...}".to_string()
+                            } else {
+                                v.to_string()
+                            };
+                            format!("{k}={val_str}")
+                        })
                         .collect::<Vec<_>>()
                         .join(" ")
                 } else {
                     String::new()
                 };
+                let preview_truncated = truncate_cmd(&args_preview);
                 Line::from(vec![
                     bullet,
                     Span::styled(other.to_string(), action_style),
                     Span::raw(" "),
-                    Span::styled(args_preview, dim_style),
+                    Span::styled(preview_truncated.to_string(), dim_style),
                 ])
             }
         }
@@ -326,8 +392,8 @@ pub fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunk> {
     hunks
 }
 
-fn render_content_spans(
-    content: &str,
+fn highlight_line_spans(
+    line: &str,
     highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>,
     syntect: &gray_markdown::Syntect,
     fallback_fg: Color,
@@ -335,7 +401,7 @@ fn render_content_spans(
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
     if let Some(hl) = highlighter.as_mut()
-        && let Ok(ranges) = hl.highlight_line(&format!("{content}\n"), &syntect.syntax_set)
+        && let Ok(ranges) = hl.highlight_line(&format!("{line}\n"), &syntect.syntax_set)
     {
         let mut wrote = false;
         for (style, segment) in ranges {
@@ -369,9 +435,115 @@ fn render_content_spans(
     if let Some(bg_c) = bg {
         st = st.bg(bg_c);
     }
-    let text = if content.is_empty() { " " } else { content };
+    let text = if line.is_empty() { " " } else { line };
     spans.push(Span::styled(text.to_string(), st));
     spans
+}
+
+fn wrap_styled_spans(
+    spans: Vec<Span<'static>>,
+    max_w: usize,
+    cont_indent_len: usize,
+) -> Vec<Vec<Span<'static>>> {
+    if spans.is_empty() {
+        return vec![Vec::new()];
+    }
+    let total_width: usize = spans.iter().map(|s| s.width()).sum();
+    if total_width <= max_w {
+        return vec![spans];
+    }
+
+    let mut result: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur_line: Vec<Span<'static>> = Vec::new();
+    let mut cur_w: usize = 0;
+    let mut is_first_line = true;
+
+    let get_avail = |is_first: bool| -> usize {
+        if is_first {
+            max_w
+        } else {
+            max_w.saturating_sub(cont_indent_len).max(10)
+        }
+    };
+
+    for span in spans {
+        let style = span.style;
+        let text = span.content;
+        let mut chars = text.chars().peekable();
+
+        while chars.peek().is_some() {
+            let is_space = chars.peek().map(|&c| c == ' ').unwrap_or(false);
+            let mut word = String::new();
+            if is_space {
+                while let Some(&c) = chars.peek() {
+                    if c == ' ' {
+                        word.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            } else {
+                while let Some(&c) = chars.peek() {
+                    if c != ' ' {
+                        word.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            let word_w = word.chars().count();
+            let avail = get_avail(is_first_line);
+
+            if cur_w + word_w <= avail {
+                cur_line.push(Span::styled(word, style));
+                cur_w += word_w;
+            } else if is_space && cur_line.is_empty() {
+                continue;
+            } else if word_w > avail {
+                if cur_w > 0 {
+                    result.push(std::mem::take(&mut cur_line));
+                    is_first_line = false;
+                    cur_w = 0;
+                }
+                let line_cap = get_avail(is_first_line);
+                let wchars: Vec<char> = word.chars().collect();
+                for chunk in wchars.chunks(line_cap) {
+                    let chunk_str: String = chunk.iter().collect();
+                    let chunk_len = chunk_str.chars().count();
+                    if cur_w + chunk_len > get_avail(is_first_line) && cur_w > 0 {
+                        result.push(std::mem::take(&mut cur_line));
+                        is_first_line = false;
+                        cur_w = 0;
+                    }
+                    cur_line.push(Span::styled(chunk_str, style));
+                    cur_w += chunk_len;
+                    if cur_w >= get_avail(is_first_line) {
+                        result.push(std::mem::take(&mut cur_line));
+                        is_first_line = false;
+                        cur_w = 0;
+                    }
+                }
+            } else {
+                if !cur_line.is_empty() {
+                    result.push(std::mem::take(&mut cur_line));
+                    is_first_line = false;
+                    cur_w = 0;
+                }
+                if !is_space {
+                    cur_line.push(Span::styled(word, style));
+                    cur_w += word_w;
+                }
+            }
+        }
+    }
+
+    if !cur_line.is_empty() || result.is_empty() {
+        result.push(cur_line);
+    }
+    result
 }
 
 /// Renders unified diff hunks with Codex/Grok-style gutter line numbers,
@@ -451,37 +623,8 @@ pub fn render_diff_hunks(
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-        let overhead = 2 + gutter_width + 3;
-        let content_w = term_w.saturating_sub(overhead + 2).max(20);
-        let wrap_text = |t: &str| -> Vec<String> {
-            if t.is_empty() { return vec![String::new()]; }
-            let mut out = Vec::new();
-            let mut cur = String::new();
-            let mut cur_w = 0usize;
-            let push_cur = |out: &mut Vec<String>, cur: &mut String, cur_w: &mut usize| {
-                if !cur.is_empty() { out.push(std::mem::take(cur)); *cur_w = 0; }
-            };
-            for word in t.split_whitespace() {
-                let wlen = word.chars().count();
-                if wlen > content_w {
-                    push_cur(&mut out, &mut cur, &mut cur_w);
-                    let chars: Vec<char> = word.chars().collect();
-                    for chunk in chars.chunks(content_w) {
-                        out.push(chunk.iter().collect());
-                    }
-                    continue;
-                }
-                if cur_w != 0 && cur_w + 1 + wlen > content_w {
-                    out.push(std::mem::take(&mut cur));
-                    cur_w = 0;
-                }
-                if cur_w != 0 { cur.push(' '); cur_w += 1; }
-                cur.push_str(word);
-                cur_w += wlen;
-            }
-            if !cur.is_empty() || out.is_empty() { out.push(cur); }
-            out
-        };
+        let overhead = 2 + gutter_width + 5 + 2;
+        let content_w = term_w.saturating_sub(overhead).max(20);
 
         for line in hunk {
             let bg_color = match line.tag {
@@ -510,35 +653,42 @@ pub fn render_diff_hunks(
                 DiffTag::Insert => "+",
             };
             let gutter_str = format!("{:>width$} | {sign} ", num, width = gutter_width);
-            let text = &line.text;
-            let chunks = wrap_text(text);
-            for (ci, chunk) in chunks.iter().enumerate() {
+            let cont_gutter_str = format!("{:>width$} |   ", "", width = gutter_width);
+
+            let expanded = expand_tabs(&line.text, 4);
+            let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
+            let cont_indent_len = indent_count.min(content_w / 2);
+            let cont_indent_str = " ".repeat(cont_indent_len);
+
+            let row_spans = match line.tag {
+                DiffTag::Delete => {
+                    highlight_line_spans(&expanded, &mut old_highlighter, syntect, DIFF_DELETE_FG, bg_color)
+                }
+                DiffTag::Insert => {
+                    highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_INSERT_FG, bg_color)
+                }
+                DiffTag::Equal => {
+                    let s = highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_EQUAL_FG, None);
+                    if let Some(hl) = old_highlighter.as_mut() {
+                        let _ = hl.highlight_line(&format!("{expanded}\n"), &syntect.syntax_set);
+                    }
+                    s
+                }
+            };
+
+            let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
+            for (ci, chunk_spans) in wrapped_rows.into_iter().enumerate() {
                 let mut spans = Vec::new();
                 spans.push(Span::styled("  ", prefix_style.clone()));
                 if ci == 0 {
                     spans.push(Span::styled(gutter_str.clone(), gutter_style.clone()));
                 } else {
-                    // continuation: keep same gutter style but empty number
-                    let cont_gutter = format!("{:>width$} | ", "", width = gutter_width);
-                    spans.push(Span::styled(cont_gutter, gutter_style.clone()));
+                    spans.push(Span::styled(cont_gutter_str.clone(), gutter_style.clone()));
+                    if cont_indent_len > 0 {
+                        spans.push(Span::styled(cont_indent_str.clone(), prefix_style.clone()));
+                    }
                 }
-                let content_spans = match line.tag {
-                    DiffTag::Delete => {
-                        render_content_spans(chunk, &mut old_highlighter, syntect, DIFF_DELETE_FG, bg_color)
-                    }
-                    DiffTag::Insert => {
-                        render_content_spans(chunk, &mut new_highlighter, syntect, DIFF_INSERT_FG, bg_color)
-                    }
-                    DiffTag::Equal => {
-                        let s = render_content_spans(chunk, &mut new_highlighter, syntect, DIFF_EQUAL_FG, None);
-                        // keep old_highlighter in sync for Equal lines (advance even for wrapped chunks)
-                        if let Some(hl) = old_highlighter.as_mut() {
-                            let _ = hl.highlight_line(&format!("{chunk}\n"), &syntect.syntax_set);
-                        }
-                        s
-                    }
-                };
-                spans.extend(content_spans);
+                spans.extend(chunk_spans);
                 let base_line = Line::from(spans);
                 let line_obj = if let Some(bg) = bg_color {
                     base_line.style(Style::default().bg(bg))
@@ -566,62 +716,37 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
     let mut lines = Vec::new();
 
     let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
-    // gutter: "  " (2) + gutter_width + " | " (3) = overhead
-    let overhead = 2 + gutter_width + 3;
-    let content_w = term_w.saturating_sub(overhead + 2).max(20);
-    let wrap_text = |text: &str| -> Vec<String> {
-        if text.is_empty() { return vec![String::new()]; }
-        let mut out = Vec::new();
-        let mut cur = String::new();
-        let mut cur_w = 0usize;
-        let push_cur = |out: &mut Vec<String>, cur: &mut String, cur_w: &mut usize| {
-            if !cur.is_empty() { out.push(std::mem::take(cur)); *cur_w = 0; }
-        };
-        for word in text.split_whitespace() {
-            let wlen = word.chars().count();
-            if wlen > content_w {
-                // word itself longer than line, split it
-                push_cur(&mut out, &mut cur, &mut cur_w);
-                let chars: Vec<char> = word.chars().collect();
-                for chunk in chars.chunks(content_w) {
-                    let s: String = chunk.iter().collect();
-                    out.push(s);
-                }
-                continue;
-            }
-            if cur_w != 0 && cur_w + 1 + wlen > content_w {
-                out.push(std::mem::take(&mut cur));
-                cur_w = 0;
-            }
-            if cur_w != 0 { cur.push(' '); cur_w += 1; }
-            cur.push_str(word);
-            cur_w += wlen;
-        }
-        if !cur.is_empty() || out.is_empty() { out.push(cur); }
-        if out.is_empty() { out.push(String::new()); }
-        out
-    };
+    let overhead = 2 + gutter_width + 3 + 2;
+    let content_w = term_w.saturating_sub(overhead).max(20);
+
     let push_wrapped = |lines: &mut Vec<Line<'static>>, line_num: usize, text: &str, highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>| {
-        let chunks = wrap_text(text);
-        for (ci, chunk) in chunks.iter().enumerate() {
+        let expanded = expand_tabs(text, 4);
+        let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
+        let cont_indent_len = indent_count.min(content_w / 2);
+        let cont_indent_str = " ".repeat(cont_indent_len);
+
+        let row_spans = highlight_line_spans(&expanded, highlighter, syntect, DIFF_EQUAL_FG, None);
+        let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
+
+        let gutter_str = format!("{:>width$} | ", line_num, width = gutter_width);
+        let cont_gutter_str = format!("{:>width$} | ", "", width = gutter_width);
+
+        for (ci, chunk_spans) in wrapped_rows.into_iter().enumerate() {
             let mut spans = Vec::new();
             spans.push(Span::raw("  "));
             if ci == 0 {
-                spans.push(Span::styled(
-                    format!("{:>width$} | ", line_num, width = gutter_width),
-                    Style::default().fg(DIFF_GUTTER_FG),
-                ));
+                spans.push(Span::styled(gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
             } else {
-                spans.push(Span::styled(
-                    format!("{:>width$} | ", "", width = gutter_width),
-                    Style::default().fg(DIFF_GUTTER_FG),
-                ));
+                spans.push(Span::styled(cont_gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
+                if cont_indent_len > 0 {
+                    spans.push(Span::raw(cont_indent_str.clone()));
+                }
             }
-            let content_spans = render_content_spans(chunk, highlighter, syntect, DIFF_EQUAL_FG, None);
-            spans.extend(content_spans);
+            spans.extend(chunk_spans);
             lines.push(Line::from(spans));
         }
     };
+
     let max_lines_to_show = 40;
     if total <= max_lines_to_show {
         for (idx, line_text) in raw_lines.iter().enumerate() {
@@ -707,7 +832,7 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    if tool_name == "read" {
+    if tool_name == "read" || tool_name == "request_user_input" {
         return Vec::new();
     }
 
@@ -777,7 +902,7 @@ pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: 
 
     match name {
         "bash" => {
-            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let cmd = truncate_cmd(args.get("command").and_then(|v| v.as_str()).unwrap_or("").trim());
             format!("{bullet} {bold}Ran{reset} {yellow}{cmd}{reset}")
         }
         "write" => {
@@ -824,6 +949,35 @@ pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: 
         "ls" => {
             let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
             format!("{bullet} {bold}List{reset} {orange}{}{reset}", shorten_path(raw_path, cwd))
+        }
+        "request_user_input" => {
+            let q_summary = args.get("questions")
+                .and_then(|q| q.as_array())
+                .and_then(|arr| {
+                    if arr.len() == 1 {
+                        arr[0].get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\""))
+                    } else if arr.len() > 1 {
+                        Some(format!("{} questions", arr.len()))
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| args.get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\"")))
+                .unwrap_or_else(|| "question".to_string());
+            let summary = truncate_cmd(&q_summary);
+            format!("{bullet} {bold}Asked{reset} {yellow}{summary}{reset}")
+        }
+        "delegate" => {
+            let agent = args.get("agent").or_else(|| args.get("to")).and_then(|v| v.as_str()).unwrap_or("agent");
+            format!("{bullet} {bold}Delegate{reset} {orange}{agent}{reset}")
+        }
+        "skill" => {
+            let skill_name = args.get("name").or_else(|| args.get("skill")).and_then(|v| v.as_str()).unwrap_or("skill");
+            format!("{bullet} {bold}Skill{reset} {yellow}{skill_name}{reset}")
+        }
+        "cron" => {
+            let sched = args.get("cron").or_else(|| args.get("schedule")).and_then(|v| v.as_str()).unwrap_or("");
+            format!("{bullet} {bold}Cron{reset} {yellow}{sched}{reset}")
         }
         other => {
             let path = shorten_path(arg_path(args), cwd);
@@ -890,4 +1044,3 @@ pub fn format_tool_result_plain_with_context(
 pub fn format_tool_result_plain(tool_name: &str, output: &str, is_error: bool) -> String {
     format_tool_result_plain_with_context(tool_name, None, output, is_error, None)
 }
-
