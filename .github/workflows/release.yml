@@ -124,6 +124,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # the manifest lives in web/, not the repo root — action-setup resolves
+      # `packageManager` from package_json_file
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: build site
+        run: |
+          cd web
+          pnpm install --frozen-lockfile
+          pnpm build
       - name: deploy site to gray.alignment.id
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
@@ -134,5 +149,9 @@ jobs:
           install -m 600 /dev/null ~/.config/gray-deploy/key
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
           ssh-keyscan -H 168.110.210.65 >> ~/.ssh/known_hosts 2>/dev/null
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes dist/index.html dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
-          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/index.html /var/www/gray/index.html && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/index.html /tmp/install.sh /tmp/install.ps1 && echo '✓ site live: https://gray.alignment.id'"
+          # the static export owns everything in the docroot except the
+          # installer artifacts, which deploy-web.sh excludes and re-verifies
+          DEPLOY_KEY=~/.config/gray-deploy/key scripts/deploy-web.sh
+          # installers still ship straight from dist/
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ site live: https://gray.alignment.id'"
