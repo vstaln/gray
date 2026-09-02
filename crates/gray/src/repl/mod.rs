@@ -2507,8 +2507,9 @@ pub async fn run_repl_mode(
                                         _ => {}
                                     }
                                 }
-                                // Popup navigation when matches present
-                                if !t.matches.is_empty() {
+                                // Popup navigation when >1 match (a lone match leaves
+                                // Up/Down free for history recall / cursor movement)
+                                if t.matches.len() > 1 {
                                     match code {
                                         KeyCode::Up => { t.sel = t.sel.saturating_sub(1); let _ = t.draw(); continue; }
                                         KeyCode::Down => { t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1)); let _ = t.draw(); continue; }
@@ -2553,7 +2554,7 @@ pub async fn run_repl_mode(
                                         let _ = t.draw();
                                     }
                                     KeyCode::Up => {
-                                        if !t.matches.is_empty() {
+                                        if t.matches.len() > 1 {
                                             t.sel = t.sel.saturating_sub(1);
                                             let _ = t.draw();
                                         } else {
@@ -2562,7 +2563,7 @@ pub async fn run_repl_mode(
                                         }
                                     }
                                     KeyCode::Down => {
-                                        if !t.matches.is_empty() {
+                                        if t.matches.len() > 1 {
                                             t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
                                             let _ = t.draw();
                                         } else {

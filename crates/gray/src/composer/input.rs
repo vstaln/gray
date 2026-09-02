@@ -161,14 +161,18 @@ pub(crate) fn handle_popup_key(tui: &mut Tui, code: crossterm::event::KeyCode, m
     }
     use crossterm::event::{KeyCode, KeyModifiers};
     match code {
-        KeyCode::Up => {
+        // Popup navigates only when there is something to navigate (>1 match).
+        // With a single match, Up/Down fall through to history recall /
+        // cursor movement instead of being swallowed by the selector.
+        KeyCode::Up if tui.matches.len() > 1 => {
             tui.sel = tui.sel.saturating_sub(1);
             return true;
         }
-        KeyCode::Down => {
+        KeyCode::Down if tui.matches.len() > 1 => {
             tui.sel = (tui.sel + 1).min(tui.matches.len().saturating_sub(1));
             return true;
         }
+        KeyCode::Up | KeyCode::Down => return false,
         KeyCode::Esc => {
             tui.matches.clear();
             tui.sel = 0;
@@ -508,7 +512,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         }
                     }
                     KeyCode::Up => {
-                        if !tui.matches.is_empty() {
+                        if tui.matches.len() > 1 {
                             tui.sel = tui.sel.saturating_sub(1);
                         } else {
                             let has_multiline = tui.textarea.text().contains('\n');
@@ -522,7 +526,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         }
                     }
                     KeyCode::Down => {
-                        if !tui.matches.is_empty() {
+                        if tui.matches.len() > 1 {
                             tui.sel = (tui.sel + 1).min(tui.matches.len().saturating_sub(1));
                         } else if tui.history_idx.is_some() {
                             let idx = tui.history_idx.unwrap();
