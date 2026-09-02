@@ -21,9 +21,12 @@ if [ ! -d "$OUT" ]; then
 fi
 
 echo "→ deploying web/out to ${HOST}:/var/www/gray/ ..."
+# `P` (protect) rules are explicit: --delete must never remove the installer
+# artifacts from the receiver, even though they are not in the source tree.
 rsync -az --delete \
     -e "ssh -i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes" \
-    --exclude 'dl/' --exclude 'install.sh' --exclude 'install.ps1' \
+    --filter 'P /dl/' --filter 'P /install.sh' --filter 'P /install.ps1' \
+    --exclude '/dl/' --exclude '/install.sh' --exclude '/install.ps1' \
     --rsync-path='sudo rsync' \
     "$OUT/" "$HOST:/var/www/gray/"
 

@@ -32,3 +32,7 @@ web/next-env.d.ts
 .vscode/
 *.swp
 *~
+
+# python bytecode from web/scripts/*.py
+__pycache__/
+*.pyc

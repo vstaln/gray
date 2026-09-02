@@ -105,6 +105,7 @@ export const tiers = [
     cta: "Install",
     href: "#install",
     featured: false,
+    available: true,
   },
   {
     id: "pro",
@@ -120,9 +121,10 @@ export const tiers = [
       "Session sync",
       "Priority builds",
     ],
-    cta: "Subscribe",
-    href: "#",
+    cta: "Not yet available",
+    href: null,
     featured: true,
+    available: false,
   },
   {
     id: "team",
@@ -138,8 +140,9 @@ export const tiers = [
       "Audit log",
       "SSO",
     ],
-    cta: "Subscribe",
-    href: "#",
+    cta: "Not yet available",
+    href: null,
     featured: false,
+    available: false,
   },
 ] as const;
