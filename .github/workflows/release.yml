@@ -124,7 +124,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # the manifest lives in web/, not the repo root — action-setup resolves
+      # `packageManager` from package_json_file
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: web/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
