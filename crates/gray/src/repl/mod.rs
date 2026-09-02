@@ -2226,7 +2226,22 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Gateway(raw) => {
-                handle_gateway(&raw, tui.as_ref().map(|(s, _)| s)).await;
+                let t = tui.as_ref().map(|(s, _)| s);
+                // bare /gateway in the TUI opens the interactive picker; the
+                // modal returns an equivalent command string to execute
+                let cmd = if raw.trim() == "/gateway" && t.is_some() {
+                    let bg = t.map(|s| s.lock().expect("tui lock").snapshot());
+                    let running = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
+                    match with_modal_sync(t, || crate::setup::run_gateway_modal(bg.as_ref(), running)) {
+                        Ok(Some(c)) => c,
+                        _ => String::new(),
+                    }
+                } else {
+                    raw.clone()
+                };
+                if !cmd.is_empty() {
+                    handle_gateway(&cmd, t).await;
+                }
                 continue;
             }
             ReplCommand::Unknown(cmd) => {
