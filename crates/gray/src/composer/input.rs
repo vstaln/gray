@@ -450,7 +450,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         if is_slash_cmd {
                             tui.ensure_gap(1);
                             tui.push_line_styled(
-                                format!(" ⬡ {trimmed}"),
+                                format!(" ❯ {trimmed}"),
                                 ratatui::style::Style::default()
                                     .fg(ratatui::style::Color::Rgb(180, 180, 180))
                                     .add_modifier(ratatui::style::Modifier::BOLD),

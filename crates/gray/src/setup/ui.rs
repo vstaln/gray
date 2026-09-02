@@ -100,7 +100,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let footer_cwd_color = Color::Rgb(48, 48, 48);
     let footer_model_color = Color::Rgb(58, 58, 58);
 
-    let arrow_span = Span::styled("⬡ ", Style::default().fg(prompt_arrow_color).add_modifier(Modifier::DIM).bg(box_bg));
+    let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_arrow_color).add_modifier(Modifier::DIM).bg(box_bg));
     let prompt_line = if bg.prompt_text.is_empty() {
         Line::from(vec![arrow_span]).style(Style::default().bg(box_bg))
     } else {

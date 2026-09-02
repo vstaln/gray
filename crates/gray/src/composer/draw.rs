@@ -37,7 +37,7 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> V
 }
 
 /// Input box render state: styled lines (own internal top/bottom margin rows,
-/// `⬡` prompt) plus the cursor position within them.
+/// `❯` prompt) plus the cursor position within them.
 pub(crate) struct InputBox {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) cur_row: usize,
@@ -61,7 +61,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     box_lines.push(Line::from(""));
 
     // Prompt input rows
-    let prompt_arrow = " ⬡ ";
+    let prompt_arrow = " ❯ ";
     let arrow_span = Span::styled(prompt_arrow, Style::default().fg(prompt_color).add_modifier(Modifier::BOLD).bg(bg_color));
 
     let mut cur_row = 0usize;
@@ -189,7 +189,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let footer_y = attach_y + attach_h;
 
         if let Some((started, label)) = &tui.status && !question_active {
-            let label_text = format!(" \u{27f3} {label}\u{2026}");
+            let label_text = format!(" ⬡ {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed(), tui.truecolor);
             let elapsed = started.elapsed();
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());

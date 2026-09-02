@@ -260,7 +260,7 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
     let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines = Vec::new();
     lines.push(Line::from("").style(bg_style));
-    let arrow_span = Span::styled(" ⬡ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
+    let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
     let max_w = width.saturating_sub(4).max(1);
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
