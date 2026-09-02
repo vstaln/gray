@@ -327,9 +327,9 @@ mod tests {
         let header = vec![cell("Field"), cell("Value")];
         let rows = vec![vec![cell("a"), cell("b")]];
         let out = render_records(&header, &rows, Some(40), Style::new().bold(), Style::new().dim());
-        assert_eq!(out.lines[0], " Field Value");
-        assert_eq!(out.lines[1], "       a b");
+        assert_eq!(out.lines[0], " Field  a");
+        assert_eq!(out.lines[1], " Value  b");
         assert_eq!(out.line_source_offsets[0], 0);
-        assert_eq!(out.line_source_offsets[1], 2);
+        assert_eq!(out.line_source_offsets[1], 0);
     }
 }

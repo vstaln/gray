@@ -81,7 +81,7 @@ pub(crate) struct QuestionSession {
     current_resolved: Arc<AtomicBool>,
     pub queue: VecDeque<QueuedRequest>,
     answers: Vec<AnswerState>,
-    current_idx: usize,
+        current_idx: usize,
     pub(crate) focus: Focus,
     confirm_unanswered: Option<usize>,
     request_started_at: Instant,
@@ -89,7 +89,8 @@ pub(crate) struct QuestionSession {
     last_countdown: Option<String>,
 }
 
-pub(crate) enum QuestionOutcome {
+#[derive(Debug)]
+    pub(crate) enum QuestionOutcome {
     /// Key ignored / nothing changed.
     None,
     /// State changed; redraw and keep the session.
@@ -109,7 +110,7 @@ fn init_answers(questions: &[UserQuestion]) -> Vec<AnswerState> {
     questions
         .iter()
         .map(|_| AnswerState {
-            selected_idx: Some(0),
+            selected_idx: None, // codex: highlight cursor starts unset; Enter on an untouched question advances without answering
             draft: String::new(),
             answer_committed: false,
             notes_visible: false,
@@ -279,9 +280,11 @@ impl QuestionSession {
     fn select_current_option(&mut self, committed: bool) {
         let len = self.options_len();
         let a = &mut self.answers[self.current_idx];
-        if let Some(sel) = a.selected_idx.as_mut() {
-            *sel = (*sel).min(len.saturating_sub(1));
-        }
+        // Selecting seeds the cursor at the highlighted row (defaults to first).
+        a.selected_idx = Some(match a.selected_idx {
+            Some(sel) => sel.min(len.saturating_sub(1)),
+            None => 0,
+        });
         a.answer_committed = committed;
     }
 
@@ -871,7 +874,8 @@ mod tests {
         // proceed
         q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
         let answers = rx.try_recv().unwrap();
-        assert_eq!(answers[0].answers, vec!["Alpha".to_string()]);
+        // Enter on an untouched question advances without answering (codex parity).
+        assert!(answers[0].answers.is_empty());
         assert!(answers[1].answers.is_empty());
     }
 
