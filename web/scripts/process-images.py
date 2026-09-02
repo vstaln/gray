@@ -4,11 +4,13 @@
   dither  — Floyd-Steinberg 1-bit halftone on black, the Hermes pricing-card look
   plate   — desaturated + contrast-lifted photo for full-bleed sections
 
-Source images are NASA public domain (see public/space/CREDITS.md).
-Run from web/:  python3 scripts/process-images.py ../../nasa/raw
+Outputs exactly the assets the site references; attribution for each source
+image is on the /credits page (web/app/credits/page.tsx).
+
+Run from web/:  python3 scripts/process-images.py /tmp/nasa/raw
 """
 import sys, os
-from PIL import Image, ImageEnhance, ImageOps
+from PIL import Image, ImageEnhance
 import numpy as np
 
 SRC = sys.argv[1] if len(sys.argv) > 1 else "/tmp/nasa/raw"
@@ -47,14 +49,12 @@ def plate(name, w, h, sat=0.14, bright=0.72, out=None):
 # hero + full-bleed plates
 plate("carina", 2400, 1400, sat=0.10, bright=0.55)
 plate("pillars", 1800, 1200, sat=0.12, bright=0.60)
-plate("andromeda", 2400, 1000, sat=0.10, bright=0.50)
 plate("earthlimb", 2400, 900, sat=0.16, bright=0.65)
 plate("mwcore", 2000, 1200, sat=0.10, bright=0.55)
 
-# dithered engravings — pricing cards, panels, footer
+# dithered engravings — pricing cards and panels
 for n in ("helix", "saturn", "jupiter", "eclipse", "moon", "aurora", "bluemarble", "carina"):
     dither(n, 900, 520)
-dither("pillars", 1400, 900, gamma=1.15)
 dither("andromeda", 1400, 700)
 
 print("\n".join(sorted(os.listdir(OUT))))
