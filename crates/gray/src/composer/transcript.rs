@@ -81,13 +81,38 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
     if flat.is_empty() {
         return vec![line];
     }
-    // Tokenize into words (non-space runs) with byte ranges
+
+    // Detect if this line has a gutter prefix (e.g. " 12 | " or "    | ")
+    let gutter_info = if let Some(bar_idx) = flat.find(" | ") {
+        if bar_idx <= 14 && flat[..bar_idx].chars().all(|c| c.is_ascii_digit() || c == ' ') {
+            let gutter_end = bar_idx + 3;
+            let gutter_style = span_bounds
+                .iter()
+                .find(|(r, _)| r.start <= bar_idx && bar_idx < r.end)
+                .map(|(_, s)| *s)
+                .unwrap_or(line.style);
+            let cont_gutter_str = format!("{:>width$} | ", "", width = bar_idx);
+            Some((gutter_end, cont_gutter_str, gutter_style))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let (content_start, cont_gutter_str, gutter_style, eff_max_w) = if let Some((g_end, ref c_str, g_style)) = gutter_info {
+        let g_width = str_display_width(&flat[..g_end]);
+        let avail = max_w.saturating_sub(g_width).max(10);
+        (g_end, Some(c_str.clone()), Some(g_style), avail)
+    } else {
+        (0, None, None, max_w)
+    };
+
+    // Tokenize content into words (non-space runs) with byte ranges
     let mut words: Vec<Range<usize>> = Vec::new();
-    let mut i = 0usize;
+    let mut i = content_start;
     while i < flat.len() {
-        // skip spaces
         while i < flat.len() && flat[i..].starts_with(' ') {
-            // find next char boundary
             let ch = flat[i..].chars().next().unwrap();
             i += ch.len_utf8();
         }
@@ -101,9 +126,9 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
         words.push(start..i);
     }
     if words.is_empty() {
-        // line is all spaces? fallback to original char chunk logic
         return char_chunk_fallback(line, max_w, flat);
     }
+
     // Build wrapped ranges word-aware
     let mut out_ranges: Vec<Range<usize>> = Vec::new();
     let mut cur_start: Option<usize> = None;
@@ -112,18 +137,16 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
     for w_range in words {
         let word_str = &flat[w_range.clone()];
         let word_w = str_display_width(word_str);
-        if word_w > max_w {
-            // flush current line first
+        if word_w > eff_max_w {
             if let Some(s) = cur_start.take() {
                 out_ranges.push(s..cur_end);
                 cur_w = 0;
             }
-            // split long word into chunks of max_w
             let chars: Vec<char> = word_str.chars().collect();
             let mut byte_offset = w_range.start;
             let mut idx = 0;
             while idx < chars.len() {
-                let take = max_w.min(chars.len() - idx);
+                let take = eff_max_w.min(chars.len() - idx);
                 let chunk_chars = &chars[idx..idx+take];
                 let chunk_str: String = chunk_chars.iter().collect();
                 let byte_len = chunk_str.len();
@@ -138,13 +161,11 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
             cur_end = w_range.end;
             cur_w = word_w;
         } else {
-            // need space + word
             let needed = 1 + word_w;
-            if cur_w + needed <= max_w {
+            if cur_w + needed <= eff_max_w {
                 cur_end = w_range.end;
                 cur_w += needed;
             } else {
-                // finish current line
                 out_ranges.push(cur_start.take().unwrap()..cur_end);
                 cur_start = Some(w_range.start);
                 cur_end = w_range.end;
@@ -158,16 +179,24 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
     if out_ranges.is_empty() {
         return vec![Line::from("").style(line.style)];
     }
-    // Convert ranges to Lines preserving styles
+
+    // Convert ranges to Lines preserving styles and prepending gutter
     let mut result: Vec<Line<'static>> = Vec::new();
-    for r in out_ranges {
-        let sliced = slice_line_spans(&line, &span_bounds, &r);
-        // patch with line style
+    for (row_idx, r) in out_ranges.into_iter().enumerate() {
         let mut spans: Vec<Span<'static>> = Vec::new();
+        if let (Some(c_str), Some(g_style)) = (&cont_gutter_str, gutter_style) {
+            if row_idx == 0 {
+                let g_sliced = slice_line_spans(&line, &span_bounds, &(0..content_start));
+                for s in g_sliced.spans {
+                    spans.push(Span::styled(s.content.into_owned(), s.style.patch(line.style)));
+                }
+            } else {
+                spans.push(Span::styled(c_str.clone(), g_style.patch(line.style)));
+            }
+        }
+        let sliced = slice_line_spans(&line, &span_bounds, &r);
         for s in sliced.spans {
-            // owned conversion
-            let owned_content = s.content.into_owned();
-            spans.push(Span::styled(owned_content, s.style.patch(line.style)));
+            spans.push(Span::styled(s.content.into_owned(), s.style.patch(line.style)));
         }
         let mut new_line = Line::from(spans).style(line.style);
         new_line.alignment = line.alignment;
@@ -384,7 +413,6 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string(), attached.to_vec()));
         self.transcript.extend(lines);
-        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
@@ -405,6 +433,7 @@ pub(crate) fn format_tool_box_lines(
     let wrapped_header = wrap_styled_line(header, max_w);
     for mut l in wrapped_header {
         l.style = l.style.patch(bg_style);
+        l.spans.insert(0, Span::styled("  ", bg_style));
         for span in l.spans.iter_mut() {
             span.style = span.style.bg(bg_color);
         }
@@ -571,9 +600,11 @@ impl Tui {
                             }
                             gray_core::ContentBlock::ToolResult { id, content, is_error } => {
                                 let (name, args) = tool_calls.remove(id).map(|(n, a)| (n, Some(a))).unwrap_or_else(|| ("tool".to_string(), None));
-                                let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
-                                self.push_tool_box(header, lines);
+                                if name != "request_user_input" {
+                                    let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                    let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
+                                    self.push_tool_box(header, lines);
+                                }
                             }
                             _ => {}
                         }
@@ -603,9 +634,11 @@ impl Tui {
                     for block in &entry.message.content {
                         if let gray_core::ContentBlock::ToolResult { id, content, is_error } = block {
                             let (name, args) = tool_calls.remove(id).map(|(n, a)| (n, Some(a))).unwrap_or_else(|| ("tool".to_string(), None));
-                            let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                            let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
-                            self.push_tool_box(header, lines);
+                            if name != "request_user_input" {
+                                let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
+                                self.push_tool_box(header, lines);
+                            }
                         }
                     }
                 }

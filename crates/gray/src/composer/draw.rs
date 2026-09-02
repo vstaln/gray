@@ -189,7 +189,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let footer_y = attach_y + attach_h;
 
         if let Some((started, label)) = &tui.status && !question_active {
-            let label_text = format!(" \u{2b21} {label}\u{2026}");
+            let label_text = format!(" \u{27f3} {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed(), tui.truecolor);
             let elapsed = started.elapsed();
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
