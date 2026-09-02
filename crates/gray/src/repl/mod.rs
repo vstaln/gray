@@ -1094,6 +1094,207 @@ async fn persist_turn_messages(
     }
 }
 
+async fn ensure_session_state(
+    session_state: &mut Option<SessionState>,
+    config: &Config,
+    cwd: &Path,
+) {
+    if session_state.is_none() {
+        if let Some(root) = default_root() {
+            let store = JsonlSessionStore::new(root);
+            let session_id = SessionId::generate();
+            let timestamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let meta = SessionMeta::new(
+                session_id.clone(),
+                timestamp,
+                cwd.to_path_buf(),
+                config.model.clone().unwrap_or_else(|| "unset".into()),
+            );
+            store.create(meta).await;
+            *session_state = Some(SessionState { store, session_id });
+        }
+    }
+}
+
+fn dispatch_agent_event(
+    ev: &AgentEvent,
+    tui_stream: Option<&crate::composer::SharedTui>,
+    interactive: bool,
+    current_tool_name: &mut Option<String>,
+    current_tool_args: &mut Option<serde_json::Value>,
+    turn_usage: &mut Option<gray_core::event::Usage>,
+    cwd: &Path,
+) {
+    if let Some(shared) = tui_stream {
+        if let Ok(mut t) = shared.lock() {
+            match ev {
+                AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
+                AgentEvent::TextDelta { delta } => t.stream_text(delta),
+                AgentEvent::ToolCallStart { name, .. } => {
+                    t.flush_markdown();
+                    t.end_thinking();
+                    *current_tool_name = Some(name.clone());
+                    *current_tool_args = None;
+                }
+                AgentEvent::ToolCallEnd { args, .. } => {
+                    t.end_thinking();
+                    *current_tool_args = Some(args.clone());
+                }
+                AgentEvent::ToolResult { output, is_error, .. } => {
+                    let name = current_tool_name.take().unwrap_or_default();
+                    let args = current_tool_args.take();
+                    if name != "request_user_input" {
+                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+                            &name,
+                            args.as_ref(),
+                            output,
+                            *is_error,
+                            Some(cwd),
+                        );
+                        let header = args
+                            .as_ref()
+                            .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+                            .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                        t.push_tool_box(header, lines);
+                    }
+                }
+                AgentEvent::StepUsage { usage } => {
+                    t.set_usage(*usage);
+                }
+                AgentEvent::TurnEnd { usage, .. } => {
+                    *turn_usage = Some(*usage);
+                    t.end_thinking();
+                    t.set_usage(*usage);
+                    if usage.total() > 0 {
+                        t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total())));
+                    }
+                }
+                _ => {}
+            }
+            let _ = std::io::stdout().flush();
+            return;
+        }
+    }
+    if !interactive {
+        match ev {
+            AgentEvent::TextDelta { delta } => print!("{delta}"),
+            AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
+            AgentEvent::ToolCallStart { name, .. } => {
+                *current_tool_name = Some(name.clone());
+                *current_tool_args = None;
+            }
+            AgentEvent::ToolCallEnd { args, .. } => {
+                let name = current_tool_name.as_deref().unwrap_or("tool");
+                *current_tool_args = Some(args.clone());
+                if name != "request_user_input" {
+                    println!(
+                        "\n{}",
+                        crate::tool_fmt::format_tool_call_header_plain(name, args, Some(cwd))
+                    );
+                }
+            }
+            AgentEvent::ToolResult { output, is_error, .. } => {
+                let name = current_tool_name.take().unwrap_or_default();
+                let args = current_tool_args.take();
+                let res = crate::tool_fmt::format_tool_result_plain_with_context(
+                    &name,
+                    args.as_ref(),
+                    output,
+                    *is_error,
+                    Some(cwd),
+                );
+                if !res.is_empty() {
+                    print!("{res}");
+                }
+            }
+            AgentEvent::TurnEnd { usage, .. } => {
+                *turn_usage = Some(*usage);
+                if usage.total() > 0 {
+                    println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()));
+                }
+            }
+            _ => {}
+        }
+        let _ = std::io::stdout().flush();
+    }
+}
+
+async fn maybe_threshold_compact(
+    agent: &mut Agent,
+    config: &Config,
+    session_state: &mut Option<SessionState>,
+    cwd: &Path,
+    tui: Option<&crate::composer::SharedTui>,
+    latest: Option<gray_core::event::Usage>,
+    initial_count: &mut usize,
+) {
+    let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
+    let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
+    if !crate::compact::should_compact(tokens, window, &crate::compact::DEFAULT_COMPACTION_SETTINGS) {
+        return;
+    }
+    say(
+        tui,
+        &format!(
+            "auto-compacting {}/{} tokens...",
+            crate::setup::format_context_length(tokens),
+            crate::setup::format_context_length(window)
+        ),
+    );
+    match crate::compact::auto_compact_if_needed(agent, config, latest, "threshold").await {
+        Ok(true) => {
+            ensure_session_state(session_state, config, cwd).await;
+            if let Some(state) = session_state {
+                for msg in agent.messages().to_vec() {
+                    let _ = state.store.append(&state.session_id, &msg).await;
+                }
+            }
+            *initial_count = agent.messages().len();
+        }
+        Ok(false) => {},
+        Err(e) => log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}"),
+    }
+}
+
+async fn maybe_overflow_compact(
+    agent: &mut Agent,
+    config: &Config,
+    session_state: &mut Option<SessionState>,
+    cwd: &Path,
+    tui: Option<&crate::composer::SharedTui>,
+    latest: Option<gray_core::event::Usage>,
+    initial_count: &mut usize,
+    err: &CoreError,
+) -> bool {
+    if !crate::compact::is_context_overflow_error(err) {
+        return false;
+    }
+    say(tui, "context overflow — compacting...");
+    match crate::compact::auto_compact_if_needed(agent, config, latest, "overflow").await {
+        Ok(true) => {
+            ensure_session_state(session_state, config, cwd).await;
+            if let Some(state) = session_state {
+                for msg in agent.messages().to_vec() {
+                    let _ = state.store.append(&state.session_id, &msg).await;
+                }
+            }
+            *initial_count = agent.messages().len();
+            true
+        }
+        Ok(false) => {
+            log::warn!(target: "gray_compact", "overflow auto-compact returned false (nothing to compact)");
+            false
+        }
+        Err(e) => {
+            log::warn!(target: "gray_compact", "overflow auto-compact failed: {e}");
+            false
+        }
+    }
+}
+
 /// Runs Gray in interactive REPL mode.
 pub async fn run_repl_mode(
     config: &mut Config,
@@ -1551,37 +1752,21 @@ pub async fn run_repl_mode(
                     let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()) };
                     let user_msg = build_user_message_with_images(&prompt_text, &images);
                     let user_msg_for_retry = user_msg.clone();
-                    let initial_count = agent.messages().len();
-                    // auto-compact threshold check (image prompt path)
+                    let mut initial_count = agent.messages().len();
                     {
                         let latest = tui
                             .as_ref()
                             .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage));
-                        let window =
-                            crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
-                        let tokens =
-                            crate::compact::estimate_context_tokens(agent.messages(), latest);
-                        if crate::compact::should_compact(
-                            tokens,
-                            window,
-                            &crate::compact::DEFAULT_COMPACTION_SETTINGS,
-                        ) {
-                            say(
-                                tui.as_ref().map(|(s, _)| s),
-                                &format!(
-                                    "auto-compacting {}/{} tokens...",
-                                    crate::setup::format_context_length(tokens),
-                                    crate::setup::format_context_length(window)
-                                ),
-                            );
-                            if let Err(e) = crate::compact::auto_compact_if_needed(
-                                agent, config, latest, "threshold",
-                            )
-                            .await
-                            {
-                                log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}");
-                            }
-                        }
+                        maybe_threshold_compact(
+                            agent,
+                            config,
+                            &mut session_state,
+                            &cwd,
+                            tui.as_ref().map(|(s, _)| s),
+                            latest,
+                            &mut initial_count,
+                        )
+                        .await;
                     }
                     let (shared, _) = if interactive { (Some(tui.as_ref().expect("interactive implies tui")), ()) } else { (None, ()) };
                     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
@@ -1624,61 +1809,29 @@ pub async fn run_repl_mode(
                     let mut turn_usage: Option<gray_core::event::Usage> = None;
                     let mut run_result = {
                         let mut on_event = |ev: &gray_core::event::AgentEvent| {
-                            if let Some(shared) = &tui_stream && let Ok(mut t) = shared.lock() {
-                                match ev {
-                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                                    gray_core::event::AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                    gray_core::event::AgentEvent::ToolCallStart { name, .. } => {
-                                        t.flush_markdown();
-                                        t.end_thinking();
-                                        current_tool_name = Some(name.clone());
-                                        current_tool_args = None;
-                                    }
-                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); current_tool_args = Some(args.clone()); }
-                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => {
-                                        let name = current_tool_name.take().unwrap_or_default();
-                                        let args = current_tool_args.take();
-                                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                        t.push_tool_box(header, lines);
-                                    }
-                                    gray_core::event::AgentEvent::StepUsage { usage } => {
-                                        t.set_usage(*usage);
-                                    }
-                                    gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
-                                    _ => {}
-                                }
-                            } else if !interactive {
-                                match ev {
-                                    gray_core::event::AgentEvent::TextDelta { delta } => print!("{delta}"),
-                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-                                    gray_core::event::AgentEvent::ToolCallStart { name, .. } => { current_tool_name = Some(name.clone()); current_tool_args = None; }
-                                    gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd))); }
-                                    gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !res.is_empty() { print!("{res}"); } }
-                                    gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); if usage.total() > 0 { println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total())); } }
-                                    _ => {}
-                                }
-                                let _ = std::io::stdout().flush();
-                            }
+                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
                         };
                         let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                         tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
                     };
                     // overflow recovery (one retry only)
                     if let Err(ref e) = run_result {
-                        if crate::compact::is_context_overflow_error(e) {
-                            let latest = tui
-                                .as_ref()
-                                .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
-                                .or(turn_usage);
-                            say(
-                                tui.as_ref().map(|(s, _)| s),
-                                "context overflow — compacting...",
-                            );
-                            if crate::compact::auto_compact_if_needed(agent, config, latest, "overflow")
-                                .await
-                                .unwrap_or(false)
-                            {
+                        let latest = tui
+                            .as_ref()
+                            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
+                            .or(turn_usage);
+                        if maybe_overflow_compact(
+                            agent,
+                            config,
+                            &mut session_state,
+                            &cwd,
+                            tui.as_ref().map(|(s, _)| s),
+                            latest,
+                            &mut initial_count,
+                            e,
+                        )
+                        .await
+                        {
                                 current_tool_name = None;
                                 current_tool_args = None;
                                 let ctx2 = gray_core::agent::ToolContext {
@@ -1687,45 +1840,11 @@ pub async fn run_repl_mode(
                                     questions: Some(question_bridge.clone()),
                                 };
                                 let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
-                                    if let Some(shared) = &tui_stream && let Ok(mut t) = shared.lock() {
-                                        match ev {
-                                            gray_core::event::AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                                            gray_core::event::AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                            gray_core::event::AgentEvent::ToolCallStart { name, .. } => {
-                                                t.flush_markdown();
-                                                t.end_thinking();
-                                                current_tool_name = Some(name.clone());
-                                                current_tool_args = None;
-                                            }
-                                            gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { t.end_thinking(); current_tool_args = Some(args.clone()); }
-                                            gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => {
-                                                let name = current_tool_name.take().unwrap_or_default();
-                                                let args = current_tool_args.take();
-                                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                                let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                                t.push_tool_box(header, lines);
-                                            }
-                                            gray_core::event::AgentEvent::StepUsage { usage } => { t.set_usage(*usage); }
-                                            gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); t.end_thinking(); t.set_usage(*usage); if usage.total() > 0 { t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()))); } }
-                                            _ => {}
-                                        }
-                                    } else if !interactive {
-                                        match ev {
-                                            gray_core::event::AgentEvent::TextDelta { delta } => print!("{delta}"),
-                                            gray_core::event::AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-                                            gray_core::event::AgentEvent::ToolCallStart { name, .. } => { current_tool_name = Some(name.clone()); current_tool_args = None; }
-                                            gray_core::event::AgentEvent::ToolCallEnd { args, .. } => { let name = current_tool_name.as_deref().unwrap_or("tool"); current_tool_args = Some(args.clone()); println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd))); }
-                                            gray_core::event::AgentEvent::ToolResult { output, is_error, .. } => { let name = current_tool_name.take().unwrap_or_default(); let args = current_tool_args.take(); let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd)); if !res.is_empty() { print!("{res}"); } }
-                                            gray_core::event::AgentEvent::TurnEnd { usage, .. } => { turn_usage = Some(*usage); if usage.total() > 0 { println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total())); } }
-                                            _ => {}
-                                        }
-                                        let _ = std::io::stdout().flush();
-                                    }
+                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
                                 };
                                 let mut run_future2 = Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
                                 let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
                                 run_result = retry_res;
-                            }
                         }
                     }
                     TURN_STATE.lock().expect("turn state lock").take();
@@ -2014,37 +2133,21 @@ pub async fn run_repl_mode(
                 let images = std::mem::take(&mut pending_images);
                 let user_msg = build_user_message_with_images(&prompt_text, &images);
                 let user_msg_for_retry = user_msg.clone();
-                let initial_count = agent.messages().len();
-                // auto-compact threshold check (Task 4: pi parity)
+                let mut initial_count = agent.messages().len();
                 {
                     let latest = tui
                         .as_ref()
                         .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage));
-                    let window =
-                        crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
-                    let tokens =
-                        crate::compact::estimate_context_tokens(agent.messages(), latest);
-                    if crate::compact::should_compact(
-                        tokens,
-                        window,
-                        &crate::compact::DEFAULT_COMPACTION_SETTINGS,
-                    ) {
-                        say(
-                            tui.as_ref().map(|(s, _)| s),
-                            &format!(
-                                "auto-compacting {}/{} tokens...",
-                                crate::setup::format_context_length(tokens),
-                                crate::setup::format_context_length(window)
-                            ),
-                        );
-                        if let Err(e) = crate::compact::auto_compact_if_needed(
-                            agent, config, latest, "threshold",
-                        )
-                        .await
-                        {
-                            log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}");
-                        }
-                    }
+                    maybe_threshold_compact(
+                        agent,
+                        config,
+                        &mut session_state,
+                        &cwd,
+                        tui.as_ref().map(|(s, _)| s),
+                        latest,
+                        &mut initial_count,
+                    )
+                    .await;
                 }
 
                 let (shared, _) = if interactive {
@@ -2370,80 +2473,7 @@ pub async fn run_repl_mode(
                 let mut turn_usage: Option<gray_core::event::Usage> = None;
                 let mut run_result = {
                     let mut on_event = |ev: &AgentEvent| {
-                        if let Some(shared) = &tui_stream
-                            && let Ok(mut t) = shared.lock()
-                        {
-                            match ev {
-                                AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                                AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                AgentEvent::ToolCallStart { name, .. } => {
-                                    t.flush_markdown();
-                                    t.end_thinking();
-                                    current_tool_name = Some(name.clone());
-                                    current_tool_args = None;
-                                }
-                                AgentEvent::ToolCallEnd { args, .. } => {
-                                    t.end_thinking();
-                                    current_tool_args = Some(args.clone());
-                                }
-                                AgentEvent::ToolResult { output, is_error, .. } => {
-                                    let name = current_tool_name.take().unwrap_or_default();
-                                    let args = current_tool_args.take();
-                                    if name != "request_user_input" {
-                                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                        let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                        t.push_tool_box(header, lines);
-                                    }
-                                }
-                                AgentEvent::StepUsage { usage } => {
-                                    t.set_usage(*usage);
-                                }
-                                AgentEvent::TurnEnd { usage, .. } => {
-                                    turn_usage = Some(*usage);
-                                    t.end_thinking();
-                                    t.set_usage(*usage);
-                                    if usage.total() > 0 {
-                                        t.push_usage(format!(
-                                            "\u{2b22} {} tok",
-                                            fmt_usage(usage.total())
-                                        ));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        } else if !interactive {
-                            match ev {
-                                AgentEvent::TextDelta { delta } => print!("{delta}"),
-                                AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-                                AgentEvent::ToolCallStart { name, .. } => {
-                                    current_tool_name = Some(name.clone());
-                                    current_tool_args = None;
-                                }
-                                AgentEvent::ToolCallEnd { args, .. } => {
-                                    let name = current_tool_name.as_deref().unwrap_or("tool");
-                                    current_tool_args = Some(args.clone());
-                                    if name != "request_user_input" {
-                                        println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd)));
-                                    }
-                                }
-                                AgentEvent::ToolResult { output, is_error, .. } => {
-                                    let name = current_tool_name.take().unwrap_or_default();
-                                    let args = current_tool_args.take();
-                                    let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                    if !res.is_empty() {
-                                        print!("{res}");
-                                    }
-                                }
-                                AgentEvent::TurnEnd { usage, .. } => {
-                                    turn_usage = Some(*usage);
-                                    if usage.total() > 0 {
-                                        println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", fmt_usage(usage.total()));
-                                    }
-                                }
-                                _ => {}
-                            }
-                            let _ = std::io::stdout().flush();
-                        }
+                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
                     };
                     let mut run_future =
                         Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
@@ -2454,19 +2484,22 @@ pub async fn run_repl_mode(
                 };
                 // overflow recovery (one retry only)
                 if let Err(ref e) = run_result {
-                    if crate::compact::is_context_overflow_error(e) {
-                        let latest = tui
-                            .as_ref()
-                            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
-                            .or(turn_usage);
-                        say(
-                            tui.as_ref().map(|(s, _)| s),
-                            "context overflow — compacting...",
-                        );
-                        if crate::compact::auto_compact_if_needed(agent, config, latest, "overflow")
-                            .await
-                            .unwrap_or(false)
-                        {
+                    let latest = tui
+                        .as_ref()
+                        .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
+                        .or(turn_usage);
+                    if maybe_overflow_compact(
+                        agent,
+                        config,
+                        &mut session_state,
+                        &cwd,
+                        tui.as_ref().map(|(s, _)| s),
+                        latest,
+                        &mut initial_count,
+                        e,
+                    )
+                    .await
+                    {
                             current_tool_name = None;
                             current_tool_args = None;
                             let ctx2 = ToolContext {
@@ -2475,80 +2508,7 @@ pub async fn run_repl_mode(
                                 questions: Some(question_bridge.clone()),
                             };
                             let mut on_event2 = |ev: &AgentEvent| {
-                                if let Some(shared) = &tui_stream
-                                    && let Ok(mut t) = shared.lock()
-                                {
-                                    match ev {
-                                        AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                                        AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                                        AgentEvent::ToolCallStart { name, .. } => {
-                                            t.flush_markdown();
-                                            t.end_thinking();
-                                            current_tool_name = Some(name.clone());
-                                            current_tool_args = None;
-                                        }
-                                        AgentEvent::ToolCallEnd { args, .. } => {
-                                            t.end_thinking();
-                                            current_tool_args = Some(args.clone());
-                                        }
-                                        AgentEvent::ToolResult { output, is_error, .. } => {
-                                            let name = current_tool_name.take().unwrap_or_default();
-                                            let args = current_tool_args.take();
-                                            if name != "request_user_input" {
-                                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                                let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(&cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                                t.push_tool_box(header, lines);
-                                            }
-                                        }
-                                        AgentEvent::StepUsage { usage } => {
-                                            t.set_usage(*usage);
-                                        }
-                                        AgentEvent::TurnEnd { usage, .. } => {
-                                            turn_usage = Some(*usage);
-                                            t.end_thinking();
-                                            t.set_usage(*usage);
-                                            if usage.total() > 0 {
-                                                t.push_usage(format!(
-                                                    "\u{2b22} {} tok",
-                                                    fmt_usage(usage.total())
-                                                ));
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                } else if !interactive {
-                                    match ev {
-                                        AgentEvent::TextDelta { delta } => print!("{delta}"),
-                                        AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-                                        AgentEvent::ToolCallStart { name, .. } => {
-                                            current_tool_name = Some(name.clone());
-                                            current_tool_args = None;
-                                        }
-                                        AgentEvent::ToolCallEnd { args, .. } => {
-                                            let name = current_tool_name.as_deref().unwrap_or("tool");
-                                            current_tool_args = Some(args.clone());
-                                            if name != "request_user_input" {
-                                                println!("\n{}", crate::tool_fmt::format_tool_call_header_plain(name, args, Some(&cwd)));
-                                            }
-                                        }
-                                        AgentEvent::ToolResult { output, is_error, .. } => {
-                                            let name = current_tool_name.take().unwrap_or_default();
-                                            let args = current_tool_args.take();
-                                            let res = crate::tool_fmt::format_tool_result_plain_with_context(&name, args.as_ref(), output, *is_error, Some(&cwd));
-                                            if !res.is_empty() {
-                                                print!("{res}");
-                                            }
-                                        }
-                                        AgentEvent::TurnEnd { usage, .. } => {
-                                            turn_usage = Some(*usage);
-                                            if usage.total() > 0 {
-                                                println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", fmt_usage(usage.total()));
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                    let _ = std::io::stdout().flush();
-                                }
+                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
                             };
                             let mut run_future2 =
                                 Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
@@ -2557,7 +2517,6 @@ pub async fn run_repl_mode(
                                 _ = cancel.cancelled() => Err(CoreError::Cancelled),
                             };
                             run_result = retry_res;
-                        }
                     }
                 }
                 TURN_STATE.lock().expect("turn state lock").take();

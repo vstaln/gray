@@ -170,10 +170,6 @@ pub fn is_context_overflow_error(err: &CoreError) -> bool {
             || lower.contains("context window")
             || lower.contains("context length")
             || lower.contains("max_tokens")
-            || lower.contains("maximum context")
-            || lower.contains("too many tokens")
-            || lower.contains("token limit")
-            || lower.contains("context overflow")
     } else {
         false
     }
