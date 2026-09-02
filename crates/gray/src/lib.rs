@@ -106,8 +106,8 @@ pub fn rule(label: &str) -> String {
 
 /// Builds an [`Agent`] instance wired with the OpenAI provider, builtin tools, and system prompt.
 ///
-/// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills` +
-/// `~/.pi/agent/skills` compat + project `cwd/.gray/skills` / `cwd/.pi/skills`
+/// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
+/// OpenCode plugins, `~/.agents/skills`, `~/.claude/skills` + project skills
 /// walked up to git root) respecting `.gitignore`/`.ignore`/`.fdignore`, and
 /// `AGENTS.md`/`CLAUDE.md` context files are discovered walking up to git root
 /// and appended as `<project_context>` blocks. Skills are only surfaced when the
@@ -125,12 +125,11 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
 
-    // Discover skills + AGENTS.md / CLAUDE.md context (literal port of pi discovery)
+    // Discover skills + AGENTS.md / CLAUDE.md context
     let discovered = skills::discover_skills(cwd);
     let context_files = system_prompt::discover_context_files(cwd);
 
-    // Tools only appear in the prompt when they have a snippet — literal port of
-    // `visibleTools = tools.filter(name => !!toolSnippets[name])`.
+    // Tools only appear in the prompt when they have a snippet.
     let tmp_registry = Registry::builtin();
     let tool_snippets = tmp_registry.prompt_snippets();
     let selected_tools = tmp_registry.tool_names();

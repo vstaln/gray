@@ -1,12 +1,12 @@
-//! Skills discovery — port of `packages/coding-agent/src/core/skills.ts` (510 LOC).
+//! Skills discovery.
 //!
-//! Discovery rules (literal port):
+//! Discovery rules:
 //! - if a directory contains `SKILL.md`, treat it as a skill root and do not recurse further
 //! - otherwise, load direct `.md` children in the root
 //! - recurse into subdirectories to find `SKILL.md`
 //! - respect `.gitignore` / `.ignore` / `.fdignore` via prefix-aware `ignore`-crate semantics
-//! - global: `~/.pi/agent/skills` or `~/.gray/skills` (grok/codex style fallback)
-//! - project: `cwd/.pi/skills` or `cwd/.gray/skills`, walking up to git root
+//! - global: `~/.gray/skills`, `~/.config/opencode/skills`, `~/.config/opencode/*/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.pi/agent/skills`
+//! - project: `.gray/skills`, `.opencode/skills`, `.agents/skills`, `.claude/skills`, `.pi/skills`, walking up to git root
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -98,7 +98,6 @@ fn gray_agent_dir() -> PathBuf {
         if gray.exists() {
             return gray;
         }
-        // fallback to pi agent dir for compat
         let pi = home.join(".pi").join("agent");
         if pi.exists() {
             return pi;
@@ -258,7 +257,7 @@ struct SkillFrontmatter {
 fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String> {
     let trimmed = content.trim_start();
     if !trimmed.starts_with("---") {
-        // no frontmatter → empty, body is whole file (pi behavior: parse will return empty frontmatter)
+        // no frontmatter → empty, body is whole file
         return Ok((SkillFrontmatter::default(), content.to_string()));
     }
     // find closing ---
@@ -323,7 +322,7 @@ fn parse_yaml_like(s: &str) -> SkillFrontmatter {
 }
 
 // ---------------------------------------------------------------------------
-// Validation (literal port)
+// Validation
 // ---------------------------------------------------------------------------
 
 fn validate_name(name: &str) -> Vec<String> {
@@ -452,7 +451,7 @@ fn load_skill_from_file(file_path: &Path, source: &str) -> (Option<Skill>, Vec<D
     (Some(skill), diagnostics)
 }
 
-// internal walker — literal port of loadSkillsFromDirInternal
+// internal walker
 fn load_skills_from_dir_internal(
     dir: &Path,
     source: &str,
@@ -606,7 +605,7 @@ pub fn format_skill_invocation(skill: &Skill) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level loader — port of loadSkills()
+// Top-level loader
 // Handles global + project defaults and explicit paths, with collision diagnostics.
 // ---------------------------------------------------------------------------
 
@@ -661,14 +660,41 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
         // global
         let global_skills = resolved_agent_dir.join("skills");
         do_add(load_skills_from_dir(&global_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
-        // also check ~/.pi/agent/skills for compat
         if let Some(home) = resolve_home() {
+            // OpenCode global skills & plugins (e.g. ponytail, superpowers)
+            let config_base = std::env::var("XDG_CONFIG_HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| home.join(".config"));
+            let opencode_dir = config_base.join("opencode");
+            let opencode_skills = opencode_dir.join("skills");
+            if opencode_skills.is_dir() && opencode_skills != global_skills {
+                do_add(load_skills_from_dir(&opencode_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
+            }
+            if let Ok(entries) = fs::read_dir(&opencode_dir) {
+                for entry in entries.flatten() {
+                    let sub_skills = entry.path().join("skills");
+                    if sub_skills.is_dir() && sub_skills != opencode_skills && sub_skills != global_skills {
+                        do_add(load_skills_from_dir(&sub_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
+                    }
+                }
+            }
+
+            // Agents and Claude global skills
+            let agents_skills = home.join(".agents").join("skills");
+            if agents_skills.is_dir() && agents_skills != global_skills {
+                do_add(load_skills_from_dir(&agents_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
+            }
+            let claude_skills = home.join(".claude").join("skills");
+            if claude_skills.is_dir() && claude_skills != global_skills {
+                do_add(load_skills_from_dir(&claude_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
+            }
+
             let pi_skills = home.join(".pi").join("agent").join("skills");
-            if pi_skills != global_skills {
+            if pi_skills.is_dir() && pi_skills != global_skills {
                 do_add(load_skills_from_dir(&pi_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
             }
         }
-        // project: walk up to git root collecting .pi/skills and .gray/skills
+        // project: walk up to git root collecting skills
         let git_root = find_git_root(&resolved_cwd);
         let mut project_roots: Vec<PathBuf> = Vec::new();
         let mut cur = Some(resolved_cwd.clone());
@@ -683,7 +709,6 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
             if cur.is_none() {
                 break;
             }
-            // stop at git root if present
             if let Some(root) = &git_root {
                 if cur.as_ref() == Some(root) {
                     project_roots.push(root.clone());
@@ -691,18 +716,36 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
                 }
             }
         }
-        // walk from git root down to cwd so closer dirs win? In pi, project is single dir; we load both .pi and .gray
         for ancestor in project_roots.iter().rev() {
-            for cfg in [".pi", ".gray"] {
+            for cfg in [".gray", ".opencode", ".agents", ".claude", ".pi"] {
                 let d = ancestor.join(cfg).join("skills");
-                do_add(load_skills_from_dir(&d, "project"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
+                if d.is_dir() {
+                    do_add(load_skills_from_dir(&d, "project"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
+                }
             }
         }
     }
 
     // explicit paths handling
-    let user_skills_dir = resolved_agent_dir.join("skills");
-    let pi_user_skills = resolve_home().map(|h| h.join(".pi").join("agent").join("skills"));
+    let mut user_skill_roots = vec![resolved_agent_dir.join("skills")];
+    if let Some(home) = resolve_home() {
+        let config_base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".config"));
+        let opencode_dir = config_base.join("opencode");
+        user_skill_roots.push(opencode_dir.join("skills"));
+        if let Ok(entries) = fs::read_dir(&opencode_dir) {
+            for entry in entries.flatten() {
+                let sub = entry.path().join("skills");
+                if sub.is_dir() {
+                    user_skill_roots.push(sub);
+                }
+            }
+        }
+        user_skill_roots.push(home.join(".agents").join("skills"));
+        user_skill_roots.push(home.join(".claude").join("skills"));
+        user_skill_roots.push(home.join(".pi").join("agent").join("skills"));
+    }
     // For is_under_path checks
     let is_under = |target: &Path, root: &Path| -> bool {
         if target == root {
@@ -739,9 +782,7 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
             }
         };
         let source = if !options.include_defaults {
-            if is_under(&resolved, &user_skills_dir) {
-                "user"
-            } else if pi_user_skills.as_ref().map(|p| is_under(&resolved, p)).unwrap_or(false) {
+            if user_skill_roots.iter().any(|root| is_under(&resolved, root)) {
                 "user"
             } else {
                 "path"

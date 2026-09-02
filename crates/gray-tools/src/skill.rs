@@ -1,8 +1,7 @@
 //! The `skill` tool: loads a skill's SKILL.md body into context.
 //!
-//! Pattern ported from Grok (`xai-grok-tools/src/implementations/skills/skill.rs`):
-//! read the file, strip YAML frontmatter, substitute `$ARGUMENTS` / `${SKILL_DIR}`,
-//! and return the body wrapped in a `<skill>` envelope so the model treats it as
+//! Reads the file, strips YAML frontmatter, substitutes `$ARGUMENTS` / `${SKILL_DIR}`,
+//! and returns the body wrapped in a `<skill>` envelope so the model treats it as
 //! instructions to follow rather than a program to run.
 
 use async_trait::async_trait;
@@ -16,13 +15,11 @@ use crate::{fail, finish, Tool};
 
 pub const SKILL_SNIPPET: &str = "Load a skill's instructions into context";
 
-/// Loads a skill file (`path`, or `name` resolved against gray's skill dirs).
+/// Loads a skill file (`path`, or `name` resolved against skill directories).
 pub struct SkillTool;
 
-/// Resolve a skill name to a SKILL.md path by scanning gray's skill dirs
-/// (mirrors `crates/gray/src/skills.rs` discovery roots): agent dir (`$GRAY_HOME`
-/// or `~/.gray`, plus `~/.pi/agent` compat) and project `.gray`/`.pi` dirs up to
-/// the git root. First match wins.
+/// Resolve a skill name to a SKILL.md path by scanning skill roots:
+/// global agent directories and project directories up to the git root. First match wins.
 pub fn resolve_skill_name(cwd: &Path, name: &str) -> Option<PathBuf> {
     let mut dirs = Vec::new();
     let home = std::env::var("GRAY_HOME")
@@ -32,21 +29,46 @@ pub fn resolve_skill_name(cwd: &Path, name: &str) -> Option<PathBuf> {
         dirs.push(PathBuf::from(base).join("skills"));
     }
     if let Ok(h) = std::env::var("HOME") {
-        dirs.push(PathBuf::from(h).join(".pi/agent/skills"));
+        let home_path = PathBuf::from(&h);
+        let config_base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home_path.join(".config"));
+        let opencode_dir = config_base.join("opencode");
+        dirs.push(opencode_dir.join("skills"));
+        if let Ok(entries) = std::fs::read_dir(&opencode_dir) {
+            for entry in entries.flatten() {
+                let sub_skills = entry.path().join("skills");
+                if sub_skills.is_dir() {
+                    dirs.push(sub_skills);
+                }
+            }
+        }
+        dirs.push(home_path.join(".agents/skills"));
+        dirs.push(home_path.join(".claude/skills"));
+        dirs.push(home_path.join(".pi/agent/skills"));
     }
     // project dirs up to git root
     let mut cur = Some(cwd.to_path_buf());
     while let Some(dir) = cur {
-        dirs.push(dir.join(".gray/skills"));
-        dirs.push(dir.join(".pi/skills"));
+        for cfg in [".gray", ".opencode", ".agents", ".claude", ".pi"] {
+            dirs.push(dir.join(cfg).join("skills"));
+        }
         if dir.join(".git").exists() {
             break;
         }
         cur = dir.parent().map(Path::to_path_buf);
     }
-    dirs.into_iter()
-        .map(|d| d.join(name).join("SKILL.md"))
-        .find(|p| p.is_file())
+    for d in dirs {
+        let skill_md = d.join(name).join("SKILL.md");
+        if skill_md.is_file() {
+            return Some(skill_md);
+        }
+        let direct_md = d.join(format!("{name}.md"));
+        if direct_md.is_file() {
+            return Some(direct_md);
+        }
+    }
+    None
 }
 
 /// Strip YAML frontmatter (`---`-delimited block at the top), returning the body.

@@ -1,6 +1,6 @@
-//! System prompt construction — port of `packages/coding-agent/src/core/system-prompt.ts` (169 LOC).
+//! System prompt construction.
 //!
-//! Literal port of `buildSystemPrompt` semantics:
+//! System prompt rules:
 //! - tools list only includes tools WITH `promptSnippet`
 //! - guidelines deduped via insertion-ordered set
 //! - cwd appended last
@@ -75,7 +75,7 @@ pub fn discover_context_files(cwd: &Path) -> Vec<ContextFile> {
 }
 
 // ---------------------------------------------------------------------------
-// buildSystemPrompt — literal port
+// buildSystemPrompt
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Default)]
@@ -102,7 +102,7 @@ fn default_selected_tools() -> Vec<String> {
     vec!["read".to_string(), "bash".to_string(), "edit".to_string(), "write".to_string()]
 }
 
-/// Build the system prompt — literal port of `buildSystemPrompt` in `system-prompt.ts`.
+/// Build the system prompt.
 pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
     let cwd = options.cwd.clone();
     let prompt_cwd = cwd.to_string_lossy().replace('\\', "/");
