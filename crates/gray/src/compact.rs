@@ -5,6 +5,7 @@
 //! prompts the LLM to produce a structured summary (Goal, Constraints, Progress Done/In Progress,
 //! Key Decisions, Next Steps, Critical Context), and condenses the active conversation history.
 
+use gray_core::event::Usage;
 use gray_core::message::{ContentBlock, Message, Role};
 
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured, concise summary.
@@ -123,5 +124,50 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
     }
 
     parts.join("\n\n")
+}
+
+pub struct CompactionSettings {
+    pub enabled: bool,
+    pub reserve_tokens: usize,
+    pub keep_recent_tokens: usize,
+}
+
+pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
+    enabled: true,
+    reserve_tokens: 16384,
+    keep_recent_tokens: 20000,
+};
+
+pub fn should_compact(tokens: usize, window: usize, s: &CompactionSettings) -> bool {
+    s.enabled && tokens > window.saturating_sub(s.reserve_tokens)
+}
+
+pub fn calculate_context_tokens(u: &Usage) -> usize {
+    if u.total() > 0 { u.total() } else { u.input_tokens + u.output_tokens }
+}
+
+pub fn estimate_tokens(msg: &Message) -> usize {
+    (msg.text_content().len() as f64 / 4.0).ceil() as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_compact_threshold() {
+        let s = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 16384,
+            keep_recent_tokens: 20000,
+        };
+        assert!(!should_compact(100_000, 128_000, &s));
+        assert!(should_compact(115_000, 128_000, &s)); // 115k > 128k-16k
+        assert!(!should_compact(
+            200_000,
+            128_000,
+            &CompactionSettings { enabled: false, ..s }
+        ));
+    }
 }
 
