@@ -283,6 +283,15 @@ async fn handle_model(
         } else {
             println!("✓ Model set to {m}");
         }
+        if crate::setup::get_user_context_window().is_none()
+            && crate::setup::get_cached_model_context(&m).is_none()
+        {
+            let base = config.base_url.clone();
+            let key = config.api_key.clone();
+            tokio::spawn(async move {
+                crate::setup::fetch_live_provider_models(&base, key.as_deref());
+            });
+        }
         reload_agent(agent, config, cwd).await;
         return;
     }
@@ -298,6 +307,17 @@ async fn handle_model(
                     t.push_action("Model set to", Some(m));
                 }
                 let _ = t.draw();
+            }
+            if let Some(m) = config.model.clone() {
+                if crate::setup::get_user_context_window().is_none()
+                    && crate::setup::get_cached_model_context(&m).is_none()
+                {
+                    let base = config.base_url.clone();
+                    let key = config.api_key.clone();
+                    tokio::spawn(async move {
+                        crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                    });
+                }
             }
             reload_agent(agent, config, cwd).await;
         }
@@ -409,6 +429,103 @@ async fn handle_thinking(
                 shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
             } else {
                 println!("effort error: {e}");
+            }
+        }
+    }
+}
+
+async fn handle_context_window(
+    config: &mut Config,
+    direct: Option<String>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    let Some(val) = direct else {
+        // show current effective window
+        let model = config.model.as_deref().unwrap_or("");
+        let effective = crate::setup::resolve_model_context_length(model);
+        let user = crate::setup::get_user_context_window();
+        let cached = crate::setup::get_cached_model_context(model);
+        let source = if user.is_some() {
+            "user override"
+        } else if cached.is_some() {
+            "auto-fetched from provider"
+        } else {
+            "hardcoded fallback"
+        };
+        let msg = format!(
+            "context window: {} tokens ({}) — source: {source}\n  set: /context-window 128k  |  clear: /context-window auto",
+            effective,
+            crate::setup::format_context_length(effective)
+        );
+        if let Some(shared) = tui {
+            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+        } else {
+            println!("{msg}");
+        }
+        return;
+    };
+    let lower = val.trim().to_lowercase();
+    if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" || lower.is_empty() {
+        config.context_window = None;
+        crate::setup::set_user_context_window(None);
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            saved.context_window = None;
+            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        }
+        // re-prime cache if model present
+        if let Some(m) = config.model.clone() {
+            if crate::setup::get_cached_model_context(&m).is_none() {
+                let base = config.base_url.clone();
+                let key = config.api_key.clone();
+                tokio::spawn(async move {
+                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                });
+            }
+        }
+        let effective = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
+        let msg = format!(
+            "context window cleared → auto ({} / {})",
+            effective,
+            crate::setup::format_context_length(effective)
+        );
+        if let Some(shared) = tui {
+            let mut t = shared.lock().expect("tui lock");
+            t.push_dim(format!("╰ {msg}"));
+            let _ = t.draw();
+        } else {
+            println!("✓ {msg}");
+        }
+        return;
+    }
+    match crate::setup::parse_context_window(&val) {
+        Some(n) if n > 0 => {
+            config.context_window = Some(n);
+            crate::setup::set_user_context_window(Some(n));
+            if let Ok(path) = crate::setup::saved_config_path() {
+                let mut saved = crate::setup::load_saved_config_at(&path);
+                saved.context_window = Some(n);
+                let _ = crate::setup::save_saved_config_at(&path, &saved);
+            }
+            let msg = format!(
+                "context window set to {} tokens ({}) — overrides auto-fetched value",
+                n,
+                crate::setup::format_context_length(n)
+            );
+            if let Some(shared) = tui {
+                let mut t = shared.lock().expect("tui lock");
+                t.push_dim(format!("╰ {msg}"));
+                let _ = t.draw();
+            } else {
+                println!("✓ {msg}");
+            }
+        }
+        _ => {
+            let msg = format!("invalid value '{val}' — use e.g. 128000, 128k, 1m, or 'auto' to clear");
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+            } else {
+                println!("{msg}");
             }
         }
     }
@@ -998,6 +1115,21 @@ pub async fn run_repl_mode(
     let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
 
+    // context window: user override > auto-fetched provider value > hardcoded fallback
+    crate::setup::set_user_context_window(config.context_window);
+    // auto-fetch provider context window in background if not yet cached and no user override
+    if crate::setup::get_user_context_window().is_none() {
+        if let Some(m) = config.model.clone() {
+            if crate::setup::get_cached_model_context(&m).is_none() {
+                let base = config.base_url.clone();
+                let key = config.api_key.clone();
+                tokio::spawn(async move {
+                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                });
+            }
+        }
+    }
+
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
@@ -1009,6 +1141,19 @@ pub async fn run_repl_mode(
             print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n");
         }
         print!("\r\n");
+        // onboarding may have set model/base_url — re-sync context window override and prime cache
+        crate::setup::set_user_context_window(config.context_window);
+        if crate::setup::get_user_context_window().is_none() {
+            if let Some(m) = config.model.clone() {
+                if crate::setup::get_cached_model_context(&m).is_none() {
+                    let base = config.base_url.clone();
+                    let key = config.api_key.clone();
+                    tokio::spawn(async move {
+                        crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                    });
+                }
+            }
+        }
     } else if !interactive {
         crate::tui::print_logo();
         print!("\r\n");
@@ -1636,6 +1781,10 @@ pub async fn run_repl_mode(
                 handle_thinking(config, &cwd, level, &mut agent, tui.as_ref().map(|(s, _)| s), &mut hide_thinking).await;
                 continue;
             }
+            ReplCommand::ContextWindow(val) => {
+                handle_context_window(config, val, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
             ReplCommand::Provider => {
                 let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
                 let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
@@ -1691,6 +1840,11 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Proxy(raw) => {
+                handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
+            ReplCommand::Gateway(raw) => {
+                // reuse proxy handler for gateway status — shares same auth surface
                 handle_proxy(&raw, config, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
