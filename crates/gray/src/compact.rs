@@ -163,6 +163,22 @@ pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usi
     messages.iter().map(estimate_tokens).sum()
 }
 
+pub fn is_context_overflow_error(err: &CoreError) -> bool {
+    if let CoreError::Provider(msg) = err {
+        let lower = msg.to_lowercase();
+        lower.contains("context_length")
+            || lower.contains("context window")
+            || lower.contains("context length")
+            || lower.contains("max_tokens")
+            || lower.contains("maximum context")
+            || lower.contains("too many tokens")
+            || lower.contains("token limit")
+            || lower.contains("context overflow")
+    } else {
+        false
+    }
+}
+
 /// Reusable auto-compact helper that mirrors manual `/compact` flow.
 ///
 /// Serializes the whole conversation, asks the model for a structured summary
@@ -241,6 +257,52 @@ mod tests {
     fn estimate_falls_back_to_chars() {
         let msgs = vec![Message::user("a".repeat(400))]; // 100 tokens
         assert_eq!(estimate_context_tokens(&msgs, None), 100);
+    }
+
+    #[test]
+    fn is_context_overflow_error_detects() {
+        assert!(is_context_overflow_error(&CoreError::Provider(
+            "context_length_exceeded: too many tokens".into()
+        )));
+        assert!(is_context_overflow_error(&CoreError::Provider(
+            "This model's maximum context length is 128000 tokens".into()
+        )));
+        assert!(is_context_overflow_error(&CoreError::Provider(
+            "context window exceeded".into()
+        )));
+        assert!(is_context_overflow_error(&CoreError::Provider(
+            "max_tokens exceeded".into()
+        )));
+        // pi parity: generic "length" truncation is NOT overflow via this helper (handled via stopReason in pi)
+        assert!(!is_context_overflow_error(&CoreError::Provider(
+            "length truncation: output was cut off".into()
+        )));
+        assert!(!is_context_overflow_error(&CoreError::Provider(
+            "rate limit exceeded".into()
+        )));
+        assert!(!is_context_overflow_error(&CoreError::Cancelled));
+    }
+
+    #[test]
+    fn repl_threshold_120k_128k_triggers_compact() {
+        let usage = Usage {
+            input_tokens: 100_000,
+            output_tokens: 20_000,
+            ..Default::default()
+        };
+        assert_eq!(usage.total(), 120_000);
+        let window = 128_000;
+        let tokens = estimate_context_tokens(&[Message::user("hi")], Some(usage));
+        assert_eq!(tokens, 120_000);
+        assert!(should_compact(tokens, window, &DEFAULT_COMPACTION_SETTINGS));
+        // 100k should NOT trigger
+        let usage2 = Usage {
+            input_tokens: 90_000,
+            output_tokens: 10_000,
+            ..Default::default()
+        };
+        let tokens2 = estimate_context_tokens(&[Message::user("hi")], Some(usage2));
+        assert!(!should_compact(tokens2, window, &DEFAULT_COMPACTION_SETTINGS));
     }
 
     #[tokio::test]
