@@ -60,12 +60,19 @@ fn slice_line_spans<'a>(
 /// Word-aware wrapping: preserves styles, respects hyperlink guards,
 /// splits at word boundaries (space) and falls back to char chunk for long words.
 pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
+    wrap_styled_line_with_ranges(line, max_w).into_iter().map(|(l, _)| l).collect()
+}
+
+/// Same as [`wrap_styled_line`] but also returns each output row's source
+/// byte range on the original (unwrapped) flat line, so callers can map
+/// absolute columns (hyperlinks) onto wrapped rows.
+pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) -> Vec<(Line<'static>, Range<usize>)> {
     // Don't wrap lines with OSC 8 hyperlinks
     if line.spans.iter().any(|s| s.content.contains("\x1b]8;;")) {
-        return vec![line];
+        return vec![(line, 0..usize::MAX)];
     }
     if line.width() <= max_w {
-        return vec![line];
+        return vec![(line, 0..usize::MAX)];
     }
     // Flatten line for word analysis
     let mut flat = String::new();
@@ -79,7 +86,7 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
         span_bounds.push((start..acc, s.style));
     }
     if flat.is_empty() {
-        return vec![line];
+        return vec![(line, 0..usize::MAX)];
     }
 
     // Detect if this line has a gutter prefix (e.g. " 12 | " or "    | ")
@@ -126,7 +133,9 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
         words.push(start..i);
     }
     if words.is_empty() {
-        return char_chunk_fallback(line, max_w, flat);
+        // ponytail: degenerate no-word lines keep identity ranges — hyperlink
+        // column mapping is approximate here; word-split lines are the norm.
+        return char_chunk_fallback(line, max_w, flat).into_iter().map(|l| (l, 0..usize::MAX)).collect();
     }
 
     // Build wrapped ranges word-aware
@@ -177,11 +186,11 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
         out_ranges.push(s..cur_end);
     }
     if out_ranges.is_empty() {
-        return vec![Line::from("").style(line.style)];
+        return vec![(Line::from("").style(line.style), 0..0)];
     }
 
     // Convert ranges to Lines preserving styles and prepending gutter
-    let mut result: Vec<Line<'static>> = Vec::new();
+    let mut result: Vec<(Line<'static>, Range<usize>)> = Vec::new();
     for (row_idx, r) in out_ranges.into_iter().enumerate() {
         let mut spans: Vec<Span<'static>> = Vec::new();
         if let (Some(c_str), Some(g_style)) = (&cont_gutter_str, gutter_style) {
@@ -200,10 +209,10 @@ pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'s
         }
         let mut new_line = Line::from(spans).style(line.style);
         new_line.alignment = line.alignment;
-        result.push(new_line);
+        result.push((new_line, r));
     }
     if result.is_empty() {
-        result.push(Line::from("").style(line.style));
+        result.push((Line::from("").style(line.style), 0..0));
     }
     result
 }
@@ -512,9 +521,21 @@ impl Tui {
         let mut all_wrapped: Vec<(Line<'static>, Vec<HyperlinkTarget>)> = Vec::new();
         for (idx, line) in lines.iter().enumerate() {
             let line_hyperlinks = by_line.get(&idx).cloned().unwrap_or_default();
-            let wrapped = if !line_hyperlinks.is_empty() { vec![line.clone()] } else { wrap_styled_line(line.clone(), max_w) };
-            for mut l in wrapped {
-                let hl_owned: Vec<HyperlinkTarget> = line_hyperlinks.iter().map(|h| (*h).clone()).collect();
+            for (mut l, src_range) in wrap_styled_line_with_ranges(line.clone(), max_w) {
+                let hl_owned: Vec<HyperlinkTarget> = if src_range.end == usize::MAX {
+                    line_hyperlinks.iter().map(|h| (*h).clone()).collect()
+                } else {
+                    // Translate each hyperlink's absolute columns into this
+                    // row's coordinates; drop parts landing on other rows.
+                    line_hyperlinks.iter().filter_map(|h| {
+                        let s = h.column_range.start.max(src_range.start);
+                        let e = h.column_range.end.min(src_range.end);
+                        if s >= e { return None; }
+                        let mut hc = (*h).clone();
+                        hc.column_range = (s - src_range.start)..(e - src_range.start);
+                        Some(hc)
+                    }).collect()
+                };
                 if !l.spans.is_empty() {
                     l.spans.insert(0, left_pad());
                 }
@@ -610,7 +631,14 @@ impl Tui {
                             _ => {}
                         }
                     }
-                    if !user_text.is_empty() { self.push_user_prompt(&user_text, &[]); }
+                    if !user_text.is_empty() {
+                        self.push_user_prompt(&user_text, &[]);
+                        // Feed composer input history so Up/Down recall works
+                        // for prompts from the resumed session.
+                        self.history.push(user_text.clone());
+                        if self.history.len() > 100 { self.history.remove(0); }
+                        self.history_idx = None;
+                    }
                 }
                 gray_core::Role::Assistant => {
                     for block in &entry.message.content {
@@ -653,6 +681,34 @@ impl Tui {
             self.set_usage(last_usage);
         }
         // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_ranges_round_trip_and_identity() {
+        // identity: short line maps to the whole source
+        let short = Line::from(vec![Span::raw("hello world")]);
+        let out = wrap_styled_line_with_ranges(short, 20);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].1.end, usize::MAX);
+
+        // long line: rows fit max_w and each row's text equals the source slice
+        let text = "the quick brown fox jumps over the lazy dog again and again until it wraps somewhere";
+        let long = Line::from(vec![Span::raw(text.to_string())]);
+        let max_w = 24;
+        let out = wrap_styled_line_with_ranges(long, max_w);
+        assert!(out.len() > 1);
+        let mut prev_end = 0usize;
+        for (l, r) in &out {
+            let row_text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(row_text, &text[r.clone()], "row text must equal its source slice");
+            assert!(r.start >= prev_end, "ranges ascend without overlap");
+            prev_end = r.end;
+        }
     }
 }
 
