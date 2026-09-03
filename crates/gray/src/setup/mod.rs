@@ -1791,6 +1791,11 @@ pub fn gateway_modal_rows(cfg: &gray_gateway::config::GatewayConfig, running: bo
     ));
     rows.push(("/gateway install".to_string(), "Install systemd service".to_string(), String::new()));
     rows.push(("/gateway uninstall".to_string(), "Remove systemd service".to_string(), String::new()));
+    rows.push((
+        format!("/gateway autostart {}", if cfg.autostart { "off" } else { "on" }),
+        format!("Autostart on launch: {}", if cfg.autostart { "on" } else { "off" }),
+        String::new(),
+    ));
     rows
 }
 

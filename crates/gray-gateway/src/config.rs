@@ -41,9 +41,12 @@ pub struct GatewayConfig {
     #[serde(default)] pub platforms: HashMap<Platform, PlatformConfig>,
     #[serde(default="default_group_per_user")] pub group_per_user: bool,
     #[serde(default)] pub thread_per_user: bool,
+    /// Auto-start the in-process gateway when gray launches (toggle: /gateway autostart on|off).
+    #[serde(default = "default_autostart")] pub autostart: bool,
 }
 fn default_group_per_user() -> bool { true }
-impl Default for GatewayConfig { fn default() -> Self { Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false } } }
+fn default_autostart() -> bool { true }
+impl Default for GatewayConfig { fn default() -> Self { Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true } } }
 pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
     let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map_err(|_| anyhow::anyhow!("cannot resolve home"))?;
     Ok(PathBuf::from(base))
