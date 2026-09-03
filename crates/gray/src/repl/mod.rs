@@ -603,17 +603,9 @@ async fn handle_context_window(
         let model = config.model.as_deref().unwrap_or("");
         let window = crate::setup::resolve_model_context_length(model);
         let max = crate::setup::model_max_context(model);
-        let user = crate::setup::get_user_context_window();
-        let cached = crate::setup::get_cached_model_context(model);
-        let source = if user.is_some() {
-            "user override"
-        } else if cached.is_some() {
-            "auto-fetched"
-        } else {
-            "hardcoded fallback"
-        };
-        let reserve = crate::setup::user_reserve_tokens();
-        let keep = crate::setup::user_keep_recent_tokens();
+        let source = crate::setup::context_source(model);
+        let reserve = crate::setup::user_reserve_tokens_for(window);
+        let keep = crate::setup::user_keep_for(window);
         let used = parts.used();
         let free = parts.free(window, reserve);
         let pct = |n: usize| if window > 0 { n * 100 / window } else { 0 };
@@ -701,10 +693,12 @@ async fn handle_context_window(
     if head == "reserve" || head == "keep" {
         let is_reserve = head == "reserve";
         if rest.is_empty() || rest == "status" || rest == "show" {
+            let window =
+                crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
             let cur = if is_reserve {
-                crate::setup::user_reserve_tokens()
+                crate::setup::user_reserve_tokens_for(window)
             } else {
-                crate::setup::user_keep_recent_tokens()
+                crate::setup::user_keep_for(window)
             };
             emit(
                 format!("{head}: {} ({})", cur, crate::setup::format_context_length(cur)),
@@ -1685,7 +1679,7 @@ async fn maybe_threshold_compact(
 ) {
     let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
     let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
-    if !crate::compact::should_compact(tokens, window, &crate::compact::compaction_settings()) {
+    if !crate::compact::should_compact(tokens, window, &crate::compact::compaction_settings_for(window)) {
         return;
     }
     say(
@@ -1762,13 +1756,14 @@ pub async fn run_repl_mode(
     let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
 
-    // context window: user override > auto-fetched provider value > LiteLLM table > hardcoded fallback
+    // context window: user override > provider live > disk > litellm/models.dev > guess fallback
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     // auto-fetch provider context window in background if not yet cached and no user override
     if crate::setup::get_user_context_window().is_none() {
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
+        tokio::spawn(crate::setup::fetch_models_dev_context());
         if let Some(m) = config.model.clone() {
             if crate::setup::get_cached_model_context(&m).is_none() {
                 let base = config.base_url.clone();
@@ -1797,6 +1792,7 @@ pub async fn run_repl_mode(
         crate::setup::set_user_keep_recent_tokens(config.context_keep);
         if crate::setup::get_user_context_window().is_none() {
             tokio::spawn(crate::setup::fetch_litellm_context_windows());
+            tokio::spawn(crate::setup::fetch_models_dev_context());
             if let Some(m) = config.model.clone() {
                 if crate::setup::get_cached_model_context(&m).is_none() {
                     let base = config.base_url.clone();

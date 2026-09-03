@@ -8,18 +8,23 @@ pub(crate) use catalog::{load_auth_keys, save_auth_key};
 
 pub mod context;
 pub use context::{
-    cache_model_context, cache_model_context_if_absent, estimate_str_tokens,
-    extract_context_length_from_json, fetch_litellm_context_windows,
+    cache_model_context, cache_model_context_if_absent, cache_models_dev_if_absent,
+    context_source, default_keep_for_window, default_reserve_for_window, estimate_str_tokens,
+    extract_context_length_from_json, fetch_litellm_context_windows, fetch_models_dev_context,
     fetch_live_provider_models, format_context_length, format_cost, friendly_model_name,
     get_cached_model_context, get_model_rate, get_provider_models, get_provider_models_with_live,
-    get_user_context_window, model_context_info, model_max_context, parse_context_window,
-    parse_litellm_context_json, resolve_model_context_length, set_user_context_window,
-    set_user_keep_recent_tokens, set_user_reserve_tokens, turn_cost, user_keep_recent_tokens,
-    user_reserve_tokens, ContextParts, ModelRate, DEFAULT_KEEP_RECENT_TOKENS, DEFAULT_RESERVE_TOKENS,
+    get_user_context_window, load_models_cache_to_memory, model_context_info, model_max_context,
+    parse_context_window, parse_litellm_context_json, parse_models_dev_json,
+    resolve_model_context_length, save_models_cache_to_disk, set_user_context_window,
+    set_user_keep_recent_tokens, set_user_reserve_tokens, turn_cost, user_keep_for,
+    user_keep_recent_tokens, user_reserve_tokens, user_reserve_tokens_for, ContextParts, ModelRate,
+    DEFAULT_KEEP_RECENT_TOKENS, DEFAULT_RESERVE_TOKENS,
 };
 
 pub mod ui;
 pub use ui::{BackgroundSnapshot, dim_color, dim_line, dim_style, render_dimmed_background};
+pub mod icons;
+pub use icons::{has_nerd_font, icon, init_nerd_font, set_nerd_font};
 
 use crate::{config::Config, tui::print_wrapped};
 
@@ -1416,8 +1421,8 @@ pub fn run_context_modal(
         loop {
             let window = resolve_model_context_length(model);
             let max = model_max_context(model);
-            let reserve = user_reserve_tokens();
-            let keep = user_keep_recent_tokens();
+            let reserve = user_reserve_tokens_for(window);
+            let keep = user_keep_for(window);
             let used = parts.used();
             let free = parts.free(window, reserve);
             let pct = if window > 0 { used * 100 / window } else { 0 };
@@ -1485,20 +1490,20 @@ pub fn run_context_modal(
                     ])
                 };
                 let details = [
-                    row("●", c_sys, "System prompt", parts.system_prompt),
-                    row("●", c_ctx, "Project context", parts.project_context),
-                    row("●", c_tools, "System tools", parts.tools),
-                    row("●", c_skills, "Skills", parts.skills),
-                    row("●", c_msgs, "Messages", parts.messages),
+                    row(icon("system"), c_sys, "System prompt", parts.system_prompt),
+                    row(icon("project"), c_ctx, "Project context", parts.project_context),
+                    row(icon("tools"), c_tools, "System tools", parts.tools),
+                    row(icon("skills"), c_skills, "Skills", parts.skills),
+                    row(icon("messages"), c_msgs, "Messages", parts.messages),
                     Line::from(vec![
-                        Span::styled("░ ", Style::default().fg(c_free).bg(box_bg)),
+                        Span::styled(format!("{} ", icon("free")), Style::default().fg(c_free).bg(box_bg)),
                         Span::styled(
                             format!("Free space: {} ({}%)", format_context_length(free), pct_of(free)),
                             Style::default().fg(text_dim).bg(box_bg),
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled("✕ ", Style::default().fg(c_reserve).bg(box_bg)),
+                        Span::styled(format!("{} ", icon("reserve")), Style::default().fg(c_reserve).bg(box_bg)),
                         Span::styled(
                             format!("Autocompact buffer: {} ({}%)", format_context_length(reserve), pct_of(reserve)),
                             Style::default().fg(text_dim).bg(box_bg),
@@ -1510,13 +1515,13 @@ pub fn run_context_modal(
                     for c in 0..10usize {
                         let kind = flat[(r as usize) * 10 + c];
                         let (g, col) = match kind {
-                            0 => ("●", c_sys),
-                            1 => ("●", c_ctx),
-                            2 => ("●", c_tools),
-                            3 => ("●", c_skills),
-                            4 => ("●", c_msgs),
-                            5 => ("✕", c_reserve),
-                            _ => ("░", c_free),
+                            0 => (icon("system"), c_sys),
+                            1 => (icon("project"), c_ctx),
+                            2 => (icon("tools"), c_tools),
+                            3 => (icon("skills"), c_skills),
+                            4 => (icon("messages"), c_msgs),
+                            5 => (icon("reserve"), c_reserve),
+                            _ => (icon("free"), c_free),
                         };
                         spans.push(Span::styled(format!("{g} "), Style::default().fg(col).bg(box_bg)));
                     }
@@ -1534,7 +1539,7 @@ pub fn run_context_modal(
 
                 // settings rows
                 let set_y = grid_y + 11;
-                let win_src = if get_user_context_window().is_some() { "override" } else { "auto" };
+                let win_src = context_source(model);
                 let set_rows = [
                     format!("Window: {} ({}) [{win_src}, max {}]", format_context_length(window), window, format_context_length(max)),
                     format!("Reserve: {} ({})", format_context_length(reserve), reserve),
@@ -1546,7 +1551,7 @@ pub fn run_context_modal(
                     }
                     let y = set_y + i as u16;
                     if i == sel && editing.is_none() {
-                        let raw = format!("› {text}");
+                        let raw = format!("{} {text}", icon("arrow"));
                         let fill = (inner.width as usize).saturating_sub(raw.chars().count());
                         frame.render_widget(
                             Paragraph::new(Line::from(Span::styled(
@@ -1570,7 +1575,7 @@ pub fn run_context_modal(
                 // input / footer
                 let foot_y = inner.y + inner.height - 1;
                 if let Some(idx) = editing {
-                    let line = format!("› {}: {buf}█", setting_labels[idx]);
+                    let line = format!("{} {}: {buf}█", icon("arrow"), setting_labels[idx]);
                     frame.render_widget(
                         Paragraph::new(Line::from(Span::styled(line, Style::default().fg(Color::White).bg(box_bg)))),
                         Rect::new(inner.x, foot_y - 1, inner.width, 1),
@@ -1644,7 +1649,7 @@ pub fn run_context_modal(
                                         if ["auto", "clear", "reset", "default"].contains(&v.as_str()) {
                                             config.context_reserve = None;
                                             set_user_reserve_tokens(None);
-                                            Some(user_reserve_tokens())
+                                            Some(user_reserve_tokens_for(model_max_context(model)))
                                         } else {
                                             parse_context_window(&v).map(|n| {
                                                 config.context_reserve = Some(n);
@@ -1658,7 +1663,7 @@ pub fn run_context_modal(
                                         if ["auto", "clear", "reset", "default"].contains(&v.as_str()) {
                                             config.context_keep = None;
                                             set_user_keep_recent_tokens(None);
-                                            Some(user_keep_recent_tokens())
+                                            Some(user_keep_for(model_max_context(model)))
                                         } else if v == "off" || v == "0" {
                                             config.context_keep = Some(0);
                                             set_user_keep_recent_tokens(Some(0));
@@ -1706,12 +1711,12 @@ pub fn run_context_modal(
                                 0 => get_user_context_window()
                                     .map(|n| format_context_length(n))
                                     .unwrap_or_else(|| "auto".to_string()),
-                                1 => format_context_length(user_reserve_tokens()),
+                                1 => format_context_length(user_reserve_tokens_for(window)),
                                 _ => {
-                                    if user_keep_recent_tokens() == 0 {
+                                    if user_keep_for(window) == 0 {
                                         "off".to_string()
                                     } else {
-                                        format_context_length(user_keep_recent_tokens())
+                                        format_context_length(user_keep_for(window))
                                     }
                                 }
                             };
@@ -1841,7 +1846,7 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
                         Style::default().fg(Color::Rgb(100, 100, 100)).bg(box_bg),
                     ));
                     frame.render_widget(Paragraph::new(sub_line), Rect::new(inner.x, inner.y + 1, inner.width, 1));
-                    let field = format!(" › {input_buf}█");
+                    let field = format!(" {} {input_buf}█", icon("arrow"));
                     let field_line = Line::from(Span::styled(field, Style::default().fg(Color::White).bg(box_bg)));
                     frame.render_widget(Paragraph::new(field_line), Rect::new(inner.x, inner.y + 3, inner.width, 1));
                 } else {

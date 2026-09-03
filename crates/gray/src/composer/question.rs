@@ -21,6 +21,7 @@ use tokio::sync::oneshot;
 
 use super::Tui;
 use crate::composer::text_area::TextArea;
+use crate::setup::icons::icon;
 use gray_core::questions::{UserAnswer, UserQuestion};
 
 pub(crate) const AUTO_RESOLUTION_HIDDEN_GRACE: Duration = Duration::from_secs(60);
@@ -704,7 +705,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
             ("Go back", "Return to the first unanswered question.".to_string()),
         ];
         for (i, (label, desc)) in rows.iter().enumerate() {
-            let prefix = if i == sel { "›" } else { " " };
+            let prefix = if i == sel { icon("arrow") } else { " " };
             lines.push(option_row(prefix, i + 1, label, Some(desc), i == sel));
         }
         return lines;
@@ -734,7 +735,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     let visible = budget.min(len).max(3.min(len));
     let start = sel.saturating_sub(visible.saturating_sub(1)).min(sel);
     for i in start..len.min(start + visible) {
-        let prefix = if i == sel && q.answers[q.current_idx].selected_idx.is_some() { "›" } else { " " };
+        let prefix = if i == sel && q.answers[q.current_idx].selected_idx.is_some() { icon("arrow") } else { " " };
         let label = q.option_label_for_index(i).unwrap_or_default();
         let desc = if i < q.current_question().options.len() {
             Some(q.current_question().options[i].description.clone())
