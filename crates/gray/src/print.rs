@@ -91,6 +91,9 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     };
 
     let mut agent = build_agent(config, &cwd).await?;
+    for w in crate::take_profile_warnings() {
+        eprintln!("warning: {w}");
+    }
 
     let user_msg = Message::user(prompt);
     // Stream events live so piped output isn't all-or-nothing.

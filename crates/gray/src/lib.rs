@@ -44,10 +44,33 @@ pub fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
     ]
 }
 
+/// Profile warnings queued for transcript display. Raw `eprintln!` while the
+/// composer viewport is live collides with the next draw (ghost/overlapped
+/// rows), so lib code never prints — it queues here and the UI drains.
+/// Each distinct message surfaces once per process.
+static PROFILE_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static WARNED_ONCE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn queue_profile_warning(msg: String) {
+    // Each distinct message surfaces once per process (N is tiny; Vec scan is fine).
+    let fresh = WARNED_ONCE.lock().map(|mut s| {
+        if s.contains(&msg) { false } else { s.push(msg.clone()); true }
+    }).unwrap_or(true);
+    if fresh {
+        PROFILE_WARNINGS.lock().map(|mut q| q.push(msg)).ok();
+    }
+}
+
+/// Drains queued profile warnings (transcript/non-TUI display owns rendering).
+pub fn take_profile_warnings() -> Vec<String> {
+    PROFILE_WARNINGS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
+}
+
 /// Ordered plugins named by the `gray.yml` profile, or `None` when the
 /// profile is missing/unparseable (caller falls back to builtin).
-/// Unknown names warn loudly; parse errors warn naming path + error.
-/// Sidecar spawn failure is a hard `Err` naming entry index + argv (boot aborts).
+/// A missing file is silent (default state); parse errors and unknown names
+/// queue warnings for the UI to drain. Sidecar spawn failure is a hard `Err`
+/// naming entry index + argv (boot aborts).
 /// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
 /// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
 pub async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
@@ -60,7 +83,7 @@ pub async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn g
                     gray_plugin::profile::PluginEntry::Builtin(n) => {
                         match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
                             Some(p) => plugins.push(p),
-                            None => eprintln!("warning: unknown plugin {n:?} in gray.yml — ignoring"),
+                            None => queue_profile_warning(format!("unknown plugin {n:?} in gray.yml — ignoring")),
                         }
                     }
                     gray_plugin::profile::PluginEntry::Sidecar(spec) => {
@@ -77,7 +100,12 @@ pub async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn g
             Ok(Some(plugins))
         }
         Err(e) => {
-            eprintln!("warning: cannot load gray.yml profile ({e}); using builtin plugins");
+            // Missing file is the default state — silent. Anything else
+            // (parse error) warns once via the UI drain.
+            let missing = e.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+            if !missing {
+                queue_profile_warning(format!("cannot load gray.yml profile ({e}); using builtin plugins"));
+            }
             Ok(None)
         }
     }
