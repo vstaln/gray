@@ -28,6 +28,7 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("provider", "connect"),
     ("login", "connect"),
     ("effort", "thinking"),
+    ("reasoning", "thinking"),
     ("compress", "compact"),
     ("sys", "agentsmd"),
     ("portal", "proxy"),
@@ -201,7 +202,7 @@ pub enum ReplCommand {
     Resume(ResumeArgs),
     /// Compress conversation context window (`/compact` or `/compress [instructions]`).
     Compact(Option<String>),
-    /// Set reasoning effort (`/thinking [level]` or `/effort [level]`; bare toggles hide/show).
+    /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare toggles hide/show).
     Thinking(Option<String>),
     /// Print the command list (`/help`).
     Help,
@@ -292,7 +293,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         },
         "/new" | "/clear" | "/reset" => ReplCommand::New(opt(rest)),
         "/compact" | "/compress" => ReplCommand::Compact(opt(rest)),
-        "/thinking" | "/effort" => ReplCommand::Thinking(opt(rest)),
+        "/thinking" | "/effort" | "/reasoning" => ReplCommand::Thinking(opt(rest)),
         "/context" => ReplCommand::ContextWindow(opt(rest)),
         "/usage" | "/cost" => ReplCommand::Usage,
         "/help" => ReplCommand::Help,
@@ -376,6 +377,16 @@ mod tests {
         assert!(super::completion_matches_dyn("/us", cwd).iter().any(|(n, _)| n == "usage"));
         // `cost` resolves through the alias table
         assert!(super::completion_matches("cost").iter().any(|(n, _)| *n == "usage"));
+    }
+
+    #[test]
+    fn thinking_effort_and_reasoning_aliases() {
+        assert!(matches!(parse_command("/thinking"), ReplCommand::Thinking(None)));
+        assert!(matches!(parse_command("/effort"), ReplCommand::Thinking(None)));
+        assert!(matches!(parse_command("/reasoning"), ReplCommand::Thinking(None)));
+        assert!(matches!(parse_command("/reasoning max"), ReplCommand::Thinking(Some(_))));
+        // `reasoning` resolves through the alias table
+        assert!(super::completion_matches("reasoning").iter().any(|(n, _)| *n == "thinking"));
     }
 
     #[test]

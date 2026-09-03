@@ -1064,6 +1064,9 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
 
     let current_level = config.thinking_effort.clone().unwrap_or_else(|| "high".to_string());
     let mut sel = THINKING_LEVELS.iter().position(|(l, _)| *l == current_level).unwrap_or(4);
+    // Extra trailing row: reasoning-text display toggle (not an effort level).
+    let rows = THINKING_LEVELS.len() + 1;
+    let max_sel = rows.saturating_sub(1);
 
     let bg_snapshot = bg.cloned().unwrap_or_else(BackgroundSnapshot::default_initial);
 
@@ -1078,7 +1081,7 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
                 render_dimmed_background(frame, &bg_snapshot);
 
                 let modal_w = 58.min(area.width.saturating_sub(4)).max(36).min(area.width);
-                let modal_h = (THINKING_LEVELS.len() as u16 + 5).min(area.height.saturating_sub(2)).max(10).min(area.height);
+                let modal_h = (rows as u16 + 5).min(area.height.saturating_sub(2)).max(10).min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                 let modal_y = (area.height.saturating_sub(modal_h)) / 3;
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
@@ -1103,11 +1106,17 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
                 ]);
                 frame.render_widget(Paragraph::new(header_line), Rect::new(inner.x, inner.y, inner.width, 1));
 
-                // List of levels
+                // List of levels + display toggle
                 let list_y = inner.y + 2;
-                for (idx, (level, desc)) in THINKING_LEVELS.iter().enumerate() {
+                for idx in 0..rows {
+                    let (level, desc, is_current) = if idx < THINKING_LEVELS.len() {
+                        let (l, d) = THINKING_LEVELS[idx];
+                        (l, d, current_level == l)
+                    } else {
+                        let shown = config.show_reasoning.unwrap_or(true);
+                        ("display", if shown { "Reasoning text shown" } else { "Reasoning text hidden" }, shown)
+                    };
                     let is_selected = idx == sel;
-                    let is_current = current_level == *level;
 
                     let check_glyph = if is_current { "✓ " } else { "  " };
                     let raw_content = format!(" {check_glyph}{level:<8}  {desc}");
@@ -1126,7 +1135,7 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
                             Span::styled("   ", Style::default().bg(box_bg))
                         };
                         let name_span = Span::styled(format!("{level:<8}  "), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg));
-                        let desc_span = Span::styled(*desc, Style::default().fg(Color::Rgb(140, 140, 140)).bg(box_bg));
+                        let desc_span = Span::styled(desc, Style::default().fg(Color::Rgb(140, 140, 140)).bg(box_bg));
                         let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(box_bg));
                         Line::from(vec![check_span, name_span, desc_span, pad_span])
                     };
@@ -1160,15 +1169,25 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => {
                     match code {
                         KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                        KeyCode::Char('n') => sel = (sel + 1).min(THINKING_LEVELS.len().saturating_sub(1)),
+                        KeyCode::Char('n') => sel = (sel + 1).min(max_sel),
                         _ => {}
                     }
                 }
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                     KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(THINKING_LEVELS.len().saturating_sub(1)),
+                    KeyCode::Down => sel = (sel + 1).min(max_sel),
                     KeyCode::Esc => return Ok(false),
                     KeyCode::Enter => {
+                        if sel == THINKING_LEVELS.len() {
+                            // Display toggle: flip, persist, stay open.
+                            let shown = !config.show_reasoning.unwrap_or(true);
+                            config.show_reasoning = Some(shown);
+                            let path = saved_config_path()?;
+                            let mut saved = load_saved_config_at(&path);
+                            saved.show_reasoning = Some(shown);
+                            save_saved_config_at(&path, &saved)?;
+                            continue;
+                        }
                         let (chosen, _) = THINKING_LEVELS[sel];
                         config.thinking_effort = Some(chosen.to_string());
 

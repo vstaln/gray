@@ -378,7 +378,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cache_display = format!("{hit_rate:.1}% cache");
 
         let model_display = crate::setup::friendly_model_name(&tui.model_name);
-        let effort_display = &tui.thinking_effort;
+        let effort_display = if tui.hide_thinking {
+            if tui.thinking_effort.is_empty() { "hidden".to_string() } else { format!("{} · hidden", tui.thinking_effort) }
+        } else {
+            tui.thinking_effort.clone()
+        };
         let right_parts = if model_display.is_empty() {
             vec![Span::styled(effort_display.clone(), Style::default().fg(Color::Rgb(108, 108, 108)))]
         } else {

@@ -92,6 +92,10 @@ pub struct SavedConfig {
     /// Thinking / reasoning effort: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking_effort: Option<String>,
+    /// Show reasoning text in the transcript (effort "off" always hides).
+    /// None (default) = shown.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_reasoning: Option<bool>,
     /// User override for model context window in tokens (e.g. 128000). When set,
     /// it takes precedence over the auto-fetched provider value.
     #[serde(skip_serializing_if = "Option::is_none")]
