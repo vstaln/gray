@@ -793,7 +793,7 @@ fn tips_line(q: &QuestionSession) -> Line<'static> {
     if q.questions.len() > 1 {
         tips.push(("←/→ to change question".into(), false));
     }
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
     for (i, (text, highlight)) in tips.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(TIP_SEPARATOR, Style::default().fg(Color::Rgb(80, 80, 80))));
