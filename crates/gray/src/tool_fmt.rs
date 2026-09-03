@@ -51,23 +51,39 @@ fn arg_content<'a>(args: &'a serde_json::Value) -> &'a str {
 }
 
 /// Shortens a path relative to CWD or HOME for compact terminal display.
+/// Long paths are middle-truncated (`head…tail`, tail kept longer since the
+/// filename matters most) so tool headers stay on one line instead of
+/// wrapping across three — ponytail: fixed 80 cols, not terminal width.
 pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     let path = Path::new(path_str);
+    let mut rel = path_str.to_string();
     if let Some(cwd) = cwd {
-        if let Ok(rel) = path.strip_prefix(cwd) {
-            let rel_str = rel.display().to_string();
-            if !rel_str.is_empty() {
-                return rel_str;
+        if let Ok(stripped) = path.strip_prefix(cwd) {
+            let s = stripped.display().to_string();
+            if !s.is_empty() {
+                rel = s;
             }
         }
     }
-    if let Ok(home) = std::env::var("HOME") {
-        let home_path = Path::new(&home);
-        if let Ok(rel) = path.strip_prefix(home_path) {
-            return format!("~/{}", rel.display());
+    if rel == path_str {
+        if let Ok(home) = std::env::var("HOME") {
+            let home_path = Path::new(&home);
+            if let Ok(stripped) = path.strip_prefix(home_path) {
+                rel = format!("~/{}", stripped.display());
+            }
         }
     }
-    path_str.to_string()
+    const MAX: usize = 80;
+    if rel.chars().count() <= MAX {
+        return rel;
+    }
+    // ponytail: char-based split, byte-safe via char indices
+    let chars: Vec<char> = rel.chars().collect();
+    let tail_len = 49;
+    let head_len = MAX - 1 - tail_len;
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[chars.len() - tail_len..].iter().collect();
+    format!("{head}…{tail}")
 }
 
 /// Expands tabs to spaces with a given tab size (default 4) to ensure
@@ -100,6 +116,49 @@ fn truncate_cmd(cmd: &str) -> &str {
     } else {
         line
     }
+}
+
+/// Resolves the display name for a `skill` tool call, matching opencode's
+/// `Skill "name"` header. Prefers explicit `name`/`skill` args, then derives
+/// from `path`/`location` (parent dir for SKILL.md, else file stem).
+fn skill_display_name(args: &serde_json::Value) -> String {
+    if let Some(n) = args
+        .get("name")
+        .or_else(|| args.get("skill"))
+        .and_then(|v| v.as_str())
+    {
+        let t = n.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    if let Some(p) = args
+        .get("path")
+        .or_else(|| args.get("location"))
+        .and_then(|v| v.as_str())
+    {
+        let t = p.trim();
+        if !t.is_empty() {
+            let path = Path::new(t);
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                if fname == "SKILL.md" {
+                    if let Some(parent) = path
+                        .parent()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                    {
+                        return parent.to_string();
+                    }
+                } else if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    return stem.to_string();
+                } else {
+                    return fname.to_string();
+                }
+            }
+            return t.to_string();
+        }
+    }
+    "skill".to_string()
 }
 
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
@@ -215,11 +274,11 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         "skill" => {
-            let skill_name = args.get("name").or_else(|| args.get("skill")).and_then(|v| v.as_str()).unwrap_or("skill");
+            let skill_name = skill_display_name(args);
             Line::from(vec![
                 bullet,
                 Span::styled("Skill ", action_style),
-                Span::styled(skill_name.to_string(), cmd_style),
+                Span::styled(format!("\"{skill_name}\""), cmd_style),
             ])
         }
         "cron" => {
@@ -960,8 +1019,8 @@ pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: 
             format!("{bullet} {bold}Asked{reset} {yellow}{summary}{reset}")
         }
         "skill" => {
-            let skill_name = args.get("name").or_else(|| args.get("skill")).and_then(|v| v.as_str()).unwrap_or("skill");
-            format!("{bullet} {bold}Skill{reset} {yellow}{skill_name}{reset}")
+            let skill_name = skill_display_name(args);
+            format!("{bullet} {bold}Skill{reset} {yellow}\"{skill_name}\"{reset}")
         }
         "cron" => {
             let sched = args.get("cron").or_else(|| args.get("schedule")).and_then(|v| v.as_str()).unwrap_or("");

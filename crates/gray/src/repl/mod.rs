@@ -42,7 +42,7 @@ async fn spawn_ctrl_c_policy() {
         }
     }
 }
-use crate::{build_agent, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
+use crate::{build_agent, build_agent_with_session, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
 
 pub mod commands;
@@ -1366,7 +1366,7 @@ async fn handle_resume(
         Ok((_meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
-            match build_agent(config, cwd) {
+            match build_agent_with_session(config, cwd, sid.as_str()) {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
                     *session_state = Some(SessionState { session_id: sid.clone(), store });
@@ -1735,7 +1735,7 @@ pub async fn run_repl_mode(
                 }
                 let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                 pending_history = history.clone();
-                if let Ok(built) = build_agent(config, &cwd) {
+                if let Ok(built) = build_agent_with_session(config, &cwd, sid.as_str()) {
                     agent = Some(built.with_messages(history));
                 }
                 session_state = Some(SessionState {
@@ -1766,7 +1766,7 @@ pub async fn run_repl_mode(
                     }
                     let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                     pending_history = history.clone();
-                    if let Ok(built) = build_agent(config, &cwd) {
+                    if let Ok(built) = build_agent_with_session(config, &cwd, latest.id.as_str()) {
                         agent = Some(built.with_messages(history));
                     }
                     session_state = Some(SessionState {
@@ -2021,7 +2021,12 @@ pub async fn run_repl_mode(
                                 }
                             }
                         }
-                        match build_agent(config, &cwd) {
+                        let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
+                        let built = match sid.as_deref() {
+                            Some(s) => build_agent_with_session(config, &cwd, s),
+                            None => build_agent(config, &cwd),
+                        };
+                        match built {
                             Ok(built) => {
                                 if !pending_history.is_empty() {
                                     agent = Some(built.with_messages(std::mem::take(&mut pending_history)));
@@ -2216,9 +2221,9 @@ pub async fn run_repl_mode(
             }
             ReplCommand::New(initial_prompt) => {
                 pending_history.clear();
-                agent = build_agent(config, &cwd).ok();
                 session_state = None;
                 let mut short_id = String::new();
+                let mut new_sid: Option<SessionId> = None;
                 if let Some(root) = default_root() {
                     let store = JsonlSessionStore::new(root);
                     let session_id = SessionId::generate();
@@ -2234,8 +2239,15 @@ pub async fn run_repl_mode(
                     );
                     store.create(meta).await;
                     short_id = session_id.as_str().split('-').next().unwrap_or("new").to_string();
+                    new_sid = Some(session_id.clone());
                     session_state = Some(SessionState { store, session_id });
                 }
+                // Build with the new session id so the prompt-cache shard
+                // survives future resumes of this session.
+                agent = match new_sid.as_ref() {
+                    Some(s) => build_agent_with_session(config, &cwd, s.as_str()).ok(),
+                    None => build_agent(config, &cwd).ok(),
+                };
 
                 if let Some((shared, _)) = &tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -2411,7 +2423,12 @@ pub async fn run_repl_mode(
                             }
                         }
                     }
-                    match build_agent(config, &cwd) {
+                    let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
+                    let built = match sid.as_deref() {
+                        Some(s) => build_agent_with_session(config, &cwd, s),
+                        None => build_agent(config, &cwd),
+                    };
+                    match built {
                         Ok(built) => {
                             if !pending_history.is_empty() {
                                 agent = Some(built.with_messages(std::mem::take(&mut pending_history)));
