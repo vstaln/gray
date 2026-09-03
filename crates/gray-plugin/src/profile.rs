@@ -14,6 +14,7 @@ pub fn load_profile(path: &str) -> anyhow::Result<Vec<String>> {
     let text = std::fs::read_to_string(path)?;
     let mut names = Vec::new();
     let mut in_plugins = false;
+    let mut saw_plugins = false;
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with('#') || t.is_empty() {
@@ -21,6 +22,7 @@ pub fn load_profile(path: &str) -> anyhow::Result<Vec<String>> {
         }
         if !line.starts_with([' ', '\t']) {
             in_plugins = t == "plugins:";
+            saw_plugins |= in_plugins;
             continue;
         }
         if !in_plugins {
@@ -38,6 +40,9 @@ pub fn load_profile(path: &str) -> anyhow::Result<Vec<String>> {
         if !name.is_empty() {
             names.push(name.to_string());
         }
+    }
+    if !saw_plugins || names.is_empty() {
+        anyhow::bail!("no `plugins:` entries in {path}");
     }
     Ok(names)
 }
