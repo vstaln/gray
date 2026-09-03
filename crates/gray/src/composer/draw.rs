@@ -146,6 +146,15 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     InputBox { lines: box_lines, cur_row, cur_col }
 }
 
+/// Height reserved above the input box for the live status row: exactly 1.
+/// The status renders as a gray card chip (same bg as the prompt/tool
+/// boxes), so scrollback contrast — not blank seam rows — keeps live
+/// transcript tokens from visually jamming against it. Blank seam rows
+/// here stack with the input box's own top padding into a weird gap.
+pub(crate) fn status_dock_h(has_status: bool, question_active: bool) -> u16 {
+    u16::from(has_status && !question_active)
+}
+
 /// Queued follow-up inputs held while a turn is in flight (codex
 /// `PendingInputPreview` parity, minimal): header + `↳` dim-italic rows.
 /// One row per queued message, first line only, truncated to `w`.
@@ -202,10 +211,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // While a question is up it IS the status: hide the shimmer and the
     // attachments row so the panel gets the whole inline viewport.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
-    // 1-row seam above status (scrollback never touches the Working row),
-    // status row, 1-row breathing room below. Without the top seam the live
-    // transcript jams directly against the status line mid-turn.
-    let status_h: u16 = if tui.status.is_some() && !question_active { 3 } else { 0 };
+    // Status is a 1-row gray card chip (contrast, not blank rows,
+    // separates it from live transcript above). No seam/breathing rows:
+    // they stack with the input box's own padding into a weird gap.
+    let status_h: u16 = status_dock_h(tui.status.is_some(), question_active);
 
     tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -269,7 +278,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             };
             let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y + 1, area.width, 1));
+            // Card chip: same bg as the prompt/tool boxes, so the row reads
+            // as a distinct edge against scrollback with no spacer rows.
+            let card = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            frame.render_widget(Paragraph::new(Line::from(spans)).block(card), Rect::new(area.x, status_y, area.width, 1));
         }
 
         for (i, line) in queued_lines.iter().enumerate() {
@@ -443,6 +455,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_dock_is_single_card_row() {
+        assert_eq!(status_dock_h(false, false), 0);
+        assert_eq!(status_dock_h(true, true), 0); // question owns the viewport
+        assert_eq!(status_dock_h(true, false), 1); // chip only, never seam rows
+    }
 
     #[test]
     fn queued_preview_renders_header_and_entries() {
