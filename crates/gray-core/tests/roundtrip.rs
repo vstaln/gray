@@ -193,9 +193,31 @@ fn test_stream_events_roundtrip_integration() {
 
 #[test]
 fn test_thinking_block_roundtrips_losslessly() {
-    let msg = Message::new(Role::Assistant, vec![ContentBlock::Thinking { text: "private".into() }, ContentBlock::text("visible")]);
+    let msg = Message::new(Role::Assistant, vec![ContentBlock::Thinking { text: "private".into(), encrypted_content: None, item_id: None, model: None }, ContentBlock::text("visible")]);
     let req = ChatRequest::new(vec![msg.clone()]);
     let json = serde_json::to_string(&req).unwrap();
     let back: ChatRequest = serde_json::from_str(&json).unwrap();
     assert_eq!(back.messages[0], msg);
+}
+
+#[test]
+fn test_legacy_thinking_without_replay_fields_still_parses() {
+    // Session files written before encrypted replay existed must load.
+    let legacy = r#"{"role":"assistant","content":[{"type":"thinking","text":"private"},{"type":"text","text":"visible"}]}"#;
+    let msg: Message = serde_json::from_str(legacy).unwrap();
+    assert_eq!(msg.content.len(), 2);
+    assert!(matches!(msg.content[0], ContentBlock::Thinking { encrypted_content: None, item_id: None, model: None, .. }));
+}
+
+#[test]
+fn test_thinking_with_replay_data_roundtrips() {
+    let msg = Message::new(Role::Assistant, vec![ContentBlock::Thinking {
+        text: "hmm".into(),
+        encrypted_content: Some("blob".into()),
+        item_id: Some("rs_1".into()),
+        model: Some("m1".into()),
+    }]);
+    let json = serde_json::to_string(&msg).unwrap();
+    let back: Message = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, msg);
 }
