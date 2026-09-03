@@ -214,7 +214,14 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // below it. No top seam row.
     let status_h: u16 = status_dock_h(tui.status.is_some(), question_active);
 
-    tui.terminal.draw(|frame| {
+    // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
+    // present per frame so the compositor never shows a torn frame.
+    // Terminals without support ignore the sequence.
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::BeginSynchronizedUpdate
+    )?;
+    let res = tui.terminal.draw(|frame| {
         let area = frame.area();
         let w = area.width as usize;
 
@@ -443,7 +450,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         }
-    })?;
+    });
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::EndSynchronizedUpdate
+    );
+    res?;
     Ok(())
 }
 
