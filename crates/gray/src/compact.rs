@@ -424,6 +424,7 @@ mod tests {
             base_url: "https://example.com".to_string(),
             api_key: None,
             thinking_effort: None,
+            show_reasoning: None,
             context_window: None,
             context_reserve: None,
             context_keep: None,

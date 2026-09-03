@@ -18,6 +18,9 @@ pub struct Config {
     pub api_key: Option<String>,
     /// Thinking / reasoning effort level ("off", "minimal", "low", "medium", "high", "xhigh", "max").
     pub thinking_effort: Option<String>,
+    /// Show reasoning text in the transcript. None (default) = shown.
+    /// `GRAY_SHOW_REASONING=0/false/no/off` hides. Effort "off" always hides.
+    pub show_reasoning: Option<bool>,
     /// User override for context window in tokens. Highest priority (over auto-fetched).
     pub context_window: Option<usize>,
     /// Reserve tokens before auto-compact fires.
@@ -93,6 +96,10 @@ impl Config {
             .filter(|s| !s.is_empty())
             .or(saved.thinking_effort);
 
+        let show_reasoning = env("GRAY_SHOW_REASONING")
+            .map(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+            .or(saved.show_reasoning);
+
         let context_window = cli
             .context_window
             .or_else(|| env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s)))
@@ -113,12 +120,19 @@ impl Config {
             base_url,
             api_key,
             thinking_effort,
+            show_reasoning,
             context_window,
             context_reserve,
             context_keep,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)
+    }
+
+    /// Whether reasoning text stays hidden: effort "off" always hides,
+    /// otherwise the show_reasoning setting decides (default shown).
+    pub fn reasoning_hidden(&self) -> bool {
+        self.thinking_effort.as_deref() == Some("off") || !self.show_reasoning.unwrap_or(true)
     }
 }
 

@@ -383,7 +383,7 @@ async fn handle_thinking(
                 saved.thinking_effort = Some(eff_clean.clone());
                 let _ = crate::setup::save_saved_config_at(&path, &saved);
             }
-            *hide_thinking = eff_clean == "off";
+            *hide_thinking = config.reasoning_hidden();
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.set_thinking_effort(eff_clean.clone());
@@ -413,7 +413,7 @@ async fn handle_thinking(
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(eff) = &config.thinking_effort {
                     t.set_thinking_effort(eff.clone());
-                    *hide_thinking = eff == "off";
+                    *hide_thinking = config.reasoning_hidden();
                     t.set_hide_thinking(*hide_thinking);
                     t.push_action("Thinking effort set to", Some(eff));
                 }
@@ -423,12 +423,19 @@ async fn handle_thinking(
         }
         Ok(false) => {
             if !has_explicit_level {
-                *hide_thinking = !*hide_thinking;
-                let (msg, eff) = if *hide_thinking { ("thinking hidden — /thinking to show", "off") } else { ("thinking shown", "high") };
+                // First run, Esc: flip the display setting (effort untouched).
+                let shown = !config.show_reasoning.unwrap_or(true);
+                config.show_reasoning = Some(shown);
+                if let Ok(path) = crate::setup::saved_config_path() {
+                    let mut saved = crate::setup::load_saved_config_at(&path);
+                    saved.show_reasoning = Some(shown);
+                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                }
+                *hide_thinking = config.reasoning_hidden();
+                let msg = if *hide_thinking { "reasoning hidden — /thinking to show" } else { "reasoning shown" };
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(*hide_thinking);
-                    t.set_thinking_effort(eff.to_string());
                     t.push_dim(format!("└ {msg}"));
                 } else {
                     println!("{msg}");
@@ -1932,6 +1939,7 @@ pub async fn run_repl_mode(
                 if let Some(eff) = &config.thinking_effort {
                     t.set_thinking_effort(eff.clone());
                 }
+                t.set_hide_thinking(config.reasoning_hidden());
                 t.set_cwd(cwd.display().to_string());
                 if let Some((ref sid, ref entries)) = resumed_session_info {
                     t.replay_session_history(entries, &cwd);
@@ -2037,7 +2045,7 @@ pub async fn run_repl_mode(
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Reasoning is ON by default — user wants to see thinking (high effort).
     // Bare /thinking toggles visibility; picker sets level persisted to config.
-    let mut hide_thinking = config.thinking_effort.as_deref() == Some("off");
+    let mut hide_thinking = config.reasoning_hidden();
     // Wire default: if no effort saved yet, enable reasoning so ThinkingDelta
     // actually streams on openrouter/zen etc. Persist once so future sessions
     // keep it without relying on this default branch.
