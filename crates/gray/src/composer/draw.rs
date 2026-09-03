@@ -146,6 +146,50 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     InputBox { lines: box_lines, cur_row, cur_col }
 }
 
+/// Queued follow-up inputs held while a turn is in flight (codex
+/// `PendingInputPreview` parity, minimal): header + `↳` dim-italic rows.
+/// One row per queued message, first line only, truncated to `w`.
+pub(crate) fn queued_preview_lines(
+    queued: &std::collections::VecDeque<(String, Vec<std::path::PathBuf>)>,
+    w: usize,
+) -> Vec<Line<'static>> {
+    if queued.is_empty() {
+        return Vec::new();
+    }
+    let dim = Style::default().fg(Color::Rgb(140, 140, 140));
+    let dim_italic = Style::default()
+        .fg(Color::Rgb(140, 140, 140))
+        .add_modifier(Modifier::DIM)
+        .add_modifier(Modifier::ITALIC);
+    let mut lines = vec![Line::from(vec![
+        Span::styled("• ", dim),
+        Span::styled(format!("Queued follow-up inputs ({})", queued.len()), dim),
+    ])];
+    // Viewport is only 10 rows — cap preview so input + footer stay visible.
+    let max_show = 3usize;
+    for (text, attached) in queued.iter().take(max_show) {
+        let first = text.lines().next().unwrap_or("").trim();
+        let mut preview: String = first.chars().take(w.saturating_sub(6).max(8)).collect();
+        if first.chars().count() > preview.chars().count() {
+            preview.push('…');
+        }
+        if !attached.is_empty() {
+            preview.push_str(&format!(" [+{} image]", attached.len()));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("  ↳ ", dim),
+            Span::styled(preview, dim_italic),
+        ]));
+    }
+    if queued.len() > max_show {
+        lines.push(Line::from(vec![Span::styled(
+            format!("    … +{} more", queued.len() - max_show),
+            dim_italic,
+        )]));
+    }
+    lines
+}
+
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let w = cols as usize;
@@ -158,15 +202,26 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // While a question is up it IS the status: hide the shimmer and the
     // attachments row so the panel gets the whole inline viewport.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
-    let status_h: u16 = if tui.status.is_some() && !question_active { 2 } else { 0 };
+    // 1-row seam above status (scrollback never touches the Working row),
+    // status row, 1-row breathing room below. Without the top seam the live
+    // transcript jams directly against the status line mid-turn.
+    let status_h: u16 = if tui.status.is_some() && !question_active { 3 } else { 0 };
 
     tui.terminal.draw(|frame| {
         let area = frame.area();
         let w = area.width as usize;
 
         let status_y = area.y;
-        let box_y = status_y + status_h;
-        let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + if question_active { 0 } else { box_h } + attach_h + 1));
+        // Queued preview sits between status and input (codex PendingInputPreview
+        // parity). Hidden while a question owns the viewport.
+        let queued_lines: Vec<Line<'static>> = if question_active {
+            Vec::new()
+        } else {
+            queued_preview_lines(&tui.queued_inputs, w)
+        };
+        let queued_h = queued_lines.len() as u16;
+        let box_y = status_y + status_h + queued_h;
+        let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1));
         let question_lines: Option<Vec<Line<'static>>> = if question_active {
             tui.active_question
                 .as_ref()
@@ -208,7 +263,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             };
             let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
+            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y + 1, area.width, 1));
+        }
+
+        for (i, line) in queued_lines.iter().enumerate() {
+            let y = status_y + status_h + i as u16;
+            if y < area.y || y >= area.y + area.height {
+                continue;
+            }
+            frame.render_widget(Paragraph::new(line.clone()), Rect::new(area.x, y, area.width, 1));
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
@@ -369,4 +432,28 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
     })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_preview_renders_header_and_entries() {
+        let mut q: std::collections::VecDeque<(String, Vec<std::path::PathBuf>)> =
+            std::collections::VecDeque::new();
+        assert!(queued_preview_lines(&q, 80).is_empty());
+        q.push_back(("hello".to_string(), vec![]));
+        q.push_back(("second\nline".to_string(), vec![]));
+        let lines = queued_preview_lines(&q, 80);
+        assert_eq!(lines.len(), 3); // header + 2 entries
+        let text: String = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Queued follow-up inputs (2)"), "got: {text}");
+        assert!(text.contains("↳ hello"), "got: {text}");
+        assert!(text.contains("↳ second"), "got: {text}");
+    }
 }
