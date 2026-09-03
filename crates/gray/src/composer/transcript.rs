@@ -421,7 +421,9 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string(), attached.to_vec()));
         self.transcript.extend(lines);
-        self.ensure_gap(1);
+        // No trailing gap: command/agent output hugs the card; the output
+        // itself leaves breathing room below (say() trailing gap, agent
+        // stream leading gaps).
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
