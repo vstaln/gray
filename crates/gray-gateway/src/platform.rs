@@ -39,6 +39,19 @@ pub fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
 }
 
+/// First ~80 bytes of `s` for log previews, never splitting a char.
+/// (`&s[..s.len().min(80)]` panics on multi-byte UTF-8 at the boundary.)
+pub fn preview_80(s: &str) -> &str {
+    if s.len() <= 80 {
+        return s;
+    }
+    let mut i = 80;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
+}
+
 /// Longest prefix of `s` whose utf16_len <= limit, without slicing a char.
 pub fn prefix_within_utf16_limit(s: &str, limit: usize) -> String {
     if utf16_len(s) <= limit {
@@ -177,5 +190,17 @@ mod tests {
         let s = "hello world ".repeat(100);
         let chunks = split_message(&s, 100);
         assert_eq!(chunks.join(""), s);
+    }
+
+    #[test]
+    fn preview_80_never_splits_char() {
+        assert_eq!(preview_80("hi"), "hi");
+        assert_eq!(preview_80(&"a".repeat(80)), "a".repeat(80));
+        // 79 ascii + emoji: byte 80 is mid-emoji, old `&s[..80]` panicked here
+        let s = "a".repeat(79) + "😀";
+        let p = preview_80(&s);
+        assert!(p.len() <= 80);
+        assert!(s.is_char_boundary(p.len()));
+        assert_eq!(p, "a".repeat(79));
     }
 }

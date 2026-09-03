@@ -291,7 +291,7 @@ impl BasePlatformAdapter for DiscordAdapter {
         {
             for (i, chunk) in chunks.iter().enumerate() {
                 debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
-                log::info!("[discord] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), &chunk[..chunk.len().min(80)]);
+                log::info!("[discord] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), crate::platform::preview_80(chunk));
             }
             SendResult { success: true, message_id: None, error: None, retryable: false }
         }

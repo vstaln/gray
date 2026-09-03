@@ -117,7 +117,7 @@ impl BasePlatformAdapter for TelegramAdapter {
             }
             #[cfg(not(feature = "telegram"))]
             {
-                log::info!("[telegram] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), &chunk[..chunk.len().min(80)]);
+                log::info!("[telegram] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), crate::platform::preview_80(chunk));
             }
         }
 
