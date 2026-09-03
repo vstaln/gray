@@ -9,10 +9,9 @@
 //! requires `slack-morphism` (optional). Default stub keeps `cargo check` passing.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{split_message, truncate_message, utf16_len, BasePlatformAdapter, SendResult};
+use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, SendResult};
 
 pub const MAX_LENGTH: usize = 39000;
-pub const SPLITS_LONG_MESSAGES: bool = true;
 
 pub struct SlackAdapter {
     bot_token: String,
@@ -43,13 +42,7 @@ impl SlackAdapter {
 }
 
 pub fn validate_slack_bot_token(token: &str) -> anyhow::Result<()> {
-    let t = token.trim();
-    if t.is_empty() {
-        anyhow::bail!("slack bot token empty");
-    }
-    if t.contains(' ') || t.contains('\n') {
-        anyhow::bail!("slack bot token must not contain whitespace");
-    }
+    let t = check_token_shape(token, "slack bot token")?;
     if !(t.starts_with("xoxb-") || t.starts_with("xoxp-")) {
         anyhow::bail!("slack token must start with xoxb- (bot) or xoxp- (user); got prefix {:?}", &t[..t.len().min(5)]);
     }
@@ -60,13 +53,7 @@ pub fn validate_slack_bot_token(token: &str) -> anyhow::Result<()> {
 }
 
 pub fn validate_slack_app_token(token: &str) -> anyhow::Result<()> {
-    let t = token.trim();
-    if t.is_empty() {
-        anyhow::bail!("slack app token empty");
-    }
-    if t.contains(' ') {
-        anyhow::bail!("slack app token must not contain whitespace");
-    }
+    let t = check_token_shape(token, "slack app token")?;
     if !t.starts_with("xapp-") {
         anyhow::bail!("slack app_token must start with xapp- (Socket Mode); got {:?}", &t[..t.len().min(5)]);
     }
@@ -120,13 +107,7 @@ impl BasePlatformAdapter for SlackAdapter {
             return SendResult { success: true, message_id: None, error: None, retryable: false };
         }
 
-        let chunks = if SPLITS_LONG_MESSAGES && utf16_len(text) > MAX_LENGTH {
-            split_message(text, MAX_LENGTH)
-        } else if utf16_len(text) > MAX_LENGTH {
-            vec![truncate_message(text, MAX_LENGTH)]
-        } else {
-            vec![text.to_string()]
-        };
+        let chunks = crate::platform::chunk_message(text, MAX_LENGTH);
 
         for (i, chunk) in chunks.iter().enumerate() {
             debug_assert!(utf16_len(chunk) <= MAX_LENGTH);

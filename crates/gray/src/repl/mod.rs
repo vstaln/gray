@@ -47,13 +47,16 @@ use crate::config::Config;
 
 pub mod commands;
 pub mod format;
-pub mod session;
 
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use commands::{COMMANDS, completion_matches_dyn};
 pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
 pub(crate) use format::build_user_message_with_images;
-pub(crate) use session::SessionState;
+
+pub(crate) struct SessionState {
+    pub(crate) store: gray_session::JsonlSessionStore,
+    pub(crate) session_id: gray_session::SessionId,
+}
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
 /// Raw println! while the composer viewport is live collides with the next draw (ghost input).
