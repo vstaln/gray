@@ -62,7 +62,6 @@ pub fn build_registry() -> Registry {
 
 /// Merged manifests of the default plugins (for `--dump-manifest`).
 pub fn default_manifests() -> Vec<gray_plugin::Manifest> {
-    use gray_plugin::Plugin;
     default_plugins().iter().map(|p| p.manifest()).collect()
 }
 
