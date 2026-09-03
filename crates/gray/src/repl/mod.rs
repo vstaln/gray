@@ -465,6 +465,16 @@ impl SessionTotals {
             self.cost += c;
         }
     }
+
+    /// Rebuilds totals from stored session entries. Usage is recorded on the
+    /// last message of each turn, so entries carrying usage map 1:1 to turns.
+    fn from_entries(entries: &[gray_session::SessionEntry], model: &str) -> Self {
+        let mut t = SessionTotals::default();
+        for u in entries.iter().filter_map(|e| e.usage) {
+            t.add(&u, model);
+        }
+        t
+    }
 }
 
 /// `⬡ 12,400 tok · $0.004 ($0.41 session)` — cost parts appear only when the
@@ -1371,6 +1381,7 @@ async fn handle_resume(
     args: ResumeArgs,
     agent: &mut Option<Agent>,
     session_state: &mut Option<SessionState>,
+    totals: &mut SessionTotals,
     tui: Option<&crate::composer::SharedTui>,
 ) {
     let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
@@ -1435,13 +1446,19 @@ async fn handle_resume(
     let Some(root) = default_root() else { return; };
     let store = JsonlSessionStore::new(root);
     match store.load(&sid).await {
-        Ok((_meta, entries)) => {
+        Ok((meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
+            let model = if meta.model.is_empty() {
+                config.model.as_deref().unwrap_or("")
+            } else {
+                meta.model.as_str()
+            };
             match build_agent_with_session(config, cwd, sid.as_str()) {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
                     *session_state = Some(SessionState { session_id: sid.clone(), store });
+                    *totals = SessionTotals::from_entries(&entries, model);
                     if let Some(shared) = &tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.replay_session_history(&entries, cwd);
@@ -1821,6 +1838,7 @@ pub async fn run_repl_mode(
                     session_id: sid.clone(),
                     store,
                 });
+                session_totals = SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
                 resumed_session_info = Some((sid, entries));
             }
             Err(e) => {
@@ -1852,6 +1870,7 @@ pub async fn run_repl_mode(
                         session_id: latest.id.clone(),
                         store,
                     });
+                    session_totals = SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
                     resumed_session_info = Some((latest.id.clone(), entries));
                 }
                 Err(e) => println!("could not resume: {e}"),
@@ -2295,7 +2314,7 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Resume(args) => {
-                handle_resume(config, &cwd, args, &mut agent, &mut session_state, tui.as_ref().map(|(s, _)| s)).await;
+                handle_resume(config, &cwd, args, &mut agent, &mut session_state, &mut session_totals, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::New(initial_prompt) => {
@@ -3095,5 +3114,37 @@ mod tests {
         assert!(!joined.contains("secret-token"), "token must never render: {joined}");
         let lines = super::gateway_status_lines(&cfg, false);
         assert!(lines.join("\n").contains("not running"));
+    }
+
+    #[test]
+    fn totals_rebuild_from_stored_entries() {
+        let v: serde_json::Value = serde_json::json!({
+            "test-persist-model": {
+                "max_input_tokens": 100000,
+                "input_cost_per_token": 0.000001,
+                "output_cost_per_token": 0.000002,
+            },
+        });
+        crate::setup::parse_litellm_context_json(&v);
+        let entry = |id: u64, text: &str, usage: Option<gray_core::event::Usage>| {
+            gray_session::SessionEntry {
+                entry_id: id,
+                parent_id: if id == 1 { None } else { Some(id - 1) },
+                timestamp: 0,
+                message: gray_core::message::Message::user(text),
+                usage,
+            }
+        };
+        let entries = vec![
+            entry(1, "hi", Some(gray_core::event::Usage::new(1000, 500))),
+            entry(2, "yo", None),
+            entry(3, "again", Some(gray_core::event::Usage::new(2000, 1000))),
+        ];
+        let t = super::SessionTotals::from_entries(&entries, "test-persist-model");
+        assert_eq!(t.turns, 2);
+        assert_eq!(t.input, 3000);
+        assert_eq!(t.output, 1500);
+        let want = 3000.0 * 0.000001 + 1500.0 * 0.000002;
+        assert!((t.cost - want).abs() < 1e-12, "got {}, want {want}", t.cost);
     }
 }
