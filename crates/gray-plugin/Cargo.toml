@@ -10,3 +10,4 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 gray-core = { workspace = true }
+tokio = { workspace = true }

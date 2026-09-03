@@ -8,6 +8,7 @@ use gray_core::event::Usage;
 use gray_core::message::Message;
 
 pub mod profile;
+pub mod sidecar;
 
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
