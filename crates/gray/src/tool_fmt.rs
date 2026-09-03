@@ -214,14 +214,6 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
                 Span::styled(summary.to_string(), cmd_style),
             ])
         }
-        "delegate" => {
-            let agent = args.get("agent").or_else(|| args.get("to")).and_then(|v| v.as_str()).unwrap_or("agent");
-            Line::from(vec![
-                bullet,
-                Span::styled("Delegate ", action_style),
-                Span::styled(agent.to_string(), path_style),
-            ])
-        }
         "skill" => {
             let skill_name = args.get("name").or_else(|| args.get("skill")).and_then(|v| v.as_str()).unwrap_or("skill");
             Line::from(vec![
@@ -966,10 +958,6 @@ pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: 
                 .unwrap_or_else(|| "question".to_string());
             let summary = truncate_cmd(&q_summary);
             format!("{bullet} {bold}Asked{reset} {yellow}{summary}{reset}")
-        }
-        "delegate" => {
-            let agent = args.get("agent").or_else(|| args.get("to")).and_then(|v| v.as_str()).unwrap_or("agent");
-            format!("{bullet} {bold}Delegate{reset} {orange}{agent}{reset}")
         }
         "skill" => {
             let skill_name = args.get("name").or_else(|| args.get("skill")).and_then(|v| v.as_str()).unwrap_or("skill");
