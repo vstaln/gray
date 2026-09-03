@@ -447,6 +447,78 @@ async fn handle_thinking(
     }
 }
 
+/// Running token + cost totals for the current process session (reset on `/new`).
+#[derive(Debug, Default)]
+struct SessionTotals {
+    turns: usize,
+    input: usize,
+    output: usize,
+    cost: f64,
+}
+
+impl SessionTotals {
+    fn add(&mut self, usage: &gray_core::event::Usage, model: &str) {
+        self.turns += 1;
+        self.input += usage.input_tokens;
+        self.output += usage.output_tokens;
+        if let Some(c) = crate::setup::turn_cost(usage, model) {
+            self.cost += c;
+        }
+    }
+}
+
+/// `⬡ 12,400 tok · $0.004 ($0.41 session)` — cost parts appear only when the
+/// model has a LiteLLM rate; otherwise the footer is tokens-only as before.
+fn turn_footer(
+    usage: &gray_core::event::Usage,
+    model: &str,
+    totals: &SessionTotals,
+) -> String {
+    let base = format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()));
+    match crate::setup::turn_cost(usage, model) {
+        Some(c) if totals.turns > 1 => format!(
+            "{base} · {} ({} session)",
+            crate::setup::format_cost(c),
+            crate::setup::format_cost(totals.cost)
+        ),
+        Some(c) => format!("{base} · {}", crate::setup::format_cost(c)),
+        None => base,
+    }
+}
+
+/// Handles `/usage` / `/cost`: session totals plus the active model's rate.
+fn handle_usage(
+    totals: &SessionTotals,
+    config: &Config,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    if totals.turns == 0 {
+        say(tui, "no turns yet this session — usage appears after the first turn");
+        return;
+    }
+    let model = config.model.as_deref().unwrap_or("no model");
+    let mut msg = format!(
+        "session usage — {model} · {} turn{}\n  input: {} · output: {} · total: {} tok",
+        totals.turns,
+        if totals.turns == 1 { "" } else { "s" },
+        crate::repl::fmt_usage(totals.input),
+        crate::repl::fmt_usage(totals.output),
+        crate::repl::fmt_usage(totals.input + totals.output),
+    );
+    match crate::setup::get_model_rate(config.model.as_deref().unwrap_or("")) {
+        Some(r) => {
+            msg.push_str(&format!(
+                "\n  cost: {} @ ${:.2}/${:.2} per 1M in/out",
+                crate::setup::format_cost(totals.cost),
+                r.input * 1_000_000.0,
+                r.output * 1_000_000.0
+            ));
+        }
+        None => msg.push_str("\n  cost: unpriced (no LiteLLM rate for this model)"),
+    }
+    say(tui, &msg);
+}
+
 async fn handle_context_window(
     config: &mut Config,
     cwd: &Path,
@@ -1480,6 +1552,8 @@ fn dispatch_agent_event(
     current_tool_args: &mut Option<serde_json::Value>,
     turn_usage: &mut Option<gray_core::event::Usage>,
     cwd: &Path,
+    model: &str,
+    totals: &mut SessionTotals,
 ) {
     if let Some(shared) = tui_stream {
         if let Ok(mut t) = shared.lock() {
@@ -1522,7 +1596,8 @@ fn dispatch_agent_event(
                     t.end_thinking();
                     t.set_usage(*usage);
                     if usage.total() > 0 {
-                        t.push_usage(format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total())));
+                        totals.add(usage, model);
+                        t.push_usage(turn_footer(usage, model, totals));
                     }
                 }
                 _ => {}
@@ -1566,7 +1641,8 @@ fn dispatch_agent_event(
             AgentEvent::TurnEnd { usage, .. } => {
                 *turn_usage = Some(*usage);
                 if usage.total() > 0 {
-                    println!("\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()));
+                    totals.add(usage, model);
+                    println!("\n\x1b[2m{}\x1b[0m", turn_footer(usage, model, totals));
                 }
             }
             _ => {}
@@ -1721,6 +1797,7 @@ pub async fn run_repl_mode(
     // we surface a friendly hint on first use instead of refusing to start.
     let mut agent: Option<Agent> = None;
     let mut session_state: Option<SessionState> = None;
+    let mut session_totals = SessionTotals::default();
     let mut pending_history: Vec<Message> = Vec::new();
     let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
 
@@ -2105,7 +2182,7 @@ pub async fn run_repl_mode(
                     let mut turn_usage: Option<gray_core::event::Usage> = None;
                     let mut run_result = {
                         let mut on_event = |ev: &gray_core::event::AgentEvent| {
-                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
+                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
                         };
                         let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                         tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
@@ -2136,7 +2213,7 @@ pub async fn run_repl_mode(
                                     questions: Some(question_bridge.clone()),
                                 };
                                 let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
-                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
+                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
                                 };
                                 let mut run_future2 = Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
                                 let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
@@ -2223,6 +2300,7 @@ pub async fn run_repl_mode(
             }
             ReplCommand::New(initial_prompt) => {
                 pending_history.clear();
+                session_totals = SessionTotals::default();
                 session_state = None;
                 let mut short_id = String::new();
                 let mut new_sid: Option<SessionId> = None;
@@ -2295,6 +2373,10 @@ pub async fn run_repl_mode(
             }
             ReplCommand::ContextWindow(val) => {
                 handle_context_window(config, &cwd, &agent, val, tui.as_ref().map(|(s, _)| s)).await;
+                continue;
+            }
+            ReplCommand::Usage => {
+                handle_usage(&session_totals, config, tui.as_ref().map(|(s, _)| s));
                 continue;
             }
             ReplCommand::Provider => {
@@ -2816,7 +2898,7 @@ pub async fn run_repl_mode(
                 let mut turn_usage: Option<gray_core::event::Usage> = None;
                 let mut run_result = {
                     let mut on_event = |ev: &AgentEvent| {
-                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
+                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
                     };
                     let mut run_future =
                         Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
@@ -2851,7 +2933,7 @@ pub async fn run_repl_mode(
                                 questions: Some(question_bridge.clone()),
                             };
                             let mut on_event2 = |ev: &AgentEvent| {
-                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd);
+                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
                             };
                             let mut run_future2 =
                                 Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));

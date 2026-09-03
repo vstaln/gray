@@ -7,6 +7,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("resume", "resume conversation"),
     ("new", "new conversation"),
     ("compact", "summarize context"),
+    ("usage", "session tokens & cost"),
     ("cron", "cron jobs"),
     ("proxy", "share Codex/Grok/OpenRouter via :8645"),
     ("gateway", "messaging gateway (Telegram/Discord/Slack)"),
@@ -31,6 +32,7 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("sys", "agentsmd"),
     ("portal", "proxy"),
     ("gw", "gateway"),
+    ("cost", "usage"),
 ];
 
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
@@ -207,6 +209,8 @@ pub enum ReplCommand {
     Model(Option<String>),
     /// Set context window (`/context [128k|auto|reserve 16k|keep 20k|status]`).
     ContextWindow(Option<String>),
+    /// Session token + cost totals (`/usage` or `/cost`).
+    Usage,
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Cron jobs: /cron, /cron list, /cron create --schedule ... --prompt ...
@@ -290,6 +294,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         "/compact" | "/compress" => ReplCommand::Compact(opt(rest)),
         "/thinking" | "/effort" => ReplCommand::Thinking(opt(rest)),
         "/context" => ReplCommand::ContextWindow(opt(rest)),
+        "/usage" | "/cost" => ReplCommand::Usage,
         "/help" => ReplCommand::Help,
         _ => {
             // preserve original edge cases: bare aliases exact, "/key foo" is Provider but "/keys foo" is Unknown, "/model*" prefix without space
@@ -360,6 +365,17 @@ mod tests {
             ReplCommand::ContextWindow(Some(_))
         ));
         assert!(matches!(parse_command("/context-window"), ReplCommand::Unknown(_)));
+    }
+
+    #[test]
+    fn usage_command_and_cost_alias() {
+        assert!(matches!(parse_command("/usage"), ReplCommand::Usage));
+        assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
+        use std::path::Path;
+        let cwd = Path::new(".");
+        assert!(super::completion_matches_dyn("/us", cwd).iter().any(|(n, _)| n == "usage"));
+        // `cost` resolves through the alias table
+        assert!(super::completion_matches("cost").iter().any(|(n, _)| *n == "usage"));
     }
 
     #[test]

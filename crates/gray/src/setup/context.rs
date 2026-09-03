@@ -192,6 +192,95 @@ fn json_usize(v: &serde_json::Value) -> Option<usize> {
         .or_else(|| v.as_f64().map(|f| f as usize))
 }
 
+/// USD-per-token rates from LiteLLM's table (same source as the context
+/// windows — and the one T3 Code prices against). Base tier, like T3.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModelRate {
+    pub input: f64,
+    pub output: f64,
+    pub cache_read: f64,
+    pub cache_write: f64,
+    /// False when the entry had no cache prices — price all input at `input`.
+    pub has_cache_prices: bool,
+}
+
+static MODEL_RATES: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, ModelRate>>> =
+    std::sync::OnceLock::new();
+
+fn model_rates_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, ModelRate>> {
+    MODEL_RATES.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+fn cache_model_rate(model_id: &str, rate: ModelRate) {
+    if let Ok(mut g) = model_rates_cell().write() {
+        g.insert(model_id.to_string(), rate);
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            g.insert(lower, rate);
+        }
+    }
+}
+
+/// Rate for a model id, with the same `provider/model` tail fallback as the
+/// context cache. None = unpriced (LiteLLM has no rate for it).
+pub fn get_model_rate(model_id: &str) -> Option<ModelRate> {
+    if let Ok(g) = model_rates_cell().read() {
+        if let Some(r) = g.get(model_id).copied() {
+            return Some(r);
+        }
+        let lower = model_id.to_lowercase();
+        if let Some(r) = g.get(&lower).copied() {
+            return Some(r);
+        }
+        if let Some((_, suffix)) = model_id.rsplit_once('/') {
+            if let Some(r) = g.get(suffix).copied() {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+fn json_rate(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64()
+        .filter(|f| f.is_finite() && *f >= 0.0)
+        .or_else(|| v.as_u64().map(|n| n as f64))
+}
+
+/// Turn cost in USD, or None when the model is unpriced. Cache-aware: fresh
+/// input at `input`, cached reads/writes at their prices; providers that only
+/// fill inclusive `input_tokens` get it all priced fresh.
+pub fn turn_cost(usage: &gray_core::event::Usage, model: &str) -> Option<f64> {
+    let r = get_model_rate(model)?;
+    let read = usage.cache_read_input_tokens as f64;
+    let write = usage.cache_write_input_tokens as f64;
+    let mut fresh = usage.non_cached_input_tokens as f64;
+    if fresh == 0.0 {
+        fresh = (usage.input_tokens as f64 - read - write).max(0.0);
+    }
+    let input_cost = if r.has_cache_prices {
+        fresh * r.input + read * r.cache_read + write * r.cache_write
+    } else {
+        (fresh + read + write) * r.input
+    };
+    Some(input_cost + usage.output_tokens as f64 * r.output)
+}
+
+/// `$0.004`, `$0.41`, `$1.50` — 4 decimals trimmed, 2 minimum past a dollar.
+pub fn format_cost(usd: f64) -> String {
+    if usd >= 1.0 {
+        return format!("${:.2}", usd);
+    }
+    let trimmed = format!("{:.4}", usd)
+        .trim_end_matches('0')
+        .trim_end_matches('.')
+        .to_string();
+    if trimmed == "0" {
+        return if usd > 0.0 { "<$0.0001".to_string() } else { "$0".to_string() };
+    }
+    format!("${trimmed}")
+}
+
 /// Projects LiteLLM's public `model_prices_and_context_window.json` (the same
 /// table T3 Code / ccusage price against) into the context cache.
 /// `max_input_tokens` is the window; legacy `max_tokens` is the fallback
@@ -218,6 +307,23 @@ pub fn parse_litellm_context_json(val: &serde_json::Value) -> usize {
                 cache_model_context_if_absent(suffix, len);
             }
             n += 1;
+        }
+        // Rates ride the same loop. Both base rates required — a half-priced
+        // model silently under-reports, which is worse than unpriced.
+        if let (Some(input), Some(output)) = (
+            entry.get("input_cost_per_token").and_then(json_rate),
+            entry.get("output_cost_per_token").and_then(json_rate),
+        ) {
+            let (cache_read, cache_write, has_cache) =
+                match (entry.get("cache_read_input_token_cost").and_then(json_rate), entry.get("cache_creation_input_token_cost").and_then(json_rate)) {
+                    (Some(r), Some(w)) => (r, w, true),
+                    _ => (0.0, 0.0, false),
+                };
+            let rate = ModelRate { input, output, cache_read, cache_write, has_cache_prices: has_cache };
+            cache_model_rate(key, rate);
+            if let Some((_, suffix)) = key.rsplit_once('/') {
+                cache_model_rate(suffix, rate);
+            }
         }
     }
     n
@@ -597,6 +703,58 @@ mod tests {
         cache_model_context("test-litellm-alpha", 999_000);
         assert_eq!(parse_litellm_context_json(&v), 3);
         assert_eq!(model_max_context("test-litellm-alpha"), 999_000);
+    }
+
+    #[test]
+    fn litellm_rates_and_turn_cost() {
+        let v: serde_json::Value = serde_json::json!({
+            "test-rate-full": {
+                "max_input_tokens": 200000,
+                "input_cost_per_token": 0.000003,
+                "output_cost_per_token": 0.000015,
+                "cache_read_input_token_cost": 0.0000003,
+                "cache_creation_input_token_cost": 0.00000375,
+            },
+            "test-rate-nocache": {
+                "max_input_tokens": 128000,
+                "input_cost_per_token": 0.000002,
+                "output_cost_per_token": 0.000008,
+            },
+            "test-rate-half": {
+                "max_input_tokens": 64000,
+                "input_cost_per_token": 0.000001,
+            },
+        });
+        parse_litellm_context_json(&v);
+        // full entry: cache-aware
+        let r = get_model_rate("someprov/test-rate-full").expect("rate with suffix fallback");
+        assert!(r.has_cache_prices);
+        let u = gray_core::event::Usage {
+            input_tokens: 10_000,
+            output_tokens: 2_000,
+            non_cached_input_tokens: 6_000,
+            cache_read_input_tokens: 3_000,
+            cache_write_input_tokens: 1_000,
+            ..Default::default()
+        };
+        let cost = turn_cost(&u, "test-rate-full").expect("priced");
+        let want = 6_000.0 * 0.000003 + 3_000.0 * 0.0000003 + 1_000.0 * 0.00000375 + 2_000.0 * 0.000015;
+        assert!((cost - want).abs() < 1e-9, "got {cost}, want {want}");
+        // no cache prices: everything at input rate
+        let u2 = gray_core::event::Usage::new(10_000, 2_000);
+        let cost2 = turn_cost(&u2, "test-rate-nocache").expect("priced");
+        assert!((cost2 - (10_000.0 * 0.000002 + 2_000.0 * 0.000008)).abs() < 1e-9);
+        // inclusive-only providers: all input priced fresh
+        let u3 = gray_core::event::Usage { input_tokens: 5_000, output_tokens: 0, ..Default::default() };
+        assert!(turn_cost(&u3, "test-rate-full").expect("priced") > 0.0);
+        // half entry dropped, unknown model unpriced
+        assert!(get_model_rate("test-rate-half").is_none());
+        assert!(turn_cost(&u, "no-such-model").is_none());
+        // formatting
+        assert_eq!(format_cost(0.004), "$0.004");
+        assert_eq!(format_cost(0.41), "$0.41");
+        assert_eq!(format_cost(1.5), "$1.50");
+        assert_eq!(format_cost(0.0), "$0");
     }
 
     #[test]
