@@ -158,7 +158,7 @@ export const docs: Doc[] = [
       {
         t: "code",
         lang: "bash",
-        text: "/context-window            # inspect\n/context-window 128k       # set — 128000, 128k and 1m all parse\n/context-window auto       # clear the override",
+        text: "/context            # inspect\n/context 128k       # set — 128000, 128k and 1m all parse\n/context auto       # clear the override",
       },
       {
         t: "p",
@@ -297,7 +297,7 @@ export const docs: Doc[] = [
           ["/connect", "setup provider & API key"],
           ["/model", "switch model"],
           ["/thinking", "reasoning effort"],
-          ["/context-window", "set context window (e.g. 128k, auto)"],
+          ["/context", "set context window (e.g. 128k, auto)"],
           ["/resume", "resume conversation"],
           ["/new", "new conversation"],
           ["/compact", "summarize context"],
@@ -314,7 +314,7 @@ export const docs: Doc[] = [
       { t: "h", text: "Aliases" },
       {
         t: "p",
-        text: "/clear and /reset map to /new; /exit to /quit; /key, /keys, /provider, /providers and /login to /connect; /effort to /thinking; /compress to /compact; /sys to /agentsmd; /gw to /gateway; /context to /context-window.",
+        text: "/clear and /reset map to /new; /exit to /quit; /key, /keys, /provider, /providers and /login to /connect; /effort to /thinking; /compress to /compact; /sys to /agentsmd; /gw to /gateway.",
       },
     ],
   },

@@ -54,11 +54,11 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/provider` | provider menu: free tier · API key · OAuth · local |
 | `/key [provider]` | add or rotate a key without leaving the chat |
 | `/compact [instructions]` | summarize context (auto-compacts when near limit) |
-| `/context-window [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
+| `/context [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
 | `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/help`, `/quit` | you know these |
 
-Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing.
+Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing. Suffixes too — e.g. `/context r` suggests `reserve`.
 
 ## Shape
 
@@ -78,7 +78,7 @@ crates/
 
 ## Context window & auto-compact
 
-Context window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` > auto-fetched provider value > hardcoded fallback per model. Inspect with `/context-window`, set with `/context-window 128k` (or `1m`, `auto` to clear).
+Context window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` > auto-fetched provider value > hardcoded fallback per model. Inspect with `/context`, set with `/context 128k` (or `1m`, `auto` to clear).
 
 When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray auto-compacts before the next turn by summarizing history into a 2-message summary (same flow as manual `/compact`). On `context_length` / `max_tokens` overflow errors it compacts and retries once. No flag needed — auto is the default; use `/compact` to force a manual summarization.
 

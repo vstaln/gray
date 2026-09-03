@@ -3,7 +3,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "setup provider & API key"),
     ("model", "switch model"),
     ("thinking", "reasoning effort"),
-    ("context-window", "set context window (e.g. 128k, reserve 16k, keep 20k, auto)"),
+    ("context", "set context window (e.g. 128k, reserve 16k, keep 20k, auto)"),
     ("resume", "resume conversation"),
     ("new", "new conversation"),
     ("compact", "summarize context"),
@@ -31,7 +31,6 @@ pub(crate) const ALIASES: &[(&str, &str)] = &[
     ("sys", "agentsmd"),
     ("portal", "proxy"),
     ("gw", "gateway"),
-    ("context", "context-window"),
 ];
 
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
@@ -69,8 +68,9 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 }
 
 
-/// Completion for the composer prompt: static commands, or skill names after
-/// `/skills:`. Owned here so every read_loop call site stays in sync.
+/// Completion for the composer prompt: static commands, skill names after
+/// `/skills:`, or per-command suffixes after `/cmd ` (Minecraft-style).
+/// Owned here so every read_loop call site stays in sync.
 pub(crate) fn completion_matches_dyn(cur_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
     if cur_text.starts_with("/skills:") && !cur_text[8..].contains(char::is_whitespace) {
         let filter = &cur_text[8..];
@@ -81,13 +81,106 @@ pub(crate) fn completion_matches_dyn(cur_text: &str, cwd: &std::path::Path) -> V
             .map(|s| (format!("skills:{}", s.name), s.description.clone()))
             .collect();
     }
-    if cur_text.starts_with('/') && !cur_text[1..].contains(char::is_whitespace) {
-        return completion_matches(&cur_text[1..])
+    if cur_text.starts_with('/') {
+        let inner = &cur_text[1..];
+        if let Some(idx) = inner.find(char::is_whitespace) {
+            let (cmd, _) = inner.split_at(idx);
+            if cmd.contains(':') {
+                return Vec::new();
+            }
+            // Everything after `<cmd>`, leading spaces trimmed, trailing kept
+            // for level detection (`/context reserve ` vs `/context reserve`).
+            let after = inner[cmd.len()..].trim_start_matches(char::is_whitespace);
+            // Reconstruct trailing-space info from the raw line.
+            let trailing = cur_text.ends_with(char::is_whitespace);
+            let full_after = if trailing && !after.ends_with(char::is_whitespace) {
+                format!("{after} ")
+            } else {
+                after.to_string()
+            };
+            return complete_command_args(&cmd.to_lowercase(), &full_after, cwd);
+        }
+        return completion_matches(inner)
             .into_iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
     }
     Vec::new()
+}
+
+/// Universal per-command suffix completion hook.
+///
+/// `cmd` is lowercased without the leading `/`; `arg_text` is everything
+/// after it with leading spaces trimmed (trailing space preserved to detect
+/// `/cmd sub ` vs `/cmd sub`). Returns full `cmd + args` names (no slash)
+/// so the existing `/{name} ` fill just works. Add new commands here.
+pub(crate) fn complete_command_args(
+    cmd: &str,
+    arg_text: &str,
+    _cwd: &std::path::Path,
+) -> Vec<(String, String)> {
+    match cmd {
+        "context" => complete_context_args(arg_text),
+        _ => Vec::new(),
+    }
+}
+
+/// Suffixes for `/context`: L1 (`128k|auto|status|reserve|keep`) and L2
+/// (`reserve <16k|auto>`, `keep <20k|auto|off>`).
+fn complete_context_args(arg_text: &str) -> Vec<(String, String)> {
+    const L1: &[(&str, &str)] = &[
+        ("128k", "set window — e.g. 128k, 1m"),
+        ("auto", "clear override → auto"),
+        ("status", "show breakdown"),
+        ("reserve", "set reserve…"),
+        ("keep", "set keep tail…"),
+    ];
+    const RESERVE_VALS: &[(&str, &str)] = &[
+        ("16k", "reserve 16k"),
+        ("auto", "clear reserve → default"),
+    ];
+    const KEEP_VALS: &[(&str, &str)] = &[
+        ("20k", "keep 20k tail"),
+        ("auto", "clear keep → default"),
+        ("off", "summary only"),
+    ];
+    let trailing = arg_text.ends_with(char::is_whitespace);
+    let parts: Vec<&str> = arg_text.split_whitespace().collect();
+    // `/context ` → all L1
+    if parts.is_empty() {
+        return L1
+            .iter()
+            .map(|(s, d)| (format!("context {s}"), d.to_string()))
+            .collect();
+    }
+    let head = parts[0].to_lowercase();
+    if head == "reserve" || head == "keep" {
+        // `/context reserve` (no space) → still L1 filtering, so Tab picks `reserve ` first
+        if parts.len() == 1 && !trailing {
+            let f = parts[0].to_lowercase();
+            return L1
+                .iter()
+                .filter(|(s, _)| s.to_lowercase().contains(&f))
+                .map(|(s, d)| (format!("context {s}"), d.to_string()))
+                .collect();
+        }
+        let vals = if head == "reserve" { RESERVE_VALS } else { KEEP_VALS };
+        let f = if parts.len() >= 2 { parts[1].to_lowercase() } else { String::new() };
+        return vals
+            .iter()
+            .filter(|(s, _)| f.is_empty() || s.to_lowercase().contains(&f))
+            .map(|(s, d)| (format!("context {head} {s}"), d.to_string()))
+            .collect();
+    }
+    // L1 leaf with trailing space takes nothing further.
+    if parts.len() > 1 || trailing {
+        return Vec::new();
+    }
+    let f = parts[0].to_lowercase();
+    L1.iter()
+        .filter(|(s, _)| s.to_lowercase().contains(&f))
+        .map(|(s, d)| (format!("context {s}"), d.to_string()))
+        .collect()
 }
 
 /// Parsed command or input from the REPL prompt.
@@ -112,7 +205,7 @@ pub enum ReplCommand {
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
-    /// Set context window (`/context-window [128k|auto|reserve 16k|keep 20k|status]`).
+    /// Set context window (`/context [128k|auto|reserve 16k|keep 20k|status]`).
     ContextWindow(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
@@ -196,7 +289,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         "/new" | "/clear" | "/reset" => ReplCommand::New(opt(rest)),
         "/compact" | "/compress" => ReplCommand::Compact(opt(rest)),
         "/thinking" | "/effort" => ReplCommand::Thinking(opt(rest)),
-        "/context-window" | "/context" => ReplCommand::ContextWindow(opt(rest)),
+        "/context" => ReplCommand::ContextWindow(opt(rest)),
         "/help" => ReplCommand::Help,
         _ => {
             // preserve original edge cases: bare aliases exact, "/key foo" is Provider but "/keys foo" is Unknown, "/model*" prefix without space
@@ -244,7 +337,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
 #[cfg(test)]
 mod tests {
     use super::{ReplCommand, parse_command};
-
     #[test]
     fn slash_name_with_slash_is_plain_prompt_like_codex() {
         // Reported bug: pasting Rust `///` doc comments said "unknown command".
@@ -258,6 +350,41 @@ mod tests {
         // Known commands unaffected.
         assert!(matches!(parse_command("/help"), ReplCommand::Help));
         assert!(matches!(parse_command("/model foo"), ReplCommand::Model(_)));
+    }
+
+    #[test]
+    fn context_renamed_no_window_alias() {
+        assert!(matches!(parse_command("/context"), ReplCommand::ContextWindow(None)));
+        assert!(matches!(
+            parse_command("/context 128k"),
+            ReplCommand::ContextWindow(Some(_))
+        ));
+        assert!(matches!(parse_command("/context-window"), ReplCommand::Unknown(_)));
+    }
+
+    #[test]
+    fn context_arg_completion_levels() {
+        use super::{complete_command_args, completion_matches_dyn};
+        use std::path::Path;
+        let cwd = Path::new(".");
+        // bare suffix lists everything
+        let all = complete_command_args("context", "", cwd);
+        assert!(all.iter().any(|(n, _)| n == "context reserve"));
+        assert!(all.iter().any(|(n, _)| n == "context auto"));
+        // filtered L1
+        let r = complete_command_args("context", "r", cwd);
+        assert!(r.iter().any(|(n, _)| n == "context reserve"));
+        // L2 after `reserve `
+        let r2 = complete_command_args("context", "reserve ", cwd);
+        assert!(r2.iter().any(|(n, _)| n == "context reserve 16k"));
+        // unknown command has no suffixes (universal hook default)
+        assert!(complete_command_args("model", "", cwd).is_empty());
+        // dyn dispatch through the composer entry point
+        let dyn_all = completion_matches_dyn("/context ", cwd);
+        assert!(dyn_all.iter().any(|(n, _)| n == "context reserve"));
+        assert!(completion_matches_dyn("/model ", cwd).is_empty());
+        // command-name path unaffected
+        assert!(completion_matches_dyn("/cont", cwd).iter().any(|(n, _)| n == "context"));
     }
 }
 
