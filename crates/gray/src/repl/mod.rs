@@ -1093,6 +1093,7 @@ enum GatewayAction {
     Enable(gray_gateway::config::Platform),
     Run,
     Stop,
+    Autostart(bool),
     Install,
     Uninstall,
     Help,
@@ -1106,6 +1107,11 @@ fn parse_gateway_args(raw: &str) -> GatewayAction {
         None | Some("status") => GatewayAction::Status,
         Some("run") => GatewayAction::Run,
         Some("stop") => GatewayAction::Stop,
+        Some("autostart") => match toks.next().map(|t| t.to_ascii_lowercase()).as_deref() {
+            Some("on") | Some("true") | Some("enable") => GatewayAction::Autostart(true),
+            Some("off") | Some("false") | Some("disable") => GatewayAction::Autostart(false),
+            _ => GatewayAction::Help,
+        },
         Some("install") => GatewayAction::Install,
         Some("uninstall") => GatewayAction::Uninstall,
         Some("help") => GatewayAction::Help,
@@ -1151,8 +1157,38 @@ fn gateway_status_lines(cfg: &gray_gateway::config::GatewayConfig, running: bool
         };
         lines.push(format!("  {}: {state}", plat.label()));
     }
-    lines.push("usage: /gateway connect <platform> <token> | enable <platform> | disconnect <platform> | run | stop | install | uninstall | status".to_string());
+    lines.push(format!("  autostart: {}", if cfg.autostart { "on" } else { "off" }));
+    lines.push("usage: /gateway connect <platform> <token> | enable <platform> | disconnect <platform> | run | stop | autostart on|off | install | uninstall | status".to_string());
     lines
+}
+
+/// Starts the gateway daemon in-process (shared by /gateway run and launch
+/// autostart). Returns false when already running.
+fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> bool {
+    let already = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
+    if already {
+        return false;
+    }
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let tui_arc = tui.cloned();
+    let h = tokio::spawn(async move {
+        let res = gray_gateway::daemon::run_gateway_shutdown(rx).await;
+        if let Err(e) = &res {
+            log::warn!("gateway exited: {e}");
+        }
+        GATEWAY_HANDLE.lock().ok().and_then(|mut g| g.take());
+        if let Some(shared) = tui_arc {
+            if let Ok(mut t) = shared.lock() {
+                match res {
+                    Ok(()) => t.push_dim("└ gateway stopped".to_string()),
+                    Err(e) => t.push_dim(format!("└ gateway exited: {e}")),
+                }
+                let _ = t.draw();
+            }
+        }
+    });
+    *GATEWAY_HANDLE.lock().unwrap() = Some((h, tx));
+    true
 }
 
 /// Enables `plat` in `cfg` with `token` (mutates in place; caller saves).
@@ -1228,31 +1264,19 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             }
         }
         GatewayAction::Run => {
-            let already = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
-            if already {
+            if start_gateway_in_background(tui) {
+                say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
+            } else {
                 say(tui, "gateway already running");
-                return;
             }
-            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-            let tui_arc = tui.cloned();
-            let h = tokio::spawn(async move {
-                let res = gray_gateway::daemon::run_gateway_shutdown(rx).await;
-                if let Err(e) = &res {
-                    log::warn!("gateway exited: {e}");
-                }
-                GATEWAY_HANDLE.lock().ok().and_then(|mut g| g.take());
-                if let Some(shared) = tui_arc {
-                    if let Ok(mut t) = shared.lock() {
-                        match res {
-                            Ok(()) => t.push_dim("└ gateway stopped".to_string()),
-                            Err(e) => t.push_dim(format!("└ gateway exited: {e}")),
-                        }
-                        let _ = t.draw();
-                    }
-                }
-            });
-            *GATEWAY_HANDLE.lock().unwrap() = Some((h, tx));
-            say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
+        }
+        GatewayAction::Autostart(on) => {
+            let mut cfg = gray_gateway::config::load_gateway_config();
+            cfg.autostart = on;
+            match gray_gateway::config::save_gateway_config(&cfg) {
+                Ok(()) => say(tui, &format!("gateway autostart {}", if on { "on — starts with gray" } else { "off" })),
+                Err(e) => say(tui, &format!("gateway config error: {e}")),
+            }
         }
         GatewayAction::Stop => {
             let mut g = GATEWAY_HANDLE.lock().ok();
@@ -2057,6 +2081,14 @@ pub async fn run_repl_mode(
                 saved.thinking_effort = Some("high".to_string());
                 let _ = crate::setup::save_saved_config_at(&path, &saved);
             }
+        }
+    }
+    // Gateway autostart (default on): boot the in-process daemon when any
+    // platform is enabled. Silent when nothing is configured.
+    if let Some((shared, _)) = tui.as_ref() {
+        let cfg = gray_gateway::config::load_gateway_config();
+        if cfg.autostart && cfg.platforms.values().any(|p| p.enabled) && start_gateway_in_background(Some(shared)) {
+            say(Some(shared), "gateway autostarted — /gateway stop to stop, /gateway autostart off to disable");
         }
     }
     let mut pending_command: Option<ReplCommand> = None;
@@ -3134,6 +3166,12 @@ mod tests {
             G::Enable(Platform::Telegram) => {}
             other => panic!("expected enable telegram, got {other:?}"),
         }
+        assert!(matches!(super::parse_gateway_args("/gateway autostart on"), G::Autostart(true)));
+        assert!(matches!(super::parse_gateway_args("/gateway autostart OFF"), G::Autostart(false)));
+        assert!(matches!(super::parse_gateway_args("/gateway autostart"), G::Help));
+        assert!(matches!(super::parse_gateway_args("/gateway autostart maybe"), G::Help));
+        // default-on: fresh config autostarts
+        assert!(gray_gateway::config::GatewayConfig::default().autostart);
     }
 
     #[test]
