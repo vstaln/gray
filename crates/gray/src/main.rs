@@ -110,11 +110,15 @@ fn print_invite(platform: &str) -> anyhow::Result<()> {
     match platform.to_ascii_lowercase().as_str() {
         "discord" => {
             let cfg = gray_gateway::config::load_gateway_config();
-            let id = cfg
-                .platforms
-                .get(&gray_gateway::config::Platform::Discord)
+            let plat = cfg.platforms.get(&gray_gateway::config::Platform::Discord);
+            // client_id is auto-derived from the token when not set explicitly.
+            let id = plat
                 .and_then(|c| c.client_id.clone())
-                .ok_or_else(|| anyhow::anyhow!("set platforms.discord.client_id to your Application ID in ~/.gray/gateway.yaml (portal → General Information)"))?;
+                .or_else(|| {
+                    plat.and_then(|c| c.token.clone())
+                        .and_then(|t| gray_gateway::discord::client_id_from_token(&t))
+                })
+                .ok_or_else(|| anyhow::anyhow!("set platforms.discord.token (or client_id) in ~/.gray/gateway.yaml"))?;
             println!("{}", gray_gateway::discord::invite_url(&id)?);
             Ok(())
         }
