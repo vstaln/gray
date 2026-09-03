@@ -63,9 +63,14 @@ pub(crate) struct SessionState {
 fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
+        // Symmetric spacing: transcript blocks always leave one blank above
+        // (callers) — without one below, replies jam against what follows.
+        // ensure_gap is idempotent, so multi-say sequences just paragraph.
+        t.ensure_gap(1);
         for line in msg.split('\n') {
             t.push_dim(format!("╰ {line}"));
         }
+        t.ensure_gap(1);
     } else {
         println!("{msg}");
     }
