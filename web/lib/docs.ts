@@ -301,6 +301,7 @@ export const docs: Doc[] = [
           ["/resume", "resume conversation"],
           ["/new", "new conversation"],
           ["/compact", "summarize context"],
+          ["/usage", "session tokens & cost"],
           ["/cron", "cron jobs"],
           ["/proxy", "share Codex/Grok/OpenRouter via :8645"],
           ["/gateway", "messaging gateway (Telegram/Discord/Slack)"],

@@ -54,6 +54,7 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/provider` | provider menu: free tier · API key · OAuth · local |
 | `/key [provider]` | add or rotate a key without leaving the chat |
 | `/compact [instructions]` | summarize context (auto-compacts when near limit) |
+| `/usage` | session tokens & cost |
 | `/context [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
 | `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/help`, `/quit` | you know these |
