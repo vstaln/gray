@@ -13,10 +13,11 @@ async fn main() -> anyhow::Result<()> {
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
     if cli.dump_manifest {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&gray::default_manifests())?
-        );
+        let (manifests, fallback) = gray::effective_manifests();
+        if fallback {
+            eprintln!("note: gray.yml profile missing/unresolvable — showing builtin manifests");
+        }
+        println!("{}", serde_json::to_string_pretty(&manifests)?);
         return Ok(());
     }
     let mut config = Config::resolve(&cli)?;

@@ -1229,6 +1229,7 @@ dependencies = [
  "gray-cron",
  "gray-gateway",
  "gray-markdown",
+ "gray-plugin",
  "gray-provider",
  "gray-session",
  "gray-tools",
@@ -1337,6 +1338,7 @@ dependencies = [
 name = "gray-plugin"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "gray-core",
  "serde",

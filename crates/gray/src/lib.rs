@@ -39,25 +39,53 @@ pub fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
             as std::sync::Arc<dyn gray_plugin::Plugin>,
         std::sync::Arc::new(gray_tools::plugin::ToolsSearchPlugin)
             as std::sync::Arc<dyn gray_plugin::Plugin>,
+        std::sync::Arc::new(gray_tools::plugin::CronPlugin)
+            as std::sync::Arc<dyn gray_plugin::Plugin>,
     ]
+}
+
+/// Ordered plugins named by the `gray.yml` profile, or `None` when the
+/// profile is missing/unparseable (caller falls back to builtin).
+/// Unknown names warn loudly; parse errors warn naming path + error.
+fn profile_plugins() -> Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>> {
+    let defaults = default_plugins();
+    match gray_plugin::profile::load_profile("gray.yml") {
+        Ok(names) => {
+            let mut plugins = Vec::new();
+            for n in &names {
+                match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
+                    Some(p) => plugins.push(p),
+                    None => eprintln!("warning: unknown plugin {n:?} in gray.yml — ignoring"),
+                }
+            }
+            Some(plugins)
+        }
+        Err(e) => {
+            eprintln!("warning: cannot load gray.yml profile ({e}); using builtin plugins");
+            None
+        }
+    }
 }
 
 /// Builds the tool registry from the `gray.yml` profile plugin order,
 /// falling back to [`Registry::builtin`] when no profile file is present.
 pub fn build_registry() -> Registry {
-    let defaults = default_plugins();
-    let plugins: Vec<std::sync::Arc<dyn gray_plugin::Plugin>> =
-        match gray_plugin::profile::load_profile("gray.yml") {
-            Ok(names) => names
-                .iter()
-                .filter_map(|n| defaults.iter().find(|p| p.manifest().name == *n).cloned())
-                .collect(),
-            Err(_) => return Registry::builtin(),
-        };
-    if plugins.is_empty() {
-        return Registry::builtin();
+    match profile_plugins() {
+        Some(plugins) if !plugins.is_empty() => Registry::from_plugins(&plugins),
+        _ => Registry::builtin(),
     }
-    Registry::from_plugins(&plugins).with_extra_tools()
+}
+
+/// Effective manifests for `--dump-manifest`: the profile-ordered set when a
+/// profile resolves, else builtin. Returns `(manifests, used_fallback)`.
+pub fn effective_manifests() -> (Vec<gray_plugin::Manifest>, bool) {
+    match profile_plugins() {
+        Some(plugins) if !plugins.is_empty() => (
+            plugins.iter().map(|p| p.manifest()).collect(),
+            false,
+        ),
+        _ => (default_manifests(), true),
+    }
 }
 
 /// Merged manifests of the default plugins (for `--dump-manifest`).

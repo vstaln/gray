@@ -1,5 +1,6 @@
 plugins:
   - tools-basic
   - tools-search
-  - provider-openai
   - cron
+# NOTE: providers-become-plugins is Phase-2-adjacent work; `provider-openai`
+# is intentionally not listed here (no provider plugin exists yet).
