@@ -449,6 +449,8 @@ async fn handle_thinking(
 
 async fn handle_context_window(
     config: &mut Config,
+    cwd: &Path,
+    agent: &Option<Agent>,
     direct: Option<String>,
     tui: Option<&crate::composer::SharedTui>,
 ) {
@@ -476,9 +478,42 @@ async fn handle_context_window(
             let _ = crate::setup::save_saved_config_at(&path, &saved);
         }
     }
-    fn status_msg(config: &Config) -> String {
+    fn collect_parts(
+        cwd: &Path,
+        agent: &Option<Agent>,
+        tui: Option<&crate::composer::SharedTui>,
+    ) -> crate::setup::ContextParts {
+        let sys = crate::sys_prompt_path()
+            .ok()
+            .and_then(|p| load_or_create_system_prompt_at(&p).ok())
+            .map(|s| crate::setup::estimate_str_tokens(&s))
+            .unwrap_or(0);
+        let ctx_bytes: usize = crate::system_prompt::discover_context_files(cwd)
+            .iter()
+            .map(|f| f.content.len())
+            .sum::<usize>();
+        let skills = crate::skills::discover_skills(cwd).skills;
+        let skills_toks =
+            crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(&skills));
+        let tools_toks = serde_json::to_string(&gray_tools::Registry::builtin().defs())
+            .map(|s| crate::setup::estimate_str_tokens(&s))
+            .unwrap_or(0);
+        let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
+        let messages = agent
+            .as_ref()
+            .map(|a| crate::compact::estimate_context_tokens(a.messages(), latest))
+            .unwrap_or(0);
+        crate::setup::ContextParts {
+            system_prompt: sys,
+            project_context: (ctx_bytes as f64 / 4.0).ceil() as usize,
+            tools: tools_toks,
+            skills: skills_toks,
+            messages,
+        }
+    }
+    fn breakdown_text(config: &Config, parts: &crate::setup::ContextParts) -> String {
         let model = config.model.as_deref().unwrap_or("");
-        let effective = crate::setup::resolve_model_context_length(model);
+        let window = crate::setup::resolve_model_context_length(model);
         let max = crate::setup::model_max_context(model);
         let user = crate::setup::get_user_context_window();
         let cached = crate::setup::get_cached_model_context(model);
@@ -489,23 +524,60 @@ async fn handle_context_window(
         } else {
             "hardcoded fallback"
         };
+        let reserve = crate::setup::user_reserve_tokens();
+        let keep = crate::setup::user_keep_recent_tokens();
+        let used = parts.used();
+        let free = parts.free(window, reserve);
+        let pct = |n: usize| if window > 0 { n * 100 / window } else { 0 };
+        let f = crate::setup::format_context_length;
         format!(
-            "context window: {} tokens ({}) / max {} ({}) — source: {source}\n  reserve: {}  keep: {}\n  set: /context-window 128k | /context-window reserve 16k | /context-window keep 20k  |  clear: /context-window auto",
-            effective,
-            crate::setup::format_context_length(effective),
+            "{} · {}/{} tokens ({}%) — source: {source} / max {} ({})\nEstimated usage by category\n  System prompt: {} ({}%)\n  Project context: {} ({}%)\n  System tools: {} ({}%)\n  Skills: {} ({}%)\n  Messages: {} ({}%)\n  Free space: {} ({}%)\n  Autocompact buffer: {} ({}%)\n  reserve: {}  keep: {}\n  set: /context 128k | /context reserve 16k | /context keep 20k  |  clear: /context auto",
+            if model.is_empty() { "no model" } else { model },
+            f(used),
+            f(window),
+            pct(used),
             max,
-            crate::setup::format_context_length(max),
-            crate::setup::format_context_length(crate::setup::user_reserve_tokens()),
-            crate::setup::format_context_length(crate::setup::user_keep_recent_tokens()),
+            f(max),
+            f(parts.system_prompt),
+            pct(parts.system_prompt),
+            f(parts.project_context),
+            pct(parts.project_context),
+            f(parts.tools),
+            pct(parts.tools),
+            f(parts.skills),
+            pct(parts.skills),
+            f(parts.messages),
+            pct(parts.messages),
+            f(free),
+            pct(free),
+            f(reserve),
+            pct(reserve),
+            f(reserve),
+            f(keep),
         )
     }
     let Some(val) = direct else {
-        emit(status_msg(config), tui, false);
+        // Bare `/context`: modal in the TUI, static breakdown on pipes.
+        if tui.is_some() {
+            let model = config.model.clone().unwrap_or_default();
+            let breakdown = collect_parts(cwd, agent, tui);
+            let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
+            let res = with_modal_sync(tui, || {
+                crate::setup::run_context_modal(config, &breakdown, &model, bg.as_ref())
+            });
+            match res {
+                Ok(true) => emit(breakdown_text(config, &collect_parts(cwd, agent, tui)), tui, false),
+                Ok(false) => {}
+                Err(e) => emit(format!("context error: {e}"), tui, false),
+            }
+        } else {
+            emit(breakdown_text(config, &collect_parts(cwd, agent, tui)), tui, false);
+        }
         return;
     };
     let lower = val.trim().to_lowercase();
     if lower.is_empty() || lower == "status" || lower == "show" {
-        emit(status_msg(config), tui, false);
+        emit(breakdown_text(config, &collect_parts(cwd, agent, tui)), tui, false);
         return;
     }
     if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" {
@@ -2208,7 +2280,7 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::ContextWindow(val) => {
-                handle_context_window(config, val, tui.as_ref().map(|(s, _)| s)).await;
+                handle_context_window(config, &cwd, &agent, val, tui.as_ref().map(|(s, _)| s)).await;
                 continue;
             }
             ReplCommand::Provider => {

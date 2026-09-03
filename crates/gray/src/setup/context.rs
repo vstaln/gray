@@ -409,6 +409,71 @@ pub fn model_context_info(model_name: &str) -> (usize, String) {
     (tokens, label)
 }
 
+/// Token estimate for an arbitrary string, matching `compact::estimate_tokens`
+/// (`chars/4` ceiling) so `/context` breakdown stays consistent.
+pub fn estimate_str_tokens(s: &str) -> usize {
+    (s.len() as f64 / 4.0).ceil() as usize
+}
+
+/// Estimated per-category usage for the `/context` visual. All estimates.
+#[derive(Debug, Clone, Default)]
+pub struct ContextParts {
+    pub system_prompt: usize,
+    pub project_context: usize,
+    pub tools: usize,
+    pub skills: usize,
+    pub messages: usize,
+}
+
+impl ContextParts {
+    pub fn used(&self) -> usize {
+        self.system_prompt
+            .saturating_add(self.project_context)
+            .saturating_add(self.tools)
+            .saturating_add(self.skills)
+            .saturating_add(self.messages)
+    }
+
+    pub fn free(&self, window: usize, reserve: usize) -> usize {
+        window.saturating_sub(self.used().saturating_add(reserve))
+    }
+
+    /// 100 grid cells split across categories + reserve + free. Sums to 100.
+    /// Order: system, project, tools, skills, messages, reserve, free.
+    pub fn grid_cells(&self, window: usize, reserve: usize) -> [usize; 7] {
+        if window == 0 {
+            return [0; 7];
+        }
+        let mut cells = [
+            ((self.system_prompt as f64 / window as f64) * 100.0).round() as usize,
+            ((self.project_context as f64 / window as f64) * 100.0).round() as usize,
+            ((self.tools as f64 / window as f64) * 100.0).round() as usize,
+            ((self.skills as f64 / window as f64) * 100.0).round() as usize,
+            ((self.messages as f64 / window as f64) * 100.0).round() as usize,
+            ((reserve as f64 / window as f64) * 100.0).round() as usize,
+            0,
+        ];
+        let used: usize = cells.iter().take(6).sum();
+        cells[6] = 100usize.saturating_sub(used.min(100));
+        // Shrink overflow from the largest bucket so the row always sums to 100.
+        let total: usize = cells.iter().sum();
+        if total > 100 {
+            let mut over = total - 100;
+            let mut idx: Vec<usize> = (0..7).collect();
+            idx.sort_by_key(|&i| std::cmp::Reverse(cells[i]));
+            for i in idx {
+                if over == 0 {
+                    break;
+                }
+                let cut = cells[i].min(over);
+                cells[i] -= cut;
+                over -= cut;
+            }
+        }
+        cells
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -425,5 +490,23 @@ mod tests {
     fn compaction_defaults_match_legacy() {
         assert_eq!(user_reserve_tokens(), 16_384);
         assert_eq!(user_keep_recent_tokens(), 20_000);
+    }
+
+    #[test]
+    fn breakdown_free_and_grid_sum_to_window() {
+        let p = ContextParts {
+            system_prompt: 2_300,
+            project_context: 1_600,
+            tools: 16_700,
+            skills: 279,
+            messages: 42_200,
+        };
+        let window = 200_000;
+        let reserve = 45_000;
+        assert_eq!(p.used(), 2_300 + 1_600 + 16_700 + 279 + 42_200);
+        assert_eq!(p.free(window, reserve), window - p.used() - reserve);
+        assert_eq!(p.grid_cells(window, reserve).iter().sum::<usize>(), 100);
+        // saturates instead of underflowing when over budget
+        assert_eq!(p.free(10_000, reserve), 0);
     }
 }

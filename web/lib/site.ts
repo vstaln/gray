@@ -22,7 +22,7 @@ export const slashCommands: ReadonlyArray<readonly [string, string]> = [
   ["/connect", "setup provider & API key"],
   ["/model", "switch model"],
   ["/thinking", "reasoning effort"],
-  ["/context-window", "set context window (e.g. 128k, auto)"],
+  ["/context", "set context window (e.g. 128k, auto)"],
   ["/resume", "resume conversation"],
   ["/new", "new conversation"],
   ["/compact", "summarize context"],
