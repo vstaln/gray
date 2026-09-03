@@ -69,8 +69,10 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
         // ensure_gap is idempotent, so multi-say sequences just paragraph.
         t.ensure_gap(1);
         for line in msg.split('\n') {
-            t.push_dim(format!("╰ {line}"));
+            t.push_dim(format!("└ {line}"));
         }
+        // Breathing room below command output (no gap above it — it hugs
+        // the user card).
         t.ensure_gap(1);
     } else {
         println!("{msg}");
@@ -355,7 +357,7 @@ async fn handle_model(
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
+                shared.lock().expect("tui lock").push_dim(format!("└ error: {e}"));
             } else {
                 println!("model error: {e}");
             }
@@ -395,7 +397,7 @@ async fn handle_thinking(
         }
         let msg = format!("unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max");
         if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+            shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
         } else {
             println!("{msg}");
         }
@@ -427,7 +429,7 @@ async fn handle_thinking(
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(*hide_thinking);
                     t.set_thinking_effort(eff.to_string());
-                    t.push_dim(format!("╰ {msg}"));
+                    t.push_dim(format!("└ {msg}"));
                 } else {
                     println!("{msg}");
                 }
@@ -445,7 +447,7 @@ async fn handle_thinking(
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
+                shared.lock().expect("tui lock").push_dim(format!("└ error: {e}"));
             } else {
                 println!("effort error: {e}");
             }
@@ -551,10 +553,10 @@ async fn handle_context_window(
         if let Some(shared) = tui {
             if ok {
                 let mut t = shared.lock().expect("tui lock");
-                t.push_dim(format!("╰ {msg}"));
+                t.push_dim(format!("└ {msg}"));
                 let _ = t.draw();
             } else {
-                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
             }
         } else if ok {
             println!("✓ {msg}");
@@ -833,7 +835,7 @@ async fn handle_compact(
     }
     let Some(ag) = agent.as_mut() else {
         if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim("╰ error: agent could not be initialized".to_string());
+            shared.lock().expect("tui lock").push_dim("└ error: agent could not be initialized".to_string());
         } else {
             println!("error: agent could not be initialized");
         }
@@ -843,7 +845,7 @@ async fn handle_compact(
     let messages = ag.messages().to_vec();
     if messages.is_empty() {
         if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim("╰ nothing to compact (conversation is empty)".to_string());
+            shared.lock().expect("tui lock").push_dim("└ nothing to compact (conversation is empty)".to_string());
         } else {
             println!("nothing to compact (conversation is empty)");
         }
@@ -874,7 +876,7 @@ async fn handle_compact(
 
             if let Some(shared) = tui {
                 shared.lock().expect("tui lock").push_dim(format!(
-                    "╰ compressed context ({} turns -> structured summary)",
+                    "└ compressed context ({} turns -> structured summary)",
                     msg_count
                 ));
             } else {
@@ -883,14 +885,14 @@ async fn handle_compact(
         }
         Ok(false) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim("╰ nothing to compact (conversation is empty)".to_string());
+                shared.lock().expect("tui lock").push_dim("└ nothing to compact (conversation is empty)".to_string());
             } else {
                 println!("nothing to compact (conversation is empty)");
             }
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("╰ compaction failed: {e}"));
+                shared.lock().expect("tui lock").push_dim(format!("└ compaction failed: {e}"));
             } else {
                 println!("compaction failed: {e}");
             }
@@ -923,7 +925,7 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
         let input = args_str.strip_prefix("add ").unwrap().trim().trim_matches(|c| c == '"' || c == '\'');
         if input.is_empty() {
             let msg = "usage: /cron add \"check inbox every 30m\"  — schedule auto-extracted";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
             return;
         }
         match gray_cron::schedule::split_human_input(input) {
@@ -932,7 +934,7 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
                     Ok(job) => {
                         let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
-                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                         if let Some(shared) = tui {
                             let jobs = gray_cron::list_jobs();
                             if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
@@ -942,13 +944,13 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                     }
                     Err(e) => {
                         let msg = format!("failed: {e}");
-                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                     }
                 }
             }
             None => {
                 let msg = format!("could not parse schedule from '{input}' — try 'check inbox every 30m' or 'remind me in 10m'");
-                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
             }
         }
         return;
@@ -979,7 +981,7 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                     Ok(_) => match gray_cron::create_job(n.clone(), s.clone(), p.clone()) {
                         Ok(job) => {
                             let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
-                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                             if let Some(shared) = tui {
                                 let jobs = gray_cron::list_jobs();
                                 if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
@@ -989,12 +991,12 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                         }
                         Err(e) => {
                             let msg = format!("failed: {e}");
-                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                         }
                     },
                     Err(e) => {
                         let msg = format!("invalid schedule: {e}");
-                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                     }
                 }
             }
@@ -1007,7 +1009,7 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                         match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
                             Ok(job) => {
                                 let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
-                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                                 if let Some(shared) = tui {
                                     let jobs = gray_cron::list_jobs();
                                     if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
@@ -1018,14 +1020,14 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                             }
                             Err(e) => {
                                 let msg = format!("failed: {e}");
-                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                                 return;
                             }
                         }
                     }
                 }
                 let msg = "usage: /cron create --schedule \"every 30m\" --prompt \"...\" [--name myjob]  or /cron add \"check inbox every 30m\"  or /cron create \"check inbox every 30m\"";
-                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
             }
         }
         return;
@@ -1033,12 +1035,12 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     if let Some(id) = args_str.strip_prefix("remove ").map(|s| s.trim()) {
         if id.is_empty() {
             let msg = "usage: /cron remove <id|name>";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
         } else {
             match gray_cron::remove_job(id) {
                 Ok(true) => {
                     let msg = format!("removed {id}");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                     if let Some(shared) = tui {
                         let jobs = gray_cron::list_jobs();
                         if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
@@ -1048,11 +1050,11 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 }
                 Ok(false) => {
                     let msg = format!("no job found for '{id}'");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                 }
                 Err(e) => {
                     let msg = format!("error: {e}");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
                 }
             }
         }
@@ -1064,13 +1066,13 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(msg); } else { println!("{msg}"); }
         } else {
             let msg = format!("no job found for '{id}'");
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
         }
         return;
     }
     // Fallback help
     let msg = "cron: /cron list | /cron add \"check inbox every 30m\" | /cron create --schedule \"every 10m\" --prompt \"...\" | /cron remove <id> | /cron show <id>  (also \"in 10m\", \"0 9 * * *\")";
-    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
 }
 
 static PROXY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::new(None);
@@ -1235,8 +1237,8 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 if let Some(shared) = tui_arc {
                     if let Ok(mut t) = shared.lock() {
                         match res {
-                            Ok(()) => t.push_dim("╰ gateway stopped".to_string()),
-                            Err(e) => t.push_dim(format!("╰ gateway exited: {e}")),
+                            Ok(()) => t.push_dim("└ gateway stopped".to_string()),
+                            Err(e) => t.push_dim(format!("└ gateway exited: {e}")),
                         }
                         let _ = t.draw();
                     }
@@ -1314,10 +1316,10 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         if let Some(h) = g.as_mut().and_then(|g| g.take()) {
             h.abort();
             let msg = "proxy stopped";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
         } else {
             let msg = "proxy not running";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
         }
         return;
     }
@@ -1333,7 +1335,7 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
             Ok(p) => p,
             Err(e) => {
                 let msg = format!("proxy picker error: {e}");
-                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
+                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { eprintln!("{msg}"); }
                 return;
             }
         };
@@ -1351,7 +1353,7 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         // fall through to start with picked provider
     } else if is_start && PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
         let msg = "proxy already running";
-        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
         return;
     }
 
@@ -1361,7 +1363,7 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
                 Ok(a) => a,
                 Err(e) => {
                     let msg = format!("proxy: {e}");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
+                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { eprintln!("{msg}"); }
                     return;
                 }
             }
@@ -1370,7 +1372,7 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         };
         if !adapter.is_authenticated() {
             let msg = format!("Not logged into {}. Run /connect first.", adapter.display());
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { eprintln!("{msg}"); }
+            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { eprintln!("{msg}"); }
             return;
         }
         let host = "127.0.0.1".to_string();
@@ -1380,7 +1382,7 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         });
         *PROXY_HANDLE.lock().unwrap() = Some(h);
         let msg = format!("proxy: http://127.0.0.1:{port}/v1 → {display} ✓");
-        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("╰ {msg}")); } else { println!("{msg}"); }
+        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
         return;
     }
     // status (default) — explicit /proxy status
@@ -1432,7 +1434,7 @@ async fn handle_resume(
                     Err(e) => {
                         let msg = format!("no session matching '{raw}': {e}");
                         if let Some(shared) = &tui {
-                            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                            shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
                         } else {
                             println!("{msg}");
                         }
@@ -1454,7 +1456,7 @@ async fn handle_resume(
             None => {
                 let msg = if args.all { "no saved sessions" } else { "no saved sessions in this directory (try /resume --all or --all)" };
                 if let Some(shared) = &tui {
-                    shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                    shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
                 } else {
                     println!("{msg}");
                 }
@@ -1468,7 +1470,7 @@ async fn handle_resume(
             Ok(None) => return,
             Err(e) => {
                 if let Some(shared) = &tui {
-                    shared.lock().expect("tui lock").push_dim(format!("╰ resume picker error: {e}"));
+                    shared.lock().expect("tui lock").push_dim(format!("└ resume picker error: {e}"));
                 } else {
                     println!("resume picker error: {e}");
                 }
@@ -1507,7 +1509,7 @@ async fn handle_resume(
                 Err(e) => {
                     let msg = format!("could not resume (no provider): {e}");
                     if let Some(shared) = &tui {
-                        shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                        shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
                     } else {
                         println!("{msg}");
                     }
@@ -1517,7 +1519,7 @@ async fn handle_resume(
         Err(e) => {
             let msg = format!("could not resume session {}: {e}", sid.as_str());
             if let Some(shared) = &tui {
-                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+                shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
             } else {
                 println!("{msg}");
             }
@@ -2133,7 +2135,7 @@ pub async fn run_repl_mode(
                                             })
                                             .unwrap_or_else(|| "provider".to_string());
                                         t.push_dim(format!(
-                                            "╰ connected to {prov_name} · {model_str}"
+                                            "└ connected to {prov_name} · {model_str}"
                                         ));
                                         let _ = t.draw();
                                     }
@@ -2149,7 +2151,7 @@ pub async fn run_repl_mode(
                                         shared
                                             .lock()
                                             .expect("tui lock")
-                                            .push_dim(format!("╰ provider error: {e}"));
+                                            .push_dim(format!("└ provider error: {e}"));
                                     } else {
                                         println!("provider error: {e}");
                                     }
@@ -2454,7 +2456,7 @@ pub async fn run_repl_mode(
                                 .and_then(|c| c.values().find(|p| p.base_url == config.base_url))
                                 .map(|p| p.name.as_str())
                                 .unwrap_or("provider");
-                            t.push_dim(format!("╰ connected to {prov_name} · {model_str}"));
+                            t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
                             let _ = t.draw();
                         }
                         reload_agent(&mut agent, config, &cwd).await;
@@ -2474,7 +2476,7 @@ pub async fn run_repl_mode(
                     }
                     Err(e) => {
                         if let Some((shared, _)) = &tui {
-                            shared.lock().expect("tui lock").push_dim(format!("╰ error: {e}"));
+                            shared.lock().expect("tui lock").push_dim(format!("└ error: {e}"));
                         } else {
                             println!("provider error: {e}");
                         }
@@ -2540,7 +2542,7 @@ pub async fn run_repl_mode(
                                         })
                                         .unwrap_or_else(|| "provider".to_string());
                                     t.push_dim(format!(
-                                        "╰ connected to {prov_name} · {model_str}"
+                                        "└ connected to {prov_name} · {model_str}"
                                     ));
                                     let _ = t.draw();
                                 }
@@ -2556,7 +2558,7 @@ pub async fn run_repl_mode(
                                     shared
                                         .lock()
                                         .expect("tui lock")
-                                        .push_dim(format!("╰ provider error: {e}"));
+                                        .push_dim(format!("└ provider error: {e}"));
                                 } else {
                                     println!("provider error: {e}");
                                 }
