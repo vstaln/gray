@@ -9,6 +9,7 @@ members = [
     "crates/gray-provider",
     "crates/gray-session",
     "crates/gray-tools",
+    "crates/gray-plugin",
 ]
 
 [workspace.package]
