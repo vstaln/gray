@@ -615,26 +615,56 @@ async fn handle_context_window(
         let free = parts.free(window, reserve);
         let pct = |n: usize| if window > 0 { n * 100 / window } else { 0 };
         let f = crate::setup::format_context_length;
+        let ic = crate::setup::icon;
+        // 10x10 hexagon grid, kinds: 0-4 categories, 5 free, 6 buffer.
+        let grid_cells = parts.grid_cells(window, reserve);
+        let mut flat: Vec<usize> = Vec::with_capacity(100);
+        for (kind, n) in grid_cells.iter().enumerate() {
+            flat.extend(std::iter::repeat(kind).take(*n));
+        }
+        while flat.len() < 100 {
+            flat.push(5);
+        }
+        let cell = |kind: usize| match kind {
+            0..=4 => ic("cell"),
+            5 => ic("cell_free"),
+            _ => ic("cell_buffer"),
+        };
+        let mut grid = String::new();
+        for r in 0..10 {
+            for c in 0..10 {
+                grid.push_str(cell(flat[r * 10 + c]));
+                grid.push(' ');
+            }
+            grid.push('\n');
+        }
         format!(
-            "{} · {}/{} tokens ({}%) — source: {source} / max {} ({})\nEstimated usage by category\n  System prompt: {} ({}%)\n  Project context: {} ({}%)\n  System tools: {} ({}%)\n  Skills: {} ({}%)\n  Messages: {} ({}%)\n  Free space: {} ({}%)\n  Autocompact buffer: {} ({}%)\n  reserve: {}  keep: {}\n  set: /context 128k | /context reserve 16k | /context keep 20k  |  clear: /context auto",
+            "Context Usage\n{} · {}/{} tokens ({}%) — source: {source} / max {} ({})\n{grid}\nEstimated usage by category\n{} System prompt: {} tokens ({}%)\n{} Project context: {} tokens ({}%)\n{} System tools: {} tokens ({}%)\n{} Skills: {} tokens ({}%)\n{} Messages: {} tokens ({}%)\n{} Free space: {} ({}%)\n{} Autocompact buffer: {} tokens ({}%)\n  reserve: {}  keep: {}\n  set: /context 128k | /context reserve 16k | /context keep 20k  |  clear: /context auto",
             if model.is_empty() { "no model" } else { model },
             f(used),
             f(window),
             pct(used),
             max,
             f(max),
+            ic("cell"),
             f(parts.system_prompt),
             pct(parts.system_prompt),
+            ic("cell"),
             f(parts.project_context),
             pct(parts.project_context),
+            ic("cell"),
             f(parts.tools),
             pct(parts.tools),
+            ic("cell"),
             f(parts.skills),
             pct(parts.skills),
+            ic("cell"),
             f(parts.messages),
             pct(parts.messages),
+            ic("cell_free"),
             f(free),
             pct(free),
+            ic("cell_buffer"),
             f(reserve),
             pct(reserve),
             f(reserve),

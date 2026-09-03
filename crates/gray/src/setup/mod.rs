@@ -1400,14 +1400,14 @@ pub fn run_context_modal(
     let box_bg = Color::Rgb(22, 22, 22);
     let accent_peach = Color::Rgb(246, 173, 126);
     let text_dim = Color::Rgb(120, 120, 120);
-    // per-category colors (screenshot vibe: gray/orange/purple/yellow/violet)
-    let c_sys = Color::Rgb(160, 160, 160);
-    let c_ctx = Color::Rgb(205, 133, 63);
-    let c_tools = Color::Rgb(167, 139, 250);
-    let c_skills = Color::Rgb(250, 204, 21);
-    let c_msgs = Color::Rgb(192, 132, 252);
+    // jewel-tone category colors (deliberately not Claude's purple/pink)
+    let c_sys = Color::Rgb(148, 163, 184); // slate
+    let c_ctx = Color::Rgb(45, 212, 191); // teal
+    let c_tools = Color::Rgb(56, 189, 248); // sky
+    let c_skills = Color::Rgb(163, 230, 53); // lime
+    let c_msgs = Color::Rgb(251, 191, 36); // amber
     let c_free = Color::Rgb(90, 90, 90);
-    let c_reserve = Color::Rgb(248, 113, 113);
+    let c_reserve = Color::Rgb(251, 113, 133); // rose
 
     let mut sel = 0usize;
     let mut editing: Option<usize> = None;
@@ -1427,13 +1427,13 @@ pub fn run_context_modal(
             let free = parts.free(window, reserve);
             let pct = if window > 0 { used * 100 / window } else { 0 };
             let cells = parts.grid_cells(window, reserve);
-            // cell kind per grid position: 0-4 categories, 5 reserve, 6 free
+            // cell kind per grid position: 0-4 categories, 5 free, 6 buffer
             let mut flat: Vec<usize> = Vec::with_capacity(100);
             for (kind, n) in cells.iter().enumerate() {
                 flat.extend(std::iter::repeat_n(kind, *n));
             }
             while flat.len() < 100 {
-                flat.push(6);
+                flat.push(5);
             }
 
             terminal.draw(|frame| {
@@ -1476,6 +1476,14 @@ pub fn run_context_modal(
                     Rect::new(inner.x, inner.y + 1, inner.width, 1),
                 );
 
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "Estimated usage by category",
+                        Style::default().fg(text_dim).add_modifier(Modifier::ITALIC).bg(box_bg),
+                    ))),
+                    Rect::new(inner.x, inner.y + 2, inner.width, 1),
+                );
+
                 let grid_y = inner.y + 3;
                 let detail_x = inner.x + 24;
                 let detail_w = inner.width.saturating_sub(24);
@@ -1484,28 +1492,28 @@ pub fn run_context_modal(
                     Line::from(vec![
                         Span::styled(format!("{glyph} "), Style::default().fg(color).bg(box_bg)),
                         Span::styled(
-                            format!("{label}: {} ({}%)", format_context_length(n), pct_of(n)),
+                            format!("{label}: {} tokens ({}%)", format_context_length(n), pct_of(n)),
                             Style::default().fg(Color::White).bg(box_bg),
                         ),
                     ])
                 };
                 let details = [
-                    row(icon("system"), c_sys, "System prompt", parts.system_prompt),
-                    row(icon("project"), c_ctx, "Project context", parts.project_context),
-                    row(icon("tools"), c_tools, "System tools", parts.tools),
-                    row(icon("skills"), c_skills, "Skills", parts.skills),
-                    row(icon("messages"), c_msgs, "Messages", parts.messages),
+                    row(icon("cell"), c_sys, "System prompt", parts.system_prompt),
+                    row(icon("cell"), c_ctx, "Project context", parts.project_context),
+                    row(icon("cell"), c_tools, "System tools", parts.tools),
+                    row(icon("cell"), c_skills, "Skills", parts.skills),
+                    row(icon("cell"), c_msgs, "Messages", parts.messages),
                     Line::from(vec![
-                        Span::styled(format!("{} ", icon("free")), Style::default().fg(c_free).bg(box_bg)),
+                        Span::styled(format!("{} ", icon("cell_free")), Style::default().fg(c_free).bg(box_bg)),
                         Span::styled(
                             format!("Free space: {} ({}%)", format_context_length(free), pct_of(free)),
                             Style::default().fg(text_dim).bg(box_bg),
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled(format!("{} ", icon("reserve")), Style::default().fg(c_reserve).bg(box_bg)),
+                        Span::styled(format!("{} ", icon("cell_buffer")), Style::default().fg(c_reserve).bg(box_bg)),
                         Span::styled(
-                            format!("Autocompact buffer: {} ({}%)", format_context_length(reserve), pct_of(reserve)),
+                            format!("Autocompact buffer: {} tokens ({}%)", format_context_length(reserve), pct_of(reserve)),
                             Style::default().fg(text_dim).bg(box_bg),
                         ),
                     ]),
@@ -1515,13 +1523,13 @@ pub fn run_context_modal(
                     for c in 0..10usize {
                         let kind = flat[(r as usize) * 10 + c];
                         let (g, col) = match kind {
-                            0 => (icon("system"), c_sys),
-                            1 => (icon("project"), c_ctx),
-                            2 => (icon("tools"), c_tools),
-                            3 => (icon("skills"), c_skills),
-                            4 => (icon("messages"), c_msgs),
-                            5 => (icon("reserve"), c_reserve),
-                            _ => (icon("free"), c_free),
+                            0 => (icon("cell"), c_sys),
+                            1 => (icon("cell"), c_ctx),
+                            2 => (icon("cell"), c_tools),
+                            3 => (icon("cell"), c_skills),
+                            4 => (icon("cell"), c_msgs),
+                            5 => (icon("cell_free"), c_free),
+                            _ => (icon("cell_buffer"), c_reserve),
                         };
                         spans.push(Span::styled(format!("{g} "), Style::default().fg(col).bg(box_bg)));
                     }
