@@ -48,6 +48,10 @@ pub struct Tui {
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
+    /// An alternate-screen modal owns the terminal: the 100ms ticker must not
+    /// draw (its frames land on the modal's screen as duplicated chrome).
+    /// Set by with_modal/with_modal_sync around every modal call.
+    pub(crate) modal_open: bool,
     pub queued_inputs: std::collections::VecDeque<(String, Vec<PathBuf>)>,
     /// Slash command submitted via Esc mid-turn: cancel + run locally, never to the AI.
     pub local_command: Option<String>,
@@ -167,6 +171,7 @@ impl Tui {
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
+            modal_open: false,
             queued_inputs: std::collections::VecDeque::new(),
             local_command: None,
             pending: String::new(),
@@ -465,6 +470,11 @@ impl Tui {
         }
     }
     pub fn tick_status(&mut self) {
+        // A modal owns the screen: any draw here lands on its alternate
+        // screen as duplicated/garbled chrome. Skip until it closes.
+        if self.modal_open {
+            return;
+        }
         // Non-blocking question countdown rides the same ticker.
         if self.active_question.is_some() {
             tick_question(self);

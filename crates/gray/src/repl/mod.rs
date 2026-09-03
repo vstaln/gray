@@ -99,13 +99,33 @@ fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
 }
 
 async fn with_modal<T>(tui: Option<&crate::composer::SharedTui>, fut: impl std::future::Future<Output = T>) -> T {
+    if let Some(shared) = tui {
+        if let Ok(mut t) = shared.try_lock() {
+            t.modal_open = true;
+        }
+    }
     let r = fut.await;
+    if let Some(shared) = tui {
+        if let Ok(mut t) = shared.try_lock() {
+            t.modal_open = false;
+        }
+    }
     restore_viewport(tui);
     r
 }
 
 fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce() -> T) -> T {
+    if let Some(shared) = tui {
+        if let Ok(mut t) = shared.try_lock() {
+            t.modal_open = true;
+        }
+    }
     let r = f();
+    if let Some(shared) = tui {
+        if let Ok(mut t) = shared.try_lock() {
+            t.modal_open = false;
+        }
+    }
     restore_viewport(tui);
     r
 }
@@ -228,6 +248,7 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
             let editor_paused = if let Some(shared) = &tui_snap {
                 if let Ok(mut t) = shared.try_lock() {
                     t.pending_resize = Some((t.last_width, std::time::Instant::now() + std::time::Duration::from_secs(3600)));
+                    t.modal_open = true;
                     true
                 } else { false }
             } else { false };
@@ -237,6 +258,7 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
                 if let Some(shared) = &tui_snap {
                     let mut t = shared.lock().expect("tui lock");
                     t.pending_resize = None;
+                    t.modal_open = false;
                     if let Ok((cols, _)) = crossterm::terminal::size() {
                         t.reflow_on_resize(cols);
                     } else {
