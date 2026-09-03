@@ -221,7 +221,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
         let queued_h = queued_lines.len() as u16;
         let box_y = status_y + status_h + queued_h;
-        let panel_cap = (PANEL_ROWS as u16).min(area.height.saturating_sub(status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1));
+        let avail = area.height.saturating_sub(status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1);
+        // Grow viewport to fit full question; fall back to PANEL_ROWS min when short on space.
+        // ponytail: two-pass (uncapped then capped), no new layout engine.
+        let need = if question_active {
+            tui.active_question.as_ref().map(|q| super::question::panel_lines(q, w, 100).len() as u16).unwrap_or(PANEL_ROWS as u16)
+        } else { PANEL_ROWS as u16 };
+        let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
         let question_lines: Option<Vec<Line<'static>>> = if question_active {
             tui.active_question
                 .as_ref()

@@ -115,7 +115,41 @@ pub fn rule(label: &str) -> String {
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
+/// Resolves the Responses `prompt_cache_key`: the gray session id when known
+/// (stable across resumes, so a resumed session keeps hitting its cache
+/// shard), else a per-process stable id (so rebuilds mid-session — reload,
+/// lazy builds — don't bust the shard). A fresh random key per build
+/// guaranteed 0% cache after every resume/rebuild; never do that.
+pub fn provider_cache_key(session_id: Option<&str>) -> String {
+    if let Some(s) = session_id.filter(|s| !s.is_empty()) {
+        return s.to_string();
+    }
+    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FALLBACK
+        .get_or_init(|| uuid::Uuid::new_v4().to_string())
+        .clone()
+}
+
 pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
+    build_agent_inner(config, cwd, None)
+}
+
+/// Builds an [`Agent`] pinned to a session id for prompt-cache affinity.
+/// Use this whenever the session id is known (resume, /new) so the
+/// `prompt_cache_key` survives process restarts.
+pub fn build_agent_with_session(
+    config: &Config,
+    cwd: &Path,
+    session_id: &str,
+) -> anyhow::Result<Agent> {
+    build_agent_inner(config, cwd, Some(session_id))
+}
+
+fn build_agent_inner(
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+) -> anyhow::Result<Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
             "no model configured yet — run /provider (or set --model <provider/model>), then try again"
@@ -152,7 +186,7 @@ pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
     let provider = OpenAiProvider::builder(api_key, model)
         .base_url(&config.base_url)
         .reasoning_effort(config.thinking_effort.clone())
-        .session_id(uuid::Uuid::new_v4().to_string())
+        .session_id(provider_cache_key(session_id))
         .build()
         .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
 
@@ -285,4 +319,24 @@ pub enum GatewayCmd {
         #[arg(default_value = "discord")]
         platform: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_key_prefers_session_id() {
+        assert_eq!(
+            provider_cache_key(Some("cc5d154d-4c24-42ee-b8a8-6a5735bdcfc9")),
+            "cc5d154d-4c24-42ee-b8a8-6a5735bdcfc9"
+        );
+    }
+
+    #[test]
+    fn cache_key_fallback_is_stable_per_process() {
+        // Rebuilds mid-session (reload, lazy builds) must not rotate the key.
+        assert_eq!(provider_cache_key(None), provider_cache_key(None));
+        assert_eq!(provider_cache_key(Some("")), provider_cache_key(None));
+    }
 }

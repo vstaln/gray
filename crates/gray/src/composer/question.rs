@@ -707,8 +707,6 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
             let prefix = if i == sel { "›" } else { " " };
             lines.push(option_row(prefix, i + 1, label, Some(desc), i == sel));
         }
-        // bottom margin — like 4f8cc65
-        lines.push(Line::from("").style(bg_style));
         return lines;
     }
 
@@ -728,11 +726,12 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         Line::from(Span::styled(l, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)))
     }));
 
-    // Budget: top(1) + progress(1) + question + tips(1) + bottom(1); rest goes to options — like 4f8cc65 padded card
-    let budget = max_rows.saturating_sub(4 + q_lines.min(max_rows.saturating_sub(4)));
+    // Budget: top(1) + progress(1) + question + tips(1); rest goes to options.
+    // ponytail: min 3 options so long questions don't squeeze to 1.
+    let budget = max_rows.saturating_sub(3 + q_lines.min(max_rows.saturating_sub(3)));
     let len = q.options_len();
     let sel = q.answers[q.current_idx].selected_idx.unwrap_or(0);
-    let visible = budget.min(len).max(1);
+    let visible = budget.min(len).max(3.min(len));
     let start = sel.saturating_sub(visible.saturating_sub(1)).min(sel);
     for i in start..len.min(start + visible) {
         let prefix = if i == sel && q.answers[q.current_idx].selected_idx.is_some() { "›" } else { " " };
@@ -746,8 +745,6 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     }
 
     lines.push(tips_line(q));
-    // bottom margin — like 4f8cc65
-    lines.push(Line::from("").style(bg_style));
     lines
 }
 
