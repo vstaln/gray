@@ -17,9 +17,29 @@ pub const MAX_LENGTH: usize = 2000;
 /// OAuth2 invite permissions: View Channels + Send Messages + Read Message History.
 pub const INVITE_PERMISSIONS: u64 = 1024 + 2048 + 65536;
 
+/// Recover the Application (client) ID from a bot token: the first
+/// dot-segment is the base64-encoded ID (classic Discord token layout).
+/// Returns None for tokens that don't follow that layout.
+pub fn client_id_from_token(token: &str) -> Option<String> {
+    let raw = token.trim().strip_prefix("Bot ").unwrap_or(token.trim());
+    let seg = raw.split('.').next()?;
+    let mut padded = seg.to_string();
+    while padded.len() % 4 != 0 {
+        padded.push('=');
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::URL_SAFE.decode(&padded).ok()?;
+    let id = String::from_utf8(bytes).ok()?;
+    if id.chars().all(|c| c.is_ascii_digit()) && (15..=21).contains(&id.len()) {
+        Some(id)
+    } else {
+        None
+    }
+}
+
 /// Build the OAuth2 invite URL for `client_id` (Application ID, numeric).
-/// Copy from the Developer Portal (General Information) into
-/// `~/.gray/gateway.yaml` as `platforms.discord.client_id`.
+/// Normally you never pass one by hand: it is read from
+/// `platforms.discord.client_id`, falling back to `client_id_from_token`.
 pub fn invite_url(client_id: &str) -> anyhow::Result<String> {
     let id = client_id.trim();
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) || id.len() < 15 {
@@ -351,5 +371,16 @@ mod tests {
         assert!(invite_url("").is_err());
         assert!(invite_url("notanid").is_err());
         assert!(invite_url("123").is_err());
+    }
+
+    #[test]
+    fn client_id_from_token_roundtrip() {
+        use base64::Engine as _;
+        let id = "123456789012345678";
+        let tok = format!("{}.fake.sig", base64::engine::general_purpose::URL_SAFE.encode(id));
+        assert_eq!(client_id_from_token(&tok), Some(id.to_string()));
+        assert_eq!(client_id_from_token("Bot ".to_string() + &tok), Some(id.to_string()));
+        assert_eq!(client_id_from_token("short"), None);
+        assert_eq!(client_id_from_token(""), None);
     }
 }

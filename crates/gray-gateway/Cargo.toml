@@ -21,6 +21,7 @@ gray-tools = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { workspace = true }
+base64 = { workspace = true }
 # Optional real platform deps (feature-gated; default build stays stub so cargo check passes offline)
 teloxide = { version = "0.12", optional = true, default-features = false, features = ["ctrlc_handler"] }
 twilight-gateway = { version = "0.17", optional = true }
