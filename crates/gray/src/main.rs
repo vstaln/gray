@@ -18,6 +18,9 @@ async fn main() -> anyhow::Result<()> {
                 if fallback {
                     eprintln!("note: gray.yml profile missing/unresolvable — showing builtin manifests");
                 }
+                for w in gray::take_profile_warnings() {
+                    eprintln!("warning: {w}");
+                }
                 println!("{}", serde_json::to_string_pretty(&manifests)?);
                 return Ok(());
             }

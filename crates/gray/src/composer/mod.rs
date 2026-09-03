@@ -400,6 +400,16 @@ impl Tui {
         }
         self.flush_markdown();
 
+        // Profile warnings queued mid-turn (lib code can't print while the
+        // viewport is live) surface here as dim transcript lines, once each.
+        let warnings = crate::take_profile_warnings();
+        if !warnings.is_empty() {
+            self.ensure_gap(1);
+            for w in warnings {
+                self.push_dim(format!("warning: {w}"));
+            }
+        }
+
         let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
             let secs = elapsed.as_secs_f64();
