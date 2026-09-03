@@ -161,6 +161,10 @@ impl Tool for BashTool {
         };
         let secs = requested.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS);
 
+        if let Some(denial) = deny_destructive(&command) {
+            return fail(denial);
+        }
+
         let mut cmd = Command::new("sh");
         cmd.arg("-c")
             .arg(&command)
@@ -251,5 +255,173 @@ fn spawn_drain(pipe: Option<impl AsyncReadExt + Unpin + Send + 'static>) -> toki
 
 async fn join_drain_bytes(handle: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
     handle.await.unwrap_or_default()
+}
+
+/// Never-legit destructive commands, blocked before spawn (dcg core-pack ideas,
+/// reimplemented std-only). Returns the denial message.
+/// Bypass: `GRAY_GUARD_BYPASS=1` (dcg `DCG_BYPASS=1` parity, for CI/piped mode).
+/// ponytail: token/substring matching, no regex/AST; fork-bomb check is a raw
+/// substring and heredoc/`python -c` payloads are unscanned — upgrade when a real incident hits.
+fn deny_destructive(command: &str) -> Option<String> {
+    if std::env::var("GRAY_GUARD_BYPASS").as_deref() == Ok("1") {
+        return None;
+    }
+    deny_normalized(&normalize_guard_head(command))
+        .or_else(|| embedded_payload(command).and_then(|p| deny_normalized(&normalize_guard_head(&p))))
+}
+
+/// Strips wrapper prefixes agents prepend: repeated `sudo`/`command`/`env K=V`, `\cmd` escapes.
+fn normalize_guard_head(command: &str) -> String {
+    let mut rest = command.trim_start().to_string();
+    loop {
+        let t = rest.trim_start();
+        if let Some(after) = t.strip_prefix("sudo ") {
+            rest = after.to_string();
+        } else if let Some(after) = t.strip_prefix("command ") {
+            rest = after.to_string();
+        } else if let Some(after) = t.strip_prefix("env ") {
+            // drop KEY=VAL pairs following env
+            let mut parts = after.split_whitespace();
+            let mut idx = 0usize;
+            let mut cut = after.len();
+            for part in parts.by_ref() {
+                if part.contains('=') {
+                    idx += part.len() + 1;
+                } else {
+                    cut = idx;
+                    break;
+                }
+            }
+            rest = after[cut.min(after.len())..].to_string();
+        } else if let Some(after) = t.strip_prefix('\\') {
+            rest = after.to_string();
+        } else {
+            return t.to_string();
+        }
+    }
+}
+
+/// Extracts `sh|bash -c "<payload>"` for recursive scanning (obvious bypass otherwise).
+fn embedded_payload(command: &str) -> Option<String> {
+    let mut tokens = command.split_whitespace().peekable();
+    if !matches!(tokens.next(), Some("sh") | Some("bash") | Some("dash") | Some("zsh")) {
+        return None;
+    }
+    let mut seen_c = false;
+    let mut rest: Vec<&str> = Vec::new();
+    for tok in tokens {
+        if seen_c {
+            rest.push(tok);
+        } else if tok == "-c" {
+            seen_c = true;
+        }
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    let joined = rest.join(" ");
+    Some(joined.trim_matches(|c| c == '"' || c == '\'').to_string())
+}
+
+fn deny_normalized(cmd: &str) -> Option<String> {
+    let head = cmd.split_whitespace().next().unwrap_or("");
+    let base = head.rsplit('/').next().unwrap_or(head);
+    let block = |rule: &str, why: &str, alt: &str| {
+        Some(format!(
+            "Blocked by destructive-command guard ({rule}): {why}. Safe alternative: {alt}. \
+             If the user explicitly asked for this, confirm via request_user_input and have them run it manually."
+        ))
+    };
+    match base {
+        "mkfs" | "mkswap" | "wipefs" | "mkfs.ext4" | "mkfs.xfs" | "mkfs.vfat" | "mkfs.btrfs" => {
+            return block("disk-wipe", format!("{base} destroys filesystems").as_str(), "operate on a disposable VM/disk image, snapshot first")
+        }
+        "shutdown" | "poweroff" | "reboot" | "halt" => {
+            return block("host-power", format!("{base} takes the host down").as_str(), "schedule downtime with the user first")
+        }
+        "fdisk" | "parted" => {
+            if !(cmd.contains("-l") || cmd.contains("print")) {
+                return block("disk-edit", format!("{base} without list/print edits partition tables").as_str(), format!("{base} -l / {base} print to inspect read-only").as_str());
+            }
+            return None;
+        }
+        "systemctl" => {
+            if cmd.contains("poweroff") || cmd.contains("reboot") {
+                return block("host-power", "systemctl poweroff/reboot takes the host down", "schedule downtime with the user first");
+            }
+            return None;
+        }
+        _ => {}
+    }
+    if cmd.contains(":|:&") {
+        return block("fork-bomb", "fork bomb pattern `:|:&` hangs the host", "don't run fork bombs");
+    }
+    if base == "dd" && cmd.contains("of=/dev/") {
+        return block("dd-device", "dd writing to /dev/ destroys disks", "write to a regular file, double-check `of=`");
+    }
+    if base == "rm" {
+        if cmd.contains("--no-preserve-root") {
+            return block("rm-rf-root", "rm --no-preserve-root disables the last safeguard", "delete a narrower path, preview with `ls`/`find … | wc -l` first");
+        }
+        let targets_root = cmd
+            .split_whitespace()
+            .skip(1)
+            .filter(|t| !t.starts_with('-'))
+            .any(|t| matches!(t, "/" | "/*" | "~" | "~/*" | "/root" | "/home" | "/etc" | "/boot"));
+        if targets_root {
+            return block("rm-rf-root", "rm targeting a system root is unrecoverable", "delete a narrower path, preview with `ls`/`find … | wc -l` first");
+        }
+        return None;
+    }
+    if base == "git" {
+        if cmd.contains("reset") && cmd.contains("--hard") {
+            return block("git-reset-hard", "git reset --hard discards uncommitted work", "`git stash` first or have the user run it");
+        }
+        if cmd.contains("clean") && cmd.split_whitespace().any(|t| t.starts_with('-') && t.contains('f')) {
+            return block("git-clean-force", "git clean -f deletes untracked files permanently", "`git clean -n` to preview, `git stash -u` to keep");
+        }
+        if cmd.contains("push") && cmd.split_whitespace().any(|t| t == "--force" || t == "-f") {
+            return block("git-push-force", "git push --force rewrites shared history", "`git push --force-with-lease` after user confirmation");
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn blocks_rm_root_variants() {
+        for cmd in ["rm -rf /", "rm -rf /*", "rm -rf ~", "sudo rm -rf /", "\\rm -rf /", "rm --no-preserve-root -rf /tmp/x"] {
+            assert!(deny_destructive(cmd).is_some(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn blocks_disk_power_forkbomb() {
+        for cmd in ["mkfs.ext4 /dev/sda1", "dd if=x of=/dev/sda", "shutdown now", "sudo reboot", ":(){ :|:& };:"] {
+            assert!(deny_destructive(cmd).is_some(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn blocks_git_destructive() {
+        for cmd in ["git reset --hard", "git clean -fd", "git push --force origin main"] {
+            assert!(deny_destructive(cmd).is_some(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn blocks_embedded_sh_c_payload() {
+        assert!(deny_destructive("bash -c \"rm -rf /\"").is_some());
+    }
+
+    #[test]
+    fn allows_ordinary_commands() {
+        for cmd in ["rm -rf ./build", "ls /", "echo hi", "git status", "git push --force-with-lease origin main", "fdisk -l", "git clean -n"] {
+            assert!(deny_destructive(cmd).is_none(), "{cmd}");
+        }
+    }
 }
 
