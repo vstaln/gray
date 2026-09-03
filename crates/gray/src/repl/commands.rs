@@ -127,11 +127,11 @@ pub(crate) fn complete_command_args(
     }
 }
 
-/// Suffixes for `/context`: L1 (`128k|auto|status|reserve|keep`) and L2
+/// Suffixes for `/context`: L1 (`[number]|auto|status|reserve|keep`) and L2
 /// (`reserve <16k|auto>`, `keep <20k|auto|off>`).
 fn complete_context_args(arg_text: &str) -> Vec<(String, String)> {
     const L1: &[(&str, &str)] = &[
-        ("128k", "set window — e.g. 128k, 1m"),
+        ("[number]", "set window"),
         ("auto", "clear override → auto"),
         ("status", "show breakdown"),
         ("reserve", "set reserve…"),
