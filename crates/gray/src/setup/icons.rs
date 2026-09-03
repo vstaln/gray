@@ -44,13 +44,13 @@ pub fn init_nerd_font() {
 
 /// Icon by name: hexagons when available, else pure ASCII.
 /// `cell` = used (tinted per category), `cell_free` = free (dim),
-/// `cell_buffer` = autocompact buffer (rose; hollow like free, color differs).
+/// `cell_buffer` = autocompact buffer (rose six-spoke asterisk).
 pub fn icon(name: &str) -> &'static str {
     if has_nerd_font() {
         match name {
             "cell" => "⬢",
             "cell_free" => "⬡",
-            "cell_buffer" => "⬡",
+            "cell_buffer" => "✱",
             "arrow" => "❯",
             _ => "?",
         }
