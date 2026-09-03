@@ -415,35 +415,71 @@ pub fn user_keep_recent_tokens() -> usize {
         .unwrap_or(DEFAULT_KEEP_RECENT_TOKENS)
 }
 
-/// Parses a human-friendly context window string: `128000`, `128k`, `1m`, `1.5m`, `256k`, etc.
-/// Accepts commas/underscores and is case-insensitive. `k` = 1_000, `m` = 1_000_000.
+/// Parses a human-friendly context window string: `128000`, `1,000,000`,
+/// `1.000.000`, `128k`, `1000k`, `1m`, `1.5m`, etc. Case-insensitive,
+/// `k` = 1_000, `m` = 1_000_000. Commas/underscores/spaces are thousand
+/// separators; dots are too when grouped (`1.000.000`) — a single dot stays
+/// a decimal point (`1.5m`), and bare decimals (`1.5`) are rejected.
 pub fn parse_context_window(s: &str) -> Option<usize> {
-    let t = s.trim().to_lowercase().replace([',', '_'], "");
+    let t = s.trim().to_lowercase().replace([',', '_', ' '], "");
     if t.is_empty() {
         return None;
     }
-    if let Ok(n) = t.parse::<usize>() {
-        if n > 0 {
-            return Some(n);
-        }
+    // Strip one k/m suffix first so `1000k` / `1.000.000m` work uniformly.
+    let (num, mult) = if let Some(n) = t.strip_suffix('k') {
+        (n, 1_000.0)
+    } else if let Some(n) = t.strip_suffix('m') {
+        (n, 1_000_000.0)
+    } else {
+        (t.as_str(), 1.0)
+    };
+    let num = num.trim();
+    if num.is_empty() {
+        return None;
     }
-    if let Some(num) = t.strip_suffix('k') {
-        if let Ok(f) = num.trim().parse::<f64>() {
-            let v = (f * 1_000.0).round() as usize;
-            if v > 0 {
-                return Some(v);
+    let dots = num.bytes().filter(|&b| b == b'.').count();
+    let plain = if dots > 1 {
+        // `1.000.000` — unambiguous thousand separators.
+        num.replace('.', "")
+    } else {
+        num.to_string()
+    };
+    if mult == 1.0 {
+        // No suffix: integers only. A lone dot must be grouped thousands.
+        if dots == 1 && !is_grouped_thousands(num) {
+            return None;
+        }
+        if let Ok(n) = plain.parse::<usize>() {
+            if n > 0 {
+                return Some(n);
             }
         }
+        return None;
     }
-    if let Some(num) = t.strip_suffix('m') {
-        if let Ok(f) = num.trim().parse::<f64>() {
-            let v = (f * 1_000_000.0).round() as usize;
-            if v > 0 {
-                return Some(v);
-            }
+    if let Ok(f) = plain.parse::<f64>() {
+        let v = (f * mult).round() as usize;
+        if v > 0 {
+            return Some(v);
         }
     }
     None
+}
+
+/// `1.000.000`-style grouping: 1–3 leading digits then `.ddd` groups.
+fn is_grouped_thousands(num: &str) -> bool {
+    let mut parts = num.split('.');
+    match parts.next() {
+        Some(first) if (1..=3).contains(&first.len()) && first.bytes().all(|b| b.is_ascii_digit()) => {}
+        _ => return false,
+    }
+    let mut groups = 0;
+    for p in parts {
+        if p.len() != 3 || !p.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        groups += 1;
+    }
+    groups > 0
 }
 
 pub fn extract_context_length_from_json(val: &serde_json::Value) -> Option<usize> {
@@ -668,6 +704,20 @@ impl ContextParts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_context_window_accepts_separators() {
+        assert_eq!(parse_context_window("1000000"), Some(1_000_000));
+        assert_eq!(parse_context_window("1,000,000"), Some(1_000_000));
+        assert_eq!(parse_context_window("1.000.000"), Some(1_000_000));
+        assert_eq!(parse_context_window("1_000_000"), Some(1_000_000));
+        assert_eq!(parse_context_window("1000k"), Some(1_000_000));
+        assert_eq!(parse_context_window("128k"), Some(128_000));
+        assert_eq!(parse_context_window("1.5m"), Some(1_500_000));
+        assert_eq!(parse_context_window("1.5"), None); // bare decimals rejected
+        assert_eq!(parse_context_window(""), None);
+        assert_eq!(parse_context_window("abc"), None);
+    }
 
     #[test]
     fn model_max_ignores_user_override() {
