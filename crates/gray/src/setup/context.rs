@@ -112,6 +112,7 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                                         }
                                     }
                                     if !models.is_empty() {
+                                        save_models_cache_to_disk();
                                         return models;
                                     }
                                 }
@@ -145,14 +146,7 @@ fn model_context_cache() -> &'static std::sync::RwLock<std::collections::HashMap
 }
 
 pub fn cache_model_context(model_id: &str, length: usize) {
-    if length == 0 { return; }
-    if let Ok(mut g) = model_context_cache().write() {
-        g.insert(model_id.to_string(), length);
-        let lower = model_id.to_lowercase();
-        if lower != model_id {
-            g.insert(lower, length);
-        }
-    }
+    cache_model_context_with_source(model_id, length, "live", true);
 }
 
 pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
@@ -171,19 +165,87 @@ pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
 /// Gap-fill insert: leaves an existing entry (e.g. provider-fetched) alone.
 /// Provider values always win over the LiteLLM table regardless of arrival order.
 pub fn cache_model_context_if_absent(model_id: &str, length: usize) {
+    cache_model_context_with_source(model_id, length, "litellm", false);
+}
+
+/// Gap-fill insert for models.dev values (same provider-wins semantics).
+pub fn cache_models_dev_if_absent(model_id: &str, length: usize) {
+    cache_model_context_with_source(model_id, length, "models.dev", false);
+}
+
+/// Shared insert behind the cache fns above; also fans out the source tag.
+fn cache_model_context_with_source(model_id: &str, length: usize, src: &'static str, overwrite: bool) {
     if length == 0 {
         return;
     }
     if let Ok(mut g) = model_context_cache().write() {
-        if g.contains_key(model_id) {
-            return;
-        }
-        g.insert(model_id.to_string(), length);
-        let lower = model_id.to_lowercase();
-        if lower != model_id {
-            g.entry(lower).or_insert(length);
+        if overwrite || !g.contains_key(model_id) {
+            g.insert(model_id.to_string(), length);
+            let lower = model_id.to_lowercase();
+            if lower != model_id {
+                if overwrite {
+                    g.insert(lower, length);
+                } else {
+                    g.entry(lower).or_insert(length);
+                }
+            }
         }
     }
+    record_context_source(model_id, src, overwrite);
+}
+
+static MODEL_CONTEXT_SOURCE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, &'static str>>> =
+    std::sync::OnceLock::new();
+
+fn model_context_source_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, &'static str>> {
+    MODEL_CONTEXT_SOURCE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+/// Tags a cached window with its origin. Gap-fill callers pass
+/// `overwrite: false` so a live value keeps its "live" tag.
+fn record_context_source(model_id: &str, src: &'static str, overwrite: bool) {
+    if let Ok(mut g) = model_context_source_cell().write() {
+        if overwrite || !g.contains_key(model_id) {
+            g.insert(model_id.to_string(), src);
+        }
+        let lower = model_id.to_lowercase();
+        if lower != model_id && (overwrite || !g.contains_key(&lower)) {
+            g.insert(lower, src);
+        }
+    }
+}
+
+fn get_cached_source(model_id: &str) -> Option<&'static str> {
+    if let Ok(g) = model_context_source_cell().read() {
+        if let Some(s) = g.get(model_id).copied() {
+            return Some(s);
+        }
+        let lower = model_id.to_lowercase();
+        if let Some(s) = g.get(&lower).copied() {
+            return Some(s);
+        }
+        if let Some((_, suffix)) = model_id.rsplit_once('/') {
+            if let Some(s) = g.get(suffix).copied() {
+                return Some(s);
+            }
+            if let Some(s) = g.get(&suffix.to_lowercase()).copied() {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+/// Where the effective window for `model` came from.
+pub fn context_source(model: &str) -> &'static str {
+    if get_user_context_window().is_some() {
+        return "override";
+    }
+    ensure_disk_loaded();
+    if let Some(s) = get_cached_source(model) {
+        return s;
+    }
+    "guess"
 }
 
 fn json_usize(v: &serde_json::Value) -> Option<usize> {
@@ -349,8 +411,135 @@ pub async fn fetch_litellm_context_windows() {
         return;
     }
     if let Ok(json) = resp.json::<serde_json::Value>().await {
-        parse_litellm_context_json(&json);
+        if parse_litellm_context_json(&json) > 0 {
+            save_models_cache_to_disk();
+        }
     }
+}
+
+/// Projects models.dev's public `api.json` (`providers -> models ->
+/// `limit.context`, the same shape opencode's provider.ts consumes) into the
+/// context cache. Also accepts `context_window` / `max_input_tokens` keys.
+/// Gap-fill only. Returns the number of models cached.
+pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
+    let Some(providers) = val.as_object() else {
+        return 0;
+    };
+    let mut n = 0;
+    for (_pid, pval) in providers {
+        let Some(models) = pval.get("models").and_then(|m| m.as_object()) else {
+            continue;
+        };
+        for (key, entry) in models {
+            let len = entry
+                .get("limit")
+                .and_then(|l| l.get("context"))
+                .and_then(json_usize)
+                .or_else(|| entry.get("context_window").and_then(json_usize))
+                .or_else(|| entry.get("max_input_tokens").and_then(json_usize));
+            if let Some(len) = len.filter(|&v| v >= 1024) {
+                cache_models_dev_if_absent(key, len);
+                if let Some((_, suffix)) = key.rsplit_once('/') {
+                    cache_models_dev_if_absent(suffix, len);
+                }
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// Fetches models.dev's table in the background and caches context windows.
+/// Same fire-and-forget contract as `fetch_litellm_context_windows`.
+/// Returns the number of models cached (0 on any failure).
+pub async fn fetch_models_dev_context() -> usize {
+    const URL: &str = "https://models.dev/api.json";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("gray/0.1.0")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let Ok(resp) = client.get(URL).send().await else {
+        return 0;
+    };
+    if !resp.status().is_success() {
+        return 0;
+    }
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return 0;
+    };
+    let n = parse_models_dev_json(&json);
+    if n > 0 {
+        save_models_cache_to_disk();
+    }
+    n
+}
+
+/// On-disk context cache (`~/.gray/models.json`, `{ "model-id": tokens }`).
+/// A previous session's live/litellm/models.dev values beat the hardcoded
+/// guess on cold boot, before any fetch completes.
+fn models_cache_path() -> Option<std::path::PathBuf> {
+    super::catalog::gray_home().ok().map(|h| h.join("models.json"))
+}
+
+/// Loads the disk cache into memory (gap-fill, source "disk"). Best-effort.
+pub fn load_models_cache_to_memory() -> usize {
+    let Some(path) = models_cache_path() else {
+        return 0;
+    };
+    let s = std::fs::read_to_string(path).ok().unwrap_or_default();
+    if s.is_empty() {
+        return 0;
+    }
+    let map: std::collections::HashMap<String, usize> =
+        serde_json::from_str(&s).unwrap_or_default();
+    let mut n = 0;
+    for (k, v) in map {
+        if v == 0 || get_cached_model_context(&k).is_some() {
+            continue;
+        }
+        cache_model_context_with_source(&k, v, "disk", false);
+        n += 1;
+    }
+    n
+}
+
+/// Persists the in-memory cache to disk (read-modify-write, best-effort).
+/// Called after any successful fetch so cold boot beats the guess.
+pub fn save_models_cache_to_disk() {
+    let Some(path) = models_cache_path() else {
+        return;
+    };
+    let mut map: std::collections::HashMap<String, usize> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    if let Ok(g) = model_context_cache().read() {
+        for (k, v) in g.iter() {
+            map.insert(k.clone(), *v);
+        }
+    }
+    let Ok(s) = serde_json::to_string(&map) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let _ = std::fs::write(path, s);
+}
+
+/// One-shot cold-boot load so disk values are present before first resolve.
+/// (The only startup hook reachable without touching other modules.)
+fn ensure_disk_loaded() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = load_models_cache_to_memory();
+    });
 }
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> = std::sync::OnceLock::new();
@@ -393,6 +582,7 @@ pub fn set_user_reserve_tokens(v: Option<usize>) {
     }
 }
 /// Effective reserve: override or default.
+// Legacy flat default; new code prefers `user_reserve_tokens_for(window)`.
 pub fn user_reserve_tokens() -> usize {
     user_reserve_cell()
         .read()
@@ -407,12 +597,39 @@ pub fn set_user_keep_recent_tokens(v: Option<usize>) {
     }
 }
 /// Effective keep-recent: override or default.
+// Legacy flat default; new code prefers `user_keep_for(window)`.
 pub fn user_keep_recent_tokens() -> usize {
     user_keep_cell()
         .read()
         .ok()
         .and_then(|g| *g)
         .unwrap_or(DEFAULT_KEEP_RECENT_TOKENS)
+}
+
+/// Proportional budgets: reserve ≈ window/16, keep ≈ window/13, clamped to
+/// [4k, 64k]. 256k → 16k / ~19.7k (≈ legacy 16384 / 20000).
+pub fn default_reserve_for_window(window: usize) -> usize {
+    (window / 16).clamp(4096, 65_536)
+}
+pub fn default_keep_for_window(window: usize) -> usize {
+    (window / 13).clamp(4096, 65_536)
+}
+
+/// Effective reserve for a window: override or proportional default.
+pub fn user_reserve_tokens_for(window: usize) -> usize {
+    user_reserve_cell()
+        .read()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or_else(|| default_reserve_for_window(window))
+}
+/// Effective keep-recent for a window: override or proportional default.
+pub fn user_keep_for(window: usize) -> usize {
+    user_keep_cell()
+        .read()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or_else(|| default_keep_for_window(window))
 }
 
 /// Parses a human-friendly context window string: `128000`, `128k`, `1m`, `1.5m`, `256k`, etc.
@@ -518,6 +735,7 @@ pub fn resolve_model_context_length(model_name: &str) -> usize {
 /// Model max ignoring the user override: live cache → hardcoded fallback.
 /// Use for clamping user input so effective window never exceeds what the model supports.
 pub fn model_max_context(model_name: &str) -> usize {
+    ensure_disk_loaded();
     // auto-fetched provider value (populated by fetch_live_provider_models)
     if let Some(cached) = get_cached_model_context(model_name) {
         return cached;
@@ -535,6 +753,7 @@ pub fn model_max_context(model_name: &str) -> usize {
     fallback_context_length(&lower)
 }
 
+// ponytail: guess fallback, live/models.dev/litellm/disk cache wins when present.
 fn fallback_context_length(lower: &str) -> usize {
     if lower.contains("gemini-1.5-pro") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") || lower.contains("gemini-1.5-flash") || lower.contains("gemini") {
         1_048_576
