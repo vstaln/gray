@@ -133,7 +133,6 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
         words.push(start..i);
     }
     if words.is_empty() {
-        // ponytail: degenerate no-word lines keep identity ranges — hyperlink
         // column mapping is approximate here; word-split lines are the norm.
         return char_chunk_fallback(line, max_w, flat).into_iter().map(|l| (l, 0..usize::MAX)).collect();
     }
@@ -448,6 +447,11 @@ pub(crate) fn format_tool_box_lines(
             span.style = span.style.bg(bg_color);
         }
         box_lines.push(l);
+    }
+
+    // One breathing-room row between the command header and its output.
+    if !body.is_empty() {
+        box_lines.push(Line::from("").style(bg_style));
     }
 
     for line in body {
