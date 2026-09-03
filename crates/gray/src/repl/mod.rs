@@ -1168,21 +1168,9 @@ async fn handle_resume(
     let Some(root) = default_root() else { return; };
     let store = JsonlSessionStore::new(root);
     match store.load(&sid).await {
-        Ok((meta, entries)) => {
+        Ok((_meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
-            let drift_warn = if !meta.model.is_empty()
-                && config.model.as_deref() != Some(meta.model.as_str())
-            {
-                Some(format!(
-                    "session was {} but now {} — mismatch caused prior 500 (try /model {})",
-                    meta.model,
-                    config.model.as_deref().unwrap_or("unset"),
-                    meta.model
-                ))
-            } else {
-                None
-            };
             match build_agent(config, cwd) {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
@@ -1192,15 +1180,9 @@ async fn handle_resume(
                         t.replay_session_history(&entries, cwd);
                         t.ensure_gap(1);
                         t.push_dim(format!("\u{2b22} Resumed session {} ({n} messages)", sid.as_str()));
-                        if let Some(w) = drift_warn.as_deref() {
-                            t.push_dim(format!("⚠ {w}"));
-                        }
                         t.ensure_gap(1);
                     } else {
                         println!("\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m", sid.as_str());
-                        if let Some(w) = drift_warn.as_deref() {
-                            println!("\x1b[33m⚠ {w}\x1b[0m");
-                        }
                     }
                 }
                 Err(e) => {
@@ -1540,8 +1522,6 @@ pub async fn run_repl_mode(
     let mut session_state: Option<SessionState> = None;
     let mut pending_history: Vec<Message> = Vec::new();
     let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
-    #[allow(unused_assignments)]
-    let mut resume_model_warn: Option<String> = None;
 
     // `--session <id>`: reopen that exact session.
     if let Some(id) = session_id
@@ -1553,16 +1533,6 @@ pub async fn run_repl_mode(
             Ok((meta, entries)) => {
                 if config.model.is_none() && !meta.model.is_empty() {
                     config.model = Some(meta.model.clone());
-                } else if !meta.model.is_empty()
-                    && config.model.as_deref() != Some(meta.model.as_str())
-                {
-                    resume_model_warn = Some(format!(
-                        "session was {} but now {} — mismatch caused prior 500 (try /model {})",
-                        meta.model,
-                        config.model.as_deref().unwrap_or("unset"),
-                        meta.model
-                    ));
-                    log::warn!(target: "gray_session", "resume model mismatch: {}", resume_model_warn.as_deref().unwrap_or(""));
                 }
                 let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                 pending_history = history.clone();
@@ -1594,16 +1564,6 @@ pub async fn run_repl_mode(
                 Ok((meta, entries)) => {
                     if config.model.is_none() && !meta.model.is_empty() {
                         config.model = Some(meta.model.clone());
-                    } else if !meta.model.is_empty()
-                        && config.model.as_deref() != Some(meta.model.as_str())
-                    {
-                        resume_model_warn = Some(format!(
-                            "session was {} but now {} — mismatch caused prior 500 (try /model {})",
-                            meta.model,
-                            config.model.as_deref().unwrap_or("unset"),
-                            meta.model
-                        ));
-                        log::warn!(target: "gray_session", "resume model mismatch: {}", resume_model_warn.as_deref().unwrap_or(""));
                     }
                     let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                     pending_history = history.clone();
@@ -1618,12 +1578,6 @@ pub async fn run_repl_mode(
                 }
                 Err(e) => println!("could not resume: {e}"),
             }
-        }
-    }
-
-    if let Some(w) = resume_model_warn.as_deref() {
-        if !interactive {
-            println!("\x1b[33m⚠ {w}\x1b[0m");
         }
     }
 
@@ -1646,12 +1600,7 @@ pub async fn run_repl_mode(
                     t.replay_session_history(entries, &cwd);
                     t.ensure_gap(1);
                     t.push_dim(format!("\u{2b22} Resumed session {} ({} messages)", sid.as_str(), entries.len()));
-                    if let Some(w) = resume_model_warn.as_deref() {
-                        t.push_dim(format!("⚠ {w}"));
-                    }
                     t.ensure_gap(1);
-                } else if let Some(w) = resume_model_warn.as_deref() {
-                    t.push_dim(format!("⚠ {w}"));
                 }
                 t
             }));
