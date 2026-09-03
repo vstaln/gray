@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 gray-core = { workspace = true }
+gray-plugin = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-cron = { workspace = true }

@@ -12,6 +12,13 @@ async fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
+    if cli.dump_manifest {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&gray::default_manifests())?
+        );
+        return Ok(());
+    }
     let mut config = Config::resolve(&cli)?;
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);

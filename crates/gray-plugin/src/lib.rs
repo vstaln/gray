@@ -7,6 +7,8 @@ use gray_core::agent::ToolOutput;
 use gray_core::event::Usage;
 use gray_core::message::Message;
 
+pub mod profile;
+
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
     PreStep { messages: Vec<Message> },
@@ -15,7 +17,7 @@ pub enum CoreEvent {
     TurnEnd { usage: Usage },
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Manifest {
     pub name: String,
     pub version: String,

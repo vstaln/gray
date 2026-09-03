@@ -1,5 +1,5 @@
-//! gray-tools: the `Tool` trait, four builtin file/shell tools, and the
-//! tool registry behind the `ToolExecutor` seam.
+//! gray-tools: builtin file/shell tools and the tool registry behind the
+//! `ToolExecutor` seam. (The `Tool` trait itself lives in `gray-core::agent`.)
 //!
 //! Truncation policy (applied to every tool output): results are capped at
 //! 2000 lines / 50 KiB, keeping head + tail with a `[truncated ...]`
@@ -89,7 +89,7 @@ impl Registry {
     }
 
     /// Tools outside the two tool plugins (kept so no tool disappears).
-    fn with_extra_tools(mut self) -> Self {
+    pub fn with_extra_tools(mut self) -> Self {
         self.tools.push(Arc::new(CronTool));
         self
     }
