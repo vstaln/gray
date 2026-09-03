@@ -64,6 +64,9 @@ fn parse_entry(entry: &str) -> Option<PluginEntry> {
 }
 
 /// Load the ordered [`PluginEntry`] list from a profile file.
+/// This is the boot path: it preserves both builtin and sidecar entries
+/// in file order. Missing file / no `plugins:` section is an error
+/// (callers warn + fall back to builtins).
 pub fn load_entries(path: &str) -> anyhow::Result<Vec<PluginEntry>> {
     let text = std::fs::read_to_string(path)?;
     let mut entries = Vec::new();
@@ -95,6 +98,9 @@ pub fn load_entries(path: &str) -> anyhow::Result<Vec<PluginEntry>> {
     Ok(entries)
 }
 
+/// Legacy/test helper: builtin names only. Sidecar entries are dropped,
+/// so a sidecar-only file errors here while [`load_entries`] succeeds.
+/// Prefer [`load_entries`]; no non-test boot code uses this.
 pub fn load_profile(path: &str) -> anyhow::Result<Vec<String>> {
     let names: Vec<String> = load_entries(path)?
         .into_iter()

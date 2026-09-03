@@ -1341,8 +1341,10 @@ dependencies = [
  "anyhow",
  "async-trait",
  "gray-core",
+ "log",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
