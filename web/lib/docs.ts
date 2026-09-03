@@ -153,7 +153,7 @@ export const docs: Doc[] = [
     blocks: [
       {
         t: "p",
-        text: "The context window resolves in order: the --context-window flag or GRAY_CONTEXT_WINDOW, then the value auto-fetched from the provider, then a hardcoded per-model fallback.",
+        text: "The context window resolves in order: the --context-window flag or GRAY_CONTEXT_WINDOW, then the value auto-fetched from the provider, then the LiteLLM model table, then a hardcoded per-model fallback.",
       },
       {
         t: "code",

@@ -8,13 +8,14 @@ pub(crate) use catalog::{load_auth_keys, save_auth_key};
 
 pub mod context;
 pub use context::{
-    cache_model_context, estimate_str_tokens, extract_context_length_from_json,
+    cache_model_context, cache_model_context_if_absent, estimate_str_tokens,
+    extract_context_length_from_json, fetch_litellm_context_windows,
     fetch_live_provider_models, format_context_length, friendly_model_name,
     get_cached_model_context, get_provider_models, get_provider_models_with_live,
     get_user_context_window, model_context_info, model_max_context, parse_context_window,
-    resolve_model_context_length, set_user_context_window, set_user_keep_recent_tokens,
-    set_user_reserve_tokens, user_keep_recent_tokens, user_reserve_tokens, ContextParts,
-    DEFAULT_KEEP_RECENT_TOKENS, DEFAULT_RESERVE_TOKENS,
+    parse_litellm_context_json, resolve_model_context_length, set_user_context_window,
+    set_user_keep_recent_tokens, set_user_reserve_tokens, user_keep_recent_tokens,
+    user_reserve_tokens, ContextParts, DEFAULT_KEEP_RECENT_TOKENS, DEFAULT_RESERVE_TOKENS,
 };
 
 pub mod ui;
