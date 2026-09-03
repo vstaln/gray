@@ -14,6 +14,23 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub const MAX_LENGTH: usize = 2000;
 
+/// OAuth2 invite permissions: View Channels + Send Messages + Read Message History.
+pub const INVITE_PERMISSIONS: u64 = 1024 + 2048 + 65536;
+
+/// Build the OAuth2 invite URL for `client_id` (Application ID, numeric).
+/// Copy from the Developer Portal (General Information) into
+/// `~/.gray/gateway.yaml` as `platforms.discord.client_id`.
+pub fn invite_url(client_id: &str) -> anyhow::Result<String> {
+    let id = client_id.trim();
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) || id.len() < 15 {
+        anyhow::bail!("discord client_id must be the numeric Application ID (portal → General Information)");
+    }
+    Ok(format!(
+        "https://discord.com/oauth2/authorize?client_id={id}&permissions={}&scope=bot+applications.commands",
+        INVITE_PERMISSIONS
+    ))
+}
+
 /// Slash commands we register and handle (hermes: /ask /reset /status /stop).
 #[cfg(feature = "discord")]
 const SLASH_COMMANDS: [(&str, &str); 4] = [
@@ -293,7 +310,7 @@ mod tests {
     use crate::platform::utf16_len;
 
     fn cfg(token: &str) -> PlatformConfig {
-        PlatformConfig { enabled: true, token: Some(token.to_string()), app_token: None, home_channel: None }
+        PlatformConfig { enabled: true, token: Some(token.to_string()), app_token: None, home_channel: None, client_id: None }
     }
 
     #[test]
@@ -324,5 +341,15 @@ mod tests {
     fn is_auth() {
         let a = DiscordAdapter::new(cfg(&"y".repeat(30))).unwrap();
         assert!(a.is_authenticated());
+    }
+
+    #[test]
+    fn invite_url_good_bad() {
+        let url = invite_url("123456789012345678").unwrap();
+        assert!(url.starts_with("https://discord.com/oauth2/authorize?client_id=123456789012345678"));
+        assert!(url.contains("scope=bot+applications.commands"));
+        assert!(invite_url("").is_err());
+        assert!(invite_url("notanid").is_err());
+        assert!(invite_url("123").is_err());
     }
 }

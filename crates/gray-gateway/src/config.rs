@@ -27,8 +27,10 @@ pub struct PlatformConfig {
     #[serde(default)] pub token: Option<String>,
     #[serde(default)] pub app_token: Option<String>,
     #[serde(default)] pub home_channel: Option<String>,
+    /// Discord Application (client) ID — used by `gray gateway invite discord`.
+    #[serde(default)] pub client_id: Option<String>,
 }
-impl Default for PlatformConfig { fn default() -> Self { Self { enabled: false, token: None, app_token: None, home_channel: None } } }
+impl Default for PlatformConfig { fn default() -> Self { Self { enabled: false, token: None, app_token: None, home_channel: None, client_id: None } } }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     #[serde(default)] pub platforms: HashMap<Platform, PlatformConfig>,

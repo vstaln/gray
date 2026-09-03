@@ -102,6 +102,23 @@ async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
         Some(GatewayCmd::Run) => gray_gateway::daemon::run_gateway().await,
         Some(GatewayCmd::Install) => gray_gateway::systemd::install(),
         Some(GatewayCmd::Uninstall) => gray_gateway::systemd::uninstall(),
+        Some(GatewayCmd::Invite { platform }) => print_invite(&platform),
+    }
+}
+
+fn print_invite(platform: &str) -> anyhow::Result<()> {
+    match platform.to_ascii_lowercase().as_str() {
+        "discord" => {
+            let cfg = gray_gateway::config::load_gateway_config();
+            let id = cfg
+                .platforms
+                .get(&gray_gateway::config::Platform::Discord)
+                .and_then(|c| c.client_id.clone())
+                .ok_or_else(|| anyhow::anyhow!("set platforms.discord.client_id to your Application ID in ~/.gray/gateway.yaml (portal → General Information)"))?;
+            println!("{}", gray_gateway::discord::invite_url(&id)?);
+            Ok(())
+        }
+        other => anyhow::bail!("no invite URL for platform {other:?} (only discord)"),
     }
 }
 

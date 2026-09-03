@@ -133,7 +133,7 @@ mod tests {
     use crate::platform::utf16_len;
 
     fn cfg(bot: &str, app: Option<&str>) -> PlatformConfig {
-        PlatformConfig { enabled: true, token: Some(bot.to_string()), app_token: app.map(|s| s.to_string()), home_channel: None }
+        PlatformConfig { enabled: true, token: Some(bot.to_string()), app_token: app.map(|s| s.to_string()), home_channel: None, client_id: None }
     }
 
     #[test]
