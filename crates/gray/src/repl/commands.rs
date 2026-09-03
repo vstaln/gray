@@ -226,10 +226,38 @@ pub fn parse_command(line: &str) -> ReplCommand {
                 return ReplCommand::Skill(t.strip_prefix("/skills:").map(str::to_string));
             }
             if t.starts_with('/') {
+                // Codex port (`reference/openai/codex/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs`
+                // `validate_submission`): a slash-name containing '/' is plain
+                // text, not an unknown command — e.g. `///` doc comments, `//`
+                // comments, `/tmp/foo` paths. Bare `/` (empty name) is text too.
+                let name = t[1..].split_whitespace().next().unwrap_or("");
+                if name.is_empty() || name.contains('/') {
+                    return ReplCommand::Prompt(t.to_string());
+                }
                 return ReplCommand::Unknown(t.to_string());
             }
             ReplCommand::Prompt(t.to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReplCommand, parse_command};
+
+    #[test]
+    fn slash_name_with_slash_is_plain_prompt_like_codex() {
+        // Reported bug: pasting Rust `///` doc comments said "unknown command".
+        let pasted = "/// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`\n/// on first run.";
+        assert!(matches!(parse_command(pasted), ReplCommand::Prompt(_)));
+        assert!(matches!(parse_command("// comment"), ReplCommand::Prompt(_)));
+        assert!(matches!(parse_command("/tmp/foo"), ReplCommand::Prompt(_)));
+        assert!(matches!(parse_command("/"), ReplCommand::Prompt(_)));
+        // Genuinely unknown single-token commands still error.
+        assert!(matches!(parse_command("/boguscmd"), ReplCommand::Unknown(_)));
+        // Known commands unaffected.
+        assert!(matches!(parse_command("/help"), ReplCommand::Help));
+        assert!(matches!(parse_command("/model foo"), ReplCommand::Model(_)));
     }
 }
 
