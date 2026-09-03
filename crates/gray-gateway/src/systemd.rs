@@ -4,7 +4,7 @@ pub fn systemd_unit_path() -> PathBuf {
     PathBuf::from(home).join(".config/systemd/user/gray-gateway.service")
 }
 pub fn generate_unit(gray_bin: &PathBuf) -> String {
-    let gray_home = std::env::var("GRAY_HOME").unwrap_or_else(|_| format!("{}/.gray", std::env::var("HOME").unwrap_or_default()));
+    let gray_home = crate::config::gray_home_dir().map(|p| p.display().to_string()).unwrap_or_else(|_| format!("{}/.gray", std::env::var("HOME").unwrap_or_default()));
     format!("[Unit]\nDescription=Gray Gateway\nAfter=network.target\n\n[Service]\nExecStart={} gateway run\nRestart=always\nRestartSec=5\nEnvironment=GRAY_HOME={}\n\n[Install]\nWantedBy=default.target\n", gray_bin.display(), gray_home)
 }
 pub fn install() -> anyhow::Result<()> {

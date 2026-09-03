@@ -37,9 +37,12 @@ pub struct GatewayConfig {
 }
 fn default_group_per_user() -> bool { true }
 impl Default for GatewayConfig { fn default() -> Self { Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false } } }
-pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
+pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
     let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map_err(|_| anyhow::anyhow!("cannot resolve home"))?;
-    Ok(PathBuf::from(base).join("gateway.yaml"))
+    Ok(PathBuf::from(base))
+}
+pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
+    gray_home_dir().map(|b| b.join("gateway.yaml"))
 }
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else { return GatewayConfig::default(); };

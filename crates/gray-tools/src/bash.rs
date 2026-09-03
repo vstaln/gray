@@ -16,7 +16,7 @@ use crate::{fail, finish, get_opt_u64, get_str, Tool};
 fn sanitize_binary_output(bytes: &[u8]) -> String {
     let filtered: Vec<u8> = bytes
         .iter()
-        .filter(|&&b| b == 0x09 || b == 0x0A || b == 0x0D || b >= 0x20 || b >= 0x80)
+        .filter(|&&b| b == 0x09 || b == 0x0A || b == 0x0D || b >= 0x20)
         .copied()
         .collect();
     // Trim to last valid UTF-8 boundary and convert lossily

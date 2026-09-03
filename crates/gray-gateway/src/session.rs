@@ -33,8 +33,7 @@ impl FileGatewayStore {
         Self { path, map: RwLock::new(map) }
     }
     pub fn default_path() -> anyhow::Result<PathBuf> {
-        let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map_err(|_| anyhow::anyhow!("no home"))?;
-        Ok(PathBuf::from(base).join("gateway_sessions.json"))
+        crate::config::gray_home_dir().map(|b| b.join("gateway_sessions.json"))
     }
     fn persist(&self) {
         if let Ok(map) = self.map.read() {
@@ -46,7 +45,7 @@ impl FileGatewayStore {
     }
 }
 impl FileGatewayStore {
-    pub fn get_or_create(&self, key: &str, _src: &SessionSource) -> String {
+    pub fn get_or_create(&self, key: &str) -> String {
         if let Some(e) = self.map.read().unwrap().get(key) { return e.session_id.clone(); }
         let id = uuid::Uuid::new_v4().to_string();
         let entry = GatewayEntry { session_key: key.to_string(), session_id: id.clone(), updated_at: chrono::Utc::now().timestamp() };
@@ -103,8 +102,8 @@ pub fn shared_store() -> Arc<FileGatewayStore> {
         let store = FileGatewayStore::new(path.clone());
         let src = SessionSource{ platform: Platform::Telegram, chat_id: "1".to_string(), chat_type: "dm".to_string(), user_id: None, thread_id: None, scope_id: None, message_id: None };
         let key = build_session_key(&src, true, false);
-        let id1 = store.get_or_create(&key, &src);
-        let id2 = store.get_or_create(&key, &src);
+        let id1 = store.get_or_create(&key);
+        let id2 = store.get_or_create(&key);
         assert_eq!(id1, id2);
         assert_eq!(store.get(&key), Some(id1.clone()));
         // persisted file exists

@@ -6,14 +6,13 @@
 //! commands /ask /reset /status /stop.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{split_message, truncate_message, utf16_len, BasePlatformAdapter, MessageEvent, SendResult};
+use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendResult};
 use crate::session::SessionSource;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub const MAX_LENGTH: usize = 2000;
-pub const SPLITS_LONG_MESSAGES: bool = true;
 
 /// Slash commands we register and handle (hermes: /ask /reset /status /stop).
 #[cfg(feature = "discord")]
@@ -59,13 +58,8 @@ impl DiscordAdapter {
 
 pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
     let t = token.trim();
-    if t.is_empty() {
-        anyhow::bail!("discord token empty");
-    }
     let raw = t.strip_prefix("Bot ").unwrap_or(t);
-    if raw.contains(' ') || raw.contains('\n') {
-        anyhow::bail!("discord token must not contain whitespace");
-    }
+    check_token_shape(raw, "discord token")?;
     if raw.len() < 20 {
         anyhow::bail!("discord token too short (expected >=20 chars)");
     }
@@ -256,13 +250,7 @@ impl BasePlatformAdapter for DiscordAdapter {
             return SendResult { success: true, message_id: None, error: None, retryable: false };
         }
 
-        let chunks = if SPLITS_LONG_MESSAGES && utf16_len(text) > MAX_LENGTH {
-            split_message(text, MAX_LENGTH)
-        } else if utf16_len(text) > MAX_LENGTH {
-            vec![truncate_message(text, MAX_LENGTH)]
-        } else {
-            vec![text.to_string()]
-        };
+        let chunks = crate::platform::chunk_message(text, MAX_LENGTH);
 
         #[cfg(feature = "discord")]
         {

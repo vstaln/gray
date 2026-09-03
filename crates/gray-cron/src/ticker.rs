@@ -2,16 +2,6 @@ use chrono::Utc;
 use crate::scheduler::{InflightGuard, Scheduler};
 use std::sync::Arc;
 
-/// Check which jobs are due — now delegates to Scheduler::scan_due_jobs (hermes grace/fast-forward).
-/// Kept for compat; new code should use Scheduler directly.
-pub fn due_jobs(jobs: &[crate::store::CronJob]) -> Vec<crate::store::CronJob> {
-    let now = Utc::now();
-    jobs.iter()
-        .filter(|j| j.enabled && j.next_run.map(|t| t <= now).unwrap_or(false))
-        .cloned()
-        .collect()
-}
-
 /// Simple ticker loop — hermes-style with InflightGuard dedup and grace.
 /// Uses Scheduler::scan_due_jobs under the hood.
 pub async fn run_ticker<F, Fut>(mut on_due: F)

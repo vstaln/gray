@@ -5,10 +5,9 @@
 //! passes without network deps.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{split_message, truncate_message, utf16_len, BasePlatformAdapter, SendResult};
+use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, SendResult};
 
 pub const MAX_LENGTH: usize = 4096;
-pub const SPLITS_LONG_MESSAGES: bool = true;
 
 pub struct TelegramAdapter {
     token: String,
@@ -31,13 +30,7 @@ impl TelegramAdapter {
 }
 
 pub fn validate_telegram_token(token: &str) -> anyhow::Result<()> {
-    let t = token.trim();
-    if t.is_empty() {
-        anyhow::bail!("telegram token empty");
-    }
-    if t.contains(' ') || t.contains('\n') {
-        anyhow::bail!("telegram token must not contain whitespace");
-    }
+    let t = check_token_shape(token, "telegram token")?;
     // Telegram bot tokens are "<digits>:<alphanumeric_maybe_with_dash_underscore>"
     let Some((id_part, secret)) = t.split_once(':') else {
         anyhow::bail!("telegram token must be in form <id>:<secret> (e.g. 123456:ABC...)");
@@ -99,13 +92,7 @@ impl BasePlatformAdapter for TelegramAdapter {
         }
 
         // Split long messages into 4096-unit chunks (like hermes splits_long_messages)
-        let chunks = if SPLITS_LONG_MESSAGES && utf16_len(text) > MAX_LENGTH {
-            split_message(text, MAX_LENGTH)
-        } else if utf16_len(text) > MAX_LENGTH {
-            vec![truncate_message(text, MAX_LENGTH)]
-        } else {
-            vec![text.to_string()]
-        };
+        let chunks = crate::platform::chunk_message(text, MAX_LENGTH);
 
         // Stub: log each chunk; real feature would loop bot.send_message(chat_id, chunk).await
         for (i, chunk) in chunks.iter().enumerate() {

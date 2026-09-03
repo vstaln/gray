@@ -62,7 +62,7 @@ impl GatewayRunner {
                 if stopped { "Stop requested~".into() } else { "Nothing running.".into() }
             }
             text => {
-                let sid_str = self.store.get_or_create(&key, &ev.source);
+                let sid_str = self.store.get_or_create(&key);
                 // Typing indicator while the agent works (hermes persistent typing, 8s loop).
                 let done = Arc::new(tokio::sync::Notify::new());
                 let typing_task = self.adapters.get(&platform).map(|a| {
@@ -180,8 +180,7 @@ impl GatewayRunner {
 }
 
 fn load_saved_config() -> Option<SavedConfig> {
-    let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).ok()?;
-    let path = std::path::PathBuf::from(base).join("config.json");
+    let path = crate::config::gray_home_dir().ok()?.join("config.json");
     std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok())
 }
 
@@ -189,7 +188,7 @@ fn load_saved_config() -> Option<SavedConfig> {
 struct SavedConfig { base_url: Option<String>, api_key: Option<String>, model: Option<String> }
 
 fn load_system_prompt() -> String {
-    let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map(|b| std::path::PathBuf::from(b).join("AGENTS.md")).unwrap_or_else(|_| std::path::PathBuf::from("AGENTS.md"));
+    let base = crate::config::gray_home_dir().map(|b| b.join("AGENTS.md")).unwrap_or_else(|_| std::path::PathBuf::from("AGENTS.md"));
     // migrate legacy sys.md if needed (same one-time path as lib.rs)
     if !base.exists() {
         if let Some(parent) = base.parent() {
