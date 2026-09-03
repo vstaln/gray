@@ -1,4 +1,10 @@
-use gray_plugin::profile::load_profile;
+use gray_plugin::profile::{load_entries, load_profile, PluginEntry};
+
+#[test]
+fn load_profile_with_sidecar() {
+    let entries = load_entries("testdata/gray_sidecar.yml").unwrap();
+    assert!(matches!(entries[1], PluginEntry::Sidecar(_)));
+}
 
 #[test]
 fn load_profile_returns_ordered_names() {
