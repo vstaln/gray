@@ -19,6 +19,45 @@ pub struct GatewayRunner {
     cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 }
 
+/// Restart ping-back marker (hermes parity: `~/.hermes/.restart_notify.json`).
+/// Written by `/restart` before exit; consumed on next boot, always unlinked.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RestartNotify {
+    platform: String,
+    chat_id: String,
+}
+
+fn restart_notify_path_in(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".restart_notify.json")
+}
+
+fn write_restart_marker_in(
+    home: &std::path::Path,
+    platform: Platform,
+    chat_id: &str,
+) -> anyhow::Result<()> {
+    let data = RestartNotify {
+        platform: platform.to_string(),
+        chat_id: chat_id.to_string(),
+    };
+    std::fs::write(restart_notify_path_in(home), serde_json::to_string(&data)?)?;
+    Ok(())
+}
+
+/// Read + unlink the marker. Always unlinks when present (even on parse
+/// failure) so one bad file can't spam every boot.
+fn take_restart_marker_in(home: &std::path::Path) -> Option<RestartNotify> {
+    let path = restart_notify_path_in(home);
+    if !path.exists() {
+        return None;
+    }
+    let data = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let _ = std::fs::remove_file(&path);
+    data
+}
+
 impl GatewayRunner {
     pub fn from_config(config: GatewayConfig) -> anyhow::Result<Self> {
         let store = shared_store();
@@ -60,6 +99,18 @@ impl GatewayRunner {
                 let sid = self.store.get(&key).unwrap_or_default();
                 let stopped = self.cancel_tokens.lock().unwrap().get(&sid).map(|t| t.cancel()).is_some();
                 if stopped { "Stop requested~".into() } else { "Nothing running.".into() }
+            }
+            "/restart" => {
+                // hermes parity: remember the requester, reply, then exit;
+                // systemd (Restart=always) revives us and boot pings back.
+                if let Ok(home) = crate::config::gray_home_dir() {
+                    let _ = write_restart_marker_in(&home, platform, &chat_id);
+                }
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_secs(2));
+                    std::process::exit(0);
+                });
+                "Restarting gateway…".into()
             }
             text => {
                 let sid_str = self.store.get_or_create(&key);
@@ -165,6 +216,52 @@ impl GatewayRunner {
         Ok(reply)
     }
 
+    /// hermes parity (`gateway/run.py` boot sequence): ping the `/restart`
+    /// requester, then DM each platform's `home_channel`. Sends are timeout-
+    /// bounded so a flood-control sleep can't freeze boot.
+    pub async fn send_startup_notifications(&self) {
+        if let Ok(home) = crate::config::gray_home_dir() {
+            if let Some(m) = take_restart_marker_in(&home) {
+                match m.platform.parse::<Platform>() {
+                    Ok(p) if self.adapters.contains_key(&p) => {
+                        let a = Arc::clone(&self.adapters[&p]);
+                        let chat = m.chat_id.clone();
+                        let res = tokio::time::timeout(
+                            Duration::from_secs(20),
+                            a.send(&chat, "♻ Gateway restarted successfully. Your session continues."),
+                        )
+                        .await;
+                        match res {
+                            Ok(r) if r.success => log::info!("gateway restart ping sent to {p}:{chat}"),
+                            Ok(r) => log::warn!("gateway restart ping failed: {:?}", r.error),
+                            Err(_) => log::warn!("gateway restart ping timed out"),
+                        }
+                    }
+                    _ => log::warn!("gateway restart marker: no live adapter for '{}'", m.platform),
+                }
+            }
+        }
+        // Settle beat (hermes: 1s helps fresh reconnect deliveries).
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        for (plat, adapter) in &self.adapters {
+            let home = self
+                .config
+                .platforms
+                .get(plat)
+                .and_then(|c| c.home_channel.clone())
+                .unwrap_or_default();
+            if home.trim().is_empty() {
+                continue;
+            }
+            let res = tokio::time::timeout(Duration::from_secs(20), adapter.send(&home, "● Gray gateway online.")).await;
+            match res {
+                Ok(r) if r.success => log::info!("gateway online notice sent to {plat}"),
+                Ok(r) => log::warn!("gateway online notice failed: {:?}", r.error),
+                Err(_) => log::warn!("gateway online notice timed out for {plat}"),
+            }
+        }
+    }
+
     fn resolve_model(&self) -> Option<String> {
         let (_, _, m) = self.resolve_provider_config();
         m
@@ -248,6 +345,8 @@ async fn run_gateway_inner(token: tokio_util::sync::CancellationToken) -> anyhow
     }
     if runner.adapters.is_empty() { anyhow::bail!("no gateway platforms enabled — edit ~/.gray/gateway.yaml"); }
 
+    runner.send_startup_notifications().await;
+
     let runner = Arc::new(runner);
     // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
     // dedicated LocalSet thread; spawn_local per event keeps /stop responsive mid-run.
@@ -315,5 +414,25 @@ mod tests {
         let cfg = GatewayConfig{ platforms, ..Default::default() };
         let runner = GatewayRunner::from_config(cfg).unwrap();
         assert!(runner.adapters.is_empty());
+    }
+    #[test]
+    fn restart_marker_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        assert!(take_restart_marker_in(home).is_none());
+        write_restart_marker_in(home, Platform::Telegram, "12345").unwrap();
+        let m = take_restart_marker_in(home).unwrap();
+        assert_eq!(m.platform, "telegram");
+        assert_eq!(m.chat_id, "12345");
+        // consumed: gone, no repeat spam on next boot
+        assert!(!restart_notify_path_in(home).exists());
+        assert!(take_restart_marker_in(home).is_none());
+    }
+    #[test]
+    fn restart_marker_bad_content_unlinked() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(restart_notify_path_in(dir.path()), "not json").unwrap();
+        assert!(take_restart_marker_in(dir.path()).is_none());
+        assert!(!restart_notify_path_in(dir.path()).exists());
     }
 }

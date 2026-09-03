@@ -12,27 +12,39 @@ use super::Tui;
 // Attachment helpers — verbatim from mod.rs 759-885
 // ---------------------------------------------------------------------------
 
+/// Placeholder index across both `[Image #n]` (images) and `[File #n]` (pdf/video/other).
+fn placeholder_index(ph: &str) -> Option<usize> {
+    ph.strip_prefix("[Image #")
+        .or_else(|| ph.strip_prefix("[File #"))
+        .and_then(|s| s.strip_suffix(']'))
+        .and_then(|n| n.parse::<usize>().ok())
+}
+
 pub(crate) fn attach_image(tui: &mut Tui, path: PathBuf) {
     let mut max_idx = 0;
     for (ph, _) in &tui.attachments {
-        if let Some(num_str) = ph.strip_prefix("[Image #").and_then(|s| s.strip_suffix(']')) {
-            if let Ok(n) = num_str.parse::<usize>() {
-                max_idx = max_idx.max(n);
-            }
+        if let Some(n) = placeholder_index(ph) {
+            max_idx = max_idx.max(n);
         }
     }
     let text = tui.textarea.text().to_string();
-    for cap in text.match_indices("[Image #") {
-        let substr = &text[cap.0..];
-        if let Some(end) = substr.find(']') {
-            let num_str = &substr[8..end];
-            if let Ok(n) = num_str.parse::<usize>() {
-                max_idx = max_idx.max(n);
+    for prefix in ["[Image #", "[File #"] {
+        for cap in text.match_indices(prefix) {
+            let substr = &text[cap.0..];
+            if let Some(end) = substr.find(']') {
+                let num_str = &substr[prefix.len()..end];
+                if let Ok(n) = num_str.parse::<usize>() {
+                    max_idx = max_idx.max(n);
+                }
             }
         }
     }
     let idx = max_idx + 1;
-    let placeholder = format!("[Image #{idx}]");
+    let placeholder = if crate::repl::attachments::attachment_kind(&path) == crate::repl::attachments::AttachmentKind::Image {
+        format!("[Image #{idx}]")
+    } else {
+        format!("[File #{idx}]")
+    };
     tui.textarea.insert_element(&placeholder);
     tui.attachments.push((placeholder.clone(), path));
     let _ = tui.draw();
@@ -43,15 +55,15 @@ pub(crate) fn sync_attachments(tui: &mut Tui) {
     tui.attachments.retain(|(ph, _)| text.contains(ph));
 }
 
-pub(crate) fn is_image_path(path: &str) -> bool {
+/// Any file the media pipeline accepts (images, pdf, video, audio) —
+/// opencode parity: MIME-driven, not image-only.
+pub(crate) fn is_attachable_path(path: &str) -> bool {
+    use crate::repl::attachments::{attachment_kind, AttachmentKind};
     let p = Path::new(path.trim().trim_matches(|c| c == '"' || c == '\'' || c == '`'));
     if !p.exists() || !p.is_file() {
         return false;
     }
-    matches!(
-        p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref(),
-        Some("png") | Some("jpg") | Some("jpeg") | Some("webp") | Some("gif") | Some("bmp") | Some("heic") | Some("heif")
-    )
+    !matches!(attachment_kind(p), AttachmentKind::Unsupported)
 }
 
 pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
@@ -64,7 +76,7 @@ pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
     } else {
         trimmed
     };
-    if is_image_path(path_str) {
+    if is_attachable_path(path_str) {
         let path = PathBuf::from(path_str);
         attach_image(tui, path);
         return true;
@@ -89,7 +101,7 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
             }
         }
         if let Ok(text) = clipboard.get_text() {
-            if is_image_path(&text) {
+            if is_attachable_path(&text) {
                 attach_image(tui, PathBuf::from(text.trim()));
                 return true;
             }
