@@ -748,6 +748,11 @@ struct ResponsesRequest {
     /// folds generated reasoning into its cached prompt, which breaks the
     /// exact-prefix match on later turns (measured: turn 3+ misses at 0%).
     store: bool,
+    /// Reasoning summaries (`summary: "auto"`, opencode parity): without this
+    /// the backend returns encrypted-only thinking and there is nothing to
+    /// display — no `response.reasoning_summary_text.delta` events arrive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -759,7 +764,12 @@ struct ResponsesTool {
     parameters: Value,
 }
 
-fn map_chat_to_responses(req: ChatRequest, model: &str, session_id: Option<&str>) -> ResponsesRequest {
+fn map_chat_to_responses(
+    req: ChatRequest,
+    model: &str,
+    session_id: Option<&str>,
+    reasoning_effort: Option<&str>,
+) -> ResponsesRequest {
     let instructions = req.system;
     let mut input: Vec<Value> = Vec::new();
     for msg in req.messages {
@@ -886,6 +896,19 @@ fn map_chat_to_responses(req: ChatRequest, model: &str, session_id: Option<&str>
         stream: true,
         prompt_cache_key: session_id.map(str::to_string),
         store: false,
+        reasoning: map_responses_reasoning(reasoning_effort),
+    }
+}
+
+/// `reasoning: {effort, summary: "auto"}` for the Responses API.
+/// `None`/missing effort omits the field (backend default); `"off"` omits it
+/// too (display is suppressed separately via hide_thinking). `"max"` is not a
+/// Responses-API value — closest is `"xhigh"`.
+fn map_responses_reasoning(reasoning_effort: Option<&str>) -> Option<Value> {
+    match reasoning_effort {
+        None | Some("off") => None,
+        Some("max") => Some(serde_json::json!({"effort": "xhigh", "summary": "auto"})),
+        Some(eff) => Some(serde_json::json!({"effort": eff, "summary": "auto"})),
     }
 }
 
@@ -1579,7 +1602,7 @@ impl Provider for OpenAiProvider {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
             };
-            let body = map_chat_to_responses(req, &self.model, self.session_id.as_deref());
+            let body = map_chat_to_responses(req, &self.model, self.session_id.as_deref(), self.reasoning_effort.as_deref());
             log::debug!(target: "gray_provider", "using Responses API for model {}", self.model);
             let init_state = StreamState::ResponsesInit {
                 client: self.http.clone(),
