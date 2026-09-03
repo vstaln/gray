@@ -7,7 +7,6 @@
 
 pub mod bash;
 pub mod cron_tool;
-pub mod delegate;
 pub mod edit;
 pub mod edit_diff;
 pub mod find;
@@ -97,12 +96,6 @@ impl Registry {
         reg.register(Box::new(LsTool));
         reg.register(Box::new(CronTool));
         reg.register(Box::new(RequestUserInputTool));
-        {
-            use gray_core::delegation::DelegateConfig;
-            use crate::delegate::DelegateTool;
-            let cfg = DelegateConfig::default();
-            reg.register(Box::new(DelegateTool::with_global_state(cfg)));
-        }
         reg
     }
 
