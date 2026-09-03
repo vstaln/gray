@@ -24,6 +24,7 @@ gray-gateway = { path = "crates/gray-gateway" }
 gray-cron = { path = "crates/gray-cron" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
+gray-plugin = { path = "crates/gray-plugin" }
 gray-session = { path = "crates/gray-session" }
 
 # External dependencies

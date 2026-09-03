@@ -1,0 +1,5 @@
+plugins:
+  - tools-basic
+  - tools-search
+  - provider-openai
+  - cron

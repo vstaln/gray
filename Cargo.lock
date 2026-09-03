@@ -1334,6 +1334,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gray-plugin"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "gray-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gray-provider"
 version = "0.1.0"
 dependencies = [
@@ -1374,6 +1384,7 @@ dependencies = [
  "futures",
  "gray-core",
  "gray-cron",
+ "gray-plugin",
  "gray-session",
  "libc",
  "log",

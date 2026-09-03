@@ -26,7 +26,7 @@ pub struct Manifest {
 #[async_trait]
 pub trait Plugin: Send + Sync {
     fn manifest(&self) -> Manifest;
-    fn tools(&self) -> Vec<Arc<dyn gray_tools::Tool>> {
+    fn tools(&self) -> Vec<Arc<dyn gray_core::agent::Tool>> {
         vec![]
     }
     fn provider(&self) -> Option<Arc<dyn gray_core::agent::Provider>> {
