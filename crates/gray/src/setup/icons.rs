@@ -1,4 +1,6 @@
-//! Nerd Font icons with pure-ASCII fallback (ported from `reference/empryo/src/core/icons.ts`).
+//! Hexagon context glyphs with pure-ASCII fallback.
+//! One family, three states: filled = taken, hollow = free/reserved.
+//! Deliberately not Claude Code's cylinders — same idea, different shape.
 use std::sync::OnceLock;
 
 static NERD_FONT: OnceLock<bool> = OnceLock::new();
@@ -40,36 +42,24 @@ pub fn init_nerd_font() {
     set_nerd_font(env_override().unwrap_or_else(auto_detect));
 }
 
-/// Icon by name: Nerd PUA glyphs when available, else pure ASCII.
+/// Icon by name: hexagons when available, else pure ASCII.
+/// `cell` = used (tinted per category), `cell_free` = free (dim),
+/// `cell_buffer` = autocompact buffer (rose; hollow like free, color differs).
 pub fn icon(name: &str) -> &'static str {
     if has_nerd_font() {
         match name {
-            "system" => "",     // \u{f013} cog
-            "project" => "",    // \u{f07b} folder
-            "tools" => "",      // \u{f0ad} wrench
-            "skills" => "󰢪",    // \u{f08aa}
-            "messages" => "",   // \u{f075} comment
-            "context" => "",    // \u{f1c0} database
-            "dot" => "●",
-            "free" => "░",
-            "reserve" => "✕",
-            "arrow" => "›",
-            "free_space" => "○",
+            "cell" => "⬢",
+            "cell_free" => "⬡",
+            "cell_buffer" => "⬡",
+            "arrow" => "❯",
             _ => "?",
         }
     } else {
         match name {
-            "system" => "#",
-            "project" => "P",
-            "tools" => "T",
-            "skills" => "*",
-            "messages" => ">",
-            "context" => "@",
-            "dot" => ".",
-            "free" => ".",
-            "reserve" => "x",
+            "cell" => "#",
+            "cell_free" => ".",
+            "cell_buffer" => "x",
             "arrow" => ">",
-            "free_space" => "o",
             _ => "?",
         }
     }
