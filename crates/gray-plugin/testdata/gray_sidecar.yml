@@ -1,0 +1,3 @@
+plugins:
+  - builtin: tools-basic
+  - sidecar: ~/.gray/plugins/my-tools

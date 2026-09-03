@@ -47,15 +47,28 @@ pub fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
 /// Ordered plugins named by the `gray.yml` profile, or `None` when the
 /// profile is missing/unparseable (caller falls back to builtin).
 /// Unknown names warn loudly; parse errors warn naming path + error.
+/// Sidecar spawn failures are loud (bail naming entry index + argv).
 fn profile_plugins() -> Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>> {
     let defaults = default_plugins();
-    match gray_plugin::profile::load_profile("gray.yml") {
-        Ok(names) => {
+    match gray_plugin::profile::load_entries("gray.yml") {
+        Ok(entries) => {
             let mut plugins = Vec::new();
-            for n in &names {
-                match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
-                    Some(p) => plugins.push(p),
-                    None => eprintln!("warning: unknown plugin {n:?} in gray.yml — ignoring"),
+            for (i, e) in entries.iter().enumerate() {
+                match e {
+                    gray_plugin::profile::PluginEntry::Builtin(n) => {
+                        match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
+                            Some(p) => plugins.push(p),
+                            None => eprintln!("warning: unknown plugin {n:?} in gray.yml — ignoring"),
+                        }
+                    }
+                    gray_plugin::profile::PluginEntry::Sidecar(spec) => {
+                        match spawn_sidecar(i, &spec.0) {
+                            Ok(p) => plugins.push(p),
+                            Err(err) => {
+                                eprintln!("warning: sidecar[{i}] ({}) failed to spawn: {err:?} — ignoring", spec.0.join(" "));
+                            }
+                        }
+                    }
                 }
             }
             Some(plugins)
@@ -65,6 +78,29 @@ fn profile_plugins() -> Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>> {
             None
         }
     }
+}
+
+/// Spawn a sidecar plugin from sync boot code: block on the current tokio
+/// handle when inside a runtime, else a throwaway current-thread runtime.
+fn spawn_sidecar(index: usize, argv: &[String]) -> anyhow::Result<std::sync::Arc<dyn gray_plugin::Plugin>> {
+    use anyhow::Context;
+    let argv = argv.to_vec();
+    let spawn = |argv: Vec<String>| async move {
+        let label = argv.join(" ");
+        gray_plugin::sidecar::SidecarPlugin::spawn(argv)
+            .await
+            .with_context(|| format!("sidecar[{index}] ({label}) failed to spawn"))
+    };
+    let plugin = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(spawn(argv)))?
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("cannot start tokio runtime to spawn sidecar")?
+            .block_on(spawn(argv))?
+    };
+    Ok(std::sync::Arc::new(plugin) as std::sync::Arc<dyn gray_plugin::Plugin>)
 }
 
 /// Builds the tool registry from the `gray.yml` profile plugin order,
