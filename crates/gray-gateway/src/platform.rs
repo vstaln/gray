@@ -52,16 +52,6 @@ pub fn preview_80(s: &str) -> &str {
     &s[..i]
 }
 
-/// Split `text` into chunks each <= `max_utf16` (utf16 units, char-safe).
-/// Short texts come back as a single chunk.
-pub fn chunk_message(text: &str, max_utf16: usize) -> Vec<String> {
-    if utf16_len(text) <= max_utf16 {
-        vec![text.to_string()]
-    } else {
-        split_message(text, max_utf16)
-    }
-}
-
 /// Shared token preamble: trim, reject empty/whitespace. Returns trimmed token.
 pub fn check_token_shape(token: &str, what: &str) -> anyhow::Result<String> {
     let t = token.trim();

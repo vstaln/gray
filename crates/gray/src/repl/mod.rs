@@ -74,12 +74,18 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 /// Restores the inline viewport after an alternate-screen modal (model/provider/etc).
 /// EnterAlternateScreen/LeaveAlternateScreen breaks ratatui's Inline(10) viewport anchor;
 /// without this the next Tui::draw renders off-screen and the input box vanishes.
+/// Width unchanged → just re-anchor (LeaveAlternateScreen already restored the
+/// scrollback; clearing/re-emitting here destroyed it). Width changed → full reflow.
 fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     if let Some(shared) = tui {
         if let Ok(mut t) = shared.try_lock() {
             let cols = crossterm::terminal::size().map(|(c, _)| c).unwrap_or(t.last_width);
-            t.pending_resize = None;
-            t.reflow_on_resize(cols);
+            if cols == t.last_width {
+                t.reanchor_viewport(cols);
+            } else {
+                t.pending_resize = None;
+                t.reflow_on_resize(cols);
+            }
         }
     }
 }
@@ -446,10 +452,34 @@ async fn handle_context_window(
     direct: Option<String>,
     tui: Option<&crate::composer::SharedTui>,
 ) {
-    let Some(val) = direct else {
-        // show current effective window
+    fn emit(msg: String, tui: Option<&crate::composer::SharedTui>, ok: bool) {
+        if let Some(shared) = tui {
+            if ok {
+                let mut t = shared.lock().expect("tui lock");
+                t.push_dim(format!("╰ {msg}"));
+                let _ = t.draw();
+            } else {
+                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
+            }
+        } else if ok {
+            println!("✓ {msg}");
+        } else {
+            println!("{msg}");
+        }
+    }
+    fn persist_window(config: &Config) {
+        if let Ok(path) = crate::setup::saved_config_path() {
+            let mut saved = crate::setup::load_saved_config_at(&path);
+            saved.context_window = config.context_window;
+            saved.context_reserve = config.context_reserve;
+            saved.context_keep = config.context_keep;
+            let _ = crate::setup::save_saved_config_at(&path, &saved);
+        }
+    }
+    fn status_msg(config: &Config) -> String {
         let model = config.model.as_deref().unwrap_or("");
         let effective = crate::setup::resolve_model_context_length(model);
+        let max = crate::setup::model_max_context(model);
         let user = crate::setup::get_user_context_window();
         let cached = crate::setup::get_cached_model_context(model);
         let source = if user.is_some() {
@@ -459,27 +489,29 @@ async fn handle_context_window(
         } else {
             "hardcoded fallback"
         };
-        let msg = format!(
-            "context window: {} tokens ({}) — source: {source}\n  set: /context-window 128k  |  clear: /context-window auto",
+        format!(
+            "context window: {} tokens ({}) / max {} ({}) — source: {source}\n  reserve: {}  keep: {}\n  set: /context-window 128k | /context-window reserve 16k | /context-window keep 20k  |  clear: /context-window auto",
             effective,
-            crate::setup::format_context_length(effective)
-        );
-        if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
-        } else {
-            println!("{msg}");
-        }
+            crate::setup::format_context_length(effective),
+            max,
+            crate::setup::format_context_length(max),
+            crate::setup::format_context_length(crate::setup::user_reserve_tokens()),
+            crate::setup::format_context_length(crate::setup::user_keep_recent_tokens()),
+        )
+    }
+    let Some(val) = direct else {
+        emit(status_msg(config), tui, false);
         return;
     };
     let lower = val.trim().to_lowercase();
-    if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" || lower.is_empty() {
+    if lower.is_empty() || lower == "status" || lower == "show" {
+        emit(status_msg(config), tui, false);
+        return;
+    }
+    if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" {
         config.context_window = None;
         crate::setup::set_user_context_window(None);
-        if let Ok(path) = crate::setup::saved_config_path() {
-            let mut saved = crate::setup::load_saved_config_at(&path);
-            saved.context_window = None;
-            let _ = crate::setup::save_saved_config_at(&path, &saved);
-        }
+        persist_window(config);
         // re-prime cache if model present
         if let Some(m) = config.model.clone() {
             if crate::setup::get_cached_model_context(&m).is_none() {
@@ -491,49 +523,109 @@ async fn handle_context_window(
             }
         }
         let effective = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
-        let msg = format!(
-            "context window cleared → auto ({} / {})",
-            effective,
-            crate::setup::format_context_length(effective)
+        emit(
+            format!(
+                "context window cleared → auto ({} / {})",
+                effective,
+                crate::setup::format_context_length(effective)
+            ),
+            tui,
+            true,
         );
-        if let Some(shared) = tui {
-            let mut t = shared.lock().expect("tui lock");
-            t.push_dim(format!("╰ {msg}"));
-            let _ = t.draw();
-        } else {
-            println!("✓ {msg}");
+        return;
+    }
+    // Subcommands: `reserve <n|auto|default>` and `keep <n|auto|default|off`
+    let mut parts = lower.splitn(2, char::is_whitespace);
+    let head = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("").trim();
+    if head == "reserve" || head == "keep" {
+        let is_reserve = head == "reserve";
+        if rest.is_empty() || rest == "status" || rest == "show" {
+            let cur = if is_reserve {
+                crate::setup::user_reserve_tokens()
+            } else {
+                crate::setup::user_keep_recent_tokens()
+            };
+            emit(
+                format!("{head}: {} ({})", cur, crate::setup::format_context_length(cur)),
+                tui,
+                false,
+            );
+            return;
+        }
+        if rest == "auto" || rest == "clear" || rest == "reset" || rest == "default" {
+            if is_reserve {
+                config.context_reserve = None;
+                crate::setup::set_user_reserve_tokens(None);
+            } else {
+                config.context_keep = None;
+                crate::setup::set_user_keep_recent_tokens(None);
+            }
+            persist_window(config);
+            emit(format!("{head} cleared → auto"), tui, true);
+            return;
+        }
+        if !is_reserve && (rest == "off" || rest == "0") {
+            config.context_keep = Some(0);
+            crate::setup::set_user_keep_recent_tokens(Some(0));
+            persist_window(config);
+            emit("keep set to 0 (summary only)".to_string(), tui, true);
+            return;
+        }
+        match crate::setup::parse_context_window(rest) {
+            Some(n) if n > 0 => {
+                if is_reserve {
+                    config.context_reserve = Some(n);
+                    crate::setup::set_user_reserve_tokens(Some(n));
+                } else {
+                    config.context_keep = Some(n);
+                    crate::setup::set_user_keep_recent_tokens(Some(n));
+                }
+                persist_window(config);
+                emit(
+                    format!("{head} set to {n} tokens ({})", crate::setup::format_context_length(n)),
+                    tui,
+                    true,
+                );
+            }
+            _ => emit(
+                format!("invalid value '{rest}' — use e.g. 16k, 20000, or 'auto' to clear"),
+                tui,
+                false,
+            ),
         }
         return;
     }
     match crate::setup::parse_context_window(&val) {
         Some(n) if n > 0 => {
-            config.context_window = Some(n);
-            crate::setup::set_user_context_window(Some(n));
-            if let Ok(path) = crate::setup::saved_config_path() {
-                let mut saved = crate::setup::load_saved_config_at(&path);
-                saved.context_window = Some(n);
-                let _ = crate::setup::save_saved_config_at(&path, &saved);
-            }
-            let msg = format!(
-                "context window set to {} tokens ({}) — overrides auto-fetched value",
-                n,
-                crate::setup::format_context_length(n)
-            );
-            if let Some(shared) = tui {
-                let mut t = shared.lock().expect("tui lock");
-                t.push_dim(format!("╰ {msg}"));
-                let _ = t.draw();
+            let model = config.model.as_deref().unwrap_or("");
+            let max = crate::setup::model_max_context(model);
+            let (final_n, clamped) = if n > max { (max, true) } else { (n, false) };
+            config.context_window = Some(final_n);
+            crate::setup::set_user_context_window(Some(final_n));
+            persist_window(config);
+            let msg = if clamped {
+                format!(
+                    "context window clamped to model max {} ({}) — requested {}",
+                    final_n,
+                    crate::setup::format_context_length(final_n),
+                    crate::setup::format_context_length(n)
+                )
             } else {
-                println!("✓ {msg}");
-            }
+                format!(
+                    "context window set to {} tokens ({}) — overrides auto-fetched value",
+                    final_n,
+                    crate::setup::format_context_length(final_n)
+                )
+            };
+            emit(msg, tui, true);
         }
         _ => {
-            let msg = format!("invalid value '{val}' — use e.g. 128000, 128k, 1m, or 'auto' to clear");
-            if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("╰ {msg}"));
-            } else {
-                println!("{msg}");
-            }
+            emit(
+                format!("invalid value '{val}' — use e.g. 128000, 128k, 1m, or 'auto' to clear"),
+                tui,
+                false,
+            );
         }
     }
 }
@@ -576,7 +668,7 @@ async fn handle_compact(
     }
 
     let compact_res =
-        crate::compact::compact_with_instructions(ag, custom_instructions.as_deref()).await;
+        crate::compact::compact_with_keep(ag, custom_instructions.as_deref(), crate::setup::user_keep_recent_tokens()).await;
 
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").set_status(None);
@@ -800,6 +892,7 @@ enum GatewayAction {
     Status,
     Connect(gray_gateway::config::Platform, String),
     Disconnect(gray_gateway::config::Platform),
+    Enable(gray_gateway::config::Platform),
     Run,
     Stop,
     Install,
@@ -832,6 +925,13 @@ fn parse_gateway_args(raw: &str) -> GatewayAction {
             },
             None => GatewayAction::Help,
         },
+        Some("enable") => match toks.next() {
+            Some(p) => match p.parse::<gray_gateway::config::Platform>() {
+                Ok(plat) => GatewayAction::Enable(plat),
+                Err(_) => GatewayAction::Help,
+            },
+            None => GatewayAction::Help,
+        },
         Some(_) => GatewayAction::Help,
     }
 }
@@ -848,11 +948,12 @@ fn gateway_status_lines(cfg: &gray_gateway::config::GatewayConfig, running: bool
     for plat in [Platform::Telegram, Platform::Discord, Platform::Slack] {
         let state = match cfg.platforms.get(&plat) {
             Some(pc) if pc.enabled => "enabled",
+            Some(pc) if pc.token.as_ref().is_some_and(|t| !t.is_empty()) => "disabled (token saved)",
             _ => "disabled",
         };
-        lines.push(format!("  {plat}: {state}"));
+        lines.push(format!("  {}: {state}", plat.label()));
     }
-    lines.push("usage: /gateway connect <telegram|discord|slack> <token> | disconnect <platform> | run | stop | install | uninstall | status".to_string());
+    lines.push("usage: /gateway connect <platform> <token> | enable <platform> | disconnect <platform> | run | stop | install | uninstall | status".to_string());
     lines
 }
 
@@ -863,11 +964,22 @@ fn apply_connect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gatew
     pc.token = Some(token.to_string());
 }
 
-/// Disables `plat` and clears its token.
+/// Disables `plat` but keeps its token so re-enabling doesn't ask again.
 fn apply_disconnect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform) {
     let pc = cfg.platforms.entry(plat).or_default();
     pc.enabled = false;
-    pc.token = None;
+}
+
+/// Re-enables `plat` with its saved token. Returns false when no token is
+/// stored (caller should ask for `/gateway connect <platform> <token>`).
+fn apply_enable(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform) -> bool {
+    let Some(pc) = cfg.platforms.get_mut(&plat) else { return false; };
+    if pc.token.as_ref().is_some_and(|t| !t.is_empty()) {
+        pc.enabled = true;
+        true
+    } else {
+        false
+    }
 }
 
 type GatewayHandle = (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Sender<()>);
@@ -894,7 +1006,7 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_connect(&mut cfg, plat, &token);
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("╰ {plat} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)")),
+                Ok(()) => say(tui, &format!("╰ {} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)", plat.label())),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
             }
         }
@@ -902,8 +1014,19 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_disconnect(&mut cfg, plat);
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("╰ {plat} disabled")),
+                Ok(()) => say(tui, &format!("╰ {} disabled — token kept", plat.label())),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
+            }
+        }
+        GatewayAction::Enable(plat) => {
+            let mut cfg = gray_gateway::config::load_gateway_config();
+            if apply_enable(&mut cfg, plat) {
+                match gray_gateway::config::save_gateway_config(&cfg) {
+                    Ok(()) => say(tui, &format!("╰ {} enabled (saved token)", plat.label())),
+                    Err(e) => say(tui, &format!("gateway config error: {e}")),
+                }
+            } else {
+                say(tui, &format!("╰ no saved token for {} — use /gateway connect {plat} <token>", plat.label()));
             }
         }
         GatewayAction::Run => {
@@ -1391,7 +1514,7 @@ async fn maybe_threshold_compact(
 ) {
     let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
     let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
-    if !crate::compact::should_compact(tokens, window, &crate::compact::DEFAULT_COMPACTION_SETTINGS) {
+    if !crate::compact::should_compact(tokens, window, &crate::compact::compaction_settings()) {
         return;
     }
     say(
@@ -1470,6 +1593,8 @@ pub async fn run_repl_mode(
 
     // context window: user override > auto-fetched provider value > hardcoded fallback
     crate::setup::set_user_context_window(config.context_window);
+    crate::setup::set_user_reserve_tokens(config.context_reserve);
+    crate::setup::set_user_keep_recent_tokens(config.context_keep);
     // auto-fetch provider context window in background if not yet cached and no user override
     if crate::setup::get_user_context_window().is_none() {
         if let Some(m) = config.model.clone() {
@@ -1496,6 +1621,8 @@ pub async fn run_repl_mode(
         print!("\r\n");
         // onboarding may have set model/base_url — re-sync context window override and prime cache
         crate::setup::set_user_context_window(config.context_window);
+        crate::setup::set_user_reserve_tokens(config.context_reserve);
+        crate::setup::set_user_keep_recent_tokens(config.context_keep);
         if crate::setup::get_user_context_window().is_none() {
             if let Some(m) = config.model.clone() {
                 if crate::setup::get_cached_model_context(&m).is_none() {
@@ -2798,6 +2925,10 @@ mod tests {
             G::Disconnect(Platform::Slack) => {}
             other => panic!("expected disconnect slack, got {other:?}"),
         }
+        match super::parse_gateway_args("/gateway enable Telegram") {
+            G::Enable(Platform::Telegram) => {}
+            other => panic!("expected enable telegram, got {other:?}"),
+        }
     }
 
     #[test]
@@ -2808,7 +2939,11 @@ mod tests {
         assert!(pc.enabled && pc.token.as_deref() == Some("tok-1"));
         super::apply_disconnect(&mut cfg, gray_gateway::config::Platform::Telegram);
         let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
-        assert!(!pc.enabled && pc.token.is_none());
+        assert!(!pc.enabled && pc.token.as_deref() == Some("tok-1")); // token kept
+        assert!(super::apply_enable(&mut cfg, gray_gateway::config::Platform::Telegram));
+        let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
+        assert!(pc.enabled && pc.token.as_deref() == Some("tok-1"));
+        assert!(!super::apply_enable(&mut cfg, gray_gateway::config::Platform::Slack)); // no token
     }
 
     #[test]
@@ -2817,7 +2952,7 @@ mod tests {
         super::apply_connect(&mut cfg, gray_gateway::config::Platform::Discord, "secret-token");
         let lines = super::gateway_status_lines(&cfg, true);
         let joined = lines.join("\n");
-        assert!(joined.contains("discord"), "should list platform: {joined}");
+        assert!(joined.contains("Discord"), "should list platform: {joined}");
         assert!(joined.contains("connected"), "should show in-process running state: {joined}");
         assert!(!joined.contains("secret-token"), "token must never render: {joined}");
         let lines = super::gateway_status_lines(&cfg, false);

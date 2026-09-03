@@ -146,6 +146,42 @@ pub fn should_compact(tokens: usize, window: usize, s: &CompactionSettings) -> b
     s.enabled && tokens > window.saturating_sub(s.reserve_tokens)
 }
 
+/// Effective compaction settings from user overrides (or legacy defaults).
+pub fn compaction_settings() -> CompactionSettings {
+    CompactionSettings {
+        enabled: true,
+        reserve_tokens: crate::setup::user_reserve_tokens(),
+        keep_recent_tokens: crate::setup::user_keep_recent_tokens(),
+    }
+}
+
+/// Recent tail of `messages` whose estimated tokens fit in `keep_tokens`.
+/// Walks from the newest message backwards; `0` keeps nothing.
+pub fn tail_messages(messages: &[Message], keep_tokens: usize) -> Vec<Message> {
+    if keep_tokens == 0 {
+        return Vec::new();
+    }
+    let mut kept = Vec::new();
+    let mut acc = 0usize;
+    for msg in messages.iter().rev() {
+        let t = estimate_tokens(msg);
+        if kept.is_empty() && acc == 0 {
+            // Always keep at least the newest message when budget > 0,
+            // even if that single message exceeds the budget.
+            kept.push(msg.clone());
+            acc += t;
+            continue;
+        }
+        if acc + t > keep_tokens {
+            break;
+        }
+        kept.push(msg.clone());
+        acc += t;
+    }
+    kept.reverse();
+    kept
+}
+
 pub fn calculate_context_tokens(u: &Usage) -> usize {
     if u.total() > 0 { u.total() } else { u.input_tokens + u.output_tokens }
 }
@@ -188,7 +224,39 @@ pub async fn auto_compact_if_needed(
     _last_usage: Option<Usage>,
     _reason: &str,
 ) -> Result<bool, CoreError> {
-    compact_with_instructions(agent, None).await
+    let keep = crate::setup::user_keep_recent_tokens();
+    compact_with_keep(agent, None, keep).await
+}
+
+/// Summary + recent tail: replaces history with `[summary_user, summary_assistant,
+/// ...tail]` where tail fits in `keep_tokens`. `keep_tokens == 0` = legacy 2-message result.
+pub async fn compact_with_keep(
+    agent: &mut Agent,
+    custom_instructions: Option<&str>,
+    keep_tokens: usize,
+) -> Result<bool, CoreError> {
+    let messages = agent.messages().to_vec();
+    if messages.is_empty() {
+        return Ok(false);
+    }
+    let tail = tail_messages(&messages, keep_tokens);
+    let transcript = serialize_conversation(&messages);
+    let prompt = build_summarization_prompt(&transcript, custom_instructions);
+    let summary = agent
+        .complete_prompt(&prompt, Some(SUMMARIZATION_SYSTEM_PROMPT))
+        .await?;
+    let summary_trimmed = summary.trim().to_string();
+    let summary_user = Message::user(format!(
+        "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
+        summary_trimmed
+    ));
+    let summary_asst = Message::assistant(
+        "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
+    );
+    let mut next = vec![summary_user, summary_asst];
+    next.extend(tail);
+    agent.set_messages(next);
+    Ok(true)
 }
 
 /// Core compaction primitive used by both manual `/compact` and auto paths.
@@ -335,6 +403,7 @@ mod tests {
 
         let provider = FakeProvider { summary: "Test summary content".to_string() };
         let executor = NoopExecutor;
+        crate::setup::set_user_keep_recent_tokens(Some(0));
         let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_messages(vec![
             Message::user("hello"),
             Message::assistant("hi there"),
@@ -346,11 +415,30 @@ mod tests {
             api_key: None,
             thinking_effort: None,
             context_window: None,
+            context_reserve: None,
+            context_keep: None,
         };
         let compacted = auto_compact_if_needed(&mut agent, &config, None, "threshold").await.expect("compact should succeed");
+        crate::setup::set_user_keep_recent_tokens(None);
         assert!(compacted, "should have compacted");
         assert_eq!(agent.messages().len(), 2, "should be 2 messages after compact");
         assert!(agent.messages()[0].text_content().contains("Test summary content"));
+    }
+
+    #[test]
+    fn tail_keeps_recent_within_budget() {
+        let msgs = vec![
+            Message::user("a".repeat(400)), // ~100 tok
+            Message::user("b".repeat(400)), // ~100 tok
+            Message::user("c".repeat(400)), // ~100 tok
+        ];
+        let tail = tail_messages(&msgs, 150);
+        assert_eq!(tail.len(), 1, "only last msg fits in 150 tok budget, got {}", tail.len());
+        assert!(tail[0].text_content().contains('c'));
+        let tail_all = tail_messages(&msgs, 10_000);
+        assert_eq!(tail_all.len(), 3);
+        let tail_none = tail_messages(&msgs, 0);
+        assert!(tail_none.is_empty());
     }
 }
 

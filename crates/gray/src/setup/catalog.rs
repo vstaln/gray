@@ -96,6 +96,12 @@ pub struct SavedConfig {
     /// it takes precedence over the auto-fetched provider value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<usize>,
+    /// Reserve tokens before auto-compact fires (effective window = window - reserve).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_reserve: Option<usize>,
+    /// Tail budget kept alongside the summary after compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_keep: Option<usize>,
 }
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.

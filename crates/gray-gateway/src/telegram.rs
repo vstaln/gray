@@ -92,7 +92,7 @@ impl BasePlatformAdapter for TelegramAdapter {
         }
 
         // Split long messages into 4096-unit chunks (like hermes splits_long_messages)
-        let chunks = crate::platform::chunk_message(text, MAX_LENGTH);
+        let chunks = crate::platform::split_message(text, MAX_LENGTH);
 
         // Stub: log each chunk; real feature would loop bot.send_message(chat_id, chunk).await
         for (i, chunk) in chunks.iter().enumerate() {
@@ -129,7 +129,6 @@ mod tests {
             token: Some(token.to_string()),
             app_token: None,
             home_channel: None,
-            client_id: None,
         }
     }
 
@@ -151,7 +150,7 @@ mod tests {
     fn new_rejects_invalid() {
         assert!(TelegramAdapter::new(cfg("bad")).is_err());
         assert!(TelegramAdapter::new(cfg("123:short")).is_err());
-        assert!(TelegramAdapter::new(PlatformConfig { enabled: true, token: None, app_token: None, home_channel: None, client_id: None }).is_err());
+        assert!(TelegramAdapter::new(PlatformConfig { enabled: true, token: None, app_token: None, home_channel: None }).is_err());
     }
 
     #[tokio::test]

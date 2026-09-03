@@ -460,82 +460,20 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                             tui.textarea.move_to_end();
                         }
                     }
-                    KeyCode::Char(c) => {
-                        // dispatch via helper to allow popup short-circuit testing, but keep original behavior
-                        // popup does not block plain char insert (it updates filter)
-                        tui.textarea.insert_str(&c.to_string());
-                        tui.history_idx = None;
-                        tui.sel = 0;
-                    }
-                    KeyCode::Backspace => {
-                        if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
-                            tui.textarea.delete_word_backward();
-                        } else {
-                            tui.textarea.delete_backward(1);
+                    KeyCode::Char(_)
+                    | KeyCode::Backspace
+                    | KeyCode::Delete
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Up
+                    | KeyCode::Down => {
+                        // Single dispatch: popup nav first, then the shared
+                        // editing/history behavior — no inline duplicates.
+                        // (Plain Char/Backspace/Delete never trigger the popup
+                        // short-circuit; they just update the filter.)
+                        if !handle_popup_key(tui, code, modifiers) {
+                            handle_key_event_without_popup(tui, code, modifiers);
                         }
-                        sync_attachments(tui);
-                        tui.sel = 0;
-                    }
-                    KeyCode::Delete => {
-                        if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
-                            tui.textarea.delete_word_forward();
-                        } else {
-                            tui.textarea.delete_forward(1);
-                        }
-                        sync_attachments(tui);
-                        tui.sel = 0;
-                    }
-                    KeyCode::Esc => {
-                        if !tui.matches.is_empty() {
-                            tui.matches.clear();
-                            tui.sel = 0;
-                        } else {
-                            tui.textarea.set_text("");
-                            tui.attachments.clear();
-                            tui.pending_pastes.clear();
-                            tui.history_idx = None;
-                            tui.sel = 0;
-                        }
-                    }
-                    KeyCode::Left => {
-                        if handle_popup_key(tui, code, modifiers) {} else if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
-                            tui.textarea.move_word_left();
-                        } else {
-                            tui.textarea.move_left();
-                        }
-                    }
-                    KeyCode::Right => {
-                        if handle_popup_key(tui, code, modifiers) {} else if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
-                            tui.textarea.move_word_right();
-                        } else {
-                            tui.textarea.move_right();
-                        }
-                    }
-                    KeyCode::Up => {
-                        if tui.matches.len() > 1 {
-                            tui.sel = tui.sel.saturating_sub(1);
-                        } else {
-                            let has_multiline = tui.textarea.text().contains('\n');
-                            let at_top = tui.textarea.cursor() == 0 || !has_multiline;
-                            if at_top && !tui.history.is_empty() {
-                                if tui.history_idx.is_none() { tui.draft = tui.textarea.text().to_string(); tui.history_idx = Some(tui.history.len()); }
-                                if let Some(idx) = tui.history_idx.as_mut() {
-                                    if *idx > 0 { *idx -= 1; let h = tui.history[*idx].clone(); tui.textarea.set_text(&h); tui.textarea.move_to_end(); }
-                                }
-                            } else { tui.textarea.move_up(); }
-                        }
-                    }
-                    KeyCode::Down => {
-                        if tui.matches.len() > 1 {
-                            tui.sel = (tui.sel + 1).min(tui.matches.len().saturating_sub(1));
-                        } else if tui.history_idx.is_some() {
-                            let idx = tui.history_idx.unwrap();
-                            if idx + 1 >= tui.history.len() {
-                                tui.textarea.set_text(&tui.draft); tui.textarea.move_to_end(); tui.history_idx = None;
-                            } else {
-                                tui.history_idx = Some(idx+1); let h = tui.history[idx+1].clone(); tui.textarea.set_text(&h); tui.textarea.move_to_end();
-                            }
-                        } else { tui.textarea.move_down(); }
                     }
                     _ => {
                         // fallback to helper for any uncovered keys when popup closed

@@ -3,7 +3,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "setup provider & API key"),
     ("model", "switch model"),
     ("thinking", "reasoning effort"),
-    ("context-window", "set context window (e.g. 128k, auto)"),
+    ("context-window", "set context window (e.g. 128k, reserve 16k, keep 20k, auto)"),
     ("resume", "resume conversation"),
     ("new", "new conversation"),
     ("compact", "summarize context"),
@@ -112,7 +112,7 @@ pub enum ReplCommand {
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
     Model(Option<String>),
-    /// Set context window (`/context-window [128k|auto]`).
+    /// Set context window (`/context-window [128k|auto|reserve 16k|keep 20k|status]`).
     ContextWindow(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),

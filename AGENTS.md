@@ -17,11 +17,8 @@
 - Don't propose "search the web" — source is on disk.
 
 ## Build & Binary Installation
-- After modifying code in `crates/gray` or other crates, always compile the release binary and copy/install it to the user's binary path:
-  ```bash
-  cargo build --release
-  install target/release/gray ~/.local/bin/gray
-  ```
+- NEVER build (`cargo build` / `cargo test` / `cargo run`) or install the binary unless the user explicitly asks for it in that turn. Only run `cargo build --release` + `install target/release/gray ~/.local/bin/gray` when told to.
+- `cargo check` for a quick typecheck is fine without asking; full builds are not.
 - Always commit code changes.
 
 ## Website (`web/`)

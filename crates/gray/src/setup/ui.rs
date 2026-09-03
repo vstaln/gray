@@ -57,9 +57,14 @@ pub fn dim_color(c: ratatui::style::Color) -> ratatui::style::Color {
     }
 }
 
+/// Opaque backdrop for alternate-screen modals. Every dimmed style carries
+/// an explicit bg so terminal transparency / stale alt-screen cells can't
+/// bleed through the backdrop ("broken thing behind the popup").
+pub(crate) const BACKDROP_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0, 0, 0);
+
 pub fn dim_style(style: ratatui::style::Style) -> ratatui::style::Style {
     use ratatui::style::{Color, Modifier, Style};
-    let mut s = Style::default().add_modifier(Modifier::DIM);
+    let mut s = Style::default().add_modifier(Modifier::DIM).bg(BACKDROP_BG);
     if let Some(fg) = style.fg {
         s = s.fg(dim_color(fg));
     } else {
@@ -77,15 +82,33 @@ pub fn dim_line(line: &ratatui::text::Line<'_>) -> ratatui::text::Line<'static> 
         Span::styled(span.content.to_string(), dim_style(span.style))
     }).collect();
     let mut new_line = Line::from(spans);
-    new_line.style = dim_style(line.style);
+    new_line.style = dim_style(line.style).bg(BACKDROP_BG);
     new_line
+}
+
+/// Pads a backdrop line to the full width with opaque spaces so no
+/// transparent cells remain (composer `draw.rs` popup-row parity).
+/// Padding keeps the row's own bg (prompt box stays 10,10,10, transcript black).
+fn pad_backdrop_line(mut line: ratatui::text::Line<'static>, w: usize) -> ratatui::text::Line<'static> {
+    use ratatui::style::Style;
+    use ratatui::text::Span;
+    let bg = line.style.bg.unwrap_or(BACKDROP_BG);
+    let used = line.width();
+    if used < w {
+        line.spans.push(Span::styled(
+            " ".repeat(w - used),
+            Style::default().bg(bg),
+        ));
+    }
+    line.style = line.style.bg(bg);
+    line
 }
 
 pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnapshot) {
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::Paragraph;
+    use ratatui::widgets::{Clear, Paragraph};
 
     let area = frame.area();
     let w = area.width as usize;
@@ -93,6 +116,16 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     if w == 0 || h == 0 {
         return;
     }
+    // Opaque base: without this, backdrop rows with transparent cells leave
+    // stale alt-screen content / terminal transparency visible behind modals.
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " ".repeat(w),
+            Style::default().bg(BACKDROP_BG),
+        ))),
+        area,
+    );
 
     let box_bg = Color::Rgb(10, 10, 10);
     let prompt_arrow_color = Color::Rgb(70, 70, 70);
@@ -131,13 +164,14 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let pad_len = w.saturating_sub(left_len + right_text.chars().count());
 
     let footer_line = Line::from(vec![
-        Span::raw("  "),
-        Span::styled(ctx_display, Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM)),
-        Span::styled(" · ", Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM)),
-        Span::styled(cache_display, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM)),
-        Span::raw(" ".repeat(pad_len)),
-        Span::styled(right_text, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM)),
-    ]);
+        Span::styled("  ", Style::default().bg(BACKDROP_BG)),
+        Span::styled(ctx_display, Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
+        Span::styled(" · ", Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
+        Span::styled(cache_display, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
+        Span::styled(" ".repeat(pad_len), Style::default().bg(BACKDROP_BG)),
+        Span::styled(right_text, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
+    ])
+    .style(Style::default().bg(BACKDROP_BG));
 
     let composer_h = 4usize;
     let transcript_avail_h = h.saturating_sub(composer_h);
@@ -147,28 +181,36 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let transcript = &bg.transcript;
     if transcript.len() <= transcript_avail_h {
         for l in transcript {
-            full_screen_lines.push(dim_line(l));
+            full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
         let empty_needed = transcript_avail_h.saturating_sub(transcript.len());
         for _ in 0..empty_needed {
-            full_screen_lines.push(Line::from(""));
+            full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         }
     } else {
         let skip = transcript.len() - transcript_avail_h;
         for l in &transcript[skip..] {
-            full_screen_lines.push(dim_line(l));
+            full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
     }
 
     for l in bottom_box_lines {
-        full_screen_lines.push(l);
+        full_screen_lines.push(pad_backdrop_line(l, w));
     }
 
-    full_screen_lines.push(footer_line);
+    full_screen_lines.push(pad_backdrop_line(footer_line, w));
     full_screen_lines.truncate(h);
 
-    frame.render_widget(
-        Paragraph::new(full_screen_lines),
-        Rect::new(area.x, area.y, area.width, area.height),
-    );
+    // Row-by-row (composer `draw.rs` parity): a single multi-line Paragraph
+    // would wrap long transcript lines and shift the whole backdrop.
+    for (i, line) in full_screen_lines.into_iter().enumerate() {
+        let y = area.y + i as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(line),
+            Rect::new(area.x, y, area.width, 1),
+        );
+    }
 }
