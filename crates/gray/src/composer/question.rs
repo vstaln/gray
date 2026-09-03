@@ -708,6 +708,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
             let prefix = if i == sel { icon("arrow") } else { " " };
             lines.push(option_row(prefix, i + 1, label, Some(desc), i == sel));
         }
+        lines.push(Line::from("").style(bg_style));
         return lines;
     }
 
@@ -727,9 +728,10 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         Line::from(Span::styled(l, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)))
     }));
 
-    // Budget: top(1) + progress(1) + question + tips(1); rest goes to options.
+    // Budget: top(1) + progress(1) + question + tips(1) + bottom margin(1);
+    // rest goes to options.
     // ponytail: min 3 options so long questions don't squeeze to 1.
-    let budget = max_rows.saturating_sub(3 + q_lines.min(max_rows.saturating_sub(3)));
+    let budget = max_rows.saturating_sub(4 + q_lines.min(max_rows.saturating_sub(4)));
     let len = q.options_len();
     let sel = q.answers[q.current_idx].selected_idx.unwrap_or(0);
     let visible = budget.min(len).max(3.min(len));
@@ -746,6 +748,9 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     }
 
     lines.push(tips_line(q));
+    // bottom margin mirrors the top one — without it the footer jams
+    // against "enter to submit".
+    lines.push(Line::from("").style(bg_style));
     lines
 }
 
@@ -924,5 +929,17 @@ mod tests {
         // second question is now current; answer it
         q.on_key(KeyCode::Char('2'), KeyModifiers::NONE, &mut ta);
         assert!(rx2.try_recv().is_ok());
+    }
+
+    #[test]
+    fn panel_lines_end_with_bottom_margin() {
+        let (q, _rx) = mk(1);
+        let lines = panel_lines(&q, 80, 100);
+        assert!(lines.len() > 3, "panel should render, got {}", lines.len());
+        let last = lines.last().unwrap();
+        assert!(
+            last.spans.iter().all(|s| s.content.trim().is_empty()),
+            "last panel row must be blank (bottom margin)"
+        );
     }
 }
