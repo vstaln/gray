@@ -45,7 +45,19 @@ pub enum ContentBlock {
     },
     /// The model's reasoning / chain-of-thought for an assistant turn.
     /// Displayed dim+italic in the REPL (mirrors pi's thinking blocks).
-    Thinking { text: String },
+    /// `encrypted_content`/`item_id` round-trip Responses-API reasoning items
+    /// (pi_agent_rust parity) so the server keeps its prompt-cache shard warm;
+    /// `model` gates replay to the model that produced them (a foreign model
+    /// cannot decrypt the blob). All optional → old session files still parse.
+    Thinking {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encrypted_content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
 }
 
 impl ContentBlock {
@@ -67,9 +79,10 @@ impl ContentBlock {
         }
     }
 
-    /// Creates a new thinking block.
+    /// Creates a new thinking block (no replay data; the provider attaches
+    /// that when it captures a reasoning item from the stream).
     pub fn thinking(text: impl Into<String>) -> Self {
-        Self::Thinking { text: text.into() }
+        Self::Thinking { text: text.into(), encrypted_content: None, item_id: None, model: None }
     }
 
     /// Creates a new image block (base64 data).

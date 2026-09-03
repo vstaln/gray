@@ -244,6 +244,13 @@ pub enum StreamEvent {
         #[serde(alias = "text")]
         delta: String,
     },
+    /// A completed Responses-API reasoning item: its id + encrypted blob so
+    /// the agent can replay it verbatim next turn (server-side cache warmth).
+    /// The agent stamps the generating model (via `Provider::model_id`).
+    ReasoningItem {
+        item_id: String,
+        encrypted_content: String,
+    },
     /// Partial tool call chunk streamed from the provider.
     ToolCallDelta {
         index: usize,
@@ -275,6 +282,17 @@ impl StreamEvent {
     pub fn thinking_delta(delta: impl Into<String>) -> Self {
         Self::ThinkingDelta {
             delta: delta.into(),
+        }
+    }
+
+    /// Creates a reasoning-item capture (id + encrypted blob).
+    pub fn reasoning_item(
+        item_id: impl Into<String>,
+        encrypted_content: impl Into<String>,
+    ) -> Self {
+        Self::ReasoningItem {
+            item_id: item_id.into(),
+            encrypted_content: encrypted_content.into(),
         }
     }
 

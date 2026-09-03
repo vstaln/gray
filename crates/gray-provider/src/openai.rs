@@ -412,7 +412,7 @@ fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str
                             }
                         }
                         ContentBlock::Image { .. } => {}
-                        ContentBlock::Thinking { text } => {
+                        ContentBlock::Thinking { text, .. } => {
                             if !text.is_empty() {
                                 thinking_parts.push(text);
                             }
@@ -753,6 +753,11 @@ struct ResponsesRequest {
     /// display — no `response.reasoning_summary_text.delta` events arrive.
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning: Option<Value>,
+    /// Ask for `reasoning.encrypted_content` back (pi_agent_rust parity):
+    /// without this there is nothing replayable and every turn re-pays full
+    /// prefix processing. Only sent when `reasoning` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -822,6 +827,7 @@ fn map_chat_to_responses(
             }
             Role::Assistant => {
                 let mut text_parts: Vec<String> = Vec::new();
+                let mut reasoning_items: Vec<Value> = Vec::new();
                 let mut tool_uses: Vec<(String, String, Value)> = Vec::new();
                 let mut tool_results: Vec<(String, String)> = Vec::new();
                 for block in msg.content {
@@ -832,10 +838,20 @@ fn map_chat_to_responses(
                             }
                         }
                         ContentBlock::Image { .. } => {}
+                        ContentBlock::Thinking { encrypted_content: Some(ec), item_id: Some(id), model: Some(m), .. } if m == model => {
+                            // Replay the raw reasoning item verbatim so the
+                            // server keeps its cache shard warm (pi_agent_rust
+                            // parity). Same-model only: a foreign model cannot
+                            // decrypt the blob and strict servers 400 on it.
+                            reasoning_items.push(serde_json::json!({"type": "reasoning", "id": id, "summary": [], "encrypted_content": ec}));
+                        }
                         ContentBlock::Thinking { .. } => {}
                         ContentBlock::ToolUse { id, name, args } => tool_uses.push((id, name, args)),
                         ContentBlock::ToolResult { id, content, is_error: _ } => tool_results.push((id, content)),
                     }
+                }
+                for item in reasoning_items {
+                    input.push(item);
                 }
                 if !text_parts.is_empty() {
                     input.push(serde_json::json!({"role":"assistant","content": text_parts.join("\n")}));
@@ -888,6 +904,12 @@ fn map_chat_to_responses(
             parameters: t.parameters,
         })
         .collect();
+    let reasoning = map_responses_reasoning(reasoning_effort);
+    // Encrypted-content include rides with reasoning (nothing to replay
+    // without it; omitted entirely when reasoning is off).
+    let include = reasoning
+        .as_ref()
+        .map(|_| vec!["reasoning.encrypted_content".to_string()]);
     ResponsesRequest {
         model: model.to_string(),
         instructions,
@@ -896,7 +918,8 @@ fn map_chat_to_responses(
         stream: true,
         prompt_cache_key: session_id.map(str::to_string),
         store: false,
-        reasoning: map_responses_reasoning(reasoning_effort),
+        reasoning,
+        include,
     }
 }
 
@@ -1534,7 +1557,20 @@ fn stream_unfold_step(
                                         }
                                     }
                                 }
-                                "ping" | "response.created" | "response.in_progress" | "response.content_part.added" | "response.content_part.done" | "response.output_text.done" | "response.output_item.done" | "response.reasoning_text.done" => {}
+                                "response.output_item.done" => {
+                                    // Capture completed reasoning items (id +
+                                    // encrypted blob) for verbatim replay next
+                                    // turn. Other item types need no action.
+                                    if value.get("item").and_then(|i| i.get("type")).and_then(|t| t.as_str()) == Some("reasoning") {
+                                        let item = &value["item"];
+                                        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+                                        let ec = item.get("encrypted_content").and_then(|v| v.as_str()).unwrap_or_default();
+                                        if !id.is_empty() && !ec.is_empty() {
+                                            pending_events.push_back(StreamEvent::reasoning_item(id, ec));
+                                        }
+                                    }
+                                }
+                                "ping" | "response.created" | "response.in_progress" | "response.content_part.added" | "response.content_part.done" | "response.output_text.done" | "response.reasoning_text.done" => {}
                                 _ => {
                                     if let Some(uval) = value.get("response").and_then(|r| r.get("usage")).or_else(|| value.get("usage")) {
                                         if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(uval.clone()) {
@@ -1593,6 +1629,10 @@ fn stream_unfold_step(
 
 #[async_trait]
 impl Provider for OpenAiProvider {
+    fn model_id(&self) -> &str {
+        &self.model
+    }
+
     fn stream(
         &self,
         req: ChatRequest,
@@ -1674,6 +1714,59 @@ mod tests {
         let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "internal error", None, None);
         assert!(matches!(err, ProviderError::ServerError(_)));
         assert!(is_retryable_error(&err));
+    }
+
+    fn responses_req_with_thinking(model: &str) -> ChatRequest {
+        use gray_core::message::Message;
+        ChatRequest {
+            system: Some("sys".to_string()),
+            messages: vec![Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        text: "hmm".to_string(),
+                        encrypted_content: Some("blob".to_string()),
+                        item_id: Some("rs_1".to_string()),
+                        model: Some("m1".to_string()),
+                    },
+                    ContentBlock::text("answer"),
+                ],
+            }],
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn responses_include_and_replay_round_trip() {
+        let body = map_chat_to_responses(responses_req_with_thinking("m1"), "m1", Some("sess"), Some("high"));
+        let v = serde_json::to_value(&body).expect("serializes");
+        // encrypted-content include rides with reasoning
+        let include = v.get("include").and_then(|i| i.as_array()).expect("include");
+        assert!(include.iter().any(|s| s.as_str() == Some("reasoning.encrypted_content")));
+        assert!(v.get("reasoning").and_then(|r| r.get("summary")).and_then(|s| s.as_str()) == Some("auto"));
+        // same-model reasoning item replayed verbatim ahead of text
+        let input = v.get("input").and_then(|i| i.as_array()).expect("input");
+        let reason = input.iter().find(|i| i.get("type").and_then(|t| t.as_str()) == Some("reasoning")).expect("reasoning item");
+        assert_eq!(reason.get("id").and_then(|v| v.as_str()), Some("rs_1"));
+        assert_eq!(reason.get("encrypted_content").and_then(|v| v.as_str()), Some("blob"));
+    }
+
+    #[test]
+    fn responses_replay_drops_foreign_model_thinking() {
+        let body = map_chat_to_responses(responses_req_with_thinking("m1"), "m2", Some("sess"), Some("high"));
+        let v = serde_json::to_value(&body).expect("serializes");
+        let input = v.get("input").and_then(|i| i.as_array()).expect("input");
+        assert!(input.iter().all(|i| i.get("type").and_then(|t| t.as_str()) != Some("reasoning")));
+        // prose still sent
+        assert!(input.iter().any(|i| i.get("role").and_then(|r| r.as_str()) == Some("assistant")));
+    }
+
+    #[test]
+    fn responses_include_omitted_when_reasoning_off() {
+        let body = map_chat_to_responses(responses_req_with_thinking("m1"), "m1", Some("sess"), Some("off"));
+        let v = serde_json::to_value(&body).expect("serializes");
+        assert!(v.get("include").is_none());
+        assert!(v.get("reasoning").is_none());
     }
 }
 

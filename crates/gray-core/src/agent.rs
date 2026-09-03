@@ -71,6 +71,12 @@ pub trait Provider: Send + Sync {
         &self,
         req: ChatRequest,
     ) -> BoxStream<'static, Result<StreamEvent, ProviderError>>;
+
+    /// Model id behind this provider ("" when unknown). Used to stamp
+    /// captured reasoning items so replay stays same-model-only.
+    fn model_id(&self) -> &str {
+        ""
+    }
 }
 
 /// A single agent-callable tool.
@@ -307,6 +313,10 @@ impl Agent {
             // may be split across many deltas).
             let mut text_parts: Vec<String> = Vec::new();
             let mut thinking_parts: Vec<String> = Vec::new();
+            // (item_id, encrypted_content) of the latest Responses
+            // reasoning item — attached to the Thinking block at finalize so
+            // the next turn can replay it verbatim (cache warmth).
+            let mut pending_reasoning: Option<(String, String)> = None;
             let mut pending: Vec<PendingToolCall> = Vec::new();
             let mut pending_emitted_start: Vec<bool> = Vec::new();
             let (stop_reason, usage) = {
@@ -319,7 +329,7 @@ impl Agent {
                                 let mut content = Vec::new();
                                 let thinking = thinking_parts.concat();
                                 if !thinking.is_empty() {
-                                    content.push(ContentBlock::Thinking { text: thinking });
+                                    content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
                                 }
                                 content.push(ContentBlock::Text { text: text_parts.concat() });
                                 self.messages.push(Message {
@@ -338,6 +348,9 @@ impl Agent {
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
                             emit!(AgentEvent::thinking_delta(delta.clone()));
                             thinking_parts.push(delta);
+                        }
+                        Some(Ok(StreamEvent::ReasoningItem { item_id, encrypted_content })) => {
+                            pending_reasoning = Some((item_id, encrypted_content));
                         }
                         Some(Ok(StreamEvent::ToolCallDelta { index, id, name, arguments_delta })) => {
                             // cap wire-controlled indices — a hostile/broken server
@@ -381,7 +394,7 @@ impl Agent {
                                 let mut content = Vec::new();
                                 let thinking = thinking_parts.concat();
                                 if !thinking.is_empty() {
-                                    content.push(ContentBlock::Thinking { text: thinking });
+                                    content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
                                 }
                                 content.push(ContentBlock::Text { text: text_parts.concat() });
                                 self.messages.push(Message {
@@ -418,7 +431,7 @@ impl Agent {
             let mut content: Vec<ContentBlock> = Vec::new();
             let thinking = thinking_parts.concat();
             if !thinking.is_empty() {
-                content.push(ContentBlock::Thinking { text: thinking });
+                content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
             }
             let text = text_parts.concat();
             if !text.is_empty() {
@@ -588,6 +601,23 @@ impl PendingToolCall {
     }
 }
 
+/// Builds the finalized Thinking block, attaching captured Responses
+/// reasoning replay data when present. `model` stamps the generating model
+/// so replay stays same-model-only (a foreign model cannot decrypt the blob).
+fn thinking_block(
+    text: String,
+    pending_reasoning: &Option<(String, String)>,
+    model: &str,
+) -> ContentBlock {
+    let (item_id, encrypted_content, model) = match pending_reasoning {
+        Some((i, e)) if !model.is_empty() => {
+            (Some(i.clone()), Some(e.clone()), Some(model.to_string()))
+        }
+        _ => (None, None, None),
+    };
+    ContentBlock::Thinking { text, encrypted_content, item_id, model }
+}
+
 #[cfg(test)]
 mod agent_tests {
     use super::*;
@@ -745,7 +775,7 @@ mod agent_tests {
         assert_eq!(
             assistant.content,
             vec![
-                ContentBlock::Thinking { text: "hmm let me think".to_string() },
+                ContentBlock::Thinking { text: "hmm let me think".to_string(), encrypted_content: None, item_id: None, model: None },
                 ContentBlock::Text { text: "answer".to_string() },
             ]
         );
