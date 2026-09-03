@@ -168,6 +168,85 @@ pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
     None
 }
 
+/// Gap-fill insert: leaves an existing entry (e.g. provider-fetched) alone.
+/// Provider values always win over the LiteLLM table regardless of arrival order.
+pub fn cache_model_context_if_absent(model_id: &str, length: usize) {
+    if length == 0 {
+        return;
+    }
+    if let Ok(mut g) = model_context_cache().write() {
+        if g.contains_key(model_id) {
+            return;
+        }
+        g.insert(model_id.to_string(), length);
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            g.entry(lower).or_insert(length);
+        }
+    }
+}
+
+fn json_usize(v: &serde_json::Value) -> Option<usize> {
+    v.as_u64()
+        .map(|n| n as usize)
+        .or_else(|| v.as_f64().map(|f| f as usize))
+}
+
+/// Projects LiteLLM's public `model_prices_and_context_window.json` (the same
+/// table T3 Code / ccusage price against) into the context cache.
+/// `max_input_tokens` is the window; legacy `max_tokens` is the fallback
+/// (on new entries it can mean output size, so it loses). Gap-fill only.
+/// Returns the number of models cached.
+pub fn parse_litellm_context_json(val: &serde_json::Value) -> usize {
+    let Some(map) = val.as_object() else {
+        return 0;
+    };
+    let mut n = 0;
+    for (key, entry) in map {
+        if key == "sample_spec" {
+            continue;
+        }
+        let len = entry
+            .get("max_input_tokens")
+            .and_then(json_usize)
+            .or_else(|| entry.get("max_tokens").and_then(json_usize));
+        if let Some(len) = len.filter(|&v| v >= 1024) {
+            cache_model_context_if_absent(key, len);
+            // Keys are usually bare (`gpt-4o`); index the tail too so
+            // `provider/model` lookups hit without knowing every prefix.
+            if let Some((_, suffix)) = key.rsplit_once('/') {
+                cache_model_context_if_absent(suffix, len);
+            }
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Fetches LiteLLM's model table in the background and caches context windows.
+/// Fire-and-forget: callers `tokio::spawn` this at boot next to the provider
+/// `/models` fetch. Failures are silent — the hardcoded fallback covers offline.
+pub async fn fetch_litellm_context_windows() {
+    const URL: &str = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("gray/0.1.0")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let Ok(resp) = client.get(URL).send().await else {
+        return;
+    };
+    if !resp.status().is_success() {
+        return;
+    }
+    if let Ok(json) = resp.json::<serde_json::Value>().await {
+        parse_litellm_context_json(&json);
+    }
+}
+
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> = std::sync::OnceLock::new();
 
 fn user_context_window_cell() -> &'static std::sync::RwLock<Option<usize>> {
@@ -341,6 +420,12 @@ pub fn model_max_context(model_name: &str) -> usize {
     if let Some(cached) = get_cached_model_context(&lower) {
         return cached;
     }
+    // `provider/model` ids vs bare cache keys (`gpt-4o`): try the tail.
+    if let Some((_, suffix)) = model_name.rsplit_once('/') {
+        if let Some(cached) = get_cached_model_context(suffix) {
+            return cached;
+        }
+    }
     fallback_context_length(&lower)
 }
 
@@ -490,6 +575,28 @@ mod tests {
     fn compaction_defaults_match_legacy() {
         assert_eq!(user_reserve_tokens(), 16_384);
         assert_eq!(user_keep_recent_tokens(), 20_000);
+    }
+
+    #[test]
+    fn litellm_parse_fills_gaps_only() {
+        let v: serde_json::Value = serde_json::json!({
+            "sample_spec": {"max_input_tokens": 1},
+            "test-litellm-alpha": {"max_input_tokens": 123000, "max_tokens": 16000},
+            "test-litellm-beta": {"max_tokens": 64000},
+            "test-litellm-tiny": {"max_tokens": 16},
+            "prov/test-litellm-gamma": {"max_input_tokens": 50000},
+        });
+        assert_eq!(parse_litellm_context_json(&v), 3);
+        // max_input_tokens wins over output-sized max_tokens
+        assert_eq!(model_max_context("test-litellm-alpha"), 123_000);
+        assert_eq!(model_max_context("test-litellm-beta"), 64_000);
+        // suffix fallback: `some-provider/model` hits the bare key
+        assert_eq!(model_max_context("someprov/test-litellm-alpha"), 123_000);
+        assert_eq!(model_max_context("prov/test-litellm-gamma"), 50_000);
+        // provider values win over litellm gaps regardless of order
+        cache_model_context("test-litellm-alpha", 999_000);
+        assert_eq!(parse_litellm_context_json(&v), 3);
+        assert_eq!(model_max_context("test-litellm-alpha"), 999_000);
     }
 
     #[test]

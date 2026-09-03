@@ -78,7 +78,7 @@ crates/
 
 ## Context window & auto-compact
 
-Context window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` > auto-fetched provider value > hardcoded fallback per model. Inspect with `/context`, set with `/context 128k` (or `1m`, `auto` to clear).
+Context window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` > auto-fetched provider value > LiteLLM model table > hardcoded fallback per model. Inspect with `/context`, set with `/context 128k` (or `1m`, `auto` to clear).
 
 When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray auto-compacts before the next turn by summarizing history into a 2-message summary (same flow as manual `/compact`). On `context_length` / `max_tokens` overflow errors it compacts and retries once. No flag needed — auto is the default; use `/compact` to force a manual summarization.
 

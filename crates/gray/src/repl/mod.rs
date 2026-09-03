@@ -520,7 +520,7 @@ async fn handle_context_window(
         let source = if user.is_some() {
             "user override"
         } else if cached.is_some() {
-            "auto-fetched from provider"
+            "auto-fetched"
         } else {
             "hardcoded fallback"
         };
@@ -1663,12 +1663,13 @@ pub async fn run_repl_mode(
     let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
 
-    // context window: user override > auto-fetched provider value > hardcoded fallback
+    // context window: user override > auto-fetched provider value > LiteLLM table > hardcoded fallback
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     // auto-fetch provider context window in background if not yet cached and no user override
     if crate::setup::get_user_context_window().is_none() {
+        tokio::spawn(crate::setup::fetch_litellm_context_windows());
         if let Some(m) = config.model.clone() {
             if crate::setup::get_cached_model_context(&m).is_none() {
                 let base = config.base_url.clone();
@@ -1696,6 +1697,7 @@ pub async fn run_repl_mode(
         crate::setup::set_user_reserve_tokens(config.context_reserve);
         crate::setup::set_user_keep_recent_tokens(config.context_keep);
         if crate::setup::get_user_context_window().is_none() {
+            tokio::spawn(crate::setup::fetch_litellm_context_windows());
             if let Some(m) = config.model.clone() {
                 if crate::setup::get_cached_model_context(&m).is_none() {
                     let base = config.base_url.clone();
