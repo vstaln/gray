@@ -186,6 +186,50 @@ pub fn get_user_context_window() -> Option<usize> {
     user_context_window_cell().read().ok().and_then(|g| *g)
 }
 
+pub const DEFAULT_RESERVE_TOKENS: usize = 16_384;
+pub const DEFAULT_KEEP_RECENT_TOKENS: usize = 20_000;
+
+static USER_RESERVE_TOKENS: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
+    std::sync::OnceLock::new();
+static USER_KEEP_TOKENS: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
+    std::sync::OnceLock::new();
+
+fn user_reserve_cell() -> &'static std::sync::RwLock<Option<usize>> {
+    USER_RESERVE_TOKENS.get_or_init(|| std::sync::RwLock::new(None))
+}
+fn user_keep_cell() -> &'static std::sync::RwLock<Option<usize>> {
+    USER_KEEP_TOKENS.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// User override for auto-compact reserve (`None` = default 16k).
+pub fn set_user_reserve_tokens(v: Option<usize>) {
+    if let Ok(mut g) = user_reserve_cell().write() {
+        *g = v.filter(|&n| n > 0);
+    }
+}
+/// Effective reserve: override or default.
+pub fn user_reserve_tokens() -> usize {
+    user_reserve_cell()
+        .read()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or(DEFAULT_RESERVE_TOKENS)
+}
+/// User override for keep-recent tail (`None` = default 20k).
+pub fn set_user_keep_recent_tokens(v: Option<usize>) {
+    if let Ok(mut g) = user_keep_cell().write() {
+        *g = v;
+    }
+}
+/// Effective keep-recent: override or default.
+pub fn user_keep_recent_tokens() -> usize {
+    user_keep_cell()
+        .read()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or(DEFAULT_KEEP_RECENT_TOKENS)
+}
+
 /// Parses a human-friendly context window string: `128000`, `128k`, `1m`, `1.5m`, `256k`, etc.
 /// Accepts commas/underscores and is case-insensitive. `k` = 1_000, `m` = 1_000_000.
 pub fn parse_context_window(s: &str) -> Option<usize> {
@@ -283,7 +327,13 @@ pub fn resolve_model_context_length(model_name: &str) -> usize {
     if let Some(user) = get_user_context_window() {
         return user;
     }
-    // 2) auto-fetched provider value (populated by fetch_live_provider_models)
+    model_max_context(model_name)
+}
+
+/// Model max ignoring the user override: live cache → hardcoded fallback.
+/// Use for clamping user input so effective window never exceeds what the model supports.
+pub fn model_max_context(model_name: &str) -> usize {
+    // auto-fetched provider value (populated by fetch_live_provider_models)
     if let Some(cached) = get_cached_model_context(model_name) {
         return cached;
     }
@@ -291,8 +341,10 @@ pub fn resolve_model_context_length(model_name: &str) -> usize {
     if let Some(cached) = get_cached_model_context(&lower) {
         return cached;
     }
+    fallback_context_length(&lower)
+}
 
-    // Advertised model context capacities
+fn fallback_context_length(lower: &str) -> usize {
     if lower.contains("gemini-1.5-pro") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") || lower.contains("gemini-1.5-flash") || lower.contains("gemini") {
         1_048_576
     } else if lower.contains("claude-opus-4") || lower.contains("claude-sonnet-4") || lower.contains("claude-4") || lower.contains("claude-5") {
@@ -355,4 +407,23 @@ pub fn model_context_info(model_name: &str) -> (usize, String) {
     let tokens = resolve_model_context_length(model_name);
     let label = format_context_length(tokens);
     (tokens, label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_max_ignores_user_override() {
+        set_user_context_window(Some(8_000));
+        // gpt-4o fallback is 128k; max must ignore the 8k override
+        assert_eq!(model_max_context("gpt-4o"), 128_000);
+        set_user_context_window(None);
+    }
+
+    #[test]
+    fn compaction_defaults_match_legacy() {
+        assert_eq!(user_reserve_tokens(), 16_384);
+        assert_eq!(user_keep_recent_tokens(), 20_000);
+    }
 }

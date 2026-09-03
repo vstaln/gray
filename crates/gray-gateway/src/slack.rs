@@ -107,7 +107,7 @@ impl BasePlatformAdapter for SlackAdapter {
             return SendResult { success: true, message_id: None, error: None, retryable: false };
         }
 
-        let chunks = crate::platform::chunk_message(text, MAX_LENGTH);
+        let chunks = crate::platform::split_message(text, MAX_LENGTH);
 
         for (i, chunk) in chunks.iter().enumerate() {
             debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
@@ -133,7 +133,7 @@ mod tests {
     use crate::platform::utf16_len;
 
     fn cfg(bot: &str, app: Option<&str>) -> PlatformConfig {
-        PlatformConfig { enabled: true, token: Some(bot.to_string()), app_token: app.map(|s| s.to_string()), home_channel: None, client_id: None }
+        PlatformConfig { enabled: true, token: Some(bot.to_string()), app_token: app.map(|s| s.to_string()), home_channel: None }
     }
 
     #[test]

@@ -11,7 +11,10 @@ pub use context::{
     cache_model_context, extract_context_length_from_json, fetch_live_provider_models,
     format_context_length, friendly_model_name, get_cached_model_context, get_provider_models,
     get_provider_models_with_live, get_user_context_window, model_context_info,
-    parse_context_window, resolve_model_context_length, set_user_context_window,
+    model_max_context, parse_context_window, resolve_model_context_length,
+    set_user_context_window, set_user_keep_recent_tokens, set_user_reserve_tokens,
+    user_keep_recent_tokens, user_reserve_tokens, DEFAULT_KEEP_RECENT_TOKENS,
+    DEFAULT_RESERVE_TOKENS,
 };
 
 pub mod ui;
@@ -1356,27 +1359,28 @@ pub fn gateway_modal_rows(cfg: &gray_gateway::config::GatewayConfig, running: bo
     use gray_gateway::config::Platform;
     let mut rows = Vec::new();
     for plat in [Platform::Telegram, Platform::Discord, Platform::Slack] {
-        let enabled = cfg.platforms.get(&plat).is_some_and(|p| p.enabled);
-        rows.push((
-            String::new(),
-            plat.to_string(),
-            if enabled { "enabled".to_string() } else { "disabled — enter token".to_string() },
-        ));
+        let status = match cfg.platforms.get(&plat) {
+            Some(p) if p.enabled => "enabled".to_string(),
+            Some(p) if p.token.as_ref().is_some_and(|t| !t.is_empty()) => "disabled — token saved".to_string(),
+            _ => "disabled — enter token".to_string(),
+        };
+        rows.push((String::new(), plat.label().to_string(), status));
     }
     rows.push(("__sep".to_string(), String::new(), String::new()));
     rows.push((
         format!("/gateway {}", if running { "stop" } else { "run" }),
-        if running { "stop gateway" } else { "start gateway" }.to_string(),
+        if running { "Stop gateway" } else { "Start gateway" }.to_string(),
         String::new(),
     ));
-    rows.push(("/gateway install".to_string(), "install systemd service".to_string(), String::new()));
-    rows.push(("/gateway uninstall".to_string(), "remove systemd service".to_string(), String::new()));
+    rows.push(("/gateway install".to_string(), "Install systemd service".to_string(), String::new()));
+    rows.push(("/gateway uninstall".to_string(), "Remove systemd service".to_string(), String::new()));
     rows
 }
 
 /// Interactive `/gateway` picker (like `/model`, `/skills`): platforms with
-/// enabled state, plus daemon/service actions. Enter on a disabled platform
-/// opens an inline token input; on an enabled platform it disconnects.
+/// enabled state, plus daemon/service actions. Enter on a platform without a
+/// saved token opens an inline token input; on a disabled platform with a
+/// saved token it re-enables; on an enabled platform it disconnects (token kept).
 /// Returns the equivalent command string for the caller to execute.
 pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyhow::Result<Option<String>> {
     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -1550,12 +1554,17 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
                             continue;
                         }
                         if cmd.is_empty() {
-                            // platform row: disabled → token input, enabled → disconnect
+                            // platform row: no saved token → token input,
+                            // disabled with token → re-enable, enabled → disconnect
                             let Ok(plat) = label.parse::<gray_gateway::config::Platform>() else { continue; };
                             let cfg_now = gray_gateway::config::load_gateway_config();
-                            let enabled = cfg_now.platforms.get(&plat).is_some_and(|p| p.enabled);
+                            let entry = cfg_now.platforms.get(&plat);
+                            let enabled = entry.is_some_and(|p| p.enabled);
                             if enabled {
                                 return Ok(Some(format!("/gateway disconnect {plat}")));
+                            }
+                            if entry.and_then(|p| p.token.as_ref()).is_some_and(|t| !t.is_empty()) {
+                                return Ok(Some(format!("/gateway enable {plat}")));
                             }
                             input_for = Some(label.clone());
                             input_buf.clear();
@@ -1589,16 +1598,26 @@ mod gateway_modal_tests {
     fn gateway_modal_rows_reflect_state() {
         use gray_gateway::config::{GatewayConfig, Platform, PlatformConfig};
         let mut platforms = std::collections::HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig { enabled: true, token: Some("x".into()), app_token: None, home_channel: None, client_id: None });
+        platforms.insert(Platform::Telegram, PlatformConfig { enabled: true, token: Some("x".into()), app_token: None, home_channel: None });
         let cfg = GatewayConfig { platforms, ..Default::default() };
         let rows = gateway_modal_rows(&cfg, false);
-        assert_eq!(rows[0], (String::new(), "telegram".into(), "enabled".into()));
+        assert_eq!(rows[0], (String::new(), "Telegram".into(), "enabled".into()));
         assert_eq!(rows[1].2, "disabled — enter token");
-        assert!(rows.iter().any(|(c, l, _)| c == "/gateway run" && l == "start gateway"));
+        assert!(rows.iter().any(|(c, l, _)| c == "/gateway run" && l == "Start gateway"));
         let rows = gateway_modal_rows(&cfg, true);
-        assert!(rows.iter().any(|(c, l, _)| c == "/gateway stop" && l == "stop gateway"));
+        assert!(rows.iter().any(|(c, l, _)| c == "/gateway stop" && l == "Stop gateway"));
         assert!(rows.iter().any(|(c, _, _)| c == "/gateway install"));
         assert!(rows.iter().any(|(c, _, _)| c == "/gateway uninstall"));
+    }
+
+    #[test]
+    fn gateway_modal_rows_show_saved_token() {
+        use gray_gateway::config::{GatewayConfig, Platform, PlatformConfig};
+        let mut platforms = std::collections::HashMap::new();
+        platforms.insert(Platform::Discord, PlatformConfig { enabled: false, token: Some("saved".into()), app_token: None, home_channel: None });
+        let cfg = GatewayConfig { platforms, ..Default::default() };
+        let rows = gateway_modal_rows(&cfg, false);
+        assert_eq!(rows[1], (String::new(), "Discord".into(), "disabled — token saved".into()));
     }
 }
 

@@ -198,6 +198,26 @@ impl Tui {
         })
     }
 
+    /// Re-anchors the inline viewport after an alternate-screen modal
+    /// (`EnterAlternateScreen`/`LeaveAlternateScreen` breaks ratatui's
+    /// `Inline` anchor, so the next draw would render off-screen).
+    /// `LeaveAlternateScreen` already restores the main-screen scrollback,
+    /// so unlike `reflow_on_resize` this must NOT clear or re-emit anything —
+    /// purging here is what destroyed the transcript behind modals.
+    pub(crate) fn reanchor_viewport(&mut self, cols: u16) {
+        self.last_width = cols;
+        self.pending_resize = None;
+        if let Ok(term) = Terminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+            },
+        ) {
+            self.terminal = term;
+        }
+        let _ = self.draw();
+    }
+
     /// Codex-style transcript reflow on terminal resize:
     /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.

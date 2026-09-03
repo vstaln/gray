@@ -14,6 +14,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let mut config = Config::resolve(&cli)?;
     gray::setup::set_user_context_window(config.context_window);
+    gray::setup::set_user_reserve_tokens(config.context_reserve);
+    gray::setup::set_user_keep_recent_tokens(config.context_keep);
     gray::oauth::apply_saved_oauth(&mut config).await;
     if let Some(cmd) = cli.command {
         match cmd {
@@ -111,14 +113,11 @@ fn print_invite(platform: &str) -> anyhow::Result<()> {
         "discord" => {
             let cfg = gray_gateway::config::load_gateway_config();
             let plat = cfg.platforms.get(&gray_gateway::config::Platform::Discord);
-            // client_id is auto-derived from the token when not set explicitly.
+            // client_id is derived from the token.
             let id = plat
-                .and_then(|c| c.client_id.clone())
-                .or_else(|| {
-                    plat.and_then(|c| c.token.clone())
-                        .and_then(|t| gray_gateway::discord::client_id_from_token(&t))
-                })
-                .ok_or_else(|| anyhow::anyhow!("set platforms.discord.token (or client_id) in ~/.gray/gateway.yaml"))?;
+                .and_then(|c| c.token.clone())
+                .and_then(|t| gray_gateway::discord::client_id_from_token(&t))
+                .ok_or_else(|| anyhow::anyhow!("set platforms.discord.token in ~/.gray/gateway.yaml"))?;
             println!("{}", gray_gateway::discord::invite_url(&id)?);
             Ok(())
         }

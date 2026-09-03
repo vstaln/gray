@@ -21,16 +21,21 @@ impl std::fmt::Display for Platform {
         match self { Self::Telegram => write!(f, "telegram"), Self::Discord => write!(f, "discord"), Self::Slack => write!(f, "slack") }
     }
 }
+impl Platform {
+    /// Human-facing name for menus and status lines. `Display` stays lowercase:
+    /// it feeds command strings and persisted session keys (`gray:main:telegram:…`).
+    pub fn label(&self) -> &'static str {
+        match self { Self::Telegram => "Telegram", Self::Discord => "Discord", Self::Slack => "Slack" }
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformConfig {
     #[serde(default)] pub enabled: bool,
     #[serde(default)] pub token: Option<String>,
     #[serde(default)] pub app_token: Option<String>,
     #[serde(default)] pub home_channel: Option<String>,
-    /// Discord Application (client) ID — used by `gray gateway invite discord`.
-    #[serde(default)] pub client_id: Option<String>,
 }
-impl Default for PlatformConfig { fn default() -> Self { Self { enabled: false, token: None, app_token: None, home_channel: None, client_id: None } } }
+impl Default for PlatformConfig { fn default() -> Self { Self { enabled: false, token: None, app_token: None, home_channel: None } } }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     #[serde(default)] pub platforms: HashMap<Platform, PlatformConfig>,

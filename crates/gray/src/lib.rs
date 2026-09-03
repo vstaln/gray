@@ -30,7 +30,7 @@ use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;
 use gray_tools::Registry;
 
-/// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`
+/// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
 pub const DEFAULT_SYS_PROMPT: &str = r#"You are gray, a minimal agent running on the user's machine.
 You help by using tools: read files, run commands, edit code, search.
@@ -202,6 +202,14 @@ pub struct Cli {
     /// Override model context window in tokens (e.g. 128000 or 128k). Env: GRAY_CONTEXT_WINDOW. Highest priority over auto-fetched provider value.
     #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
     pub context_window: Option<usize>,
+
+    /// Reserve tokens before auto-compact fires (e.g. 16k). Env: GRAY_CONTEXT_RESERVE.
+    #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
+    pub context_reserve: Option<usize>,
+
+    /// Tail budget kept alongside the summary after compaction (e.g. 20k). Env: GRAY_CONTEXT_KEEP.
+    #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
+    pub context_keep: Option<usize>,
 
     /// Resume subcommand (picker by default; see `gray resume --help`)
     #[command(subcommand)]

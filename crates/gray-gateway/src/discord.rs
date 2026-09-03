@@ -23,12 +23,8 @@ pub const INVITE_PERMISSIONS: u64 = 1024 + 2048 + 65536;
 pub fn client_id_from_token(token: &str) -> Option<String> {
     let raw = token.trim().strip_prefix("Bot ").unwrap_or(token.trim());
     let seg = raw.split('.').next()?;
-    let mut padded = seg.to_string();
-    while padded.len() % 4 != 0 {
-        padded.push('=');
-    }
     use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::URL_SAFE.decode(&padded).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(seg).ok()?;
     let id = String::from_utf8(bytes).ok()?;
     if id.chars().all(|c| c.is_ascii_digit()) && (15..=21).contains(&id.len()) {
         Some(id)
@@ -38,8 +34,8 @@ pub fn client_id_from_token(token: &str) -> Option<String> {
 }
 
 /// Build the OAuth2 invite URL for `client_id` (Application ID, numeric).
-/// Normally you never pass one by hand: it is read from
-/// `platforms.discord.client_id`, falling back to `client_id_from_token`.
+/// Normally you never pass one by hand: the ID is derived from
+/// `platforms.discord.token` via `client_id_from_token`.
 pub fn invite_url(client_id: &str) -> anyhow::Result<String> {
     let id = client_id.trim();
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) || id.len() < 15 {
@@ -94,9 +90,7 @@ impl DiscordAdapter {
 }
 
 pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
-    let t = token.trim();
-    let raw = t.strip_prefix("Bot ").unwrap_or(t);
-    check_token_shape(raw, "discord token")?;
+    let raw = check_token_shape(token.strip_prefix("Bot ").unwrap_or(token), "discord token")?;
     if raw.len() < 20 {
         anyhow::bail!("discord token too short (expected >=20 chars)");
     }
@@ -287,7 +281,7 @@ impl BasePlatformAdapter for DiscordAdapter {
             return SendResult { success: true, message_id: None, error: None, retryable: false };
         }
 
-        let chunks = crate::platform::chunk_message(text, MAX_LENGTH);
+        let chunks = crate::platform::split_message(text, MAX_LENGTH);
 
         #[cfg(feature = "discord")]
         {
@@ -330,7 +324,7 @@ mod tests {
     use crate::platform::utf16_len;
 
     fn cfg(token: &str) -> PlatformConfig {
-        PlatformConfig { enabled: true, token: Some(token.to_string()), app_token: None, home_channel: None, client_id: None }
+        PlatformConfig { enabled: true, token: Some(token.to_string()), app_token: None, home_channel: None }
     }
 
     #[test]
@@ -379,7 +373,7 @@ mod tests {
         let id = "123456789012345678";
         let tok = format!("{}.fake.sig", base64::engine::general_purpose::URL_SAFE.encode(id));
         assert_eq!(client_id_from_token(&tok), Some(id.to_string()));
-        assert_eq!(client_id_from_token("Bot ".to_string() + &tok), Some(id.to_string()));
+        assert_eq!(client_id_from_token(&("Bot ".to_string() + &tok)), Some(id.to_string()));
         assert_eq!(client_id_from_token("short"), None);
         assert_eq!(client_id_from_token(""), None);
     }

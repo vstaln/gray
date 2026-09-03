@@ -41,7 +41,7 @@
 
 **Context:** Narrow-terminal breaks partly from parse accepting `MAX_NODES=128` + `MAX_GROUPS=24` then layout tries to fit them in 60cols → fallback box. Also `HTML_FORMAT_TAGS` 24 entries + `strip_markdown` double-passes are dead weight.
 
-- [ ] **Step 1: Cap `MAX_NODES` 128→64 and `MAX_GROUPS` 24→12** (ponytail: lower ceiling, upgrade when real diagram needs it — comment `# ponytail: capped, raise if legit diagram hits it`)
+- [ ] **Step 1: Cap `MAX_NODES` 128→64 and `MAX_GROUPS` 24→12**
 - [ ] **Step 2: Delete `strip_markdown` backtick/strong pass if not covered by tests** — `clean_label` already does `decode_html_entities` once; keep single path. If tests fail, revert.
 - [ ] **Step 3: Verify** `cargo test -p gray-markdown 2>&1 | tail -n 20` PASS ; `cargo build -p gray-markdown` PASS
 - [ ] **Step 4: Commit** `git commit -m "refactor: simplify mermaid parse caps and dead markdown strip"`
