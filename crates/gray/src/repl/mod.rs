@@ -3126,6 +3126,17 @@ mod tests {
     }
 
     #[test]
+    fn format_core_error_bounds_detail_and_marks_retryable() {
+        let base = "https://opencode.ai/zen/go/v1";
+        let long = format!("status 429: {}", "x".repeat(2000));
+        let out = format_core_error(&CoreError::Provider(long), base);
+        assert!(out.contains("(retryable)"), "rate arm must say retryable: {out}");
+        assert!(out.chars().count() < 1200, "detail must be capped, got {} chars", out.chars().count());
+        let auth = format_core_error(&CoreError::Provider("401 unauthorized nope".into()), base);
+        assert!(auth.contains("(not retryable)"), "auth arm must say not retryable: {auth}");
+    }
+
+    #[test]
     fn gateway_args_parse_all_actions() {
         use super::GatewayAction as G;
         use gray_gateway::config::Platform;
