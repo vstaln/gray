@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use crate::config::{GatewayConfig, Platform, load_gateway_config};
-use crate::platform::{BasePlatformAdapter, MessageEvent, SendResult, truncate_message};
+use crate::platform::{BasePlatformAdapter, MessageEvent, SendResult, preview_80, truncate_message};
 use crate::session::{build_session_key, shared_store, FileGatewayStore};
 
 use crate::telegram::TelegramAdapter;
@@ -41,7 +41,7 @@ impl GatewayRunner {
         let platform = ev.source.platform;
         let chat_id = ev.source.chat_id.clone();
         let key = build_session_key(&ev.source, self.config.group_per_user, self.config.thread_per_user);
-        log::info!("gateway inbound {platform} chat={chat_id} key={key} text={:?}", &ev.text[..ev.text.len().min(80)]);
+        log::info!("gateway inbound {platform} chat={chat_id} key={key} text={:?}", preview_80(&ev.text));
 
         let reply_text = match ev.text.trim() {
             "/reset" => {

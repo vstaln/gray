@@ -137,7 +137,7 @@ impl BasePlatformAdapter for SlackAdapter {
             }
             #[cfg(not(feature = "slack"))]
             {
-                log::info!("[slack] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), &chunk[..chunk.len().min(80)]);
+                log::info!("[slack] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), crate::platform::preview_80(chunk));
             }
         }
 
