@@ -421,12 +421,11 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string(), attached.to_vec()));
         self.transcript.extend(lines);
-        // Normal prompts keep a trailing gap (agent output follows with its
-        // own spacing). Slash commands skip it: their output hugs the card,
-        // and command feedback (say()) leaves the gap below instead.
-        if !text.trim_start().starts_with('/') {
-            self.ensure_gap(1);
-        }
+        // Trailing gap after every card — command and prompt alike. Handlers
+        // that print feedback (say()) treat the gap as idempotent; handlers
+        // that print nothing (dismissed modal) still leave breathing room
+        // before the next prompt instead of jamming against the card.
+        self.ensure_gap(1);
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
