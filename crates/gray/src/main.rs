@@ -13,12 +13,19 @@ async fn main() -> anyhow::Result<()> {
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
     if cli.dump_manifest {
-        let (manifests, fallback) = gray::effective_manifests();
-        if fallback {
-            eprintln!("note: gray.yml profile missing/unresolvable — showing builtin manifests");
+        match gray::effective_manifests().await {
+            Ok((manifests, fallback)) => {
+                if fallback {
+                    eprintln!("note: gray.yml profile missing/unresolvable — showing builtin manifests");
+                }
+                println!("{}", serde_json::to_string_pretty(&manifests)?);
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("error: gray.yml: {e:#}");
+                std::process::exit(1);
+            }
         }
-        println!("{}", serde_json::to_string_pretty(&manifests)?);
-        return Ok(());
     }
     let mut config = Config::resolve(&cli)?;
     gray::setup::set_user_context_window(config.context_window);

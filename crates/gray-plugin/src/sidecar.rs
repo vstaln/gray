@@ -1,3 +1,16 @@
+//! Sidecar plugin protocol (v0).
+//!
+//! Transport: newline-delimited JSON over child stdio. Requests the host
+//! sends are `{"id", "method", "params?"}`; sidecars reply with
+//! `{"id", "result"}` for request/response methods only:
+//! - `plugin/manifest` (request): no params, reply `{"name","version","tools","provider?"}`.
+//! - `tool/call` (request): params `{"name","args"}`, reply `{"content","is_error?"}`.
+//! - `event/notify` (notification): NO `id`, NO reply expected. Params carry a
+//!   minimal tagged event `{"type", ...}` where type is one of
+//!   `pre_step` | `pre_tool` | `post_tool` | `turn_end` with only the fields
+//!   the sidecar needs (tool name/args, output content, usage totals).
+//! Unknown methods/lines are ignored by the test fixtures.
+
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -30,7 +43,6 @@ pub struct SidecarPlugin {
     tools: Vec<Arc<dyn Tool>>,
     state: Arc<Mutex<State>>,
     argv: Vec<String>,
-    next_id: Arc<AtomicU64>,
 }
 
 fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, Io)> {
@@ -51,7 +63,7 @@ impl SidecarPlugin {
         let (child, io) = spawn_child(&argv)?;
         let state = Arc::new(Mutex::new(State { child, io }));
         let next_id = Arc::new(AtomicU64::new(1));
-        let manifest = Self::rpc(&state, &next_id, "plugin/manifest", None, Duration::from_secs(30))
+        let mut manifest = Self::rpc(&state, &next_id, "plugin/manifest", None, Duration::from_secs(30))
             .await
             .and_then(|v| {
                 Ok(Manifest {
@@ -64,6 +76,11 @@ impl SidecarPlugin {
                     provider: v.get("provider").and_then(|s| s.as_str()).map(|s| s.into()),
                 })
             })?;
+        let name = manifest.name.trim().to_string();
+        if name.is_empty() {
+            anyhow::bail!("sidecar manifest has missing/empty name (argv: {})", argv.join(" "));
+        }
+        manifest.name = name;
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for name in manifest.tools.clone() {
             tools.push(Arc::new(SidecarTool {
@@ -73,7 +90,7 @@ impl SidecarPlugin {
                 next_id: next_id.clone(),
             }));
         }
-        Ok(Self { manifest, tools, state, argv, next_id })
+        Ok(Self { manifest, tools, state, argv })
     }
 
     async fn ensure_alive_locked(state: &mut State, argv: &[String]) -> bool {
@@ -137,36 +154,29 @@ impl Plugin for SidecarPlugin {
         self.tools.clone()
     }
     async fn on_event(&self, e: CoreEvent) -> Option<CoreEvent> {
-        let params = match serde_json::to_value(format!("{e:?}")) {
-            Ok(v) => v,
-            Err(_) => return None,
+        // Minimal tagged JSON (see protocol v0 doc comment above).
+        let params = match &e {
+            CoreEvent::PreStep { .. } => json!({"type": "pre_step"}),
+            CoreEvent::PreTool { name, args } => json!({"type": "pre_tool", "name": name, "args": args}),
+            CoreEvent::PostTool { name, output } => {
+                json!({"type": "post_tool", "name": name, "content": output.content, "is_error": output.is_error})
+            }
+            CoreEvent::TurnEnd { usage } => json!({"type": "turn_end", "usage": usage}),
         };
         let name = self.manifest.name.clone();
-        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let req = json!({"id": id, "method": "event/notify", "params": params});
+        let req = json!({"method": "event/notify", "params": params});
+        // True notification: send without id, never read a reply (frees the stdio mutex).
         match timeout(Duration::from_secs(5), async {
             let mut state = self.state.lock().await;
             if !Self::ensure_alive_locked(&mut state, &self.argv).await {
-                return None;
+                return false;
             }
-            state.io.stdin.write_all(format!("{req}\n").as_bytes()).await.ok()?;
-            let mut line = String::new();
-            // Fire-and-forget notify: don't require a reply; just drain if one comes.
-            let _ = state.io.stdout.read_line(&mut line).await;
-            if !line.is_empty() {
-                if let Ok(resp) = serde_json::from_str::<Value>(&line) {
-                    if resp.get("id").and_then(|v| v.as_u64()) != Some(id) {
-                        log::warn!(target: "gray_plugin", "sidecar {name} hook id mismatch, skipping");
-                        return None;
-                    }
-                }
-            }
-            Some(true)
+            state.io.stdin.write_all(format!("{req}\n").as_bytes()).await.is_ok()
         })
         .await
         {
-            Ok(Some(_)) => None, // notify never transforms the event
-            Ok(None) => {
+            Ok(true) => None, // notify never transforms the event
+            Ok(false) => {
                 log::warn!(target: "gray_plugin", "sidecar {name} hook failed, skipping");
                 None
             }
@@ -204,7 +214,7 @@ impl Tool for SidecarTool {
             &self.next_id,
             "tool/call",
             Some(json!({"name": name, "args": args})),
-            Duration::from_secs(5),
+            Duration::from_secs(30),
         )
         .await
         {
@@ -214,7 +224,16 @@ impl Tool for SidecarTool {
             },
             Err(e) => {
                 log::warn!(target: "gray_plugin", "sidecar {name} tool call failed, skipping: {e}");
-                ToolOutput::error(format!("plugin timeout: {name}"))
+                let msg = e.to_string();
+                // tokio timeout errors render as "deadline has elapsed".
+                let kind = if msg.contains("elapsed") {
+                    "timeout"
+                } else if msg.contains("closed stdout") {
+                    "crashed"
+                } else {
+                    "protocol error"
+                };
+                ToolOutput::error(format!("plugin {kind}: {name}"))
             }
         }
     }
@@ -241,5 +260,27 @@ mod tests {
         let p = SidecarPlugin::spawn(vec!["testdata/crash_plugin.sh".into()]).await.unwrap();
         let out = p.tools()[0].execute(&ToolContext::default(), serde_json::json!({})).await;
         assert!(out.is_error);
+        assert!(out.content.contains("plugin crashed: crash"), "got: {}", out.content);
+    }
+
+    #[tokio::test]
+    async fn empty_manifest_name_bails() {
+        let err = SidecarPlugin::spawn(vec!["testdata/empty_name_plugin.sh".into()])
+            .await
+            .err()
+            .expect("spawn must bail on missing/empty name");
+        assert!(err.to_string().contains("empty name"), "got: {err:#}");
+    }
+
+    #[tokio::test]
+    async fn notify_sends_no_id_and_needs_no_reply() {
+        // hang fixture never replies to event/notify; if on_event waited for a
+        // reply it would hit the 5s timeout. True notification returns fast.
+        let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()]).await.unwrap();
+        let t = std::time::Instant::now();
+        assert!(
+            p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await.is_none()
+        );
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 }

@@ -48,7 +48,9 @@ pub fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
 /// profile is missing/unparseable (caller falls back to builtin).
 /// Unknown names warn loudly; parse errors warn naming path + error.
 /// Sidecar spawn failure is a hard `Err` naming entry index + argv (boot aborts).
-fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
+/// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
+/// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
+pub async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
     let defaults = default_plugins();
     match gray_plugin::profile::load_entries("gray.yml") {
         Ok(entries) => {
@@ -62,7 +64,13 @@ fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin
                         }
                     }
                     gray_plugin::profile::PluginEntry::Sidecar(spec) => {
-                        plugins.push(spawn_sidecar(i, &spec.0)?);
+                        use anyhow::Context;
+                        let label = spec.0.join(" ");
+                        let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone())
+                            .await
+                            .with_context(|| format!("sidecar[{i}] ({label}) failed to spawn"))?;
+                        plugins.push(std::sync::Arc::new(plugin)
+                            as std::sync::Arc<dyn gray_plugin::Plugin>);
                     }
                 }
             }
@@ -75,78 +83,26 @@ fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin
     }
 }
 
-/// Spawn a sidecar plugin from sync boot code: block on the current tokio
-/// handle when inside a multi-thread runtime, else a throwaway runtime
-/// (current-thread outside a runtime, multi-thread on a helper thread when
-/// the ambient runtime is current-thread and `block_in_place` is unavailable).
-fn spawn_sidecar(index: usize, argv: &[String]) -> anyhow::Result<std::sync::Arc<dyn gray_plugin::Plugin>> {
-    use anyhow::Context;
-    let argv = argv.to_vec();
-    // Future factory (reusable across the primary + fallback paths below).
-    let mk = |argv: Vec<String>| async move {
-        let label = argv.join(" ");
-        gray_plugin::sidecar::SidecarPlugin::spawn(argv)
-            .await
-            .with_context(|| format!("sidecar[{index}] ({label}) failed to spawn"))
-    };
-    let plugin = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        // `block_in_place` panics on a current_thread runtime, so catch that
-        // and fall back to a throwaway multi-thread runtime on a helper thread.
-        // (Genuine spawn errors propagate as-is, no retry.)
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tokio::task::block_in_place(|| handle.block_on(mk(argv.clone())))
-        })) {
-            Ok(r) => r?,
-            Err(_) => std::thread::scope(|s| {
-                s.spawn(|| {
-                    tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .build()
-                        .context("cannot start tokio runtime to spawn sidecar")?
-                        .block_on(mk(argv))
-                })
-                .join()
-                .unwrap_or_else(|_| anyhow::bail!("sidecar spawn helper thread panicked"))
-            })?,
-        }
-    } else {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("cannot start tokio runtime to spawn sidecar")?
-            .block_on(mk(argv))?
-    };
-    Ok(std::sync::Arc::new(plugin) as std::sync::Arc<dyn gray_plugin::Plugin>)
-}
-
 /// Builds the tool registry from the `gray.yml` profile plugin order,
 /// falling back to [`Registry::builtin`] when no profile file is present.
-/// A sidecar spawn failure aborts boot (loud error naming the entry).
-pub fn build_registry() -> Registry {
-    match profile_plugins() {
-        Ok(Some(plugins)) if !plugins.is_empty() => Registry::from_plugins(&plugins),
-        Ok(_) => Registry::builtin(),
-        Err(e) => {
-            eprintln!("error: gray.yml: {e:#}");
-            std::process::exit(1);
-        }
+/// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
+pub async fn build_registry() -> anyhow::Result<Registry> {
+    match profile_plugins().await? {
+        Some(plugins) if !plugins.is_empty() => Ok(Registry::from_plugins(&plugins)),
+        _ => Ok(Registry::builtin()),
     }
 }
 
 /// Effective manifests for `--dump-manifest`: the profile-ordered set when a
 /// profile resolves, else builtin. Returns `(manifests, used_fallback)`.
-/// A sidecar spawn failure aborts boot (loud error naming the entry).
-pub fn effective_manifests() -> (Vec<gray_plugin::Manifest>, bool) {
-    match profile_plugins() {
-        Ok(Some(plugins)) if !plugins.is_empty() => (
+/// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
+pub async fn effective_manifests() -> anyhow::Result<(Vec<gray_plugin::Manifest>, bool)> {
+    match profile_plugins().await? {
+        Some(plugins) if !plugins.is_empty() => Ok((
             plugins.iter().map(|p| p.manifest()).collect(),
             false,
-        ),
-        Ok(_) => (default_manifests(), true),
-        Err(e) => {
-            eprintln!("error: gray.yml: {e:#}");
-            std::process::exit(1);
-        }
+        )),
+        _ => Ok((default_manifests(), true)),
     }
 }
 
@@ -277,22 +233,22 @@ pub fn provider_cache_key(session_id: Option<&str>) -> String {
         .clone()
 }
 
-pub fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
-    build_agent_inner(config, cwd, None)
+pub async fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
+    build_agent_inner(config, cwd, None).await
 }
 
 /// Builds an [`Agent`] pinned to a session id for prompt-cache affinity.
 /// Use this whenever the session id is known (resume, /new) so the
 /// `prompt_cache_key` survives process restarts.
-pub fn build_agent_with_session(
+pub async fn build_agent_with_session(
     config: &Config,
     cwd: &Path,
     session_id: &str,
 ) -> anyhow::Result<Agent> {
-    build_agent_inner(config, cwd, Some(session_id))
+    build_agent_inner(config, cwd, Some(session_id)).await
 }
 
-fn build_agent_inner(
+async fn build_agent_inner(
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
@@ -311,7 +267,7 @@ fn build_agent_inner(
     let context_files = system_prompt::discover_context_files(cwd);
 
     // Tools only appear in the prompt when they have a snippet.
-    let registry = build_registry();
+    let registry = build_registry().await?;
     let tool_snippets = registry.prompt_snippets();
     let selected_tools = registry.tool_names();
     let prompt_guidelines = {

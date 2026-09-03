@@ -90,7 +90,7 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         questions: None,
     };
 
-    let mut agent = build_agent(config, &cwd)?;
+    let mut agent = build_agent(config, &cwd).await?;
 
     let user_msg = Message::user(prompt);
     // Stream events live so piped output isn't all-or-nothing.
