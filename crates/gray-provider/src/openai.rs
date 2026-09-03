@@ -283,13 +283,16 @@ struct OpenAiUsageChunk {
     prompt_tokens: usize,
     #[serde(default, alias = "output_tokens")]
     completion_tokens: usize,
-    #[serde(default)]
+    #[serde(default, alias = "output_tokens_details")]
     completion_tokens_details: Option<OpenAiCompletionDetails>,
-    #[serde(default)]
+    #[serde(default, alias = "input_tokens_details")]
     prompt_tokens_details: Option<OpenAiPromptDetails>,
     /// DeepSeek / OpenRouter / Kimi top-level fields
     #[serde(default, alias = "prompt_cache_hit_tokens", alias = "promptCacheHitTokens")]
     cached_tokens: usize,
+    /// DeepSeek explicit miss count — preferred over prompt-minus-cached (pi parity)
+    #[serde(default, alias = "promptCacheMissTokens")]
+    prompt_cache_miss_tokens: usize,
 
     /// Anthropic native breakdown (when not via OpenAI compat)
     #[serde(default, alias = "cache_creation_input_tokens", alias = "cacheCreationInputTokens")]
@@ -693,8 +696,13 @@ fn map_usage(u: &OpenAiUsageChunk) -> Usage {
         let inclusive = u.prompt_tokens + cache_read + cache_write;
         (inclusive, u.prompt_tokens)
     } else {
-        // OpenAI: prompt_tokens is inclusive
-        let non_cached = u.prompt_tokens.saturating_sub(cache_read + cache_write);
+        // OpenAI: prompt_tokens is inclusive. DeepSeek reports an explicit
+        // miss count — prefer it over subtraction (pi parity).
+        let non_cached = if u.prompt_cache_miss_tokens != 0 {
+            u.prompt_cache_miss_tokens
+        } else {
+            u.prompt_tokens.saturating_sub(cache_read + cache_write)
+        };
         (u.prompt_tokens, non_cached)
     };
 
@@ -1767,6 +1775,39 @@ mod tests {
         let v = serde_json::to_value(&body).expect("serializes");
         assert!(v.get("include").is_none());
         assert!(v.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn responses_usage_maps_input_tokens_details_cached() {
+        // Responses API shape: input_tokens_details.cached_tokens (not prompt_tokens_details)
+        let v = serde_json::json!({
+            "input_tokens": 1000,
+            "output_tokens": 200,
+            "input_tokens_details": {"cached_tokens": 800},
+            "output_tokens_details": {"reasoning_tokens": 50},
+            "total_tokens": 1200
+        });
+        let u: OpenAiUsageChunk = serde_json::from_value(v).expect("parses");
+        let usage = map_usage(&u);
+        assert_eq!(usage.cache_read_input_tokens, 800, "cache read: {usage:?}");
+        assert_eq!(usage.cached_tokens, 800, "legacy alias: {usage:?}");
+        assert_eq!(usage.reasoning_tokens, 50, "reasoning: {usage:?}");
+        assert_eq!(usage.input_tokens, 1000, "input inclusive: {usage:?}");
+    }
+
+    #[test]
+    fn chat_usage_prefers_explicit_cache_miss_tokens() {
+        // DeepSeek-style: explicit miss count beats prompt-minus-cached subtraction.
+        let v = serde_json::json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "prompt_tokens_details": {"cached_tokens": 800},
+            "prompt_cache_miss_tokens": 150
+        });
+        let u: OpenAiUsageChunk = serde_json::from_value(v).expect("parses");
+        let usage = map_usage(&u);
+        assert_eq!(usage.non_cached_input_tokens, 150, "miss preferred: {usage:?}");
+        assert_eq!(usage.cache_read_input_tokens, 800, "read kept: {usage:?}");
     }
 }
 
