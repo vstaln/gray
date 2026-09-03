@@ -17,9 +17,13 @@
 - Don't propose "search the web" — source is on disk.
 
 ## Build & Binary Installation
-- NEVER build (`cargo build` / `cargo test` / `cargo run`) or install the binary unless the user explicitly asks for it in that turn. Only run `cargo build --release` + `install target/release/gray ~/.local/bin/gray` when told to.
-- `cargo check` for a quick typecheck is fine without asking; full builds are not.
+- `cargo check` for a quick typecheck is fine without asking. NEVER `cargo test` / `cargo run` unasked (see global X-session ban).
 - Always commit code changes.
+
+## Workflow (hybrid PRs)
+- Features and fixes go on a branch + PR (CI must pass); direct-to-main only for trivial one-liners.
+- Always commit code changes (pathspec-limited; never touch another agent's uncommitted work).
+- Auto `cargo build --release` + `install target/release/gray ~/.local/bin/gray` after fixes — no need to ask.
 
 ## Website (`web/`)
 - Next.js 16 App Router, Tailwind v4, `output: 'export'`. Run `pnpm dev` from `web/`; CI runs `pnpm lint` and `pnpm build`.
