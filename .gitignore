@@ -1,3 +1,6 @@
+# local agent config (machine-specific, never commit)
+/AGENTS.md
+
 /target/
 # local reference clones (never commit)
 /reference/
