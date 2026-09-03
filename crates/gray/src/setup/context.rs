@@ -922,8 +922,8 @@ impl ContextParts {
         window.saturating_sub(self.used().saturating_add(reserve))
     }
 
-    /// 100 grid cells split across categories + reserve + free. Sums to 100.
-    /// Order: system, project, tools, skills, messages, reserve, free.
+    /// 100 grid cells split across categories + free + reserve. Sums to 100.
+    /// Order: system, project, tools, skills, messages, free, reserve.
     pub fn grid_cells(&self, window: usize, reserve: usize) -> [usize; 7] {
         if window == 0 {
             return [0; 7];
@@ -934,11 +934,11 @@ impl ContextParts {
             ((self.tools as f64 / window as f64) * 100.0).round() as usize,
             ((self.skills as f64 / window as f64) * 100.0).round() as usize,
             ((self.messages as f64 / window as f64) * 100.0).round() as usize,
+            0, // free takes the rounding remainder
             ((reserve as f64 / window as f64) * 100.0).round() as usize,
-            0,
         ];
-        let used: usize = cells.iter().take(6).sum();
-        cells[6] = 100usize.saturating_sub(used.min(100));
+        let used: usize = cells[0] + cells[1] + cells[2] + cells[3] + cells[4] + cells[6];
+        cells[5] = 100usize.saturating_sub(used.min(100));
         // Shrink overflow from the largest bucket so the row always sums to 100.
         let total: usize = cells.iter().sum();
         if total > 100 {
