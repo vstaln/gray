@@ -73,6 +73,34 @@ pub trait Provider: Send + Sync {
     ) -> BoxStream<'static, Result<StreamEvent, ProviderError>>;
 }
 
+/// A single agent-callable tool.
+#[async_trait]
+pub trait Tool: Send + Sync {
+    /// Static definition surfaced to the model (name, description, schema).
+    fn def(&self) -> crate::message::ToolDef;
+
+    /// One-line snippet rendered in the system prompt's "Available tools" list.
+    /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
+    fn prompt_snippet(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Guideline bullets contributed to the system prompt when this tool is active.
+    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// Whether this tool may run in parallel with others in the same turn.
+    /// Args allow context-sensitive decisions (e.g. read-only operations).
+    fn is_concurrency_safe(&self, args: &serde_json::Value) -> bool {
+        let _ = args;
+        true
+    }
+
+    /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
+    async fn execute(&self, ctx: &ToolContext, args: serde_json::Value) -> ToolOutput;
+}
+
 /// Executes named tools. The registry lives behind this seam so core
 /// never knows what tools exist.
 #[async_trait]

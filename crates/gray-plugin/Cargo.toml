@@ -9,4 +9,3 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 gray-core = { workspace = true }
-gray-tools = { workspace = true }

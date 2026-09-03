@@ -12,6 +12,7 @@ pub mod edit_diff;
 pub mod find;
 pub mod grep;
 pub mod ls;
+pub mod plugin;
 pub mod read;
 pub mod request_user_input;
 pub mod skill;
@@ -23,6 +24,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
+pub use gray_core::agent::Tool;
 use gray_core::message::ToolDef;
 use serde_json::Value;
 
@@ -33,7 +35,9 @@ pub use find::FindTool;
 pub use grep::GrepTool;
 pub use ls::LsTool;
 pub use read::ReadTool;
-pub use request_user_input::{RequestUserInputTool, StdinQuestionAsker};
+pub use request_user_input::{
+    RequestUserInputTool, StdinQuestionAsker, REQUEST_USER_INPUT_TOOL_NAME,
+};
 pub use skill::SkillTool;
 pub use write::WriteTool;
 
@@ -43,34 +47,6 @@ pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;
 /// Hard cap for error outputs (applied after the general truncation).
 pub const MAX_ERROR_BYTES: usize = 2048;
-
-/// A single agent-callable tool.
-#[async_trait]
-pub trait Tool: Send + Sync {
-    /// Static definition surfaced to the model (name, description, schema).
-    fn def(&self) -> ToolDef;
-
-    /// One-line snippet rendered in the system prompt's "Available tools" list.
-    /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
-    fn prompt_snippet(&self) -> Option<&'static str> {
-        None
-    }
-
-    /// Guideline bullets contributed to the system prompt when this tool is active.
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        None
-    }
-
-    /// Whether this tool may run in parallel with others in the same turn.
-    /// Args allow context-sensitive decisions (e.g. read-only operations).
-    fn is_concurrency_safe(&self, args: &Value) -> bool {
-        let _ = args;
-        true
-    }
-
-    /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
-    async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput;
-}
 
 /// Ordered collection of tools with name lookup, wired into the agent loop
 /// via [`ToolExecutor`].
@@ -85,18 +61,37 @@ impl Registry {
     }
 
     pub fn builtin() -> Self {
-        let mut reg = Self::new();
-        reg.register(Box::new(BashTool));
-        reg.register(Box::new(ReadTool));
-        reg.register(Box::new(SkillTool));
-        reg.register(Box::new(WriteTool));
-        reg.register(Box::new(EditTool));
-        reg.register(Box::new(GrepTool));
-        reg.register(Box::new(FindTool));
-        reg.register(Box::new(LsTool));
-        reg.register(Box::new(CronTool));
-        reg.register(Box::new(RequestUserInputTool));
-        reg
+        Self::from_plugins(&[
+            Arc::new(plugin::ToolsBasicPlugin),
+            Arc::new(plugin::ToolsSearchPlugin),
+        ])
+        .with_extra_tools()
+    }
+
+    /// Collects tools from plugins in order; on name conflict later entries win.
+    pub fn from_plugins(plugins: &[Arc<dyn gray_plugin::Plugin>]) -> Self {
+        let owners =
+            gray_plugin::merge_manifests(plugins.iter().map(|p| p.manifest()).collect());
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+        for p in plugins {
+            let owner_name = p.manifest().name;
+            for t in p.tools() {
+                if owners.get(&t.def().name).map(|o| o == &owner_name).unwrap_or(false) {
+                    if let Some(pos) = tools.iter().position(|e| e.def().name == t.def().name) {
+                        tools[pos] = t.clone();
+                    } else {
+                        tools.push(t.clone());
+                    }
+                }
+            }
+        }
+        Self { tools }
+    }
+
+    /// Tools outside the two tool plugins (kept so no tool disappears).
+    fn with_extra_tools(mut self) -> Self {
+        self.tools.push(Arc::new(CronTool));
+        self
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {

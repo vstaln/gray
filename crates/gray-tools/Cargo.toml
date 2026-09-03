@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 gray-core = { workspace = true }
+gray-plugin = { workspace = true }
 gray-cron = { workspace = true }
 gray-session = { workspace = true }
 async-trait = { workspace = true }
