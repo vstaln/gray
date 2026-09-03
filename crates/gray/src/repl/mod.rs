@@ -265,7 +265,7 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
 /// Rebuilds the agent after a system-prompt change, preserving conversation history.
 async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
     let old = agent.take();
-    let mut rebuilt = match build_agent(config, cwd) {
+    let mut rebuilt = match build_agent(config, cwd).await {
         Ok(a) => a,
         Err(e) => {
             println!("{e}");
@@ -1489,7 +1489,7 @@ async fn handle_resume(
             } else {
                 meta.model.as_str()
             };
-            match build_agent_with_session(config, cwd, sid.as_str()) {
+            match build_agent_with_session(config, cwd, sid.as_str()).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
                     *session_state = Some(SessionState { session_id: sid.clone(), store });
@@ -1869,7 +1869,7 @@ pub async fn run_repl_mode(
                 }
                 let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                 pending_history = history.clone();
-                if let Ok(built) = build_agent_with_session(config, &cwd, sid.as_str()) {
+                if let Ok(built) = build_agent_with_session(config, &cwd, sid.as_str()).await {
                     agent = Some(built.with_messages(history));
                 }
                 session_state = Some(SessionState {
@@ -1901,7 +1901,7 @@ pub async fn run_repl_mode(
                     }
                     let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                     pending_history = history.clone();
-                    if let Ok(built) = build_agent_with_session(config, &cwd, latest.id.as_str()) {
+                    if let Ok(built) = build_agent_with_session(config, &cwd, latest.id.as_str()).await {
                         agent = Some(built.with_messages(history));
                     }
                     session_state = Some(SessionState {
@@ -2159,8 +2159,8 @@ pub async fn run_repl_mode(
                         }
                         let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
                         let built = match sid.as_deref() {
-                            Some(s) => build_agent_with_session(config, &cwd, s),
-                            None => build_agent(config, &cwd),
+                            Some(s) => build_agent_with_session(config, &cwd, s).await,
+                            None => build_agent(config, &cwd).await,
                         };
                         match built {
                             Ok(built) => {
@@ -2382,8 +2382,8 @@ pub async fn run_repl_mode(
                 // Build with the new session id so the prompt-cache shard
                 // survives future resumes of this session.
                 agent = match new_sid.as_ref() {
-                    Some(s) => build_agent_with_session(config, &cwd, s.as_str()).ok(),
-                    None => build_agent(config, &cwd).ok(),
+                    Some(s) => build_agent_with_session(config, &cwd, s.as_str()).await.ok(),
+                    None => build_agent(config, &cwd).await.ok(),
                 };
 
                 if let Some((shared, _)) = &tui {
@@ -2566,8 +2566,8 @@ pub async fn run_repl_mode(
                     }
                     let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
                     let built = match sid.as_deref() {
-                        Some(s) => build_agent_with_session(config, &cwd, s),
-                        None => build_agent(config, &cwd),
+                        Some(s) => build_agent_with_session(config, &cwd, s).await,
+                        None => build_agent(config, &cwd).await,
                     };
                     match built {
                         Ok(built) => {
