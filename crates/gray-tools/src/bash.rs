@@ -161,8 +161,21 @@ impl Tool for BashTool {
         };
         let secs = requested.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS);
 
-        if let Some(denial) = deny_destructive(&command) {
-            return fail(denial);
+        match classify(&command) {
+            Decision::Allow => {}
+            Decision::Deny(msg) => return fail(msg),
+            Decision::Prompt { rule, why, alt } => {
+                if !prompt_allowance(rule) {
+                    return fail(format!(
+                        "Blocked by destructive-command guard ({rule}): already asked twice this session — have the user run it manually. {why}"
+                    ));
+                }
+                if !ask_allow_once(ctx, &command, rule, &why, &alt).await {
+                    return fail(format!(
+                        "Blocked by destructive-command guard ({rule}): user did not approve. {why} Safe alternative: {alt}."
+                    ));
+                }
+            }
         }
 
         let mut cmd = Command::new("sh");
@@ -257,17 +270,49 @@ async fn join_drain_bytes(handle: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
     handle.await.unwrap_or_default()
 }
 
-/// Never-legit destructive commands, blocked before spawn (dcg core-pack ideas,
-/// reimplemented std-only). Returns the denial message.
+/// Guard verdict (codex tri-state as data: Allow / Prompt / Forbidden).
+enum Decision {
+    Allow,
+    /// Ask the user (first 2 occurrences per process, then auto-deny).
+    Prompt { rule: &'static str, why: String, alt: String },
+    Deny(String),
+}
+
+/// Repeat counts for Prompt rules — graduated response (dcg idea, minimal).
+/// ponytail: per-process memory (resets on restart) — persist when a real incident demands it.
+static PROMPT_SEEN: std::sync::Mutex<Vec<(&'static str, usize)>> = std::sync::Mutex::new(Vec::new());
+
+fn prompt_allowance(rule: &'static str) -> bool {
+    let mut seen = PROMPT_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let n = seen.iter_mut().find(|(r, _)| *r == rule).map(|(_, n)| n);
+    let count = match n {
+        Some(c) => {
+            *c += 1;
+            *c
+        }
+        None => {
+            seen.push((rule, 1));
+            1
+        }
+    };
+    count <= 2
+}
+
+/// Never-legit destructive commands, evaluated before spawn (dcg core-pack ideas,
+/// reimplemented std-only).
 /// Bypass: `GRAY_GUARD_BYPASS=1` (dcg `DCG_BYPASS=1` parity, for CI/piped mode).
-/// ponytail: token/substring matching, no regex/AST; fork-bomb check is a raw
-/// substring and heredoc/`python -c` payloads are unscanned — upgrade when a real incident hits.
-fn deny_destructive(command: &str) -> Option<String> {
+/// ponytail: token/substring matching, no regex/AST; heredoc/`python -c`
+/// payloads are unscanned — upgrade when a real incident hits.
+fn classify(command: &str) -> Decision {
     if std::env::var("GRAY_GUARD_BYPASS").as_deref() == Ok("1") {
-        return None;
+        return Decision::Allow;
     }
-    deny_normalized(&normalize_guard_head(command))
-        .or_else(|| embedded_payload(command).and_then(|p| deny_normalized(&normalize_guard_head(&p))))
+    match classify_normalized(&normalize_guard_head(command)) {
+        Decision::Allow => embedded_payload(command)
+            .map(|p| classify_normalized(&normalize_guard_head(&p)))
+            .unwrap_or(Decision::Allow),
+        d => d,
+    }
 }
 
 /// Strips wrapper prefixes agents prepend: repeated `sudo`/`command`/`env K=V`, `\cmd` escapes.
@@ -323,45 +368,47 @@ fn embedded_payload(command: &str) -> Option<String> {
     Some(joined.trim_matches(|c| c == '"' || c == '\'').to_string())
 }
 
-fn deny_normalized(cmd: &str) -> Option<String> {
+fn classify_normalized(cmd: &str) -> Decision {
     let head = cmd.split_whitespace().next().unwrap_or("");
     let base = head.rsplit('/').next().unwrap_or(head);
-    let block = |rule: &str, why: &str, alt: &str| {
-        Some(format!(
+    let deny = |rule: &'static str, why: String, alt: &str| {
+        Decision::Deny(format!(
             "Blocked by destructive-command guard ({rule}): {why}. Safe alternative: {alt}. \
-             If the user explicitly asked for this, confirm via request_user_input and have them run it manually."
+             If the user explicitly asked for this, have them run it manually."
         ))
     };
+    let prompt = |rule: &'static str, why: String, alt: &str| Decision::Prompt { rule, why, alt: alt.to_string() };
     match base {
         "mkfs" | "mkswap" | "wipefs" | "mkfs.ext4" | "mkfs.xfs" | "mkfs.vfat" | "mkfs.btrfs" => {
-            return block("disk-wipe", format!("{base} destroys filesystems").as_str(), "operate on a disposable VM/disk image, snapshot first")
+            return deny("disk-wipe", format!("{base} destroys filesystems"), "operate on a disposable VM/disk image, snapshot first")
         }
         "shutdown" | "poweroff" | "reboot" | "halt" => {
-            return block("host-power", format!("{base} takes the host down").as_str(), "schedule downtime with the user first")
+            return deny("host-power", format!("{base} takes the host down"), "schedule downtime with the user first")
         }
         "fdisk" | "parted" => {
             if !(cmd.contains("-l") || cmd.contains("print")) {
-                return block("disk-edit", format!("{base} without list/print edits partition tables").as_str(), format!("{base} -l / {base} print to inspect read-only").as_str());
+                return deny("disk-edit", format!("{base} without list/print edits partition tables"), &format!("{base} -l / {base} print to inspect read-only"));
             }
-            return None;
+            return Decision::Allow;
         }
         "systemctl" => {
             if cmd.contains("poweroff") || cmd.contains("reboot") {
-                return block("host-power", "systemctl poweroff/reboot takes the host down", "schedule downtime with the user first");
+                return deny("host-power", "systemctl poweroff/reboot takes the host down".to_string(), "schedule downtime with the user first");
             }
-            return None;
+            return Decision::Allow;
         }
         _ => {}
     }
-    if cmd.contains(":|:&") {
-        return block("fork-bomb", "fork bomb pattern `:|:&` hangs the host", "don't run fork bombs");
+    // Fork-bomb needs a function definition too — bare ":|:&" in prose (echo) is not one.
+    if cmd.contains(":|:&") && cmd.contains("()") {
+        return deny("fork-bomb", "fork bomb pattern hangs the host".to_string(), "don't run fork bombs");
     }
     if base == "dd" && cmd.contains("of=/dev/") {
-        return block("dd-device", "dd writing to /dev/ destroys disks", "write to a regular file, double-check `of=`");
+        return deny("dd-device", "dd writing to /dev/ destroys disks".to_string(), "write to a regular file, double-check `of=`");
     }
     if base == "rm" {
         if cmd.contains("--no-preserve-root") {
-            return block("rm-rf-root", "rm --no-preserve-root disables the last safeguard", "delete a narrower path, preview with `ls`/`find … | wc -l` first");
+            return deny("rm-rf-root", "rm --no-preserve-root disables the last safeguard".to_string(), "delete a narrower path, preview with `ls`/`find … | wc -l` first");
         }
         let targets_root = cmd
             .split_whitespace()
@@ -369,58 +416,94 @@ fn deny_normalized(cmd: &str) -> Option<String> {
             .filter(|t| !t.starts_with('-'))
             .any(|t| matches!(t, "/" | "/*" | "~" | "~/*" | "/root" | "/home" | "/etc" | "/boot"));
         if targets_root {
-            return block("rm-rf-root", "rm targeting a system root is unrecoverable", "delete a narrower path, preview with `ls`/`find … | wc -l` first");
+            return deny("rm-rf-root", "rm targeting a system root is unrecoverable".to_string(), "delete a narrower path, preview with `ls`/`find … | wc -l` first");
         }
-        return None;
+        return Decision::Allow;
     }
     if base == "git" {
         if cmd.contains("reset") && cmd.contains("--hard") {
-            return block("git-reset-hard", "git reset --hard discards uncommitted work", "`git stash` first or have the user run it");
+            return prompt("git-reset-hard", "git reset --hard discards uncommitted work".to_string(), "`git stash` first or have the user run it");
         }
         if cmd.contains("clean") && cmd.split_whitespace().any(|t| t.starts_with('-') && t.contains('f')) {
-            return block("git-clean-force", "git clean -f deletes untracked files permanently", "`git clean -n` to preview, `git stash -u` to keep");
+            return prompt("git-clean-force", "git clean -f deletes untracked files permanently".to_string(), "`git clean -n` to preview, `git stash -u` to keep");
         }
         if cmd.contains("push") && cmd.split_whitespace().any(|t| t == "--force" || t == "-f") {
-            return block("git-push-force", "git push --force rewrites shared history", "`git push --force-with-lease` after user confirmation");
+            return prompt("git-push-force", "git push --force rewrites shared history".to_string(), "`git push --force-with-lease` after user confirmation");
         }
     }
-    None
+    Decision::Allow
+}
+
+/// Asks the connected user whether a Prompt-verdict command may run once.
+/// Fail-closed: no bridge, cancel, error, or anything but an explicit
+/// "Run once" denies (codex: Esc always cancels).
+async fn ask_allow_once(ctx: &ToolContext, command: &str, rule: &str, why: &str, alt: &str) -> bool {
+    use gray_core::questions::{UserOption, UserQuestion};
+    let Some(bridge) = &ctx.questions else { return false };
+    let preview: String = command.chars().take(120).collect();
+    let q = UserQuestion {
+        id: "guard-approval".to_string(),
+        header: "Allow?".to_string(),
+        question: format!("[{rule}] Run this once? {why} Alternative: {alt}"),
+        options: vec![
+            UserOption { label: "Deny (Recommended)".to_string(), description: "Do not run it.".to_string() },
+            UserOption { label: "Run once".to_string(), description: format!("Run this once: {preview}") },
+        ],
+        is_other: false,
+    };
+    match bridge.0.ask(vec![q], true).await {
+        Ok(answers) => answers.iter().flat_map(|a| &a.answers).any(|s| s == "Run once"),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
 mod guard_tests {
     use super::*;
 
+    fn is_deny(cmd: &str) -> bool {
+        // Bypass env must not leak between tests; classify honors it.
+        assert_ne!(std::env::var("GRAY_GUARD_BYPASS").as_deref(), Ok("1"), "bypass set during test");
+        matches!(classify(cmd), Decision::Deny(_))
+    }
+
     #[test]
     fn blocks_rm_root_variants() {
         for cmd in ["rm -rf /", "rm -rf /*", "rm -rf ~", "sudo rm -rf /", "\\rm -rf /", "rm --no-preserve-root -rf /tmp/x"] {
-            assert!(deny_destructive(cmd).is_some(), "{cmd}");
+            assert!(is_deny(cmd), "{cmd}");
         }
     }
 
     #[test]
     fn blocks_disk_power_forkbomb() {
         for cmd in ["mkfs.ext4 /dev/sda1", "dd if=x of=/dev/sda", "shutdown now", "sudo reboot", ":(){ :|:& };:"] {
-            assert!(deny_destructive(cmd).is_some(), "{cmd}");
+            assert!(is_deny(cmd), "{cmd}");
         }
     }
 
     #[test]
-    fn blocks_git_destructive() {
+    fn fork_bomb_signature_needs_function_definition() {
+        // Bare prose mentioning the pattern is not a bomb.
+        assert!(matches!(classify("echo \":|:&\""), Decision::Allow));
+    }
+
+    #[test]
+    fn git_destructive_prompts_not_denies() {
         for cmd in ["git reset --hard", "git clean -fd", "git push --force origin main"] {
-            assert!(deny_destructive(cmd).is_some(), "{cmd}");
+            assert!(matches!(classify(cmd), Decision::Prompt { .. }), "{cmd}");
         }
     }
 
     #[test]
     fn blocks_embedded_sh_c_payload() {
-        assert!(deny_destructive("bash -c \"rm -rf /\"").is_some());
+        assert!(is_deny("bash -c \"rm -rf /\""));
+        assert!(matches!(classify("bash -c \"git reset --hard\""), Decision::Prompt { .. }));
     }
 
     #[test]
     fn allows_ordinary_commands() {
         for cmd in ["rm -rf ./build", "ls /", "echo hi", "git status", "git push --force-with-lease origin main", "fdisk -l", "git clean -n"] {
-            assert!(deny_destructive(cmd).is_none(), "{cmd}");
+            assert!(matches!(classify(cmd), Decision::Allow), "{cmd}");
         }
     }
 }
