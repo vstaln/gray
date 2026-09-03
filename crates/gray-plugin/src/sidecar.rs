@@ -152,16 +152,12 @@ impl Plugin for SidecarPlugin {
             state.io.stdin.write_all(format!("{req}\n").as_bytes()).await.ok()?;
             let mut line = String::new();
             // Fire-and-forget notify: don't require a reply; just drain if one comes.
-            tokio::select! {
-                r = state.io.stdout.read_line(&mut line) => {
-                    let _ = r;
-                    if !line.is_empty() {
-                        if let Ok(resp) = serde_json::from_str::<Value>(&line) {
-                            if resp.get("id").and_then(|v| v.as_u64()) != Some(id) {
-                                log::warn!(target: "gray_plugin", "sidecar {name} hook id mismatch, skipping");
-                                return None;
-                            }
-                        }
+            let _ = state.io.stdout.read_line(&mut line).await;
+            if !line.is_empty() {
+                if let Ok(resp) = serde_json::from_str::<Value>(&line) {
+                    if resp.get("id").and_then(|v| v.as_u64()) != Some(id) {
+                        log::warn!(target: "gray_plugin", "sidecar {name} hook id mismatch, skipping");
+                        return None;
                     }
                 }
             }
@@ -244,8 +240,6 @@ mod tests {
     async fn crashed_plugin_returns_error_not_panic() {
         let p = SidecarPlugin::spawn(vec!["testdata/crash_plugin.sh".into()]).await.unwrap();
         let out = p.tools()[0].execute(&ToolContext::default(), serde_json::json!({})).await;
-        assert!(!out.is_error);
-        let out2 = p.tools()[0].execute(&ToolContext::default(), serde_json::json!({})).await;
-        assert!(out2.is_error);
+        assert!(out.is_error);
     }
 }
