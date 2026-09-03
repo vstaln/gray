@@ -115,14 +115,36 @@ pub fn rule(label: &str) -> String {
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
-/// Resolves the Responses `prompt_cache_key`: the gray session id when known
-/// (stable across resumes, so a resumed session keeps hitting its cache
-/// shard), else a per-process stable id (so rebuilds mid-session — reload,
-/// lazy builds — don't bust the shard). A fresh random key per build
-/// guaranteed 0% cache after every resume/rebuild; never do that.
+/// Max `prompt_cache_key` length (pi parity:
+/// `reference/pi-mono/packages/ai/src/api/openai-prompt-cache.ts`).
+pub const PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
+
+/// Clamp a cache key to the max length (pi parity: truncate, don't hash —
+/// the prefix stays human-grepable in logs).
+pub fn clamp_prompt_cache_key(key: &str) -> &str {
+    if key.len() <= PROMPT_CACHE_KEY_MAX_LENGTH {
+        return key;
+    }
+    // UUIDs are ASCII so byte cut == char cut; walk back over a boundary just in case.
+    let mut end = PROMPT_CACHE_KEY_MAX_LENGTH;
+    while !key.is_char_boundary(end) {
+        end -= 1;
+    }
+    &key[..end]
+}
+
+/// Resolves the Responses `prompt_cache_key` (pi parity:
+/// `openai-responses.ts` sends `clamp(sessionId)`, `agent.ts` holds one
+/// session id for the agent's lifetime). Gray rebuilds its provider per
+/// `build_agent`, so the session id is threaded in at build time instead:
+/// the gray session id when known (stable across resumes, so a resumed
+/// session keeps hitting its cache shard), else a per-process stable id
+/// (so rebuilds mid-session — reload, lazy builds — don't bust the shard).
+/// A fresh random key per build guaranteed 0% cache after every
+/// resume/rebuild; never do that.
 pub fn provider_cache_key(session_id: Option<&str>) -> String {
     if let Some(s) = session_id.filter(|s| !s.is_empty()) {
-        return s.to_string();
+        return clamp_prompt_cache_key(s).to_string();
     }
     static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     FALLBACK
@@ -338,5 +360,11 @@ mod tests {
         // Rebuilds mid-session (reload, lazy builds) must not rotate the key.
         assert_eq!(provider_cache_key(None), provider_cache_key(None));
         assert_eq!(provider_cache_key(Some("")), provider_cache_key(None));
+    }
+
+    #[test]
+    fn cache_key_clamped_to_64_chars() {
+        let long = "s".repeat(100);
+        assert_eq!(provider_cache_key(Some(&long)).len(), 64);
     }
 }
