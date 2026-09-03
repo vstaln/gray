@@ -1902,6 +1902,13 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
             if let Some(plat) = input_for.clone() {
                 match ev {
                     Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+                    Event::Paste(pasted) => {
+                        // bracketed paste: tokens never contain whitespace —
+                        // keep the first run so trailing newlines can't sneak in.
+                        if let Some(tok) = pasted.split_whitespace().next() {
+                            input_buf.push_str(tok);
+                        }
+                    }
                     Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
                         KeyCode::Esc => {
                             input_for = None;
