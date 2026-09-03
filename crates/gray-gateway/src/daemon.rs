@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn from_config_with_dummy_token() {
         let mut platforms = HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig{ enabled: true, token: Some("123456:ABCDEFGHIJ1234567890".into()), app_token: None, home_channel: None });
+        platforms.insert(Platform::Telegram, PlatformConfig{ enabled: true, token: Some("123456:ABCDEFGHIJ1234567890".into()), app_token: None, home_channel: None, client_id: None });
         let cfg = GatewayConfig{ platforms, group_per_user: true, thread_per_user: false };
         let runner = GatewayRunner::from_config(cfg).unwrap();
         assert!(runner.adapters.contains_key(&Platform::Telegram));
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn from_config_skips_disabled() {
         let mut platforms = HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig{ enabled: false, token: Some("x".into()), app_token: None, home_channel: None });
+        platforms.insert(Platform::Telegram, PlatformConfig{ enabled: false, token: Some("x".into()), app_token: None, home_channel: None, client_id: None });
         let cfg = GatewayConfig{ platforms, ..Default::default() };
         let runner = GatewayRunner::from_config(cfg).unwrap();
         assert!(runner.adapters.is_empty());

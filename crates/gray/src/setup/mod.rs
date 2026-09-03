@@ -1589,7 +1589,7 @@ mod gateway_modal_tests {
     fn gateway_modal_rows_reflect_state() {
         use gray_gateway::config::{GatewayConfig, Platform, PlatformConfig};
         let mut platforms = std::collections::HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig { enabled: true, token: Some("x".into()), app_token: None, home_channel: None });
+        platforms.insert(Platform::Telegram, PlatformConfig { enabled: true, token: Some("x".into()), app_token: None, home_channel: None, client_id: None });
         let cfg = GatewayConfig { platforms, ..Default::default() };
         let rows = gateway_modal_rows(&cfg, false);
         assert_eq!(rows[0], (String::new(), "telegram".into(), "enabled".into()));

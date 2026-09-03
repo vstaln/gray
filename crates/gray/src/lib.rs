@@ -271,4 +271,10 @@ pub enum GatewayCmd {
     Install,
     /// Uninstall systemd service
     Uninstall,
+    /// Print the OAuth2 invite URL for a platform (discord)
+    Invite {
+        /// Platform to invite (discord)
+        #[arg(default_value = "discord")]
+        platform: String,
+    },
 }
