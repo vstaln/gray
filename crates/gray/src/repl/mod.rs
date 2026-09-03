@@ -1205,7 +1205,7 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_disconnect(&mut cfg, plat);
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("{} disabled — token kept", plat.label())),
+                Ok(()) => say(tui, &format!("{} disabled", plat.label())),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
             }
         }
