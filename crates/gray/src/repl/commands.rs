@@ -3,7 +3,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("connect", "setup provider & API key"),
     ("model", "switch model"),
     ("thinking", "reasoning effort"),
-    ("context", "set context window (e.g. 128k, reserve 16k, keep 20k, auto)"),
+    ("context", "set context window"),
     ("resume", "resume conversation"),
     ("new", "new conversation"),
     ("compact", "summarize context"),
