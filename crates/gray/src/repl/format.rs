@@ -41,28 +41,31 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
             "✗ Connection failed: Unable to reach {base_url} (request timed out: {detail})\n  Please check your internet connection or run /connect to configure provider settings."
         ),
         CoreError::Provider(detail) => {
-            let lower = detail.to_lowercase();
+            // pi parity: bounded detail (never raw multi-KB dumps) + explicit
+            // retryability on the first line of each classified arm.
+            let short = truncate_chars(detail, 600);
+            let lower = short.to_lowercase();
             if lower.contains("not supported")
                 || lower.contains("unsupported")
                 || lower.contains("model not found")
                 || lower.contains("unknown model")
-                || detail.contains(" 404")
-                || detail.contains("status 404")
+                || short.contains(" 404")
+                || short.contains("status 404")
             {
                 format!(
-                    "✗ Bad request: {detail}\n  Model may not be supported on {base_url}. Run /model to pick a valid model or /connect to change provider."
+                    "✗ Bad request (not retryable): {short}\n  Model may not be supported on {base_url}. Run /model to pick a valid model or /connect to change provider."
                 )
-            } else if lower.contains("auth") || detail.contains(" 401") || detail.contains(" 403") || lower.contains("unauthorized") {
+            } else if lower.contains("auth") || short.contains(" 401") || short.contains(" 403") || lower.contains("unauthorized") {
                 format!(
-                    "✗ Auth failed: {detail}\n  Check API key or run /connect to reconfigure provider."
+                    "✗ Auth failed (not retryable): {short}\n  Check API key or run /connect to reconfigure provider."
                 )
-            } else if lower.contains("rate") || detail.contains(" 429") {
+            } else if lower.contains("rate") || short.contains(" 429") {
                 format!(
-                    "✗ Rate limited: {detail}\n  Try again later or switch model via /model."
+                    "✗ Rate limited (retryable): {short}\n  Try again later or switch model via /model."
                 )
-            } else if lower.contains("bad request") || detail.contains(" 400") {
+            } else if lower.contains("bad request") || short.contains(" 400") {
                 format!(
-                    "✗ Bad request: {detail}\n  Check model/provider settings via /model or /connect."
+                    "✗ Bad request (not retryable): {short}\n  Check model/provider settings via /model or /connect."
                 )
             } else if lower.contains("server error")
                 || lower.contains("status 5")
@@ -72,12 +75,12 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 || lower.contains("504")
             {
                 format!(
-                    "✗ Provider server error: {detail}\n  Upstream model or provider ({base_url}) encountered a server error. Run /model to switch to another model or try again later."
+                    "✗ Provider server error (retryable): {short}\n  Upstream model or provider ({base_url}) encountered a server error. Run /model to switch to another model or try again later."
                 )
             } else {
                 // Steal codex's UnexpectedResponseError display: keep status+body but add provider hint
                 format!(
-                    "✗ Provider error: {detail}\n  Provider: {base_url} — try /model or /connect if this persists."
+                    "✗ Provider error: {short}\n  Provider: {base_url} — try /model or /connect if this persists."
                 )
             }
         }
