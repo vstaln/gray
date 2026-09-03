@@ -478,9 +478,83 @@ pub async fn fetch_models_dev_context() -> usize {
     n
 }
 
-/// On-disk context cache (`~/.gray/models.json`, `{ "model-id": tokens }`).
+fn cache_model_rate_if_absent(model_id: &str, rate: ModelRate) {
+    if let Ok(g) = model_rates_cell().read() {
+        if g.contains_key(model_id) {
+            return;
+        }
+    }
+    cache_model_rate(model_id, rate);
+}
+
+/// OpenRouter's `/models` carries per-model `pricing` (USD/token as strings).
+/// Gap-fill only — LiteLLM stays authoritative; this just covers models too
+/// new for LiteLLM's table (e.g. Muse Spark at launch).
+pub fn parse_openrouter_models_json(val: &serde_json::Value) -> usize {
+    let Some(list) = val.get("data").and_then(|d| d.as_array()) else {
+        return 0;
+    };
+    fn num(v: &serde_json::Value) -> Option<f64> {
+        v.as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| v.as_f64())
+            .filter(|f| f.is_finite() && *f >= 0.0)
+    }
+    let mut n = 0;
+    for entry in list {
+        let (Some(id), Some(pricing)) = (
+            entry.get("id").and_then(|v| v.as_str()),
+            entry.get("pricing"),
+        ) else {
+            continue;
+        };
+        let (Some(input), Some(output)) = (
+            pricing.get("prompt").and_then(num),
+            pricing.get("completion").and_then(num),
+        ) else {
+            continue;
+        };
+        if input == 0.0 && output == 0.0 {
+            continue;
+        }
+        let rate = ModelRate { input, output, cache_read: 0.0, cache_write: 0.0, has_cache_prices: false };
+        cache_model_rate_if_absent(id, rate);
+        let lower = id.to_lowercase();
+        cache_model_rate_if_absent(&lower, rate);
+        if let Some((_, suffix)) = id.rsplit_once('/') {
+            cache_model_rate_if_absent(suffix, rate);
+        }
+        n += 1;
+    }
+    n
+}
+
+/// Same fire-and-forget contract as `fetch_litellm_context_windows`.
+/// No auth needed — OpenRouter's model list is public.
+pub async fn fetch_openrouter_rates() -> usize {
+    const URL: &str = "https://openrouter.ai/api/v1/models";
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent("gray/0.1.0")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let Ok(resp) = client.get(URL).send().await else {
+        return 0;
+    };
+    if !resp.status().is_success() {
+        return 0;
+    }
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return 0;
+    };
+    parse_openrouter_models_json(&json)
+}
 /// A previous session's live/litellm/models.dev values beat the hardcoded
 /// guess on cold boot, before any fetch completes.
+/// On-disk context cache (`~/.gray/models.json`, `{ "model-id": tokens }`).
 fn models_cache_path() -> Option<std::path::PathBuf> {
     super::catalog::gray_home().ok().map(|h| h.join("models.json"))
 }
@@ -974,6 +1048,27 @@ mod tests {
         assert_eq!(format_cost(0.41), "$0.41");
         assert_eq!(format_cost(1.5), "$1.50");
         assert_eq!(format_cost(0.0), "$0");
+    }
+
+    #[test]
+    fn openrouter_rates_gapfill() {
+        let v: serde_json::Value = serde_json::json!({
+            "data": [
+                {"id": "test-or-new-model", "pricing": {"prompt": "0.000003", "completion": "0.000015"}},
+                {"id": "test-or-claimed", "pricing": {"prompt": "0.99", "completion": "0.99"}},
+                {"id": "test-or-free", "pricing": {"prompt": "0", "completion": "0"}},
+            ]
+        });
+        assert_eq!(parse_openrouter_models_json(&v), 2);
+        let r = get_model_rate("test-or-new-model").expect("openrouter rate cached");
+        assert!(!r.has_cache_prices);
+        // gap-fill only: second parse can't overwrite an existing rate
+        let v2: serde_json::Value = serde_json::json!({
+            "data": [{"id": "test-or-new-model", "pricing": {"prompt": "0.99", "completion": "0.99"}}]
+        });
+        parse_openrouter_models_json(&v2);
+        let kept = get_model_rate("test-or-new-model").expect("rate kept");
+        assert!((kept.input - 0.000003).abs() < 1e-12);
     }
 
     #[test]

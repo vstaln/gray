@@ -1,4 +1,4 @@
-use std::path::Path;
+
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
@@ -101,34 +101,50 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
     out
 }
 
-pub(crate) fn media_type_for_path(path: &Path) -> String {
-    match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
-        Some("png") => "image/png".to_string(),
-        Some("jpg") | Some("jpeg") => "image/jpeg".to_string(),
-        Some("webp") => "image/webp".to_string(),
-        Some("gif") => "image/gif".to_string(),
-        Some("bmp") => "image/bmp".to_string(),
-        _ => "image/png".to_string(),
-    }
-}
-
-pub(crate) fn build_user_message_with_images(text: &str, image_paths: &[std::path::PathBuf]) -> Message {
-    if image_paths.is_empty() {
+/// Builds the user message with MIME-driven attachments (opencode parity):
+/// images normalized (downscaled, capped), PDFs as extracted text, videos
+/// as first-frame stills. Audio/anything else is reported loudly, never
+/// silently dropped.
+pub(crate) fn build_user_message_with_attachments(text: &str, paths: &[std::path::PathBuf]) -> Message {
+    use super::attachments::{attachment_kind, AttachmentKind};
+    if paths.is_empty() {
         return Message::user(text);
     }
     let mut blocks = Vec::new();
     if !text.is_empty() {
         blocks.push(gray_core::message::ContentBlock::text(text.to_string()));
     }
-    for path in image_paths {
-        if let Ok(bytes) = std::fs::read(path) {
-            let media_type = media_type_for_path(path);
-            let data = base64_encode(&bytes);
-            blocks.push(gray_core::message::ContentBlock::image(media_type, data));
+    for path in paths {
+        let name = path.display().to_string();
+        match attachment_kind(path) {
+            AttachmentKind::Image => match std::fs::read(path) {
+                Ok(bytes) => match super::attachments::normalize_image_bytes(&bytes) {
+                    Ok((mime, out)) => blocks.push(gray_core::message::ContentBlock::image(mime, base64_encode(&out))),
+                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached image {name} skipped: {e})"))),
+                },
+                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached image {name} unreadable: {e})"))),
+            },
+            AttachmentKind::Pdf => match super::attachments::pdf_text(path) {
+                Ok(t) => blocks.push(gray_core::message::ContentBlock::text(format!("--- {name} (PDF text) ---\n{t}"))),
+                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached PDF {name} skipped: {e})"))),
+            },
+            AttachmentKind::Video => match super::attachments::video_frame(path) {
+                Ok(frame) => match super::attachments::normalize_image_bytes(&frame) {
+                    Ok((mime, out)) => {
+                        blocks.push(gray_core::message::ContentBlock::text(format!("(first frame of {name})")));
+                        blocks.push(gray_core::message::ContentBlock::image(mime, base64_encode(&out)));
+                    }
+                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached video {name} skipped: {e})"))),
+                },
+                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached video {name} skipped: {e})"))),
+            },
+            // No model-agnostic wire path for audio on our providers — loud skip.
+            AttachmentKind::Audio | AttachmentKind::Unsupported => blocks.push(
+                gray_core::message::ContentBlock::text(format!("(attached file {name} skipped: audio/unsupported type, no model wire path yet)")),
+            ),
         }
     }
     if blocks.is_empty() {
-        // image read failed, fallback to text placeholder
         return Message::user(text);
     }
     Message::new(gray_core::message::Role::User, blocks)

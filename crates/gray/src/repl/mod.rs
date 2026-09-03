@@ -498,6 +498,7 @@ fn turn_footer(
 }
 
 /// Handles `/usage` / `/cost`: session totals plus the active model's rate.
+/// TUI renders like `/model` — `✓` action header + dim detail lines.
 fn handle_usage(
     totals: &SessionTotals,
     config: &Config,
@@ -508,26 +509,30 @@ fn handle_usage(
         return;
     }
     let model = config.model.as_deref().unwrap_or("no model");
-    let mut msg = format!(
-        "session usage — {model} · {} turn{}\n  input: {} · output: {} · total: {} tok",
-        totals.turns,
-        if totals.turns == 1 { "" } else { "s" },
+    let header = format!("{model} · {} turn{}", totals.turns, if totals.turns == 1 { "" } else { "s" });
+    let body = format!(
+        "{} in · {} out · {} total",
         crate::repl::fmt_usage(totals.input),
         crate::repl::fmt_usage(totals.output),
         crate::repl::fmt_usage(totals.input + totals.output),
     );
-    match crate::setup::get_model_rate(config.model.as_deref().unwrap_or("")) {
-        Some(r) => {
-            msg.push_str(&format!(
-                "\n  cost: {} @ ${:.2}/${:.2} per 1M in/out",
-                crate::setup::format_cost(totals.cost),
-                r.input * 1_000_000.0,
-                r.output * 1_000_000.0
-            ));
-        }
-        None => msg.push_str("\n  cost: unpriced (no LiteLLM rate for this model)"),
+    let cost_line = match crate::setup::get_model_rate(config.model.as_deref().unwrap_or("")) {
+        Some(r) => format!(
+            "{} @ ${:.2}/${:.2} per 1M in/out",
+            crate::setup::format_cost(totals.cost),
+            r.input * 1_000_000.0,
+            r.output * 1_000_000.0
+        ),
+        None => "unpriced (no rate yet — pricing tables lag new models)".to_string(),
+    };
+    if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        t.push_action("Session usage", Some(&header));
+        t.push_dim(body);
+        t.push_dim(cost_line);
+    } else {
+        println!("✓ Session usage — {header}\n  {body}\n  {cost_line}");
     }
-    say(tui, &msg);
 }
 
 async fn handle_context_window(
@@ -1759,6 +1764,7 @@ pub async fn run_repl_mode(
     if crate::setup::get_user_context_window().is_none() {
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
         tokio::spawn(crate::setup::fetch_models_dev_context());
+        tokio::spawn(crate::setup::fetch_openrouter_rates());
         if let Some(m) = config.model.clone() {
             if crate::setup::get_cached_model_context(&m).is_none() {
                 let base = config.base_url.clone();
