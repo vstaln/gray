@@ -654,7 +654,10 @@ fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserA
         }
     }
     if !lines.is_empty() {
-        t.push_dim(lines.join("\n"));
+        // Stacked: one transcript row per line, not a joined blob.
+        for line in lines {
+            t.push_dim(line);
+        }
     }
 }
 
