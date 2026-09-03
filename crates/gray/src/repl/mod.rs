@@ -45,13 +45,14 @@ async fn spawn_ctrl_c_policy() {
 use crate::{build_agent, build_agent_with_session, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
 
+pub mod attachments;
 pub mod commands;
 pub mod format;
 
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use commands::{COMMANDS, completion_matches_dyn};
 pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
-pub(crate) use format::build_user_message_with_images;
+pub(crate) use format::build_user_message_with_attachments;
 
 pub(crate) struct SessionState {
     pub(crate) store: gray_session::JsonlSessionStore,
@@ -1160,7 +1161,7 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_connect(&mut cfg, plat, &token);
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("╰ {} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)", plat.label())),
+                Ok(()) => say(tui, &format!("{} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)", plat.label())),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
             }
         }
@@ -1168,7 +1169,7 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_disconnect(&mut cfg, plat);
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("╰ {} disabled — token kept", plat.label())),
+                Ok(()) => say(tui, &format!("{} disabled — token kept", plat.label())),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
             }
         }
@@ -1176,11 +1177,11 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             if apply_enable(&mut cfg, plat) {
                 match gray_gateway::config::save_gateway_config(&cfg) {
-                    Ok(()) => say(tui, &format!("╰ {} enabled (saved token)", plat.label())),
+                    Ok(()) => say(tui, &format!("{} enabled (saved token)", plat.label())),
                     Err(e) => say(tui, &format!("gateway config error: {e}")),
                 }
             } else {
-                say(tui, &format!("╰ no saved token for {} — use /gateway connect {plat} <token>", plat.label()));
+                say(tui, &format!("no saved token for {} — use /gateway connect {plat} <token>", plat.label()));
             }
         }
         GatewayAction::Run => {
@@ -2142,7 +2143,7 @@ pub async fn run_repl_mode(
                     let cancel = tokio_util::sync::CancellationToken::new();
                     *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
                     let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()) };
-                    let user_msg = build_user_message_with_images(&prompt_text, &images);
+                    let user_msg = build_user_message_with_attachments(&prompt_text, &images);
                     let user_msg_for_retry = user_msg.clone();
                     let mut initial_count = agent.messages().len();
                     {
@@ -2554,7 +2555,7 @@ pub async fn run_repl_mode(
                     questions: Some(question_bridge.clone()),
                 };
                 let images = std::mem::take(&mut pending_images);
-                let user_msg = build_user_message_with_images(&prompt_text, &images);
+                let user_msg = build_user_message_with_attachments(&prompt_text, &images);
                 let user_msg_for_retry = user_msg.clone();
                 let mut initial_count = agent.messages().len();
                 {
