@@ -64,8 +64,8 @@ impl Registry {
         Self::from_plugins(&[
             Arc::new(plugin::ToolsBasicPlugin),
             Arc::new(plugin::ToolsSearchPlugin),
+            Arc::new(plugin::CronPlugin),
         ])
-        .with_extra_tools()
     }
 
     /// Collects tools from plugins in order; on name conflict later entries win.
@@ -86,12 +86,6 @@ impl Registry {
             }
         }
         Self { tools }
-    }
-
-    /// Tools outside the two tool plugins (kept so no tool disappears).
-    pub fn with_extra_tools(mut self) -> Self {
-        self.tools.push(Arc::new(CronTool));
-        self
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
@@ -334,6 +328,71 @@ pub(crate) fn resolve_path(cwd: &std::path::Path, p: &str) -> std::path::PathBuf
         path.to_path_buf()
     } else {
         cwd.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::agent::{ToolContext, ToolOutput};
+    use gray_core::message::ToolDef;
+    use serde_json::{json, Value};
+
+    struct StubTool {
+        name: &'static str,
+        marker: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for StubTool {
+        fn def(&self) -> ToolDef {
+            ToolDef::new(self.name, "stub", json!({"type": "object"}))
+        }
+        async fn execute(&self, _ctx: &ToolContext, _args: Value) -> ToolOutput {
+            ToolOutput::ok(self.marker)
+        }
+    }
+
+    struct StubPlugin {
+        name: &'static str,
+        tool_name: &'static str,
+        marker: &'static str,
+    }
+
+    impl gray_plugin::Plugin for StubPlugin {
+        fn manifest(&self) -> gray_plugin::Manifest {
+            gray_plugin::Manifest {
+                name: self.name.to_string(),
+                version: "0.0.0".to_string(),
+                tools: vec![self.tool_name.to_string()],
+                provider: None,
+            }
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            vec![Arc::new(StubTool { name: self.tool_name, marker: self.marker })]
+        }
+    }
+
+    #[tokio::test]
+    async fn from_plugins_later_plugin_wins_on_conflict() {
+        let a: Arc<dyn gray_plugin::Plugin> = Arc::new(StubPlugin {
+            name: "a",
+            tool_name: "dup",
+            marker: "from-a",
+        });
+        let b: Arc<dyn gray_plugin::Plugin> = Arc::new(StubPlugin {
+            name: "b",
+            tool_name: "dup",
+            marker: "from-b",
+        });
+        let reg = Registry::from_plugins(&[a, b]);
+        assert_eq!(reg.len(), 1);
+        let out = reg
+            .lookup("dup")
+            .unwrap()
+            .execute(&ToolContext::default(), json!({}))
+            .await;
+        assert!(format!("{out:?}").contains("from-b"), "{out:?}");
     }
 }
 

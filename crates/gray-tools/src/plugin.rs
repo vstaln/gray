@@ -4,7 +4,7 @@ use gray_core::agent::Tool;
 use gray_plugin::{Manifest, Plugin};
 
 use crate::{
-    BashTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, RequestUserInputTool,
+    BashTool, CronTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, RequestUserInputTool,
     REQUEST_USER_INPUT_TOOL_NAME, SkillTool, WriteTool,
 };
 
@@ -53,5 +53,22 @@ impl Plugin for ToolsSearchPlugin {
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         vec![Arc::new(GrepTool), Arc::new(FindTool), Arc::new(LsTool)]
+    }
+}
+
+pub struct CronPlugin;
+
+impl Plugin for CronPlugin {
+    fn manifest(&self) -> Manifest {
+        Manifest {
+            name: "cron".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            tools: vec!["schedule_task".to_string()],
+            provider: None,
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![Arc::new(CronTool)]
     }
 }
