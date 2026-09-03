@@ -146,13 +146,13 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     InputBox { lines: box_lines, cur_row, cur_col }
 }
 
-/// Height reserved above the input box for the live status row: exactly 1.
-/// The status renders as a gray card chip (same bg as the prompt/tool
-/// boxes), so scrollback contrast — not blank seam rows — keeps live
-/// transcript tokens from visually jamming against it. Blank seam rows
-/// here stack with the input box's own top padding into a weird gap.
+/// Height reserved above the input box for the live status: exactly 2 —
+/// the 1-row gray card chip plus one black breathing row below it. The chip
+/// (same bg as the prompt/tool boxes) separates the status from scrollback
+/// above by contrast, but the input box below shares that bg, so without
+/// the breathing row the status melts into the text area. No top seam row.
 pub(crate) fn status_dock_h(has_status: bool, question_active: bool) -> u16 {
-    u16::from(has_status && !question_active)
+    u16::from(has_status && !question_active) * 2
 }
 
 /// Queued follow-up inputs held while a turn is in flight (codex
@@ -211,9 +211,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // While a question is up it IS the status: hide the shimmer and the
     // attachments row so the panel gets the whole inline viewport.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
-    // Status is a 1-row gray card chip (contrast, not blank rows,
-    // separates it from live transcript above). No seam/breathing rows:
-    // they stack with the input box's own padding into a weird gap.
+    // Status is a gray card chip + one black breathing row below it (never
+    // a top seam: scrollback contrast handles the upper edge, and a top row
+    // just stacks with transcript gaps into a weird void).
     let status_h: u16 = status_dock_h(tui.status.is_some(), question_active);
 
     tui.terminal.draw(|frame| {
@@ -457,10 +457,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_dock_is_single_card_row() {
+    fn status_dock_is_chip_plus_breathing() {
         assert_eq!(status_dock_h(false, false), 0);
         assert_eq!(status_dock_h(true, true), 0); // question owns the viewport
-        assert_eq!(status_dock_h(true, false), 1); // chip only, never seam rows
+        assert_eq!(status_dock_h(true, false), 2); // chip + 1 black row, no top seam
     }
 
     #[test]
