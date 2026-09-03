@@ -647,10 +647,10 @@ fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserA
             .map(|a| a.answers.join(" · "))
             .unwrap_or_default();
         if joined.is_empty() {
-            lines.push(format!("❓ {} — ⏭ skipped", q.question));
+            lines.push(format!("? {} → skipped", q.question));
         } else {
-            lines.push(format!("❓ {}", q.question));
-            lines.push(format!("   → {joined}"));
+            lines.push(format!("? {}", q.question));
+            lines.push(format!("  → {joined}"));
         }
     }
     if !lines.is_empty() {
