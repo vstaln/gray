@@ -42,7 +42,7 @@ log = { version = "0.4", features = ["std"] }
 crossterm = "0.28"
 ratatui = "0.29"
 arboard = "3"
-image = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"

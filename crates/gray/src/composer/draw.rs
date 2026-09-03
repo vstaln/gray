@@ -147,10 +147,9 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
 }
 
 /// Height reserved above the input box for the live status: exactly 2 —
-/// the 1-row gray card chip plus one black breathing row below it. The chip
-/// (same bg as the prompt/tool boxes) separates the status from scrollback
-/// above by contrast, but the input box below shares that bg, so without
-/// the breathing row the status melts into the text area. No top seam row.
+/// the plain shimmer text row plus one black breathing row below it. No
+/// background overlays anywhere: the status is bare text, the breathing
+/// row is bare terminal space.
 pub(crate) fn status_dock_h(has_status: bool, question_active: bool) -> u16 {
     u16::from(has_status && !question_active) * 2
 }
@@ -211,9 +210,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // While a question is up it IS the status: hide the shimmer and the
     // attachments row so the panel gets the whole inline viewport.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
-    // Status is a gray card chip + one black breathing row below it (never
-    // a top seam: scrollback contrast handles the upper edge, and a top row
-    // just stacks with transcript gaps into a weird void).
+    // Plain shimmer status text (no bg overlay) + one bare breathing row
+    // below it. No top seam row.
     let status_h: u16 = status_dock_h(tui.status.is_some(), question_active);
 
     tui.terminal.draw(|frame| {
@@ -278,10 +276,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             };
             let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(suffix, Style::default().fg(Color::Rgb(108, 108, 108))));
-            // Card chip: same bg as the prompt/tool boxes, so the row reads
-            // as a distinct edge against scrollback with no spacer rows.
-            let card = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
-            frame.render_widget(Paragraph::new(Line::from(spans)).block(card), Rect::new(area.x, status_y, area.width, 1));
+            frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, status_y, area.width, 1));
         }
 
         for (i, line) in queued_lines.iter().enumerate() {
@@ -457,10 +452,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_dock_is_chip_plus_breathing() {
+    fn status_dock_is_plain_plus_breathing() {
         assert_eq!(status_dock_h(false, false), 0);
         assert_eq!(status_dock_h(true, true), 0); // question owns the viewport
-        assert_eq!(status_dock_h(true, false), 2); // chip + 1 black row, no top seam
+        assert_eq!(status_dock_h(true, false), 2); // text row + 1 bare row, no overlay
     }
 
     #[test]
