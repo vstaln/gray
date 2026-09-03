@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod delegation;
 pub mod error;
 pub mod event;
 pub mod message;
