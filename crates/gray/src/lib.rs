@@ -30,6 +30,45 @@ use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;
 use gray_tools::Registry;
 
+/// Builds the tool registry from the `gray.yml` profile plugin order,
+/// falling back to [`Registry::builtin`] when no profile file is present.
+/// Unknown plugin names are skipped; later entries win on tool conflicts.
+pub fn build_registry() -> Registry {
+    let plugins: Vec<std::sync::Arc<dyn gray_plugin::Plugin>> =
+        match gray_plugin::profile::load_profile("gray.yml") {
+            Ok(names) => names
+                .iter()
+                .filter_map(|n| match n.as_str() {
+                    "tools-basic" => Some(std::sync::Arc::new(
+                        gray_tools::plugin::ToolsBasicPlugin,
+                    )
+                        as std::sync::Arc<dyn gray_plugin::Plugin>),
+                    "tools-search" => Some(std::sync::Arc::new(
+                        gray_tools::plugin::ToolsSearchPlugin,
+                    )
+                        as std::sync::Arc<dyn gray_plugin::Plugin>),
+                    _ => None,
+                })
+                .collect(),
+            Err(_) => return Registry::builtin(),
+        };
+    if plugins.is_empty() {
+        return Registry::builtin();
+    }
+    Registry::from_plugins(&plugins).with_extra_tools()
+}
+
+/// Merged manifests of the default plugins (for `--dump-manifest`).
+pub fn default_manifests() -> Vec<gray_plugin::Manifest> {
+    use gray_plugin::Plugin;
+    [
+        gray_tools::plugin::ToolsBasicPlugin.manifest(),
+        gray_tools::plugin::ToolsSearchPlugin.manifest(),
+    ]
+    .into_iter()
+    .collect()
+}
+
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
 pub const DEFAULT_SYS_PROMPT: &str = r#"You are gray, a minimal agent running on the user's machine.
@@ -186,7 +225,7 @@ fn build_agent_inner(
     let context_files = system_prompt::discover_context_files(cwd);
 
     // Tools only appear in the prompt when they have a snippet.
-    let tmp_registry = Registry::builtin();
+    let tmp_registry = build_registry();
     let tool_snippets = tmp_registry.prompt_snippets();
     let selected_tools = tmp_registry.tool_names();
     let prompt_guidelines = {
@@ -212,7 +251,7 @@ fn build_agent_inner(
         .build()
         .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
 
-    let registry = Registry::builtin();
+    let registry = build_registry();
     let tool_defs = registry.defs();
 
     let agent = Agent::new(Box::new(provider), Box::new(registry))
@@ -266,6 +305,10 @@ pub struct Cli {
     /// Tail budget kept alongside the summary after compaction (e.g. 20k). Env: GRAY_CONTEXT_KEEP.
     #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
     pub context_keep: Option<usize>,
+
+    /// Print the merged plugin manifest as JSON and exit
+    #[arg(long = "dump-manifest")]
+    pub dump_manifest: bool,
 
     /// Resume subcommand (picker by default; see `gray resume --help`)
     #[command(subcommand)]
