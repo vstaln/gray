@@ -27,7 +27,7 @@ SSH "sudo install -m 644 /tmp/$BASE /var/www/gray/dl/$BASE \
      && rm -f /tmp/$BASE /tmp/gray-install-$UNIQ.sh"
 
 # version manifest for the in-app update check (gray-<channel>-<plat>.tar.gz)
-CHANNEL=${BASE%%-*}; CHANNEL=${CHANNEL#gray-}
+CHANNEL=${BASE#gray-}; CHANNEL=${CHANNEL%%-*}
 VER=$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
 echo "$VER" | SSH "cat | sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
 echo "✓ latest-$CHANNEL.txt = $VER"
