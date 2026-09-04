@@ -26,6 +26,7 @@ clap = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
 futures = { workspace = true }
+fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
