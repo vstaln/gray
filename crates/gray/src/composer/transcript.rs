@@ -660,7 +660,11 @@ impl Tui {
                     lines.push(format!("• {text}"));
                     lines.push(format!("  {} answered: {}", "↳", list.join(" · ")));
                 }
-                _ => lines.push(format!("• {text} — skipped")),
+                // Stacked like answered: outcome on its own row, never inline.
+                _ => {
+                    lines.push(format!("• {text}"));
+                    lines.push("  ↳ skipped".to_string());
+                }
             }
         }
         if !lines.is_empty() {
@@ -756,6 +760,21 @@ impl Tui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn repro_screenshot_wrap() {
+        let text = "Invoking the conversation-start skill to establish skill discovery before responding to the poetry request. Evaluating whether to invoke the brainstorming or writing skill for the creative request.";
+        for max_w in [60usize, 80, 100, 120, 148] {
+            let line = Line::from(vec![Span::raw(text.to_string())]);
+            let out = wrap_styled_line_with_ranges(line, max_w);
+            eprintln!("=== max_w={max_w} rows={} ===", out.len());
+            for (l, _) in &out {
+                let row: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                eprintln!("  [{:>3}] {:?}", unicode_width::UnicodeWidthStr::width(row.as_str()), row);
+            }
+        }
+    }
 
     #[test]
     fn wrap_ranges_round_trip_and_identity() {
