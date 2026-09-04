@@ -201,3 +201,41 @@ pub fn fmt_event(event: &AgentEvent) -> String {
     }
 }
 
+/// Formats a turn duration like the TUI `Worked for` line: `850ms`, `6s`, `6.5s`, `2m 5s`.
+pub fn fmt_duration_ms(ms: u64) -> String {
+    let secs = ms as f64 / 1000.0;
+    if secs < 1.0 {
+        format!("{ms}ms")
+    } else if secs < 60.0 {
+        let s = format!("{secs:.1}s");
+        if s.ends_with(".0s") { s.replacen(".0s", "s", 1) } else { s }
+    } else {
+        let total_s = (ms / 1000) as u64;
+        let m = total_s / 60;
+        let s = total_s % 60;
+        if s == 0 { format!("{m}m") } else { format!("{m}m {s}s") }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_subsecond_as_ms() {
+        assert_eq!(fmt_duration_ms(850), "850ms");
+    }
+
+    #[test]
+    fn formats_seconds_trimming_point_zero() {
+        assert_eq!(fmt_duration_ms(6000), "6s");
+        assert_eq!(fmt_duration_ms(6500), "6.5s");
+    }
+
+    #[test]
+    fn formats_minutes() {
+        assert_eq!(fmt_duration_ms(125_000), "2m 5s");
+        assert_eq!(fmt_duration_ms(120_000), "2m");
+    }
+}
+
