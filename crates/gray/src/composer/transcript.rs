@@ -29,6 +29,21 @@ fn str_display_width(s: &str) -> usize {
     crate::tui::visible_width(s)
 }
 
+/// Redact secrets from slash-command echo cards: `/gateway connect <platform> <token>`
+/// renders as `/gateway connect <platform> ••••`, same for `/gateway pairing approve`
+/// codes. Everything else passes through untouched. Execution always uses the raw
+/// string — only the visible card is redacted.
+pub fn redact_command_echo(text: &str) -> String {
+    let mut it = text.split_whitespace();
+    match (it.next(), it.next(), it.next(), it.next(), it.next()) {
+        (Some("/gateway"), Some("connect"), Some(plat), Some(_), _) => format!("/gateway connect {plat} ••••"),
+        (Some("/gateway"), Some("pairing"), Some("approve"), Some(plat), Some(_)) => {
+            format!("/gateway pairing approve {plat} ••••")
+        }
+        _ => text.to_string(),
+    }
+}
+
 fn slice_line_spans<'a>(
     original: &'a Line<'a>,
     span_bounds: &[(Range<usize>, Style)],
@@ -505,9 +520,23 @@ pub(crate) fn format_tool_box_lines(
         }
         let wrapped_body = wrap_styled_line(line, max_w);
         for mut l in wrapped_body {
-            l.style = l.style.patch(bg_style);
+            let line_bg = l
+                .style
+                .bg
+                .or_else(|| l.spans.iter().find_map(|s| s.style.bg))
+                .unwrap_or(bg_color);
+
+            l.style = l.style.bg(line_bg);
             for span in l.spans.iter_mut() {
-                span.style = span.style.bg(bg_color);
+                if span.style.bg.is_none() {
+                    span.style = span.style.bg(line_bg);
+                }
+            }
+            if line_bg != bg_color {
+                let current_w: usize = l.spans.iter().map(|s| s.width()).sum();
+                if current_w < max_w {
+                    l.spans.push(Span::styled(" ".repeat(max_w - current_w), Style::default().bg(line_bg)));
+                }
             }
             box_lines.push(l);
         }
@@ -790,6 +819,22 @@ impl Tui {
 mod tests {
     use super::*;
 
+    #[test]
+    fn redact_command_echo_hides_connect_token() {
+        assert_eq!(
+            redact_command_echo("/gateway connect discord secret-token"),
+            "/gateway connect discord ••••"
+        );
+        // No token yet: untouched.
+        assert_eq!(redact_command_echo("/gateway connect discord"), "/gateway connect discord");
+        assert_eq!(
+            redact_command_echo("/gateway pairing approve discord ABC123"),
+            "/gateway pairing approve discord ••••"
+        );
+        // Anything else: untouched.
+        assert_eq!(redact_command_echo("/gateway status"), "/gateway status");
+        assert_eq!(redact_command_echo("hello world"), "hello world");
+    }
 
     #[test]
     fn word_flush_cut_breaks_at_spaces() {
