@@ -51,7 +51,7 @@ pub mod commands;
 pub mod format;
 
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
-pub(crate) use commands::{COMMANDS, completion_matches_dyn};
+pub(crate) use commands::{REGISTRY, completion_matches_dyn};
 pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
 pub(crate) use format::build_user_message_with_attachments;
 
@@ -2594,14 +2594,14 @@ pub async fn run_repl_mode(
             ReplCommand::Help => {
                 if let Some((shared, _)) = &tui {
                     let mut out = String::new();
-                    for (name, desc) in COMMANDS {
-                        out.push_str(&format!("  /{name:<10} {desc}\n"));
+                    for d in REGISTRY {
+                        out.push_str(&format!("  /{:<10} {}\n", d.name, d.desc));
                     }
                     shared.lock().expect("tui lock").push_dim(out.trim_end().to_string());
                 } else {
                     println!("{}", crate::rule("commands"));
-                    for (name, desc) in COMMANDS {
-                        println!("  /{name:<8} {desc}");
+                    for d in REGISTRY {
+                        println!("  /{:<8} {}", d.name, d.desc);
                     }
                 }
                 continue;
