@@ -29,6 +29,75 @@ pub fn fmt_usage(total: usize) -> String {
     out.chars().rev().collect()
 }
 
+/// Codex steal (agent-loop.ts): pull Status/Code/Type/Message out of a
+/// `status 503: {"error":{"message":..,"type":..,"code":..}}` blob so the UI
+/// never dumps raw `{"model":..,"param":null}` JSON. Returns a short human
+/// line; falls back to the raw detail when no JSON is found.
+pub fn clean_provider_detail(detail: &str) -> String {
+    let start = match detail.find('{') {
+        Some(i) => i,
+        None => return detail.to_string(),
+    };
+    let end = match detail.rfind('}') {
+        Some(i) if i > start => i,
+        _ => return detail.to_string(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&detail[start..=end]) {
+        Ok(v) => v,
+        Err(_) => return detail.to_string(),
+    };
+    // Shape is usually {"model":..,"error":{"message","type","code"}} or just {"error":..}.
+    let err_obj = parsed.get("error").unwrap_or(&parsed);
+    let message = err_obj
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if message.is_empty() {
+        return detail.to_string();
+    }
+    let typ = err_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let code = err_obj
+        .get("code")
+        .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string())))
+        .unwrap_or_default();
+    let prefix = detail[..start].trim().trim_end_matches(':').trim_end().to_string();
+    // Preserve trailing diagnostics Codex keeps (cf-ray / request-id).
+    let mut suffix = String::new();
+    for key in ["cf-ray: ", "request-id: ", "request_id: "] {
+        if let Some(pos) = detail[end..].find(key) {
+            let tail = detail[end + pos + key.len()..].trim();
+            let val: String = tail.chars().take_while(|c| !c.is_whitespace() && *c != ',').collect();
+            if !val.is_empty() {
+                let label = if key.starts_with("cf") { "cf-ray" } else { "request-id" };
+                if !suffix.is_empty() {
+                    suffix.push_str(", ");
+                }
+                suffix.push_str(&format!("{label}: {val}"));
+            }
+        }
+    }
+    let mut out = if prefix.is_empty() {
+        message.to_string()
+    } else {
+        format!("{prefix}: {message}")
+    };
+    if !typ.is_empty() || !code.is_empty() {
+        let mut meta = vec![];
+        if !typ.is_empty() {
+            meta.push(format!("type: {typ}"));
+        }
+        if !code.is_empty() {
+            meta.push(format!("code: {code}"));
+        }
+        out.push_str(&format!(" ({})", meta.join(", ")));
+    }
+    if !suffix.is_empty() {
+        out.push_str(&format!(", {suffix}"));
+    }
+    out
+}
+
 /// Formats a [`CoreError`] for REPL display.
 /// Connection/timeout failures get a friendly, actionable message with the
 /// provider's `base_url`; all other errors fall back to the generic prefix.
@@ -43,7 +112,10 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
         CoreError::Provider(detail) => {
             // pi parity: bounded detail (never raw multi-KB dumps) + explicit
             // retryability on the first line of each classified arm.
-            let short = truncate_chars(detail, 600);
+            // Codex steal: extract Status/Code/Type/Message from JSON blobs
+            // instead of dumping {"model":..,"error":{...}} raw.
+            let cleaned = clean_provider_detail(detail);
+            let short = truncate_chars(&cleaned, 600);
             let lower = short.to_lowercase();
             if lower.contains("not supported")
                 || lower.contains("unsupported")
@@ -198,6 +270,15 @@ pub fn fmt_event(event: &AgentEvent) -> String {
                 "\n".to_string()
             }
         }
+        // Codex steal (`new_stream_error_event`): dim `⚠ msg` + `└ details`.
+        AgentEvent::StreamError { message, details } => {
+            let trunc = truncate_chars(details, MAX_ERROR_DISPLAY_CHARS);
+            if trunc.is_empty() {
+                format!("\n\x1b[2m⚠ {message}\x1b[0m\n")
+            } else {
+                format!("\n\x1b[2m⚠ {message}\n└ {trunc}\x1b[0m\n")
+            }
+        }
     }
 }
 
@@ -220,6 +301,35 @@ pub fn fmt_duration_ms(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_style_server_error_extracts_message_not_raw_json() {
+        // Screenshot case: opencode/zen 503 with {"model":..,"error":{...}} blob.
+        // Codex-style: show Status/Code/Type/Message, never the raw JSON dump.
+        let detail = r#"server error: status 503 Service Unavailable: {"model":"muse-spark-1.3-contributor","error":{"param":null,"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [service_overloaded] The backend is temporarily overloaded. Please retry."}}, cf-ray: a35cf09b5c1b7537-SEA"#;
+        let out = format_core_error(&CoreError::Provider(detail.to_string()), "https://opencode.ai/zen/go/v1");
+        assert!(out.contains("(retryable)"), "must stay retryable: {out}");
+        assert!(
+            out.contains("The backend is temporarily overloaded"),
+            "must surface extracted message: {out}"
+        );
+        assert!(!out.contains("\"model\":"), "must not dump raw JSON: {out}");
+        assert!(!out.contains("\"param\":"), "must not dump raw JSON: {out}");
+        assert!(out.contains("503"), "must keep status: {out}");
+        assert!(out.contains("cf-ray"), "must keep cf-ray: {out}");
+    }
+
+    #[test]
+    fn codex_style_stream_error_renders_reconnecting_with_details() {
+        // Codex steal: StreamError cell is `⚠ Reconnecting... n/m` + `└ details`.
+        let ev = AgentEvent::StreamError {
+            message: "Reconnecting... 1/3".to_string(),
+            details: "status 503: backend overloaded".to_string(),
+        };
+        let out = fmt_event(&ev);
+        assert!(out.contains("Reconnecting... 1/3"), "must show attempt: {out}");
+        assert!(out.contains("backend overloaded"), "must show details: {out}");
+    }
 
     #[test]
     fn formats_subsecond_as_ms() {
