@@ -638,7 +638,9 @@ fn format_answers_text(questions: &[UserQuestion], answers: &[UserAnswer]) -> St
     out
 }
 
-fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserAnswer], _auto: bool) {
+/// Resolved-question summary rows: the question on its own row, the outcome
+/// (`→ answer` or `→ skipped`) stacked below it — never jammed on one line.
+fn result_summary_lines(questions: &[UserQuestion], answers: &[UserAnswer]) -> Vec<String> {
     let mut lines = Vec::new();
     for q in questions {
         let joined = answers
@@ -646,13 +648,18 @@ fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserA
             .find(|a| a.id == q.id)
             .map(|a| a.answers.join(" · "))
             .unwrap_or_default();
+        lines.push(format!("? {}", q.question));
         if joined.is_empty() {
-            lines.push(format!("? {} → skipped", q.question));
+            lines.push("  → skipped".to_string());
         } else {
-            lines.push(format!("? {}", q.question));
             lines.push(format!("  → {joined}"));
         }
     }
+    lines
+}
+
+fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserAnswer], _auto: bool) {
+    let lines = result_summary_lines(questions, answers);
     if !lines.is_empty() {
         // Stacked: one transcript row per line, not a joined blob.
         for line in lines {
@@ -943,6 +950,27 @@ mod tests {
         assert!(
             last.spans.iter().all(|s| s.content.trim().is_empty()),
             "last panel row must be blank (bottom margin)"
+        );
+    }
+
+    #[test]
+    fn result_summary_stacks_question_and_outcome() {
+        let qs = vec![UserQuestion {
+            id: "q0".into(),
+            header: "H".into(),
+            question: "question 0?".into(),
+            options: vec![],
+            is_other: false,
+        }];
+        // Skipped stacks like answered: question row, then outcome row.
+        assert_eq!(
+            result_summary_lines(&qs, &[]),
+            vec!["? question 0?".to_string(), "  → skipped".to_string()]
+        );
+        let answered = vec![UserAnswer { id: "q0".into(), answers: vec!["Alpha".into()] }];
+        assert_eq!(
+            result_summary_lines(&qs, &answered),
+            vec!["? question 0?".to_string(), "  → Alpha".to_string()]
         );
     }
 }
