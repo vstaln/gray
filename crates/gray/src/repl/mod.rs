@@ -1,6 +1,7 @@
 //! Interactive REPL mode for Gray.
 // 2 turn loops (~400 lines) + 3 provider blocks duplicated; extract ensure_provider + run_turn when adding streaming resume.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -481,15 +482,21 @@ struct SessionTotals {
     input: usize,
     output: usize,
     cost: f64,
+    total_duration_ms: u64,
+    timed_turns: usize,
 }
 
 impl SessionTotals {
-    fn add(&mut self, usage: &gray_core::event::Usage, model: &str) {
+    fn add(&mut self, usage: &gray_core::event::Usage, model: &str, duration_ms: Option<u64>) {
         self.turns += 1;
         self.input += usage.input_tokens;
         self.output += usage.output_tokens;
         if let Some(c) = crate::setup::turn_cost(usage, model) {
             self.cost += c;
+        }
+        if let Some(ms) = duration_ms {
+            self.total_duration_ms += ms;
+            self.timed_turns += 1;
         }
     }
 
@@ -497,29 +504,34 @@ impl SessionTotals {
     /// last message of each turn, so entries carrying usage map 1:1 to turns.
     fn from_entries(entries: &[gray_session::SessionEntry], model: &str) -> Self {
         let mut t = SessionTotals::default();
-        for u in entries.iter().filter_map(|e| e.usage) {
-            t.add(&u, model);
+        for e in entries.iter().filter(|e| e.usage.is_some()) {
+            let u = e.usage.as_ref().expect("filtered");
+            t.add(u, model, e.duration_ms);
         }
         t
     }
 }
 
-/// `⬡ 12,400 tok · $0.004 ($0.41 session)` — cost parts appear only when the
-/// model has a LiteLLM rate; otherwise the footer is tokens-only as before.
+/// `⬡ 12,400 tok · 6s · $0.004 ($0.41 session)` — cost/time parts appear only
+/// when known; otherwise the footer stays tokens-only as before.
 fn turn_footer(
     usage: &gray_core::event::Usage,
     model: &str,
     totals: &SessionTotals,
+    duration_ms: Option<u64>,
 ) -> String {
     let base = format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()));
+    let time = duration_ms
+        .map(|ms| format!(" · {}", crate::repl::format::fmt_duration_ms(ms)))
+        .unwrap_or_default();
     match crate::setup::turn_cost(usage, model) {
         Some(c) if totals.turns > 1 => format!(
-            "{base} · {} ({} session)",
+            "{base}{time} · {} ({} session)",
             crate::setup::format_cost(c),
             crate::setup::format_cost(totals.cost)
         ),
-        Some(c) => format!("{base} · {}", crate::setup::format_cost(c)),
-        None => base,
+        Some(c) => format!("{base}{time} · {}", crate::setup::format_cost(c)),
+        None => format!("{base}{time}"),
     }
 }
 
@@ -542,6 +554,16 @@ fn handle_usage(
         crate::repl::fmt_usage(totals.output),
         crate::repl::fmt_usage(totals.input + totals.output),
     );
+    let time_line = if totals.total_duration_ms > 0 && totals.timed_turns > 0 {
+        let avg = totals.total_duration_ms / totals.timed_turns as u64;
+        Some(format!(
+            "{} total · {} avg",
+            crate::repl::format::fmt_duration_ms(totals.total_duration_ms),
+            crate::repl::format::fmt_duration_ms(avg),
+        ))
+    } else {
+        None
+    };
     let cost_line = match crate::setup::get_model_rate(config.model.as_deref().unwrap_or("")) {
         Some(r) => format!(
             "{} @ ${:.2}/${:.2} per 1M in/out",
@@ -555,9 +577,16 @@ fn handle_usage(
         let mut t = shared.lock().expect("tui lock");
         t.push_action("Session usage", Some(&header));
         t.push_dim(body);
+        if let Some(time) = &time_line {
+            t.push_dim(time.clone());
+        }
         t.push_dim(cost_line);
     } else {
-        println!("✓ Session usage — {header}\n  {body}\n  {cost_line}");
+        println!("✓ Session usage — {header}\n  {body}");
+        if let Some(time) = &time_line {
+            println!("  {time}");
+        }
+        println!("  {cost_line}");
     }
 }
 
@@ -1108,7 +1137,16 @@ enum GatewayAction {
     Autostart(bool),
     Install,
     Uninstall,
+    Pairing(PairingArgs),
     Help,
+}
+
+/// Args for `/gateway pairing ...` — same actions as `gray gateway pairing`.
+#[derive(Debug, PartialEq)]
+enum PairingArgs {
+    Approve(String, String),
+    List(Option<String>),
+    Revoke(String, String),
 }
 
 /// Parses `/gateway [sub] [args]` — bare or unknown subcommands default to
@@ -1148,6 +1186,19 @@ fn parse_gateway_args(raw: &str) -> GatewayAction {
             },
             None => GatewayAction::Help,
         },
+        Some("pairing") => match toks.next().map(|t| t.to_ascii_lowercase()).as_deref() {
+            Some("approve") => match (toks.next(), toks.next()) {
+                (Some(p), Some(c)) => GatewayAction::Pairing(PairingArgs::Approve(p.to_string(), c.to_string())),
+                _ => GatewayAction::Help,
+            },
+            Some("revoke") => match (toks.next(), toks.next()) {
+                (Some(p), Some(u)) => GatewayAction::Pairing(PairingArgs::Revoke(p.to_string(), u.to_string())),
+                _ => GatewayAction::Help,
+            },
+            Some("list") => GatewayAction::Pairing(PairingArgs::List(toks.next().map(str::to_string))),
+            None => GatewayAction::Pairing(PairingArgs::List(None)),
+            _ => GatewayAction::Help,
+        },
         Some(_) => GatewayAction::Help,
     }
 }
@@ -1170,7 +1221,7 @@ fn gateway_status_lines(cfg: &gray_gateway::config::GatewayConfig, running: bool
         lines.push(format!("  {}: {state}", plat.label()));
     }
     lines.push(format!("  autostart: {}", if cfg.autostart { "on" } else { "off" }));
-    lines.push("usage: /gateway connect <platform> <token> | enable <platform> | disconnect <platform> | run | stop | autostart on|off | install | uninstall | status".to_string());
+    lines.push("usage: /gateway connect <platform> <token> | enable <platform> | disconnect <platform> | run | stop | autostart on|off | install | uninstall | pairing approve <platform> <code> | pairing list | pairing revoke <platform> <user> | status".to_string());
     lines
 }
 
@@ -1310,6 +1361,18 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             match with_modal_sync(tui, gray_gateway::systemd::uninstall) {
                 Ok(()) => say(tui, "gateway systemd service removed"),
                 Err(e) => say(tui, &format!("gateway uninstall failed: {e}")),
+            }
+        }
+        GatewayAction::Pairing(args) => {
+            use gray_gateway::pairing::{pairing_approve, pairing_list, pairing_revoke};
+            let out = match args {
+                PairingArgs::Approve(p, c) => pairing_approve(&p, &c),
+                PairingArgs::List(p) => pairing_list(p.as_deref()),
+                PairingArgs::Revoke(p, u) => pairing_revoke(&p, &u),
+            };
+            match out {
+                Ok(s) => say(tui, &s),
+                Err(e) => say(tui, &format!("pairing: {e}")),
             }
         }
         GatewayAction::Help => {
@@ -1580,6 +1643,7 @@ async fn persist_turn_messages(
     cwd: &Path,
     initial_count: usize,
     latest_usage: Option<gray_core::event::Usage>,
+    duration_ms: Option<u64>,
 ) {
     if session_state.is_none()
         && let Some(root) = default_root()
@@ -1606,12 +1670,14 @@ async fn persist_turn_messages(
     {
         let new_messages = &agent.messages()[initial_count..];
         for (i, msg) in new_messages.iter().enumerate() {
-            let usage = if i == new_messages.len() - 1 {
-                latest_usage
-            } else {
-                None
-            };
-            if let Err(e) = state.store.append_with_usage(&state.session_id, msg, usage).await {
+            let is_last = i == new_messages.len() - 1;
+            let usage = if is_last { latest_usage } else { None };
+            let duration = if is_last { duration_ms } else { None };
+            if let Err(e) = state
+                .store
+                .append_with_usage_and_duration(&state.session_id, msg, usage, duration)
+                .await
+            {
                 log::warn!(target: "gray_session", "session append failed: {e}");
             }
         }
@@ -1645,35 +1711,46 @@ async fn ensure_session_state(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn dispatch_agent_event(
     ev: &AgentEvent,
     tui_stream: Option<&crate::composer::SharedTui>,
     interactive: bool,
-    current_tool_name: &mut Option<String>,
-    current_tool_args: &mut Option<serde_json::Value>,
+    pending_tools: &mut HashMap<String, (String, Option<serde_json::Value>)>,
     turn_usage: &mut Option<gray_core::event::Usage>,
     cwd: &Path,
     model: &str,
     totals: &mut SessionTotals,
+    turn_start: std::time::Instant,
+    turn_duration_ms: &mut Option<u64>,
 ) {
+    // ponytail: single elapsed source — TurnEnd stamps duration once so footer,
+    // totals, and persisted entry agree even when TUI + headless paths diverge.
+    let elapsed_ms = || turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(shared) = tui_stream {
         if let Ok(mut t) = shared.lock() {
             match ev {
                 AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
                 AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                AgentEvent::ToolCallStart { name, .. } => {
+                AgentEvent::ToolCallStart { id, name } => {
                     t.flush_markdown();
                     t.end_thinking();
-                    *current_tool_name = Some(name.clone());
-                    *current_tool_args = None;
+                    pending_tools.insert(id.clone(), (name.clone(), None));
                 }
-                AgentEvent::ToolCallEnd { args, .. } => {
+                AgentEvent::ToolCallEnd { id, args } => {
                     t.end_thinking();
-                    *current_tool_args = Some(args.clone());
+                    pending_tools
+                        .entry(id.clone())
+                        .and_modify(|e| e.1 = Some(args.clone()))
+                        .or_insert((String::new(), Some(args.clone())));
                 }
-                AgentEvent::ToolResult { output, is_error, .. } => {
-                    let name = current_tool_name.take().unwrap_or_default();
-                    let args = current_tool_args.take();
+                AgentEvent::ToolResult { id, output, is_error, .. } => {
+                    // Keyed by call id so parallel/retried calls can never swap
+                    // names and args (single-slot tracking rendered `● command=…`
+                    // headers with no tool name).
+                    let (name, args) = pending_tools.remove(id).map(|(n, a)| {
+                        (if n.is_empty() { "tool".to_string() } else { n }, a)
+                    }).unwrap_or_else(|| ("tool".to_string(), None));
                     if name != "request_user_input" {
                         let lines = crate::tool_fmt::format_tool_result_lines_with_context(
                             &name,
@@ -1694,11 +1771,13 @@ fn dispatch_agent_event(
                 }
                 AgentEvent::TurnEnd { usage, .. } => {
                     *turn_usage = Some(*usage);
+                    let ms = elapsed_ms();
+                    *turn_duration_ms = Some(ms);
                     t.end_thinking();
                     t.set_usage(*usage);
                     if usage.total() > 0 {
-                        totals.add(usage, model);
-                        t.push_usage(turn_footer(usage, model, totals));
+                        totals.add(usage, model, Some(ms));
+                        t.push_usage(turn_footer(usage, model, totals, Some(ms)));
                     }
                 }
                 _ => {}
@@ -1711,13 +1790,13 @@ fn dispatch_agent_event(
         match ev {
             AgentEvent::TextDelta { delta } => print!("{delta}"),
             AgentEvent::ThinkingDelta { delta } => print!("{THINKING_STYLE}{delta}\x1b[0m"),
-            AgentEvent::ToolCallStart { name, .. } => {
-                *current_tool_name = Some(name.clone());
-                *current_tool_args = None;
+            AgentEvent::ToolCallStart { id, name } => {
+                pending_tools.insert(id.clone(), (name.clone(), None));
             }
-            AgentEvent::ToolCallEnd { args, .. } => {
-                let name = current_tool_name.as_deref().unwrap_or("tool");
-                *current_tool_args = Some(args.clone());
+            AgentEvent::ToolCallEnd { id, args } => {
+                let entry = pending_tools.entry(id.clone()).or_insert((String::new(), None));
+                entry.1 = Some(args.clone());
+                let name = if entry.0.is_empty() { "tool" } else { entry.0.as_str() };
                 if name != "request_user_input" {
                     println!(
                         "\n{}",
@@ -1725,9 +1804,10 @@ fn dispatch_agent_event(
                     );
                 }
             }
-            AgentEvent::ToolResult { output, is_error, .. } => {
-                let name = current_tool_name.take().unwrap_or_default();
-                let args = current_tool_args.take();
+            AgentEvent::ToolResult { id, output, is_error, .. } => {
+                let (name, args) = pending_tools.remove(id).map(|(n, a)| {
+                    (if n.is_empty() { "tool".to_string() } else { n }, a)
+                }).unwrap_or_else(|| ("tool".to_string(), None));
                 let res = crate::tool_fmt::format_tool_result_plain_with_context(
                     &name,
                     args.as_ref(),
@@ -1741,9 +1821,11 @@ fn dispatch_agent_event(
             }
             AgentEvent::TurnEnd { usage, .. } => {
                 *turn_usage = Some(*usage);
+                let ms = elapsed_ms();
+                *turn_duration_ms = Some(ms);
                 if usage.total() > 0 {
-                    totals.add(usage, model);
-                    println!("\n\x1b[2m{}\x1b[0m", turn_footer(usage, model, totals));
+                    totals.add(usage, model, Some(ms));
+                    println!("\n\x1b[2m{}\x1b[0m", turn_footer(usage, model, totals, Some(ms)));
                 }
             }
             _ => {}
@@ -2102,7 +2184,28 @@ pub async fn run_repl_mode(
     if let Some((shared, _)) = tui.as_ref() {
         let cfg = gray_gateway::config::load_gateway_config();
         if cfg.autostart && cfg.platforms.values().any(|p| p.enabled) && start_gateway_in_background(Some(shared)) {
-            say(Some(shared), "gateway autostarted — /gateway stop to stop, /gateway autostart off to disable");
+            use gray_gateway::config::Platform;
+            let started: Vec<&str> = [Platform::Telegram, Platform::Discord, Platform::Slack]
+                .into_iter()
+                .filter(|p| cfg.platforms.get(p).is_some_and(|pc| pc.enabled))
+                .map(|p| p.label())
+                .collect();
+            let mut t = shared.lock().expect("tui lock");
+            let header = ratatui::text::Line::from(ratatui::text::Span::styled(
+                "Gateway autostarted",
+                ratatui::style::Style::default().fg(ratatui::style::Color::White).add_modifier(ratatui::style::Modifier::BOLD),
+            ));
+            let dim = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(140, 140, 140));
+            let mut body = Vec::new();
+            for (i, name) in started.iter().enumerate() {
+                let branch = if i + 1 == started.len() { "└─" } else { "├─" };
+                body.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                    format!("{branch} {name} — connecting in background"),
+                    dim,
+                )));
+            }
+            t.push_tool_box(header, body);
+            t.ensure_gap(1);
         }
     }
     let mut pending_command: Option<ReplCommand> = None;
@@ -2287,12 +2390,13 @@ pub async fn run_repl_mode(
                             }
                         }
                     });
-                    let mut current_tool_name: Option<String> = None;
-                    let mut current_tool_args: Option<serde_json::Value> = None;
+                    let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
                     let mut turn_usage: Option<gray_core::event::Usage> = None;
+                    let turn_start = std::time::Instant::now();
+                    let mut turn_duration_ms: Option<u64> = None;
                     let mut run_result = {
                         let mut on_event = |ev: &gray_core::event::AgentEvent| {
-                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
+                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
                         };
                         let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                         tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
@@ -2315,15 +2419,14 @@ pub async fn run_repl_mode(
                         )
                         .await
                         {
-                                current_tool_name = None;
-                                current_tool_args = None;
+                                pending_tools.clear();
                                 let ctx2 = gray_core::agent::ToolContext {
                                     cwd: cwd.clone(),
                                     cancel: cancel.clone(),
                                     questions: Some(question_bridge.clone()),
                                 };
                                 let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
-                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
+                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
                                 };
                                 let mut run_future2 = Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
                                 let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
@@ -2332,12 +2435,15 @@ pub async fn run_repl_mode(
                     }
                     TURN_STATE.lock().expect("turn state lock").take();
                     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if turn_duration_ms.is_none() {
+                        turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                    }
                     match run_result {
                         Ok(_) => {
-                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
                         }
                         Err(gray_core::error::CoreError::Cancelled) => {
-                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
                             if interactive {
                                 if let Some((shared, _)) = &tui {
                                     let mut t = shared.lock().expect("tui lock");
@@ -2349,7 +2455,7 @@ pub async fn run_repl_mode(
                             }
                         }
                         Err(e) => {
-                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
                             let msg = format_core_error(&e, &config.base_url);
                             if interactive {
                                 if let Some((shared, _)) = &tui {
@@ -2731,7 +2837,8 @@ pub async fn run_repl_mode(
                                         for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
                                         let text = text.trim().to_string();
                                         if text.starts_with('/') && !text.contains('\n') {
-                                            t.push_user_prompt(&text, &[], false);
+                                            let echo = crate::composer::transcript::redact_command_echo(&text);
+                                            t.push_user_prompt(&echo, &[], false);
                                             t.local_command = Some(text);
                                             t.textarea.set_text("");
                                             t.attachments.clear();
@@ -2999,12 +3106,13 @@ pub async fn run_repl_mode(
                     }
                 });
 
-                let mut current_tool_name: Option<String> = None;
-                let mut current_tool_args: Option<serde_json::Value> = None;
+                let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
                 let mut turn_usage: Option<gray_core::event::Usage> = None;
+                let turn_start = std::time::Instant::now();
+                let mut turn_duration_ms: Option<u64> = None;
                 let mut run_result = {
                     let mut on_event = |ev: &AgentEvent| {
-                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
+                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
                     };
                     let mut run_future =
                         Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
@@ -3031,15 +3139,14 @@ pub async fn run_repl_mode(
                     )
                     .await
                     {
-                            current_tool_name = None;
-                            current_tool_args = None;
+                            pending_tools.clear();
                             let ctx2 = ToolContext {
                                 cwd: cwd.clone(),
                                 cancel: cancel.clone(),
                                 questions: Some(question_bridge.clone()),
                             };
                             let mut on_event2 = |ev: &AgentEvent| {
-                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut current_tool_name, &mut current_tool_args, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals);
+                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
                             };
                             let mut run_future2 =
                                 Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
@@ -3054,13 +3161,16 @@ pub async fn run_repl_mode(
                 // signal the watcher to exit; it dies within one 100ms tick.
                 // (Never .await it here without the flag — deadlock.)
                 watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                if turn_duration_ms.is_none() {
+                    turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                }
 
                 match run_result {
                     Ok(_) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
                     }
                     Err(CoreError::Cancelled) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
                         if interactive {
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");
@@ -3072,7 +3182,7 @@ pub async fn run_repl_mode(
                         }
                     }
                     Err(e) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage).await;
+                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
                         let msg = format_core_error(&e, &config.base_url);
                         if interactive {
                             if let Some((shared, _)) = &tui {
@@ -3097,7 +3207,8 @@ pub async fn run_repl_mode(
                             drop(t);
                             pending_command = Some(expand_skill_command(parse_command(&text), &cwd, Some(shared), true));
                         } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
-                            t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
+                            let echo = crate::composer::transcript::redact_command_echo(&qtext);
+                            t.push_user_prompt(&echo, &qimages, !qtext.starts_with('/'));
                             drop(t);
                             pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared), false));
                             pending_images = qimages;
@@ -3176,6 +3287,16 @@ mod tests {
             super::parse_gateway_args("/gateway connect slack"), // no token
             G::Help
         ));
+        match super::parse_gateway_args("/gateway pairing approve discord ABC123") {
+            G::Pairing(super::PairingArgs::Approve(p, c)) => assert_eq!((p, c), ("discord".to_string(), "ABC123".to_string())),
+            other => panic!("expected pairing approve, got {other:?}"),
+        }
+        assert!(matches!(super::parse_gateway_args("/gateway pairing list"), G::Pairing(super::PairingArgs::List(None))));
+        match super::parse_gateway_args("/gateway pairing revoke discord 123") {
+            G::Pairing(super::PairingArgs::Revoke(p, u)) => assert_eq!((p, u), ("discord".to_string(), "123".to_string())),
+            other => panic!("expected pairing revoke, got {other:?}"),
+        }
+        assert!(matches!(super::parse_gateway_args("/gateway pairing approve discord"), G::Help));
         match super::parse_gateway_args("/gateway disconnect slack") {
             G::Disconnect(Platform::Slack) => {}
             other => panic!("expected disconnect slack, got {other:?}"),
@@ -3237,6 +3358,7 @@ mod tests {
                 timestamp: 0,
                 message: gray_core::message::Message::user(text),
                 usage,
+                duration_ms: None,
             }
         };
         let entries = vec![
@@ -3250,5 +3372,31 @@ mod tests {
         assert_eq!(t.output, 1500);
         let want = 3000.0 * 0.000001 + 1500.0 * 0.000002;
         assert!((t.cost - want).abs() < 1e-12, "got {}, want {want}", t.cost);
+    }
+
+    #[test]
+    fn totals_sum_durations_and_skip_untimed() {
+        let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+            entry_id: id,
+            parent_id: None,
+            timestamp: 0,
+            message: gray_core::message::Message::user("hi"),
+            usage: Some(gray_core::event::Usage::new(10, 5)),
+            duration_ms,
+        };
+        let entries = vec![entry(0, Some(6000)), entry(1, Some(4000)), entry(2, None)];
+        let t = super::SessionTotals::from_entries(&entries, "test-persist-model");
+        assert_eq!(t.turns, 3);
+        assert_eq!(t.total_duration_ms, 10_000);
+        assert_eq!(t.timed_turns, 2);
+    }
+
+    #[test]
+    fn turn_footer_includes_duration_when_known() {
+        let usage = gray_core::event::Usage::new(1000, 500);
+        let totals = super::SessionTotals::default();
+        let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
+        assert!(line.contains("6.5s"), "footer should show time: {line}");
+        assert!(line.contains("tok"), "footer should keep tokens: {line}");
     }
 }

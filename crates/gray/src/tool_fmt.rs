@@ -14,9 +14,9 @@ pub const PATH_COLOR: Color = Color::Rgb(255, 158, 100); // #ff9e64 (TokyoNight 
 pub const COMMAND_COLOR: Color = Color::Rgb(224, 175, 104); // #e0af68 (TokyoNight yellow)
 pub const DIM_COLOR: Color = Color::Rgb(108, 108, 108); // #6c6c6c (muted gray)
 
-pub const DIFF_DELETE_BG: Color = Color::Rgb(74, 34, 29); // #4A221D (dark red, Codex matching)
+pub const DIFF_DELETE_BG: Color = Color::Rgb(55, 25, 28); // #37191c (dark red diff tint)
 pub const DIFF_DELETE_FG: Color = Color::Rgb(247, 118, 142); // #f7768e (bright red)
-pub const DIFF_INSERT_BG: Color = Color::Rgb(33, 58, 43); // #213A2B (dark green, Codex matching)
+pub const DIFF_INSERT_BG: Color = Color::Rgb(24, 50, 32); // #183220 (dark green diff tint)
 pub const DIFF_INSERT_FG: Color = Color::Rgb(158, 206, 106); // #9ece6a (bright green)
 pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code text)
 pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
@@ -678,11 +678,6 @@ pub fn render_diff_hunks(
             } else {
                 Style::default()
             };
-            let gutter_style = match line.tag {
-                DiffTag::Equal => Style::default().fg(DIFF_GUTTER_FG),
-                DiffTag::Delete => Style::default().fg(DIFF_DELETE_FG).bg(DIFF_DELETE_BG),
-                DiffTag::Insert => Style::default().fg(DIFF_INSERT_FG).bg(DIFF_INSERT_BG),
-            };
             let num = match line.tag {
                 DiffTag::Equal => line.ln,
                 DiffTag::Delete => line.lo,
@@ -693,8 +688,24 @@ pub fn render_diff_hunks(
                 DiffTag::Delete => "-",
                 DiffTag::Insert => "+",
             };
-            let gutter_str = format!("{:>width$} | {sign} ", num, width = gutter_width);
-            let cont_gutter_str = format!("{:>width$} |   ", "", width = gutter_width);
+
+            let gutter_num_style = if let Some(bg) = bg_color {
+                Style::default().fg(DIFF_GUTTER_FG).bg(bg)
+            } else {
+                Style::default().fg(DIFF_GUTTER_FG)
+            };
+            let gutter_pipe_style = gutter_num_style;
+            let gutter_sign_style = match line.tag {
+                DiffTag::Equal => gutter_num_style,
+                DiffTag::Delete => Style::default().fg(DIFF_DELETE_FG).bg(DIFF_DELETE_BG).add_modifier(Modifier::BOLD),
+                DiffTag::Insert => Style::default().fg(DIFF_INSERT_FG).bg(DIFF_INSERT_BG).add_modifier(Modifier::BOLD),
+            };
+
+            let num_str = format!("{:>width$} ", num, width = gutter_width);
+            let pipe_str = "| ";
+            let sign_str = format!("{sign} ");
+            let cont_num_str = format!("{:>width$} ", "", width = gutter_width);
+            let cont_sign_str = "  ";
 
             let expanded = expand_tabs(&line.text, 4);
             let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
@@ -703,10 +714,10 @@ pub fn render_diff_hunks(
 
             let row_spans = match line.tag {
                 DiffTag::Delete => {
-                    highlight_line_spans(&expanded, &mut old_highlighter, syntect, DIFF_DELETE_FG, bg_color)
+                    highlight_line_spans(&expanded, &mut old_highlighter, syntect, DIFF_EQUAL_FG, bg_color)
                 }
                 DiffTag::Insert => {
-                    highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_INSERT_FG, bg_color)
+                    highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_EQUAL_FG, bg_color)
                 }
                 DiffTag::Equal => {
                     let s = highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_EQUAL_FG, None);
@@ -722,9 +733,13 @@ pub fn render_diff_hunks(
                 let mut spans = Vec::new();
                 spans.push(Span::styled("  ", prefix_style.clone()));
                 if ci == 0 {
-                    spans.push(Span::styled(gutter_str.clone(), gutter_style.clone()));
+                    spans.push(Span::styled(num_str.clone(), gutter_num_style));
+                    spans.push(Span::styled(pipe_str, gutter_pipe_style));
+                    spans.push(Span::styled(sign_str.clone(), gutter_sign_style));
                 } else {
-                    spans.push(Span::styled(cont_gutter_str.clone(), gutter_style.clone()));
+                    spans.push(Span::styled(cont_num_str.clone(), gutter_num_style));
+                    spans.push(Span::styled(pipe_str, gutter_pipe_style));
+                    spans.push(Span::styled(cont_sign_str, gutter_num_style));
                     if cont_indent_len > 0 {
                         spans.push(Span::styled(cont_indent_str.clone(), prefix_style.clone()));
                     }
