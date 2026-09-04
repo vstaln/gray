@@ -1,9 +1,11 @@
 //! Live per-platform connection board.
 //!
 //! The in-process gateway connects to each platform sequentially (up to 45s
-//! per platform). The daemon marks results here; the REPL polls the board and
-//! paints one live-updating boot card (`connecting…` → `connected as <name>`)
-//! instead of a static "connecting in background" line.
+//! per platform). The daemon marks results here; the REPL paints one
+//! live-updating boot card (`connecting…` → `connected as <name>`).
+//! Every mutating mark wakes [`tokio::sync::Notify`] waiters, so the REPL
+//! repaints on each stage transition instead of polling-luck (a stage with
+//! less dwell than the tick interval would otherwise never paint).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -24,11 +26,13 @@ impl PlatformConnState {
     }
 }
 
-/// Shareable board: the daemon writes, the REPL polls. Every method locks
-/// briefly and never blocks on I/O, so either side can call from any task.
+/// Shareable board: the daemon writes, the REPL waits-and-paints. Every
+/// method locks briefly and never blocks on I/O, so either side can call
+/// from any task.
 #[derive(Debug, Clone, Default)]
 pub struct GatewayStatusBoard {
     inner: Arc<Mutex<HashMap<Platform, PlatformConnState>>>,
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl GatewayStatusBoard {
@@ -38,20 +42,31 @@ impl GatewayStatusBoard {
             .iter()
             .map(|p| (*p, PlatformConnState::Connecting { stage: "connecting" }))
             .collect();
-        Self { inner: Arc::new(Mutex::new(inner)) }
+        Self { inner: Arc::new(Mutex::new(inner)), notify: Arc::new(tokio::sync::Notify::new()) }
     }
 
     /// Advance the [`PlatformConnState::Connecting`] stage (e.g. `"polling"`).
     /// Terminal states are never clobbered; unknown platforms start connecting.
+    /// Wakes [`Self::notified`] waiters when the stored state actually changes.
     pub fn mark_stage(&self, plat: Platform, stage: &'static str) {
-        if let Ok(mut m) = self.inner.lock() {
+        let changed = if let Ok(mut m) = self.inner.lock() {
             match m.get_mut(&plat) {
-                Some(PlatformConnState::Connecting { stage: s }) => *s = stage,
-                Some(_) => {}
+                Some(PlatformConnState::Connecting { stage: s }) if *s != stage => {
+                    *s = stage;
+                    true
+                }
+                Some(PlatformConnState::Connecting { .. }) => false,
+                Some(_) => false,
                 None => {
                     m.insert(plat, PlatformConnState::Connecting { stage });
+                    true
                 }
             }
+        } else {
+            false
+        };
+        if changed {
+            self.notify.notify_waiters();
         }
     }
 
@@ -59,24 +74,41 @@ impl GatewayStatusBoard {
         if let Ok(mut m) = self.inner.lock() {
             m.insert(plat, PlatformConnState::Connected { identity });
         }
+        self.notify.notify_waiters();
     }
 
     pub fn mark_failed(&self, plat: Platform, err: impl Into<String>) {
         if let Ok(mut m) = self.inner.lock() {
             m.insert(plat, PlatformConnState::Failed(err.into()));
         }
+        self.notify.notify_waiters();
     }
 
     /// Anything still [`PlatformConnState::Connecting`] becomes failed (the
     /// gateway task exited before reporting — never leave the card spinning).
     pub fn fail_unresolved(&self, err: &str) {
-        if let Ok(mut m) = self.inner.lock() {
+        let changed = if let Ok(mut m) = self.inner.lock() {
+            let mut changed = false;
             for st in m.values_mut() {
                 if matches!(*st, PlatformConnState::Connecting { .. }) {
                     *st = PlatformConnState::Failed(err.to_string());
+                    changed = true;
                 }
             }
+            changed
+        } else {
+            false
+        };
+        if changed {
+            self.notify.notify_waiters();
         }
+    }
+
+    /// Resolves on the next board mutation ([`Self::mark_stage`] and friends).
+    /// One-shot per call: create it, then mutate, then await. Missed signals
+    /// are harmless — callers also poll on an interval as backstop.
+    pub fn notified(&self) -> tokio::sync::futures::Notified<'_> {
+        self.notify.notified()
     }
 
     /// `(platform, state)` pairs in canonical platform order.
@@ -181,8 +213,7 @@ mod tests {
     }
 
     #[test]
-    fn fail_unresolved_covers_staged_connecting() {
-        let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Slack]);
+    fn fail_unresolved_covers_staged_connecting() {        let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Slack]);
         b.mark_stage(Platform::Discord, "waiting for ready");
         b.mark_connected(Platform::Slack, None);
         b.fail_unresolved("gateway exited");
@@ -195,5 +226,41 @@ mod tests {
                 Platform::Telegram => unreachable!(),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn mutations_wake_notified_waiters() {
+        let b = GatewayStatusBoard::new(&[Platform::Discord]);
+        // Idle board: no wake.
+        let n = b.notified();
+        tokio::pin!(n);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut n)
+                .await
+                .is_err(),
+            "no mutation, no wake"
+        );
+        // Stage advance wakes.
+        b.mark_stage(Platform::Discord, "validating token");
+        tokio::time::timeout(std::time::Duration::from_secs(1), n)
+            .await
+            .expect("stage mark must wake waiter");
+        // Same stage twice: second mark is a no-op, no spurious wake.
+        let n2 = b.notified();
+        tokio::pin!(n2);
+        b.mark_stage(Platform::Discord, "validating token");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut n2)
+                .await
+                .is_err(),
+            "no-op mark must not wake"
+        );
+        // Terminal marks wake too.
+        let n3 = b.notified();
+        tokio::pin!(n3);
+        b.mark_connected(Platform::Discord, None);
+        tokio::time::timeout(std::time::Duration::from_secs(1), n3)
+            .await
+            .expect("connect mark must wake waiter");
     }
 }
