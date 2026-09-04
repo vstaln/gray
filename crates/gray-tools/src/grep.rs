@@ -81,10 +81,6 @@ impl Tool for GrepTool {
         Some(GREP_GUIDELINES)
     }
 
-    fn is_concurrency_safe(&self, _args: &Value) -> bool {
-        true
-    }
-
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let pattern = match get_str(&args, "pattern") {
             Ok(p) => p,

@@ -124,7 +124,6 @@ impl Tool for EditTool {
 
     fn prompt_snippet(&self) -> Option<&'static str> { Some(EDIT_SNIPPET) }
     fn prompt_guidelines(&self) -> Option<&'static [&'static str]> { Some(EDIT_GUIDELINES) }
-    fn is_concurrency_safe(&self, _args: &Value) -> bool { false }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let path = args.get("path")

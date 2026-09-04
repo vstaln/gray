@@ -58,11 +58,6 @@ impl Tool for WriteTool {
         Some(WRITE_GUIDELINES)
     }
 
-    // Mutates the filesystem: never run in parallel.
-    fn is_concurrency_safe(&self, _args: &Value) -> bool {
-        false
-    }
-
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let path = args.get("path")
             .or_else(|| args.get("file_path"))

@@ -162,10 +162,6 @@ impl super::Tool for RequestUserInputTool {
         ])
     }
 
-    fn is_concurrency_safe(&self, _args: &Value) -> bool {
-        false // blocks on a human
-    }
-
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let parsed: RequestUserInputToolArgs = match serde_json::from_value(args) {
             Ok(a) => a,

@@ -12,7 +12,7 @@ pub struct UpstreamCredential { pub bearer: String, pub base_url: String }
 impl UpstreamCredential { fn auth(&self)->String { format!("Bearer {}", self.bearer) } }
 #[async_trait]
 pub trait UpstreamAdapter: Send+Sync {
-    fn name(&self)->&str; fn display(&self)->&str; fn allowed_paths(&self)->&[&str];
+    fn display(&self)->&str;
     fn is_authenticated(&self)->bool;
     async fn get_credential(&self)->anyhow::Result<UpstreamCredential>;
     async fn get_retry_credential(&self,_:&UpstreamCredential,_:u16)->Option<UpstreamCredential>{None}
@@ -27,7 +27,7 @@ const COMMON: &[&str]=&["/chat/completions","/completions","/embeddings","/model
 pub struct OpenRouterAdapter; pub struct XaiAdapter; pub struct CodexAdapter;
 #[async_trait]
 impl UpstreamAdapter for OpenRouterAdapter{
-    fn name(&self)->&str{"openrouter"} fn display(&self)->&str{"OpenRouter"} fn allowed_paths(&self)->&[&str]{COMMON}
+    fn display(&self)->&str{"OpenRouter"}
     fn is_authenticated(&self)->bool{
         let keys=crate::setup::load_auth_keys();
         if keys.contains_key("openrouter"){return true}
@@ -45,7 +45,7 @@ impl UpstreamAdapter for OpenRouterAdapter{
 }
 #[async_trait]
 impl UpstreamAdapter for XaiAdapter{
-    fn name(&self)->&str{"xai"} fn display(&self)->&str{"xAI Grok"} fn allowed_paths(&self)->&[&str]{COMMON}
+    fn display(&self)->&str{"xAI Grok"}
     fn is_authenticated(&self)->bool{crate::oauth::load_auth("xai").is_ok()}
     async fn get_credential(&self)->anyhow::Result<UpstreamCredential>{
         let t=crate::oauth::ensure_access_token("xai").await?;
@@ -59,7 +59,7 @@ impl UpstreamAdapter for XaiAdapter{
 }
 #[async_trait]
 impl UpstreamAdapter for CodexAdapter{
-    fn name(&self)->&str{"codex"} fn display(&self)->&str{"Codex (OpenAI)"} fn allowed_paths(&self)->&[&str]{COMMON}
+    fn display(&self)->&str{"Codex (OpenAI)"}
     fn is_authenticated(&self)->bool{crate::oauth::load_auth("codex").is_ok()}
     async fn get_credential(&self)->anyhow::Result<UpstreamCredential>{
         let t=crate::oauth::ensure_access_token("codex").await?;
@@ -94,8 +94,8 @@ async fn handle_proxy(State(a):State<Arc<dyn UpstreamAdapter>>,req:Request)->Res
     let path=req.uri().path().to_string();
     let tail=path.strip_prefix("/v1").unwrap_or(&path);
     let rel=if tail.is_empty(){"/".to_string()}else if tail.starts_with('/') {tail.to_string()}else{format!("/{tail}")};
-    if !a.allowed_paths().contains(&rel.as_str()){
-        let b=Json(json!({"error":{"message":format!("Path /v1{rel} is not forwarded by this proxy. Allowed: {}",a.allowed_paths().join(", ")),"type":"path_not_allowed","code":"path_not_allowed"}}));
+    if !COMMON.contains(&rel.as_str()){
+        let b=Json(json!({"error":{"message":format!("Path /v1{rel} is not forwarded by this proxy. Allowed: {}",COMMON.join(", ")),"type":"path_not_allowed","code":"path_not_allowed"}}));
         return (StatusCode::NOT_FOUND,b).into_response();
     }
     let cred=match a.get_credential().await{
