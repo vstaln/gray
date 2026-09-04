@@ -4,6 +4,7 @@ use super::context::{format_context_length, friendly_model_name, model_context_i
 #[derive(Debug, Clone, Default)]
 pub struct BackgroundSnapshot {
     pub transcript: Vec<ratatui::text::Line<'static>>,
+    pub history_entries: Vec<crate::composer::TranscriptEntry>,
     pub cwd: String,
     pub model_name: String,
     pub thinking_effort: String,
@@ -22,6 +23,7 @@ impl BackgroundSnapshot {
 
         Self {
             transcript: welcome_lines,
+            history_entries: vec![crate::composer::TranscriptEntry::Welcome],
             cwd,
             model_name: String::new(),
             thinking_effort: "high".to_string(),
@@ -29,6 +31,35 @@ impl BackgroundSnapshot {
             used_tokens: 0,
             cache_hit_rate: 0.0,
         }
+    }
+
+    pub fn rebuild_transcript(&self, w: usize) -> Vec<ratatui::text::Line<'static>> {
+        if self.history_entries.is_empty() {
+            return self.transcript.clone();
+        }
+        let mut lines = Vec::new();
+        for entry in &self.history_entries {
+            match entry {
+                crate::composer::TranscriptEntry::Welcome => {
+                    lines.extend(crate::composer::build_welcome_lines(w));
+                }
+                crate::composer::TranscriptEntry::UserPrompt(text, attached) => {
+                    lines.extend(crate::composer::transcript::format_user_prompt_lines(text, attached, w));
+                }
+                crate::composer::TranscriptEntry::ToolBox { header, body } => {
+                    lines.extend(crate::composer::transcript::format_tool_box_lines(header.clone(), body, w));
+                }
+                crate::composer::TranscriptEntry::StyledLines { lines: styled, hyperlinks: _ } => {
+                    lines.extend(styled.clone());
+                }
+                crate::composer::TranscriptEntry::Gap(n) => {
+                    for _ in 0..*n {
+                        lines.push(ratatui::text::Line::from(""));
+                    }
+                }
+            }
+        }
+        lines
     }
 }
 
@@ -82,7 +113,11 @@ pub fn dim_line(line: &ratatui::text::Line<'_>) -> ratatui::text::Line<'static> 
         Span::styled(span.content.to_string(), dim_style(span.style))
     }).collect();
     let mut new_line = Line::from(spans);
-    new_line.style = dim_style(line.style).bg(BACKDROP_BG);
+    let mut st = dim_style(line.style);
+    if st.bg.is_none() {
+        st = st.bg(BACKDROP_BG);
+    }
+    new_line.style = st;
     new_line
 }
 
@@ -175,19 +210,19 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
 
     let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
 
-    let transcript = &bg.transcript;
+    let transcript = bg.rebuild_transcript(w);
     if transcript.len() <= transcript_avail_h {
-        for l in transcript {
+        for l in &transcript {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
+        }
+        let empty_needed = transcript_avail_h.saturating_sub(transcript.len());
+        for _ in 0..empty_needed {
+            full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         }
         for l in bottom_box_lines {
             full_screen_lines.push(pad_backdrop_line(l, w));
         }
         full_screen_lines.push(pad_backdrop_line(footer_line, w));
-        let empty_needed = h.saturating_sub(full_screen_lines.len());
-        for _ in 0..empty_needed {
-            full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
-        }
     } else {
         let skip = transcript.len() - transcript_avail_h;
         for l in &transcript[skip..] {

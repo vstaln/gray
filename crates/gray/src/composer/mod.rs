@@ -27,7 +27,7 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 
 mod draw;
 pub(crate) use draw::thinking_style;
-mod transcript;
+pub(crate) mod transcript;
 mod input;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
@@ -86,7 +86,7 @@ pub struct Tui {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum TranscriptEntry {
+pub enum TranscriptEntry {
     Welcome,
     UserPrompt(String, Vec<std::path::PathBuf>),
     ToolBox {
@@ -461,6 +461,7 @@ impl Tui {
         };
         crate::setup::BackgroundSnapshot {
             transcript: self.transcript.clone(),
+            history_entries: self.history_entries.clone(),
             cwd: self.cwd.clone(),
             model_name: self.model_name.clone(),
             thinking_effort: self.thinking_effort.clone(),
