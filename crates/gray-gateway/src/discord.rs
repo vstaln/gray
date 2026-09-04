@@ -68,6 +68,8 @@ pub struct DiscordAdapter {
     /// Last inbound message id per channel — reply target for the first chunk (hermes reply_to_mode=first).
     #[cfg_attr(not(feature = "discord"), allow(dead_code))]
     last_inbound: Mutex<HashMap<String, u64>>,
+    /// Bot name from `current_user` (set on connect, read by the boot card).
+    identity: Mutex<Option<String>>,
 }
 
 impl DiscordAdapter {
@@ -81,6 +83,7 @@ impl DiscordAdapter {
             client: Mutex::new(None),
             event_tx: Mutex::new(None),
             last_inbound: Mutex::new(HashMap::new()),
+            identity: Mutex::new(None),
         })
     }
 
@@ -251,15 +254,30 @@ impl BasePlatformAdapter for DiscordAdapter {
         self.is_authenticated()
     }
 
+    fn bot_identity(&self) -> Option<String> {
+        self.identity.lock().ok().and_then(|g| g.clone())
+    }
+
     async fn connect(&self) -> anyhow::Result<()> {
         validate_discord_token(&self.token)?;
         #[cfg(feature = "discord")]
         {
             let http = std::sync::Arc::new(twilight_http::Client::new(self.token.clone()));
             // Validate the token early so misconfigurations fail fast (hermes get_me parity).
-            if let Err(e) = http.current_user().await {
-                anyhow::bail!("discord token rejected: {e}");
-            }
+            // The display name is user-chosen at bot creation — the boot card shows it verbatim.
+            let me = http
+                .current_user()
+                .await
+                .map_err(|e| anyhow::anyhow!("discord token rejected: {e}"))?
+                .model()
+                .await
+                .map_err(|e| anyhow::anyhow!("discord token rejected: {e}"))?;
+            *self.identity.lock().unwrap() = Some(
+                me.global_name
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| me.name.clone()),
+            );
             *self.client.lock().unwrap() = Some(http.clone());
             match self.event_tx.lock().unwrap().clone() {
                 Some(tx) => {
