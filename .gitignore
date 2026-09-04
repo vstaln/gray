@@ -20,13 +20,6 @@
 # build artifacts that should never be committed
 dist/dl/
 
-# web (Next.js site)
-web/node_modules/
-web/.next/
-web/out/
-web/shots/
-web/next-env.d.ts
-
 # rust / editor / os
 **/*.rs.bk
 *.pdb
@@ -36,6 +29,6 @@ web/next-env.d.ts
 *.swp
 *~
 
-# python bytecode from web/scripts/*.py
+# python bytecode
 __pycache__/
 *.pyc
