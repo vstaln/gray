@@ -672,10 +672,12 @@ fn result_summary_lines(questions: &[UserQuestion], answers: &[UserAnswer]) -> V
 fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserAnswer], _auto: bool) {
     let lines = result_summary_lines(questions, answers);
     if !lines.is_empty() {
+        t.ensure_gap(1);
         // Stacked: one transcript row per line, not a joined blob.
         for line in lines {
             t.push_dim(line);
         }
+        t.ensure_gap(1);
     }
 }
 
