@@ -948,10 +948,18 @@ async fn handle_compact(
     }
 }
 
-async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+/// Strip the `/cron` prefix case-insensitively (`/CRON <args>` acts, not lists).
+fn cron_args(raw: &str) -> &str {
     let trimmed = raw.trim();
-    // Strip leading "/cron" and trim
-    let args_str = trimmed.strip_prefix("/cron").unwrap_or("").trim();
+    if trimmed.len() >= 5 && trimmed[..5].eq_ignore_ascii_case("/cron") {
+        trimmed[5..].trim()
+    } else {
+        ""
+    }
+}
+
+async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+    let args_str = cron_args(raw);
     if args_str.is_empty() || args_str == "list" {
         let jobs = gray_cron::list_jobs();
         let msg = if jobs.is_empty() {
@@ -3322,8 +3330,17 @@ pub async fn run_repl_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::format_core_error;
+    use super::{cron_args, format_core_error};
     use gray_core::error::CoreError;
+
+    #[test]
+    fn cron_prefix_strips_case_insensitively() {
+        assert_eq!(cron_args("/cron list"), "list");
+        assert_eq!(cron_args("/CRON list"), "list");
+        assert_eq!(cron_args("/Cron create --schedule \"every 10m\" --prompt \"hi\""), "create --schedule \"every 10m\" --prompt \"hi\"");
+        assert_eq!(cron_args("/CRON"), "");
+        assert_eq!(cron_args("  /cRoN   show abc  "), "show abc");
+    }
 
     #[test]
     fn format_core_error_includes_provider_hint_and_cf_ray() {

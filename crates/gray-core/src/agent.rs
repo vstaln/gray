@@ -214,6 +214,12 @@ impl Agent {
         self
     }
 
+    /// Bounds per-tool execution (default 120s); timeouts become error results.
+    pub fn with_tool_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_timeout = timeout;
+        self
+    }
+
     /// Queues a steering note for the running turn. Drained before the next
     /// request: appended to the newest tool result when one exists, else held
     /// for the next turn boundary as a real user message. `redirect` is just
@@ -278,7 +284,24 @@ impl Agent {
             self.messages.push(Message::user(joined));
         }
     }
+}
 
+/// Shared compaction envelope: `[summary_user, summary_ack]` so
+/// `Agent::try_compact_once` and `gray::compact` can never drift.
+/// Trims `summary`; byte-stable (see `summary_pair_envelope_is_byte_stable`).
+pub fn summary_pair(summary: &str) -> [Message; 2] {
+    let s = summary.trim();
+    [
+        Message::user(format!(
+            "<conversation_summary>\n{s}\n</conversation_summary>\n\nPlease continue assisting based on the summary above."
+        )),
+        Message::assistant(
+            "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
+        ),
+    ]
+}
+
+impl Agent {
     /// One-shot transcript compaction for context-overflow recovery: summarizes
     /// history via [`complete_prompt`](Self::complete_prompt) into the 2-message
     /// summary shape. False when there is nothing worth compacting.
@@ -306,15 +329,7 @@ impl Agent {
         if summary.trim().is_empty() {
             return Ok(false);
         }
-        self.messages = vec![
-            Message::user(format!(
-                "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
-                summary.trim()
-            )),
-            Message::assistant(
-                "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
-            ),
-        ];
+        self.messages = summary_pair(&summary).into();
         Ok(true)
     }
 
@@ -378,6 +393,8 @@ impl Agent {
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
         let mut compact_attempted = false;
+        // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
+        let mut empty_nudge_sent = false;
 
         'turn: loop {
             // Cancellation is honored between turns, never mid-stream: a
@@ -587,7 +604,8 @@ impl Agent {
                 let tail_had_results = self.messages.last().is_some_and(|m| {
                     m.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
                 });
-                if tail_had_results {
+                if tail_had_results && !empty_nudge_sent {
+                    empty_nudge_sent = true;
                     self.messages.push(Message::assistant("(empty)"));
                     self.messages.push(Message::user(
                         "executed tool calls but returned empty — process results and continue",
@@ -1507,6 +1525,50 @@ mod agent_tests {
         );
     }
 
+    fn tool_script_with_args(id: &str, args: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::text_delta("checking..."),
+            StreamEvent::tool_call_delta(0, Some(id.to_string()), Some(TOOL_NAME.to_string()), args),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
+        ]
+    }
+
+    #[tokio::test]
+    async fn alternating_tool_empty_stays_bounded_and_nudges_once() {
+        // tool -> empty x3 (nudge) -> tool(varied) -> empty x3 -> end.
+        // Without a once-per-run nudge gate the second empty burst would nudge
+        // again and the alternation could continue unbounded.
+        let provider = FakeProvider::new(vec![
+            tool_script_with_args("c1", r#"{"q":"a"}"#),
+            empty_script(),
+            empty_script(),
+            empty_script(),
+            tool_script_with_args("c2", r#"{"q":"b"}"#),
+            empty_script(),
+            empty_script(),
+            empty_script(),
+            end_script(),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("alternation must terminate");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        let nudges = agent
+            .messages()
+            .iter()
+            .filter(|m| m.text_content().contains("process results"))
+            .count();
+        assert_eq!(nudges, 1, "post-tool empty nudge must fire once per run");
+    }
+
     #[tokio::test]
     async fn maxtokens_truncation_continues_and_stitches_partial() {
         let provider = FakeProvider::new(vec![
@@ -1584,14 +1646,25 @@ mod agent_tests {
         assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
     }
 
+    #[test]
+    fn tool_timeout_builder_keeps_120s_default() {
+        let agent = Agent::new(
+            Box::new(FakeProvider::new(vec![])),
+            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+        );
+        assert_eq!(agent.tool_timeout, std::time::Duration::from_secs(120));
+        let agent = agent.with_tool_timeout(std::time::Duration::from_millis(50));
+        assert_eq!(agent.tool_timeout, std::time::Duration::from_millis(50));
+    }
+
     #[tokio::test]
     async fn tool_timeout_becomes_error_result_and_continues() {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let mut executor = FakeExecutor::new(ToolOutput::ok("too slow"));
         executor.delay = Some(std::time::Duration::from_secs(5));
         let mut agent = Agent::new(Box::new(provider), Box::new(executor))
-            .with_tools(vec![tool_def()]);
-        agent.tool_timeout = std::time::Duration::from_millis(50);
+            .with_tools(vec![tool_def()])
+            .with_tool_timeout(std::time::Duration::from_millis(50));
 
         let events = agent
             .run(Message::user("go"), ToolContext::default())
@@ -1661,5 +1734,22 @@ mod agent_tests {
             .unwrap();
 
         assert_eq!(agent.messages()[1], Message::user("focus on tests"));
+    }
+
+    #[test]
+    fn summary_pair_envelope_is_byte_stable() {
+        let [u, a] = super::summary_pair("  hello world  ");
+        assert_eq!(
+            u.text_content(),
+            "<conversation_summary>\nhello world\n</conversation_summary>\n\nPlease continue assisting based on the summary above."
+        );
+        assert_eq!(
+            a.text_content(),
+            "Understood. I have reviewed the conversation summary and context, and I am ready to continue."
+        );
+        // Byte-equality: trimming + envelope must never drift.
+        let [u2, a2] = super::summary_pair("hello world");
+        assert_eq!(u.text_content().as_bytes(), u2.text_content().as_bytes());
+        assert_eq!(a.text_content().as_bytes(), a2.text_content().as_bytes());
     }
 }

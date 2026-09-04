@@ -962,21 +962,19 @@ pub(crate) fn classify_http_error(
     }
     let lower = snippet.to_lowercase();
     // Taxonomy lite: context exhaustion compacts + retries once (never retried
-    // blindly); content filters are terminal bad requests.
-    const CONTEXT_OVERFLOW_HINTS: [&str; 5] = [
-        "context length",
-        "context window",
-        "too many tokens",
-        "max_tokens",
-        "prompt is too long",
-    ];
-    if CONTEXT_OVERFLOW_HINTS.iter().any(|h| lower.contains(h)) {
+    // blindly); content filters are terminal bad requests. Narrowed to avoid
+    // false positives: `max_tokens` needs a context qualifier, bare
+    // violates/flagged/safety are not filters.
+    const CONTEXT_OVERFLOW_HINTS: [&str; 4] =
+        ["context length", "context window", "too many tokens", "prompt is too long"];
+    let max_tokens_qualified = lower.contains("max_tokens")
+        && (lower.contains("context") || lower.contains("too long") || lower.contains("exceeded"));
+    if CONTEXT_OVERFLOW_HINTS.iter().any(|h| lower.contains(h)) || max_tokens_qualified {
         return ProviderError::ContextOverflow(format!(
             "context exhausted — start /new or compact ({msg})"
         ));
     }
-    const CONTENT_FILTER_HINTS: [&str; 5] =
-        ["content_filter", "violates", "usage policies", "flagged", "safety"];
+    const CONTENT_FILTER_HINTS: [&str; 3] = ["content_filter", "content-filter", "usage policies"];
     if CONTENT_FILTER_HINTS.iter().any(|h| lower.contains(h)) {
         return ProviderError::BadRequest(msg);
     }
@@ -1923,6 +1921,27 @@ mod tests {
             assert!(matches!(err, ProviderError::BadRequest(_)), "body: {body}");
             assert!(!is_retryable_error(&err), "must not retry: {body}");
             assert!(!err.should_compress());
+        }
+        // Narrowed: hyphen form still counts (500 proves filter path, not generic 400).
+        for body in ["content-filter triggered", "content_filter triggered"] {
+            let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body, None, None);
+            assert!(matches!(err, ProviderError::BadRequest(_)), "filter must win over 500: {body} -> {err}");
+        }
+        // Bare violates/flagged/safety without a filter qualifier are NOT filters:
+        // 500 must stay retryable ServerError, not BadRequest.
+        for body in ["request violates policy", "response was flagged", "safety check failed"] {
+            let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body, None, None);
+            assert!(matches!(err, ProviderError::ServerError(_)), "bare hint must not filter: {body} -> {err}");
+        }
+        // Bare max_tokens without a context qualifier is NOT overflow.
+        {
+            let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, "max_tokens must be positive", None, None);
+            assert!(!matches!(err, ProviderError::ContextOverflow(_)), "bare max_tokens: {err}");
+        }
+        // max_tokens needs a context qualifier to count as overflow.
+        for body in ["max_tokens exceeded: context too long", "max_tokens context exceeded"] {
+            let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, body, None, None);
+            assert!(matches!(err, ProviderError::ContextOverflow(_)), "body: {body}");
         }
     }
 

@@ -47,7 +47,16 @@ impl FileGatewayStore {
 }
 impl FileGatewayStore {
     pub fn get_or_create(&self, key: &str) -> String {
-        if let Some(e) = self.map.read().unwrap().get(key) { return e.session_id.clone(); }
+        // Hit = activity: bump updated_at so Idle measures since last use, not creation.
+        let existing = { self.map.read().unwrap().get(key).map(|e| e.session_id.clone()) };
+        if let Some(id) = existing {
+            let now = chrono::Utc::now().timestamp();
+            if let Some(entry) = self.map.write().unwrap().get_mut(key) {
+                entry.updated_at = now;
+            }
+            self.persist();
+            return id;
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let entry = GatewayEntry { session_key: key.to_string(), session_id: id.clone(), updated_at: chrono::Utc::now().timestamp() };
         self.map.write().unwrap().insert(key.to_string(), entry);
@@ -135,6 +144,31 @@ pub fn reset_due(policy: &ResetPolicy, updated_at: i64, now: i64) -> bool {
         assert_eq!(store.get(&key), Some(id1.clone()));
         // persisted file exists
         assert!(path.exists());
+    }
+
+    #[test] fn idle_measures_since_last_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileGatewayStore::new(dir.path().join("s.json"));
+        let key = "gray:main:telegram:dm:1";
+        let id1 = store.get_or_create(key);
+        let t1 = store.updated_at(key).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // Hit bumps updated_at but keeps the id (activity).
+        let id2 = store.get_or_create(key);
+        assert_eq!(id1, id2);
+        let t2 = store.updated_at(key).unwrap();
+        assert!(t2 > t1, "get_or_create hit must bump updated_at: {t1} -> {t2}");
+        // Active session never expires under Idle(60s).
+        let idle = crate::config::ResetPolicy { mode: crate::config::ResetMode::Idle, idle_secs: 60, at_hour: 0 };
+        assert!(store.reset_if_due(key, &idle).is_none());
+        // Quiet session does: backdate past the idle window.
+        {
+            let mut map = store.map.write().unwrap();
+            if let Some(e) = map.get_mut(key) {
+                e.updated_at = chrono::Utc::now().timestamp() - 3600;
+            }
+        }
+        assert!(store.reset_if_due(key, &idle).is_some());
     }
 
     #[test] fn integration_truncate_and_key() {
