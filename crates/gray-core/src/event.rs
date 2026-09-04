@@ -155,6 +155,14 @@ pub enum AgentEvent {
     StepUsage {
         usage: Usage,
     },
+    /// Codex steal (`StreamErrorEvent`): a retryable transport/provider hiccup
+    /// the loop is handling (e.g. `Reconnecting... 1/3`). `message` is the
+    /// short header, `details` the underlying error. Rendered dim, never fatal.
+    StreamError {
+        message: String,
+        #[serde(default)]
+        details: String,
+    },
     /// Turn finished with a stop reason and token usage.
     TurnEnd {
         stop_reason: StopReason,
@@ -210,6 +218,14 @@ impl AgentEvent {
     pub fn turn_end(stop_reason: StopReason, usage: Usage) -> Self {
         Self::TurnEnd { stop_reason, usage }
     }
+
+    /// Creates a stream-error / retry notice (Codex `StreamErrorEvent`).
+    pub fn stream_error(message: impl Into<String>, details: impl Into<String>) -> Self {
+        Self::StreamError {
+            message: message.into(),
+            details: details.into(),
+        }
+    }
 }
 
 /// Provider-side stream event received during low-level model streaming.
@@ -249,6 +265,14 @@ pub enum StreamEvent {
         stop_reason: Option<StopReason>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,
+    },
+    /// Codex steal (`StreamErrorEvent`): retryable hiccup the provider is
+    /// handling itself (emitted as Ok so the turn keeps going). Agent forwards
+    /// it as `AgentEvent::StreamError` for live `Reconnecting... n/m` display.
+    StreamError {
+        message: String,
+        #[serde(default)]
+        details: String,
     },
 }
 
@@ -299,6 +323,14 @@ impl StreamEvent {
         usage: Option<Usage>,
     ) -> Self {
         Self::MessageComplete { stop_reason, usage }
+    }
+
+    /// Creates a stream-error / retry notice (Codex `StreamErrorEvent`).
+    pub fn stream_error(message: impl Into<String>, details: impl Into<String>) -> Self {
+        Self::StreamError {
+            message: message.into(),
+            details: details.into(),
+        }
     }
 }
 

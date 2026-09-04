@@ -372,6 +372,11 @@ impl Agent {
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
                             break (stop_reason.unwrap_or(StopReason::EndTurn), usage.unwrap_or_default());
                         }
+                        // Codex steal: retry notices ride as Ok so the turn
+                        // keeps going; forward live so UI shows Reconnecting.
+                        Some(Ok(StreamEvent::StreamError { message, details })) => {
+                            emit!(AgentEvent::stream_error(message.clone(), details.clone()));
+                        }
                         Some(Err(e)) => {
                             // Mid-stream failure after deltas already reached the
                             // user's screen: salvage the partial assistant text
@@ -962,6 +967,30 @@ mod agent_tests {
             .await
             .expect("a write must reset the stall streak");
 
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+    }
+
+    #[tokio::test]
+    async fn stream_error_notices_forward_live_without_ending_turn() {
+        // Codex steal: provider `Reconnecting...` notices ride as Ok events
+        // so the turn continues; agent must forward them verbatim.
+        let provider = FakeProvider::new(vec![vec![
+            StreamEvent::stream_error("Reconnecting... 1/3", "status 503: boom"),
+            StreamEvent::text_delta("still here"),
+            StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+        ]]);
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(FakeExecutor::new(ToolOutput::ok(""))));
+
+        let events = agent
+            .run(Message::user("hi"), ToolContext::default())
+            .await
+            .expect("retry notice must not fail the run");
+
+        assert!(
+            events.contains(&AgentEvent::stream_error("Reconnecting... 1/3", "status 503: boom")),
+            "expected forwarded StreamError, got {events:?}"
+        );
         assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
     }
 
