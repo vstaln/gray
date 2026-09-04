@@ -68,6 +68,15 @@ pub fn render_event_with_context<W: Write>(
             w.flush()
         }
         AgentEvent::StepUsage { .. } => Ok(()),
+        // Codex steal: retry notices go to the same stream, dim, never fatal.
+        AgentEvent::StreamError { message, details } => {
+            if details.is_empty() {
+                writeln!(w, "\n\x1b[2m⚠ {message}\x1b[0m")?;
+            } else {
+                writeln!(w, "\n\x1b[2m⚠ {message}\n└ {details}\x1b[0m")?;
+            }
+            w.flush()
+        }
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
                 writeln!(w, "\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()))?;

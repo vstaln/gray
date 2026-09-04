@@ -1769,6 +1769,16 @@ fn dispatch_agent_event(
                 AgentEvent::StepUsage { usage } => {
                     t.set_usage(*usage);
                 }
+                // Codex steal: `⚠ Reconnecting... n/m` + `└ details` dim cell.
+                AgentEvent::StreamError { message, details } => {
+                    t.flush_markdown();
+                    t.end_thinking();
+                    t.push_dim(format!("⚠ {message}"));
+                    if !details.is_empty() {
+                        let trunc = crate::repl::format::truncate_chars(details, 200);
+                        t.push_dim(format!("└ {trunc}"));
+                    }
+                }
                 AgentEvent::TurnEnd { usage, .. } => {
                     *turn_usage = Some(*usage);
                     let ms = elapsed_ms();
@@ -1817,6 +1827,13 @@ fn dispatch_agent_event(
                 );
                 if !res.is_empty() {
                     print!("{res}");
+                }
+            }
+            AgentEvent::StreamError { message, details } => {
+                if details.is_empty() {
+                    eprintln!("\n\x1b[2m⚠ {message}\x1b[0m");
+                } else {
+                    eprintln!("\n\x1b[2m⚠ {message}\n└ {details}\x1b[0m");
                 }
             }
             AgentEvent::TurnEnd { usage, .. } => {
