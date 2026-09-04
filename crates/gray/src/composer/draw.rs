@@ -199,6 +199,9 @@ pub(crate) fn queued_preview_lines(
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
+    if tui.modal_open {
+        return Ok(());
+    }
     let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let w = cols as usize;
 

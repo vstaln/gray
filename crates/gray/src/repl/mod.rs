@@ -86,29 +86,24 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 /// scrollback; clearing/re-emitting here destroyed it). Width changed → full reflow.
 fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            let cols = crossterm::terminal::size().map(|(c, _)| c).unwrap_or(t.last_width);
-            if cols == t.last_width {
-                t.reanchor_viewport(cols);
-            } else {
-                t.pending_resize = None;
-                t.reflow_on_resize(cols);
-            }
+        let mut t = shared.lock().expect("tui lock");
+        let cols = crossterm::terminal::size().map(|(c, _)| c).unwrap_or(t.last_width);
+        if cols == t.last_width {
+            t.reanchor_viewport(cols);
+        } else {
+            t.pending_resize = None;
+            t.reflow_on_resize(cols);
         }
     }
 }
 
 async fn with_modal<T>(tui: Option<&crate::composer::SharedTui>, fut: impl std::future::Future<Output = T>) -> T {
     if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.modal_open = true;
-        }
+        shared.lock().expect("tui lock").modal_open = true;
     }
     let r = fut.await;
     if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.modal_open = false;
-        }
+        shared.lock().expect("tui lock").modal_open = false;
     }
     restore_viewport(tui);
     r
@@ -116,15 +111,11 @@ async fn with_modal<T>(tui: Option<&crate::composer::SharedTui>, fut: impl std::
 
 fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce() -> T) -> T {
     if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.modal_open = true;
-        }
+        shared.lock().expect("tui lock").modal_open = true;
     }
     let r = f();
     if let Some(shared) = tui {
-        if let Ok(mut t) = shared.try_lock() {
-            t.modal_open = false;
-        }
+        shared.lock().expect("tui lock").modal_open = false;
     }
     restore_viewport(tui);
     r
@@ -246,11 +237,10 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
             };
             let tui_snap = tui.cloned();
             let editor_paused = if let Some(shared) = &tui_snap {
-                if let Ok(mut t) = shared.try_lock() {
-                    t.pending_resize = Some((t.last_width, std::time::Instant::now() + std::time::Duration::from_secs(3600)));
-                    t.modal_open = true;
-                    true
-                } else { false }
+                let mut t = shared.lock().expect("tui lock");
+                t.pending_resize = Some((t.last_width, std::time::Instant::now() + std::time::Duration::from_secs(3600)));
+                t.modal_open = true;
+                true
             } else { false };
             let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
             let res = editor.run();

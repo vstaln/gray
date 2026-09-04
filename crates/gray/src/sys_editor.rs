@@ -50,7 +50,7 @@ impl SysEditor {
             enable_raw_mode()?;
         }
 
-        crossterm::execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Show)?;
+        crossterm::execute!(stdout(), EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Show)?;
         // Some tiling WMs deliver a resize between EnterAlternateScreen and
         // Terminal::new, which ratatui would then map to a zero-sized viewport.
         // Match codex tui::init pattern: re-query after the switch so we anchor correctly.
