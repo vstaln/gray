@@ -1300,14 +1300,15 @@ pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard
 }
 
 /// Watches the gateway board and drives the live boot panel → final card.
-/// Capped at 6 minutes so a wedged daemon can't leak the task.
+/// Repaints on every board mutation (via [`GatewayStatusBoard::notified`])
+/// so short-lived stages still paint; the 250ms tick stays as backstop for
+/// missed signals. Capped at 6 minutes so a wedged daemon can't leak the task.
 fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gateway::status::GatewayStatusBoard) {
     tokio::spawn(async move {
         let fut = async move {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
             let mut iv = tokio::time::interval(std::time::Duration::from_millis(250));
             loop {
-                iv.tick().await;
                 let done = board.all_terminal() || std::time::Instant::now() >= deadline;
                 if let Ok(mut t) = tui.try_lock() {
                     if done {
@@ -1318,10 +1319,19 @@ fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gatew
                     let _ = t.draw();
                 } else if done {
                     // TUI busy — retry the commit next tick instead of dropping it.
+                    tokio::select! {
+                        _ = board.notified() => {}
+                        _ = iv.tick() => {}
+                    }
                     continue;
                 }
                 if done && tui.try_lock().map(|t| t.gateway_boot.is_none()).unwrap_or(false) {
                     break;
+                }
+                // Wait for the next stage transition or the backstop tick.
+                tokio::select! {
+                    _ = board.notified() => {}
+                    _ = iv.tick() => {}
                 }
             }
         };
