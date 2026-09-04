@@ -503,6 +503,10 @@ impl Agent {
                 )));
             }
 
+            // W3 dispatch validation: unknown tools and malformed args never
+            // reach the executor; each still gets one error tool result so the
+            // assistant/user alternation stays intact.
+            let available: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
             for (idx, (id, name, args)) in tool_uses.iter().enumerate() {
                 if ctx.cancel.is_cancelled() {
                     answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
@@ -512,6 +516,28 @@ impl Agent {
                     emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
                 }
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
+
+                if !self.tools.iter().any(|t| t.name == *name) {
+                    let list = if available.is_empty() { "(none)".to_string() } else { available.join(", ") };
+                    let err = ToolOutput::error(format!("Tool '{name}' does not exist. Available: {list}"));
+                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    self.messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                    });
+                    continue;
+                }
+                if !args.is_object() {
+                    let err = ToolOutput::error(format!(
+                        "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
+                    ));
+                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    self.messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                    });
+                    continue;
+                }
 
                 let output = tokio::select! {
                     out = self.executor.execute(&ctx, &name, args.clone()) => out,
@@ -1092,5 +1118,91 @@ mod agent_tests {
             .with_tools(vec![tool_def()]);
         let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
         assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCallEnd { args: serde_json::Value::String(s), .. } if s == "not-json{{")));
+    }
+
+    #[tokio::test]
+    async fn unknown_tool_name_skips_executor_with_error_result() {
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::tool_call_delta(0, Some("c-unknown".into()), Some("nope".into()), r#"{"q":"x"}"#),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+            ],
+            end_script(),
+        ]);
+        let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
+        let call_log = executor.calls.clone();
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        assert!(call_log.lock().expect("calls lock poisoned").is_empty(), "executor must not run for unknown tool");
+        let (output, is_error) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { id, output, is_error } if id == "c-unknown" => {
+                    Some((output.clone(), *is_error))
+                }
+                _ => None,
+            })
+            .expect("expected tool result for unknown tool");
+        assert!(is_error, "unknown tool must be is_error, got {output}");
+        assert!(output.contains("does not exist") && output.contains("nope") && output.contains(TOOL_NAME), "got {output}");
+        assert_eq!(agent.messages()[1].role, Role::Assistant);
+        assert!(matches!(&agent.messages()[2].content[0], ContentBlock::ToolResult { is_error: true, .. }));
+    }
+
+    #[tokio::test]
+    async fn null_args_skips_executor_with_error_result() {
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::tool_call_delta(0, Some("c-null".into()), Some(TOOL_NAME.into()), ""),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+            ],
+            end_script(),
+        ]);
+        let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
+        let call_log = executor.calls.clone();
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        assert!(call_log.lock().expect("calls lock poisoned").is_empty(), "executor must not run for null args");
+        let (output, is_error) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { id, output, is_error } if id == "c-null" => {
+                    Some((output.clone(), *is_error))
+                }
+                _ => None,
+            })
+            .expect("expected tool result for null args");
+        assert!(is_error, "null args must be is_error, got {output}");
+        assert!(output.contains("valid JSON object"), "got {output}");
+    }
+
+    #[tokio::test]
+    async fn malformed_string_args_skips_executor_with_error_result() {
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::tool_call_delta(0, Some("c-bad".into()), Some(TOOL_NAME.into()), "not-json{{"),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+            ],
+            end_script(),
+        ]);
+        let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
+        let call_log = executor.calls.clone();
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        assert!(call_log.lock().expect("calls lock poisoned").is_empty(), "executor must not run for malformed args");
+        let (output, is_error) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { id, output, is_error } if id == "c-bad" => {
+                    Some((output.clone(), *is_error))
+                }
+                _ => None,
+            })
+            .expect("expected tool result for malformed args");
+        assert!(is_error, "malformed args must be is_error, got {output}");
+        assert!(output.contains("valid JSON object"), "got {output}");
     }
 }

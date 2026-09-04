@@ -65,6 +65,12 @@ pub struct SessionMeta {
     pub cwd: PathBuf,
     /// Model name or identifier used for the session.
     pub model: String,
+    /// Optional display title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Title provenance: `"user"` or `"auto"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<String>,
 }
 
 impl SessionMeta {
@@ -80,6 +86,8 @@ impl SessionMeta {
             timestamp,
             cwd: cwd.into(),
             model: model.into(),
+            title: None,
+            title_source: None,
         }
     }
 }
@@ -114,6 +122,12 @@ pub struct SessionSummary {
     pub cwd: PathBuf,
     /// The text content of the first user message in the session, if present.
     pub first_user_text: Option<String>,
+    /// Optional display title (mirrors the header).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Title provenance: `"user"` or `"auto"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title_source: Option<String>,
 }
 
 /// Errors that can occur during session storage operations.
@@ -147,6 +161,51 @@ pub enum SessionError {
 /// Type alias for results from session operations.
 pub type Result<T> = std::result::Result<T, SessionError>;
 
+/// Strips control chars, zero-width/bidi formatting, collapses whitespace, caps at 120 chars.
+pub fn sanitize_title(s: &str) -> String {
+    let mut kept = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() {
+            // Keep real whitespace so words don't glue; drop the rest (NUL, BEL, DEL, ...).
+            if c.is_whitespace() {
+                kept.push(c);
+            }
+        } else {
+            match c {
+                // Zero-width, bidi isolates/overrides, word joiner, BOM.
+                '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}' | '\u{200e}'
+                | '\u{200f}' | '\u{202a}' | '\u{202b}' | '\u{202c}' | '\u{202d}'
+                | '\u{202e}' | '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'
+                | '\u{061c}' | '\u{2060}' => {}
+                _ => kept.push(c),
+            }
+        }
+    }
+    let collapsed = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > 120 {
+        collapsed.chars().take(120).collect()
+    } else {
+        collapsed
+    }
+}
+
+/// First meaningful non-empty line of `text`, word-boundary trimmed with a `…` suffix.
+pub fn derive_title(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let clean = sanitize_title(line);
+        if clean.is_empty() {
+            continue;
+        }
+        if clean.chars().count() <= 60 {
+            return Some(clean);
+        }
+        let prefix: String = clean.chars().take(60).collect();
+        let cut = prefix.rfind(' ').map(|i| prefix[..i].to_string()).unwrap_or(prefix);
+        return Some(format!("{}…", cut.trim_end()));
+    }
+    None
+}
+
 /// Header metadata stored as the first line of a session `.jsonl` file.
 #[derive(Debug, Serialize, Deserialize)]
 struct Header {
@@ -155,6 +214,10 @@ struct Header {
     timestamp: u64,
     cwd: PathBuf,
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title_source: Option<String>,
 }
 
 /// A JSONL file-backed session store.
@@ -192,6 +255,63 @@ impl JsonlSessionStore {
     fn session_path(&self, id: &SessionId) -> PathBuf {
         self.root_dir.join(format!("{}.jsonl", id.as_str()))
     }
+
+    /// Moves a corrupt session file aside as `<stem>.corrupt-<n>`, keeping the newest 3.
+    async fn quarantine_corrupt_file(path: &Path) {
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            return;
+        };
+        let Some(parent) = path.parent() else {
+            return;
+        };
+        let prefix = format!("{stem}.corrupt-");
+        let mut max_n = 0u32;
+        if let Ok(mut rd) = tokio::fs::read_dir(parent).await {
+            while let Ok(Some(e)) = rd.next_entry().await {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if let Some(n) = name.strip_prefix(&prefix).and_then(|s| s.parse().ok()) {
+                    max_n = max_n.max(n);
+                }
+            }
+        }
+        if tokio::fs::rename(path, parent.join(format!("{prefix}{}", max_n + 1))).await.is_err() {
+            return;
+        }
+        if max_n + 1 > 3 {
+            for n in 1..=(max_n + 1 - 3) {
+                let _ = tokio::fs::remove_file(parent.join(format!("{prefix}{n}"))).await;
+            }
+        }
+    }
+
+    /// Resolves an id prefix: exact stem wins, else exactly-one `starts_with` match, else None.
+    /// Prefixes containing `/`, `\`, or `..` are rejected (path traversal).
+    pub fn resolve_session_id(&self, prefix: &str) -> Option<SessionId> {
+        if prefix.contains('/') || prefix.contains('\\') || prefix.contains("..") {
+            return None;
+        }
+        if self.root_dir.join(format!("{prefix}.jsonl")).is_file() {
+            return Some(SessionId::new(prefix));
+        }
+        let mut hit = None;
+        for entry in std::fs::read_dir(&self.root_dir).ok()?.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !stem.starts_with(prefix) {
+                continue;
+            }
+            if hit.is_some() {
+                return None;
+            }
+            hit = Some(SessionId::new(stem));
+        }
+        hit
+    }
 }
 
 impl JsonlSessionStore {
@@ -210,6 +330,8 @@ impl JsonlSessionStore {
             timestamp: meta.timestamp,
             cwd: meta.cwd,
             model: meta.model,
+            title: meta.title,
+            title_source: meta.title_source,
         };
 
         let json = serde_json::to_string(&header)?;
@@ -333,17 +455,25 @@ impl JsonlSessionStore {
             .first()
             .map(|&(n, s)| (n, s))
             .unwrap_or((1, ""));
-        let header: Header = serde_json::from_str(header_str).map_err(|e| SessionError::Corrupt {
-            path: path.clone(),
-            line: header_line_num,
-            source: e,
-        })?;
+        let header: Header = match serde_json::from_str(header_str) {
+            Ok(h) => h,
+            Err(e) => {
+                Self::quarantine_corrupt_file(&path).await;
+                return Err(SessionError::Corrupt {
+                    path: path.clone(),
+                    line: header_line_num,
+                    source: e,
+                });
+            }
+        };
 
         let meta = SessionMeta {
             id: header.id,
             timestamp: header.timestamp,
             cwd: header.cwd,
             model: header.model,
+            title: header.title,
+            title_source: header.title_source,
         };
 
         let entry_lines = &all_lines[1..];
@@ -423,6 +553,7 @@ impl JsonlSessionStore {
                 Ok(h) => h,
                 Err(e) => {
                     log::warn!("skipping corrupt header in {}: {}", path.display(), e);
+                    Self::quarantine_corrupt_file(&path).await;
                     continue;
                 }
             };
@@ -445,6 +576,8 @@ impl JsonlSessionStore {
                 started_at: header.timestamp,
                 cwd: header.cwd,
                 first_user_text,
+                title: header.title,
+                title_source: header.title_source,
             });
         }
 
@@ -459,6 +592,76 @@ impl JsonlSessionStore {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(SessionError::Io(e)),
+        }
+    }
+
+    /// Sets an explicit user title; always wins over auto titles.
+    pub async fn set_user_title(&self, id: &SessionId, title: &str) -> Result<()> {
+        self.set_title_inner(id, title, "user", true).await.map(|_| ())
+    }
+
+    /// Sets a derived title unless a user title is present. Returns whether it wrote.
+    pub async fn set_auto_title(&self, id: &SessionId, title: &str) -> Result<bool> {
+        self.set_title_inner(id, title, "auto", false).await
+    }
+
+    async fn set_title_inner(
+        &self,
+        id: &SessionId,
+        title: &str,
+        source: &str,
+        force: bool,
+    ) -> Result<bool> {
+        let _guard = self.lock.lock().await;
+        let path = self.session_path(id);
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SessionError::NotFound(id.clone()));
+            }
+            Err(e) => return Err(SessionError::Io(e)),
+        };
+        let header_end = content.find('\n').map(|i| i + 1).unwrap_or(content.len());
+        let (header_str, rest) = content.split_at(header_end);
+        let mut header: Header = serde_json::from_str(header_str.trim_end()).map_err(|e| {
+            SessionError::Corrupt {
+                path: path.clone(),
+                line: 1,
+                source: e,
+            }
+        })?;
+        if !force && matches!(header.title_source.as_deref(), Some("user")) {
+            return Ok(false);
+        }
+        let clean = sanitize_title(title);
+        if clean.is_empty() {
+            header.title = None;
+            header.title_source = None;
+        } else {
+            header.title = Some(clean);
+            header.title_source = Some(source.to_string());
+        }
+        let mut out = serde_json::to_string(&header)?;
+        out.push('\n');
+        out.push_str(rest);
+        tokio::fs::write(&path, out).await?;
+        Ok(true)
+    }
+
+    /// Returns `base` when unused, else the first unused `base #N` (N >= 2).
+    pub async fn next_title_in_lineage(&self, base: &str) -> String {
+        let titles: std::collections::HashSet<String> =
+            self.list().await.into_iter().filter_map(|s| s.title).collect();
+        if !titles.contains(base) {
+            return base.to_string();
+        }
+        let mut n = 2u32;
+        loop {
+            let candidate = format!("{base} #{n}");
+            if !titles.contains(candidate.as_str()) {
+                return candidate;
+            }
+            n += 1;
         }
     }
 }
@@ -526,6 +729,148 @@ mod tests {
         let (_, entries) = store.load(&id).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].duration_ms, None);
+    }
+
+    #[test]
+    fn sanitize_title_collapses_and_strips() {
+        assert_eq!(sanitize_title("  hello   world  "), "hello world");
+        assert_eq!(sanitize_title("a\u{200b}b\u{202e}c\x07d"), "abcd");
+        assert_eq!(sanitize_title("   "), "");
+        assert_eq!(sanitize_title(&"x".repeat(200)).chars().count(), 120);
+    }
+
+    #[test]
+    fn derive_title_picks_first_meaningful_line() {
+        assert_eq!(derive_title(""), None);
+        assert_eq!(derive_title("  \n \n"), None);
+        assert_eq!(
+            derive_title("hello world\nsecond"),
+            Some("hello world".to_string())
+        );
+        assert_eq!(
+            derive_title("\n\n  Real Title  \nsecond"),
+            Some("Real Title".to_string())
+        );
+        let t = derive_title(&"word ".repeat(30)).unwrap();
+        assert!(t.ends_with('…'));
+        assert!(t.chars().count() <= 61);
+    }
+
+    #[tokio::test]
+    async fn auto_title_yields_to_user_title() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store
+            .create(SessionMeta::new(SessionId::new("t1"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        assert!(store.set_auto_title(&id, "Auto One").await.unwrap());
+        let (meta, _) = store.load(&id).await.unwrap();
+        assert_eq!(meta.title.as_deref(), Some("Auto One"));
+        assert_eq!(meta.title_source.as_deref(), Some("auto"));
+        assert!(store.set_auto_title(&id, "Auto Two").await.unwrap());
+        store.set_user_title(&id, "Mine").await.unwrap();
+        assert!(!store.set_auto_title(&id, "Auto Three").await.unwrap());
+        let (meta, _) = store.load(&id).await.unwrap();
+        assert_eq!(meta.title.as_deref(), Some("Mine"));
+        assert_eq!(meta.title_source.as_deref(), Some("user"));
+    }
+
+    #[test]
+    fn resolve_session_id_exact_prefix_and_ambiguous() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        for id in ["abc", "abcdef11", "abcdef22", "xyz999"] {
+            std::fs::write(dir.path().join(format!("{id}.jsonl")), "{}\n").unwrap();
+        }
+        // Exact stem wins even though others share the prefix.
+        assert_eq!(store.resolve_session_id("abc").unwrap().as_str(), "abc");
+        // Two matches, no exact hit: ambiguous.
+        assert!(store.resolve_session_id("abcdef").is_none());
+        // Exactly one prefix match resolves.
+        assert_eq!(store.resolve_session_id("abcdef1").unwrap().as_str(), "abcdef11");
+        assert_eq!(store.resolve_session_id("xyz").unwrap().as_str(), "xyz999");
+        assert!(store.resolve_session_id("nope").is_none());
+    }
+
+    #[test]
+    fn resolve_session_id_rejects_traversal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = JsonlSessionStore::new(&root);
+        // File outside the root: reachable pre-fix via the `is_file` join.
+        std::fs::write(dir.path().join("evil.jsonl"), "{}\n").unwrap();
+        assert!(store.resolve_session_id("../evil").is_none());
+        assert!(store.resolve_session_id("..").is_none());
+        // Exact stem containing `..` must still be rejected.
+        std::fs::write(root.join("a..b.jsonl"), "{}\n").unwrap();
+        assert!(store.resolve_session_id("a..b").is_none());
+        assert!(store.resolve_session_id("a/b").is_none());
+        assert!(store.resolve_session_id("a\\b").is_none());
+    }
+
+    #[tokio::test]
+    async fn next_title_in_lineage_finds_first_unused() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        assert_eq!(store.next_title_in_lineage("Base").await, "Base");
+        let a = store
+            .create(SessionMeta::new(SessionId::new("a"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        store.set_user_title(&a, "Base").await.unwrap();
+        assert_eq!(store.next_title_in_lineage("Base").await, "Base #2");
+        let b = store
+            .create(SessionMeta::new(SessionId::new("b"), 2, "/tmp", "m"))
+            .await
+            .unwrap();
+        store.set_user_title(&b, "Base #2").await.unwrap();
+        assert_eq!(store.next_title_in_lineage("Base").await, "Base #3");
+    }
+
+    #[tokio::test]
+    async fn corrupt_header_is_quarantined_on_load() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store
+            .create(SessionMeta::new(SessionId::new("bad1"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        let path = store.session_path(&id);
+        tokio::fs::write(&path, "not json\n").await.unwrap();
+        let err = store.load(&id).await.unwrap_err();
+        assert!(matches!(err, SessionError::Corrupt { .. }));
+        assert!(!path.exists());
+        assert!(dir.path().join("bad1.corrupt-1").exists());
+        assert!(store.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn corrupt_header_is_quarantined_on_list_and_keeps_newest_3() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let good = store
+            .create(SessionMeta::new(SessionId::new("good"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        let bad = SessionId::new("bad2");
+        let bad_path = store.session_path(&bad);
+        for _ in 0..5 {
+            tokio::fs::write(&bad_path, "not json\n").await.unwrap();
+            let summaries = store.list().await;
+            assert_eq!(summaries.len(), 1);
+            assert_eq!(summaries[0].id, good);
+        }
+        let mut kept: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("bad2.corrupt-"))
+            .collect();
+        kept.sort();
+        assert_eq!(kept, vec!["bad2.corrupt-3", "bad2.corrupt-4", "bad2.corrupt-5"]);
+        assert!(!bad_path.exists());
     }
 }
 

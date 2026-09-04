@@ -136,6 +136,31 @@ pub struct CompactionSettings {
     pub keep_recent_tokens: usize,
 }
 
+/// Master switch for *automatic* compaction only (`should_compact` callers and
+/// `auto_compact_if_needed`). Manual entry points (`compact_with_keep`,
+/// `compact_with_instructions`) always run, so an `enabled=false` session keeps
+/// its manual escape hatch.
+static AUTO_COMPACT_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Disables/enables automatic compaction for this session. Manual `/compact` ignores this.
+pub fn set_auto_compact_enabled(on: bool) {
+    AUTO_COMPACT_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn is_auto_compact_enabled() -> bool {
+    AUTO_COMPACT_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Env kill-switch for automatic compaction, following the `GRAY_*` pattern in
+/// `config.rs`: `GRAY_NO_AUTO_COMPACT=1` (also `true`/`yes`/`on`) disables it.
+/// `0`/`false`/`no`/`off`/unset leave it enabled. Manual `/compact` still runs.
+pub fn init_auto_compact_from_env() {
+    let disabled = std::env::var("GRAY_NO_AUTO_COMPACT")
+        .map(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no" | "off"))
+        .unwrap_or(false);
+    set_auto_compact_enabled(!disabled);
+}
+
 pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
     enabled: true,
     reserve_tokens: 16384,
@@ -234,6 +259,9 @@ pub async fn auto_compact_if_needed(
     _last_usage: Option<Usage>,
     _reason: &str,
 ) -> Result<bool, CoreError> {
+    if !is_auto_compact_enabled() {
+        return Ok(false);
+    }
     let keep = crate::setup::user_keep_recent_tokens();
     compact_with_keep(agent, None, keep).await
 }
@@ -381,6 +409,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_compact_triggers_on_threshold() {
+        let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
         use async_trait::async_trait;
         use futures::stream::BoxStream;
         use gray_core::agent::{Agent, Provider, ToolContext, ToolExecutor};
@@ -450,6 +479,126 @@ mod tests {
         assert_eq!(tail_all.len(), 3);
         let tail_none = tail_messages(&msgs, 0);
         assert!(tail_none.is_empty());
+    }
+
+    /// Serializes tests that flip the global auto-compact switch; also guards
+    /// the flag back to enabled even when an assertion panics.
+    static COMPACT_SWITCH_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    struct EnableGuard;
+    impl Drop for EnableGuard {
+        fn drop(&mut self) {
+            set_auto_compact_enabled(true);
+        }
+    }
+
+    mod switch_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use futures::stream::BoxStream;
+        use gray_core::agent::{Agent, Provider, ToolContext, ToolExecutor};
+        use gray_core::event::{StopReason, Usage};
+        use gray_core::message::ChatRequest;
+        use crate::config::Config;
+
+        struct FakeProvider;
+        #[async_trait]
+        impl Provider for FakeProvider {
+            fn stream(&self, _req: ChatRequest) -> BoxStream<'static, Result<gray_core::event::StreamEvent, gray_core::agent::ProviderError>> {
+                let events = vec![
+                    gray_core::event::StreamEvent::TextDelta { delta: "summarized".to_string() },
+                    gray_core::event::StreamEvent::MessageComplete { stop_reason: Some(StopReason::EndTurn), usage: Some(Usage::new(10, 5)) },
+                ];
+                Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
+            }
+        }
+
+        struct NoopExecutor;
+        #[async_trait]
+        impl ToolExecutor for NoopExecutor {
+            fn execute(&self, _ctx: &ToolContext, _name: &str, _args: serde_json::Value) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
+                Box::pin(async { gray_core::agent::ToolOutput::ok("") })
+            }
+        }
+
+        fn agent() -> Agent {
+            Agent::new(Box::new(FakeProvider), Box::new(NoopExecutor)).with_messages(vec![
+                Message::user("hello"),
+                Message::assistant("hi there"),
+            ])
+        }
+
+        fn config() -> Config {
+            Config {
+                model: None,
+                base_url: "https://example.com".to_string(),
+                api_key: None,
+                thinking_effort: None,
+                show_reasoning: None,
+                context_window: None,
+                context_reserve: None,
+                context_keep: None,
+            }
+        }
+
+        #[tokio::test]
+        async fn auto_compact_disabled_is_noop() {
+            let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _guard = EnableGuard;
+            set_auto_compact_enabled(false);
+            let mut ag = agent();
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("must not error when disabled");
+            assert!(!out);
+            assert_eq!(ag.messages().len(), 2, "disabled auto-compact must leave history untouched");
+        }
+
+        #[tokio::test]
+        async fn env_kill_switch_disables_auto_compact() {
+            let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _guard = EnableGuard;
+            let prev = std::env::var("GRAY_NO_AUTO_COMPACT").ok();
+            unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", "1") };
+            init_auto_compact_from_env();
+            let mut ag = agent();
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("must not error when disabled");
+            assert!(!out);
+            assert_eq!(ag.messages().len(), 2, "env-disabled auto-compact must leave history untouched");
+            match prev {
+                Some(v) => unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", v) },
+                None => unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") },
+            }
+        }
+
+        #[tokio::test]
+        async fn env_unset_leaves_auto_compact_enabled() {
+            let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _guard = EnableGuard;
+            let prev = std::env::var("GRAY_NO_AUTO_COMPACT").ok();
+            unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") };
+            init_auto_compact_from_env();
+            let mut ag = agent();
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("compact should succeed");
+            assert!(out);
+            assert!(ag.messages()[0].text_content().contains("summarized"));
+            match prev {
+                Some(v) => unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", v) },
+                None => unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") },
+            }
+        }
+
+        #[tokio::test]
+        async fn manual_compact_bypasses_disabled_switch() {
+            let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _guard = EnableGuard;
+            set_auto_compact_enabled(false);
+            let mut ag = agent();
+            let out = compact_with_keep(&mut ag, None, 0).await.expect("manual compact must run when disabled");
+            assert!(out);
+            assert!(ag.messages()[0].text_content().contains("summarized"));
+            let mut ag2 = agent();
+            let out2 = compact_with_instructions(&mut ag2, None).await.expect("manual compact must run when disabled");
+            assert!(out2);
+            assert!(ag2.messages()[0].text_content().contains("summarized"));
+        }
     }
 }
 
