@@ -65,16 +65,8 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
     let trimmed = s.trim();
     let lower = trimmed.to_lowercase();
 
-    // "in 10m" / "in 2h" / "once in 10m" → Once (AI self-scheduling)
-    if let Some(rest) = lower.strip_prefix("in ") {
-        let dur = parse_duration(rest.trim())?;
-        if dur.as_secs() == 0 {
-            anyhow::bail!("interval must be > 0");
-        }
-        let at = Utc::now() + chrono::Duration::from_std(dur).unwrap_or(chrono::Duration::seconds(0));
-        return Ok(Schedule::Once(at));
-    }
-    if let Some(rest) = lower.strip_prefix("once in ") {
+    // "in 10m" / "once in 10m" → Once (AI self-scheduling)
+    if let Some(rest) = lower.strip_prefix("once in ").or_else(|| lower.strip_prefix("in ")) {
         let dur = parse_duration(rest.trim())?;
         if dur.as_secs() == 0 {
             anyhow::bail!("interval must be > 0");
@@ -125,17 +117,16 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
             return Ok(Schedule::Interval(dur));
         }
     }
-    // Fallback cron try
-    let cron_candidate = if trimmed.split_whitespace().count() == 5 {
-        format!("0 {trimmed}")
-    } else {
-        trimmed.to_string()
-    };
-    if let Ok(sched) = cron::Schedule::from_str(&cron_candidate) {
-        return Ok(Schedule::Cron(sched));
-    }
-    if let Ok(sched) = cron::Schedule::from_str(trimmed) {
-        return Ok(Schedule::Cron(sched));
+    // Fallback cron try (5-field gets a prepended sec 0)
+    // ponytail-audit #15: one attempt, not three — the extra retries re-ran the same parse.
+    let candidates = [
+        (trimmed.split_whitespace().count() == 5).then(|| format!("0 {trimmed}")),
+        Some(trimmed.to_string()),
+    ];
+    for c in candidates.into_iter().flatten() {
+        if let Ok(sched) = cron::Schedule::from_str(&c) {
+            return Ok(Schedule::Cron(sched));
+        }
     }
     anyhow::bail!(
         "invalid schedule '{}' — use cron '0 * * * *', 'every 10m', 'in 10m', or '2026-02-03T14:00'",
@@ -206,10 +197,8 @@ fn parse_duration(s: &str) -> anyhow::Result<std::time::Duration> {
 }
 
 pub fn compute_next_run(schedule_str: &str, from: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let sched = parse_schedule(schedule_str).ok()?;
-    // For Once, next_after handles grace; but hermes semantics: Once only fires once — if from >= run_at + grace, None
-    // So just delegate to sched.next_after
-    sched.next_after(from)
+    // ponytail-audit #15: next run is just the parsed schedule's next fire after `from`.
+    parse_schedule(schedule_str).ok()?.next_after(from)
 }
 
 /// Hermes compat: compute next run from stored schedule string + last_run

@@ -97,20 +97,3 @@ pub fn load_entries(path: &str) -> anyhow::Result<Vec<PluginEntry>> {
     }
     Ok(entries)
 }
-
-/// Legacy/test helper: builtin names only. Sidecar entries are dropped,
-/// so a sidecar-only file errors here while [`load_entries`] succeeds.
-/// Prefer [`load_entries`]; no non-test boot code uses this.
-pub fn load_profile(path: &str) -> anyhow::Result<Vec<String>> {
-    let names: Vec<String> = load_entries(path)?
-        .into_iter()
-        .filter_map(|e| match e {
-            PluginEntry::Builtin(n) => Some(n),
-            PluginEntry::Sidecar(_) => None,
-        })
-        .collect();
-    if names.is_empty() {
-        anyhow::bail!("no `plugins:` entries in {path}");
-    }
-    Ok(names)
-}

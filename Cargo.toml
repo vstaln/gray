@@ -26,6 +26,7 @@ gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }
 gray-session = { path = "crates/gray-session" }
+gray-markdown = { path = "crates/gray-markdown" }
 
 # External dependencies
 tokio = { version = "1", features = ["full"] }

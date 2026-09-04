@@ -67,6 +67,10 @@ Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd
 crates/
 ├── gray           REPL · onboarding · config · TUI
 ├── gray-core      agent loop · events · messages
+├── gray-cron      cron scheduling · job store · ticker
+├── gray-gateway   Discord gateway daemon
+├── gray-markdown  streaming markdown renderer for the TUI
+├── gray-plugin    plugin trait · manifest · profile loader
 ├── gray-provider  OpenAI-compatible SSE streaming (+ retries)
 ├── gray-session   JSONL session store with parent-id branching
 └── gray-tools     read · write · edit · bash tool registry
