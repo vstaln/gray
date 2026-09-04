@@ -111,8 +111,23 @@ pub struct DeliveryLedger {
 }
 
 impl DeliveryLedger {
+    /// Load persisted obligations; corrupt JSON warns and starts fresh
+    /// (documented) instead of silently wiping.
     pub fn new(path: PathBuf) -> Self {
-        let map = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let map = match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(e) => {
+                log::warn!("delivery ledger unreadable {}: {e}; starting fresh", path.display());
+                HashMap::new()
+            }
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::warn!("delivery ledger corrupt {}: {e}; starting fresh", path.display());
+                    HashMap::new()
+                }
+            },
+        };
         Self { path: Some(path), lock: Mutex::new(map) }
     }
 
@@ -179,12 +194,12 @@ impl DeliveryLedger {
 
     /// Record a failed attempt. Non-retryable errors and attempt #3+ are
     /// terminal (abandoned + logged); [`SendResult::retryable`] is the ONLY
-    /// replay gate.
+    /// replay gate. `attempts` is clamped at [`MAX_DELIVERY_ATTEMPTS`].
     pub fn mark_failed(&self, id: &str, error: &str, retryable: bool) {
         {
             let mut map = self.lock.lock().unwrap();
             if let Some(o) = map.get_mut(id) {
-                o.attempts += 1;
+                o.attempts = (o.attempts + 1).min(MAX_DELIVERY_ATTEMPTS);
                 o.retryable = retryable;
                 o.last_error = Some(error.to_string());
                 o.updated_at = now_ts();
@@ -230,8 +245,23 @@ pub struct DeadTargets {
 }
 
 impl DeadTargets {
+    /// Load persisted dead targets; corrupt JSON warns and starts fresh
+    /// (documented) instead of silently wiping.
     pub fn new(path: PathBuf) -> Self {
-        let map = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let map = match std::fs::read_to_string(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
+            Err(e) => {
+                log::warn!("dead targets unreadable {}: {e}; starting fresh", path.display());
+                HashMap::new()
+            }
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(m) => m,
+                Err(e) => {
+                    log::warn!("dead targets corrupt {}: {e}; starting fresh", path.display());
+                    HashMap::new()
+                }
+            },
+        };
         Self { path: Some(path), lock: Mutex::new(map) }
     }
 
@@ -381,6 +411,8 @@ impl DeliveryRouter {
 
     /// Record-then-send: the obligation hits the ledger BEFORE the send so a
     /// crash between the two still replays via [`sweep_ledger`].
+    /// Skips non-Pending obligations (already Delivered/Failed) without
+    /// re-sending or bumping `attempts`.
     pub async fn deliver_recorded(
         &self,
         ledger: &DeliveryLedger,
@@ -391,6 +423,14 @@ impl DeliveryRouter {
         reply_to: Option<&str>,
     ) -> (String, SendResult) {
         let id = ledger.record(session_key, message_ref, target, text, reply_to);
+        if let Some(ob) = ledger.get(&id) {
+            if ob.status == ObligationStatus::Delivered {
+                return (id, SendResult::ok(None));
+            }
+            if ob.status == ObligationStatus::Failed {
+                return (id, SendResult::fail(ob.last_error.unwrap_or_else(|| "already failed".into()), false));
+            }
+        }
         let res = self.deliver(target, text, reply_to).await;
         if res.success {
             ledger.mark_delivered(&id);
@@ -730,6 +770,50 @@ mod tests {
         assert!(done[0].1.success);
         assert!(!dead.is_dead("telegram:123"));
         assert_eq!(ledger.get(&id).unwrap().status, ObligationStatus::Delivered);
+    }
+
+    #[test]
+    fn ledger_attempts_never_exceed_cap() {
+        let ledger = DeliveryLedger::in_memory();
+        let target = DeliveryTarget::parse("telegram:123", None).unwrap();
+        let id = ledger.record("sess", "m1", &target, "hi", None);
+        for _ in 0..10 {
+            ledger.mark_failed(&id, "timeout", true);
+        }
+        let ob = ledger.get(&id).unwrap();
+        assert_eq!(ob.status, ObligationStatus::Failed);
+        assert!(ob.attempts <= MAX_DELIVERY_ATTEMPTS, "clamped: {}", ob.attempts);
+        assert_eq!(ob.attempts, MAX_DELIVERY_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn deliver_recorded_skips_non_pending() {
+        let (adapter, router) = script_router(vec![SendResult::ok(None), SendResult::ok(None)]);
+        let ledger = DeliveryLedger::in_memory();
+        let target = DeliveryTarget::parse("telegram:123", None).unwrap();
+        let (id, res) = router.deliver_recorded(&ledger, "sess", "m1", &target, "hi", None).await;
+        assert!(res.success);
+        assert_eq!(ledger.get(&id).unwrap().status, ObligationStatus::Delivered);
+        let calls = adapter.calls();
+        // Same obligation again: already Delivered → skip send, no attempt bump.
+        let (id2, res2) = router.deliver_recorded(&ledger, "sess", "m1", &target, "hi", None).await;
+        assert_eq!(id, id2);
+        assert!(res2.success);
+        assert_eq!(adapter.calls(), calls, "non-Pending must skip the send");
+    }
+
+    #[test]
+    fn corrupt_ledger_and_dead_targets_start_fresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let lpath = dir.path().join("delivery_ledger.json");
+        let dpath = dir.path().join("dead_targets.json");
+        std::fs::write(&lpath, "not json").unwrap();
+        std::fs::write(&dpath, "{bad").unwrap();
+        // Corrupt files warn and start fresh (documented), never panic.
+        let ledger = DeliveryLedger::new(lpath);
+        assert!(ledger.sweep().is_empty());
+        let dead = DeadTargets::new(dpath);
+        assert!(!dead.is_dead("telegram:123"));
     }
 
     #[test]

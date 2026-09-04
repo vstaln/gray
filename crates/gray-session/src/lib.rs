@@ -655,6 +655,9 @@ impl JsonlSessionStore {
     /// `(session_id, entry_id, snippet)` where the snippet is a ~120-char
     /// window around the first hit plus up to 60 chars of the neighboring
     /// entries (already loaded, so free) as context.
+    ///
+    /// Cost: O(store) full scan — lists every session and loads each file;
+    /// do not call in a hot loop.
     pub async fn search(
         &self,
         query: &str,
@@ -697,7 +700,7 @@ impl JsonlSessionStore {
                         && neg.iter().all(|t| !hay.contains(t))
                     {
                         matched = true;
-                        hit = pos.iter().filter_map(|t| hay.find(t).map(|b| (b, t.len()))).min();
+                        hit = char_hit_on_original(&text, &hay, pos);
                         break;
                     }
                 }
@@ -766,7 +769,49 @@ fn parse_search_query(query: &str) -> Vec<(Vec<String>, Vec<String>)> {
         .collect()
 }
 
-/// ~120-char window around `hit` (byte idx + len, `None` = head of text),
+/// Hit index on the ORIGINAL text, char-based (not the lowercased copy):
+/// lowercasing can expand chars (e.g. Turkish İ → i̇), shifting byte indices.
+/// Returns the smallest `(orig_char_idx, orig_char_len)` across `terms`.
+fn char_hit_on_original(text: &str, hay: &str, terms: &[String]) -> Option<(usize, usize)> {
+    let orig_chars: Vec<char> = text.chars().collect();
+    let hay_chars: Vec<char> = hay.chars().collect();
+    // Map each lowercased char back to its original char index.
+    let mut lower_to_orig: Vec<usize> = Vec::with_capacity(hay_chars.len());
+    for (oi, c) in orig_chars.iter().enumerate() {
+        for _ in c.to_lowercase() {
+            lower_to_orig.push(oi);
+        }
+    }
+    if lower_to_orig.len() != hay_chars.len() {
+        // Paranoia fallback (context-sensitive casing): byte search on original.
+        return terms
+            .iter()
+            .filter(|t| !t.is_empty())
+            .filter_map(|t| text.find(t.as_str()).map(|b| {
+                let idx = text[..b].chars().count();
+                (idx, t.chars().count())
+            }))
+            .min();
+    }
+    terms
+        .iter()
+        .filter(|t| !t.is_empty())
+        .filter_map(|t| {
+            let t_chars: Vec<char> = t.chars().collect();
+            if t_chars.is_empty() || t_chars.len() > hay_chars.len() {
+                return None;
+            }
+            hay_chars.windows(t_chars.len()).position(|w| w == t_chars.as_slice()).map(|lc_idx| {
+                let orig_idx = *lower_to_orig.get(lc_idx).unwrap_or(&0);
+                let orig_end = lower_to_orig.get(lc_idx + t_chars.len()).copied().unwrap_or(orig_chars.len());
+                let len = orig_end.saturating_sub(orig_idx).max(1).min(orig_chars.len().saturating_sub(orig_idx));
+                (orig_idx, len)
+            })
+        })
+        .min()
+}
+
+/// ~120-char window around `hit` (orig char idx + char len, `None` = head),
 /// with up to 60 chars of prev/next entry text as context.
 fn snippet_around(
     text: &str,
@@ -777,10 +822,7 @@ fn snippet_around(
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let (s, mut e) = match hit {
-        Some((b, bl)) => {
-            let hs = text.get(..b.min(text.len())).map_or(n, |s| s.chars().count());
-            (hs.saturating_sub(60), (hs + bl + 60).min(n))
-        }
+        Some((idx, len)) => (idx.saturating_sub(60), (idx + len + 60).min(n)),
         None => (0, 120.min(n)),
     };
     if e - s > 120 {
@@ -1061,6 +1103,19 @@ mod tests {
             store.search("hello", 10, Some(Role::Assistant)).await.len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn search_turkish_dotted_I_hit_is_char_based() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        // 100 × İ (U+0130, 2 bytes, lowercases to 2 chars) shifts lowercased
+        // byte indices; the hit must be computed on the original text.
+        let body = format!("{}needle{}", "İ".repeat(100), "y".repeat(200));
+        seed(&store, "s1", 1, vec![Message::user(body.clone())]).await;
+        let hits = store.search("needle", 10, None).await;
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].2.contains("needle"), "snippet must contain hit, got: {}", hits[0].2);
     }
 
     #[tokio::test]

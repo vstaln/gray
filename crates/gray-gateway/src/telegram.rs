@@ -31,6 +31,16 @@ pub fn heartbeat_should_respawn(consecutive_failures: u32) -> bool {
     consecutive_failures >= HEARTBEAT_MAX_MISSES
 }
 
+/// Heartbeat `get_me` failure policy: Terminal (revoked token) never
+/// respawns, Retryable respawns once misses hit the threshold.
+/// Routes through the daemon's [`crate::daemon::classify_connect_error`].
+pub fn heartbeat_should_respawn_error(err: &str, consecutive_failures: u32) -> bool {
+    match crate::daemon::classify_connect_error(err) {
+        crate::daemon::Fatal::Terminal(_) => false,
+        crate::daemon::Fatal::Retryable(_) => heartbeat_should_respawn(consecutive_failures),
+    }
+}
+
 /// Fold a sequence of probe outcomes (`true` = ok) into
 /// (final miss count, respawn tripped). A success clears the count.
 pub fn drive_heartbeat<I: IntoIterator<Item = bool>>(probes: I) -> (u32, bool) {
@@ -232,9 +242,15 @@ fn spawn_heartbeat(
                     respawns = 0;
                 }
                 Err(e) => {
+                    let msg = e.to_string();
+                    // Revoked token is Terminal: stop respawning, don't loop forever.
+                    if matches!(crate::daemon::classify_connect_error(&msg), crate::daemon::Fatal::Terminal(_)) {
+                        log::error!("[telegram] heartbeat terminal (not respawning): {e}");
+                        return;
+                    }
                     misses += 1;
                     log::warn!("[telegram] heartbeat failed ({misses}): {e}");
-                    if heartbeat_should_respawn(misses) {
+                    if heartbeat_should_respawn_error(&msg, misses) {
                         let d = crate::platform::backoff_delay(respawns);
                         respawns += 1;
                         log::warn!("[telegram] heartbeat missed {misses}x, respawning poller in {d:?}");
@@ -573,6 +589,19 @@ mod tests {
         assert_eq!(drive_heartbeat([true, false, false]), (2, true));
         assert_eq!(drive_heartbeat([false, false]), (2, true));
         assert_eq!(drive_heartbeat([true]), (0, false));
+    }
+
+    #[test]
+    fn heartbeat_terminal_never_respawns_retryable_does() {
+        // Revoked token: Terminal → no respawn even past the miss threshold.
+        for err in ["401 Unauthorized", "telegram token rejected: forbidden", "invalid token"] {
+            assert!(!heartbeat_should_respawn_error(err, 2), "terminal must not respawn: {err}");
+            assert!(!heartbeat_should_respawn_error(err, 10), "terminal must not respawn: {err}");
+        }
+        // Transient: Retryable → respawn once misses hit the threshold.
+        assert!(!heartbeat_should_respawn_error("connection reset by peer", 1));
+        assert!(heartbeat_should_respawn_error("connection reset by peer", 2));
+        assert!(heartbeat_should_respawn_error("connect timeout 45s", 3));
     }
 
     #[tokio::test]
