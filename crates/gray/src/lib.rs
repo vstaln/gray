@@ -31,9 +31,9 @@ use gray_provider::OpenAiProvider;
 use gray_tools::Registry;
 
 /// Single source of truth for the default (builtin) plugins.
-/// Used by both [`build_registry`] and [`default_manifests`] so
-/// `--dump-manifest` cannot drift from the actual registry.
-pub fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
+/// Used by [`profile_plugins`] and [`build_registry`] so the registry cannot
+/// drift from the profile resolution.
+fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
     vec![
         std::sync::Arc::new(gray_tools::plugin::ToolsBasicPlugin)
             as std::sync::Arc<dyn gray_plugin::Plugin>,
@@ -47,18 +47,21 @@ pub fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
 /// Profile warnings queued for transcript display. Raw `eprintln!` while the
 /// composer viewport is live collides with the next draw (ghost/overlapped
 /// rows), so lib code never prints — it queues here and the UI drains.
-/// Each distinct message surfaces once per process.
+/// One lock, one Vec: each distinct message is queued once per drain cycle
+/// (N is tiny; Vec scan is fine). A rebuild re-queues a still-broken profile
+/// warning — correct, like a compiler re-emitting warnings.
+/// (ponytail-audit #13: two mutexes doing one dedup queue.)
 static PROFILE_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-static WARNED_ONCE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn queue_profile_warning(msg: String) {
-    // Each distinct message surfaces once per process (N is tiny; Vec scan is fine).
-    let fresh = WARNED_ONCE.lock().map(|mut s| {
-        if s.contains(&msg) { false } else { s.push(msg.clone()); true }
-    }).unwrap_or(true);
-    if fresh {
-        PROFILE_WARNINGS.lock().map(|mut q| q.push(msg)).ok();
-    }
+    PROFILE_WARNINGS
+        .lock()
+        .map(|mut q| {
+            if !q.contains(&msg) {
+                q.push(msg);
+            }
+        })
+        .ok();
 }
 
 /// Drains queued profile warnings (transcript/non-TUI display owns rendering).
@@ -73,7 +76,7 @@ pub fn take_profile_warnings() -> Vec<String> {
 /// naming entry index + argv (boot aborts).
 /// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
 /// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
-pub async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
+async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
     let defaults = default_plugins();
     match gray_plugin::profile::load_entries("gray.yml") {
         Ok(entries) => {
@@ -113,30 +116,15 @@ pub async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn g
 
 /// Builds the tool registry from the `gray.yml` profile plugin order,
 /// falling back to [`Registry::builtin`] when no profile file is present.
+/// Returns `(registry, used_fallback)` — the flag feeds `--dump-manifest`'s note.
 /// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
-pub async fn build_registry() -> anyhow::Result<Registry> {
+/// (ponytail-audit #13: `default_manifests`/`effective_manifests` deleted;
+/// manifests travel on the registry via [`Registry::manifests`].)
+pub async fn build_registry() -> anyhow::Result<(Registry, bool)> {
     match profile_plugins().await? {
-        Some(plugins) if !plugins.is_empty() => Ok(Registry::from_plugins(&plugins)),
-        _ => Ok(Registry::builtin()),
+        Some(plugins) if !plugins.is_empty() => Ok((Registry::from_plugins(&plugins), false)),
+        _ => Ok((Registry::builtin(), true)),
     }
-}
-
-/// Effective manifests for `--dump-manifest`: the profile-ordered set when a
-/// profile resolves, else builtin. Returns `(manifests, used_fallback)`.
-/// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
-pub async fn effective_manifests() -> anyhow::Result<(Vec<gray_plugin::Manifest>, bool)> {
-    match profile_plugins().await? {
-        Some(plugins) if !plugins.is_empty() => Ok((
-            plugins.iter().map(|p| p.manifest()).collect(),
-            false,
-        )),
-        _ => Ok((default_manifests(), true)),
-    }
-}
-
-/// Merged manifests of the default plugins (for `--dump-manifest`).
-pub fn default_manifests() -> Vec<gray_plugin::Manifest> {
-    default_plugins().iter().map(|p| p.manifest()).collect()
 }
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
@@ -171,16 +159,13 @@ pub fn load_or_create_system_prompt_at(path: &Path) -> anyhow::Result<String> {
         return Ok(body);
     }
     // Migrate legacy sys.md -> AGENTS.md (one-time)
-    if path.file_name().is_some_and(|n| n == "AGENTS.md") {
-        if let Some(parent) = path.parent() {
-            let legacy = parent.join("sys.md");
-            if let Ok(body) = std::fs::read_to_string(&legacy) {
-                if !body.trim().is_empty() {
-                    let _ = std::fs::write(path, &body);
-                    return Ok(body);
-                }
-            }
-        }
+    if path.file_name().is_some_and(|n| n == "AGENTS.md")
+        && let Some(parent) = path.parent()
+        && let Ok(body) = std::fs::read_to_string(parent.join("sys.md"))
+        && !body.trim().is_empty()
+        && std::fs::write(path, &body).is_ok()
+    {
+        return Ok(body);
     }
     match std::fs::read_to_string(path) {
         Ok(body) => Ok(body),
@@ -213,7 +198,11 @@ pub fn rule(label: &str) -> String {
     format!("{prefix}{}", "\u{2500}".repeat(fill))
 }
 
-/// Builds an [`Agent`] instance wired with the OpenAI provider, builtin tools, and system prompt.
+/// Builds an [`Agent`] wired with the OpenAI provider, builtin tools, and system prompt.
+/// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
+/// pass it whenever known (resume, /new); `None` uses a per-process stable id.
+/// (ponytail-audit #13: `build_agent` + `build_agent_with_session` +
+/// `build_agent_inner` were one function with an unused `None` leg.)
 ///
 /// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
 /// OpenCode plugins, `~/.agents/skills`, `~/.claude/skills` + project skills
@@ -261,22 +250,7 @@ pub fn provider_cache_key(session_id: Option<&str>) -> String {
         .clone()
 }
 
-pub async fn build_agent(config: &Config, cwd: &Path) -> anyhow::Result<Agent> {
-    build_agent_inner(config, cwd, None).await
-}
-
-/// Builds an [`Agent`] pinned to a session id for prompt-cache affinity.
-/// Use this whenever the session id is known (resume, /new) so the
-/// `prompt_cache_key` survives process restarts.
-pub async fn build_agent_with_session(
-    config: &Config,
-    cwd: &Path,
-    session_id: &str,
-) -> anyhow::Result<Agent> {
-    build_agent_inner(config, cwd, Some(session_id)).await
-}
-
-async fn build_agent_inner(
+pub async fn build_agent(
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
@@ -295,7 +269,7 @@ async fn build_agent_inner(
     let context_files = system_prompt::discover_context_files(cwd);
 
     // Tools only appear in the prompt when they have a snippet.
-    let registry = build_registry().await?;
+    let (registry, _) = build_registry().await?;
     let tool_snippets = registry.prompt_snippets();
     let selected_tools = registry.tool_names();
     let prompt_guidelines = {
@@ -402,33 +376,20 @@ pub enum Commands {
         /// Show all sessions (disables cwd filtering)
         #[arg(long)]
         all: bool,
-        /// Optional prompt to send immediately after resuming
-        #[arg(value_name = "PROMPT")]
-        prompt: Option<String>,
     },
     /// Manage cron jobs (schedule recurring prompts)
+    #[command(alias = "cronjobs")]
     Cron {
         #[command(subcommand)]
         cmd: Option<crate::cron_cli::CronCmd>,
     },
-    /// Alias for `cron`
-    #[command(hide = true)]
-    Cronjobs {
-        #[command(subcommand)]
-        cmd: Option<crate::cron_cli::CronCmd>,
-    },
     /// Share Codex/Grok/OpenRouter auth via http://127.0.0.1:8645/v1 (any bearer forwarded)
+    #[command(alias = "portal")]
     Proxy {
         #[command(subcommand)]
         cmd: Option<crate::proxy::ProxyCmd>,
     },
-    /// Alias for proxy (portal)
-    #[command(name = "portal", hide = true)]
-    Portal {
-        #[command(subcommand)]
-        cmd: Option<crate::proxy::ProxyCmd>,
-    },
-    /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
+    /// Messaging gateway (Discord) — daemon on VPS
     Gateway {
         #[command(subcommand)]
         cmd: Option<GatewayCmd>,

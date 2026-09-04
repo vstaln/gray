@@ -72,24 +72,6 @@ impl Usage {
         }
     }
 
-    /// Clamped subtract: max(0, total - sub) like opencode `ProviderShared.subtractTokens`.
-    pub fn subtract_tokens(total: Option<usize>, sub: Option<usize>) -> Option<usize> {
-        match (total, sub) {
-            (None, _) => None,
-            (Some(t), None) => Some(t),
-            (Some(t), Some(s)) => Some(t.saturating_sub(s)),
-        }
-    }
-
-    /// Sum optional tokens, None only if all None (opencode `sumTokens`).
-    pub fn sum_tokens(vals: &[Option<usize>]) -> Option<usize> {
-        if vals.iter().all(|v| v.is_none()) {
-            None
-        } else {
-            Some(vals.iter().map(|v| v.unwrap_or(0)).sum())
-        }
-    }
-
     /// Normalize after filling breakdown fields — ensures invariants and legacy alias.
     pub fn normalize(&mut self) {
         // legacy alias

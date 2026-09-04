@@ -1,8 +1,7 @@
 //! Session storage for the Gray agent.
 //!
 //! This crate provides session persistence and management for conversations,
-//! storing each session as a JSONL file (legacy) and — phase 1 — a SQLite
-//! store with FTS5 (new).
+//! storing each session as a JSONL file.
 //!
 //! # Architecture & Logging Choice
 //! This crate uses the lightweight [`log`] facade (not `tracing`) as it is a leaf
@@ -42,27 +41,13 @@ impl SessionId {
     }
 }
 
+// NOTE (ponytail-audit #11): earlier `From<String>`/`From<&str>`/`AsRef<str>`
+// impls were deleted — every caller uses `new`/`generate`/`as_str`.
+// `Display` stays: it formats `{sid}` in status lines and `NotFound`.
+
 impl std::fmt::Display for SessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
-    }
-}
-
-impl From<String> for SessionId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for SessionId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl AsRef<str> for SessionId {
-    fn as_ref(&self) -> &str {
-        &self.0
     }
 }
 
@@ -206,19 +191,14 @@ impl JsonlSessionStore {
 }
 
 impl JsonlSessionStore {
-    pub async fn create(&self, meta: SessionMeta) -> SessionId {
+    // ponytail-audit #11: returns Result — callers decide what a failed
+    // session write means instead of five nested warn-and-continue arms.
+    pub async fn create(&self, meta: SessionMeta) -> Result<SessionId> {
         let _guard = self.lock.lock().await;
         let id = meta.id.clone();
         let path = self.session_path(&id);
 
-        if let Err(e) = tokio::fs::create_dir_all(&self.root_dir).await {
-            log::warn!(
-                "failed to create session root directory {}: {}",
-                self.root_dir.display(),
-                e
-            );
-            return id;
-        }
+        tokio::fs::create_dir_all(&self.root_dir).await?;
 
         let header = Header {
             version: 1,
@@ -228,53 +208,20 @@ impl JsonlSessionStore {
             model: meta.model,
         };
 
-        match serde_json::to_string(&header) {
-            Ok(json) => {
-                let open_res = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(&path)
-                    .await;
-                match open_res {
-                    Ok(mut file) => {
-                        use tokio::io::AsyncWriteExt;
-                        let line = format!("{}\n", json);
-                        if let Err(e) = file.write_all(line.as_bytes()).await {
-                            log::warn!(
-                                "failed to write session header to {}: {}",
-                                path.display(),
-                                e
-                            );
-                        } else if let Err(e) = file.flush().await {
-                            log::warn!(
-                                "failed to flush session header to {}: {}",
-                                path.display(),
-                                e
-                            );
-                        } else if let Err(e) = file.sync_all().await {
-                            log::warn!(
-                                "failed to sync session header to {}: {}",
-                                path.display(),
-                                e
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "failed to open session file {}: {}",
-                            path.display(),
-                            e
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                log::warn!("failed to serialize session header: {}", e);
-            }
-        }
+        let json = serde_json::to_string(&header)?;
+        let line = format!("{json}\n");
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .await?;
+        use tokio::io::AsyncWriteExt;
+        file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
+        file.sync_all().await?;
 
-        id
+        Ok(id)
     }
 
     pub async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId> {
@@ -526,7 +473,7 @@ mod tests {
     async fn load_ignores_torn_final_line_but_preserves_prior_entries() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await;
+        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await.unwrap();
         store.append(&id, &Message::user("hello")).await.unwrap();
         let path = store.session_path(&id);
         let mut raw = tokio::fs::read_to_string(&path).await.unwrap();

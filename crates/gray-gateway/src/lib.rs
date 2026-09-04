@@ -1,18 +1,14 @@
-//! Gateway crate — stubs by default, real adapters behind feature flags.
+//! Gateway crate — Discord adapter only.
 //!
-//! Real deps are optional so `cargo check -p gray-gateway` passes offline:
-//! - `telegram` feature → `teloxide` polling (Telegram MAX 4096 utf16)
-//! - `discord`  feature → `twilight-gateway` (Discord MAX 2000)
-//! - `slack`    feature → `slack-morphism` Socket Mode (Slack MAX 39000)
-//!
-//! Enable: `cargo check -p gray-gateway --features telegram,slack`
-//! All:    `cargo check -p gray-gateway --features all-platforms`
+//! An earlier revision carried Telegram/Slack adapters that validated tokens
+//! and logged sends but never delivered a message, behind `telegram`/`slack`
+//! features the shipped binary never enabled. Deleted (ponytail-audit #2);
+//! re-add a platform when it can actually send. `Platform` keeps all three
+//! variants so persisted session keys (`gray:main:telegram:…`) still parse.
 
 pub mod config;
 pub mod daemon;
 pub mod platform;
 pub mod session;
 pub mod systemd;
-pub mod telegram;
 pub mod discord;
-pub mod slack;

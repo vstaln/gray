@@ -39,13 +39,7 @@ impl Log for FileLogger {
 }
 
 fn level_from_env() -> LevelFilter {
-    match std::env::var("GRAY_LOG").as_deref() {
-        Ok("error") => LevelFilter::Error,
-        Ok("warn") => LevelFilter::Warn,
-        Ok("debug") => LevelFilter::Debug,
-        Ok("trace") => LevelFilter::Trace,
-        _ => LevelFilter::Info, // unset or invalid → info
-    }
+    std::env::var("GRAY_LOG").ok().and_then(|s| s.parse().ok()).unwrap_or(log::LevelFilter::Info)
 }
 
 /// Installs the file logger once; silently no-ops on second call or when

@@ -5,9 +5,7 @@ use crate::config::{GatewayConfig, Platform, load_gateway_config};
 use crate::platform::{BasePlatformAdapter, MessageEvent, SendResult, preview_80, truncate_message};
 use crate::session::{build_session_key, shared_store, FileGatewayStore};
 
-use crate::telegram::TelegramAdapter;
 use crate::discord::DiscordAdapter;
-use crate::slack::SlackAdapter;
 
 type Adapter = Arc<dyn BasePlatformAdapter>;
 
@@ -65,9 +63,11 @@ impl GatewayRunner {
         for (plat, cfg) in &config.platforms {
             if !cfg.enabled { continue; }
             let adapter: Adapter = match plat {
-                Platform::Telegram => Arc::new(TelegramAdapter::new(cfg.clone())?),
+                // Telegram/Slack adapters were log-only stubs — deleted (ponytail-audit #2).
+                // The Platform variants stay so old session keys still parse; enabling
+                // one errors here until a real adapter lands.
                 Platform::Discord => Arc::new(DiscordAdapter::new(cfg.clone())?),
-                Platform::Slack => Arc::new(SlackAdapter::new(cfg.clone())?),
+                p => anyhow::bail!("gateway platform {p} has no adapter in this build (Discord only)"),
             };
             adapters.insert(*plat, adapter);
         }
@@ -402,10 +402,18 @@ mod tests {
     #[test]
     fn from_config_with_dummy_token() {
         let mut platforms = HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig{ enabled: true, token: Some("123456:ABCDEFGHIJ1234567890".into()), app_token: None, home_channel: None });
-        let cfg = GatewayConfig{ platforms, group_per_user: true, thread_per_user: false };
+        platforms.insert(Platform::Discord, PlatformConfig{ enabled: true, token: Some("MTIzNDU2Nzg5MDEyMzQ1.proxy.abcdef".into()), app_token: None, home_channel: None });
+        let cfg = GatewayConfig{ platforms, group_per_user: true, thread_per_user: false, ..Default::default() };
         let runner = GatewayRunner::from_config(cfg).unwrap();
-        assert!(runner.adapters.contains_key(&Platform::Telegram));
+        assert!(runner.adapters.contains_key(&Platform::Discord));
+    }
+    #[test]
+    fn from_config_rejects_removed_stub_platform() {
+        // Telegram/Slack adapters were deleted (ponytail-audit #2): enabling one errors.
+        let mut platforms = HashMap::new();
+        platforms.insert(Platform::Telegram, PlatformConfig{ enabled: true, token: Some("123456:ABCDEFGHIJ1234567890".into()), app_token: None, home_channel: None });
+        let cfg = GatewayConfig{ platforms, group_per_user: true, thread_per_user: false, ..Default::default() };
+        assert!(GatewayRunner::from_config(cfg).is_err());
     }
     #[test]
     fn from_config_skips_disabled() {

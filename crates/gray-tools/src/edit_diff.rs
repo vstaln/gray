@@ -559,10 +559,10 @@ pub fn generate_unified_patch(
     let mut cur: Vec<DiffOp> = Vec::new();
     let mut equal_run: Vec<DiffOp> = Vec::new();
 
-    for op in ops {
-        match &op {
+    for op in &ops {
+        match op {
             DiffOp::Equal(_) => {
-                equal_run.push(op);
+                equal_run.push(op.clone());
                 if equal_run.len() > context_lines * 2 {
                     // Flush current hunk
                     if cur.iter().any(|o| !matches!(o, DiffOp::Equal(_))) {
@@ -589,7 +589,7 @@ pub fn generate_unified_patch(
             }
             _ => {
                 cur.extend(equal_run.drain(..));
-                cur.push(op);
+                cur.push(op.clone());
             }
         }
     }
@@ -610,12 +610,12 @@ pub fn generate_unified_patch(
     out.push_str(&format!("--- {path}\n"));
     out.push_str(&format!("+++ {path}\n"));
 
-    // Compute hunk headers in one pass (no second lcs_diff).
+    // Compute hunk headers from the single ops result (no second lcs_diff).
     let mut old_line = 1usize;
     let mut new_line = 1usize;
     let mut op_idx = 0usize;
-    // Need full ops to advance gap counters between hunks
-    let all_ops = lcs_diff(&old_lines, &new_lines);
+    // Reuse ops to advance gap counters between hunks.
+    let all_ops = &ops;
     for hunk in hunks {
         // Advance op_idx to start of hunk
         while op_idx < all_ops.len() {

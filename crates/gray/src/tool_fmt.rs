@@ -21,31 +21,21 @@ pub const DIFF_INSERT_FG: Color = Color::Rgb(158, 206, 106); // #9ece6a (bright 
 pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code text)
 pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
 
-fn arg_path<'a>(args: &'a serde_json::Value) -> &'a str {
+fn arg_path(args: &serde_json::Value) -> &str {
+    // ponytail: schemas emit only `path` + `file_path` (write.rs); dropped
+    // filePath/TargetFile/targetFile/file/filename/target/destination probes.
     args.get("path")
         .or_else(|| args.get("file_path"))
-        .or_else(|| args.get("filePath"))
-        .or_else(|| args.get("TargetFile"))
-        .or_else(|| args.get("target_file"))
-        .or_else(|| args.get("targetFile"))
-        .or_else(|| args.get("file"))
-        .or_else(|| args.get("filename"))
-        .or_else(|| args.get("target"))
-        .or_else(|| args.get("destination"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
 }
 
-fn arg_content<'a>(args: &'a serde_json::Value) -> &'a str {
+fn arg_content(args: &serde_json::Value) -> &str {
+    // ponytail: write.rs schema emits content/contents/text; dropped
+    // CodeContent/code_content/codeContent/code/body/data probes.
     args.get("content")
         .or_else(|| args.get("contents"))
-        .or_else(|| args.get("CodeContent"))
-        .or_else(|| args.get("code_content"))
-        .or_else(|| args.get("codeContent"))
         .or_else(|| args.get("text"))
-        .or_else(|| args.get("code"))
-        .or_else(|| args.get("body"))
-        .or_else(|| args.get("data"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
 }
@@ -57,12 +47,12 @@ fn arg_content<'a>(args: &'a serde_json::Value) -> &'a str {
 pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     let path = Path::new(path_str);
     let mut rel = path_str.to_string();
-    if let Some(cwd) = cwd {
-        if let Ok(stripped) = path.strip_prefix(cwd) {
-            let s = stripped.display().to_string();
-            if !s.is_empty() {
-                rel = s;
-            }
+    if let Some(cwd) = cwd
+        && let Ok(stripped) = path.strip_prefix(cwd)
+    {
+        let s = stripped.display().to_string();
+        if !s.is_empty() {
+            rel = s;
         }
     }
     if rel == path_str {
@@ -942,99 +932,47 @@ pub fn format_tool_result_lines(tool_name: &str, output: &str, is_error: bool) -
     format_tool_result_lines_with_context(tool_name, None, output, is_error, None)
 }
 
-/// Plain ANSI string formatting for one-shot / non-TUI output header.
-pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> String {
-    let bullet = "\x1b[38;2;158;206;106m\x1b[1m\u{2b22}\x1b[0m";
-    let bold = "\x1b[1m";
-    let orange = "\x1b[38;2;255;158;100m\x1b[1m";
-    let yellow = "\x1b[38;2;224;175;104m\x1b[1m";
-    let dim = "\x1b[38;2;108;108;108m";
-    let reset = "\x1b[0m";
-
-    match name {
-        "bash" => {
-            let cmd = truncate_cmd(args.get("command").and_then(|v| v.as_str()).unwrap_or("").trim());
-            format!("{bullet} {bold}Ran{reset} {yellow}{cmd}{reset}")
-        }
-        "write" => {
-            let path = shorten_path(arg_path(args), cwd);
-            let content = arg_content(args);
-            let lines_count = content.lines().count();
-            format!("{bullet} {bold}Wrote{reset} {orange}{path}{reset} {dim}({lines_count} lines){reset}")
-        }
-        "edit" => {
-            let path = shorten_path(arg_path(args), cwd);
-            format!("{bullet} {bold}Edit{reset} {orange}{path}{reset}")
-        }
-        "read" => {
-            let path = shorten_path(arg_path(args), cwd);
-            let offset = args.get("offset").and_then(|v| v.as_u64());
-            let limit = args.get("limit").and_then(|v| v.as_u64());
-            let span_detail = match (offset, limit) {
-                (Some(o), Some(l)) => format!(" {dim}(lines {o}-{}){reset}", o + l),
-                (Some(o), None) => format!(" {dim}(line {o}+){reset}"),
-                _ => String::new(),
-            };
-            format!("{bullet} {bold}Read{reset} {orange}{path}{reset}{span_detail}")
-        }
-        "grep" => {
-            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let in_clause = if !raw_path.is_empty() && raw_path != "." {
-                format!(" {dim}in{reset} {orange}{}{reset}", shorten_path(raw_path, cwd))
-            } else {
-                String::new()
-            };
-            format!("{bullet} {bold}Grep{reset} {yellow}\"{pattern}\"{reset}{in_clause}")
-        }
-        "find" => {
-            let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let in_clause = if !raw_path.is_empty() && raw_path != "." {
-                format!(" {dim}in{reset} {orange}{}{reset}", shorten_path(raw_path, cwd))
-            } else {
-                String::new()
-            };
-            format!("{bullet} {bold}Find{reset} {yellow}\"{pattern}\"{reset}{in_clause}")
-        }
-        "ls" => {
-            let raw_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-            format!("{bullet} {bold}List{reset} {orange}{}{reset}", shorten_path(raw_path, cwd))
-        }
-        "request_user_input" => {
-            let q_summary = args.get("questions")
-                .and_then(|q| q.as_array())
-                .and_then(|arr| {
-                    if arr.len() == 1 {
-                        arr[0].get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\""))
-                    } else if arr.len() > 1 {
-                        Some(format!("{} questions", arr.len()))
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| args.get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\"")))
-                .unwrap_or_else(|| "question".to_string());
-            let summary = truncate_cmd(&q_summary);
-            format!("{bullet} {bold}Asked{reset} {yellow}{summary}{reset}")
-        }
-        "skill" => {
-            let skill_name = skill_display_name(args);
-            format!("{bullet} {bold}Skill{reset} {yellow}\"{skill_name}\"{reset}")
-        }
-        "cron" => {
-            let sched = args.get("cron").or_else(|| args.get("schedule")).and_then(|v| v.as_str()).unwrap_or("");
-            format!("{bullet} {bold}Cron{reset} {yellow}{sched}{reset}")
-        }
-        other => {
-            let path = shorten_path(arg_path(args), cwd);
-            if !path.is_empty() {
-                format!("{bullet} {bold}{other}{reset} {orange}{path}{reset}")
-            } else {
-                format!("{bullet} {bold}{other}{reset}")
+/// Converts a [`Line`] to an ANSI string (single line, no trailing newline).
+fn line_to_ansi(l: &Line<'_>) -> String {
+    let mut line_str = String::new();
+    for span in &l.spans {
+        let mut style_prefix = String::new();
+        if let Some(fg) = span.style.fg {
+            match fg {
+                Color::Rgb(r, g, b) => style_prefix.push_str(&format!("\x1b[38;2;{r};{g};{b}m")),
+                Color::Red => style_prefix.push_str("\x1b[31m"),
+                Color::Green => style_prefix.push_str("\x1b[32m"),
+                _ => {}
             }
         }
+        if let Some(bg) = span.style.bg {
+            if let Color::Rgb(r, g, b) = bg {
+                style_prefix.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
+            }
+        }
+        if span.style.add_modifier.contains(Modifier::BOLD) {
+            style_prefix.push_str("\x1b[1m");
+        }
+        if span.style.add_modifier.contains(Modifier::DIM) {
+            style_prefix.push_str("\x1b[2m");
+        }
+        if span.style.add_modifier.contains(Modifier::ITALIC) {
+            style_prefix.push_str("\x1b[3m");
+        }
+        if style_prefix.is_empty() {
+            line_str.push_str(&span.content);
+        } else {
+            line_str.push_str(&format!("{style_prefix}{}\x1b[0m", span.content));
+        }
     }
+    line_str
+}
+
+/// Plain ANSI string formatting for one-shot / non-TUI output header.
+// ponytail: thin wrapper over `format_tool_call_header`; kept as `String`
+// because print.rs + repl/mod.rs callers (outside this file) need `String`.
+pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> String {
+    line_to_ansi(&format_tool_call_header(name, args, cwd))
 }
 
 /// Plain ANSI string formatting for tool output lines with context.
@@ -1051,38 +989,8 @@ pub fn format_tool_result_plain_with_context(
     }
     let mut out = String::new();
     for l in lines {
-        let mut line_str = String::new();
-        for span in &l.spans {
-            let mut style_prefix = String::new();
-            if let Some(fg) = span.style.fg {
-                match fg {
-                    Color::Rgb(r, g, b) => style_prefix.push_str(&format!("\x1b[38;2;{r};{g};{b}m")),
-                    Color::Red => style_prefix.push_str("\x1b[31m"),
-                    Color::Green => style_prefix.push_str("\x1b[32m"),
-                    _ => {}
-                }
-            }
-            if let Some(bg) = span.style.bg {
-                if let Color::Rgb(r, g, b) = bg {
-                    style_prefix.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
-                }
-            }
-            if span.style.add_modifier.contains(Modifier::BOLD) {
-                style_prefix.push_str("\x1b[1m");
-            }
-            if span.style.add_modifier.contains(Modifier::DIM) {
-                style_prefix.push_str("\x1b[2m");
-            }
-            if span.style.add_modifier.contains(Modifier::ITALIC) {
-                style_prefix.push_str("\x1b[3m");
-            }
-            if style_prefix.is_empty() {
-                line_str.push_str(&span.content);
-            } else {
-                line_str.push_str(&format!("{style_prefix}{}\x1b[0m", span.content));
-            }
-        }
-        out.push_str(&format!("{line_str}\n"));
+        out.push_str(&line_to_ansi(&l));
+        out.push('\n');
     }
     out
 }
