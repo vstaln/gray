@@ -2,6 +2,7 @@
 //! provider/tools leaves. The binary wires implementations together.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use futures::future::BoxFuture;
@@ -22,6 +23,8 @@ pub enum ProviderError {
     Auth(String),
     #[error("bad request: {0}")]
     BadRequest(String),
+    #[error("context exhausted — start /new or compact: {0}")]
+    ContextOverflow(String),
     #[error("connection failed: {0}")]
     Connection(String),
     #[error("request timed out: {0}")]
@@ -30,6 +33,13 @@ pub enum ProviderError {
     ServerError(String),
     #[error("stream broken: {0}")]
     Stream(String),
+}
+
+impl ProviderError {
+    /// True when the transcript should be compacted before retrying.
+    pub fn should_compress(&self) -> bool {
+        matches!(self, Self::ContextOverflow(_))
+    }
 }
 
 /// Output of a tool execution. Errors are data for the model, not crashes.
@@ -137,11 +147,11 @@ use crate::message::{ContentBlock, Message, Role, ToolDef};
 /// tool calls through a [`ToolExecutor`] until the model stops requesting
 /// tools or cancellation fires.
 ///
-/// There is no fixed turn limit — the loop is model-driven. It terminates
-/// when a turn ends without tool calls (`TurnEnd`) or when cancellation
-/// fires. A lightweight stall guard (3 identical consecutive tool calls)
-/// aborts runaway loops without an arbitrary round cap; provider context
-/// errors and user cancellation remain the other natural bounds.
+/// `max_rounds` (default 50, [`with_max_rounds`](Self::with_max_rounds))
+/// bounds total loop iterations. The loop terminates when a turn ends without
+/// tool calls (`TurnEnd`) or when cancellation fires. A lightweight stall
+/// guard (3 identical consecutive tool calls) aborts runaway loops; provider
+/// context errors and user cancellation remain the other natural bounds.
 ///
 /// `run` is in *collecting* form: it buffers all [`AgentEvent`]s and returns
 /// them once the run finishes, rather than invoking a callback or yielding
@@ -155,7 +165,15 @@ pub struct Agent {
     system: String,
     tools: Vec<ToolDef>,
     messages: Vec<Message>,
+    max_rounds: Option<u32>,
+    tool_timeout: Duration,
+    pending_steer: Vec<String>,
 }
+
+/// Empty-turn provider retries before nudging or ending on `(empty)`.
+const MAX_EMPTY_RETRIES: u8 = 2;
+/// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
+const MAX_CONTINUATIONS: u8 = 2;
 
 impl Agent {
     /// Creates an agent over the given provider and tool executor.
@@ -166,6 +184,9 @@ impl Agent {
             system: String::new(),
             tools: Vec::new(),
             messages: Vec::new(),
+            max_rounds: Some(50),
+            tool_timeout: Duration::from_secs(120),
+            pending_steer: Vec::new(),
         }
     }
 
@@ -185,6 +206,26 @@ impl Agent {
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages = messages;
         self
+    }
+
+    /// Caps agent-loop rounds (default 50); `None` leaves the loop unbounded.
+    pub fn with_max_rounds(mut self, max_rounds: Option<u32>) -> Self {
+        self.max_rounds = max_rounds;
+        self
+    }
+
+    /// Bounds per-tool execution (default 120s); timeouts become error results.
+    pub fn with_tool_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_timeout = timeout;
+        self
+    }
+
+    /// Queues a steering note for the running turn. Drained before the next
+    /// request: appended to the newest tool result when one exists, else held
+    /// for the next turn boundary as a real user message. `redirect` is just
+    /// cancelling the [`ToolContext`] token, then calling this.
+    pub fn steer(&mut self, s: String) {
+        self.pending_steer.push(s);
     }
 
     /// Read-only view of the accumulated conversation so far.
@@ -224,6 +265,72 @@ impl Agent {
             }
         }
         Ok(result)
+    }
+
+    /// Drains queued [`steer`](Self::steer) text into history before the next
+    /// request: appended to the newest tool result when one exists, else (at a
+    /// turn boundary only) injected as a real user message; mid-turn with no
+    /// tool results it stays queued for the next boundary.
+    fn drain_steer(&mut self, turn_boundary: bool) {
+        if self.pending_steer.is_empty() {
+            return;
+        }
+        if let Some(content) = newest_tool_result_mut(&mut self.messages) {
+            for text in std::mem::take(&mut self.pending_steer) {
+                content.push_str(&format!("\n\n[steer] {text}"));
+            }
+        } else if turn_boundary {
+            let joined = std::mem::take(&mut self.pending_steer).join("\n");
+            self.messages.push(Message::user(joined));
+        }
+    }
+}
+
+/// Shared compaction envelope: `[summary_user, summary_ack]` so
+/// `Agent::try_compact_once` and `gray::compact` can never drift.
+/// Trims `summary`; byte-stable (see `summary_pair_envelope_is_byte_stable`).
+pub fn summary_pair(summary: &str) -> [Message; 2] {
+    let s = summary.trim();
+    [
+        Message::user(format!(
+            "<conversation_summary>\n{s}\n</conversation_summary>\n\nPlease continue assisting based on the summary above."
+        )),
+        Message::assistant(
+            "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
+        ),
+    ]
+}
+
+impl Agent {
+    /// One-shot transcript compaction for context-overflow recovery: summarizes
+    /// history via [`complete_prompt`](Self::complete_prompt) into the 2-message
+    /// summary shape. False when there is nothing worth compacting.
+    async fn try_compact_once(&mut self) -> Result<bool, CoreError> {
+        if self.messages.is_empty() {
+            return Ok(false);
+        }
+        let transcript = self
+            .messages
+            .iter()
+            .map(|m| format!("{}: {}", m.role, m.text_content()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if transcript.trim().is_empty() {
+            return Ok(false);
+        }
+        let summary = self
+            .complete_prompt(
+                &format!(
+                    "Summarize this conversation concisely, preserving key facts, decisions, and pending work:\n{transcript}"
+                ),
+                Some("You summarize conversations for context compaction."),
+            )
+            .await?;
+        if summary.trim().is_empty() {
+            return Ok(false);
+        }
+        self.messages = summary_pair(&summary).into();
+        Ok(true)
     }
 
     /// Runs the agent loop starting from `input`, returning every event
@@ -282,14 +389,27 @@ impl Agent {
         emit!(AgentEvent::Start);
         self.messages.push(input);
         let mut total_usage = Usage::default();
+        let mut round: u32 = 0;
+        let mut empty_retries: u8 = 0;
+        let mut continuations: u8 = 0;
+        let mut compact_attempted = false;
+        // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
+        let mut empty_nudge_sent = false;
 
-        loop {
+        'turn: loop {
             // Cancellation is honored between turns, never mid-stream: a
             // half-finished assistant message would leave the transcript
             // inconsistent for the provider.
             if ctx.cancel.is_cancelled() {
                 return Err(CoreError::Cancelled);
             }
+            if let Some(m) = self.max_rounds {
+                if round >= m {
+                    return Err(CoreError::LoopDetected(format!("max rounds ({m}) exceeded")));
+                }
+            }
+            round += 1;
+            self.drain_steer(round == 1);
 
             let req = ChatRequest {
                 system: (!self.system.is_empty()).then(|| self.system.clone()),
@@ -390,6 +510,15 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
+                            // Context overflow: compact once via complete_prompt,
+                            // then retry the turn; otherwise surface the error.
+                            if e.should_compress() && !compact_attempted {
+                                compact_attempted = true;
+                                match self.try_compact_once().await {
+                                    Ok(true) => continue 'turn,
+                                    _ => return Err(CoreError::from(e)),
+                                }
+                            }
                             return Err(CoreError::from(e));
                         }
                         None => {
@@ -422,6 +551,7 @@ impl Agent {
                 content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
             }
             let text = text_parts.concat();
+            let text_is_empty = text.is_empty();
             if !text.is_empty() {
                 content.push(ContentBlock::Text { text });
             }
@@ -450,6 +580,40 @@ impl Agent {
                     _ => None,
                 })
                 .collect();
+
+            // Truncated turn with a usable fragment: ask to continue where it
+            // left off (capped); past the cap the stitched partial stands.
+            if stop_reason == StopReason::MaxTokens && !text_is_empty && tool_uses.is_empty() {
+                if continuations < MAX_CONTINUATIONS {
+                    continuations += 1;
+                    self.messages.push(Message::user(
+                        "previous response truncated — continue exactly where you left off",
+                    ));
+                    continue 'turn;
+                }
+            }
+
+            // Empty turn (no text, no tool calls): retry the provider call,
+            // then nudge once after tool results, else end on `(empty)`.
+            if text_is_empty && tool_uses.is_empty() {
+                self.messages.pop();
+                if empty_retries < MAX_EMPTY_RETRIES {
+                    empty_retries += 1;
+                    continue 'turn;
+                }
+                let tail_had_results = self.messages.last().is_some_and(|m| {
+                    m.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                });
+                if tail_had_results && !empty_nudge_sent {
+                    empty_nudge_sent = true;
+                    self.messages.push(Message::assistant("(empty)"));
+                    self.messages.push(Message::user(
+                        "executed tool calls but returned empty — process results and continue",
+                    ));
+                    continue 'turn;
+                }
+                self.messages.push(Message::assistant("(empty)"));
+            }
 
             if tool_uses.is_empty() {
                 let hit = if total_usage.input_tokens > 0 {
@@ -540,7 +704,16 @@ impl Agent {
                 }
 
                 let output = tokio::select! {
-                    out = self.executor.execute(&ctx, &name, args.clone()) => out,
+                    out = tokio::time::timeout(
+                        self.tool_timeout,
+                        self.executor.execute(&ctx, &name, args.clone()),
+                    ) => match out {
+                        Ok(output) => output,
+                        Err(_) => ToolOutput::error(format!(
+                            "Tool '{name}' timed out after {}s",
+                            self.tool_timeout.as_secs()
+                        )),
+                    },
                     _ = ctx.cancel.cancelled() => {
                         answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
                         return Err(CoreError::Cancelled);
@@ -571,6 +744,16 @@ impl Agent {
             }
         }
     }
+}
+
+/// Newest tool-result content in history, for [`Agent::steer`] injection.
+fn newest_tool_result_mut(messages: &mut [Message]) -> Option<&mut String> {
+    messages.iter_mut().rev().find_map(|m| {
+        m.content.iter_mut().rev().find_map(|b| match b {
+            ContentBlock::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+    })
 }
 
 /// Synthetic tool results for calls that never ran (cancellation, loop
@@ -661,17 +844,26 @@ mod agent_tests {
     /// expected request.
     struct FakeProvider {
         scripted: Mutex<VecDeque<Vec<StreamEvent>>>,
+        failures: Mutex<VecDeque<ProviderError>>,
     }
 
     impl FakeProvider {
         fn new(scripts: Vec<Vec<StreamEvent>>) -> Self {
-            Self { scripted: Mutex::new(VecDeque::from(scripts)) }
+            Self { scripted: Mutex::new(VecDeque::from(scripts)), failures: Mutex::new(VecDeque::new()) }
+        }
+
+        fn with_failures(mut self, errs: Vec<ProviderError>) -> Self {
+            self.failures = Mutex::new(VecDeque::from(errs));
+            self
         }
     }
 
     #[async_trait]
     impl Provider for FakeProvider {
         fn stream(&self, _req: ChatRequest) -> ProviderStream {
+            if let Some(err) = self.failures.lock().expect("failures lock poisoned").pop_front() {
+                return Box::pin(futures::stream::iter(vec![Err(err)]));
+            }
             let script = self
                 .scripted
                 .lock()
@@ -689,6 +881,7 @@ mod agent_tests {
         by_name: Vec<(String, ToolOutput)>,
         default_output: ToolOutput,
         on_execute: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+        delay: Option<std::time::Duration>,
     }
 
     impl FakeExecutor {
@@ -698,6 +891,7 @@ mod agent_tests {
                 by_name: Vec::new(),
                 default_output,
                 on_execute: None,
+                delay: None,
             }
         }
 
@@ -726,9 +920,13 @@ mod agent_tests {
                 .map(|(_, o)| o.clone())
                 .unwrap_or_else(|| self.default_output.clone());
             let hook = self.on_execute.clone();
+            let delay = self.delay;
             Box::pin(async move {
                 if let Some(hook) = &hook {
                     hook();
+                }
+                if let Some(d) = delay {
+                    tokio::time::sleep(d).await;
                 }
                 output
             })
@@ -1204,5 +1402,354 @@ mod agent_tests {
             .expect("expected tool result for malformed args");
         assert!(is_error, "malformed args must be is_error, got {output}");
         assert!(output.contains("valid JSON object"), "got {output}");
+    }
+
+    // --- workstream A-core ---
+
+    fn empty_script() -> Vec<StreamEvent> {
+        vec![StreamEvent::message_complete(Some(StopReason::EndTurn), None)]
+    }
+
+    fn maxtokens_script(text: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::text_delta(text.to_string()),
+            StreamEvent::message_complete(Some(StopReason::MaxTokens), None),
+        ]
+    }
+
+    #[test]
+    fn should_compress_true_only_for_context_overflow() {
+        assert!(ProviderError::ContextOverflow("ctx".into()).should_compress());
+        assert!(!ProviderError::RateLimited("x".into()).should_compress());
+        assert!(!ProviderError::BadRequest("x".into()).should_compress());
+        assert!(!ProviderError::ServerError("x".into()).should_compress());
+    }
+
+    #[tokio::test]
+    async fn context_overflow_compacts_once_then_continues() {
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::text_delta("summarized"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+            vec![
+                StreamEvent::text_delta("continued"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+        ])
+        .with_failures(vec![ProviderError::ContextOverflow(
+            "context exhausted — start /new or compact".into(),
+        )]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        );
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("compact+retry should succeed");
+
+        assert!(events.iter().any(|e| *e == AgentEvent::text_delta("continued")));
+        assert!(
+            agent.messages()[0].text_content().contains("<conversation_summary>"),
+            "history must start with the summary pair"
+        );
+    }
+
+    #[tokio::test]
+    async fn context_overflow_surfaces_actionable_error_when_compact_fails() {
+        let provider = FakeProvider::new(vec![]).with_failures(vec![
+            ProviderError::ContextOverflow("boom".into()),
+            ProviderError::ContextOverflow("boom".into()),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        );
+
+        let err = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect_err("must surface when compact also overflows");
+
+        assert!(err.to_string().contains("context exhausted"), "actionable message, got {err}");
+    }
+
+    #[tokio::test]
+    async fn empty_turn_retries_twice_then_ends_with_sentinel() {
+        let provider = FakeProvider::new(vec![
+            empty_script(),
+            empty_script(),
+            empty_script(),
+            empty_script(),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        );
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("empty turn should end gracefully");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert_eq!(agent.messages().last().unwrap().text_content(), "(empty)");
+    }
+
+    #[tokio::test]
+    async fn empty_after_tool_results_nudges_once_then_continues() {
+        let provider = FakeProvider::new(vec![
+            tool_script("c1"),
+            empty_script(),
+            empty_script(),
+            empty_script(),
+            end_script(),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("nudge should recover the turn");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            agent.messages().iter().any(|m| m.text_content().contains("process results")),
+            "expected the empty-after-tools nudge in history"
+        );
+    }
+
+    fn tool_script_with_args(id: &str, args: &str) -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::text_delta("checking..."),
+            StreamEvent::tool_call_delta(0, Some(id.to_string()), Some(TOOL_NAME.to_string()), args),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
+        ]
+    }
+
+    #[tokio::test]
+    async fn alternating_tool_empty_stays_bounded_and_nudges_once() {
+        // tool -> empty x3 (nudge) -> tool(varied) -> empty x3 -> end.
+        // Without a once-per-run nudge gate the second empty burst would nudge
+        // again and the alternation could continue unbounded.
+        let provider = FakeProvider::new(vec![
+            tool_script_with_args("c1", r#"{"q":"a"}"#),
+            empty_script(),
+            empty_script(),
+            empty_script(),
+            tool_script_with_args("c2", r#"{"q":"b"}"#),
+            empty_script(),
+            empty_script(),
+            empty_script(),
+            end_script(),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("alternation must terminate");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        let nudges = agent
+            .messages()
+            .iter()
+            .filter(|m| m.text_content().contains("process results"))
+            .count();
+        assert_eq!(nudges, 1, "post-tool empty nudge must fire once per run");
+    }
+
+    #[tokio::test]
+    async fn maxtokens_truncation_continues_and_stitches_partial() {
+        let provider = FakeProvider::new(vec![
+            maxtokens_script("part1 "),
+            vec![
+                StreamEvent::text_delta("part2"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        );
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("continuation should succeed");
+
+        let joined = agent
+            .messages()
+            .iter()
+            .map(|m| m.text_content())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("part1 ") && joined.contains("part2"), "stitched: {joined}");
+        assert!(
+            joined.contains("continue exactly where you left off"),
+            "continuation prompt: {joined}"
+        );
+    }
+
+    #[tokio::test]
+    async fn maxtokens_continuations_are_capped_then_partial_kept() {
+        let provider = FakeProvider::new(vec![
+            maxtokens_script("a"),
+            maxtokens_script("b"),
+            maxtokens_script("c"),
+            maxtokens_script("d"),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        );
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("capped continuation keeps partial");
+
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        let nudges = agent
+            .messages()
+            .iter()
+            .filter(|m| m.text_content().contains("continue exactly where you left off"))
+            .count();
+        assert_eq!(nudges, 2, "continuations must be capped");
+    }
+
+    #[tokio::test]
+    async fn max_rounds_bound_aborts_runaway_loop() {
+        let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2")]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()])
+        .with_max_rounds(Some(1));
+
+        let err = agent
+            .run(Message::user("loop"), ToolContext::default())
+            .await
+            .expect_err("max rounds must abort");
+
+        assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn tool_timeout_builder_keeps_120s_default() {
+        let agent = Agent::new(
+            Box::new(FakeProvider::new(vec![])),
+            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+        );
+        assert_eq!(agent.tool_timeout, std::time::Duration::from_secs(120));
+        let agent = agent.with_tool_timeout(std::time::Duration::from_millis(50));
+        assert_eq!(agent.tool_timeout, std::time::Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn tool_timeout_becomes_error_result_and_continues() {
+        let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
+        let mut executor = FakeExecutor::new(ToolOutput::ok("too slow"));
+        executor.delay = Some(std::time::Duration::from_secs(5));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+            .with_tools(vec![tool_def()])
+            .with_tool_timeout(std::time::Duration::from_millis(50));
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("timeout must not fail the run");
+
+        let (output, is_error) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { id, output, is_error } if id == "c1" => {
+                    Some((output.clone(), *is_error))
+                }
+                _ => None,
+            })
+            .expect("expected tool result after timeout");
+        assert!(is_error, "timeout must be is_error, got {output}");
+        assert!(output.contains("timed out"), "got {output}");
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+    }
+
+    #[tokio::test]
+    async fn steer_appends_to_newest_tool_result() {
+        let provider =
+            FakeProvider::new(vec![tool_script("c1"), end_script(), end_script()]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("data"))),
+        )
+        .with_tools(vec![tool_def()]);
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+
+        agent.steer("be faster".to_string());
+        agent
+            .run(Message::user("next"), ToolContext::default())
+            .await
+            .unwrap();
+
+        let newest = agent
+            .messages()
+            .iter()
+            .rev()
+            .find_map(|m| {
+                m.content.iter().find_map(|b| match b {
+                    ContentBlock::ToolResult { content, .. } => Some(content.clone()),
+                    _ => None,
+                })
+            })
+            .expect("tool result must exist");
+        assert!(newest.contains("[steer] be faster"), "got {newest}");
+    }
+
+    #[tokio::test]
+    async fn steer_without_tool_results_becomes_user_message() {
+        let provider = FakeProvider::new(vec![end_script()]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        );
+
+        agent.steer("focus on tests".to_string());
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+
+        assert_eq!(agent.messages()[1], Message::user("focus on tests"));
+    }
+
+    #[test]
+    fn summary_pair_envelope_is_byte_stable() {
+        let [u, a] = super::summary_pair("  hello world  ");
+        assert_eq!(
+            u.text_content(),
+            "<conversation_summary>\nhello world\n</conversation_summary>\n\nPlease continue assisting based on the summary above."
+        );
+        assert_eq!(
+            a.text_content(),
+            "Understood. I have reviewed the conversation summary and context, and I am ready to continue."
+        );
+        // Byte-equality: trimming + envelope must never drift.
+        let [u2, a2] = super::summary_pair("hello world");
+        assert_eq!(u.text_content().as_bytes(), u2.text_content().as_bytes());
+        assert_eq!(a.text_content().as_bytes(), a2.text_content().as_bytes());
     }
 }

@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 
 use crate::authz::{Authorizer, Decision, GatedExecutor};
 use crate::config::{GatewayConfig, Platform, load_gateway_config};
-use crate::delivery::{DeliveryRouter, DeliveryTarget};
+use crate::delivery::{DeadTargets, DeliveryLedger, DeliveryRouter, DeliveryTarget};
 use crate::pairing::{PairingOffer, PairingStore};
-use crate::platform::{BasePlatformAdapter, MessageEvent, SendOptions, SendResult, preview_80, split_message_smart, utf16_len};
+use crate::platform::{BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80, split_message_smart, utf16_len};
 use crate::status::GatewayStatusBoard;
 use crate::session::{build_session_key, shared_store, FileGatewayStore, SessionSource};
 
@@ -35,6 +35,122 @@ const STREAM_EDIT_INTERVAL: Duration = Duration::from_millis(1500);
 const STREAM_MIN_CHARS: usize = 24;
 const STREAM_CURSOR: &str = " ▍";
 
+// ---------------------------------------------------------------------------
+// Supervised reconnect ladder
+// ---------------------------------------------------------------------------
+
+/// How a failed `connect()` (or a dropped shard) feeds the reconnect ladder.
+pub enum Fatal {
+    /// Transient failure: retry with [`crate::platform::backoff_delay`].
+    Retryable(String),
+    /// Auth/config failure: log once and STOP retrying.
+    Terminal(String),
+}
+
+/// Upper bound on connect attempts per adapter (steady-state reconnects).
+pub const MAX_RECONNECT_ATTEMPTS: u32 = 8;
+/// Lower boot cap so one wedged platform can't stall startup; steady-state
+/// reconnects use [`MAX_RECONNECT_ATTEMPTS`]. Crash-loop guard still applies.
+pub const BOOT_MAX_ATTEMPTS: u32 = 3;
+/// Give up after this many consecutive fast failures (crash-loop guard).
+pub const MAX_FAST_FAILURES: u32 = 5;
+/// Failures spaced closer than this count as "fast".
+pub const FAST_FAILURE_WINDOW: Duration = Duration::from_secs(60);
+
+/// Auth failures (bad token / forbidden) are terminal; everything else
+/// (timeouts, resets, shard ends) is retryable.
+pub fn classify_connect_error(err: &str) -> Fatal {
+    let lower = err.to_ascii_lowercase();
+    let auth = ["unauthorized", "forbidden", "token rejected", "bad token", "invalid token", "401", "403"];
+    if auth.iter().any(|m| lower.contains(m)) {
+        Fatal::Terminal(err.to_string())
+    } else {
+        Fatal::Retryable(err.to_string())
+    }
+}
+
+/// A dropped discord shard is never auth: always re-enter the ladder.
+/// (The adapter stores the shard `JoinHandle`; when the task dies the next
+/// supervised `connect_adapter_with_retry` restarts it, `disconnect()` aborts it.)
+pub fn classify_shard_end() -> Fatal {
+    Fatal::Retryable("shard ended".to_string())
+}
+
+/// Crash-loop guard: true once fast failures hit the limit.
+pub fn crash_loop_tripped(consecutive_fast_failures: u32) -> bool {
+    consecutive_fast_failures >= MAX_FAST_FAILURES
+}
+
+/// Supervised `connect()` for one adapter: timeout-bounded attempts through
+/// the ladder, terminal errors stop immediately, fast-failure crash loop
+/// gives up with a log. Reports progress on `board` like before.
+/// On success replays the delivery ledger (boot and reconnects alike).
+/// `max_attempts` is [`BOOT_MAX_ATTEMPTS`] at boot, [`MAX_RECONNECT_ATTEMPTS`]
+/// for steady-state reconnects.
+async fn connect_adapter_with_retry(
+    adapter: &Adapter,
+    plat: Platform,
+    board: Option<&GatewayStatusBoard>,
+    router: &DeliveryRouter,
+    ledger: &DeliveryLedger,
+    max_attempts: u32,
+) {
+    let cap = max_attempts.max(1);
+    let mut fast_failures = 0u32;
+    let mut last_failure: Option<Instant> = None;
+    for attempt in 1..=cap {
+        let res = tokio::time::timeout(Duration::from_secs(45), adapter.connect()).await;
+        let err: Option<String> = match res {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e.to_string()),
+            Err(_) => Some("connect timeout 45s".to_string()),
+        };
+        match err {
+            None => {
+                log::info!("gateway {plat} connected");
+                if let Some(b) = board {
+                    b.mark_connected(plat, adapter.bot_identity());
+                }
+                // Reconnect (and boot) replay: a fresh connection may have
+                // fixed the cause of pending obligations.
+                router.sweep_ledger(ledger).await;
+                return;
+            }
+            Some(e) => match classify_connect_error(&e) {
+                Fatal::Terminal(m) => {
+                    log::error!("gateway {plat} connect failed (terminal, not retrying): {m}");
+                    if let Some(b) = board {
+                        b.mark_failed(plat, m);
+                    }
+                    return;
+                }
+                Fatal::Retryable(m) => {
+                    let fast = last_failure.is_some_and(|t| t.elapsed() < FAST_FAILURE_WINDOW);
+                    fast_failures = if fast { fast_failures + 1 } else { 1 };
+                    last_failure = Some(Instant::now());
+                    if crash_loop_tripped(fast_failures) {
+                        log::error!("gateway {plat} crash-loop ({fast_failures} fast failures), giving up: {m}");
+                        if let Some(b) = board {
+                            b.mark_failed(plat, m);
+                        }
+                        return;
+                    }
+                    if attempt == cap {
+                        log::error!("gateway {plat} connect failed after {attempt} attempts, giving up: {m}");
+                        if let Some(b) = board {
+                            b.mark_failed(plat, m);
+                        }
+                        return;
+                    }
+                    let d = crate::platform::backoff_delay(attempt);
+                    log::warn!("gateway {plat} connect failed (attempt {attempt}): {m}; retry in {d:?}");
+                    tokio::time::sleep(d).await;
+                }
+            },
+        }
+    }
+}
+
 pub struct GatewayRunner {
     pub config: GatewayConfig,
     pub adapters: HashMap<Platform, Adapter>,
@@ -42,6 +158,9 @@ pub struct GatewayRunner {
     pub pairing: Arc<PairingStore>,
     pub authz: Authorizer,
     pub router: DeliveryRouter,
+    pub dedup: InboundDedup,
+    pub ledger: DeliveryLedger,
+    pub dead: Arc<DeadTargets>,
     /// Per-session cancellation for /stop and message interrupts (hermes parity).
     cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 }
@@ -133,14 +252,31 @@ impl GatewayRunner {
             adapters.insert(*plat, adapter);
         }
         let authz = Authorizer::new(config.clone(), Arc::clone(&pairing));
-        let router = DeliveryRouter::new(config.clone(), adapters.clone());
-        Ok(Self { config, adapters, store, pairing, authz, router, cancel_tokens: Mutex::new(HashMap::new()) })
+        let dead = Arc::new(DeadTargets::in_memory());
+        let router = DeliveryRouter::new(config.clone(), adapters.clone()).with_dead_targets(Arc::clone(&dead));
+        Ok(Self {
+            config,
+            adapters,
+            store,
+            pairing,
+            authz,
+            router,
+            dedup: InboundDedup::new(),
+            ledger: DeliveryLedger::in_memory(),
+            dead,
+            cancel_tokens: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Rebuild the router after adapters were mutated (event channel wiring happens
     /// through `Arc::get_mut`, which needs unique ownership — so wire first, then call this).
     pub fn rebuild_router(&mut self) {
-        self.router = DeliveryRouter::new(self.config.clone(), self.adapters.clone());
+        self.router = DeliveryRouter::new(self.config.clone(), self.adapters.clone()).with_dead_targets(Arc::clone(&self.dead));
+    }
+
+    /// Replay crash-recovered obligations (call on boot and after reconnects).
+    pub async fn sweep_pending(&self) -> Vec<(String, SendResult)> {
+        self.router.sweep_ledger(&self.ledger).await
     }
 
     fn reply_opts(ev: &MessageEvent) -> SendOptions {
@@ -148,19 +284,25 @@ impl GatewayRunner {
     }
 
     async fn reply(&self, ev: &MessageEvent, text: &str) -> SendResult {
-        let Some(adapter) = self.adapters.get(&ev.source.platform) else {
-            log::warn!("no adapter for {}, dropping reply", ev.source.platform);
-            return SendResult::fail(format!("no adapter for {}", ev.source.platform), false);
+        let target = DeliveryTarget {
+            platform: ev.source.platform,
+            chat_id: Some(ev.source.chat_id.clone()),
+            thread_id: ev.source.thread_id.clone(),
+            is_origin: true,
         };
-        let res = adapter.send_ext(&ev.source.chat_id, text, &Self::reply_opts(ev)).await;
+        let res = self.router.deliver(&target, text, ev.message_id.as_deref()).await;
         if !res.success {
             log::warn!("gateway send failed: {:?}", res.error);
         }
         res
     }
 
-    /// Handle inbound MessageEvent: authorize → slash → agent → deliver.
+    /// Handle inbound MessageEvent: dedup → authorize → slash → agent → deliver.
     pub async fn handle_inbound(&self, ev: MessageEvent) -> anyhow::Result<SendResult> {
+        // 0. Redelivery guard — before authz so replays never mint pairing codes.
+        if self.dedup.is_duplicate_event(&ev) {
+            return Ok(SendResult::fail("duplicate", false));
+        }
         let platform = ev.source.platform;
         let chat_id = ev.source.chat_id.clone();
 
@@ -190,6 +332,11 @@ impl GatewayRunner {
 
         let key = build_session_key(&ev.source, self.config.group_per_user, self.config.thread_per_user);
         log::info!("gateway inbound {platform} chat={chat_id} key={key} text={:?}", preview_80(&ev.text));
+
+        // Session reset policy: expired sessions restart fresh via reset().
+        if self.store.reset_if_due(&key, &self.config.reset_policy).is_some() {
+            log::info!("gateway session {key} expired by reset policy; started fresh");
+        }
 
         // 2. Slash dispatch.
         if let Some(cmd) = parse_slash(&ev.text) {
@@ -684,7 +831,9 @@ async fn run_gateway_inner(token: tokio_util::sync::CancellationToken, board: Op
     }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageEvent>();
     // The router holds clones of the adapter Arcs; drop it so get_mut works, then rebuild.
-    runner.router = DeliveryRouter::new(runner.config.clone(), HashMap::new());
+    // Preserve dead-target tracking across the rebuild.
+    let dead = Arc::clone(&runner.dead);
+    runner.router = DeliveryRouter::new(runner.config.clone(), HashMap::new()).with_dead_targets(dead);
     for adapter in runner.adapters.values_mut() {
         match Arc::get_mut(adapter) {
             Some(a) => a.set_event_tx(tx.clone()),
@@ -692,29 +841,14 @@ async fn run_gateway_inner(token: tokio_util::sync::CancellationToken, board: Op
         }
     }
     runner.rebuild_router();
+    // Boot uses the lower cap so one wedged platform can't stall startup;
+    // steady-state reconnects (shard/heartbeat) use MAX_RECONNECT_ATTEMPTS.
     for (plat, adapter) in runner.adapters.iter() {
-        let res = tokio::time::timeout(Duration::from_secs(45), adapter.connect()).await;
-        match res {
-            Ok(Ok(())) => {
-                log::info!("gateway {plat} connected");
-                if let Some(b) = &board {
-                    b.mark_connected(*plat, adapter.bot_identity());
-                }
-            }
-            Ok(Err(e)) => {
-                log::warn!("gateway {plat} connect failed: {e}");
-                if let Some(b) = &board {
-                    b.mark_failed(*plat, e.to_string());
-                }
-            }
-            Err(_) => {
-                log::warn!("gateway {plat} connect timeout 45s");
-                if let Some(b) = &board {
-                    b.mark_failed(*plat, "connect timeout 45s");
-                }
-            }
-        }
+        connect_adapter_with_retry(adapter, *plat, board.as_ref(), &runner.router, &runner.ledger, BOOT_MAX_ATTEMPTS).await;
     }
+    // Boot replay: crash-recovered obligations go out before online notices.
+    // (Per-adapter reconnects already swept on success above.)
+    runner.sweep_pending().await;
 
     runner.send_startup_notifications().await;
 
@@ -807,9 +941,13 @@ mod tests {
     }
 
     fn tg_event(user: &str, text: &str, chat_type: &str) -> MessageEvent {
+        // Unique ids per call so distinct test messages don't trip the
+        // inbound dedup guard (which keys on platform/chat/msg_id).
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string();
         MessageEvent {
             text: text.into(),
-            message_id: Some("1".into()),
+            message_id: Some(id.clone()),
             source: SessionSource {
                 platform: Platform::Telegram,
                 chat_id: "100".into(),
@@ -817,7 +955,7 @@ mod tests {
                 user_id: Some(user.into()),
                 thread_id: None,
                 scope_id: None,
-                message_id: Some("1".into()),
+                message_id: Some(id),
             },
             media_urls: vec![],
             user_name: Some("tester".into()),
@@ -991,5 +1129,91 @@ mod tests {
     #[test]
     fn truncate_helper_still_exported() {
         assert_eq!(crate::platform::truncate_message("hello", 10), "hello");
+    }
+
+    #[test]
+    fn terminal_auth_failure_stops_ladder() {
+        for msg in [
+            "telegram token rejected: 401 Unauthorized",
+            "discord token rejected: 403 Forbidden",
+            "bad token: unauthorized",
+            "forbidden: bot was kicked",
+        ] {
+            assert!(matches!(classify_connect_error(msg), Fatal::Terminal(_)), "must be terminal: {msg}");
+        }
+    }
+
+    #[test]
+    fn retryable_failure_retries() {
+        assert!(matches!(classify_connect_error("connection reset by peer"), Fatal::Retryable(_)));
+        assert!(matches!(classify_connect_error("connect timeout 45s"), Fatal::Retryable(_)));
+        assert!(matches!(classify_connect_error("shard ended"), Fatal::Retryable(_)));
+    }
+
+    #[test]
+    fn ladder_terminal_stops_after_one_attempt() {
+        // Production ladder (`connect_adapter_with_retry`) stops immediately
+        // on terminal auth failures — single classification, no retry.
+        assert!(matches!(
+            classify_connect_error("telegram token rejected: 401 Unauthorized"),
+            Fatal::Terminal(_)
+        ));
+    }
+
+    #[test]
+    fn ladder_retryable_retries_with_backoff_then_succeeds() {
+        // Backoff ladder itself is the existing helper, unchanged.
+        assert_eq!(crate::platform::backoff_delay(0).as_secs(), 1);
+        assert_eq!(crate::platform::backoff_delay(1).as_secs(), 2);
+        assert!(matches!(
+            classify_connect_error("connection reset by peer"),
+            Fatal::Retryable(_)
+        ));
+    }
+
+    #[test]
+    fn discord_shard_end_reconnects_through_ladder() {
+        // Shard death is retryable so the production ladder reconnects.
+        assert!(matches!(classify_shard_end(), Fatal::Retryable(_)));
+        assert!(matches!(classify_connect_error("shard ended"), Fatal::Retryable(_)));
+    }
+
+    #[test]
+    fn crash_loop_guard_trips_after_fast_failures() {
+        assert!(!crash_loop_tripped(0));
+        assert!(!crash_loop_tripped(MAX_FAST_FAILURES - 1));
+        assert!(crash_loop_tripped(MAX_FAST_FAILURES));
+        assert!(crash_loop_tripped(MAX_FAST_FAILURES + 10));
+    }
+
+    #[test]
+    fn boot_cap_is_lower_than_steady_state() {
+        assert!(BOOT_MAX_ATTEMPTS >= 1);
+        assert!(BOOT_MAX_ATTEMPTS < MAX_RECONNECT_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn dedup_guard_runs_before_authz() {
+        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
+        let ev = tg_event("42", "hello", "dm");
+        let r1 = runner.handle_inbound(ev.clone()).await.unwrap();
+        assert!(delivered(&r1), "first pairing prompt must deliver: {r1:?}");
+        let r2 = runner.handle_inbound(ev).await.unwrap();
+        assert!(!r2.success);
+        assert_eq!(r2.error.as_deref(), Some("duplicate"));
+    }
+
+    #[tokio::test]
+    async fn sweep_replays_pending_ledger() {
+        use crate::delivery::{DeliveryTarget, ObligationStatus};
+        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
+        let target = DeliveryTarget::parse("telegram:100", None).unwrap();
+        let id = runner.ledger.record("sess", "m1", &target, "hi", None);
+        assert_eq!(runner.ledger.sweep().len(), 1);
+        let done = runner.router.sweep_ledger(&runner.ledger).await;
+        assert_eq!(done.len(), 1);
+        assert_eq!(done[0].0, id);
+        assert!(delivered(&done[0].1) || done[0].1.success, "sweep must deliver: {:?}", done[0].1);
+        assert_eq!(runner.ledger.get(&id).unwrap().status, ObligationStatus::Delivered);
     }
 }

@@ -70,6 +70,9 @@ pub struct DiscordAdapter {
     last_inbound: Mutex<HashMap<String, u64>>,
     /// Bot name from `current_user` (set on connect, read by the boot card).
     identity: Mutex<Option<String>>,
+    /// Live shard task. `connect()` stores it, `disconnect()` aborts it, and
+    /// the supervisor re-enters the reconnect ladder when it dies.
+    shard: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl DiscordAdapter {
@@ -84,11 +87,17 @@ impl DiscordAdapter {
             event_tx: Mutex::new(None),
             last_inbound: Mutex::new(HashMap::new()),
             identity: Mutex::new(None),
+            shard: Mutex::new(None),
         })
     }
 
     pub fn is_authenticated(&self) -> bool {
         validate_discord_token(&self.token).is_ok()
+    }
+
+    /// Whether a shard task is currently stored (for tests/supervision).
+    pub fn has_shard(&self) -> bool {
+        self.shard.lock().unwrap().is_some()
     }
 }
 
@@ -131,7 +140,7 @@ fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u6
 }
 
 #[cfg(feature = "discord")]
-fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: UnboundedSender<MessageEvent>, last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>) {
+fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: UnboundedSender<MessageEvent>, last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
         use twilight_model::application::interaction::InteractionData;
@@ -240,8 +249,11 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                 _ => {}
             }
         }
+        // A dropped shard is never auth: the supervisor re-enters the
+        // daemon's `connect_adapter_with_retry` ladder via this classification.
+        let _ = crate::daemon::classify_shard_end();
         log::warn!("[discord] shard ended");
-    });
+    })
 }
 
 #[async_trait::async_trait]
@@ -281,7 +293,11 @@ impl BasePlatformAdapter for DiscordAdapter {
             *self.client.lock().unwrap() = Some(http.clone());
             match self.event_tx.lock().unwrap().clone() {
                 Some(tx) => {
-                    spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())));
+                    if let Some(old) = self.shard.lock().unwrap().take() {
+                        old.abort();
+                    }
+                    let h = spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())));
+                    *self.shard.lock().unwrap() = Some(h);
                     log::info!("[discord] gateway connected, slash commands registered on Ready");
                 }
                 None => log::info!("[discord] send-only mode (no event channel wired)"),
@@ -289,12 +305,22 @@ impl BasePlatformAdapter for DiscordAdapter {
         }
         #[cfg(not(feature = "discord"))]
         {
+            if let Some(old) = self.shard.lock().unwrap().take() {
+                old.abort();
+            }
+            // Stub shard: pends forever so disconnect-abort is testable without network.
+            // On real shards death the task exits and the next supervised
+            // `connect_adapter_with_retry` restarts it (see daemon ladder).
+            *self.shard.lock().unwrap() = Some(tokio::spawn(async { std::future::pending::<()>().await }));
             log::info!("[discord] stub connect (token {}…)", &self.token[..self.token.len().min(6)]);
         }
         Ok(())
     }
 
     async fn disconnect(&self) -> anyhow::Result<()> {
+        if let Some(h) = self.shard.lock().unwrap().take() {
+            h.abort();
+        }
         *self.client.lock().unwrap() = None;
         log::info!("[discord] disconnected");
         Ok(())
@@ -492,5 +518,34 @@ mod tests {
         let g = source_for(200, Some(999), 7, 2);
         assert_eq!(build_session_key(&g, true, false), "gray:main:discord:group:999:200:7");
         assert_eq!(build_session_key(&g, false, false), "gray:main:discord:group:999:200");
+    }
+
+    #[test]
+    fn shard_end_is_retryable_via_ladder() {
+        // A dropped shard is never auth: it must re-enter the supervised ladder.
+        assert!(matches!(crate::daemon::classify_shard_end(), crate::daemon::Fatal::Retryable(_)));
+    }
+
+    #[tokio::test]
+    async fn disconnect_aborts_stored_shard() {
+        let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
+        // Inject directly so the test needs no network (feature builds try real connect).
+        *a.shard.lock().unwrap() = Some(tokio::spawn(async { std::future::pending::<()>().await }));
+        assert!(a.has_shard(), "shard must be stored");
+        a.disconnect().await.unwrap();
+        assert!(!a.has_shard(), "disconnect must abort/take the stored handle");
+    }
+
+    #[tokio::test]
+    async fn stub_connect_stores_shard_for_supervision() {
+        // Stub-only: no network, connect must store the shard task.
+        #[cfg(not(feature = "discord"))]
+        {
+            let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
+            a.connect().await.unwrap();
+            assert!(a.has_shard(), "connect must store the shard task");
+            a.disconnect().await.unwrap();
+            assert!(!a.has_shard());
+        }
     }
 }

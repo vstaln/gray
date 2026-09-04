@@ -283,14 +283,7 @@ pub async fn compact_with_keep(
     let summary = agent
         .complete_prompt(&prompt, Some(SUMMARIZATION_SYSTEM_PROMPT))
         .await?;
-    let summary_trimmed = summary.trim().to_string();
-    let summary_user = Message::user(format!(
-        "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
-        summary_trimmed
-    ));
-    let summary_asst = Message::assistant(
-        "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
-    );
+    let [summary_user, summary_asst] = gray_core::agent::summary_pair(&summary);
     let mut next = vec![summary_user, summary_asst];
     next.extend(tail);
     agent.set_messages(next);
@@ -312,14 +305,7 @@ pub async fn compact_with_instructions(
     let summary = agent
         .complete_prompt(&prompt, Some(SUMMARIZATION_SYSTEM_PROMPT))
         .await?;
-    let summary_trimmed = summary.trim().to_string();
-    let summary_user = Message::user(format!(
-        "<conversation_summary>\n{}\n</conversation_summary>\n\nPlease continue assisting based on the summary above.",
-        summary_trimmed
-    ));
-    let summary_asst = Message::assistant(
-        "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",
-    );
+    let [summary_user, summary_asst] = gray_core::agent::summary_pair(&summary);
     agent.set_messages(vec![summary_user, summary_asst]);
     Ok(true)
 }
@@ -342,6 +328,16 @@ mod tests {
             128_000,
             &CompactionSettings { enabled: false, ..s }
         ));
+    }
+
+    #[test]
+    fn summary_envelope_matches_core_helper_byte_for_byte() {
+        let [u1, a1] = gray_core::agent::summary_pair("  shared summary  ");
+        assert!(u1.text_content().contains("shared summary"));
+        // Both compact paths build via the same helper, so envelopes are identical.
+        let [u2, a2] = gray_core::agent::summary_pair("shared summary");
+        assert_eq!(u1.text_content().as_bytes(), u2.text_content().as_bytes());
+        assert_eq!(a1.text_content().as_bytes(), a2.text_content().as_bytes());
     }
 
     #[test]
