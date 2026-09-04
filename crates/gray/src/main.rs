@@ -119,7 +119,19 @@ async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
         Some(GatewayCmd::Install) => gray_gateway::systemd::install(),
         Some(GatewayCmd::Uninstall) => gray_gateway::systemd::uninstall(),
         Some(GatewayCmd::Invite { platform }) => print_invite(&platform),
+        Some(GatewayCmd::Pairing { cmd }) => run_pairing(cmd),
     }
+}
+
+fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
+    use gray::PairingCmd;
+    use gray_gateway::pairing::{pairing_approve, pairing_list, pairing_revoke};
+    match cmd {
+        PairingCmd::Approve { platform, code } => println!("{}", pairing_approve(&platform, &code)?),
+        PairingCmd::List { platform } => println!("{}", pairing_list(Some(&platform))?),
+        PairingCmd::Revoke { platform, user } => println!("{}", pairing_revoke(&platform, &user)?),
+    }
+    Ok(())
 }
 
 fn print_invite(platform: &str) -> anyhow::Result<()> {

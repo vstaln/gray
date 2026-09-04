@@ -97,6 +97,22 @@ pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Guild trigger + cleanup (legacy parity): `Some(clean text)` only on
+/// @mention or reply-to-bot (resolved inline by the gateway), else `None`
+/// meaning stay silent. DMs bypass this entirely.
+#[cfg_attr(not(feature = "discord"), allow(dead_code))]
+fn guild_answer(mentioned: bool, reply_to_bot: bool, content: &str, bot_id: &str) -> Option<String> {
+    if !(mentioned || reply_to_bot) {
+        return None;
+    }
+    let text = content
+        .replace(&format!("<@{bot_id}>"), "")
+        .replace(&format!("<@!{bot_id}>"), "")
+        .trim()
+        .to_string();
+    (!text.is_empty()).then_some(text)
+}
+
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
 fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u64) -> SessionSource {
     SessionSource {
@@ -120,6 +136,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
         let intents = Intents::GUILD_MESSAGES | Intents::DIRECT_MESSAGES | Intents::MESSAGE_CONTENT;
         let mut shard = Shard::new(ShardId::ONE, token, intents);
         let mut app_id = None;
+        let mut bot_id: Option<twilight_model::id::Id<twilight_model::id::marker::UserMarker>> = None;
         while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
             let event = match item {
                 Ok(e) => e,
@@ -131,6 +148,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
             match event {
                 Event::Ready(r) => {
                     app_id = Some(r.application.id);
+                    bot_id = Some(r.user.id);
                     // Register global slash commands (hermes _register_slash_commands).
                     let commands: Vec<twilight_model::application::command::Command> = SLASH_COMMANDS
                         .iter()
@@ -152,8 +170,15 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                 Event::MessageCreate(msg) => {
                     let m = msg.0;
                     if m.author.bot { continue; }
-                    let content = m.content.clone();
+                    let mut content = m.content.clone();
                     if content.is_empty() { continue; }
+                    if m.guild_id.is_some() {
+                        let Some(bot) = bot_id else { continue };
+                        let mentioned = m.mentions.iter().any(|u| u.id == bot);
+                        let reply_to_bot = m.referenced_message.as_deref().is_some_and(|r| r.author.id == bot);
+                        let Some(text) = guild_answer(mentioned, reply_to_bot, &content, &bot.to_string()) else { continue };
+                        content = text;
+                    }
                     let cid = m.channel_id.get();
                     last_inbound.lock().unwrap().insert(cid.to_string(), m.id.get());
                     let ev = MessageEvent {
@@ -430,6 +455,15 @@ mod tests {
         assert_eq!(client_id_from_token(&("Bot ".to_string() + &tok)), Some(id.to_string()));
         assert_eq!(client_id_from_token("short"), None);
         assert_eq!(client_id_from_token(""), None);
+    }
+
+    #[test]
+    fn guild_answer_gate() {
+        assert_eq!(guild_answer(true, false, "<@123> hello", "123").as_deref(), Some("hello"));
+        assert_eq!(guild_answer(false, true, "reply hi", "123").as_deref(), Some("reply hi"));
+        assert_eq!(guild_answer(false, false, "noise", "123"), None);
+        assert_eq!(guild_answer(true, false, "<@!123>", "123"), None); // mention-only
+        assert_eq!(guild_answer(true, false, "hey <@123> yo", "123").as_deref(), Some("hey  yo"));
     }
 
     #[test]

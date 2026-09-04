@@ -414,6 +414,36 @@ pub enum GatewayCmd {
         #[arg(default_value = "discord")]
         platform: String,
     },
+    /// Approve/deny chat pairing requests (bind the owner without editing gateway.yaml)
+    Pairing {
+        #[command(subcommand)]
+        cmd: PairingCmd,
+    },
+}
+
+/// `gray gateway pairing ...` — runtime owner binding (hermes/openclaw parity).
+#[derive(Parser, Debug, Clone)]
+pub enum PairingCmd {
+    /// Approve a pending DM code (`pairing approve discord ABC12345`)
+    Approve {
+        /// Platform the code came from
+        platform: String,
+        /// Pairing code the user received
+        code: String,
+    },
+    /// Show pending + approved users (`pairing list [discord|all]`)
+    List {
+        /// Platform or `all`
+        #[arg(default_value = "all")]
+        platform: String,
+    },
+    /// Drop a user's approval
+    Revoke {
+        /// Platform
+        platform: String,
+        /// Approved user id
+        user: String,
+    },
 }
 
 #[cfg(test)]

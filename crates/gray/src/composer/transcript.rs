@@ -418,6 +418,11 @@ impl Tui {
             self.set_status(Some("Working"));
         }
         let clean = strip_ansi(chunk);
+        // Feed the live viewport width so tables lay out to fit (or fall back
+        // to records) instead of rendering wide and shredding downstream.
+        // No-op when unchanged; resize mid-table only affects new tables.
+        let tw = self.width().max(10).saturating_sub(2);
+        self.markdown_renderer.set_max_table_width(Some(tw));
         self.markdown_renderer.push_and_render(&clean, Some(gray_markdown::get_syntect()));
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
@@ -773,7 +778,11 @@ impl Tui {
                                 let clean = strip_ansi(text);
                                 if !clean.trim().is_empty() {
                                     self.ensure_gap(1);
-                                    let (output, _) = gray_markdown::render_markdown_ratatui_full(&clean, gray_markdown::gray_markdown_style(), true, Some(gray_markdown::get_syntect()));
+                                    // Same budget the insert wrapper will use (width-2):
+                                    // tables fit by construction instead of shredding.
+                                    let tw = self.width().max(10).saturating_sub(2);
+                                    let mut buffers = gray_markdown::MarkdownBuffers::new();
+                                    let (output, _) = gray_markdown::render_markdown_ratatui_with_buffers_width(&clean, gray_markdown::gray_markdown_style(), true, &mut buffers, Some(gray_markdown::get_syntect()), Some(tw));
                                     self.push_styled_lines_with_hyperlinks(output.lines, &output.hyperlinks, 0);
                                 }
                             }

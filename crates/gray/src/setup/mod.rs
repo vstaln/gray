@@ -1896,7 +1896,9 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
                         Style::default().fg(Color::Rgb(100, 100, 100)).bg(box_bg),
                     ));
                     frame.render_widget(Paragraph::new(sub_line), Rect::new(inner.x, inner.y + 1, inner.width, 1));
-                    let field = format!(" {} {input_buf}█", icon("arrow"));
+                    // Never render the token itself (stream-safe): dots only.
+                    let masked = "•".repeat(input_buf.chars().count());
+                    let field = format!(" {} {masked}█", icon("arrow"));
                     let field_line = Line::from(Span::styled(field, Style::default().fg(Color::White).bg(box_bg)));
                     frame.render_widget(Paragraph::new(field_line), Rect::new(inner.x, inner.y + 3, inner.width, 1));
                 } else {
