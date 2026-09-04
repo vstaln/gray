@@ -14,10 +14,39 @@
 use crate::config::{Platform, PlatformConfig};
 use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendOptions, SendResult};
 use crate::session::SessionSource;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "telegram")]
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub const MAX_LENGTH: usize = 4096;
+
+/// Heartbeat (`get_me`) interval; after [`HEARTBEAT_MAX_MISSES`]
+/// consecutive failures the poller is aborted + respawned with backoff.
+pub const HEARTBEAT_INTERVAL_SECS: u64 = 60;
+pub const HEARTBEAT_MAX_MISSES: u32 = 2;
+
+/// True once missed heartbeats hit the respawn threshold.
+pub fn heartbeat_should_respawn(consecutive_failures: u32) -> bool {
+    consecutive_failures >= HEARTBEAT_MAX_MISSES
+}
+
+/// Fold a sequence of probe outcomes (`true` = ok) into
+/// (final miss count, respawn tripped). A success clears the count.
+pub fn drive_heartbeat<I: IntoIterator<Item = bool>>(probes: I) -> (u32, bool) {
+    let mut misses = 0u32;
+    for ok in probes {
+        if ok {
+            misses = 0;
+        } else {
+            misses += 1;
+            if heartbeat_should_respawn(misses) {
+                return (misses, true);
+            }
+        }
+    }
+    (misses, heartbeat_should_respawn(misses))
+}
 
 #[cfg(feature = "telegram")]
 type BotClient = teloxide::Bot;
@@ -28,8 +57,11 @@ pub struct TelegramAdapter {
     token: String,
     client: Mutex<Option<BotClient>>,
     event_tx: Mutex<Option<UnboundedSender<MessageEvent>>>,
-    /// Polling task handle so `disconnect` can stop it.
-    poller: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Polling task handle so `disconnect` can stop it (shared with the
+    /// heartbeat task, which respawns the poller after missed heartbeats).
+    poller: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// Heartbeat task handle so `disconnect` can stop it.
+    heartbeat: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Bot name from `get_me` (set on connect, read by the boot card).
     identity: Mutex<Option<String>>,
 }
@@ -44,7 +76,8 @@ impl TelegramAdapter {
             token: token.trim().to_string(),
             client: Mutex::new(None),
             event_tx: Mutex::new(None),
-            poller: Mutex::new(None),
+            poller: Arc::new(Mutex::new(None)),
+            heartbeat: Mutex::new(None),
             identity: Mutex::new(None),
         })
     }
@@ -179,6 +212,46 @@ fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>) -> tokio:
 }
 
 #[cfg(feature = "telegram")]
+fn spawn_heartbeat(
+    bot: teloxide::Bot,
+    tx: UnboundedSender<MessageEvent>,
+    poller: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+) -> tokio::task::JoinHandle<()> {
+    // NOTE: TCP keepalive would need a custom reqwest client, but
+    // `teloxide::Bot::new` doesn't expose socket options (and no new deps
+    // are in scope), so liveness is covered by this `get_me` heartbeat.
+    tokio::spawn(async move {
+        use teloxide::prelude::*;
+        let mut misses = 0u32;
+        let mut respawns = 0u32;
+        loop {
+            tokio::time::sleep(Duration::from_secs(HEARTBEAT_INTERVAL_SECS)).await;
+            match bot.get_me().await {
+                Ok(_) => {
+                    misses = 0;
+                    respawns = 0;
+                }
+                Err(e) => {
+                    misses += 1;
+                    log::warn!("[telegram] heartbeat failed ({misses}): {e}");
+                    if heartbeat_should_respawn(misses) {
+                        let d = crate::platform::backoff_delay(respawns);
+                        respawns += 1;
+                        log::warn!("[telegram] heartbeat missed {misses}x, respawning poller in {d:?}");
+                        tokio::time::sleep(d).await;
+                        if let Some(old) = poller.lock().unwrap().take() {
+                            old.abort();
+                        }
+                        *poller.lock().unwrap() = Some(spawn_poller(bot.clone(), tx.clone()));
+                        misses = 0;
+                    }
+                }
+            }
+        }
+    })
+}
+
+#[cfg(feature = "telegram")]
 async fn send_one(
     bot: &teloxide::Bot,
     chat: teloxide::types::ChatId,
@@ -237,8 +310,12 @@ impl BasePlatformAdapter for TelegramAdapter {
             let tx = self.event_tx.lock().unwrap().clone();
             match tx {
                 Some(tx) => {
-                    let handle = spawn_poller(bot, tx);
+                    let handle = spawn_poller(bot.clone(), tx.clone());
                     if let Some(old) = self.poller.lock().unwrap().replace(handle) {
+                        old.abort();
+                    }
+                    let hb = spawn_heartbeat(bot, tx, Arc::clone(&self.poller));
+                    if let Some(old) = self.heartbeat.lock().unwrap().replace(hb) {
                         old.abort();
                     }
                     log::info!("[telegram] long-polling started");
@@ -254,6 +331,9 @@ impl BasePlatformAdapter for TelegramAdapter {
     }
 
     async fn disconnect(&self) -> anyhow::Result<()> {
+        if let Some(h) = self.heartbeat.lock().unwrap().take() {
+            h.abort();
+        }
         if let Some(h) = self.poller.lock().unwrap().take() {
             h.abort();
         }
@@ -477,6 +557,22 @@ mod tests {
         assert_eq!(parse_chat_target("-1001234:55").unwrap(), (-1001234, Some(55)));
         assert!(parse_chat_target("abc").is_err());
         assert!(parse_chat_target("1:x").is_err());
+    }
+
+    #[test]
+    fn heartbeat_respawns_after_two_consecutive_failures() {
+        assert_eq!(HEARTBEAT_INTERVAL_SECS, 60);
+        assert_eq!(HEARTBEAT_MAX_MISSES, 2);
+        assert!(!heartbeat_should_respawn(0));
+        assert!(!heartbeat_should_respawn(1));
+        assert!(heartbeat_should_respawn(2));
+        assert!(heartbeat_should_respawn(3));
+        // One success clears the miss count.
+        assert_eq!(drive_heartbeat([true, false, true, false]), (1, false));
+        // Two in a row trips respawn.
+        assert_eq!(drive_heartbeat([true, false, false]), (2, true));
+        assert_eq!(drive_heartbeat([false, false]), (2, true));
+        assert_eq!(drive_heartbeat([true]), (0, false));
     }
 
     #[tokio::test]

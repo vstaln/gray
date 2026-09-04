@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use serde::{Deserialize, Serialize};
 use crate::config::Platform;
+use crate::config::{ResetMode, ResetPolicy};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSource {
     pub platform: Platform,
@@ -54,6 +55,13 @@ impl FileGatewayStore {
         id
     }
     pub fn get(&self, key: &str) -> Option<String> { self.map.read().unwrap().get(key).map(|e| e.session_id.clone()) }
+    pub fn updated_at(&self, key: &str) -> Option<i64> { self.map.read().unwrap().get(key).map(|e| e.updated_at) }
+    /// Check the reset policy on message routing: calls the existing
+    /// [`reset`](Self::reset) when the session expired. Returns the new id.
+    pub fn reset_if_due(&self, key: &str, policy: &ResetPolicy) -> Option<String> {
+        let ts = self.updated_at(key)?;
+        if reset_due(policy, ts, chrono::Utc::now().timestamp()) { Some(self.reset(key)) } else { None }
+    }
     /// /reset: drop the mapping and mint a fresh session id.
     pub fn reset(&self, key: &str) -> String {
         let id = uuid::Uuid::new_v4().to_string();
@@ -66,6 +74,25 @@ impl FileGatewayStore {
 pub fn shared_store() -> Arc<FileGatewayStore> {
     let path = FileGatewayStore::default_path().unwrap_or_else(|_| PathBuf::from("/tmp/gray-gateway-sessions.json"));
     Arc::new(FileGatewayStore::new(path))
+}
+
+/// Pure expiry check behind [`FileGatewayStore::reset_if_due`].
+/// `none` never expires; `idle` expires after `idle_secs` without activity;
+/// `daily` expires once the clock passes today's `at_hour` (UTC) boundary.
+pub fn reset_due(policy: &ResetPolicy, updated_at: i64, now: i64) -> bool {
+    match policy.mode {
+        ResetMode::None => false,
+        ResetMode::Idle => now.saturating_sub(updated_at) >= policy.idle_secs as i64,
+        ResetMode::Daily => {
+            use chrono::{TimeZone, Utc};
+            let day = Utc.timestamp_opt(now, 0).single().map(|d| d.date_naive());
+            let boundary = day.and_then(|d| d.and_hms_opt(policy.at_hour.min(23) as u32, 0, 0)).map(|b| b.and_utc().timestamp());
+            match boundary {
+                Some(b) => now >= b && updated_at < b,
+                None => false,
+            }
+        }
+    }
 }
 #[cfg(test)] mod tests {
     use super::*;
@@ -122,5 +149,33 @@ pub fn shared_store() -> Arc<FileGatewayStore> {
         assert!(crate::platform::utf16_len(&truncated) <= 4096);
         let chunks = crate::platform::split_message(&msg, 4096);
         assert!(chunks.len() >= 2);
+    }
+
+    #[test] fn reset_none_never_expires() {
+        let p = ResetPolicy::default();
+        assert_eq!(p.mode, crate::config::ResetMode::None);
+        assert!(!reset_due(&p, 0, i64::MAX));
+        assert!(!reset_due(&p, 100, 101));
+    }
+
+    #[test] fn reset_idle_expiry() {
+        let p = crate::config::ResetPolicy { mode: crate::config::ResetMode::Idle, idle_secs: 60, at_hour: 0 };
+        assert!(!reset_due(&p, 1000, 1059));
+        assert!(reset_due(&p, 1000, 1060));
+        assert!(reset_due(&p, 1000, 2000));
+    }
+
+    #[test] fn reset_daily_expiry() {
+        use chrono::TimeZone;
+        let day1 = chrono::Utc.with_ymd_and_hms(2026, 8, 1, 5, 0, 0).unwrap().timestamp();
+        let day1_early = chrono::Utc.with_ymd_and_hms(2026, 8, 1, 3, 0, 0).unwrap().timestamp();
+        let day2 = chrono::Utc.with_ymd_and_hms(2026, 8, 2, 5, 0, 0).unwrap().timestamp();
+        let p = crate::config::ResetPolicy { mode: crate::config::ResetMode::Daily, idle_secs: 0, at_hour: 4 };
+        // Same-day after the hour: no reset yet.
+        assert!(!reset_due(&p, day1, day1));
+        // Before today's boundary: no reset either.
+        assert!(!reset_due(&p, day1_early, day1_early + 60));
+        // Next day past the hour with stale session: reset.
+        assert!(reset_due(&p, day1, day2));
     }
 }
