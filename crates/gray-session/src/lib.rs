@@ -285,7 +285,11 @@ impl JsonlSessionStore {
     }
 
     /// Resolves an id prefix: exact stem wins, else exactly-one `starts_with` match, else None.
+    /// Prefixes containing `/`, `\`, or `..` are rejected (path traversal).
     pub fn resolve_session_id(&self, prefix: &str) -> Option<SessionId> {
+        if prefix.contains('/') || prefix.contains('\\') || prefix.contains("..") {
+            return None;
+        }
         if self.root_dir.join(format!("{prefix}.jsonl")).is_file() {
             return Some(SessionId::new(prefix));
         }
@@ -787,6 +791,23 @@ mod tests {
         assert_eq!(store.resolve_session_id("abcdef1").unwrap().as_str(), "abcdef11");
         assert_eq!(store.resolve_session_id("xyz").unwrap().as_str(), "xyz999");
         assert!(store.resolve_session_id("nope").is_none());
+    }
+
+    #[test]
+    fn resolve_session_id_rejects_traversal() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = JsonlSessionStore::new(&root);
+        // File outside the root: reachable pre-fix via the `is_file` join.
+        std::fs::write(dir.path().join("evil.jsonl"), "{}\n").unwrap();
+        assert!(store.resolve_session_id("../evil").is_none());
+        assert!(store.resolve_session_id("..").is_none());
+        // Exact stem containing `..` must still be rejected.
+        std::fs::write(root.join("a..b.jsonl"), "{}\n").unwrap();
+        assert!(store.resolve_session_id("a..b").is_none());
+        assert!(store.resolve_session_id("a/b").is_none());
+        assert!(store.resolve_session_id("a\\b").is_none());
     }
 
     #[tokio::test]

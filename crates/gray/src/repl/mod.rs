@@ -1945,6 +1945,10 @@ fn dispatch_agent_event(
     }
 }
 
+/// Evaluated once per process on the threshold-compact path (the REPL's only
+/// auto-compact entry): picks up `GRAY_NO_AUTO_COMPACT=1` from the environment.
+static AUTO_COMPACT_ENV_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
 async fn maybe_threshold_compact(
     agent: &mut Agent,
     config: &Config,
@@ -1954,21 +1958,20 @@ async fn maybe_threshold_compact(
     latest: Option<gray_core::event::Usage>,
     initial_count: &mut usize,
 ) {
+    AUTO_COMPACT_ENV_ONCE.get_or_init(crate::compact::init_auto_compact_from_env);
     let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
     let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
     if !crate::compact::should_compact(tokens, window, &crate::compact::compaction_settings_for(window)) {
         return;
     }
-    say(
-        tui,
-        &format!(
-            "auto-compacting {}/{} tokens...",
-            crate::setup::format_context_length(tokens),
-            crate::setup::format_context_length(window)
-        ),
+    let notice = format!(
+        "auto-compacting {}/{} tokens...",
+        crate::setup::format_context_length(tokens),
+        crate::setup::format_context_length(window)
     );
     match crate::compact::auto_compact_if_needed(agent, config, latest, "threshold").await {
         Ok(true) => {
+            say(tui, &notice);
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 for msg in agent.messages().to_vec() {

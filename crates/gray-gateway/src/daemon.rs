@@ -313,12 +313,9 @@ impl GatewayRunner {
         let provider = OpenAiProvider::builder(&api_key, &model).base_url(&base_url).build().map_err(|e| anyhow::anyhow!("provider init: {e}"))?;
 
         let registry = Registry::builtin();
-        // Advertise only tools the gate will actually let through.
-        let tool_defs: Vec<_> = registry
-            .defs()
-            .into_iter()
-            .filter(|d| crate::authz::tool_call_allowed(&self.config.denied_tools, &d.name, &serde_json::Value::Null).is_ok())
-            .collect();
+        // Advertise the full registry: denials belong to GatedExecutor so the
+        // model gets the gate's accurate reason instead of "does not exist".
+        let tool_defs = registry.defs();
         let executor = GatedExecutor::new(Box::new(registry), self.config.denied_tools.clone());
 
         Ok(Agent::new(Box::new(provider), Box::new(executor))
@@ -962,6 +959,27 @@ mod tests {
         // Empty text with a placeholder is a no-op success.
         let r = finalize_stream(a.as_ref(), "100", &SendOptions::default(), Some("9"), "", 4096).await;
         assert!(r.success);
+    }
+
+    #[tokio::test]
+    async fn gated_executor_denies_with_accurate_message() {
+        use crate::authz::GatedExecutor;
+        use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
+        struct Inner;
+        #[async_trait::async_trait]
+        impl ToolExecutor for Inner {
+            fn execute(&self, _ctx: &ToolContext, _name: &str, _args: serde_json::Value) -> futures::future::BoxFuture<'static, ToolOutput> {
+                Box::pin(async { ToolOutput::ok("must not reach inner") })
+            }
+        }
+        let ex = GatedExecutor::new(Box::new(Inner), vec!["write".to_string()]);
+        let ctx = ToolContext { cwd: std::path::PathBuf::from("."), cancel: tokio_util::sync::CancellationToken::new(), questions: None };
+        let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
+        assert!(out.is_error);
+        assert!(out.content.contains("disabled in gateway mode"), "got: {}", out.content);
+        // Non-denied tools still delegate.
+        let out = ex.execute(&ctx, "read", serde_json::json!({"path": "x"})).await;
+        assert!(!out.is_error);
     }
 
     #[test]

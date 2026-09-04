@@ -147,6 +147,20 @@ pub fn set_auto_compact_enabled(on: bool) {
     AUTO_COMPACT_ENABLED.store(on, std::sync::atomic::Ordering::Relaxed);
 }
 
+pub fn is_auto_compact_enabled() -> bool {
+    AUTO_COMPACT_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Env kill-switch for automatic compaction, following the `GRAY_*` pattern in
+/// `config.rs`: `GRAY_NO_AUTO_COMPACT=1` (also `true`/`yes`/`on`) disables it.
+/// `0`/`false`/`no`/`off`/unset leave it enabled. Manual `/compact` still runs.
+pub fn init_auto_compact_from_env() {
+    let disabled = std::env::var("GRAY_NO_AUTO_COMPACT")
+        .map(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no" | "off"))
+        .unwrap_or(false);
+    set_auto_compact_enabled(!disabled);
+}
+
 pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
     enabled: true,
     reserve_tokens: 16384,
@@ -245,7 +259,7 @@ pub async fn auto_compact_if_needed(
     _last_usage: Option<Usage>,
     _reason: &str,
 ) -> Result<bool, CoreError> {
-    if !AUTO_COMPACT_ENABLED.load(std::sync::atomic::Ordering::Relaxed) {
+    if !is_auto_compact_enabled() {
         return Ok(false);
     }
     let keep = crate::setup::user_keep_recent_tokens();
@@ -535,6 +549,40 @@ mod tests {
             let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("must not error when disabled");
             assert!(!out);
             assert_eq!(ag.messages().len(), 2, "disabled auto-compact must leave history untouched");
+        }
+
+        #[tokio::test]
+        async fn env_kill_switch_disables_auto_compact() {
+            let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _guard = EnableGuard;
+            let prev = std::env::var("GRAY_NO_AUTO_COMPACT").ok();
+            unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", "1") };
+            init_auto_compact_from_env();
+            let mut ag = agent();
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("must not error when disabled");
+            assert!(!out);
+            assert_eq!(ag.messages().len(), 2, "env-disabled auto-compact must leave history untouched");
+            match prev {
+                Some(v) => unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", v) },
+                None => unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") },
+            }
+        }
+
+        #[tokio::test]
+        async fn env_unset_leaves_auto_compact_enabled() {
+            let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _guard = EnableGuard;
+            let prev = std::env::var("GRAY_NO_AUTO_COMPACT").ok();
+            unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") };
+            init_auto_compact_from_env();
+            let mut ag = agent();
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("compact should succeed");
+            assert!(out);
+            assert!(ag.messages()[0].text_content().contains("summarized"));
+            match prev {
+                Some(v) => unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", v) },
+                None => unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") },
+            }
         }
 
         #[tokio::test]
