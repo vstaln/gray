@@ -986,98 +986,79 @@ pub(crate) fn is_retryable_error(err: &ProviderError) -> bool {
     )
 }
 
-async fn send_json_with_retries(
+/// Codex steal (`notify_stream_error`): `Reconnecting... n/m` + short cause.
+/// Details are capped so a multi-KB upstream blob never reaches the transcript.
+pub(crate) fn retry_notice_event(attempt: usize, max: usize, err: &ProviderError) -> StreamEvent {
+    let details: String = err.to_string().chars().take(200).collect();
+    StreamEvent::stream_error(format!("Reconnecting... {attempt}/{max}"), details)
+}
+
+/// Exponential backoff with jitter, matching the existing retry cadence.
+fn backoff_delay(initial: Duration, attempt: usize) -> Duration {
+    let exp_factor = 1u64 << (attempt.saturating_sub(1));
+    let backoff_ms = (initial.as_millis() as u64).saturating_mul(exp_factor);
+    let max_jitter = backoff_ms / 2;
+    let jitter_ms = if max_jitter > 0 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64)
+            .unwrap_or(0);
+        nanos % (max_jitter + 1)
+    } else {
+        0
+    };
+    Duration::from_millis(backoff_ms + jitter_ms)
+}
+
+/// Single POST attempt (no retry). Retry + `Reconnecting...` notices live in
+/// `stream_unfold_step` so each attempt surfaces to the UI like Codex's
+/// `notify_stream_error` instead of stalling silently in a sleep loop.
+async fn send_json_once(
     client: &reqwest::Client,
     url: &Url,
     api_key: &str,
     body: &Value,
-    initial_backoff: Duration,
+    attempt: usize,
 ) -> Result<reqwest::Response, ProviderError> {
-    for attempt in 1..=MAX_ATTEMPTS {
-        let base = if api_key.is_empty() {
-            client.post(url.clone())
-        } else {
-            client
-                .post(url.clone())
-                .header("Authorization", format!("Bearer {api_key}"))
-        };
-        let req = base.header("Content-Type", "application/json").json(body);
-        let res_result = req.send().await;
-        log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
-        let err = match res_result {
-            Ok(res) => {
-                let status = res.status();
-                if status.is_success() {
-                    return Ok(res);
-                }
-                let cf_ray = res
-                    .headers()
-                    .get("cf-ray")
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let req_id = res
-                    .headers()
-                    .get("x-request-id")
-                    .or_else(|| res.headers().get("request-id"))
-                    .and_then(|v| v.to_str().ok())
-                    .map(|s| s.to_string());
-                let text = res.text().await.unwrap_or_default();
-                let snippet: String = text.chars().take(500).collect();
-                classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref())
+    let base = if api_key.is_empty() {
+        client.post(url.clone())
+    } else {
+        client
+            .post(url.clone())
+            .header("Authorization", format!("Bearer {api_key}"))
+    };
+    let req = base.header("Content-Type", "application/json").json(body);
+    let res_result = req.send().await;
+    log::debug!(target: "gray_provider", "request sent to {url} (attempt {attempt})");
+    match res_result {
+        Ok(res) => {
+            let status = res.status();
+            if status.is_success() {
+                return Ok(res);
             }
-            Err(e) => {
-                if e.is_connect() {
-                    ProviderError::Connection(e.to_string())
-                } else if e.is_timeout() {
-                    ProviderError::Timeout(e.to_string())
-                } else {
-                    ProviderError::Stream(e.to_string())
-                }
-            }
-        };
-        let is_retryable = is_retryable_error(&err);
-        if !is_retryable || attempt == MAX_ATTEMPTS {
-            log::warn!(target: "gray_provider", "request error after attempt {attempt}: {err}");
-            return Err(err);
+            let cf_ray = res
+                .headers()
+                .get("cf-ray")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let req_id = res
+                .headers()
+                .get("x-request-id")
+                .or_else(|| res.headers().get("request-id"))
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let text = res.text().await.unwrap_or_default();
+            let snippet: String = text.chars().take(500).collect();
+            Err(classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref()))
         }
-        log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
-        let exp_factor = 1u64 << (attempt - 1);
-        let backoff_ms = (initial_backoff.as_millis() as u64).saturating_mul(exp_factor);
-        let max_jitter = backoff_ms / 2;
-        let jitter_ms = if max_jitter > 0 {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.subsec_nanos() as u64)
-                .unwrap_or(0);
-            nanos % (max_jitter + 1)
+        Err(e) => Err(if e.is_connect() {
+            ProviderError::Connection(e.to_string())
+        } else if e.is_timeout() {
+            ProviderError::Timeout(e.to_string())
         } else {
-            0
-        };
-        tokio::time::sleep(Duration::from_millis(backoff_ms + jitter_ms)).await;
+            ProviderError::Stream(e.to_string())
+        }),
     }
-    Err(ProviderError::Stream("maximum retry attempts exceeded".to_string()))
-}
-
-async fn send_responses_with_retries(
-    client: &reqwest::Client,
-    url: &Url,
-    api_key: &str,
-    body: &ResponsesRequest,
-    initial_backoff: Duration,
-) -> Result<reqwest::Response, ProviderError> {
-    let body_value = serde_json::to_value(body).expect("ResponsesRequest serialization");
-    send_json_with_retries(client, url, api_key, &body_value, initial_backoff).await
-}
-
-async fn send_request_with_retries(
-    client: &reqwest::Client,
-    url: &Url,
-    api_key: &str,
-    body: &OpenAiChatRequest,
-    initial_backoff: Duration,
-) -> Result<reqwest::Response, ProviderError> {
-    let body_value = serde_json::to_value(body).expect("OpenAiChatRequest serialization");
-    send_json_with_retries(client, url, api_key, &body_value, initial_backoff).await
 }
 
 type BoxedEventStream = BoxStream<
@@ -1095,6 +1076,7 @@ enum StreamState {
         api_key: String,
         body: OpenAiChatRequest,
         initial_backoff: Duration,
+        attempt: usize,
     },
     ResponsesInit {
         client: reqwest::Client,
@@ -1102,6 +1084,7 @@ enum StreamState {
         api_key: String,
         body: ResponsesRequest,
         initial_backoff: Duration,
+        attempt: usize,
     },
     Streaming {
         event_stream: BoxedEventStream,
@@ -1219,8 +1202,17 @@ fn stream_unfold_step(
                     api_key,
                     body,
                     initial_backoff,
+                    attempt,
                 } => {
-                    match send_request_with_retries(&client, &url, &api_key, &body, initial_backoff).await {
+                    // Backoff for attempts 2+ runs here so the previous
+                    // `Reconnecting...` notice is already on screen (Codex:
+                    // notify then sleep, not sleep then notify).
+                    if attempt > 1 {
+                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1)).await;
+                    }
+                    let body_value =
+                        serde_json::to_value(&body).expect("OpenAiChatRequest serialization");
+                    match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
                         Ok(response) => {
                             let event_stream: BoxedEventStream = response.bytes_stream().eventsource().boxed();
                             state = StreamState::Streaming {
@@ -1233,18 +1225,49 @@ fn stream_unfold_step(
                             };
                         }
                         Err(err) => {
+                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
+                                log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
+                                let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                let next = StreamState::Init {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body,
+                                    initial_backoff,
+                                    attempt: attempt + 1,
+                                };
+                                return Some((Ok(notice), next));
+                            }
                             log::error!(target: "gray_provider", "stream request failed: {err}");
                             return Some((Err(err), StreamState::Done));
                         }
                     }
                 }
-                StreamState::ResponsesInit { client, url, api_key, body, initial_backoff } => {
-                    match send_responses_with_retries(&client, &url, &api_key, &body, initial_backoff).await {
+                StreamState::ResponsesInit { client, url, api_key, body, initial_backoff, attempt } => {
+                    if attempt > 1 {
+                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1)).await;
+                    }
+                    let body_value =
+                        serde_json::to_value(&body).expect("ResponsesRequest serialization");
+                    match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
                         Ok(response) => {
                             let event_stream: BoxedEventStream = response.bytes_stream().eventsource().boxed();
                             state = StreamState::ResponsesStreaming { event_stream, tools_by_call_id: BTreeMap::new(), index_to_call_id: BTreeMap::new(), last_usage: None, pending_events: VecDeque::new(), completed: false };
                         }
                         Err(err) => {
+                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
+                                log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
+                                let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                let next = StreamState::ResponsesInit {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body,
+                                    initial_backoff,
+                                    attempt: attempt + 1,
+                                };
+                                return Some((Ok(notice), next));
+                            }
                             log::error!(target: "gray_provider", "responses request failed: {err}");
                             return Some((Err(err), StreamState::Done));
                         }
@@ -1658,6 +1681,7 @@ impl Provider for OpenAiProvider {
                 api_key: self.api_key.clone(),
                 body,
                 initial_backoff: self.initial_backoff,
+                attempt: 1,
             };
             return stream::unfold(init_state, stream_unfold_step).boxed();
         }
@@ -1673,6 +1697,7 @@ impl Provider for OpenAiProvider {
             api_key: self.api_key.clone(),
             body,
             initial_backoff: self.initial_backoff,
+            attempt: 1,
         };
 
         stream::unfold(init_state, stream_unfold_step).boxed()
@@ -1722,6 +1747,20 @@ mod tests {
         let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "internal error", None, None);
         assert!(matches!(err, ProviderError::ServerError(_)));
         assert!(is_retryable_error(&err));
+    }
+
+    #[test]
+    fn retry_notice_uses_codex_reconnecting_format() {
+        // Codex steal: `Reconnecting... n/m` header + short underlying error.
+        let err = ProviderError::ServerError("status 503: backend overloaded".to_string());
+        let ev = retry_notice_event(1, 3, &err);
+        match ev {
+            StreamEvent::StreamError { message, details } => {
+                assert_eq!(message, "Reconnecting... 1/3");
+                assert!(details.contains("503"), "details keeps cause: {details}");
+            }
+            other => panic!("expected StreamError, got {other:?}"),
+        }
     }
 
     fn responses_req_with_thinking(model: &str) -> ChatRequest {
