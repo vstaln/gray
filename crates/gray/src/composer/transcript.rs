@@ -604,8 +604,9 @@ impl Tui {
     }
 
     /// Clears the live panel + status and commits the final board state as
-    /// ONE card with no trailing gap (it hugs the input box). No-op when no
-    /// boot is active (the watcher only commits once).
+    /// ONE card, followed by one breathing row so the card's gray block
+    /// never fuses with the input band below it. No-op when no boot is
+    /// active (the watcher only commits once).
     pub fn finish_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
         let Some(panel) = self.gateway_boot.take() else { return; };
         if self.status_is_gateway_or_empty() {
@@ -621,6 +622,7 @@ impl Tui {
             .map(|r| Line::from(Span::styled(r, dim)))
             .collect();
         self.push_tool_box_no_gap(header, body);
+        self.ensure_gap(1);
         let _ = self.draw();
     }
 
