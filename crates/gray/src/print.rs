@@ -90,7 +90,7 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         questions: None,
     };
 
-    let mut agent = build_agent(config, &cwd).await?;
+    let mut agent = build_agent(config, &cwd, None).await?;
     for w in crate::take_profile_warnings() {
         eprintln!("warning: {w}");
     }
@@ -138,7 +138,7 @@ pub async fn save_session(
         cwd.to_path_buf(),
         model.to_string(),
     );
-    store.create(meta).await;
+    store.create(meta).await?;
 
     for msg in messages {
         store

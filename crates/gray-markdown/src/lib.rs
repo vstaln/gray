@@ -75,18 +75,7 @@ pub fn render_markdown_ratatui_full(
     syntect: Option<&Syntect>,
 ) -> (MarkdownRenderOutput, Option<Checkpoint>) {
     let mut buffers = MarkdownBuffers::new();
-    render_markdown_ratatui_with_buffers(text, ms, pretty, &mut buffers, syntect)
-}
-
-/// Render markdown to ratatui Lines, reusing the provided buffers.
-pub fn render_markdown_ratatui_with_buffers(
-    text: &str,
-    ms: MarkdownStyle,
-    pretty: bool,
-    buffers: &mut MarkdownBuffers,
-    syntect: Option<&Syntect>,
-) -> (MarkdownRenderOutput, Option<Checkpoint>) {
-    render_markdown_ratatui_with_buffers_width(text, ms, pretty, buffers, syntect, None)
+    render_markdown_ratatui_with_buffers_width(text, ms, pretty, &mut buffers, syntect, None)
 }
 
 /// Render markdown to ratatui Lines, reusing the provided buffers,

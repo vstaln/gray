@@ -5,24 +5,19 @@ use gray_plugin::{Manifest, Plugin};
 
 use crate::{
     BashTool, CronTool, EditTool, FindTool, GrepTool, LsTool, ReadTool, RequestUserInputTool,
-    REQUEST_USER_INPUT_TOOL_NAME, SkillTool, WriteTool,
+    SkillTool, WriteTool,
 };
 
 pub struct ToolsBasicPlugin;
 
 impl Plugin for ToolsBasicPlugin {
     fn manifest(&self) -> Manifest {
+        // ponytail-audit #6: names derived from tools() so the two can't drift.
+        let tools = self.tools();
         Manifest {
             name: "tools-basic".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: vec![
-                "read".to_string(),
-                "write".to_string(),
-                "edit".to_string(),
-                "bash".to_string(),
-                "skill".to_string(),
-                REQUEST_USER_INPUT_TOOL_NAME.to_string(),
-            ],
+            tools: tools.iter().map(|t| t.def().name.clone()).collect(),
             provider: None,
         }
     }
@@ -43,10 +38,11 @@ pub struct ToolsSearchPlugin;
 
 impl Plugin for ToolsSearchPlugin {
     fn manifest(&self) -> Manifest {
+        let tools = self.tools();
         Manifest {
             name: "tools-search".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: vec!["grep".to_string(), "find".to_string(), "ls".to_string()],
+            tools: tools.iter().map(|t| t.def().name.clone()).collect(),
             provider: None,
         }
     }
@@ -60,10 +56,11 @@ pub struct CronPlugin;
 
 impl Plugin for CronPlugin {
     fn manifest(&self) -> Manifest {
+        let tools = self.tools();
         Manifest {
             name: "cron".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: vec!["schedule_task".to_string()],
+            tools: tools.iter().map(|t| t.def().name.clone()).collect(),
             provider: None,
         }
     }

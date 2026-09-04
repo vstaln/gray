@@ -342,13 +342,18 @@ mod tests {
 
     #[tokio::test]
     async fn send_splits() {
-        let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
         let long = "a".repeat(5000);
-        let res = a.send("chan1", &long).await;
-        assert!(res.success);
         let chunks = crate::platform::split_message(&long, MAX_LENGTH);
         assert_eq!(chunks.len(), 3); // 2000*2 +1000
         for c in &chunks { assert!(utf16_len(c) <= MAX_LENGTH); }
+        // Live send needs a connected client (feature build hits the network
+        // path); the stub-only success assertion runs without the feature.
+        #[cfg(not(feature = "discord"))]
+        {
+            let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
+            let res = a.send("chan1", &long).await;
+            assert!(res.success);
+        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-cron = { workspace = true }
 gray-session = { workspace = true }
-gray-markdown = { path = "../gray-markdown" }
+gray-markdown = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
@@ -39,7 +39,7 @@ image = { workspace = true }
 tempfile = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
-tower = { version = "0.5" }
+tower = { workspace = true }
 async-trait = { workspace = true }
 gray-gateway = { workspace = true, features = ["discord"] }
 sha2 = { workspace = true }
@@ -51,4 +51,4 @@ ignore = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 reqwest = { workspace = true }
-tempfile = "3"
+tempfile = { workspace = true }

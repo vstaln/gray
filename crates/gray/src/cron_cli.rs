@@ -91,22 +91,16 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
         }
         CronCmd::Run => {
             use gray_cron::Scheduler;
-            use std::sync::Arc;
             println!("gray cron daemon running — checking every 60s (Ctrl-C to stop)...");
             let scheduler = Scheduler::from_active();
-            let guard = Arc::new(gray_cron::InflightGuard::new());
             loop {
                 match scheduler.scan_due_jobs() {
                     Ok(due) => {
                         for job in due {
-                            if !guard.try_register_running_job(&job.id) {
-                                continue;
-                            }
                             println!("→ running cron job {} (\"{}\"): {}", job.id, job.name, job.prompt);
                             let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
                             // Daemon headless: for now log + update; REPL background will run Agent.
                             // One-shot jobs: next_run=None after update, so they won't refire.
-                            guard.release_running_job(&job.id);
                         }
                     }
                     Err(e) => eprintln!("cron scan failed: {e}"),

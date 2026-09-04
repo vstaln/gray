@@ -96,14 +96,10 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// Whether this tool may run in parallel with others in the same turn.
-    /// Args allow context-sensitive decisions (e.g. read-only operations).
-    fn is_concurrency_safe(&self, args: &serde_json::Value) -> bool {
-        let _ = args;
-        true
-    }
-
     /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
+    /// NOTE (ponytail-audit #8): an earlier `is_concurrency_safe` hook was
+    /// deleted — tools run sequentially and nothing read it. If a parallel
+    /// executor lands, re-add it then (bash/edit are the unsafe ones).
     async fn execute(&self, ctx: &ToolContext, args: serde_json::Value) -> ToolOutput;
 }
 
@@ -182,13 +178,6 @@ impl Agent {
     /// Sets the tools advertised to the model.
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
-        self
-    }
-
-    /// Deprecated: turn limit removed — loop is model-driven with stall
-    /// detection. Kept for API compatibility; no effect.
-    #[deprecated(note = "max_turns removed; loop is now unbounded with stall detection")]
-    pub fn with_max_turns(self, _max_turns: usize) -> Self {
         self
     }
 
@@ -326,16 +315,13 @@ impl Agent {
                         ev = stream.next() => ev,
                         _ = ctx.cancel.cancelled() => {
                             if !text_parts.is_empty() && pending.is_empty() {
-                                let mut content = Vec::new();
-                                let thinking = thinking_parts.concat();
-                                if !thinking.is_empty() {
-                                    content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
-                                }
-                                content.push(ContentBlock::Text { text: text_parts.concat() });
-                                self.messages.push(Message {
-                                    role: Role::Assistant,
-                                    content,
-                                });
+                                salvage_partial_text(
+                                    &mut self.messages,
+                                    thinking_parts.concat(),
+                                    text_parts.concat(),
+                                    &pending_reasoning,
+                                    self.provider.model_id(),
+                                );
                             }
                             return Err(CoreError::Cancelled);
                         }
@@ -391,16 +377,13 @@ impl Agent {
                             // user's screen: salvage the partial assistant text
                             // into history so the transcript matches what was seen.
                             if !text_parts.is_empty() && pending.is_empty() {
-                                let mut content = Vec::new();
-                                let thinking = thinking_parts.concat();
-                                if !thinking.is_empty() {
-                                    content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
-                                }
-                                content.push(ContentBlock::Text { text: text_parts.concat() });
-                                self.messages.push(Message {
-                                    role: Role::Assistant,
-                                    content,
-                                });
+                                salvage_partial_text(
+                                    &mut self.messages,
+                                    thinking_parts.concat(),
+                                    text_parts.concat(),
+                                    &pending_reasoning,
+                                    self.provider.model_id(),
+                                );
                             }
                             return Err(CoreError::from(e));
                         }
@@ -616,6 +599,25 @@ fn thinking_block(
         _ => (None, None, None),
     };
     ContentBlock::Thinking { text, encrypted_content, item_id, model }
+}
+
+/// Push streamed-so-far thinking + text so the transcript matches what the
+/// user already saw on screen. Shared by the cancel and mid-stream-error arms
+/// (the end-of-turn finalize differs: it also appends tool calls).
+/// (ponytail-audit #9)
+fn salvage_partial_text(
+    messages: &mut Vec<Message>,
+    thinking: String,
+    text: String,
+    pending_reasoning: &Option<(String, String)>,
+    model: &str,
+) {
+    let mut content = Vec::new();
+    if !thinking.is_empty() {
+        content.push(thinking_block(thinking, pending_reasoning, model));
+    }
+    content.push(ContentBlock::Text { text });
+    messages.push(Message { role: Role::Assistant, content });
 }
 
 #[cfg(test)]
@@ -960,30 +962,6 @@ mod agent_tests {
             .await
             .expect("a write must reset the stall streak");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
-    }
-
-    #[tokio::test]
-    async fn max_turns_guard_stops_runloop_with_error() {
-        // Deprecated API is now a no-op — loop is unbounded with stall detection.
-        // Keep test for compat: with_max_turns does not enforce a turn limit.
-        let provider = FakeProvider::new(vec![
-            tool_script("c1"),
-            vec![
-                StreamEvent::text_delta("done"),
-                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
-            ],
-        ]);
-        let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        #[allow(deprecated)]
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
-            .with_tools(vec![tool_def()])
-            .with_max_turns(2);
-
-        let events = agent
-            .run(Message::user("go"), ToolContext::default())
-            .await
-            .expect("with_max_turns is now no-op, should succeed");
         assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
     }
 

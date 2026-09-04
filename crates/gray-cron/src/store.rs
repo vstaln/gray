@@ -208,7 +208,7 @@ fn peek_jobs_unlocked(store: &CronStorePaths) -> Option<Vec<CronJob>> {
     serde_json::from_str(trimmed).ok()
 }
 
-fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
+pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
     ensure_dirs(store);
     // one-time auto-migrate legacy daily wall-clock crons stored as UTC before fix (e.g. 45 19 * * * → 45 17 * * * for UTC+2)
     let _ = maybe_migrate_legacy_crons(store);
@@ -298,7 +298,7 @@ pub fn save_jobs(jobs: &[CronJob]) -> anyhow::Result<()> {
     with_jobs_lock(&store, || save_jobs_inner(&store, jobs.to_vec(), &[], false))
 }
 
-fn save_jobs_inner(
+pub(crate) fn save_jobs_inner(
     store: &CronStorePaths,
     mut jobs: Vec<CronJob>,
     removed_ids: &[String],

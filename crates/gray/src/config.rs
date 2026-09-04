@@ -7,6 +7,10 @@ use crate::Cli;
 /// Default API base URL pointing to OpenRouter.
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
+fn nonempty(s: Option<&str>) -> Option<String> {
+    s.map(str::trim).filter(|s| !s.is_empty()).map(ToString::to_string)
+}
+
 /// Resolved application configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -46,55 +50,22 @@ impl Config {
             &crate::setup::saved_config_path().unwrap_or_else(|_| PathBuf::from("/dev/null")),
         );
 
-        let model = cli
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
-            .or_else(|| {
-                env("GRAY_MODEL")
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
+        let model = nonempty(cli.model.as_deref())
+            .or_else(|| nonempty(env("GRAY_MODEL").as_deref()))
             .or(saved.model); // optional: REPL starts without a model; validated on first use
 
-        let base_url = cli
-            .base_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
-            .or_else(|| {
-                env("GRAY_BASE_URL")
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
+        let base_url = nonempty(cli.base_url.as_deref())
+            .or_else(|| nonempty(env("GRAY_BASE_URL").as_deref()))
             .or(saved.base_url)
             .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
 
-        let api_key = cli
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
-            .or_else(|| {
-                env("GRAY_API_KEY")
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
-            .or_else(|| {
-                env("OPENAI_API_KEY")
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
+        let api_key = nonempty(cli.api_key.as_deref())
+            .or_else(|| nonempty(env("GRAY_API_KEY").as_deref()))
+            .or_else(|| nonempty(env("OPENAI_API_KEY").as_deref()))
             .or(saved.api_key); // optional: validated on first use
 
-        let thinking_effort = env("GRAY_THINKING_EFFORT")
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or(saved.thinking_effort);
+        let thinking_effort =
+            nonempty(env("GRAY_THINKING_EFFORT").as_deref()).or(saved.thinking_effort);
 
         let show_reasoning = env("GRAY_SHOW_REASONING")
             .map(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))

@@ -45,10 +45,6 @@ impl Tool for LsTool {
         Some(LS_GUIDELINES)
     }
 
-    fn is_concurrency_safe(&self, _args: &Value) -> bool {
-        true
-    }
-
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let path_arg = match args.get("path") {
             None | Some(Value::Null) => None,

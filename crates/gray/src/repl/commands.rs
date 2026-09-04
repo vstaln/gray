@@ -10,7 +10,7 @@ pub(crate) const COMMANDS: &[(&str, &str)] = &[
     ("usage", "session tokens & cost"),
     ("cron", "cron jobs"),
     ("proxy", "share Codex/Grok/OpenRouter via :8645"),
-    ("gateway", "messaging gateway (Telegram/Discord/Slack)"),
+    ("gateway", "messaging gateway (Discord)"),
     ("portal", "portal status"),
     ("agentsmd", "edit system prompt"),
     ("skills", "list skills (/skills:<name> [args] to run one)"),
