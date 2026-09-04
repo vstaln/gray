@@ -1,72 +1,69 @@
-/// Static slash-command table driving both `/help` and the autocomplete panel.
-pub(crate) const COMMANDS: &[(&str, &str)] = &[
-    ("connect", "setup provider & API key"),
-    ("model", "switch model"),
-    ("thinking", "reasoning effort"),
-    ("context", "set context window"),
-    ("resume", "resume conversation"),
-    ("new", "new conversation"),
-    ("compact", "summarize context"),
-    ("usage", "session tokens & cost"),
-    ("cron", "cron jobs"),
-    ("proxy", "share Codex/Grok/OpenRouter via :8645"),
-    ("gateway", "messaging gateway (Discord)"),
-    ("portal", "portal status"),
-    ("agentsmd", "edit system prompt"),
-    ("skills", "list skills (/skills:<name> [args] to run one)"),
-    ("help", "show commands"),
-    ("quit", "exit"),
+/// Single slash-command registry driving `/help`, completion, and parsing.
+/// `portal` is both a canonical row (display) and a `proxy` alias (dispatch
+/// shares Proxy) — resolve() prefers the canonical exact match.
+pub(crate) struct CmdDef {
+    pub(crate) name: &'static str,
+    pub(crate) desc: &'static str,
+    pub(crate) aliases: &'static [&'static str],
+    #[allow(dead_code)] // reserved for future per-command hints; empty keeps /help byte-identical
+    pub(crate) args_hint: &'static str,
+}
+
+pub(crate) const REGISTRY: &[CmdDef] = &[
+    CmdDef { name: "connect", desc: "setup provider & API key", aliases: &["keys", "key", "providers", "provider", "login"], args_hint: "" },
+    CmdDef { name: "model", desc: "switch model", aliases: &[], args_hint: "" },
+    CmdDef { name: "thinking", desc: "reasoning effort", aliases: &["effort", "reasoning"], args_hint: "" },
+    CmdDef { name: "context", desc: "set context window", aliases: &[], args_hint: "" },
+    CmdDef { name: "resume", desc: "resume conversation", aliases: &[], args_hint: "" },
+    CmdDef { name: "new", desc: "new conversation", aliases: &["clear", "reset"], args_hint: "" },
+    CmdDef { name: "compact", desc: "summarize context", aliases: &["compress"], args_hint: "" },
+    CmdDef { name: "usage", desc: "session tokens & cost", aliases: &["cost"], args_hint: "" },
+    CmdDef { name: "cron", desc: "cron jobs", aliases: &[], args_hint: "" },
+    CmdDef { name: "proxy", desc: "share Codex/Grok/OpenRouter via :8645", aliases: &["portal"], args_hint: "" },
+    CmdDef { name: "gateway", desc: "messaging gateway (Discord)", aliases: &["gw"], args_hint: "" },
+    CmdDef { name: "portal", desc: "portal status", aliases: &[], args_hint: "" },
+    CmdDef { name: "agentsmd", desc: "edit system prompt", aliases: &["sys"], args_hint: "" },
+    CmdDef { name: "skills", desc: "list skills (/skills:<name> [args] to run one)", aliases: &[], args_hint: "" },
+    CmdDef { name: "help", desc: "show commands", aliases: &[], args_hint: "" },
+    CmdDef { name: "quit", desc: "exit", aliases: &["exit"], args_hint: "" },
 ];
 
-pub(crate) const ALIASES: &[(&str, &str)] = &[
-    ("clear", "new"),
-    ("reset", "new"),
-    ("exit", "quit"),
-    ("keys", "connect"),
-    ("key", "connect"),
-    ("providers", "connect"),
-    ("provider", "connect"),
-    ("login", "connect"),
-    ("effort", "thinking"),
-    ("reasoning", "thinking"),
-    ("compress", "compact"),
-    ("sys", "agentsmd"),
-    ("portal", "proxy"),
-    ("gw", "gateway"),
-    ("cost", "usage"),
-];
+/// Canonical lookup: strip one leading `/`, lowercase, exact wins then aliases.
+pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
+    let n = name.strip_prefix('/').unwrap_or(name).to_lowercase();
+    if let Some(d) = REGISTRY.iter().find(|d| d.name == n) {
+        return Some(d);
+    }
+    REGISTRY.iter().find(|d| d.aliases.iter().any(|a| *a == n))
+}
 
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
 pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
     let mut matches: Vec<(&'static str, &'static str)> = Vec::new();
-
-    for &(name, desc) in COMMANDS {
+    for d in REGISTRY {
         let is_match = f.is_empty()
-            || name.to_lowercase().contains(&f)
-            || desc.to_lowercase().contains(&f)
-            || ALIASES.iter().any(|(alias, target)| *target == name && alias.contains(&f));
-
+            || d.name.to_lowercase().contains(&f)
+            || d.desc.to_lowercase().contains(&f)
+            || d.aliases.iter().any(|a| a.contains(f.as_str()));
         if is_match {
-            matches.push((name, desc));
+            matches.push((d.name, d.desc));
         }
     }
-
     matches.sort_by_key(|(n, _)| {
         let nl = n.to_lowercase();
         if nl == f {
             0
         } else if nl.starts_with(&f) {
             1
-        } else if ALIASES.iter().any(|(alias, target)| *target == *n && *alias == f) {
+        } else if REGISTRY.iter().any(|d| d.name == *n && d.aliases.contains(&f.as_str())) {
             2
-        } else if ALIASES.iter().any(|(alias, target)| *target == *n && alias.starts_with(&f)) {
+        } else if REGISTRY.iter().any(|d| d.name == *n && d.aliases.iter().any(|a| a.starts_with(f.as_str()))) {
             3
         } else {
             4
         }
     });
-
     matches
 }
 
@@ -266,76 +263,90 @@ pub(crate) fn parse_resume_args(rest: &str) -> ResumeArgs {
     ResumeArgs { target, last, all }
 }
 
-/// Parses a line of input into a [`ReplCommand`].
+/// Parses a line of input into a [`ReplCommand`]: resolve the first token
+/// to its canonical registry name, then match on canonical only.
 pub fn parse_command(line: &str) -> ReplCommand {
     let t = line.trim();
     if t.is_empty() {
         return ReplCommand::Empty;
+    }
+    if !t.starts_with('/') {
+        return ReplCommand::Prompt(t.to_string());
     }
     let (cmd, rest) = match t.split_once(' ') {
         Some((c, r)) => (c, r.trim()),
         None => (t, ""),
     };
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
-
-    match cmd {
-        "/quit" | "/exit" => ReplCommand::Quit,
-        "/resume" => ReplCommand::Resume(if rest.is_empty() {
+    let lower_t = t.to_lowercase();
+    let lower_cmd = cmd.to_lowercase();
+    let canon: Option<&str> = if lower_cmd == "/skills" || lower_t.starts_with("/skills:") {
+        Some("skills")
+    } else if let Some(d) = resolve(cmd) {
+        Some(d.name)
+    } else if lower_t.starts_with("/model") {
+        Some("model")
+    } else if lower_t.starts_with("/cron") {
+        Some("cron")
+    } else if lower_t.starts_with("/proxy") {
+        Some("proxy")
+    } else if lower_t.starts_with("/portal") {
+        Some("portal")
+    } else if lower_t.starts_with("/gateway") || lower_t.starts_with("/gw") {
+        Some("gateway")
+    } else {
+        None
+    };
+    match canon {
+        Some("quit") => ReplCommand::Quit,
+        Some("resume") => ReplCommand::Resume(if rest.is_empty() {
             ResumeArgs { target: None, last: false, all: false }
         } else {
             parse_resume_args(rest)
         }),
-        "/agentsmd" | "/sys" => match rest {
+        Some("agentsmd") => match rest {
             "" => ReplCommand::Sys(SysAction::Edit),
             "show" => ReplCommand::Sys(SysAction::Show),
             "reset" => ReplCommand::Sys(SysAction::Reset),
             _ => ReplCommand::Unknown(t.to_string()),
         },
-        "/new" | "/clear" | "/reset" => ReplCommand::New(opt(rest)),
-        "/compact" | "/compress" => ReplCommand::Compact(opt(rest)),
-        "/thinking" | "/effort" | "/reasoning" => ReplCommand::Thinking(opt(rest)),
-        "/context" => ReplCommand::ContextWindow(opt(rest)),
-        "/usage" | "/cost" => ReplCommand::Usage,
-        "/help" => ReplCommand::Help,
+        Some("new") => ReplCommand::New(opt(rest)),
+        Some("compact") => ReplCommand::Compact(opt(rest)),
+        Some("thinking") => ReplCommand::Thinking(opt(rest)),
+        Some("context") => ReplCommand::ContextWindow(opt(rest)),
+        Some("usage") => ReplCommand::Usage,
+        Some("help") => ReplCommand::Help,
+        // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
+        Some("connect") => {
+            if rest.is_empty() || lower_cmd == "/key" {
+                ReplCommand::Provider
+            } else {
+                ReplCommand::Unknown(t.to_string())
+            }
+        }
+        Some("model") => ReplCommand::Model(opt(t[6..].trim())),
+        Some("cron") => ReplCommand::Cron(t.to_string()),
+        Some("proxy") | Some("portal") => ReplCommand::Proxy(t.to_string()),
+        Some("gateway") => ReplCommand::Gateway(t.to_string()),
+        Some("skills") => {
+            if lower_t == "/skills" {
+                ReplCommand::Skill(None)
+            } else if lower_t.starts_with("/skills:") {
+                ReplCommand::Skill(Some(t[8..].to_string()))
+            } else {
+                ReplCommand::Unknown(t.to_string())
+            }
+        }
         _ => {
-            // preserve original edge cases: bare aliases exact, "/key foo" is Provider but "/keys foo" is Unknown, "/model*" prefix without space
-            if t == "/connect"
-                || t == "/provider"
-                || t == "/providers"
-                || t == "/login"
-                || t == "/key"
-                || t == "/keys"
-                || t.starts_with("/key ")
-            {
-                return ReplCommand::Provider;
+            // Codex port: a slash-name containing '/' is plain text, not an
+            // unknown command — e.g. `///` doc comments, `//` comments,
+            // `/tmp/foo` paths. Bare `/` (empty name) is text too.
+            let name = t[1..].split_whitespace().next().unwrap_or("");
+            if name.is_empty() || name.contains('/') {
+                ReplCommand::Prompt(t.to_string())
+            } else {
+                ReplCommand::Unknown(t.to_string())
             }
-            if t.starts_with("/model") {
-                return ReplCommand::Model(opt(t[6..].trim()));
-            }
-            if t.starts_with("/cron") {
-                return ReplCommand::Cron(t.to_string());
-            }
-            if t.starts_with("/proxy") || t.starts_with("/portal") {
-                return ReplCommand::Proxy(t.to_string());
-            }
-            if t.starts_with("/gateway") || t.starts_with("/gw") {
-                return ReplCommand::Gateway(t.to_string());
-            }
-            if t == "/skills" || t.starts_with("/skills:") {
-                return ReplCommand::Skill(t.strip_prefix("/skills:").map(str::to_string));
-            }
-            if t.starts_with('/') {
-                // Codex port (`reference/openai/codex/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs`
-                // `validate_submission`): a slash-name containing '/' is plain
-                // text, not an unknown command — e.g. `///` doc comments, `//`
-                // comments, `/tmp/foo` paths. Bare `/` (empty name) is text too.
-                let name = t[1..].split_whitespace().next().unwrap_or("");
-                if name.is_empty() || name.contains('/') {
-                    return ReplCommand::Prompt(t.to_string());
-                }
-                return ReplCommand::Unknown(t.to_string());
-            }
-            ReplCommand::Prompt(t.to_string())
         }
     }
 }
@@ -387,6 +398,114 @@ mod tests {
         assert!(matches!(parse_command("/reasoning max"), ReplCommand::Thinking(Some(_))));
         // `reasoning` resolves through the alias table
         assert!(super::completion_matches("reasoning").iter().any(|(n, _)| *n == "thinking"));
+    }
+
+    #[test]
+    fn registry_resolve_canonical_and_aliases() {
+        for name in [
+            "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
+            "cron", "proxy", "gateway", "portal", "agentsmd", "skills", "help", "quit",
+        ] {
+            let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
+            assert_eq!(d.name, name);
+            assert_eq!(super::resolve(&format!("/{name}")).unwrap().name, name);
+            assert_eq!(super::resolve(&name.to_uppercase()).unwrap().name, name);
+        }
+        for (alias, target) in [
+            ("clear", "new"),
+            ("reset", "new"),
+            ("exit", "quit"),
+            ("keys", "connect"),
+            ("key", "connect"),
+            ("providers", "connect"),
+            ("provider", "connect"),
+            ("login", "connect"),
+            ("effort", "thinking"),
+            ("reasoning", "thinking"),
+            ("compress", "compact"),
+            ("sys", "agentsmd"),
+            ("gw", "gateway"),
+            ("cost", "usage"),
+        ] {
+            assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
+            assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
+        }
+        // `portal` is both a canonical command and a legacy alias for `proxy`;
+        // canonical exact wins in resolve(), dispatch still maps both to Proxy.
+        assert_eq!(super::resolve("portal").unwrap().name, "portal");
+        assert!(
+            super::REGISTRY
+                .iter()
+                .find(|d| d.name == "proxy")
+                .unwrap()
+                .aliases
+                .contains(&"portal")
+        );
+        assert!(super::resolve("boguscmd").is_none());
+        assert!(super::resolve("/boguscmd").is_none());
+        assert!(super::resolve("").is_none());
+        assert!(super::resolve("/").is_none());
+    }
+
+    #[test]
+    fn registry_help_covers_all_commands() {
+        let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
+        for expected in [
+            "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
+            "cron", "proxy", "gateway", "portal", "agentsmd", "skills", "help", "quit",
+        ] {
+            assert!(names.contains(&expected), "help missing {expected}");
+        }
+        assert_eq!(super::REGISTRY.len(), 16);
+        // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
+        assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
+        let all = super::completion_matches("");
+        assert_eq!(all.len(), 16);
+        for expected in names {
+            assert!(all.iter().any(|(n, _)| *n == expected));
+        }
+    }
+
+    #[test]
+    fn registry_completion_covers_aliases() {
+        for (alias, target) in [
+            ("clear", "new"),
+            ("reset", "new"),
+            ("exit", "quit"),
+            ("keys", "connect"),
+            ("key", "connect"),
+            ("providers", "connect"),
+            ("provider", "connect"),
+            ("login", "connect"),
+            ("effort", "thinking"),
+            ("reasoning", "thinking"),
+            ("compress", "compact"),
+            ("sys", "agentsmd"),
+            ("portal", "proxy"),
+            ("gw", "gateway"),
+            ("cost", "usage"),
+        ] {
+            assert!(
+                super::completion_matches(alias).iter().any(|(n, _)| *n == target),
+                "completion {alias} -> {target}"
+            );
+        }
+        let m = super::completion_matches("portal");
+        assert!(m.iter().any(|(n, _)| *n == "portal"));
+        assert!(m.iter().any(|(n, _)| *n == "proxy"));
+    }
+
+    #[test]
+    fn registry_parse_uses_canonical() {
+        assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
+        assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
+        assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
+        assert!(matches!(parse_command("/portal"), ReplCommand::Proxy(_)));
+        assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(_)));
+        assert!(matches!(parse_command("/keys foo"), ReplCommand::Unknown(_)));
+        assert!(matches!(parse_command("/connect foo"), ReplCommand::Unknown(_)));
+        assert!(matches!(parse_command("/key foo"), ReplCommand::Provider));
+        assert!(matches!(parse_command("/skills foo"), ReplCommand::Unknown(_)));
     }
 
     #[test]

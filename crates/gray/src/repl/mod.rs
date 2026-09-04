@@ -51,7 +51,7 @@ pub mod commands;
 pub mod format;
 
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
-pub(crate) use commands::{COMMANDS, completion_matches_dyn};
+pub(crate) use commands::{REGISTRY, completion_matches_dyn};
 pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
 pub(crate) use format::build_user_message_with_attachments;
 
@@ -948,10 +948,19 @@ async fn handle_compact(
     }
 }
 
-async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+/// Strip the `/cron` prefix case-insensitively (`/CRON <args>` acts, not lists).
+fn cron_args(raw: &str) -> &str {
     let trimmed = raw.trim();
-    // Strip leading "/cron" and trim
-    let args_str = trimmed.strip_prefix("/cron").unwrap_or("").trim();
+    // `get` (not `[..5]`): byte 5 may split a multibyte char (`/aéé`), and
+    // slicing there panics. Non-boundary/short input falls through to "".
+    match (trimmed.get(..5), trimmed.get(5..)) {
+        (Some(prefix), Some(rest)) if prefix.eq_ignore_ascii_case("/cron") => rest.trim(),
+        _ => "",
+    }
+}
+
+async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+    let args_str = cron_args(raw);
     if args_str.is_empty() || args_str == "list" {
         let jobs = gray_cron::list_jobs();
         let msg = if jobs.is_empty() {
@@ -2594,14 +2603,14 @@ pub async fn run_repl_mode(
             ReplCommand::Help => {
                 if let Some((shared, _)) = &tui {
                     let mut out = String::new();
-                    for (name, desc) in COMMANDS {
-                        out.push_str(&format!("  /{name:<10} {desc}\n"));
+                    for d in REGISTRY {
+                        out.push_str(&format!("  /{:<10} {}\n", d.name, d.desc));
                     }
                     shared.lock().expect("tui lock").push_dim(out.trim_end().to_string());
                 } else {
                     println!("{}", crate::rule("commands"));
-                    for (name, desc) in COMMANDS {
-                        println!("  /{name:<8} {desc}");
+                    for d in REGISTRY {
+                        println!("  /{:<8} {}", d.name, d.desc);
                     }
                 }
                 continue;
@@ -3322,8 +3331,20 @@ pub async fn run_repl_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::format_core_error;
+    use super::{cron_args, format_core_error};
     use gray_core::error::CoreError;
+
+    #[test]
+    fn cron_prefix_strips_case_insensitively() {
+        assert_eq!(cron_args("/cron list"), "list");
+        assert_eq!(cron_args("/CRON list"), "list");
+        assert_eq!(cron_args("/Cron create --schedule \"every 10m\" --prompt \"hi\""), "create --schedule \"every 10m\" --prompt \"hi\"");
+        assert_eq!(cron_args("/CRON"), "");
+        assert_eq!(cron_args("  /cRoN   show abc  "), "show abc");
+        // Multibyte input must never panic: byte 5 splits `é` in `/aéé`.
+        assert_eq!(cron_args("/aéé"), "");
+        assert_eq!(cron_args("/é"), "");
+    }
 
     #[test]
     fn format_core_error_includes_provider_hint_and_cf_ray() {
