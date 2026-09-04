@@ -84,6 +84,69 @@ pub fn backoff_delay(attempt: u32) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+// ---------------------------------------------------------------------------
+// Inbound dedup: reconnect/RESUME redelivery guard (checked before authz).
+// ---------------------------------------------------------------------------
+
+/// How long a seen `(platform, chat, msg_id)` suppresses redelivery.
+pub const DEDUP_TTL_SECS: u64 = 3600;
+/// Upper bound on tracked ids; the oldest entry is evicted past this.
+pub const DEDUP_CAP: usize = 1000;
+
+/// Remembers recent inbound ids and reports repeats so the event-entry fn can
+/// drop them BEFORE authz/routing (no double-turns). Thread-agnostic by
+/// design: the key is chat-level, no thread-vs-chat split.
+pub struct InboundDedup {
+    ttl: std::time::Duration,
+    cap: usize,
+    seen: std::sync::Mutex<std::collections::HashMap<(String, String, String), std::time::Instant>>,
+}
+
+impl Default for InboundDedup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InboundDedup {
+    pub fn new() -> Self {
+        Self::with_limits(std::time::Duration::from_secs(DEDUP_TTL_SECS), DEDUP_CAP)
+    }
+
+    pub fn with_limits(ttl: std::time::Duration, cap: usize) -> Self {
+        Self { ttl, cap: std::cmp::max(cap, 1), seen: std::sync::Mutex::new(std::collections::HashMap::new()) }
+    }
+
+    /// True when `(platform, chat, msg_id)` arrived within the TTL → drop it.
+    /// First sightings (and expired ones, re-admitted) return false.
+    pub fn is_duplicate(&self, platform: &str, chat: &str, msg_id: &str) -> bool {
+        let key = (platform.to_string(), chat.to_string(), msg_id.to_string());
+        let mut seen = self.seen.lock().unwrap();
+        if let Some(t) = seen.get(&key) {
+            if t.elapsed() < self.ttl {
+                return true;
+            }
+        }
+        seen.insert(key, std::time::Instant::now());
+        if seen.len() > self.cap {
+            // ponytail: O(n) oldest scan, inbound-only at ~1000 entries; a heap if this ever matters
+            if let Some(oldest) = seen.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
+                seen.remove(&oldest);
+            }
+        }
+        false
+    }
+
+    /// Event-level helper for the inbound entry fn: unkeyed events (no
+    /// message id) can never be duplicates. Call BEFORE authz/routing.
+    pub fn is_duplicate_event(&self, ev: &MessageEvent) -> bool {
+        let Some(id) = ev.message_id.as_ref().or(ev.source.message_id.as_ref()) else {
+            return false;
+        };
+        self.is_duplicate(&ev.source.platform.to_string(), &ev.source.chat_id, id)
+    }
+}
+
 /// Count UTF-16 code units (Telegram/Discord limits are in utf16).
 pub fn utf16_len(s: &str) -> usize {
     s.encode_utf16().count()
@@ -326,5 +389,33 @@ mod tests {
         assert_eq!(backoff_delay(0).as_secs(), 1);
         assert_eq!(backoff_delay(3).as_secs(), 8);
         assert_eq!(backoff_delay(20).as_secs(), 60);
+    }
+
+    #[test]
+    fn dedup_suppresses_repeats() {
+        let d = InboundDedup::new();
+        assert!(!d.is_duplicate("telegram", "100", "1"));
+        assert!(d.is_duplicate("telegram", "100", "1"));
+        // Distinct keys pass.
+        assert!(!d.is_duplicate("telegram", "100", "2"));
+        assert!(!d.is_duplicate("telegram", "101", "1"));
+        assert!(!d.is_duplicate("discord", "100", "1"));
+    }
+
+    #[test]
+    fn dedup_expired_re_admitted() {
+        let d = InboundDedup::with_limits(std::time::Duration::from_secs(0), 1000);
+        assert!(!d.is_duplicate("telegram", "100", "1"));
+        // TTL 0 → everything is already expired, so repeats are re-admitted.
+        assert!(!d.is_duplicate("telegram", "100", "1"));
+    }
+
+    #[test]
+    fn dedup_bounded_evicts_oldest() {
+        let d = InboundDedup::with_limits(std::time::Duration::from_secs(3600), 2);
+        assert!(!d.is_duplicate("t", "c", "1"));
+        assert!(!d.is_duplicate("t", "c", "2"));
+        assert!(!d.is_duplicate("t", "c", "3")); // over cap → evicts oldest (m1)
+        assert!(!d.is_duplicate("t", "c", "1")); // m1 was evicted → treated as new
     }
 }

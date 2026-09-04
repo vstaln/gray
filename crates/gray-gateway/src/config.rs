@@ -85,6 +85,42 @@ impl PlatformConfig {
     }
 }
 
+/// When gateway sessions reset without a manual `/reset`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResetMode {
+    /// Never auto-reset (current behavior).
+    #[default]
+    None,
+    /// Reset when the session has been idle for `idle_secs`.
+    Idle,
+    /// Reset once per day after `at_hour` (UTC).
+    Daily,
+}
+
+/// Auto-reset policy for gateway sessions. Defaults preserve current
+/// behavior (never reset); checked on message routing in the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResetPolicy {
+    #[serde(default)]
+    pub mode: ResetMode,
+    #[serde(default = "default_idle_secs")]
+    pub idle_secs: u64,
+    /// UTC hour of the daily boundary (0-23).
+    #[serde(default)]
+    pub at_hour: u8,
+}
+
+impl Default for ResetPolicy {
+    fn default() -> Self {
+        Self { mode: ResetMode::None, idle_secs: default_idle_secs(), at_hour: 0 }
+    }
+}
+
+fn default_idle_secs() -> u64 {
+    3600
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     #[serde(default)] pub platforms: HashMap<Platform, PlatformConfig>,
@@ -99,13 +135,15 @@ pub struct GatewayConfig {
     #[serde(default = "default_true")] pub streaming: bool,
     /// Run due cron jobs inside the gateway and deliver output to each platform's home channel.
     #[serde(default = "default_true")] pub cron_delivery: bool,
+    /// Auto-reset policy for gateway sessions (default: never).
+    #[serde(default)] pub reset_policy: ResetPolicy,
 }
 fn default_group_per_user() -> bool { true }
 fn default_autostart() -> bool { true }
 fn default_true() -> bool { true }
 impl Default for GatewayConfig {
     fn default() -> Self {
-        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true, denied_tools: Vec::new(), streaming: true, cron_delivery: true }
+        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true, denied_tools: Vec::new(), streaming: true, cron_delivery: true, reset_policy: ResetPolicy::default() }
     }
 }
 pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
@@ -157,5 +195,31 @@ mod tests {
     fn dm_policy_serde_lowercase() {
         assert_eq!(serde_yaml::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
         assert_eq!(serde_yaml::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
+    }
+
+    #[test]
+    fn reset_policy_defaults_to_none_preserving_behavior() {
+        let cfg = GatewayConfig::default();
+        assert_eq!(cfg.reset_policy.mode, ResetMode::None);
+        // Legacy yaml without the key still loads and never resets.
+        let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.reset_policy.mode, ResetMode::None);
+    }
+
+    #[test]
+    fn reset_policy_serde_roundtrip() {
+        let yaml = "mode: idle\nidle_secs: 60\nat_hour: 3\n";
+        let p: ResetPolicy = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(p.mode, ResetMode::Idle);
+        assert_eq!(p.idle_secs, 60);
+        assert_eq!(p.at_hour, 3);
+        let yaml = "mode: daily\nat_hour: 4\n";
+        let p: ResetPolicy = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(p.mode, ResetMode::Daily);
+        assert_eq!(p.idle_secs, default_idle_secs());
+        // Missing keys default, never fail old configs.
+        let p: ResetPolicy = serde_yaml::from_str("{}\n").unwrap();
+        assert_eq!(p.mode, ResetMode::None);
     }
 }
