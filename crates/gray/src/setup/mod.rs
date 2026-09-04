@@ -75,7 +75,7 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
 
     let backend = CrosstermBackend::new(stdout_handle);
@@ -776,7 +776,7 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
 
     let backend = CrosstermBackend::new(stdout_handle);
@@ -1052,7 +1052,7 @@ pub fn run_effort_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) ->
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
 
     let backend = CrosstermBackend::new(stdout_handle);
@@ -1253,7 +1253,7 @@ pub fn run_proxy_modal(_config: &Config, bg: Option<&BackgroundSnapshot>) -> any
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -1412,7 +1412,7 @@ pub fn run_context_modal(
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
@@ -1821,7 +1821,7 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -2076,7 +2076,7 @@ pub fn run_skills_modal(cwd: &std::path::Path, bg: Option<&BackgroundSnapshot>) 
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
