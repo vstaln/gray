@@ -1,4 +1,12 @@
 //! Gateway config
+//!
+//! Security model (OpenClaw-style "trusted gateway, explicit operator allowlist"):
+//! - every platform is deny-by-default; nobody talks to the agent unless an
+//!   operator put them on an allowlist (config, `{PLATFORM}_ALLOWED_USERS` env)
+//!   or approved a pairing code via `gray gateway pairing approve`;
+//! - `dm_policy: open` is only honored when `allowed_users` literally contains
+//!   `"*"` — there is no `allow_all: true` switch;
+//! - groups never pair: an unknown sender in a group is silently ignored.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
@@ -27,15 +35,56 @@ impl Platform {
     pub fn label(&self) -> &'static str {
         match self { Self::Telegram => "Telegram", Self::Discord => "Discord", Self::Slack => "Slack" }
     }
+    /// All platforms, for iteration in status/onboarding code.
+    pub const ALL: [Platform; 3] = [Platform::Telegram, Platform::Discord, Platform::Slack];
+    /// Outbound hard limit in UTF-16 code units (Telegram 4096, Discord 2000, Slack 39000).
+    pub fn max_message_len(&self) -> usize {
+        match self { Self::Telegram => 4096, Self::Discord => 2000, Self::Slack => 39000 }
+    }
+    /// Env var consulted for the user allowlist (hermes `TELEGRAM_ALLOWED_USERS` style).
+    pub fn allowed_users_env(&self) -> &'static str {
+        match self { Self::Telegram => "TELEGRAM_ALLOWED_USERS", Self::Discord => "DISCORD_ALLOWED_USERS", Self::Slack => "SLACK_ALLOWED_USERS" }
+    }
 }
+
+/// How unknown DM senders are treated (OpenClaw `dmPolicy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DmPolicy {
+    /// Unknown senders get a one-time pairing code; nothing is processed until approved.
+    #[default]
+    Pairing,
+    /// Only allowlisted senders; unknown senders are ignored silently.
+    Allowlist,
+    /// Public bot. Only effective when `allowed_users` contains `"*"`.
+    Open,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlatformConfig {
     #[serde(default)] pub enabled: bool,
     #[serde(default)] pub token: Option<String>,
     #[serde(default)] pub app_token: Option<String>,
     #[serde(default)] pub home_channel: Option<String>,
+    /// Operator allowlist of platform user ids (numeric for Telegram/Discord, `U…` for Slack).
+    /// `"*"` means everyone (only meaningful with `dm_policy: open`).
+    #[serde(default)] pub allowed_users: Vec<String>,
+    /// Extra allowlist for group/channel senders (in addition to `allowed_users`).
+    #[serde(default)] pub group_allowed_users: Vec<String>,
+    #[serde(default)] pub dm_policy: DmPolicy,
 }
-impl Default for PlatformConfig { fn default() -> Self { Self { enabled: false, token: None, app_token: None, home_channel: None } } }
+impl Default for PlatformConfig {
+    fn default() -> Self {
+        Self { enabled: false, token: None, app_token: None, home_channel: None, allowed_users: Vec::new(), group_allowed_users: Vec::new(), dm_policy: DmPolicy::default() }
+    }
+}
+impl PlatformConfig {
+    /// Convenience for tests and REPL wiring: enabled + token, everything else default.
+    pub fn with_token(token: impl Into<String>) -> Self {
+        Self { enabled: true, token: Some(token.into()), ..Default::default() }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
     #[serde(default)] pub platforms: HashMap<Platform, PlatformConfig>,
@@ -43,10 +92,22 @@ pub struct GatewayConfig {
     #[serde(default)] pub thread_per_user: bool,
     /// Auto-start the in-process gateway when gray launches (toggle: /gateway autostart on|off).
     #[serde(default = "default_autostart")] pub autostart: bool,
+    /// Tools the agent may never call while driven from a chat platform
+    /// (no interactive operator to confirm). Merged with the built-in deny set.
+    #[serde(default)] pub denied_tools: Vec<String>,
+    /// Stream partial replies via edit-in-place where the platform supports it.
+    #[serde(default = "default_true")] pub streaming: bool,
+    /// Run due cron jobs inside the gateway and deliver output to each platform's home channel.
+    #[serde(default = "default_true")] pub cron_delivery: bool,
 }
 fn default_group_per_user() -> bool { true }
 fn default_autostart() -> bool { true }
-impl Default for GatewayConfig { fn default() -> Self { Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true } } }
+fn default_true() -> bool { true }
+impl Default for GatewayConfig {
+    fn default() -> Self {
+        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true, denied_tools: Vec::new(), streaming: true, cron_delivery: true }
+    }
+}
 pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
     let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map_err(|_| anyhow::anyhow!("cannot resolve home"))?;
     Ok(PathBuf::from(base))
@@ -65,4 +126,36 @@ pub fn save_gateway_config(cfg: &GatewayConfig) -> anyhow::Result<()> {
     std::fs::write(&path, s)?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?; }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_display_and_serde_are_byte_identical() {
+        // Persisted session keys depend on these strings — never change them.
+        for (p, s) in [(Platform::Telegram, "telegram"), (Platform::Discord, "discord"), (Platform::Slack, "slack")] {
+            assert_eq!(p.to_string(), s);
+            assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{s}\""));
+            assert_eq!(s.parse::<Platform>().unwrap(), p);
+        }
+    }
+
+    #[test]
+    fn legacy_yaml_loads_with_secure_defaults() {
+        let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
+        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let t = &cfg.platforms[&Platform::Telegram];
+        assert!(t.allowed_users.is_empty());
+        assert_eq!(t.dm_policy, DmPolicy::Pairing);
+        assert!(cfg.streaming);
+        assert!(cfg.denied_tools.is_empty());
+    }
+
+    #[test]
+    fn dm_policy_serde_lowercase() {
+        assert_eq!(serde_yaml::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
+        assert_eq!(serde_yaml::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
+    }
 }
