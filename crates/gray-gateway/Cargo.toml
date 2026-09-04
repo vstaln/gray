@@ -2,7 +2,7 @@
 name = "gray-gateway"
 version.workspace = true
 edition.workspace = true
-description = "gray gateway daemon for Discord"
+description = "gray gateway daemon for Telegram/Discord/Slack"
 license.workspace = true
 
 [dependencies]
@@ -18,19 +18,27 @@ gray-core = { workspace = true }
 gray-session = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
+gray-cron = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { workspace = true }
 base64 = { workspace = true }
-# Optional real platform deps (feature-gated; default build stays offline-friendly)
+sha2 = { workspace = true }
+# Optional real platform deps (feature-gated; default build stays stub so cargo check passes offline)
+teloxide = { version = "0.17", optional = true, default-features = false, features = ["rustls"] }
 twilight-gateway = { version = "0.17", optional = true }
 twilight-http = { version = "0.17", optional = true }
 twilight-model = { version = "0.17", optional = true }
+slack-morphism = { version = "2", optional = true, features = ["hyper"] }
 twilight-util = { version = "0.17.0", features = ["builder"], optional = true }
 
 [features]
 default = []
+telegram = ["dep:teloxide"]
 discord = ["dep:twilight-gateway", "dep:twilight-http", "dep:twilight-model", "dep:twilight-util"]
+slack = ["dep:slack-morphism"]
+# Enable all real adapters: --features all-platforms
+all-platforms = ["telegram", "discord", "slack"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
