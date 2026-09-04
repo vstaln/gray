@@ -444,7 +444,11 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         tui.pending_pastes.clear();
                         let trimmed = text.trim().to_string();
                         if trimmed.is_empty() && tui.attachments.is_empty() { continue; }
-                        if !trimmed.is_empty() {
+                        // A connect command carries a live token: echo it redacted and keep it
+                        // out of Up/Down history so neither the transcript nor recall leaks it.
+                        let echo = super::transcript::redact_command_echo(&trimmed);
+                        let has_secret = echo != trimmed;
+                        if !trimmed.is_empty() && !has_secret {
                             tui.history.push(trimmed.clone());
                             if tui.history.len() > 100 { tui.history.remove(0); }
                         }
@@ -463,7 +467,7 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         tui.matches.clear();
                         tui.sel = 0;
                         // Slash commands hug their feedback: no trailing gap, say() output follows directly.
-                        tui.push_user_prompt(&trimmed, &attached, !trimmed.starts_with('/'));
+                        tui.push_user_prompt(&echo, &attached, !trimmed.starts_with('/'));
                         return Ok(Some((trimmed, attached)));
                     }
                     KeyCode::Tab => {
