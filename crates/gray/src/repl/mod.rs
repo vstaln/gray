@@ -951,10 +951,11 @@ async fn handle_compact(
 /// Strip the `/cron` prefix case-insensitively (`/CRON <args>` acts, not lists).
 fn cron_args(raw: &str) -> &str {
     let trimmed = raw.trim();
-    if trimmed.len() >= 5 && trimmed[..5].eq_ignore_ascii_case("/cron") {
-        trimmed[5..].trim()
-    } else {
-        ""
+    // `get` (not `[..5]`): byte 5 may split a multibyte char (`/aéé`), and
+    // slicing there panics. Non-boundary/short input falls through to "".
+    match (trimmed.get(..5), trimmed.get(5..)) {
+        (Some(prefix), Some(rest)) if prefix.eq_ignore_ascii_case("/cron") => rest.trim(),
+        _ => "",
     }
 }
 
@@ -3340,6 +3341,9 @@ mod tests {
         assert_eq!(cron_args("/Cron create --schedule \"every 10m\" --prompt \"hi\""), "create --schedule \"every 10m\" --prompt \"hi\"");
         assert_eq!(cron_args("/CRON"), "");
         assert_eq!(cron_args("  /cRoN   show abc  "), "show abc");
+        // Multibyte input must never panic: byte 5 splits `é` in `/aéé`.
+        assert_eq!(cron_args("/aéé"), "");
+        assert_eq!(cron_args("/é"), "");
     }
 
     #[test]
