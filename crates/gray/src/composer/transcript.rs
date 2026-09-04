@@ -592,25 +592,14 @@ impl Tui {
             header: header.to_string(),
             rows: crate::repl::gateway_boot_rows(board),
         });
-        if self.status_is_gateway_or_empty() {
-            self.status = crate::repl::gateway_boot_label(board).map(|l| (std::time::Instant::now(), l));
-        }
         let _ = self.draw();
     }
 
-    /// Refreshes the live panel + shimmer-bar text from the board. Never
-    /// clobbers a turn's status that started mid-boot.
+    /// Refreshes the live panel rows. Never touches `status`: the boot card
+    /// above the input is the only boot indicator (no top shimmer row).
     pub fn refresh_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
         if let Some(p) = self.gateway_boot.as_mut() {
             p.rows = crate::repl::gateway_boot_rows(board);
-        }
-        if self.status_is_gateway_or_empty() {
-            if let Some(label) = crate::repl::gateway_boot_label(board) {
-                let same = self.status.as_ref().is_some_and(|(_, cur)| cur == &label);
-                if !same {
-                    self.status = Some((std::time::Instant::now(), label));
-                }
-            }
         }
     }
 
