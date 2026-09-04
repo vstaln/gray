@@ -23,6 +23,7 @@ pub mod delivery;
 pub mod pairing;
 pub mod platform;
 pub mod session;
+pub mod status;
 pub mod systemd;
 pub mod telegram;
 pub mod discord;

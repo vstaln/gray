@@ -9,6 +9,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use gray_markdown::HyperlinkTarget;
 
 use super::Tui;
+use super::GatewayBootPanel;
 
 fn thinking_style() -> Style {
     Style::default()
@@ -552,6 +553,21 @@ pub(crate) fn format_tool_box_lines(
 
 impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
+        self.insert_tool_box(header, body);
+        self.ensure_gap(1);
+        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        let _ = std::io::stdout().flush();
+    }
+
+    /// Tool box with no trailing gap: the card hugs the input box. Used for
+    /// the gateway boot card (its final state is committed once, in one message).
+    pub fn push_tool_box_no_gap(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
+        self.insert_tool_box(header, body);
+        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        let _ = std::io::stdout().flush();
+    }
+
+    fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.ensure_gap(1);
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
@@ -565,9 +581,62 @@ impl Tui {
             body,
         });
         self.transcript.extend(box_lines);
-        self.ensure_gap(1);
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
-        let _ = std::io::stdout().flush();
+    }
+
+    /// Live gateway boot panel: rendered in the viewport above the input
+    /// while platforms connect, then committed as ONE static card.
+    /// `header` is e.g. "Gateway autostarted"; rows come from
+    /// [`crate::repl::gateway_boot_rows`] (` └─ Discord — connecting…`).
+    pub fn begin_gateway_boot(&mut self, header: &str, board: &gray_gateway::status::GatewayStatusBoard) {
+        self.gateway_boot = Some(GatewayBootPanel {
+            header: header.to_string(),
+            rows: crate::repl::gateway_boot_rows(board),
+        });
+        if self.status_is_gateway_or_empty() {
+            self.status = crate::repl::gateway_boot_label(board).map(|l| (std::time::Instant::now(), l));
+        }
+        let _ = self.draw();
+    }
+
+    /// Refreshes the live panel + shimmer-bar text from the board. Never
+    /// clobbers a turn's status that started mid-boot.
+    pub fn refresh_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
+        if let Some(p) = self.gateway_boot.as_mut() {
+            p.rows = crate::repl::gateway_boot_rows(board);
+        }
+        if self.status_is_gateway_or_empty() {
+            if let Some(label) = crate::repl::gateway_boot_label(board) {
+                let same = self.status.as_ref().is_some_and(|(_, cur)| cur == &label);
+                if !same {
+                    self.status = Some((std::time::Instant::now(), label));
+                }
+            }
+        }
+    }
+
+    /// Clears the live panel + status and commits the final board state as
+    /// ONE card with no trailing gap (it hugs the input box). No-op when no
+    /// boot is active (the watcher only commits once).
+    pub fn finish_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
+        let Some(panel) = self.gateway_boot.take() else { return; };
+        if self.status_is_gateway_or_empty() {
+            self.status = None;
+        }
+        let header = Line::from(Span::styled(
+            panel.header,
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ));
+        let dim = Style::default().fg(Color::Rgb(140, 140, 140));
+        let body: Vec<Line<'static>> = crate::repl::gateway_boot_rows(board)
+            .into_iter()
+            .map(|r| Line::from(Span::styled(r, dim)))
+            .collect();
+        self.push_tool_box_no_gap(header, body);
+        let _ = self.draw();
+    }
+
+    fn status_is_gateway_or_empty(&self) -> bool {
+        self.status.as_ref().map(|(_, l)| l.starts_with("Gateway")).unwrap_or(true)
     }
 
     pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }

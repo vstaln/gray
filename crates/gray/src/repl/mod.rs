@@ -1226,19 +1226,33 @@ fn gateway_status_lines(cfg: &gray_gateway::config::GatewayConfig, running: bool
 }
 
 /// Starts the gateway daemon in-process (shared by /gateway run and launch
-/// autostart). Returns false when already running.
-fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> bool {
+/// autostart). Returns the live connection board, or None when already running.
+fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> Option<gray_gateway::status::GatewayStatusBoard> {
     let already = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
     if already {
-        return false;
+        return None;
     }
+    // The board starts with every enabled platform in `Connecting`; the
+    // daemon marks each result and the boot watcher paints the live card.
+    let board = {
+        use gray_gateway::config::Platform;
+        let cfg = gray_gateway::config::load_gateway_config();
+        let plats: Vec<Platform> = Platform::ALL
+            .into_iter()
+            .filter(|p| cfg.platforms.get(p).is_some_and(|pc| pc.enabled))
+            .collect();
+        gray_gateway::status::GatewayStatusBoard::new(&plats)
+    };
+    let board_task = board.clone();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tui_arc = tui.cloned();
     let h = tokio::spawn(async move {
-        let res = gray_gateway::daemon::run_gateway_shutdown(rx).await;
+        let res = gray_gateway::daemon::run_gateway_shutdown_with_board(rx, Some(board_task.clone())).await;
         if let Err(e) = &res {
             log::warn!("gateway exited: {e}");
         }
+        // Never leave the boot card spinning when the task exits early.
+        board_task.fail_unresolved("gateway exited");
         GATEWAY_HANDLE.lock().ok().and_then(|mut g| g.take());
         if let Some(shared) = tui_arc {
             if let Ok(mut t) = shared.lock() {
@@ -1251,7 +1265,79 @@ fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> bool
         }
     });
     *GATEWAY_HANDLE.lock().unwrap() = Some((h, tx));
-    true
+    Some(board)
+}
+
+/// One boot-card row per platform: ` └─ Discord — connecting…` →
+/// ` └─ Discord — connected as GrayBot`. The leading space is the requested
+/// indent under the card header; shared verbatim by the live viewport panel
+/// and the committed final card.
+pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard) -> Vec<String> {
+    use gray_gateway::status::PlatformConnState as S;
+    let snap = board.snapshot();
+    snap.iter()
+        .enumerate()
+        .map(|(i, (plat, st))| {
+            let branch = if i + 1 == snap.len() { "└─" } else { "├─" };
+            let status = match st {
+                S::Connecting => "connecting…".to_string(),
+                S::Connected { identity: Some(id) } => format!("connected as {id}"),
+                S::Connected { identity: None } => "connected".to_string(),
+                S::Failed(e) => format!("connect failed: {e}"),
+            };
+            format!(" {branch} {} — {status}", plat.label())
+        })
+        .collect()
+}
+
+/// Compact shimmer-bar text while the gateway boots (`Gateway · connecting
+/// Discord…`). None once everything resolved — the watcher then commits the
+/// final card and clears the bar.
+pub(crate) fn gateway_boot_label(board: &gray_gateway::status::GatewayStatusBoard) -> Option<String> {
+    let snap = board.snapshot();
+    if snap.is_empty() {
+        return None;
+    }
+    let pending: Vec<&str> = snap
+        .iter()
+        .filter(|(_, s)| !s.terminal())
+        .map(|(p, _)| p.label())
+        .collect();
+    if pending.is_empty() {
+        return None;
+    }
+    Some(format!("Gateway · connecting {}…", pending.join(", ")))
+}
+
+/// Watches the gateway board and drives the live boot panel → final card.
+/// Capped at 6 minutes so a wedged daemon can't leak the task.
+fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gateway::status::GatewayStatusBoard) {
+    tokio::spawn(async move {
+        let fut = async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
+            let mut iv = tokio::time::interval(std::time::Duration::from_millis(250));
+            loop {
+                iv.tick().await;
+                let done = board.all_terminal() || std::time::Instant::now() >= deadline;
+                if let Ok(mut t) = tui.try_lock() {
+                    if done {
+                        t.finish_gateway_boot(&board);
+                    } else {
+                        t.refresh_gateway_boot(&board);
+                    }
+                    let _ = t.draw();
+                } else if done {
+                    // TUI busy — retry the commit next tick instead of dropping it.
+                    continue;
+                }
+                if done && tui.try_lock().map(|t| t.gateway_boot.is_none()).unwrap_or(false) {
+                    break;
+                }
+            }
+        };
+        // Hard outer cap: never outlive the session.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(420), fut).await;
+    });
 }
 
 /// Enables `plat` in `cfg` with `token` (mutates in place; caller saves).
@@ -1327,10 +1413,18 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             }
         }
         GatewayAction::Run => {
-            if start_gateway_in_background(tui) {
-                say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
-            } else {
-                say(tui, "gateway already running");
+            match start_gateway_in_background(tui) {
+                Some(board) => {
+                    if let Some(shared) = tui {
+                        // Live boot panel + shimmer bar; the final state lands
+                        // as ONE card, no follow-up lines.
+                        shared.lock().expect("tui lock").begin_gateway_boot("Gateway started", &board);
+                        spawn_gateway_boot_watcher(shared.clone(), board);
+                    } else {
+                        say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
+                    }
+                }
+                None => say(tui, "gateway already running"),
             }
         }
         GatewayAction::Autostart(on) => {
@@ -2197,32 +2291,17 @@ pub async fn run_repl_mode(
         }
     }
     // Gateway autostart (default on): boot the in-process daemon when any
-    // platform is enabled. Silent when nothing is configured.
+    // platform is enabled. Silent when nothing is configured. Shows a LIVE
+    // boot panel above the input (per-platform connecting → connected as …
+    // plus a shimmer-bar line); when every platform resolves, the final
+    // state is committed as ONE card with no trailing gap. No follow-ups.
     if let Some((shared, _)) = tui.as_ref() {
         let cfg = gray_gateway::config::load_gateway_config();
-        if cfg.autostart && cfg.platforms.values().any(|p| p.enabled) && start_gateway_in_background(Some(shared)) {
-            use gray_gateway::config::Platform;
-            let started: Vec<&str> = [Platform::Telegram, Platform::Discord, Platform::Slack]
-                .into_iter()
-                .filter(|p| cfg.platforms.get(p).is_some_and(|pc| pc.enabled))
-                .map(|p| p.label())
-                .collect();
-            let mut t = shared.lock().expect("tui lock");
-            let header = ratatui::text::Line::from(ratatui::text::Span::styled(
-                "Gateway autostarted",
-                ratatui::style::Style::default().fg(ratatui::style::Color::White).add_modifier(ratatui::style::Modifier::BOLD),
-            ));
-            let dim = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(140, 140, 140));
-            let mut body = Vec::new();
-            for (i, name) in started.iter().enumerate() {
-                let branch = if i + 1 == started.len() { "└─" } else { "├─" };
-                body.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                    format!("{branch} {name} — connecting in background"),
-                    dim,
-                )));
+        if cfg.autostart && cfg.platforms.values().any(|p| p.enabled) {
+            if let Some(board) = start_gateway_in_background(Some(shared)) {
+                shared.lock().expect("tui lock").begin_gateway_boot("Gateway autostarted", &board);
+                spawn_gateway_boot_watcher(shared.clone(), board);
             }
-            t.push_tool_box(header, body);
-            t.ensure_gap(1);
         }
     }
     let mut pending_command: Option<ReplCommand> = None;
@@ -3415,5 +3494,55 @@ mod tests {
         let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
         assert!(line.contains("6.5s"), "footer should show time: {line}");
         assert!(line.contains("tok"), "footer should keep tokens: {line}");
+    }
+
+    #[test]
+    fn gateway_boot_rows_indent_and_states() {
+        use gray_gateway::config::Platform;
+        use gray_gateway::status::{GatewayStatusBoard, PlatformConnState as S};
+        let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Telegram]);
+        // Canonical order (Telegram first), connecting, one leading space.
+        assert_eq!(
+            super::gateway_boot_rows(&b),
+            vec![
+                " ├─ Telegram — connecting…".to_string(),
+                " └─ Discord — connecting…".to_string(),
+            ]
+        );
+        b.mark_connected(Platform::Discord, Some("GrayBot".into()));
+        b.mark_connected(Platform::Telegram, None);
+        assert_eq!(
+            super::gateway_boot_rows(&b),
+            vec![
+                " ├─ Telegram — connected".to_string(),
+                " └─ Discord — connected as GrayBot".to_string(),
+            ]
+        );
+        // Failed state surfaces the error inline (same single card).
+        b.mark_failed(Platform::Telegram, "token rejected");
+        let rows = super::gateway_boot_rows(&b);
+        assert_eq!(rows[0], " ├─ Telegram — connect failed: token rejected");
+        // No identity leak: rows never contain tokens, only display names.
+        assert!(!rows.join("\n").contains("secret"));
+        let _ = S::Connecting;
+    }
+
+    #[test]
+    fn gateway_boot_label_tracks_pending() {
+        use gray_gateway::config::Platform;
+        use gray_gateway::status::GatewayStatusBoard;
+        let b = GatewayStatusBoard::new(&[Platform::Telegram, Platform::Discord]);
+        assert_eq!(
+            super::gateway_boot_label(&b).as_deref(),
+            Some("Gateway · connecting Telegram, Discord…")
+        );
+        b.mark_connected(Platform::Telegram, None);
+        assert_eq!(
+            super::gateway_boot_label(&b).as_deref(),
+            Some("Gateway · connecting Discord…")
+        );
+        b.mark_failed(Platform::Discord, "x");
+        assert!(super::gateway_boot_label(&b).is_none());
+        assert!(super::gateway_boot_label(&GatewayStatusBoard::default()).is_none());
     }
 }

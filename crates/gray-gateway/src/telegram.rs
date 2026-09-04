@@ -30,6 +30,8 @@ pub struct TelegramAdapter {
     event_tx: Mutex<Option<UnboundedSender<MessageEvent>>>,
     /// Polling task handle so `disconnect` can stop it.
     poller: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Bot name from `get_me` (set on connect, read by the boot card).
+    identity: Mutex<Option<String>>,
 }
 
 impl TelegramAdapter {
@@ -43,6 +45,7 @@ impl TelegramAdapter {
             client: Mutex::new(None),
             event_tx: Mutex::new(None),
             poller: Mutex::new(None),
+            identity: Mutex::new(None),
         })
     }
 
@@ -216,6 +219,10 @@ impl BasePlatformAdapter for TelegramAdapter {
         self.is_authenticated()
     }
 
+    fn bot_identity(&self) -> Option<String> {
+        self.identity.lock().ok().and_then(|g| g.clone())
+    }
+
     async fn connect(&self) -> anyhow::Result<()> {
         validate_telegram_token(&self.token)?;
         #[cfg(feature = "telegram")]
@@ -225,6 +232,7 @@ impl BasePlatformAdapter for TelegramAdapter {
             // Fail fast on a rejected token (hermes get_me parity).
             let me = bot.get_me().await.map_err(|e| anyhow::anyhow!("telegram token rejected: {e}"))?;
             log::info!("[telegram] authenticated as @{}", me.username());
+            *self.identity.lock().unwrap() = Some(format!("@{}", me.username()));
             *self.client.lock().unwrap() = Some(bot.clone());
             let tx = self.event_tx.lock().unwrap().clone();
             match tx {

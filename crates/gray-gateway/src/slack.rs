@@ -38,6 +38,8 @@ pub struct SlackAdapter {
     event_tx: Mutex<Option<UnboundedSender<MessageEvent>>>,
     /// Socket Mode task; aborted on disconnect.
     listener: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Bot name from `auth.test` (set on connect, read by the boot card).
+    identity: Mutex<Option<String>>,
 }
 
 impl SlackAdapter {
@@ -56,6 +58,7 @@ impl SlackAdapter {
             client: Mutex::new(None),
             event_tx: Mutex::new(None),
             listener: Mutex::new(None),
+            identity: Mutex::new(None),
         })
     }
 
@@ -236,6 +239,10 @@ impl BasePlatformAdapter for SlackAdapter {
         self.is_authenticated()
     }
 
+    fn bot_identity(&self) -> Option<String> {
+        self.identity.lock().ok().and_then(|g| g.clone())
+    }
+
     async fn connect(&self) -> anyhow::Result<()> {
         validate_slack_bot_token(&self.bot_token)?;
         if let Some(ref t) = self.app_token {
@@ -253,6 +260,7 @@ impl BasePlatformAdapter for SlackAdapter {
                 .await
                 .map_err(|e| anyhow::anyhow!("slack bot token rejected: {e}"))?;
             log::info!("[slack] authenticated as {} in {}", me.user.as_deref().unwrap_or("?"), me.team);
+            *self.identity.lock().unwrap() = me.user.clone().filter(|s| !s.trim().is_empty());
             *self.client.lock().unwrap() = Some(client.clone());
             let tx = self.event_tx.lock().unwrap().clone();
             match (tx, self.app_token.clone()) {
