@@ -36,10 +36,8 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> V
     }).collect()
 }
 
-/// Input box render state: styled content lines (optional bare top pad row,
-/// `❯` prompt) plus the cursor position within them. No bottom pad: the
-/// breathing row below the band is a bare layout gap (see `gap_h` in draw),
-/// so it never melts into the footer like a same-bg pad row would.
+/// Input box render state: styled lines (own internal top/bottom margin rows,
+/// `❯` prompt) plus the cursor position within them.
 pub(crate) struct InputBox {
     pub(crate) lines: Vec<Line<'static>>,
     pub(crate) cur_row: usize,
@@ -48,10 +46,8 @@ pub(crate) struct InputBox {
 
 /// Builds the prompt box lines from textarea state. Hoisted out of the draw
 /// closure so the dock height (and thus the viewport) can be sized before
-/// `terminal.draw` runs. `top_pad` is false when a panel rides directly
-/// above (boot card, queued preview) so it hugs the box; `cur_row` stays
-/// content-relative either way.
-pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize, top_pad: bool) -> InputBox {
+/// `terminal.draw` runs.
+pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     let content_w = w.saturating_sub(4).max(1);
 
     // Neutral Gray palette (no blue)
@@ -61,10 +57,8 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize, top_pad: bool
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
-    // Top padding inside the box — skipped when a panel hugs the box above.
-    if top_pad {
-        box_lines.push(Line::from(""));
-    }
+    // Top padding inside the box
+    box_lines.push(Line::from(""));
 
     // Prompt input rows
     let prompt_arrow = " ❯ ";
@@ -145,6 +139,9 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize, top_pad: bool
             current_byte_pos = line_end_bytes + 1;
         }
     }
+
+    // Bottom padding inside the box
+    box_lines.push(Line::from(""));
 
     InputBox { lines: box_lines, cur_row, cur_col }
 }
@@ -236,12 +233,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
-    // A live panel (boot card, queued preview) hugs the box: no top pad.
-    // Mirrors the `queued_lines` construction below (question hides the box,
-    // so pad stays true there — today's behavior, bit for bit).
-    let top_pad = tui.active_question.is_some()
-        || (tui.gateway_boot.is_none() && tui.queued_inputs.is_empty());
-    let ibox = build_input_box(&text, cursor, w, top_pad);
+    let ibox = build_input_box(&text, cursor, w);
     let box_h = ibox.lines.len().max(1) as u16;
     let question_active = tui.active_question.is_some();
     // While a question is up it IS the status: hide the shimmer and the
@@ -279,11 +271,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             lines
         };
         let queued_h = queued_lines.len() as u16;
-    let box_y = status_y + status_h + queued_h;
-    // Bare breathing row between the band (or panel/attachments below it)
-    // and the footer. Question panels carry their own bottom margin.
-    let gap_h: u16 = if question_active { 0 } else { 1 };
-    let avail = area.height.saturating_sub(status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + gap_h + 1);
+        let box_y = status_y + status_h + queued_h;
+        let avail = area.height.saturating_sub(status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1);
         // Grow viewport to fit full question; fall back to PANEL_ROWS min when short on space.
         // ponytail: two-pass (uncapped then capped), no new layout engine.
         let need = if question_active {
@@ -308,8 +297,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // Codex parity: while a question is active the question surface REPLACES
         // the composer — no input box, the panel occupies its slot.
         let panel_y = if question_active { box_y } else { box_y + box_h };
-    let attach_y = panel_y + panel_h;
-    let footer_y = attach_y + attach_h + gap_h;
+        let attach_y = panel_y + panel_h;
+        let footer_y = attach_y + attach_h;
 
         if let Some((started, label)) = &tui.status && !question_active {
             let label_text = format!(" ⬡ {label}\u{2026}");
@@ -419,14 +408,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, attach_y, area.width, 1));
         }
 
-        if gap_h > 0 {
-        let gap_y = attach_y + attach_h;
-        if gap_y >= area.y && gap_y < area.y + area.height {
-            frame.render_widget(Paragraph::new(Line::from("")), Rect::new(area.x, gap_y, area.width, 1));
-        }
-    }
-
-    let (_, max_label) = crate::setup::model_context_info(&tui.model_name);
+        let (_, max_label) = crate::setup::model_context_info(&tui.model_name);
         let (used_tokens, hit_rate) = if let Some(u) = tui.latest_usage.or(tui.cumulative_usage) {
             (u.total(), u.cache_hit_rate() * 100.0)
         } else {
@@ -509,8 +491,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         if tui.status.is_none() && !tui.is_task_running {
             let cur_x = (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
-            // Cursor rows are content-relative; skip the top pad row when present.
-            let cur_y = (box_y + u16::from(top_pad) + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+            let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         }
     });
@@ -527,23 +508,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_dock_seam_is_dynamic() {        assert_eq!(status_dock_h(false, false, true), 0);
+    fn status_dock_seam_is_dynamic() {
+        assert_eq!(status_dock_h(false, false, true), 0);
         assert_eq!(status_dock_h(true, true, true), 0);   // question owns the viewport
         assert_eq!(status_dock_h(true, false, false), 2); // scrollback already blank: status + breath
         assert_eq!(status_dock_h(true, false, true), 3);  // seam + status + breath
-    }
-
-    #[test]
-    fn input_box_hug_skips_top_pad_and_keeps_prompt_first() {
-        let padded = build_input_box("", 0, 40, true);
-        let hug = build_input_box("", 0, 40, false);
-        // Hug drops exactly the top pad row; ❯ prompt row leads either way.
-        assert_eq!(padded.lines.len(), hug.lines.len() + 1);
-        let first: String = hug.lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(first.contains('❯'), "hug box must lead with the prompt: {first:?}");
-        // Cursor stays content-relative: row 0 in both shapes.
-        assert_eq!((padded.cur_row, padded.cur_col), (0, 0));
-        assert_eq!((hug.cur_row, hug.cur_col), (0, 0));
     }
 
     #[test]
