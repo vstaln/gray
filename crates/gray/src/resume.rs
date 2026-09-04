@@ -204,7 +204,7 @@ fn run_picker_sync(
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;

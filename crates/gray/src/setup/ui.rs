@@ -108,7 +108,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Clear, Paragraph};
+    use ratatui::widgets::{Block, Clear, Paragraph};
 
     let area = frame.area();
     let w = area.width as usize;
@@ -120,10 +120,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     // stale alt-screen content / terminal transparency visible behind modals.
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            " ".repeat(w),
-            Style::default().bg(BACKDROP_BG),
-        ))),
+        Block::default().style(Style::default().bg(BACKDROP_BG)),
         area,
     );
 
@@ -183,7 +180,11 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         for l in transcript {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
-        let empty_needed = transcript_avail_h.saturating_sub(transcript.len());
+        for l in bottom_box_lines {
+            full_screen_lines.push(pad_backdrop_line(l, w));
+        }
+        full_screen_lines.push(pad_backdrop_line(footer_line, w));
+        let empty_needed = h.saturating_sub(full_screen_lines.len());
         for _ in 0..empty_needed {
             full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
         }
@@ -192,13 +193,12 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         for l in &transcript[skip..] {
             full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
         }
+        for l in bottom_box_lines {
+            full_screen_lines.push(pad_backdrop_line(l, w));
+        }
+        full_screen_lines.push(pad_backdrop_line(footer_line, w));
     }
 
-    for l in bottom_box_lines {
-        full_screen_lines.push(pad_backdrop_line(l, w));
-    }
-
-    full_screen_lines.push(pad_backdrop_line(footer_line, w));
     full_screen_lines.truncate(h);
 
     // Row-by-row (composer `draw.rs` parity): a single multi-line Paragraph
