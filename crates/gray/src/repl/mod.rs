@@ -1299,25 +1299,6 @@ pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard
         .collect()
 }
 
-/// Compact shimmer-bar text while the gateway boots (`Gateway · connecting
-/// Discord…`). None once everything resolved — the watcher then commits the
-/// final card and clears the bar.
-pub(crate) fn gateway_boot_label(board: &gray_gateway::status::GatewayStatusBoard) -> Option<String> {
-    let snap = board.snapshot();
-    if snap.is_empty() {
-        return None;
-    }
-    let pending: Vec<&str> = snap
-        .iter()
-        .filter(|(_, s)| !s.terminal())
-        .map(|(p, _)| p.label())
-        .collect();
-    if pending.is_empty() {
-        return None;
-    }
-    Some(format!("Gateway · connecting {}…", pending.join(", ")))
-}
-
 /// Watches the gateway board and drives the live boot panel → final card.
 /// Capped at 6 minutes so a wedged daemon can't leak the task.
 fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gateway::status::GatewayStatusBoard) {
@@ -3548,24 +3529,5 @@ mod tests {
         // No identity leak: rows never contain tokens, only display names.
         assert!(!rows.join("\n").contains("secret"));
         let _ = S::Connecting;
-    }
-
-    #[test]
-    fn gateway_boot_label_tracks_pending() {
-        use gray_gateway::config::Platform;
-        use gray_gateway::status::GatewayStatusBoard;
-        let b = GatewayStatusBoard::new(&[Platform::Telegram, Platform::Discord]);
-        assert_eq!(
-            super::gateway_boot_label(&b).as_deref(),
-            Some("Gateway · connecting Telegram, Discord…")
-        );
-        b.mark_connected(Platform::Telegram, None);
-        assert_eq!(
-            super::gateway_boot_label(&b).as_deref(),
-            Some("Gateway · connecting Discord…")
-        );
-        b.mark_failed(Platform::Discord, "x");
-        assert!(super::gateway_boot_label(&b).is_none());
-        assert!(super::gateway_boot_label(&GatewayStatusBoard::default()).is_none());
     }
 }
