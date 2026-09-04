@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
@@ -83,6 +83,9 @@ pub struct Tui {
     // request_user_input overlay (codex port) + late non-blocking answers
     pub(crate) active_question: Option<question::QuestionSession>,
     pub pending_question_answers: Vec<String>,
+    /// Live gateway boot panel: painted in the viewport above the input while
+    /// platforms connect, then committed as ONE static card (no follow-ups).
+    pub(crate) gateway_boot: Option<GatewayBootPanel>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +101,15 @@ pub enum TranscriptEntry {
         hyperlinks: Vec<HyperlinkTarget>,
     },
     Gap(usize),
+}
+
+/// Live gateway boot panel state: the header plus one plain-text row per
+/// platform. Painted bare in the viewport while connecting; the same strings
+/// are committed into the final card (with card styling) when boot resolves.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct GatewayBootPanel {
+    pub header: String,
+    pub rows: Vec<String>,
 }
 
 pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
@@ -200,6 +212,7 @@ impl Tui {
             last_cron_tick: None,
             active_question: None,
             pending_question_answers: Vec::new(),
+            gateway_boot: None,
         })
     }
 
@@ -442,6 +455,22 @@ impl Tui {
         self.pending_tokens = Some(tok_line);
     }
 
+    /// Viewport rows for the live gateway boot panel (empty when no boot is
+    /// active). Bare text like the queued-input preview: bold-white header +
+    /// dim per-platform rows, sharing the exact strings the final card commits.
+    pub(crate) fn gateway_panel_lines(&self) -> Vec<Line<'static>> {
+        let Some(panel) = &self.gateway_boot else { return Vec::new(); };
+        let mut out = vec![Line::from(vec![Span::styled(
+            format!("  {}", panel.header),
+            Style::default().fg(Color::Rgb(225, 225, 225)).add_modifier(Modifier::BOLD),
+        )])];
+        let dim = Style::default().fg(Color::Rgb(140, 140, 140));
+        for row in &panel.rows {
+            out.push(Line::from(vec![Span::styled(row.clone(), dim)]));
+        }
+        out
+    }
+
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
         let (used_tokens, cache_hit_rate) = if let Some(u) = self.latest_usage.or(self.cumulative_usage) {
             (u.total(), u.cache_hit_rate())
@@ -495,7 +524,7 @@ impl Tui {
                 }
             }
         }
-        if self.status.is_none() && !needs_cron_tick {
+        if self.status.is_none() && !needs_cron_tick && self.gateway_boot.is_none() {
             return;
         }
         if needs_cron_tick {

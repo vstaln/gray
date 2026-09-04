@@ -19,6 +19,7 @@ use crate::config::{GatewayConfig, Platform, load_gateway_config};
 use crate::delivery::{DeliveryRouter, DeliveryTarget};
 use crate::pairing::{PairingOffer, PairingStore};
 use crate::platform::{BasePlatformAdapter, MessageEvent, SendOptions, SendResult, preview_80, split_message_smart, utf16_len};
+use crate::status::GatewayStatusBoard;
 use crate::session::{build_session_key, shared_store, FileGatewayStore, SessionSource};
 
 use crate::discord::DiscordAdapter;
@@ -641,26 +642,35 @@ fn now_millis() -> u64 {
 /// CLI entry: run until SIGINT/SIGTERM.
 pub async fn run_gateway() -> anyhow::Result<()> {
     let token = tokio_util::sync::CancellationToken::new();
-    let res = run_gateway_inner(token.clone()).await;
+    let res = run_gateway_inner(token.clone(), None).await;
     token.cancel();
     res
 }
 
 /// Like [`run_gateway`], but also exits when `shutdown` resolves (REPL `/gateway stop`).
 pub async fn run_gateway_shutdown(shutdown: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
+    run_gateway_shutdown_with_board(shutdown, None).await
+}
+
+/// Like [`run_gateway_shutdown`], but reports per-platform connect progress
+/// on `board` for the REPL's live boot card (`connecting…` → `connected as …`).
+pub async fn run_gateway_shutdown_with_board(
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+    board: Option<GatewayStatusBoard>,
+) -> anyhow::Result<()> {
     let token = tokio_util::sync::CancellationToken::new();
     let t = token.clone();
     let relay = tokio::spawn(async move {
         let _ = shutdown.await;
         t.cancel();
     });
-    let res = run_gateway_inner(token.clone()).await;
+    let res = run_gateway_inner(token.clone(), board).await;
     token.cancel();
     let _ = relay.await;
     res
 }
 
-async fn run_gateway_inner(token: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
+async fn run_gateway_inner(token: tokio_util::sync::CancellationToken, board: Option<GatewayStatusBoard>) -> anyhow::Result<()> {
     let cfg = load_gateway_config();
     let mut runner = GatewayRunner::from_config(cfg)?;
     if runner.adapters.is_empty() {
@@ -688,9 +698,24 @@ async fn run_gateway_inner(token: tokio_util::sync::CancellationToken) -> anyhow
     for (plat, adapter) in runner.adapters.iter() {
         let res = tokio::time::timeout(Duration::from_secs(45), adapter.connect()).await;
         match res {
-            Ok(Ok(())) => log::info!("gateway {plat} connected"),
-            Ok(Err(e)) => log::warn!("gateway {plat} connect failed: {e}"),
-            Err(_) => log::warn!("gateway {plat} connect timeout 45s"),
+            Ok(Ok(())) => {
+                log::info!("gateway {plat} connected");
+                if let Some(b) = &board {
+                    b.mark_connected(*plat, adapter.bot_identity());
+                }
+            }
+            Ok(Err(e)) => {
+                log::warn!("gateway {plat} connect failed: {e}");
+                if let Some(b) = &board {
+                    b.mark_failed(*plat, e.to_string());
+                }
+            }
+            Err(_) => {
+                log::warn!("gateway {plat} connect timeout 45s");
+                if let Some(b) = &board {
+                    b.mark_failed(*plat, "connect timeout 45s");
+                }
+            }
         }
     }
 

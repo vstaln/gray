@@ -205,6 +205,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let w = cols as usize;
 
+    // Snapshot the live boot panel before the draw closure borrows the terminal.
+    let boot_panel_lines: Vec<Line<'static>> = if tui.active_question.is_some() {
+        Vec::new()
+    } else {
+        tui.gateway_panel_lines()
+    };
+
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
     let ibox = build_input_box(&text, cursor, w);
@@ -234,7 +241,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let queued_lines: Vec<Line<'static>> = if question_active {
             Vec::new()
         } else {
-            queued_preview_lines(&tui.queued_inputs, w)
+            let mut lines = queued_preview_lines(&tui.queued_inputs, w);
+            // Live gateway boot panel rides the same slot (above the input
+            // box): one live card's worth of rows, zero transcript lines.
+            lines.extend(boot_panel_lines);
+            lines
         };
         let queued_h = queued_lines.len() as u16;
         let box_y = status_y + status_h + queued_h;

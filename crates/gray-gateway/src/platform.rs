@@ -48,6 +48,12 @@ pub trait BasePlatformAdapter: Send + Sync {
     /// `gray send` CLI can reuse the same code path.
     async fn connect(&self) -> anyhow::Result<()>;
     async fn disconnect(&self) -> anyhow::Result<()>;
+    /// Bot display name learned during [`BasePlatformAdapter::connect`]
+    /// (`get_me` / `current_user` / `auth.test`). Shown on the REPL boot card
+    /// as `connected as <name>`. None for stubs or before connect.
+    fn bot_identity(&self) -> Option<String> {
+        None
+    }
     async fn send(&self, chat: &str, text: &str) -> SendResult;
 
     /// Send with reply/thread hints. Default ignores the hints.
