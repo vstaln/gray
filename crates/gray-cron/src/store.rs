@@ -208,6 +208,36 @@ fn peek_jobs_unlocked(store: &CronStorePaths) -> Option<Vec<CronJob>> {
     serde_json::from_str(trimmed).ok()
 }
 
+fn heal_job_value(v: serde_json::Value) -> Option<CronJob> {
+    let mut rec = v.as_object()?.clone();
+    if rec.get("id").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).is_none() {
+        let fresh = uuid::Uuid::new_v4().to_string()[..8].to_string();
+        rec.insert("id".into(), serde_json::Value::String(fresh));
+    }
+    for f in ["next_run", "last_run"] {
+        if let Some(val) = rec.get(f) {
+            if !val.is_null() && serde_json::from_value::<Option<DateTime<Utc>>>(val.clone()).is_err() {
+                rec.insert(f.into(), serde_json::Value::Null);
+            }
+        }
+    }
+    serde_json::from_value::<CronJob>(serde_json::Value::Object(rec)).ok()
+}
+
+fn is_expired_oneshot(job: &CronJob) -> bool {
+    let last = match job.last_run {
+        Some(t) => t,
+        None => return false,
+    };
+    let is_once = crate::schedule::parse_schedule(&job.schedule)
+        .map(|s| s.is_once())
+        .unwrap_or(false);
+    if !is_once {
+        return false;
+    }
+    Utc::now() - last > chrono::Duration::days(7)
+}
+
 pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
     ensure_dirs(store);
     // one-time auto-migrate legacy daily wall-clock crons stored as UTC before fix (e.g. 45 19 * * * → 45 17 * * * for UTC+2)
@@ -228,25 +258,27 @@ pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
                 if let Some(jobs_val) = obj.remove("jobs") {
                     match jobs_val {
                         serde_json::Value::Array(items) => {
-                            let jobs: Vec<CronJob> = items
+                            let mut jobs: Vec<CronJob> = items
                                 .into_iter()
-                                .filter_map(|x| serde_json::from_value(x).ok())
+                                .filter_map(heal_job_value)
                                 .collect();
+                            jobs.retain(|j| !is_expired_oneshot(j));
                             // Auto-repair: if jobs were stored as envelope, keep it (no write here)
                             return jobs;
                         }
                         serde_json::Value::Object(map) => {
                             // id-keyed map (hand-edited) — flatten
-                            let jobs: Vec<CronJob> = map
+                            let mut jobs: Vec<CronJob> = map
                                 .into_iter()
                                 .filter_map(|(k, v)| {
                                     let mut rec = v.as_object()?.clone();
                                     if rec.get("id").and_then(|x| x.as_str()).is_none() {
                                         rec.insert("id".into(), serde_json::Value::String(k.clone()));
                                     }
-                                    serde_json::from_value::<CronJob>(serde_json::Value::Object(rec)).ok()
+                                    heal_job_value(serde_json::Value::Object(rec))
                                 })
                                 .collect();
+                            jobs.retain(|j| !is_expired_oneshot(j));
                             return jobs;
                         }
                         _ => return Vec::new(),
@@ -255,10 +287,9 @@ pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
                 return Vec::new();
             }
             serde_json::Value::Array(items) => {
-                return items
-                    .into_iter()
-                    .filter_map(|x| serde_json::from_value::<CronJob>(x).ok())
-                    .collect();
+                let mut jobs: Vec<CronJob> = items.into_iter().filter_map(heal_job_value).collect();
+                jobs.retain(|j| !is_expired_oneshot(j));
+                return jobs;
             }
             _ => return Vec::new(),
         }
@@ -311,6 +342,7 @@ pub(crate) fn save_jobs_inner(
             jobs = merge_unexpected_disk_jobs(&disk, &jobs, removed_ids);
         }
     }
+    jobs.retain(|j| !is_expired_oneshot(j));
     // Try 5 times with re-peek to avoid stomping
     for _ in 0..5 {
         if !replace {
@@ -322,6 +354,7 @@ pub(crate) fn save_jobs_inner(
             if stale {
                 // re-merge and retry
                 jobs = merge_unexpected_disk_jobs(&disk, &jobs, removed_ids);
+                jobs.retain(|j| !is_expired_oneshot(j));
                 continue;
             }
         }
@@ -352,6 +385,7 @@ pub(crate) fn save_jobs_inner(
     // Final fallback
     let disk = peek_jobs_unlocked(store).unwrap_or_default();
     jobs = merge_unexpected_disk_jobs(&disk, &jobs, removed_ids);
+    jobs.retain(|j| !is_expired_oneshot(j));
     let body = serde_json::to_string_pretty(&jobs)?;
     std::fs::write(&store.jobs_file, body)?;
     Ok(())
@@ -512,4 +546,126 @@ pub fn update_job_run(id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
 /// For scheduler internals — paths pinned to active home
 pub fn cron_store_paths() -> CronStorePaths {
     CronStorePaths::active()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration as ChronoDuration;
+
+    fn test_store() -> (tempfile::TempDir, CronStorePaths) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CronStorePaths::from_home(dir.path());
+        std::fs::create_dir_all(&store.cron_dir).unwrap();
+        (dir, store)
+    }
+
+    fn write_jobs(store: &CronStorePaths, raw: &str) {
+        std::fs::write(&store.jobs_file, raw).unwrap();
+    }
+
+    #[test]
+    fn missing_id_is_stamped_not_dropped() {
+        let (_tmp, store) = test_store();
+        let now = Utc::now().to_rfc3339();
+        write_jobs(
+            &store,
+            &format!(
+                r#"[{{"name":"n","schedule":"every 10m","prompt":"p","enabled":true,"created_at":"{now}","last_run":null,"next_run":null}}]"#
+            ),
+        );
+        let jobs = load_jobs_inner(&store);
+        assert_eq!(jobs.len(), 1);
+        assert!(!jobs[0].id.is_empty());
+    }
+
+    #[test]
+    fn unparsable_timestamps_are_cleared_not_dropped() {
+        let (_tmp, store) = test_store();
+        let now = Utc::now().to_rfc3339();
+        write_jobs(
+            &store,
+            &format!(
+                r#"[{{"id":"abc","name":"n","schedule":"every 10m","prompt":"p","enabled":true,"created_at":"{now}","last_run":"garbage","next_run":"bogus"}}]"#
+            ),
+        );
+        let jobs = load_jobs_inner(&store);
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].last_run.is_none());
+        assert!(jobs[0].next_run.is_none());
+    }
+
+    #[test]
+    fn expired_oneshots_pruned_but_recent_and_recurring_kept() {
+        let (_tmp, store) = test_store();
+        let now = Utc::now();
+        let old = (now - ChronoDuration::days(8)).to_rfc3339();
+        let recent = (now - ChronoDuration::days(1)).to_rfc3339();
+        let created = now.to_rfc3339();
+        write_jobs(
+            &store,
+            &format!(
+                r#"[
+                  {{"id":"old1","name":"old","schedule":"2020-01-01T00:00","prompt":"p","enabled":true,"created_at":"{created}","last_run":"{old}","next_run":null}},
+                  {{"id":"new1","name":"new","schedule":"2020-01-01T00:00","prompt":"p","enabled":true,"created_at":"{created}","last_run":"{recent}","next_run":null}},
+                  {{"id":"rec1","name":"rec","schedule":"every 10m","prompt":"p","enabled":true,"created_at":"{created}","last_run":"{old}","next_run":null}}
+                ]"#
+            ),
+        );
+        let jobs = load_jobs_inner(&store);
+        let ids: Vec<_> = jobs.iter().map(|j| j.id.as_str()).collect();
+        assert!(!ids.contains(&"old1"), "old one-shot should be pruned: {ids:?}");
+        assert!(ids.contains(&"new1"));
+        assert!(ids.contains(&"rec1"));
+    }
+
+    #[test]
+    fn oneshot_without_parseable_last_run_never_pruned() {
+        let (_tmp, store) = test_store();
+        let created = Utc::now().to_rfc3339();
+        write_jobs(
+            &store,
+            &format!(
+                r#"[{{"id":"o1","name":"o","schedule":"2020-01-01T00:00","prompt":"p","enabled":true,"created_at":"{created}","last_run":"bogus","next_run":null}}]"#
+            ),
+        );
+        let jobs = load_jobs_inner(&store);
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].last_run.is_none());
+    }
+
+    #[test]
+    fn save_prunes_expired_oneshots() {
+        let (_tmp, store) = test_store();
+        let now = Utc::now();
+        let old = now - ChronoDuration::days(8);
+        let created = now;
+        let jobs = vec![
+            CronJob {
+                id: "old1".into(),
+                name: "old".into(),
+                schedule: "2020-01-01T00:00".into(),
+                prompt: "p".into(),
+                enabled: true,
+                created_at: created,
+                last_run: Some(old),
+                next_run: None,
+            },
+            CronJob {
+                id: "rec1".into(),
+                name: "rec".into(),
+                schedule: "every 10m".into(),
+                prompt: "p".into(),
+                enabled: true,
+                created_at: created,
+                last_run: Some(old),
+                next_run: None,
+            },
+        ];
+        save_jobs_inner(&store, jobs, &[], true).unwrap();
+        let reloaded = load_jobs_inner(&store);
+        let ids: Vec<_> = reloaded.iter().map(|j| j.id.as_str()).collect();
+        assert!(!ids.contains(&"old1"), "save should prune old one-shot: {ids:?}");
+        assert!(ids.contains(&"rec1"));
+    }
 }
