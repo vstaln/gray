@@ -2539,6 +2539,7 @@ pub async fn run_repl_mode(
                                 if let Some((shared, _)) = &tui {
                                     let mut t = shared.lock().expect("tui lock");
                                     t.end_thinking();
+                                    t.ensure_gap(1); // never glue "(interrupted)" to the last streamed row
                                     t.stream("(interrupted)\n");
                                 }
                             } else {
@@ -2552,6 +2553,7 @@ pub async fn run_repl_mode(
                                 if let Some((shared, _)) = &tui {
                                     let mut t = shared.lock().expect("tui lock");
                                     t.end_thinking();
+                                    t.ensure_gap(1);
                                     t.stream(&format!("{msg}\n"));
                                 }
                             } else {
@@ -3266,6 +3268,7 @@ pub async fn run_repl_mode(
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");
                                 t.end_thinking();
+                                t.ensure_gap(1); // never glue "(interrupted)" to the last streamed row
                                 t.stream("(interrupted)\n");
                             }
                         } else {
@@ -3279,6 +3282,7 @@ pub async fn run_repl_mode(
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");
                                 t.end_thinking();
+                                t.ensure_gap(1);
                                 t.stream(&format!("{msg}\n"));
                             }
                         } else {
