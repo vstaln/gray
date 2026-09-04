@@ -648,6 +648,79 @@ impl JsonlSessionStore {
         Ok(true)
     }
 
+    /// Case-insensitive substring search over entry content across sessions.
+    ///
+    /// Query: space-separated terms are implicit AND, uppercase `OR` splits
+    /// OR-groups, `-term` negates. Returns up to `limit` hits as
+    /// `(session_id, entry_id, snippet)` where the snippet is a ~120-char
+    /// window around the first hit plus up to 60 chars of the neighboring
+    /// entries (already loaded, so free) as context.
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: usize,
+        role_filter: Option<Role>,
+    ) -> Vec<(SessionId, SessionEntryId, String)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let groups = parse_search_query(query);
+        if groups.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        for summary in self.list().await {
+            if out.len() >= limit {
+                break;
+            }
+            let Ok((_, entries)) = self.load(&summary.id).await else {
+                continue;
+            };
+            for (i, entry) in entries.iter().enumerate() {
+                if out.len() >= limit {
+                    break;
+                }
+                if let Some(rf) = role_filter
+                    && entry.message.role != rf
+                {
+                    continue;
+                }
+                let text = entry.message.text_content();
+                if text.is_empty() {
+                    continue;
+                }
+                let hay = text.to_lowercase();
+                let mut matched = false;
+                let mut hit = None;
+                for (pos, neg) in &groups {
+                    if pos.iter().all(|t| hay.contains(t))
+                        && neg.iter().all(|t| !hay.contains(t))
+                    {
+                        matched = true;
+                        hit = pos.iter().filter_map(|t| hay.find(t).map(|b| (b, t.len()))).min();
+                        break;
+                    }
+                }
+                if !matched {
+                    continue;
+                }
+                let prev = (i > 0)
+                    .then(|| entries[i - 1].message.text_content())
+                    .filter(|s| !s.is_empty());
+                let next = entries
+                    .get(i + 1)
+                    .map(|e| e.message.text_content())
+                    .filter(|s| !s.is_empty());
+                out.push((
+                    summary.id.clone(),
+                    entry.entry_id,
+                    snippet_around(&text, hit, prev.as_deref(), next.as_deref()),
+                ));
+            }
+        }
+        out
+    }
+
     /// Returns `base` when unused, else the first unused `base #N` (N >= 2).
     pub async fn next_title_in_lineage(&self, base: &str) -> String {
         let titles: std::collections::HashSet<String> =
@@ -664,6 +737,75 @@ impl JsonlSessionStore {
             n += 1;
         }
     }
+}
+
+/// Parses a search query into OR-groups of `(and_terms, not_terms)`, lowercased.
+/// Only uppercase `OR` splits groups; a lone `-` is ignored.
+fn parse_search_query(query: &str) -> Vec<(Vec<String>, Vec<String>)> {
+    let tokens: Vec<&str> = query.split_whitespace().collect();
+    tokens
+        .split(|t| *t == "OR")
+        .filter_map(|group| {
+            let mut pos = Vec::new();
+            let mut neg = Vec::new();
+            for t in group {
+                if let Some(n) = t.strip_prefix('-') {
+                    if !n.is_empty() {
+                        neg.push(n.to_lowercase());
+                    }
+                } else {
+                    pos.push(t.to_lowercase());
+                }
+            }
+            if pos.is_empty() && neg.is_empty() {
+                None
+            } else {
+                Some((pos, neg))
+            }
+        })
+        .collect()
+}
+
+/// ~120-char window around `hit` (byte idx + len, `None` = head of text),
+/// with up to 60 chars of prev/next entry text as context.
+fn snippet_around(
+    text: &str,
+    hit: Option<(usize, usize)>,
+    prev: Option<&str>,
+    next: Option<&str>,
+) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let (s, mut e) = match hit {
+        Some((b, bl)) => {
+            let hs = text.get(..b.min(text.len())).map_or(n, |s| s.chars().count());
+            (hs.saturating_sub(60), (hs + bl + 60).min(n))
+        }
+        None => (0, 120.min(n)),
+    };
+    if e - s > 120 {
+        e = (s + 120).min(n);
+    }
+    let mut window: String = chars[s..e].iter().collect();
+    if s > 0 {
+        window = format!("…{window}");
+    }
+    if e < n {
+        window.push('…');
+    }
+    let mut out = String::new();
+    if let Some(p) = prev.filter(|p| !p.is_empty()) {
+        let tail: String = p.chars().rev().take(60).collect::<String>().chars().rev().collect();
+        out.push_str(&tail);
+        out.push_str(" … ");
+    }
+    out.push_str(&window);
+    if let Some(nx) = next.filter(|nx| !nx.is_empty()) {
+        let head: String = nx.chars().take(60).collect();
+        out.push_str(" … ");
+        out.push_str(&head);
+    }
+    out
 }
 
 /// Returns the default session directory (`~/.gray/sessions`), or `None` if `$HOME` is not set.
@@ -827,6 +969,146 @@ mod tests {
             .unwrap();
         store.set_user_title(&b, "Base #2").await.unwrap();
         assert_eq!(store.next_title_in_lineage("Base").await, "Base #3");
+    }
+
+    async fn seed(store: &JsonlSessionStore, id: &str, ts: u64, msgs: Vec<Message>) -> SessionId {
+        let sid = store
+            .create(SessionMeta::new(SessionId::new(id), ts, "/tmp", "m"))
+            .await
+            .unwrap();
+        for m in &msgs {
+            store.append(&sid, m).await.unwrap();
+        }
+        sid
+    }
+
+    #[tokio::test]
+    async fn search_and_semantics() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        seed(
+            &store,
+            "s1",
+            1,
+            vec![
+                Message::user("the quick brown fox"),
+                Message::user("lazy dog sleeps"),
+            ],
+        )
+        .await;
+        let hits = store.search("quick fox", 10, None).await;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, 0);
+        assert!(store.search("quick dog", 10, None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_or_semantics() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        seed(
+            &store,
+            "s1",
+            1,
+            vec![
+                Message::user("the quick brown fox"),
+                Message::user("lazy dog sleeps"),
+            ],
+        )
+        .await;
+        let hits = store.search("fox OR dog", 10, None).await;
+        assert_eq!(hits.len(), 2);
+        // Lowercase "or" is a plain term, not a separator.
+        assert!(store.search("fox or dog", 10, None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_not_semantics() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        seed(
+            &store,
+            "s1",
+            1,
+            vec![Message::user("foo bar"), Message::user("foo baz")],
+        )
+        .await;
+        let hits = store.search("foo -bar", 10, None).await;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, 1);
+        assert!(store.search("-foo", 10, None).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_role_filter() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        seed(
+            &store,
+            "s1",
+            1,
+            vec![
+                Message::user("hello world"),
+                Message::assistant("hello world"),
+            ],
+        )
+        .await;
+        assert_eq!(store.search("hello", 10, None).await.len(), 2);
+        let hits = store.search("hello", 10, Some(Role::User)).await;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, 0);
+        assert_eq!(
+            store.search("hello", 10, Some(Role::Assistant)).await.len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn search_snippet_window_with_context() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let body = format!("{}needle{}", "x".repeat(500), "y".repeat(500));
+        seed(
+            &store,
+            "s1",
+            1,
+            vec![
+                Message::user("before marker alpha"),
+                Message::user(body.clone()),
+                Message::user("after marker omega"),
+            ],
+        )
+        .await;
+        let hits = store.search("needle", 10, None).await;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, 1);
+        let snip = &hits[0].2;
+        assert!(snip.contains("needle"), "snippet must contain the hit");
+        assert!(snip.chars().count() < body.chars().count());
+        assert!(snip.contains("alpha"), "prev message context");
+        assert!(snip.contains("omega"), "next message context");
+    }
+
+    #[tokio::test]
+    async fn search_limit_case_and_empty() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        seed(
+            &store,
+            "s1",
+            1,
+            vec![
+                Message::user("foo one"),
+                Message::user("foo two"),
+                Message::user("foo three"),
+            ],
+        )
+        .await;
+        assert_eq!(store.search("FOO", 10, None).await.len(), 3);
+        assert_eq!(store.search("foo", 2, None).await.len(), 2);
+        assert!(store.search("", 10, None).await.is_empty());
+        assert!(store.search("   ", 10, None).await.is_empty());
+        assert!(store.search("foo", 0, None).await.is_empty());
     }
 
     #[tokio::test]
