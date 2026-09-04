@@ -411,7 +411,11 @@ impl Tui {
         }
     }
 
-    pub fn push_user_prompt(&mut self, text: &str, attached: &[std::path::PathBuf]) {
+    /// Echoes a submitted prompt as a card. `trailing_gap` leaves one blank
+    /// below the card for the breathing room before the next prompt; slash
+    /// commands pass false so their `say()` feedback hugs the card instead
+    /// (dismissed-modal breathing room is restored by `restore_viewport`).
+    pub fn push_user_prompt(&mut self, text: &str, attached: &[std::path::PathBuf], trailing_gap: bool) {
         self.ensure_gap(1);
         let lines = format_user_prompt_lines(text, attached, self.width().max(10));
         let height = lines.len() as u16;
@@ -421,11 +425,15 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string(), attached.to_vec()));
         self.transcript.extend(lines);
-        // Trailing gap after every card — command and prompt alike. Handlers
-        // that print feedback (say()) treat the gap as idempotent; handlers
-        // that print nothing (dismissed modal) still leave breathing room
-        // before the next prompt instead of jamming against the card.
-        self.ensure_gap(1);
+        // Trailing gap after every chat card — command and prompt alike.
+        // Handlers that print feedback (say()) treat the gap as idempotent;
+        // handlers that print nothing (dismissed modal) still leave breathing
+        // room before the next prompt instead of jamming against the card.
+        // Slash-command cards skip it (trailing_gap=false): their feedback
+        // hugs the card, and restore_viewport() covers the dismissed modal.
+        if trailing_gap {
+            self.ensure_gap(1);
+        }
         if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
         let _ = std::io::stdout().flush();
     }
@@ -687,7 +695,7 @@ impl Tui {
                         }
                     }
                     if !user_text.is_empty() {
-                        self.push_user_prompt(&user_text, &[]);
+                        self.push_user_prompt(&user_text, &[], true);
                         // Feed composer input history so Up/Down recall works
                         // for prompts from the resumed session.
                         self.history.push(user_text.clone());

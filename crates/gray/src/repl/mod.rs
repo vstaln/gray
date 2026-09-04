@@ -64,15 +64,11 @@ pub(crate) struct SessionState {
 fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
-        // Symmetric spacing: transcript blocks always leave one blank above
-        // (callers) — without one below, replies jam against what follows.
-        // ensure_gap is idempotent, so multi-say sequences just paragraph.
-        t.ensure_gap(1);
+        // No gap above: command cards skip their trailing gap so this hugs them.
         for line in msg.split('\n') {
             t.push_dim(format!("└ {line}"));
         }
-        // Breathing room below command output (no gap above it — it hugs
-        // the user card).
+        // Breathing room below command output before the next prompt.
         t.ensure_gap(1);
     } else {
         println!("{msg}");
@@ -87,6 +83,10 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
 fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     if let Some(shared) = tui {
         let mut t = shared.lock().expect("tui lock");
+        // Breathing room when a modal is dismissed with no output: command
+        // cards skip their trailing gap, so without this the next prompt
+        // would jam against the card. Idempotent after output with a gap.
+        t.ensure_gap(1);
         let cols = crossterm::terminal::size().map(|(c, _)| c).unwrap_or(t.last_width);
         if cols == t.last_width {
             t.reanchor_viewport(cols);
@@ -1802,6 +1802,10 @@ async fn maybe_overflow_compact(
     if !crate::compact::is_context_overflow_error(err) {
         return false;
     }
+    // Mid-turn notice (not after a card): keep the separating blank say() used to add.
+    if let Some(t) = tui {
+        t.lock().expect("tui lock").ensure_gap(1);
+    }
     say(tui, "context overflow — compacting...");
     match crate::compact::auto_compact_if_needed(agent, config, latest, "overflow").await {
         Ok(true) => {
@@ -2453,7 +2457,7 @@ pub async fn run_repl_mode(
 
                 if let Some(prompt_text) = initial_prompt {
                     if let Some((shared, _)) = &tui {
-                        shared.lock().expect("tui lock").push_user_prompt(&prompt_text, &[]);
+                        shared.lock().expect("tui lock").push_user_prompt(&prompt_text, &[], !prompt_text.starts_with('/'));
                     } else {
                         println!("❯ {prompt_text}");
                     }
@@ -2727,7 +2731,7 @@ pub async fn run_repl_mode(
                                         for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
                                         let text = text.trim().to_string();
                                         if text.starts_with('/') && !text.contains('\n') {
-                                            t.push_user_prompt(&text, &[]);
+                                            t.push_user_prompt(&text, &[], false);
                                             t.local_command = Some(text);
                                             t.textarea.set_text("");
                                             t.attachments.clear();
@@ -3093,7 +3097,7 @@ pub async fn run_repl_mode(
                             drop(t);
                             pending_command = Some(expand_skill_command(parse_command(&text), &cwd, Some(shared), true));
                         } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
-                            t.push_user_prompt(&qtext, &qimages);
+                            t.push_user_prompt(&qtext, &qimages, !qtext.starts_with('/'));
                             drop(t);
                             pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared), false));
                             pending_images = qimages;
