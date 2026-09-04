@@ -76,20 +76,31 @@ fn run_installer_locked() -> anyhow::Result<()> {
     run_installer()
 }
 
-/// Appends one JSON receipt line `{ts, channel, from, to, rc, reason}`.
+/// Writes one JSON receipt doc `{ts, channel, from, to, rc, reason}`.
+/// `latest.json` is overwritten with the single latest doc (whole-file JSON);
+/// history appends to sibling `history.jsonl`, trimmed to the last 200 lines.
 /// Best effort: receipt failures never fail the update.
 pub(crate) fn write_update_receipt_to(path: &Path, channel: &str, from: &str, to: &str, rc: i32, reason: &str) {
+    const HISTORY_LINES: usize = 200;
     let _ = (|| -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut f = OpenOptions::new().create(true).append(true).open(path)?;
-        use std::io::Write as _;
         let receipt = serde_json::json!({
             "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             "channel": channel, "from": from, "to": to, "rc": rc, "reason": reason,
         });
+        std::fs::write(path, format!("{receipt}\n"))?;
+        let hist = path.parent().map(|p| p.join("history.jsonl")).unwrap_or_else(|| PathBuf::from("history.jsonl"));
+        let mut f = OpenOptions::new().create(true).append(true).open(&hist)?;
+        use std::io::Write as _;
         writeln!(f, "{receipt}")?;
+        drop(f);
+        let text = std::fs::read_to_string(&hist)?;
+        let lines: Vec<&str> = text.lines().collect();
+        if lines.len() > HISTORY_LINES {
+            std::fs::write(&hist, lines[lines.len() - HISTORY_LINES..].join("\n") + "\n")?;
+        }
         Ok(())
     })();
 }
@@ -183,24 +194,47 @@ mod tests {
     }
 
     #[test]
-    fn receipt_appends_json_lines() {
+    fn receipt_latest_overwrites_and_history_appends() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("update_receipts").join("latest.json");
         write_update_receipt_to(&path, "beta", "0.1.0", "0.2.0", 0, "ok");
         write_update_receipt_to(&path, "beta", "0.2.0", "", 1, "boom");
+        // latest.json holds exactly the newest receipt doc (whole-file JSON).
         let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
+        let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(v["channel"], "beta");
+        assert_eq!(v["from"], "0.2.0");
+        assert_eq!(v["to"], "");
+        assert_eq!(v["rc"], 1);
+        assert_eq!(v["reason"], "boom");
+        assert!(v["ts"].is_string());
+        // history.jsonl keeps every receipt.
+        let hist = std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl")).unwrap();
+        let lines: Vec<&str> = hist.lines().collect();
         assert_eq!(lines.len(), 2);
-        let v0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(v0["channel"], "beta");
-        assert_eq!(v0["from"], "0.1.0");
-        assert_eq!(v0["to"], "0.2.0");
-        assert_eq!(v0["rc"], 0);
-        assert_eq!(v0["reason"], "ok");
-        assert!(v0["ts"].is_string());
-        let v1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(v1["rc"], 1);
-        assert_eq!(v1["reason"], "boom");
+        let h0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(h0["from"], "0.1.0");
+        let h1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(h1["reason"], "boom");
+    }
+
+    #[test]
+    fn receipt_history_trims_to_last_200() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update_receipts").join("latest.json");
+        for i in 0..205 {
+            write_update_receipt_to(&path, "beta", "0.1.0", "0.2.0", 0, &format!("run-{i}"));
+        }
+        let hist = std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl")).unwrap();
+        let lines: Vec<&str> = hist.lines().collect();
+        assert_eq!(lines.len(), 200);
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["reason"], "run-5");
+        let last: serde_json::Value = serde_json::from_str(lines[199]).unwrap();
+        assert_eq!(last["reason"], "run-204");
+        // latest.json still a single doc with the newest receipt.
+        let v: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+        assert_eq!(v["reason"], "run-204");
     }
 
     #[test]
