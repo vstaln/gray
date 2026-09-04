@@ -64,6 +64,10 @@ pub trait BasePlatformAdapter: Send + Sync {
     /// Wire the inbound event channel. Default no-op (stub adapters never receive).
     fn set_event_tx(&mut self, _tx: tokio::sync::mpsc::UnboundedSender<MessageEvent>) {}
 
+    /// Wire the status board so `connect()` can report staged progress
+    /// (`validating token` → …). Default no-op (send-only `gray send` has no board).
+    fn set_status_board(&self, _board: crate::status::GatewayStatusBoard) {}
+
     /// Best-effort typing indicator (Discord typing trigger). Default no-op.
     async fn send_typing(&self, _chat: &str) {}
 
