@@ -6,7 +6,7 @@
 //! commands /ask /reset /status /stop.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendResult};
+use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendOptions, SendResult};
 use crate::session::SessionSource;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -161,6 +161,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                         message_id: Some(m.id.get().to_string()),
                         source: source_for(cid, m.guild_id.map(|g| g.get()), m.author.id.get(), m.id.get()),
                         media_urls: vec![],
+                        user_name: Some(m.author.name.clone()),
                     };
                     let _ = tx.send(ev);
                 }
@@ -203,6 +204,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                         message_id: Some(interaction.0.id.get().to_string()),
                         source: source_for(cid, interaction.0.guild_id.map(|g| g.get()), user_id, interaction.0.id.get()),
                         media_urls: vec![],
+                        user_name: interaction.0.author().map(|u| u.name.clone()),
                     };
                     let _ = tx.send(ev);
                 }
@@ -234,10 +236,13 @@ impl BasePlatformAdapter for DiscordAdapter {
                 anyhow::bail!("discord token rejected: {e}");
             }
             *self.client.lock().unwrap() = Some(http.clone());
-            let tx = self.event_tx.lock().unwrap().clone()
-                .ok_or_else(|| anyhow::anyhow!("discord adapter started before set_event_tx"))?;
-            spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())));
-            log::info!("[discord] gateway connected, slash commands registered on Ready");
+            match self.event_tx.lock().unwrap().clone() {
+                Some(tx) => {
+                    spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())));
+                    log::info!("[discord] gateway connected, slash commands registered on Ready");
+                }
+                None => log::info!("[discord] send-only mode (no event channel wired)"),
+            }
         }
         #[cfg(not(feature = "discord"))]
         {
@@ -268,51 +273,96 @@ impl BasePlatformAdapter for DiscordAdapter {
         let _ = chat;
     }
 
-    async fn send(&self, chat: &str, text: &str) -> SendResult {
-        if !self.is_authenticated() {
-            return SendResult {
-                success: false,
-                message_id: None,
-                error: Some("discord not authenticated: invalid token".to_string()),
-                retryable: false,
+    fn supports_edit(&self) -> bool {
+        cfg!(feature = "discord")
+    }
+
+    async fn edit_message(&self, chat: &str, message_id: &str, text: &str) -> SendResult {
+        #[cfg(feature = "discord")]
+        {
+            let Some(client) = self.client.lock().unwrap().clone() else {
+                return SendResult::fail("discord not connected", false);
+            };
+            let (Ok(cid), Ok(mid)) = (chat.parse::<u64>(), message_id.parse::<u64>()) else {
+                return SendResult::fail(format!("invalid discord ids {chat:?}/{message_id:?}"), false);
+            };
+            if utf16_len(text) > MAX_LENGTH {
+                return SendResult::fail("edit text exceeds 2000 utf16 units", false);
+            }
+            return match client
+                .update_message(twilight_model::id::Id::new(cid), twilight_model::id::Id::new(mid))
+                .content(Some(text))
+                .await
+            {
+                Ok(_) => SendResult::ok(Some(message_id.to_string())),
+                Err(e) => SendResult::fail(format!("discord edit: {e}"), true),
             };
         }
+        #[cfg(not(feature = "discord"))]
+        {
+            log::info!("[discord] edit {chat}/{message_id} ({} utf16)", utf16_len(text));
+            SendResult::ok(Some(message_id.to_string()))
+        }
+    }
+
+    async fn send(&self, chat: &str, text: &str) -> SendResult {
+        // Default reply target: last inbound message in this channel (hermes reply_to_mode=first).
+        let reply_to = self.last_inbound.lock().unwrap().get(chat).map(|m| m.to_string());
+        self.send_ext(chat, text, &SendOptions { reply_to, thread_id: None }).await
+    }
+
+    async fn send_ext(&self, chat: &str, text: &str, opts: &SendOptions) -> SendResult {
+        if !self.is_authenticated() {
+            return SendResult::fail("discord not authenticated: invalid token", false);
+        }
         if text.is_empty() {
-            return SendResult { success: true, message_id: None, error: None, retryable: false };
+            return SendResult::ok(None);
         }
 
-        let chunks = crate::platform::split_message(text, MAX_LENGTH);
+        let chunks = crate::platform::split_message_smart(text, MAX_LENGTH);
 
         #[cfg(feature = "discord")]
         {
             let Some(client) = self.client.lock().unwrap().clone() else {
-                return SendResult { success: false, message_id: None, error: Some("discord not connected".into()), retryable: false };
+                return SendResult::fail("discord not connected", false);
             };
-            let Ok(cid) = chat.parse::<u64>() else {
-                return SendResult { success: false, message_id: None, error: Some(format!("invalid discord channel id {chat:?}")), retryable: false };
+            // Threads are channels on Discord: `thread_id` overrides the target channel.
+            let target = opts.thread_id.as_deref().unwrap_or(chat);
+            let Ok(cid) = target.parse::<u64>() else {
+                return SendResult::fail(format!("invalid discord channel id {target:?}"), false);
             };
             let channel = twilight_model::id::Id::new(cid);
-            let reply_to = self.last_inbound.lock().unwrap().get(chat).copied(); // hermes reply_to_mode=first
+            let reply_to = opts.reply_to.as_deref().and_then(|r| r.parse::<u64>().ok());
+            let mut last_id = None;
             for (i, chunk) in chunks.iter().enumerate() {
                 debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
                 let create = client.create_message(channel).content(chunk.as_str());
-                let create = if i == 0 {
-                    if let Some(mid) = reply_to { create.reply(twilight_model::id::Id::new(mid)) } else { create }
-                } else { create };
-                if let Err(e) = create.await {
-                    log::warn!("[discord] send chunk {}/{} failed: {e}", i + 1, chunks.len());
-                    return SendResult { success: false, message_id: None, error: Some(format!("discord send: {e}")), retryable: true };
+                let create = match (i, reply_to) {
+                    (0, Some(mid)) => create.reply(twilight_model::id::Id::new(mid)),
+                    _ => create,
+                };
+                match create.await {
+                    Ok(resp) => {
+                        if let Ok(m) = resp.model().await { last_id = Some(m.id.get().to_string()); }
+                    }
+                    Err(e) => {
+                        log::warn!("[discord] send chunk {}/{} failed: {e}", i + 1, chunks.len());
+                        return SendResult::fail(format!("discord send: {e}"), true);
+                    }
                 }
             }
-            return SendResult { success: true, message_id: None, error: None, retryable: false };
+            return SendResult::ok(last_id);
         }
         #[cfg(not(feature = "discord"))]
         {
             for (i, chunk) in chunks.iter().enumerate() {
                 debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
-                log::info!("[discord] send to {} chunk {}/{} ({} utf16): {:?}", chat, i + 1, chunks.len(), utf16_len(chunk), crate::platform::preview_80(chunk));
+                log::info!(
+                    "[discord] send to {} chunk {}/{} ({} utf16, reply_to={:?}): {:?}",
+                    chat, i + 1, chunks.len(), utf16_len(chunk), opts.reply_to, crate::platform::preview_80(chunk)
+                );
             }
-            SendResult { success: true, message_id: None, error: None, retryable: false }
+            SendResult::ok(None)
         }
     }
 }
@@ -324,7 +374,7 @@ mod tests {
     use crate::platform::utf16_len;
 
     fn cfg(token: &str) -> PlatformConfig {
-        PlatformConfig { enabled: true, token: Some(token.to_string()), app_token: None, home_channel: None }
+        PlatformConfig::with_token(token)
     }
 
     #[test]
@@ -342,18 +392,17 @@ mod tests {
 
     #[tokio::test]
     async fn send_splits() {
+        let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
         let long = "a".repeat(5000);
+        let res = a.send("chan1", &long).await;
+        // Stub logs and succeeds; the real client fails cleanly when not connected.
+        #[cfg(not(feature = "discord"))]
+        assert!(res.success);
+        #[cfg(feature = "discord")]
+        assert!(!res.success && res.error.as_deref() == Some("discord not connected"));
         let chunks = crate::platform::split_message(&long, MAX_LENGTH);
         assert_eq!(chunks.len(), 3); // 2000*2 +1000
         for c in &chunks { assert!(utf16_len(c) <= MAX_LENGTH); }
-        // Live send needs a connected client (feature build hits the network
-        // path); the stub-only success assertion runs without the feature.
-        #[cfg(not(feature = "discord"))]
-        {
-            let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
-            let res = a.send("chan1", &long).await;
-            assert!(res.success);
-        }
     }
 
     #[test]
@@ -381,5 +430,15 @@ mod tests {
         assert_eq!(client_id_from_token(&("Bot ".to_string() + &tok)), Some(id.to_string()));
         assert_eq!(client_id_from_token("short"), None);
         assert_eq!(client_id_from_token(""), None);
+    }
+
+    #[test]
+    fn session_key_routing() {
+        use crate::session::build_session_key;
+        let dm = source_for(100, None, 7, 1);
+        assert_eq!(build_session_key(&dm, true, false), "gray:main:discord:dm:100");
+        let g = source_for(200, Some(999), 7, 2);
+        assert_eq!(build_session_key(&g, true, false), "gray:main:discord:group:999:200:7");
+        assert_eq!(build_session_key(&g, false, false), "gray:main:discord:group:999:200");
     }
 }
