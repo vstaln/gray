@@ -1,9 +1,6 @@
-//! Minimal retained-mode TUI components:
-//! a retained component tree (`Container` of `Text`/`Spacer`/`Border`) whose
-//! renderer word-wraps text itself at terminal width and repaints atomically,
-//! so the terminal never soft-wraps behind our back and stale frame rows
-//! can't survive a redraw. Everything is rebuilt wholesale:
-//! container on every change, render, draw. Delete what you don't use.
+//! Small terminal helpers: ANSI-aware width/wrap (`strip_ansi`,
+//! `visible_width`, `wrap`, `print_wrapped`), a global tight-padding flag
+//! (`set_tui_tight`/`padding_x`), and logo/color/clear utilities.
 
 use std::io::Write;
 

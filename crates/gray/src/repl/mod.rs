@@ -42,7 +42,7 @@ async fn spawn_ctrl_c_policy() {
         }
     }
 }
-use crate::{build_agent, build_agent_with_session, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
+use crate::{build_agent, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
 
 pub mod attachments;
@@ -279,7 +279,7 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
 /// Rebuilds the agent after a system-prompt change, preserving conversation history.
 async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
     let old = agent.take();
-    let mut rebuilt = match build_agent(config, cwd).await {
+    let mut rebuilt = match build_agent(config, cwd, None).await {
         Ok(a) => a,
         Err(e) => {
             println!("{e}");
@@ -1534,7 +1534,7 @@ async fn handle_resume(
             } else {
                 meta.model.as_str()
             };
-            match build_agent_with_session(config, cwd, sid.as_str()).await {
+            match build_agent(config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
                     *session_state = Some(SessionState { session_id: sid.clone(), store });
@@ -1596,7 +1596,9 @@ async fn persist_turn_messages(
             cwd.to_path_buf(),
             config.model.clone().unwrap_or_else(|| "unset".into()),
         );
-        store.create(meta).await;
+        if let Err(e) = store.create(meta).await {
+            log::warn!(target: "gray_session", "session create failed: {e}");
+        }
         *session_state = Some(SessionState { store, session_id });
     }
     if let Some(state) = session_state
@@ -1635,7 +1637,9 @@ async fn ensure_session_state(
                 cwd.to_path_buf(),
                 config.model.clone().unwrap_or_else(|| "unset".into()),
             );
-            store.create(meta).await;
+            if let Err(e) = store.create(meta).await {
+            log::warn!(target: "gray_session", "session create failed: {e}");
+        }
             *session_state = Some(SessionState { store, session_id });
         }
     }
@@ -1914,7 +1918,7 @@ pub async fn run_repl_mode(
                 }
                 let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                 pending_history = history.clone();
-                if let Ok(built) = build_agent_with_session(config, &cwd, sid.as_str()).await {
+                if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
                     agent = Some(built.with_messages(history));
                 }
                 session_state = Some(SessionState {
@@ -1946,7 +1950,7 @@ pub async fn run_repl_mode(
                     }
                     let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
                     pending_history = history.clone();
-                    if let Ok(built) = build_agent_with_session(config, &cwd, latest.id.as_str()).await {
+                    if let Ok(built) = build_agent(config, &cwd, Some(latest.id.as_str())).await {
                         agent = Some(built.with_messages(history));
                     }
                     session_state = Some(SessionState {
@@ -2022,15 +2026,13 @@ pub async fn run_repl_mode(
     };
 
     // Cron background — stolen from hermes Scheduler tick (Step 3)
-    // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward), deduped by InflightGuard.
+    // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward).
     // Footer clock ticks every second via tick_status when next_cron is set.
     {
         let cron_tui = tui.clone();
         tokio::spawn(async move {
             use gray_cron::Scheduler;
-            use std::sync::Arc;
             let scheduler = Scheduler::from_active();
-            let guard = Arc::new(gray_cron::InflightGuard::new());
             // helper to push next due to footer clock
             let update_footer = |tui_opt: &Option<(crate::composer::SharedTui, std::sync::Arc<std::sync::atomic::AtomicBool>)>| {
                 if let Some((shared, _)) = tui_opt {
@@ -2062,16 +2064,12 @@ pub async fn run_repl_mode(
                     }
                 };
                 for job in due {
-                    if !guard.try_register_running_job(&job.id) {
-                        continue;
-                    }
                     let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
                     if let Some((shared, _)) = cron_tui.as_ref() {
                         if let Ok(mut t) = shared.try_lock() {
                             t.push_dim(format!("⏰ cron '{}' due: {}", job.name, job.prompt));
                         }
                     }
-                    guard.release_running_job(&job.id);
                 }
                 update_footer(&cron_tui);
             }
@@ -2212,10 +2210,7 @@ pub async fn run_repl_mode(
                             }
                         }
                         let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
-                        let built = match sid.as_deref() {
-                            Some(s) => build_agent_with_session(config, &cwd, s).await,
-                            None => build_agent(config, &cwd).await,
-                        };
+                        let built = build_agent(config, &cwd, sid.as_deref()).await;
                         match built {
                             Ok(built) => {
                                 if !pending_history.is_empty() {
@@ -2428,17 +2423,16 @@ pub async fn run_repl_mode(
                         cwd.to_path_buf(),
                         config.model.clone().unwrap_or_else(|| "unset".into()),
                     );
-                    store.create(meta).await;
+                    if let Err(e) = store.create(meta).await {
+            log::warn!(target: "gray_session", "session create failed: {e}");
+        }
                     short_id = session_id.as_str().split('-').next().unwrap_or("new").to_string();
                     new_sid = Some(session_id.clone());
                     session_state = Some(SessionState { store, session_id });
                 }
                 // Build with the new session id so the prompt-cache shard
                 // survives future resumes of this session.
-                agent = match new_sid.as_ref() {
-                    Some(s) => build_agent_with_session(config, &cwd, s.as_str()).await.ok(),
-                    None => build_agent(config, &cwd).await.ok(),
-                };
+                agent = build_agent(config, &cwd, new_sid.as_ref().map(|s| s.as_str())).await.ok();
 
                 if let Some((shared, _)) = &tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -2619,10 +2613,7 @@ pub async fn run_repl_mode(
                         }
                     }
                     let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
-                    let built = match sid.as_deref() {
-                        Some(s) => build_agent_with_session(config, &cwd, s).await,
-                        None => build_agent(config, &cwd).await,
-                    };
+                    let built = build_agent(config, &cwd, sid.as_deref()).await;
                     match built {
                         Ok(built) => {
                             if !pending_history.is_empty() {

@@ -53,13 +53,10 @@ pub const MAX_ERROR_BYTES: usize = 2048;
 #[derive(Default)]
 pub struct Registry {
     tools: Vec<Arc<dyn Tool>>,
+    manifests: Vec<gray_plugin::Manifest>,
 }
 
 impl Registry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn builtin() -> Self {
         Self::from_plugins(&[
             Arc::new(plugin::ToolsBasicPlugin),
@@ -69,9 +66,12 @@ impl Registry {
     }
 
     /// Collects tools from plugins in order; on name conflict later entries win.
+    /// Manifests travel with the registry so `--dump-manifest` can't drift
+    /// from what's actually registered. (ponytail-audit #13)
     pub fn from_plugins(plugins: &[Arc<dyn gray_plugin::Plugin>]) -> Self {
-        let owners =
-            gray_plugin::merge_manifests(plugins.iter().map(|p| p.manifest()).collect());
+        let manifests: Vec<gray_plugin::Manifest> =
+            plugins.iter().map(|p| p.manifest()).collect();
+        let owners = gray_plugin::merge_manifests(manifests.clone());
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for p in plugins {
             let owner_name = p.manifest().name;
@@ -85,11 +85,12 @@ impl Registry {
                 }
             }
         }
-        Self { tools }
+        Self { tools, manifests }
     }
 
-    pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.push(Arc::from(tool));
+    /// Plugin manifests in registration order (for `--dump-manifest`).
+    pub fn manifests(&self) -> &[gray_plugin::Manifest] {
+        &self.manifests
     }
 
     /// Tool definitions in registration order (for the chat request).
@@ -107,14 +108,6 @@ impl Registry {
     /// Clones an owned handle so execution futures can be `'static`.
     fn lookup(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.iter().find(|t| t.def().name == name).cloned()
-    }
-
-    pub fn len(&self) -> usize {
-        self.tools.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
     }
 
     /// Names of registered tools in registration order.
@@ -386,7 +379,7 @@ mod tests {
             marker: "from-b",
         });
         let reg = Registry::from_plugins(&[a, b]);
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.defs().len(), 1);
         let out = reg
             .lookup("dup")
             .unwrap()

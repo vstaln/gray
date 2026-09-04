@@ -13,15 +13,15 @@ async fn main() -> anyhow::Result<()> {
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
     if cli.dump_manifest {
-        match gray::effective_manifests().await {
-            Ok((manifests, fallback)) => {
+        match gray::build_registry().await {
+            Ok((registry, fallback)) => {
                 if fallback {
                     eprintln!("note: gray.yml profile missing/unresolvable — showing builtin manifests");
                 }
                 for w in gray::take_profile_warnings() {
                     eprintln!("warning: {w}");
                 }
-                println!("{}", serde_json::to_string_pretty(&manifests)?);
+                println!("{}", serde_json::to_string_pretty(registry.manifests())?);
                 return Ok(());
             }
             Err(e) => {
@@ -37,16 +37,13 @@ async fn main() -> anyhow::Result<()> {
     gray::oauth::apply_saved_oauth(&mut config).await;
     if let Some(cmd) = cli.command {
         match cmd {
-            gray::Commands::Resume { session_id, last, all, prompt } => {
-                return run_resume_subcommand(&mut config, session_id.as_deref(), last, all, prompt.as_deref()).await;
+            gray::Commands::Resume { session_id, last, all } => {
+                return run_resume_subcommand(&mut config, session_id.as_deref(), last, all).await;
             }
             gray::Commands::Cron { cmd } => {
                 return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
             }
-            gray::Commands::Cronjobs { cmd } => {
-                return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
-            }
-            gray::Commands::Proxy { cmd } | gray::Commands::Portal { cmd } => {
+            gray::Commands::Proxy { cmd } => {
                 return gray::proxy::run_cli(cmd, &config).await;
             }
             gray::Commands::Update => {
@@ -71,7 +68,6 @@ async fn run_resume_subcommand(
     session_id: Option<&str>,
     last: bool,
     all: bool,
-    prompt: Option<&str>,
 ) -> anyhow::Result<()> {
     use gray_session::{default_root, JsonlSessionStore};
     let Some(root) = default_root() else {
@@ -108,10 +104,10 @@ async fn run_resume_subcommand(
         }
     };
     let _ = crossterm::terminal::disable_raw_mode();
+    // NOTE (ponytail-audit #12): an earlier `PROMPT` positional was deleted —
+    // it was accepted and then discarded. To send a first message on resume,
+    // pipe it in or type it after the REPL opens.
     run_repl_mode(config, false, Some(target_id.as_str())).await?;
-    if let Some(p) = prompt {
-        let _ = p;
-    }
     Ok(())
 }
 

@@ -145,11 +145,6 @@ impl Tool for BashTool {
         Some(BASH_GUIDELINES)
     }
 
-    // Shell commands have arbitrary side effects: serialize them.
-    fn is_concurrency_safe(&self, _args: &Value) -> bool {
-        false
-    }
-
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let command = match get_str(&args, "command") {
             Ok(c) => c,
