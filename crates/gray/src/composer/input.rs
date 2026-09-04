@@ -302,7 +302,12 @@ pub(crate) fn handle_key_event_without_popup(
 // read_line — main loop, verbatim from mod.rs 887-1120 with dispatch split
 // ---------------------------------------------------------------------------
 
-pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<PathBuf>)>> {
+/// Reads one submitted line, redrawing on each keystroke. The TUI lock is
+/// held only per phase — never across the input wait — so background
+/// painters (boot watcher, footer ticker) can draw while idling at the
+/// prompt. Keystrokes queue in the pty and nothing else reads stdin, so no
+/// event is lost between the unlocked poll and the locked read.
+pub(crate) fn read_line(shared: &super::SharedTui) -> anyhow::Result<Option<(String, Vec<PathBuf>)>> {
     use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
     // raw-mode is owned by mod.rs (Tui::new / Drop), but we ensure it here for
@@ -312,32 +317,44 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
 
     let mut needs_draw = true;
     loop {
-        if let Some((cols, deadline)) = tui.pending_resize {
-            if std::time::Instant::now() >= deadline {
-                tui.pending_resize = None;
-                if cols != tui.last_width {
-                    tui.reflow_on_resize(cols);
-                    needs_draw = false;
+        // Phase 1 (locked): resize deadlines, completion recompute, draw.
+        // The guard drops at the end of this block, freeing the lock while
+        // we wait for input below so background painters can draw.
+        let timeout = {
+            let mut guard = shared.lock().expect("tui lock");
+            let tui: &mut super::Tui = &mut guard;
+            if let Some((cols, deadline)) = tui.pending_resize {
+                if std::time::Instant::now() >= deadline {
+                    tui.pending_resize = None;
+                    if cols != tui.last_width {
+                        tui.reflow_on_resize(cols);
+                        needs_draw = false;
+                    }
                 }
             }
-        }
 
-        if needs_draw {
-            let cur_text = tui.textarea.text().to_string();
-            tui.matches = crate::repl::completion_matches_dyn(&cur_text, std::path::Path::new(&tui.cwd));
-            if tui.sel >= tui.matches.len() { tui.sel = tui.matches.len().saturating_sub(1); }
-            tui.draw()?;
-            needs_draw = false;
-        }
+            if needs_draw {
+                let cur_text = tui.textarea.text().to_string();
+                tui.matches = crate::repl::completion_matches_dyn(&cur_text, std::path::Path::new(&tui.cwd));
+                if tui.sel >= tui.matches.len() { tui.sel = tui.matches.len().saturating_sub(1); }
+                tui.draw()?;
+                needs_draw = false;
+            }
 
-        let timeout = if let Some((_, deadline)) = tui.pending_resize {
-            let now = std::time::Instant::now();
-            if deadline > now { deadline - now } else { Duration::from_millis(0) }
-        } else {
-            Duration::from_millis(250)
+            if let Some((_, deadline)) = tui.pending_resize {
+                let now = std::time::Instant::now();
+                if deadline > now { deadline - now } else { Duration::from_millis(0) }
+            } else {
+                Duration::from_millis(250)
+            }
         };
+        // Phase 2 (unlocked): wait. Keystrokes queue in the pty and nothing
+        // else reads stdin, so no event is lost before the locked read below.
         if !poll(timeout)? { continue; }
         needs_draw = true;
+        // Phase 3 (locked): consume + handle exactly one event.
+        let mut guard = shared.lock().expect("tui lock");
+        let tui: &mut super::Tui = &mut guard;
         let ev = read()?;
         if tui.active_question.is_some() {
             if let Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) = ev {
