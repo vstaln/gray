@@ -130,6 +130,40 @@ impl DiscordAdapter {
     }
 }
 
+/// Retry a fallible future with a per-attempt timeout. First Ok wins;
+/// otherwise the last error, annotated with the attempt count. Keeps slow
+/// steps (token validation) fail-fast with log breadcrumbs instead of one
+/// long silent hang against the daemon's outer timeout.
+async fn retry_with_timeout<F, Fut, T>(
+    attempts: u32,
+    per_attempt: std::time::Duration,
+    label: &str,
+    mut f: F,
+) -> anyhow::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut last = anyhow::anyhow!("{label}: no attempts ran");
+    for n in 1..=attempts.max(1) {
+        match tokio::time::timeout(per_attempt, f()).await {
+            Ok(Ok(v)) => return Ok(v),
+            Ok(Err(e)) => {
+                log::warn!("[discord] {label} failed (attempt {n}): {e:#}");
+                last = e;
+            }
+            Err(_) => {
+                log::warn!(
+                    "[discord] {label} timed out after {}s (attempt {n})",
+                    per_attempt.as_secs()
+                );
+                last = anyhow::anyhow!("{label} timed out");
+            }
+        }
+    }
+    Err(anyhow::anyhow!("{label} failed: {last:#}"))
+}
+
 pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
     let raw = check_token_shape(token.strip_prefix("Bot ").unwrap_or(token), "discord token")?;
     if raw.len() < 20 {
@@ -311,14 +345,28 @@ impl BasePlatformAdapter for DiscordAdapter {
         {
             let http = std::sync::Arc::new(twilight_http::Client::new(self.token.clone()));
             // Validate the token early so misconfigurations fail fast (hermes get_me parity).
+            // Bounded attempts: a hung API call must surface in seconds, not sit
+            // on "validating token" until the daemon's 45s outer timeout.
             // The display name is user-chosen at bot creation — the boot card shows it verbatim.
-            let me = http
-                .current_user()
-                .await
-                .map_err(|e| anyhow::anyhow!("discord token rejected: {e}"))?
-                .model()
-                .await
-                .map_err(|e| anyhow::anyhow!("discord token rejected: {e}"))?;
+            let http2 = http.clone();
+            let me = retry_with_timeout(
+                3,
+                std::time::Duration::from_secs(15),
+                "discord token validation",
+                move || {
+                    let http2 = http2.clone();
+                    async move {
+                        http2
+                            .current_user()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("discord token rejected: {e}"))?
+                            .model()
+                            .await
+                            .map_err(|e| anyhow::anyhow!("discord token rejected: {e}"))
+                    }
+                },
+            )
+            .await?;
             *self.identity.lock().unwrap() = Some(
                 me.global_name
                     .clone()
@@ -635,8 +683,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_connect_stores_shard_for_supervision() {
-        // Stub-only: no network, connect must store the shard task.
+    async fn stub_connect_stores_shard_for_supervision() {        // Stub-only: no network, connect must store the shard task.
         #[cfg(not(feature = "discord"))]
         {
             let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
@@ -645,5 +692,43 @@ mod tests {
             a.disconnect().await.unwrap();
             assert!(!a.has_shard());
         }
+    }
+
+    #[tokio::test]
+    async fn retry_with_timeout_succeeds_after_flakes() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let r = retry_with_timeout(3, std::time::Duration::from_secs(5), "t", {
+            let calls = calls.clone();
+            move || {
+                let calls = calls.clone();
+                async move {
+                    let n = calls.fetch_add(1, Ordering::SeqCst);
+                    if n < 2 {
+                        anyhow::bail!("flake {n}")
+                    } else {
+                        Ok(42)
+                    }
+                }
+            }
+        })
+        .await;
+        assert_eq!(r.unwrap(), 42);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_with_timeout_bounds_a_hang() {
+        let before = std::time::Instant::now();
+        let r = retry_with_timeout(2, std::time::Duration::from_millis(50), "t", || async {
+            std::future::pending::<anyhow::Result<()>>().await
+        })
+        .await;
+        assert!(r.is_err(), "perpetual hang must surface as Err");
+        assert!(
+            before.elapsed() < std::time::Duration::from_secs(5),
+            "two 50ms attempts must not hang: {:?}",
+            before.elapsed()
+        );
     }
 }
