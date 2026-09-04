@@ -2034,8 +2034,8 @@ pub async fn run_repl_mode(
 
     // Interactive terminals get the ratatui composer; piped input falls back
     // to plain cooked reads (scripts, tests).
-    let interactive = std::io::stdin().is_terminal();
     use std::io::IsTerminal;
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
     // context window: user override > provider live > disk > litellm/models.dev > guess fallback
     crate::setup::set_user_context_window(config.context_window);
@@ -2085,13 +2085,6 @@ pub async fn run_repl_mode(
                 }
             }
         }
-    } else if !interactive {
-        crate::tui::print_logo();
-        print!("\r\n");
-        print!(
-            "\r\x1b[1mgray\x1b[0m\x1b[2m {} \u{b7} Run /help for commands\x1b[0m\r\n",
-            env!("CARGO_PKG_VERSION")
-        );
     }
 
     // The agent is built lazily so the REPL opens even with no model/key configured;
@@ -2342,8 +2335,10 @@ pub async fn run_repl_mode(
                 };
                 (txt, imgs)
             } else {
-                print!("\u{203a} ");
-                std::io::stdout().flush()?;
+                if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                    print!("\u{203a} ");
+                    std::io::stdout().flush()?;
+                }
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     break;
