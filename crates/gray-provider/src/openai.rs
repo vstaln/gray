@@ -961,6 +961,25 @@ pub(crate) fn classify_http_error(
         msg.push_str(&format!(", request-id: {rid}"));
     }
     let lower = snippet.to_lowercase();
+    // Taxonomy lite: context exhaustion compacts + retries once (never retried
+    // blindly); content filters are terminal bad requests.
+    const CONTEXT_OVERFLOW_HINTS: [&str; 5] = [
+        "context length",
+        "context window",
+        "too many tokens",
+        "max_tokens",
+        "prompt is too long",
+    ];
+    if CONTEXT_OVERFLOW_HINTS.iter().any(|h| lower.contains(h)) {
+        return ProviderError::ContextOverflow(format!(
+            "context exhausted — start /new or compact ({msg})"
+        ));
+    }
+    const CONTENT_FILTER_HINTS: [&str; 5] =
+        ["content_filter", "violates", "usage policies", "flagged", "safety"];
+    if CONTENT_FILTER_HINTS.iter().any(|h| lower.contains(h)) {
+        return ProviderError::BadRequest(msg);
+    }
     let is_unsupported = lower.contains("not supported")
         || lower.contains("unsupported")
         || lower.contains("model not found")
@@ -993,8 +1012,21 @@ pub(crate) fn retry_notice_event(attempt: usize, max: usize, err: &ProviderError
     StreamEvent::stream_error(format!("Reconnecting... {attempt}/{max}"), details)
 }
 
-/// Exponential backoff with jitter, matching the existing retry cadence.
-fn backoff_delay(initial: Duration, attempt: usize) -> Duration {
+/// Numeric `Retry-After` (seconds) honored as the backoff floor; date forms
+/// and garbage are ignored (servers that matter send seconds).
+pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+/// Exponential backoff with jitter, floored by `Retry-After` when present.
+fn backoff_delay(initial: Duration, attempt: usize, retry_after: Option<Duration>) -> Duration {
     let exp_factor = 1u64 << (attempt.saturating_sub(1));
     let backoff_ms = (initial.as_millis() as u64).saturating_mul(exp_factor);
     let max_jitter = backoff_ms / 2;
@@ -1007,7 +1039,8 @@ fn backoff_delay(initial: Duration, attempt: usize) -> Duration {
     } else {
         0
     };
-    Duration::from_millis(backoff_ms + jitter_ms)
+    let base = Duration::from_millis(backoff_ms + jitter_ms);
+    retry_after.map(|floor| base.max(floor)).unwrap_or(base)
 }
 
 /// Single POST attempt (no retry). Retry + `Reconnecting...` notices live in
@@ -1019,7 +1052,7 @@ async fn send_json_once(
     api_key: &str,
     body: &Value,
     attempt: usize,
-) -> Result<reqwest::Response, ProviderError> {
+) -> Result<reqwest::Response, (ProviderError, Option<Duration>)> {
     let base = if api_key.is_empty() {
         client.post(url.clone())
     } else {
@@ -1036,6 +1069,7 @@ async fn send_json_once(
             if status.is_success() {
                 return Ok(res);
             }
+            let retry_after = parse_retry_after(res.headers());
             let cf_ray = res
                 .headers()
                 .get("cf-ray")
@@ -1049,15 +1083,21 @@ async fn send_json_once(
                 .map(|s| s.to_string());
             let text = res.text().await.unwrap_or_default();
             let snippet: String = text.chars().take(500).collect();
-            Err(classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref()))
+            Err((
+                classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref()),
+                retry_after,
+            ))
         }
-        Err(e) => Err(if e.is_connect() {
-            ProviderError::Connection(e.to_string())
-        } else if e.is_timeout() {
-            ProviderError::Timeout(e.to_string())
-        } else {
-            ProviderError::Stream(e.to_string())
-        }),
+        Err(e) => Err((
+            if e.is_connect() {
+                ProviderError::Connection(e.to_string())
+            } else if e.is_timeout() {
+                ProviderError::Timeout(e.to_string())
+            } else {
+                ProviderError::Stream(e.to_string())
+            },
+            None,
+        )),
     }
 }
 
@@ -1077,6 +1117,7 @@ enum StreamState {
         body: OpenAiChatRequest,
         initial_backoff: Duration,
         attempt: usize,
+        retry_after: Option<Duration>,
     },
     ResponsesInit {
         client: reqwest::Client,
@@ -1085,6 +1126,7 @@ enum StreamState {
         body: ResponsesRequest,
         initial_backoff: Duration,
         attempt: usize,
+        retry_after: Option<Duration>,
     },
     Streaming {
         event_stream: BoxedEventStream,
@@ -1203,12 +1245,13 @@ fn stream_unfold_step(
                     body,
                     initial_backoff,
                     attempt,
+                    retry_after,
                 } => {
                     // Backoff for attempts 2+ runs here so the previous
                     // `Reconnecting...` notice is already on screen (Codex:
                     // notify then sleep, not sleep then notify).
                     if attempt > 1 {
-                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1)).await;
+                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1, retry_after)).await;
                     }
                     let body_value =
                         serde_json::to_value(&body).expect("OpenAiChatRequest serialization");
@@ -1224,7 +1267,7 @@ fn stream_unfold_step(
                                 completed: false,
                             };
                         }
-                        Err(err) => {
+                        Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
                                 let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
@@ -1235,6 +1278,7 @@ fn stream_unfold_step(
                                     body,
                                     initial_backoff,
                                     attempt: attempt + 1,
+                                    retry_after: floor,
                                 };
                                 return Some((Ok(notice), next));
                             }
@@ -1243,9 +1287,9 @@ fn stream_unfold_step(
                         }
                     }
                 }
-                StreamState::ResponsesInit { client, url, api_key, body, initial_backoff, attempt } => {
+                StreamState::ResponsesInit { client, url, api_key, body, initial_backoff, attempt, retry_after } => {
                     if attempt > 1 {
-                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1)).await;
+                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1, retry_after)).await;
                     }
                     let body_value =
                         serde_json::to_value(&body).expect("ResponsesRequest serialization");
@@ -1254,7 +1298,7 @@ fn stream_unfold_step(
                             let event_stream: BoxedEventStream = response.bytes_stream().eventsource().boxed();
                             state = StreamState::ResponsesStreaming { event_stream, tools_by_call_id: BTreeMap::new(), index_to_call_id: BTreeMap::new(), last_usage: None, pending_events: VecDeque::new(), completed: false };
                         }
-                        Err(err) => {
+                        Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
                                 let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
@@ -1265,6 +1309,7 @@ fn stream_unfold_step(
                                     body,
                                     initial_backoff,
                                     attempt: attempt + 1,
+                                    retry_after: floor,
                                 };
                                 return Some((Ok(notice), next));
                             }
@@ -1682,6 +1727,7 @@ impl Provider for OpenAiProvider {
                 body,
                 initial_backoff: self.initial_backoff,
                 attempt: 1,
+                retry_after: None,
             };
             return stream::unfold(init_state, stream_unfold_step).boxed();
         }
@@ -1698,6 +1744,7 @@ impl Provider for OpenAiProvider {
             body,
             initial_backoff: self.initial_backoff,
             attempt: 1,
+            retry_after: None,
         };
 
         stream::unfold(init_state, stream_unfold_step).boxed()
@@ -1847,6 +1894,52 @@ mod tests {
         let usage = map_usage(&u);
         assert_eq!(usage.non_cached_input_tokens, 150, "miss preferred: {usage:?}");
         assert_eq!(usage.cache_read_input_tokens, 800, "read kept: {usage:?}");
+    }
+
+    #[test]
+    fn context_overflow_bodies_map_to_non_retryable_context_overflow() {
+        for body in [
+            "maximum context length is 128000 tokens, requested 200000",
+            "this model's maximum context window is exceeded",
+            "too many tokens in this request",
+            "prompt is too long for this model",
+            "max_tokens exceeded: reduce input size",
+        ] {
+            let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, body, None, None);
+            assert!(matches!(err, ProviderError::ContextOverflow(_)), "body: {body}");
+            assert!(!is_retryable_error(&err), "must not retry: {body}");
+            assert!(err.should_compress(), "must flag compression: {body}");
+            assert!(err.to_string().contains("context exhausted"), "actionable: {err}");
+        }
+    }
+
+    #[test]
+    fn content_filter_bodies_map_to_non_retryable_bad_request() {
+        for body in [
+            "content_filter: response was flagged by safety classifier",
+            "request violates usage policies",
+        ] {
+            let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, body, None, None);
+            assert!(matches!(err, ProviderError::BadRequest(_)), "body: {body}");
+            assert!(!is_retryable_error(&err), "must not retry: {body}");
+            assert!(!err.should_compress());
+        }
+    }
+
+    #[test]
+    fn retry_after_header_is_backoff_floor() {
+        let base = Duration::from_millis(50);
+        assert!(backoff_delay(base, 1, None) < Duration::from_secs(1));
+        assert!(
+            backoff_delay(base, 1, Some(Duration::from_secs(5))) >= Duration::from_secs(5),
+            "numeric Retry-After must floor the backoff"
+        );
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "3".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(3)));
+        headers.insert(reqwest::header::RETRY_AFTER, "not-a-number".parse().unwrap());
+        assert_eq!(parse_retry_after(&headers), None);
+        assert_eq!(parse_retry_after(&reqwest::header::HeaderMap::new()), None);
     }
 }
 
