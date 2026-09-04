@@ -61,6 +61,14 @@ pub const FAST_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// (timeouts, resets, shard ends) is retryable.
 pub fn classify_connect_error(err: &str) -> Fatal {
     let lower = err.to_ascii_lowercase();
+    // Privileged-intents close (4014 contains "401") is reconnectable, never terminal.
+    if lower.contains("4014") || lower.contains("intent") {
+        return Fatal::Retryable(err.to_string());
+    }
+    // Revoked/dead Slack tokens never recover — no hot retry.
+    if ["invalid_auth", "account_inactive", "token_revoked", "not_authed"].iter().any(|m| lower.contains(m)) {
+        return Fatal::Terminal(err.to_string());
+    }
     let auth = ["unauthorized", "forbidden", "token rejected", "bad token", "invalid token", "401", "403"];
     if auth.iter().any(|m| lower.contains(m)) {
         Fatal::Terminal(err.to_string())
@@ -95,6 +103,10 @@ async fn connect_adapter_with_retry(
     ledger: &DeliveryLedger,
     max_attempts: u32,
 ) {
+    // Wire the board so adapters report staged progress (`validating token` → …).
+    if let Some(b) = board {
+        adapter.set_status_board(b.clone());
+    }
     let cap = max_attempts.max(1);
     let mut fast_failures = 0u32;
     let mut last_failure: Option<Instant> = None;
@@ -1176,6 +1188,30 @@ mod tests {
         // Shard death is retryable so the production ladder reconnects.
         assert!(matches!(classify_shard_end(), Fatal::Retryable(_)));
         assert!(matches!(classify_connect_error("shard ended"), Fatal::Retryable(_)));
+    }
+
+    #[test]
+    fn privileged_intents_never_terminal() {
+        // Close 4014 contains "401" — the intents carve-out must win.
+        for msg in [
+            "discord gateway closed: 4014 disallowed intents",
+            "privileged intents required (enable MESSAGE_CONTENT)",
+            "close 4014: disallowed privileged intents",
+        ] {
+            assert!(matches!(classify_connect_error(msg), Fatal::Retryable(_)), "must be retryable: {msg}");
+        }
+    }
+
+    #[test]
+    fn slack_revoked_tokens_are_terminal() {
+        for msg in [
+            "slack bot token rejected: invalid_auth",
+            "slack send: account_inactive",
+            "socket mode failed: token_revoked",
+            "not_authed",
+        ] {
+            assert!(matches!(classify_connect_error(msg), Fatal::Terminal(_)), "must be terminal: {msg}");
+        }
     }
 
     #[test]
