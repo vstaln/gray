@@ -462,7 +462,8 @@ pub(crate) fn read_line(tui: &mut Tui) -> anyhow::Result<Option<(String, Vec<Pat
                         }
                         tui.matches.clear();
                         tui.sel = 0;
-                        tui.push_user_prompt(&trimmed, &attached);
+                        // Slash commands hug their feedback: no trailing gap, say() output follows directly.
+                        tui.push_user_prompt(&trimmed, &attached, !trimmed.starts_with('/'));
                         return Ok(Some((trimmed, attached)));
                     }
                     KeyCode::Tab => {
