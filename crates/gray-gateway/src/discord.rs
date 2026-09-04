@@ -8,6 +8,7 @@
 use crate::config::{Platform, PlatformConfig};
 use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendOptions, SendResult};
 use crate::session::SessionSource;
+use crate::status::GatewayStatusBoard;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
@@ -73,6 +74,27 @@ pub struct DiscordAdapter {
     /// Live shard task. `connect()` stores it, `disconnect()` aborts it, and
     /// the supervisor re-enters the reconnect ladder when it dies.
     shard: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Status board for staged connect progress (wired by the daemon; None for send-only).
+    board: Mutex<Option<GatewayStatusBoard>>,
+}
+
+/// How long `connect()` waits for the first Ready before failing.
+pub(crate) const READY_TIMEOUT_SECS: u64 = 30;
+
+/// Wait for the first Ready event; timeout surfaces as a retryable error.
+pub(crate) async fn wait_for_ready(rx: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
+    wait_for_ready_with(rx, std::time::Duration::from_secs(READY_TIMEOUT_SECS)).await
+}
+
+pub(crate) async fn wait_for_ready_with(
+    rx: tokio::sync::oneshot::Receiver<()>,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(_)) => anyhow::bail!("discord shard ended before ready"),
+        Err(_) => anyhow::bail!("timed out waiting for discord ready (timeout {}s)", timeout.as_secs()),
+    }
 }
 
 impl DiscordAdapter {
@@ -88,7 +110,14 @@ impl DiscordAdapter {
             last_inbound: Mutex::new(HashMap::new()),
             identity: Mutex::new(None),
             shard: Mutex::new(None),
+            board: Mutex::new(None),
         })
+    }
+
+    fn stage(&self, stage: &'static str) {
+        if let Some(b) = self.board.lock().unwrap().clone() {
+            b.mark_stage(Platform::Discord, stage);
+        }
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -140,8 +169,9 @@ fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u6
 }
 
 #[cfg(feature = "discord")]
-fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: UnboundedSender<MessageEvent>, last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>) -> tokio::task::JoinHandle<()> {
+fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: UnboundedSender<MessageEvent>, last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>, ready_tx: Option<tokio::sync::oneshot::Sender<()>>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut ready_tx = ready_tx;
         use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
         use twilight_model::application::interaction::InteractionData;
 
@@ -161,6 +191,10 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                 Event::Ready(r) => {
                     app_id = Some(r.application.id);
                     bot_id = Some(r.user.id);
+                    // First Ready unblocks `connect()` (which bounds it with a timeout).
+                    if let Some(tx) = ready_tx.take() {
+                        let _ = tx.send(());
+                    }
                     // Register global slash commands (hermes _register_slash_commands).
                     let commands: Vec<twilight_model::application::command::Command> = SLASH_COMMANDS
                         .iter()
@@ -271,6 +305,7 @@ impl BasePlatformAdapter for DiscordAdapter {
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
+        self.stage("validating token");
         validate_discord_token(&self.token)?;
         #[cfg(feature = "discord")]
         {
@@ -291,13 +326,25 @@ impl BasePlatformAdapter for DiscordAdapter {
                     .unwrap_or_else(|| me.name.clone()),
             );
             *self.client.lock().unwrap() = Some(http.clone());
-            match self.event_tx.lock().unwrap().clone() {
+            // Bind first: the match scrutinee temporary would hold the
+            // non-Send guard across the ready await below.
+            let tx = self.event_tx.lock().unwrap().clone();
+            match tx {
                 Some(tx) => {
+                    self.stage("connecting gateway");
                     if let Some(old) = self.shard.lock().unwrap().take() {
                         old.abort();
                     }
-                    let h = spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())));
+                    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+                    let h = spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())), Some(ready_tx));
                     *self.shard.lock().unwrap() = Some(h);
+                    self.stage("waiting for ready");
+                    if let Err(e) = wait_for_ready(ready_rx).await {
+                        if let Some(h) = self.shard.lock().unwrap().take() {
+                            h.abort();
+                        }
+                        return Err(e);
+                    }
                     log::info!("[discord] gateway connected, slash commands registered on Ready");
                 }
                 None => log::info!("[discord] send-only mode (no event channel wired)"),
@@ -305,6 +352,7 @@ impl BasePlatformAdapter for DiscordAdapter {
         }
         #[cfg(not(feature = "discord"))]
         {
+            self.stage("connecting gateway");
             if let Some(old) = self.shard.lock().unwrap().take() {
                 old.abort();
             }
@@ -312,6 +360,7 @@ impl BasePlatformAdapter for DiscordAdapter {
             // On real shards death the task exits and the next supervised
             // `connect_adapter_with_retry` restarts it (see daemon ladder).
             *self.shard.lock().unwrap() = Some(tokio::spawn(async { std::future::pending::<()>().await }));
+            self.stage("waiting for ready");
             log::info!("[discord] stub connect (token {}…)", &self.token[..self.token.len().min(6)]);
         }
         Ok(())
@@ -328,6 +377,10 @@ impl BasePlatformAdapter for DiscordAdapter {
 
     fn set_event_tx(&mut self, tx: UnboundedSender<MessageEvent>) {
         *self.event_tx.lock().unwrap() = Some(tx);
+    }
+
+    fn set_status_board(&self, board: GatewayStatusBoard) {
+        *self.board.lock().unwrap() = Some(board);
     }
 
     async fn send_typing(&self, chat: &str) {
@@ -534,6 +587,51 @@ mod tests {
         assert!(a.has_shard(), "shard must be stored");
         a.disconnect().await.unwrap();
         assert!(!a.has_shard(), "disconnect must abort/take the stored handle");
+    }
+
+    #[test]
+    fn ready_timeout_is_30s() {
+        assert_eq!(READY_TIMEOUT_SECS, 30);
+    }
+
+    #[tokio::test]
+    async fn ready_wait_resolves_on_first_ready() {
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        tx.send(()).unwrap();
+        assert!(wait_for_ready_with(rx, std::time::Duration::from_secs(5)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn ready_wait_timeout_is_retryable_not_terminal() {
+        // Sender kept alive so the wait actually times out (no instant cancel).
+        let (_keep, rx) = tokio::sync::oneshot::channel::<()>();
+        let err = wait_for_ready_with(rx, std::time::Duration::from_millis(10)).await.unwrap_err();
+        assert!(err.to_string().contains("ready"), "error surfaces: {err}");
+        assert!(
+            matches!(crate::daemon::classify_connect_error(&err.to_string()), crate::daemon::Fatal::Retryable(_)),
+            "ready timeout must retry, never terminal: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stub_connect_walks_stages_for_supervision() {
+        // Stub-only: no network, connect still walks the staged path.
+        #[cfg(not(feature = "discord"))]
+        {
+            use crate::status::{GatewayStatusBoard, PlatformConnState};
+            let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
+            let board = GatewayStatusBoard::new(&[Platform::Discord]);
+            a.set_status_board(board.clone());
+            a.connect().await.unwrap();
+            assert!(a.has_shard(), "connect must store the shard task");
+            assert_eq!(
+                board.snapshot()[0].1,
+                PlatformConnState::Connecting { stage: "waiting for ready" },
+                "stub ends on the last pre-connected stage; the daemon marks connected"
+            );
+            a.disconnect().await.unwrap();
+            assert!(!a.has_shard());
+        }
     }
 
     #[tokio::test]
