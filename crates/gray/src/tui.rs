@@ -177,6 +177,10 @@ pub fn blend_color(base: ratatui::style::Color, hilite: ratatui::style::Color, t
 /// Prints the gray logo with a subtle diagonal shine gradient, sized to terminal.
 /// Falls back to dim if NO_COLOR is set.
 pub fn print_logo() {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() {
+        return;
+    }
     let no_color = std::env::var_os("NO_COLOR").is_some();
     let lines = logo_lines();
     let rows = lines.len().max(1) as f32;
