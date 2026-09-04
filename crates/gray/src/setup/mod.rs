@@ -1799,6 +1799,24 @@ pub fn gateway_modal_rows(cfg: &gray_gateway::config::GatewayConfig, running: bo
     rows
 }
 
+/// Move a modal selection, skipping `__sep` spacer rows so arrow keys never
+/// land on the invisible gap (e.g. between platforms and actions).
+fn move_sel(rows: &[(String, String, String)], sel: usize, delta: i32) -> usize {
+    if rows.is_empty() {
+        return 0;
+    }
+    let max = rows.len() - 1;
+    let mut next = (sel as i32 + delta).clamp(0, max as i32) as usize;
+    while rows[next].0 == "__sep" {
+        let stepped = (next as i32 + delta.signum()).clamp(0, max as i32) as usize;
+        if stepped == next {
+            break;
+        }
+        next = stepped;
+    }
+    next
+}
+
 /// Interactive `/gateway` picker (like `/model`, `/skills`): platforms with
 /// enabled state, plus daemon/service actions. Enter on a platform without a
 /// saved token opens an inline token input; on a disabled platform with a
@@ -1969,13 +1987,13 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
             match ev {
                 Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
                 Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                    KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                    KeyCode::Char('n') => sel = (sel + 1).min(max_sel),
+                    KeyCode::Char('p') => sel = move_sel(&rows, sel, -1),
+                    KeyCode::Char('n') => sel = move_sel(&rows, sel, 1),
                     _ => {}
                 },
                 Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(max_sel),
+                    KeyCode::Up => sel = move_sel(&rows, sel, -1),
+                    KeyCode::Down => sel = move_sel(&rows, sel, 1),
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Enter => {
                         let (cmd, label, _) = &rows[sel];
@@ -2003,7 +2021,9 @@ pub fn run_gateway_modal(bg: Option<&BackgroundSnapshot>, running: bool) -> anyh
                     }
                     _ => {}
                 },
-                Event::Resize(_, _) => {}
+                Event::Resize(_, _) => {
+                    let _ = terminal.clear();
+                }
                 _ => {}
             }
         }
@@ -2027,7 +2047,7 @@ mod gateway_modal_tests {
     fn gateway_modal_rows_reflect_state() {
         use gray_gateway::config::{GatewayConfig, Platform, PlatformConfig};
         let mut platforms = std::collections::HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig { enabled: true, token: Some("x".into()), app_token: None, home_channel: None });
+        platforms.insert(Platform::Telegram, PlatformConfig { enabled: true, token: Some("x".into()), ..Default::default() });
         let cfg = GatewayConfig { platforms, ..Default::default() };
         let rows = gateway_modal_rows(&cfg, false);
         assert_eq!(rows[0], (String::new(), "Telegram".into(), "enabled".into()));
@@ -2043,10 +2063,27 @@ mod gateway_modal_tests {
     fn gateway_modal_rows_show_saved_token() {
         use gray_gateway::config::{GatewayConfig, Platform, PlatformConfig};
         let mut platforms = std::collections::HashMap::new();
-        platforms.insert(Platform::Discord, PlatformConfig { enabled: false, token: Some("saved".into()), app_token: None, home_channel: None });
+        platforms.insert(Platform::Discord, PlatformConfig { enabled: false, token: Some("saved".into()), ..Default::default() });
         let cfg = GatewayConfig { platforms, ..Default::default() };
         let rows = gateway_modal_rows(&cfg, false);
         assert_eq!(rows[1], (String::new(), "Discord".into(), "disabled — token saved".into()));
+    }
+
+    #[test]
+    fn move_sel_skips_sep() {
+        let rows = vec![
+            ("".to_string(), "Telegram".to_string(), String::new()),
+            ("".to_string(), "Discord".to_string(), String::new()),
+            ("".to_string(), "Slack".to_string(), String::new()),
+            ("__sep".to_string(), String::new(), String::new()),
+            ("/gateway run".to_string(), "Start gateway".to_string(), String::new()),
+        ];
+        // Slack -> one Down lands on Start gateway, not the invisible gap.
+        assert_eq!(move_sel(&rows, 2, 1), 4);
+        // ...and back up in one press.
+        assert_eq!(move_sel(&rows, 4, -1), 2);
+        assert_eq!(move_sel(&rows, 0, -1), 0);
+        assert_eq!(move_sel(&rows, 4, 1), 4);
     }
 }
 

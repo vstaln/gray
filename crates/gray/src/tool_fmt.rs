@@ -748,7 +748,78 @@ pub fn render_diff_hunks(
 pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static>> {
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
-    let raw_lines: Vec<&str> = content.lines().collect();
+    render_numbered_lines(&content.lines().collect::<Vec<_>>(), &mut highlighter, Some(40))
+}
+
+/// Guesses a syntect language token for command output and lightly
+/// pretty-prints it: JSON is reflowed, minified HTML/XML is split one tag
+/// per line. Returns (text, token); token is None for plain output.
+fn prettify_output(trimmed: &str) -> (String, Option<&'static str>) {
+    let head = trimmed
+        .trim_start()
+        .get(..9)
+        .unwrap_or(trimmed.trim_start())
+        .to_ascii_lowercase();
+    if head.starts_with("<!doctype") || head.starts_with("<html") {
+        // ponytail: tag-boundary split only (`><`), never touches text content.
+        return (trimmed.replace("><", ">\n<"), Some("html"));
+    }
+    if head.starts_with("<?xml") {
+        return (trimmed.replace("><", ">\n<"), Some("xml"));
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Ok(pretty) = serde_json::to_string_pretty(&v)
+    {
+        return (pretty, Some("json"));
+    }
+    (trimmed.to_string(), None)
+}
+
+fn push_numbered_wrapped(
+    lines: &mut Vec<Line<'static>>,
+    line_num: usize,
+    text: &str,
+    highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>,
+    gutter_width: usize,
+    content_w: usize,
+) {
+    let syntect = gray_markdown::get_syntect();
+    let expanded = expand_tabs(text, 4);
+    let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
+    let cont_indent_len = indent_count.min(content_w / 2);
+    let cont_indent_str = " ".repeat(cont_indent_len);
+
+    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, DIFF_EQUAL_FG, None);
+    let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
+
+    let gutter_str = format!("{:>width$} | ", line_num, width = gutter_width);
+    let cont_gutter_str = format!("{:>width$} | ", "", width = gutter_width);
+
+    for (ci, chunk_spans) in wrapped_rows.into_iter().enumerate() {
+        let mut spans = Vec::new();
+        spans.push(Span::raw("  "));
+        if ci == 0 {
+            spans.push(Span::styled(gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
+        } else {
+            spans.push(Span::styled(cont_gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
+            if cont_indent_len > 0 {
+                spans.push(Span::raw(cont_indent_str.clone()));
+            }
+        }
+        spans.extend(chunk_spans);
+        lines.push(Line::from(spans));
+    }
+}
+
+/// Numbered, highlighted, indent-wrapped rendering shared by
+/// [`render_code_block`] (capped) and command output (uncapped).
+/// `max_lines_to_show`: Some(n) keeps head/tail with an omission marker,
+/// None shows every line.
+fn render_numbered_lines(
+    raw_lines: &[&str],
+    highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>,
+    max_lines_to_show: Option<usize>,
+) -> Vec<Line<'static>> {
     let total = raw_lines.len();
     if total == 0 {
         return Vec::new();
@@ -760,44 +831,13 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
     let overhead = 2 + gutter_width + 3 + 2;
     let content_w = term_w.saturating_sub(overhead).max(20);
 
-    let push_wrapped = |lines: &mut Vec<Line<'static>>, line_num: usize, text: &str, highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>| {
-        let expanded = expand_tabs(text, 4);
-        let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
-        let cont_indent_len = indent_count.min(content_w / 2);
-        let cont_indent_str = " ".repeat(cont_indent_len);
-
-        let row_spans = highlight_line_spans(&expanded, highlighter, syntect, DIFF_EQUAL_FG, None);
-        let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
-
-        let gutter_str = format!("{:>width$} | ", line_num, width = gutter_width);
-        let cont_gutter_str = format!("{:>width$} | ", "", width = gutter_width);
-
-        for (ci, chunk_spans) in wrapped_rows.into_iter().enumerate() {
-            let mut spans = Vec::new();
-            spans.push(Span::raw("  "));
-            if ci == 0 {
-                spans.push(Span::styled(gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
-            } else {
-                spans.push(Span::styled(cont_gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
-                if cont_indent_len > 0 {
-                    spans.push(Span::raw(cont_indent_str.clone()));
-                }
-            }
-            spans.extend(chunk_spans);
-            lines.push(Line::from(spans));
-        }
-    };
-
-    let max_lines_to_show = 40;
-    if total <= max_lines_to_show {
-        for (idx, line_text) in raw_lines.iter().enumerate() {
-            push_wrapped(&mut lines, idx + 1, line_text, &mut highlighter);
-        }
-    } else {
+    if let Some(max) = max_lines_to_show
+        && total > max
+    {
         const HEAD: usize = 18;
         const TAIL: usize = 6;
         for (idx, line_text) in raw_lines.iter().take(HEAD).enumerate() {
-            push_wrapped(&mut lines, idx + 1, line_text, &mut highlighter);
+            push_numbered_wrapped(&mut lines, idx + 1, line_text, highlighter, gutter_width, content_w);
         }
         let omitted = total.saturating_sub(HEAD + TAIL);
         lines.push(Line::from(vec![
@@ -805,8 +845,12 @@ pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static
             Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
         ]));
         for (idx, line_text) in raw_lines.iter().skip(total - TAIL).enumerate() {
-            push_wrapped(&mut lines, total - TAIL + idx + 1, line_text, &mut highlighter);
+            push_numbered_wrapped(&mut lines, total - TAIL + idx + 1, line_text, highlighter, gutter_width, content_w);
         }
+        return lines;
+    }
+    for (idx, line_text) in raw_lines.iter().enumerate() {
+        push_numbered_wrapped(&mut lines, idx + 1, line_text, highlighter, gutter_width, content_w);
     }
 
     lines
@@ -887,44 +931,13 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    const MAX_HEAD_LINES: usize = 6;
-    const MAX_TAIL_LINES: usize = 4;
-    const MAX_TOTAL_LINES: usize = MAX_HEAD_LINES + MAX_TAIL_LINES + 2;
-    let raw_lines: Vec<&str> = trimmed.lines().collect();
-    let total = raw_lines.len();
-    let text_dim = Color::Rgb(160, 160, 160);
-    let mut lines = Vec::new();
-
-    if total <= MAX_TOTAL_LINES {
-        for l in raw_lines {
-            let expanded = expand_tabs(l, 4);
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(expanded, Style::default().fg(text_dim)),
-            ]));
-        }
-    } else {
-        for l in raw_lines.iter().take(MAX_HEAD_LINES) {
-            let expanded = expand_tabs(l, 4);
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(expanded, Style::default().fg(text_dim)),
-            ]));
-        }
-        let omitted = total.saturating_sub(MAX_HEAD_LINES + MAX_TAIL_LINES);
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
-        ]));
-        for l in raw_lines.iter().skip(total - MAX_TAIL_LINES) {
-            let expanded = expand_tabs(l, 4);
-            lines.push(Line::from(vec![
-                Span::raw(" "),
-                Span::styled(expanded, Style::default().fg(text_dim)),
-            ]));
-        }
-    }
-    lines
+    // Show the whole output as a code block: numbered gutter, syntax
+    // highlighting, indent-aware wrapping. HTML/XML is split one tag per
+    // line and JSON is reflowed so minified bodies stay readable.
+    let (pretty, token) = prettify_output(trimmed);
+    let syntect = gray_markdown::get_syntect();
+    let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
+    render_numbered_lines(&pretty.lines().collect::<Vec<_>>(), &mut highlighter, None)
 }
 
 /// Formats tool output lines (convenience wrapper).
@@ -998,4 +1011,65 @@ pub fn format_tool_result_plain_with_context(
 /// Plain ANSI string formatting for tool output lines.
 pub fn format_tool_result_plain(tool_name: &str, output: &str, is_error: bool) -> String {
     format_tool_result_plain_with_context(tool_name, None, output, is_error, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_text(l: &Line<'_>) -> String {
+        l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn bash_plain_output_is_numbered() {
+        let lines = format_tool_result_lines("bash", "hello\nworld", false);
+        assert_eq!(lines.len(), 2);
+        assert!(row_text(&lines[0]).contains("1 | "), "got {:?}", row_text(&lines[0]));
+        assert!(row_text(&lines[0]).contains("hello"));
+        assert!(row_text(&lines[1]).contains("2 | "));
+    }
+
+    #[test]
+    fn bash_empty_output_returns_nothing() {
+        assert!(format_tool_result_lines("bash", "   \n  ", false).is_empty());
+    }
+
+    #[test]
+    fn bash_shows_every_line_uncapped() {
+        let out: String = (1..=60).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let lines = format_tool_result_lines("bash", &out, false);
+        let first_rows: Vec<String> = lines.iter().map(row_text).collect();
+        assert!(first_rows.iter().any(|r| r.contains("60 | ")), "last gutter missing");
+        assert!(!first_rows.iter().any(|r| r.contains("… +")), "must not truncate");
+    }
+
+    #[test]
+    fn bash_json_is_pretty_printed() {
+        let lines = format_tool_result_lines("bash", r#"{"a":1,"b":[1,2]}"#, false);
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(lines.len() > 1);
+        assert!(text.contains("\"a\": 1"), "got {text:?}");
+    }
+
+    #[test]
+    fn bash_html_is_split_one_tag_per_line() {
+        let html = "<!DOCTYPE html><html><head><title>Vercel Security</title></head><body><p>hi</p></body></html>";
+        let lines = format_tool_result_lines("bash", html, false);
+        assert!(lines.len() > 1);
+        for l in &lines {
+            assert!(!row_text(l).contains("><"), "still minified: {:?}", row_text(l));
+        }
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("<title>Vercel Security</title>"));
+    }
+
+    #[test]
+    fn render_code_block_cap_unchanged() {
+        let content: String = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let lines = render_code_block(&content, None);
+        // 18 head + 1 omission marker + 6 tail
+        assert_eq!(lines.len(), 25);
+        assert!(row_text(&lines[18]).contains("… +26 lines"));
+    }
 }

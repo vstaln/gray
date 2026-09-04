@@ -260,6 +260,21 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<
     result
 }
 
+/// Cut point for flushing the live thinking buffer: the last space within
+/// the first `max_w` chars so rows break between words, never mid-word
+/// ("r|espond"). Falls back to a hard cut at `max_w` when there is no
+/// space (single overlong word) — same as the wrapper's long-word path.
+fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
+    let end = max_w.min(chars.len());
+    if end < chars.len()
+        && let Some(sp) = chars[..end].iter().rposition(|c| *c == ' ')
+        && sp > 0
+    {
+        return sp + 1; // keep the space at the row end; rest starts clean
+    }
+    end
+}
+
 pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBuf], width: usize) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
     let prompt_color = Color::Rgb(180, 180, 180);
@@ -277,12 +292,25 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
             lines.push(Line::from(vec![prefix]).style(bg_style));
         } else {
             let chars: Vec<char> = raw_line.chars().collect();
-            for (ci, chunk) in chars.chunks(max_w).enumerate() {
-                let row_prefix = if ci == 0 { prefix.clone() } else { Span::raw("   ") };
+            let mut start = 0usize;
+            let mut first_row = true;
+            while start < chars.len() {
+                // Prefer a word boundary (last space in the window) over a
+                // mid-word char cut; hard-cut only a single overlong word.
+                let mut end = (start + max_w).min(chars.len());
+                if end < chars.len()
+                    && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
+                    && sp > 0
+                {
+                    end = start + sp + 1;
+                }
+                let row_prefix = if first_row { prefix.clone() } else { Span::raw("   ") };
+                first_row = false;
                 lines.push(Line::from(vec![
                     row_prefix,
-                    Span::styled(chunk.iter().collect::<String>(), Style::default().fg(text_primary)),
+                    Span::styled(chars[start..end].iter().collect::<String>(), Style::default().fg(text_primary)),
                 ]).style(bg_style));
+                start = end;
             }
         }
     }
@@ -357,8 +385,9 @@ impl Tui {
         }
         if self.pending.chars().count() >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
-            let line: String = chars[..max_w].iter().collect();
-            self.pending = chars[max_w..].iter().collect();
+            let cut = word_flush_cut(&chars, max_w);
+            let line: String = chars[..cut].iter().collect();
+            self.pending = chars[cut..].iter().collect();
             self.push_line_styled(line, thinking_style());
         }
         let _ = self.draw();
@@ -763,16 +792,39 @@ mod tests {
 
 
     #[test]
-    fn repro_screenshot_wrap() {
-        let text = "Invoking the conversation-start skill to establish skill discovery before responding to the poetry request. Evaluating whether to invoke the brainstorming or writing skill for the creative request.";
-        for max_w in [60usize, 80, 100, 120, 148] {
-            let line = Line::from(vec![Span::raw(text.to_string())]);
-            let out = wrap_styled_line_with_ranges(line, max_w);
-            eprintln!("=== max_w={max_w} rows={} ===", out.len());
-            for (l, _) in &out {
-                let row: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-                eprintln!("  [{:>3}] {:?}", unicode_width::UnicodeWidthStr::width(row.as_str()), row);
-            }
+    fn word_flush_cut_breaks_at_spaces() {
+        let chars: Vec<char> = "hello world foo".chars().collect();
+        let cut = word_flush_cut(&chars, 8);
+        let row: String = chars[..cut].iter().collect();
+        let rest: String = chars[cut..].iter().collect();
+        assert_eq!(row, "hello ");
+        assert_eq!(rest, "world foo");
+    }
+
+    #[test]
+    fn word_flush_cut_hard_cuts_overlong_word() {
+        let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+        assert_eq!(word_flush_cut(&chars, 8), 8);
+    }
+
+    #[test]
+    fn word_flush_cut_exact_fit_pushes_whole() {
+        let chars: Vec<char> = "hi you".chars().collect();
+        assert_eq!(word_flush_cut(&chars, 6), 6);
+    }
+
+    #[test]
+    fn user_prompt_wraps_at_word_boundaries() {
+        let text = "write a very long poem about the restless sea";
+        let lines = format_user_prompt_lines(text, &[], 24);
+        // content rows (skip blank margins) preserve the text exactly
+        let bodies: Vec<String> = lines.iter().filter_map(|l| l.spans.get(1)).map(|s| s.content.to_string()).collect();
+        assert!(bodies.len() > 1);
+        assert_eq!(bodies.concat(), text);
+        // every row except the last ends at a space or is a full hard cut
+        let max_w = 24usize - 4;
+        for b in &bodies[..bodies.len() - 1] {
+            assert!(b.ends_with(' ') || b.chars().count() == max_w, "mid-word break: {b:?}");
         }
     }
 
