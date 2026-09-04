@@ -417,18 +417,7 @@ impl Tui {
 
         let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
-            let secs = elapsed.as_secs_f64();
-            let elapsed_str = if secs < 1.0 {
-                format!("{}ms", elapsed.as_millis())
-            } else if secs < 60.0 {
-                // keep one decimal, trim trailing .0
-                let s = format!("{secs:.1}s");
-                if s.ends_with(".0s") { s.replacen(".0s", "s", 1) } else { s }
-            } else {
-                let m = (secs as u64) / 60;
-                let s = (secs as u64) % 60;
-                if s == 0 { format!("{m}m") } else { format!("{m}m {s}s") }
-            };
+            let elapsed_str = crate::repl::format::fmt_duration_ms(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
             let verb = if had_thinking { "Thought for" } else { "Worked for" };
             let tok_suffix = if let Some(u) = self.latest_usage {
                 format!(" · {} tok", crate::repl::fmt_usage(u.total()))

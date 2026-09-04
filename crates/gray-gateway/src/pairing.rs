@@ -319,6 +319,84 @@ impl PairingStore {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Operator actions shared by the `gray gateway pairing` CLI and the
+// `/gateway pairing` REPL command (hermes `pairing approve`, openclaw
+// `pairing approve <channel> <code>`).
+// ---------------------------------------------------------------------------
+
+fn parse_platform(raw: &str) -> anyhow::Result<Platform> {
+    raw.parse::<Platform>().map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Approve a pending code, returning a human line. Approving the first-ever
+/// user on a platform with an empty allowlist also writes them into
+/// `allowed_users` (openclaw bootstrapCommandOwnerFromPairing) so the owner
+/// bind happens with no file editing. `cfg` is mutated; the caller saves it.
+pub fn pairing_approve_with(
+    store: &PairingStore,
+    cfg: &mut crate::config::GatewayConfig,
+    platform: Platform,
+    code: &str,
+) -> anyhow::Result<String> {
+    let Some(entry) = store.approve_code(platform, code.trim()) else {
+        anyhow::bail!("no pending {platform} code matches — expired or mistyped? (`pairing list {platform}`)");
+    };
+    let who = if entry.user_name.is_empty() { entry.user_id.clone() } else { format!("{} ({})", entry.user_name, entry.user_id) };
+    let mut msg = format!("approved {platform} user {who}");
+    if let Some(pc) = cfg.platforms.get_mut(&platform)
+        && pc.allowed_users.is_empty()
+    {
+        pc.allowed_users.push(entry.user_id.clone());
+        msg += " — first user: added to allowed_users (owner bound)";
+    }
+    Ok(msg)
+}
+
+/// Approve against the default store + live gateway.yaml (CLI/REPL entry point).
+pub fn pairing_approve(platform_raw: &str, code: &str) -> anyhow::Result<String> {
+    let platform = parse_platform(platform_raw)?;
+    let store = PairingStore::open_default();
+    let mut cfg = crate::config::load_gateway_config();
+    let msg = pairing_approve_with(&store, &mut cfg, platform, code)?;
+    crate::config::save_gateway_config(&cfg)?;
+    Ok(msg)
+}
+
+/// One human block: pending + approved users, one platform or all.
+pub fn pairing_list(platform_raw: Option<&str>) -> anyhow::Result<String> {
+    use Platform::{Discord, Slack, Telegram};
+    let plats = match platform_raw {
+        Some(p) if !p.eq_ignore_ascii_case("all") => vec![parse_platform(p)?],
+        _ => vec![Telegram, Discord, Slack],
+    };
+    let store = PairingStore::open_default();
+    let mut out = String::new();
+    for p in plats {
+        let pending = store.list_pending(p);
+        let approved = store.list_approved(p);
+        out += &format!("{p}: {} pending, {} approved\n", pending.len(), approved.len());
+        for e in &pending {
+            out += &format!("  pending {} {}\n", e.user_id, e.user_name);
+        }
+        for a in &approved {
+            out += &format!("  approved {} {}\n", a.user_id, a.user_name);
+        }
+    }
+    Ok(out.trim_end().to_string())
+}
+
+/// Drop a user's approval (pairing store only; config allowlists are untouched).
+pub fn pairing_revoke(platform_raw: &str, user_raw: &str) -> anyhow::Result<String> {
+    let platform = parse_platform(platform_raw)?;
+    let store = PairingStore::open_default();
+    if store.revoke(platform, user_raw) {
+        Ok(format!("revoked {platform} user {}", user_raw.trim()))
+    } else {
+        anyhow::bail!("no {platform} approval for {}", user_raw.trim())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +405,34 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let s = PairingStore::new(d.path().join("pairing"));
         (d, s)
+    }
+
+    #[test]
+    fn approve_bootstraps_owner_when_allowlist_empty() {
+        use crate::config::{GatewayConfig, PlatformConfig};
+        let (_d, s) = store();
+        let PairingOffer::Code(code) = s.request_code(Platform::Discord, "4242", "v") else {
+            panic!("expected a code");
+        };
+        let mut cfg = GatewayConfig::default();
+        cfg.platforms.insert(Platform::Discord, PlatformConfig::with_token("t"));
+        let msg = pairing_approve_with(&s, &mut cfg, Platform::Discord, &code).unwrap();
+        assert!(msg.contains("approved"), "got: {msg}");
+        assert_eq!(cfg.platforms[&Platform::Discord].allowed_users, vec!["4242"]);
+        // Second approval must not touch the list.
+        let PairingOffer::Code(code2) = s.request_code(Platform::Discord, "9999", "") else {
+            panic!("expected a code");
+        };
+        pairing_approve_with(&s, &mut cfg, Platform::Discord, &code2).unwrap();
+        assert_eq!(cfg.platforms[&Platform::Discord].allowed_users, vec!["4242"]);
+    }
+
+    #[test]
+    fn approve_bad_code_fails() {
+        use crate::config::GatewayConfig;
+        let (_d, s) = store();
+        let mut cfg = GatewayConfig::default();
+        assert!(pairing_approve_with(&s, &mut cfg, Platform::Discord, "nope").is_err());
     }
 
     #[test]

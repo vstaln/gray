@@ -5,9 +5,11 @@
 //! typing jumps into notes, tab/esc clear notes, ←/→ + ctrl-p/n question
 //! navigation, unanswered-submit confirmation, 60s+60s auto-resolution for
 //! non-blocking requests (snoozed on keypress), request queueing.
-//! Adaptations: notes live in the shared textarea (no second composer), and
-//! the panel renders in the fixed inline viewport instead of a dynamic
-//! bottom pane.
+//! Adaptations: option 1 preselected and committed (cursor, accent, and
+//! answer agree from the start — Enter submits it with zero moves, and a
+//! highlight can never silently come back empty), Backspace skips the current
+//! question, notes live in the shared textarea (no second composer), and the
+//! panel renders in the fixed inline viewport instead of a dynamic bottom pane.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -111,9 +113,14 @@ fn init_answers(questions: &[UserQuestion]) -> Vec<AnswerState> {
     questions
         .iter()
         .map(|_| AnswerState {
-            selected_idx: None, // codex: highlight cursor starts unset; Enter on an untouched question advances without answering
+            // Option 1 preselected AND committed: cursor, accent, and answer
+            // agree from the start, so Enter submits it with zero moves and
+            // the highlight can never silently come back empty. Moving with
+            // ↑/↓ un-commits (pick again with Enter/Space/digit);
+            // Backspace skips explicitly.
+            selected_idx: Some(0),
             draft: String::new(),
-            answer_committed: false,
+            answer_committed: true,
             notes_visible: false,
         })
         .collect()
@@ -175,10 +182,7 @@ impl QuestionSession {
     }
 
     fn unanswered_count(&self) -> usize {
-        self.answers
-            .iter()
-            .filter(|a| !(a.selected_idx.is_some() && a.answer_committed))
-            .count()
+        self.answers.iter().filter(|a| !a.answer_committed).count()
     }
 
     fn progress_prefix(&self) -> String {
@@ -289,14 +293,21 @@ impl QuestionSession {
         a.answer_committed = committed;
     }
 
-    fn clear_selection(&mut self, ta: &mut TextArea) {
+    /// Explicit skip (Backspace): resolve this question empty and move on.
+    /// Committed-empty is distinct from untouched — it never triggers the
+    /// end confirmation. Pick an option later to un-skip.
+    fn skip_current(&mut self, ta: &mut TextArea) -> QuestionOutcome {
         let a = &mut self.answers[self.current_idx];
         a.selected_idx = None;
         a.draft = String::new();
-        a.answer_committed = false;
+        a.answer_committed = true;
         a.notes_visible = false;
         ta.set_text("");
         ta.move_to_end();
+        if self.focus == Focus::Notes {
+            self.focus = Focus::Options;
+        }
+        self.go_next_or_submit(ta)
     }
 
     fn clear_notes_and_focus_options(&mut self, ta: &mut TextArea) {
@@ -313,7 +324,9 @@ impl QuestionSession {
         if self.current_idx + 1 >= self.questions.len() {
             self.save_current_draft(ta);
             if self.unanswered_count() > 0 {
-                self.confirm_unanswered = Some(0);
+                // Default to "Go back": Enter-hammering through questions must
+                // return to the unanswered ones, never submit empties.
+                self.confirm_unanswered = Some(1);
                 QuestionOutcome::Redraw
             } else {
                 self.submit_answers(ta)
@@ -363,9 +376,7 @@ impl QuestionSession {
     }
 
     fn first_unanswered_index(&self) -> Option<usize> {
-        self.answers
-            .iter()
-            .position(|a| !(a.selected_idx.is_some() && a.answer_committed))
+        self.answers.iter().position(|a| !a.answer_committed)
     }
 
     fn handle_confirm_key(&mut self, code: KeyCode, ta: &mut TextArea) -> QuestionOutcome {
@@ -474,20 +485,20 @@ impl QuestionSession {
                     QuestionOutcome::Redraw
                 }
                 KeyCode::Backspace | KeyCode::Delete => {
-                    self.clear_selection(ta);
-                    QuestionOutcome::Redraw
+                    self.skip_current(ta)
                 }
                 KeyCode::Tab => {
-                    if self.answers[self.current_idx].selected_idx.is_some() {
-                        self.answers[self.current_idx].notes_visible = true;
-                        self.focus = Focus::Notes;
-                    }
+                    // Seed the highlight so Tab works on a fresh question too.
+                    self.select_current_option(false);
+                    self.answers[self.current_idx].notes_visible = true;
+                    self.focus = Focus::Notes;
                     QuestionOutcome::Redraw
                 }
                 KeyCode::Enter => {
-                    if self.answers[self.current_idx].selected_idx.is_some() {
-                        self.select_current_option(true);
-                    }
+                    // Highlight is the pick: Enter always commits what's shown, so a
+                    // selection can never silently come back empty. Skip explicitly
+                    // with Backspace; leaving via ←/→ still asks at the end.
+                    self.select_current_option(true);
                     self.go_next_or_submit(ta)
                 }
                 KeyCode::Char(c) => {
@@ -711,7 +722,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         )));
         let n = q.unanswered_count();
         let rows = [
-            ("Proceed", format!("Submit with {n} unanswered question{}.", if n == 1 { "" } else { "s" })),
+            ("Submit anyway", format!("Submit with {n} unanswered question{}.", if n == 1 { "" } else { "s" })),
             ("Go back", "Return to the first unanswered question.".to_string()),
         ];
         for (i, (label, desc)) in rows.iter().enumerate() {
@@ -743,18 +754,27 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     // ponytail: min 3 options so long questions don't squeeze to 1.
     let budget = max_rows.saturating_sub(4 + q_lines.min(max_rows.saturating_sub(4)));
     let len = q.options_len();
-    let sel = q.answers[q.current_idx].selected_idx.unwrap_or(0);
+    // Cursor position vs committed pick are different things: the cursor row
+    // always shows the arrow and gets accent styling from the start, so the
+    // preselected first option reads as highlighted with zero moves — a
+    // highlight is the cursor, never a submitted answer (preselect stays
+    // unanswered until Enter, Space, a digit, or notes confirm it).
+    let picked = q.answers[q.current_idx].selected_idx.is_some();
+    let cursor = q.answers[q.current_idx].selected_idx.unwrap_or(0);
     let visible = budget.min(len).max(3.min(len));
-    let start = sel.saturating_sub(visible.saturating_sub(1)).min(sel);
+    let start = cursor.saturating_sub(visible.saturating_sub(1)).min(cursor);
     for i in start..len.min(start + visible) {
-        let prefix = if i == sel && q.answers[q.current_idx].selected_idx.is_some() { icon("arrow") } else { " " };
+        let is_cursor = i == cursor;
+        let prefix = if is_cursor { icon("arrow") } else { " " };
         let label = q.option_label_for_index(i).unwrap_or_default();
         let desc = if i < q.current_question().options.len() {
             Some(q.current_question().options[i].description.clone())
         } else {
             Some(OTHER_OPTION_DESCRIPTION.to_string())
         };
-        lines.push(option_row(prefix, i + 1, &label, desc.as_deref(), i == sel));
+        for row in option_rows(prefix, i + 1, &label, desc.as_deref(), is_cursor && picked, w) {
+            lines.push(row);
+        }
     }
 
     lines.push(tips_line(q));
@@ -762,6 +782,34 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     // against "enter to submit".
     lines.push(Line::from("").style(bg_style));
     lines
+}
+
+/// One option as wrapped rows: the head row keeps the picked styling, long
+/// descriptions wrap onto dim continuation rows instead of clipping off-screen.
+fn option_rows(prefix: &str, num: usize, label: &str, desc: Option<&str>, selected: bool, w: usize) -> Vec<Line<'static>> {
+    let accent = Style::default().fg(if selected { ACCENT } else { DIM }).add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(if selected { ACCENT } else { TEXT }).add_modifier(Modifier::BOLD);
+    let dim_style = Style::default().fg(DIM);
+    let head = format!(" {prefix} {num}. {label}");
+    let Some(d) = desc.filter(|d| !d.is_empty()) else {
+        return vec![Line::from(vec![
+            Span::styled(format!(" {prefix} {num}. "), accent),
+            Span::styled(label.to_string(), label_style),
+        ])];
+    };
+    // wrap_plain reserves 4 for padding; desc starts after "head — ".
+    let desc_w = w.saturating_sub(head.chars().count() + 3 + 4).max(10);
+    let chunks = wrap_plain(d, desc_w + 4);
+    let mut rows = vec![Line::from(vec![
+        Span::styled(format!(" {prefix} {num}. "), accent),
+        Span::styled(label.to_string(), label_style),
+        Span::styled(format!(" — {}", chunks.first().cloned().unwrap_or_default()), dim_style),
+    ])];
+    let indent = " ".repeat(head.chars().count() + 3);
+    for c in chunks.iter().skip(1) {
+        rows.push(Line::from(Span::styled(format!("{indent}{c}"), dim_style)));
+    }
+    rows
 }
 
 fn option_row(prefix: &str, num: usize, label: &str, desc: Option<&str>, selected: bool) -> Line<'static> {
@@ -795,10 +843,11 @@ fn tips_line(q: &QuestionSession) -> Line<'static> {
     }
     let is_last = q.current_idx + 1 >= q.questions.len();
     let submit = if q.questions.len() == 1 || is_last {
-        "enter to submit all"
+        "enter picks + submits"
     } else {
-        "enter for next question"
+        "enter picks + next"
     };
+    tips.push(("backspace skips question".into(), false));
     tips.push((submit.into(), true));
     if q.questions.len() > 1 {
         tips.push(("←/→ to change question".into(), false));
@@ -816,17 +865,30 @@ fn tips_line(q: &QuestionSession) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Char-chunk wrap matching build_input_box's simple wrapping.
+/// Word-aware wrap matching the transcript's `word_flush_cut`: break at the
+/// last space in the window, hard-cut only a single overlong word.
 fn wrap_plain(s: &str, w: usize) -> Vec<String> {
     let content_w = w.saturating_sub(4).max(1);
     s.split('\n')
         .flat_map(|line| {
-            let chars: Vec<char> = line.chars().collect();
-            if chars.is_empty() {
-                vec![String::new()].into_iter().collect::<Vec<_>>()
-            } else {
-                chars.chunks(content_w).map(|c| c.iter().collect()).collect::<Vec<_>>()
+            if line.is_empty() {
+                return vec![String::new()];
             }
+            let chars: Vec<char> = line.chars().collect();
+            let mut rows = Vec::new();
+            let mut start = 0usize;
+            while start < chars.len() {
+                let mut end = (start + content_w).min(chars.len());
+                if end < chars.len()
+                    && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
+                    && sp > 0
+                {
+                    end = start + sp + 1;
+                }
+                rows.push(chars[start..end].iter().collect());
+                start = end;
+            }
+            rows
         })
         .collect()
 }
@@ -882,21 +944,138 @@ mod tests {
     }
 
     #[test]
-    fn unanswered_submit_opens_confirmation_then_proceeds() {
-        let (mut q, mut rx) = mk(2);
+    fn fresh_session_preselects_first_option() {
+        let (q, _rx) = mk(1);
+        assert_eq!(q.answers[0].selected_idx, Some(0));
+        assert!(q.answers[0].answer_committed); // preselect is a real commit
+    }
+
+    #[test]
+    fn enter_commits_highlighted_option() {
+        let (mut q, mut rx) = mk(1);
         let mut ta = TextArea::new();
-        // q1: select + advance
-        q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
-        // q2: submit with nothing selected → confirmation
+        // Untouched highlight sits on row 0: Enter picks it (never empty).
+        let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        assert!(matches!(out, QuestionOutcome::Resolved { .. }));
+        assert_eq!(rx.try_recv().unwrap()[0].answers, vec!["Alpha".to_string()]);
+    }
+
+    #[test]
+    fn backspace_skips_question_without_confirmation() {
+        let (mut q, mut rx) = mk(1);
+        let mut ta = TextArea::new();
+        let out = q.on_key(KeyCode::Backspace, KeyModifiers::NONE, &mut ta);
+        assert!(matches!(out, QuestionOutcome::Resolved { .. }));
+        assert!(rx.try_recv().unwrap()[0].answers.is_empty());
+    }
+
+    #[test]
+    fn unanswered_submit_defaults_to_go_back() {
+        let (mut q, _rx) = mk(2);
+        let mut ta = TextArea::new();
+        // Un-commit q1 by moving (arrows un-commit), leave it via keyboard
+        // navigation, answer q2: the last question then submits with q1 still
+        // open → confirmation.
+        q.on_key(KeyCode::Down, KeyModifiers::NONE, &mut ta);
+        q.on_key(KeyCode::Char('n'), KeyModifiers::CONTROL, &mut ta);
         let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
         assert!(matches!(out, QuestionOutcome::Redraw));
-        assert!(q.confirm_unanswered.is_some());
-        // proceed
-        q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        assert_eq!(q.confirm_unanswered, Some(1)); // Go back is the default.
+        // Enter on the default returns to the questions instead of submitting empties.
+        let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        assert!(matches!(out, QuestionOutcome::Redraw));
+        assert!(q.confirm_unanswered.is_none());
+    }
+
+    #[test]
+    fn confirm_submit_anyway_needs_explicit_up() {
+        let (mut q, mut rx) = mk(2);
+        let mut ta = TextArea::new();
+        q.on_key(KeyCode::Down, KeyModifiers::NONE, &mut ta);
+        q.on_key(KeyCode::Char('n'), KeyModifiers::CONTROL, &mut ta);
+        let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        assert!(matches!(out, QuestionOutcome::Redraw));
+        // Move off the Go-back default up to Submit anyway, then submit.
+        q.on_key(KeyCode::Up, KeyModifiers::NONE, &mut ta);
+        let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        match out {
+            QuestionOutcome::Resolved { answers, .. } => {
+                assert!(answers[0].answers.is_empty());
+                assert_eq!(answers[1].answers, vec!["Alpha".to_string()]);
+            }
+            _ => panic!("expected resolution"),
+        }
+        assert!(rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn wrap_plain_breaks_at_word_boundaries() {
+        // Screenshot case: "warm interior light glowing" was split as "l" / "ight".
+        let text = "warm interior light glowing from windows, porch.";
+        let rows = wrap_plain(text, 30);
+        assert!(rows.len() > 1);
+        assert_eq!(rows.concat(), text);
+        for row in &rows[..rows.len() - 1] {
+            // Mid-word break only allowed for a single overlong word.
+            let ends_mid_word = row
+                .chars()
+                .last()
+                .is_some_and(|c| c != ' ')
+                && rows
+                    .iter()
+                    .skip_while(|r| *r != row)
+                    .nth(1)
+                    .map(|next| next.chars().next().is_some_and(|c| c != ' '))
+                    .unwrap_or(false);
+            assert!(!ends_mid_word, "mid-word break: {rows:?}");
+        }
+        assert!(rows.iter().any(|r| r.contains("light")), "light must stay intact: {rows:?}");
+    }
+
+    #[test]
+    fn cursor_row_highlighted_on_entry() {
+        let (q, _rx) = mk(1);
+        let lines = panel_lines(&q, 80, 100);
+        let head: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let idx = head.iter().position(|t| t.contains("1.") && t.contains("Alpha")).expect("option 1 row");
+        let accent = lines[idx]
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(ACCENT));
+        assert!(accent, "first option must be highlighted on entry: {:?}", head[idx]);
+    }
+
+    #[test]
+    fn wrapped_option_rows_never_exceed_width() {
+        let desc = "a very long description that would previously clip off the edge of the panel ".repeat(4);
+        let w = 60;
+        let rows = option_rows("›", 1, "Long", Some(&desc), false, w);
+        assert!(rows.len() > 1, "long description should wrap onto continuations");
+        for row in &rows {
+            let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(text.chars().count() <= w, "option row overflows: {text:?}");
+        }
+        // Head row keeps label + start of description; continuations are plain.
+        let head: String = rows[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(head.contains("Long") && head.contains('—'), "got: {head:?}");
+    }
+
+    #[test]
+    fn enter_flow_commits_each_question() {
+        let (mut q, mut rx) = mk(2);
+        let mut ta = TextArea::new();
+        // q1: Enter commits the preselected first option and advances.
+        let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        assert!(matches!(out, QuestionOutcome::Redraw));
+        // q2 (last): Enter commits and submits everything.
+        let out = q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
+        assert!(matches!(out, QuestionOutcome::Resolved { .. }));
         let answers = rx.try_recv().unwrap();
-        // Enter on an untouched question advances without answering (codex parity).
-        assert!(answers[0].answers.is_empty());
-        assert!(answers[1].answers.is_empty());
+        assert_eq!(answers[0].answers, vec!["Alpha".to_string()]);
+        assert_eq!(answers[1].answers, vec!["Alpha".to_string()]);
     }
 
     #[test]
