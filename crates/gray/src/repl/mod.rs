@@ -2196,9 +2196,9 @@ pub async fn run_repl_mode(
                 }
                 if let Ok(mut t) = ticker_tui.try_lock() {
                     // Stop may have been set while we were waiting to
-                    // acquire the lock (blocked on read_line). Don't
-                    // repaint the viewport after the main thread has
-                    // already started shutdown.
+                    // acquire the lock (a keystroke handler holds it
+                    // briefly). Don't repaint the viewport after the main
+                    // thread has already started shutdown.
                     if ticker_stop.load(AtomicOrdering::Relaxed) {
                         break;
                     }
@@ -2318,19 +2318,19 @@ pub async fn run_repl_mode(
             let (line_text, images) = if interactive {
                 let (shared, stop) = tui.as_ref().expect("interactive implies tui");
                 let (txt, imgs) = {
-                    let mut t = shared.lock().expect("tui lock");
-                    let pair = match t.read_line()? {
+                    // The input lock is per-event inside read_line, so background
+                    // painters keep drawing while we wait; re-lock only to shut down.
+                    let pair = match crate::composer::input::read_line(shared)? {
                         Some(v) => v,
                         None => {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                            t.shutdown();
+                            shared.lock().expect("tui lock").shutdown();
                             print_exit_hint(&session_state);
                             break;
                         }
                     };
-                    // Quit will shut down immediately after this block;
-                    // set the stop flag now while we still hold the lock so
-                    // the ticker's try_lock gap can't slip a draw in between.
+                    // Flag stop for background tickers; with per-event locking a
+                    // final ticker draw may still slip in before shutdown clears.
                     if matches!(parse_command(&pair.0), ReplCommand::Quit) {
                         stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     }

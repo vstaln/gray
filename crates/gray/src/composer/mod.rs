@@ -28,7 +28,7 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 mod draw;
 pub(crate) use draw::thinking_style;
 pub(crate) mod transcript;
-mod input;
+pub(crate) mod input;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
@@ -354,10 +354,6 @@ impl Tui {
 
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         input::handle_paste(self, pasted)
-    }
-
-    pub fn read_line(&mut self) -> anyhow::Result<Option<(String, Vec<PathBuf>)>> {
-        input::read_line(self)
     }
 
     pub fn begin_turn(&mut self, label: &str) {
