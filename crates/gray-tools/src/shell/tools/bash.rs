@@ -20,8 +20,8 @@ use tokio::process::Child;
 use tokio::task::JoinHandle;
 
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS, PROMOTION_TAIL_BYTES, PumpSummary, TaskId,
-    TaskInfo, TaskState, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View, ExitReport,
+    DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS, NotifyPattern, PROMOTION_TAIL_BYTES, PumpSummary,
+    TaskId, TaskInfo, TaskState, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View, ExitReport,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
@@ -34,7 +34,16 @@ use crate::shell::view::{format_elapsed, header, home_relative, middle_out, resu
 use crate::{fail, get_opt_bool, get_opt_u64, get_str};
 
 pub const BASH_SNIPPET: &str = "Execute bash commands (ls, grep, find, etc.)";
-pub const BASH_GUIDELINES: &[&str] = &[];
+/// Usage guidelines, ≤ 6 bullets by contract (brief 3D — every word here
+/// ships on every request, so cut adjectives, never add).
+pub const BASH_GUIDELINES: &[&str] = &[
+    "bash output: first line is the verdict (exit, duration, size, log path). Non-zero exit is data, not a tool error; read the header.",
+    "Long or server-like commands: background=true. You are woken when they exit; do not poll.",
+    "Read new output with shell_output(task_id, from_offset=<next_offset>, wait='output'|'exit'). Never re-read the same bytes.",
+    "Port in use: shell_kill(port=N). Stop a task: shell_kill(task_id).",
+    "Waiting on something: sleep(seconds) — it ends early when anything happens.",
+    "Truncated output names the log path; grep the log instead of rerunning.",
+];
 
 /// Runs a command through the shell (`sh -c`).
 pub struct BashTool;
@@ -58,6 +67,10 @@ impl Tool for BashTool {
                     "background": {
                         "type": "boolean",
                         "description": "Return immediately with a task id; read output with shell_output(task_id). A foreground command that outlives `timeout` is promoted to background the same way instead of being killed"
+                    },
+                    "notify_on": {
+                        "type": "string",
+                        "description": "Regex (e.g. \"error|ready\"): wake a sleeping agent when a log line matches. Rate-limited (10s, max 5 per task, then disabled). Only meaningful with background=true or after promotion"
                     }
                 },
                 "required": ["command"]
@@ -87,6 +100,20 @@ impl Tool for BashTool {
             .clamp(1, MAX_TIMEOUT_SECS);
         let background = match get_opt_bool(&args, "background") {
             Ok(b) => b.unwrap_or(false),
+            Err(e) => return e,
+        };
+        // Empty = absent (an empty regex would match every line). Invalid →
+        // fail with the regex error plus an example (brief 3C wording).
+        let notify_pattern = match get_opt_str(&args, "notify_on") {
+            Ok(Some(s)) if !s.is_empty() => match NotifyPattern::new(&s) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    return fail(format!(
+                        "invalid notify_on regex {s:?}: {e}. Example: notify_on=\"error|ready\""
+                    ));
+                }
+            },
+            Ok(_) => None,
             Err(e) => return e,
         };
 
@@ -142,7 +169,7 @@ impl Tool for BashTool {
             child.stderr.take(),
             log_path.clone(),
             bytes_tx,
-            None, // notify_on pattern lands in 3C
+            notify_pattern,
             Some(reg.wake_tx()),
         );
 
@@ -218,6 +245,16 @@ impl Tool for BashTool {
                 )
             }
         }
+    }
+}
+
+/// Optional string argument (`null`/absent -> `None`). Local until 4A
+/// centralizes arg parsing (same helper lives in shell_output.rs).
+fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
     }
 }
 
