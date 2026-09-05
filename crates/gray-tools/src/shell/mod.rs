@@ -8,6 +8,7 @@ pub mod kill;
 pub mod pump;
 pub mod registry;
 pub mod spawn;
+pub mod split;
 pub mod tools;
 pub mod view;
 pub mod wake;
