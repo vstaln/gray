@@ -140,7 +140,7 @@ pub fn to_nfc(s: &str) -> String {
 /// Spelling 4: narrow no-break space (U+202F) and no-break space (U+00A0)
 /// become a plain space.
 fn nbsp_to_space(s: &str) -> String {
-    s.replace('\u{202F}', " ").replace('\u{A0}', " ")
+    s.replace(['\u{202F}', '\u{A0}'], " ")
 }
 
 /// Spelling 5: every ASCII space may be the macOS screenshot shape (U+202F).

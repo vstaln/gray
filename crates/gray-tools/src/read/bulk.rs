@@ -70,21 +70,6 @@ pub fn aggregate_note(shown: usize, total: usize, skipped: &[String]) -> String 
     super::notices::aggregate_note(shown, total, skipped)
 }
 
-/// Raw default-exclude probe: dir segments + `*.lock`, no bypass logic.
-/// The bypass lives in [`is_excluded`] (needs the inputs).
-pub fn is_default_excluded(rel: &str) -> bool {
-    let norm = rel.strip_prefix("./").unwrap_or(rel);
-    if norm
-        .split('/')
-        .any(|seg| DEFAULT_DIR_EXCLUDES.contains(&seg))
-    {
-        return true;
-    }
-    norm.rsplit('/')
-        .next()
-        .is_some_and(|base| base.ends_with(".lock"))
-}
-
 /// True when a pattern names a dir as a path segment (`node_modules/**/*.js`
 /// names `node_modules`; `**/*.js` does not).
 fn mentions_dir(pattern: &str, dir: &str) -> bool {
@@ -350,9 +335,9 @@ mod tests {
             "Cargo.lock",
             "src/Cargo.lock",
         ] {
-            assert!(is_default_excluded(rel), "{rel}");
+            assert!(is_excluded(rel, &[]), "{rel}");
         }
-        assert!(!is_default_excluded("src/a.rs"));
+        assert!(!is_excluded("src/a.rs", &[]));
         // Exact literal always wins (dirs and locks alike).
         assert!(!is_excluded(
             "node_modules/x.js",
