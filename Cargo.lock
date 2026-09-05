@@ -1269,7 +1269,7 @@ dependencies = [
 
 [[package]]
 name = "gray"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1302,7 +1302,7 @@ dependencies = [
 
 [[package]]
 name = "gray-core"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1317,7 +1317,7 @@ dependencies = [
 
 [[package]]
 name = "gray-cron"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "gray-extras"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "gray-gateway"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1394,7 +1394,7 @@ dependencies = [
 
 [[package]]
 name = "gray-markdown"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anstyle",
  "anstyle-lossy",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "gray-plugin"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1452,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "gray-provider"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "eventsource-stream",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "gray-session"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "gray-core",
@@ -1484,7 +1484,7 @@ dependencies = [
 
 [[package]]
 name = "gray-tools"
-version = "0.9.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
