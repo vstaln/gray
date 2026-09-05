@@ -57,11 +57,52 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
+        if let Some(agent) = cli.acp.as_deref() {
+            return run_acp_print_mode(agent, prompt).await;
+        }
         run_print_mode(&config, prompt).await?;
     } else {
         gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
     }
+    Ok(())
+}
+
+async fn run_acp_print_mode(agent: &str, prompt: &str) -> anyhow::Result<()> {
+    let home = gray_acp::gray_home_dir();
+    let Some(spec) = gray_acp::resolve(agent, Some(home.as_path())) else {
+        anyhow::bail!("unknown acp agent '{agent}' (try /acp list in the REPL)");
+    };
+    if !gray_acp::installed(&spec) {
+        anyhow::bail!("agent '{}' not installed ({})", spec.key, spec.install_hint);
+    }
+    let cwd = std::env::current_dir()?;
+    let auto_approve = std::env::var("GRAY_ACP_AUTO_APPROVE").as_deref() == Ok("1");
+    let display = if spec.display.is_empty() {
+        spec.key.to_string()
+    } else {
+        spec.display.to_string()
+    };
+    let opts = gray_acp::AcpSessionOptions {
+        spec,
+        cwd,
+        resume_session_id: None,
+        auto_approve,
+        permission_prompt: std::sync::Arc::new(gray_acp::DenyAllPrompt),
+        display,
+    };
+    let mut session = gray_acp::AcpSession::start(opts).await?;
+    let mut on_event = |ev: &gray_core::event::AgentEvent| {
+        use gray_core::event::AgentEvent;
+        if let AgentEvent::TextDelta { delta } = ev {
+            print!("{delta}");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+    };
+    let res = session.prompt(prompt, &mut on_event).await;
+    session.shutdown().await;
+    println!();
+    res?;
     Ok(())
 }
 

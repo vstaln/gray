@@ -214,7 +214,6 @@ impl Tui {
 
 #[cfg(test)]
 mod tests {
-    use super::cards::CARD_BG;
     use super::*;
 
     #[test]
@@ -243,13 +242,13 @@ mod tests {
         assert_eq!(text[1], " Gateway autostarted");
         assert_eq!(text[2], "  └─ Discord — connected as Gray");
         assert_eq!(text[3], "");
-        // Every row is a full-width block with the card bg baked into each span:
-        // the live viewport and insert_before paint the same thing.
+        // Transparent bg, text only: rows still pad full-width with plain
+        // spaces so the live viewport and insert_before paint the same thing.
         for l in &lines {
             assert_eq!(l.width(), 80, "row must span the full card width");
             assert!(
-                l.spans.iter().all(|s| s.style.bg == Some(CARD_BG)),
-                "every span carries the card bg"
+                l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none()),
+                "no span carries a bg"
             );
         }
     }

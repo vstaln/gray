@@ -47,6 +47,7 @@ async fn spawn_ctrl_c_policy() {
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
+mod acp_cmds;
 pub mod attachments;
 pub mod commands;
 mod dispatch;
@@ -59,6 +60,7 @@ mod prompt_turn;
 mod session;
 mod status;
 
+pub(crate) use acp_cmds::handle_acp;
 pub(crate) use commands::{REGISTRY, completion_matches_dyn};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
@@ -223,7 +225,10 @@ async fn with_modal<T>(
     r
 }
 
-fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce() -> T) -> T {
+pub(crate) fn with_modal_sync<T>(
+    tui: Option<&crate::composer::SharedTui>,
+    f: impl FnOnce() -> T,
+) -> T {
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").modal_open = true;
     }
