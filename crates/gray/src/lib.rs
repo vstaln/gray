@@ -50,7 +50,6 @@ fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
 /// One lock, one Vec: each distinct message is queued once per drain cycle
 /// (N is tiny; Vec scan is fine). A rebuild re-queues a still-broken profile
 /// warning — correct, like a compiler re-emitting warnings.
-/// (ponytail-audit #13: two mutexes doing one dedup queue.)
 static PROFILE_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 fn queue_profile_warning(msg: String) {
@@ -118,8 +117,7 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_
 /// falling back to [`Registry::builtin`] when no profile file is present.
 /// Returns `(registry, used_fallback)` — the flag feeds `--dump-manifest`'s note.
 /// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
-/// (ponytail-audit #13: `default_manifests`/`effective_manifests` deleted;
-/// manifests travel on the registry via [`Registry::manifests`].)
+/// (Manifests travel on the registry via [`Registry::manifests`].)
 pub async fn build_registry() -> anyhow::Result<(Registry, bool)> {
     match profile_plugins().await? {
         Some(plugins) if !plugins.is_empty() => Ok((Registry::from_plugins(&plugins), false)),
@@ -201,8 +199,7 @@ pub fn rule(label: &str) -> String {
 /// Builds an [`Agent`] wired with the OpenAI provider, builtin tools, and system prompt.
 /// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
 /// pass it whenever known (resume, /new); `None` uses a per-process stable id.
-/// (ponytail-audit #13: `build_agent` + `build_agent_with_session` +
-/// `build_agent_inner` were one function with an unused `None` leg.)
+/// (A single function: earlier split variants had an unused `None` leg.)
 ///
 /// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
 /// OpenCode plugins, `~/.agents/skills`, `~/.claude/skills` + project skills
@@ -213,11 +210,10 @@ pub fn rule(label: &str) -> String {
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
-/// Max `prompt_cache_key` length (pi parity:
-/// `reference/pi-mono/packages/ai/src/api/openai-prompt-cache.ts`).
+/// Max `prompt_cache_key` length (matches the Responses API cache-key limit).
 pub const PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
 
-/// Clamp a cache key to the max length (pi parity: truncate, don't hash —
+/// Clamp a cache key to the max length (truncate, don't hash —
 /// the prefix stays human-grepable in logs).
 pub fn clamp_prompt_cache_key(key: &str) -> &str {
     if key.len() <= PROMPT_CACHE_KEY_MAX_LENGTH {
@@ -231,9 +227,8 @@ pub fn clamp_prompt_cache_key(key: &str) -> &str {
     &key[..end]
 }
 
-/// Resolves the Responses `prompt_cache_key` (pi parity:
-/// `openai-responses.ts` sends `clamp(sessionId)`, `agent.ts` holds one
-/// session id for the agent's lifetime). Gray rebuilds its provider per
+/// Resolves the Responses `prompt_cache_key` (the backend pins one cache
+/// shard per session id for the agent's lifetime). Gray rebuilds its provider per
 /// `build_agent`, so the session id is threaded in at build time instead:
 /// the gray session id when known (stable across resumes, so a resumed
 /// session keeps hitting its cache shard), else a per-process stable id
@@ -421,7 +416,7 @@ pub enum GatewayCmd {
     },
 }
 
-/// `gray gateway pairing ...` — runtime owner binding (hermes/openclaw parity).
+/// `gray gateway pairing ...` — runtime owner binding without editing gateway.yaml.
 #[derive(Parser, Debug, Clone)]
 pub enum PairingCmd {
     /// Approve a pending DM code (`pairing approve discord ABC12345`)

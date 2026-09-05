@@ -1,6 +1,6 @@
 //! Gateway config
 //!
-//! Security model (OpenClaw-style "trusted gateway, explicit operator allowlist"):
+//! Security model ("trusted gateway, explicit operator allowlist"):
 //! - every platform is deny-by-default; nobody talks to the agent unless an
 //!   operator put them on an allowlist (config, `{PLATFORM}_ALLOWED_USERS` env)
 //!   or approved a pairing code via `gray gateway pairing approve`;
@@ -41,13 +41,13 @@ impl Platform {
     pub fn max_message_len(&self) -> usize {
         match self { Self::Telegram => 4096, Self::Discord => 2000, Self::Slack => 39000 }
     }
-    /// Env var consulted for the user allowlist (hermes `TELEGRAM_ALLOWED_USERS` style).
+    /// Env var consulted for the user allowlist.
     pub fn allowed_users_env(&self) -> &'static str {
         match self { Self::Telegram => "TELEGRAM_ALLOWED_USERS", Self::Discord => "DISCORD_ALLOWED_USERS", Self::Slack => "SLACK_ALLOWED_USERS" }
     }
 }
 
-/// How unknown DM senders are treated (OpenClaw `dmPolicy`).
+/// How unknown DM senders are treated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DmPolicy {

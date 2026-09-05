@@ -22,7 +22,7 @@ pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code tex
 pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
 
 fn arg_path(args: &serde_json::Value) -> &str {
-    // ponytail: schemas emit only `path` + `file_path` (write.rs); dropped
+    // Schemas emit only `path` + `file_path` (write.rs); dropped
     // filePath/TargetFile/targetFile/file/filename/target/destination probes.
     args.get("path")
         .or_else(|| args.get("file_path"))
@@ -31,7 +31,7 @@ fn arg_path(args: &serde_json::Value) -> &str {
 }
 
 fn arg_content(args: &serde_json::Value) -> &str {
-    // ponytail: write.rs schema emits content/contents/text; dropped
+    // write.rs schema emits content/contents/text; dropped
     // CodeContent/code_content/codeContent/code/body/data probes.
     args.get("content")
         .or_else(|| args.get("contents"))
@@ -43,7 +43,7 @@ fn arg_content(args: &serde_json::Value) -> &str {
 /// Shortens a path relative to CWD or HOME for compact terminal display.
 /// Long paths are middle-truncated (`head…tail`, tail kept longer since the
 /// filename matters most) so tool headers stay on one line instead of
-/// wrapping across three — ponytail: fixed 80 cols, not terminal width.
+/// wrapping across three — fixed 80 cols, not terminal width.
 pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     let path = Path::new(path_str);
     let mut rel = path_str.to_string();
@@ -67,7 +67,7 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     if rel.chars().count() <= MAX {
         return rel;
     }
-    // ponytail: char-based split, byte-safe via char indices
+    // Char-based split, byte-safe via char indices
     let chars: Vec<char> = rel.chars().collect();
     let tail_len = 49;
     let head_len = MAX - 1 - tail_len;
@@ -776,7 +776,7 @@ fn prettify_output(trimmed: &str) -> (String, Option<&'static str>) {
         .unwrap_or(trimmed.trim_start())
         .to_ascii_lowercase();
     if head.starts_with("<!doctype") || head.starts_with("<html") {
-        // ponytail: tag-boundary split only (`><`), never touches text content.
+        // Tag-boundary split only (`><`), never touches text content.
         return (trimmed.replace("><", ">\n<"), Some("html"));
     }
     if head.starts_with("<?xml") {
@@ -997,7 +997,7 @@ fn line_to_ansi(l: &Line<'_>) -> String {
 }
 
 /// Plain ANSI string formatting for one-shot / non-TUI output header.
-// ponytail: thin wrapper over `format_tool_call_header`; kept as `String`
+// Thin wrapper over `format_tool_call_header`; kept as `String`
 // because print.rs + repl/mod.rs callers (outside this file) need `String`.
 pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> String {
     line_to_ansi(&format_tool_call_header(name, args, cwd))

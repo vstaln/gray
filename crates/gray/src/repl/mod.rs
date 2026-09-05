@@ -1818,7 +1818,7 @@ fn dispatch_agent_event(
     turn_start: std::time::Instant,
     turn_duration_ms: &mut Option<u64>,
 ) {
-    // ponytail: single elapsed source — TurnEnd stamps duration once so footer,
+    // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
     let elapsed_ms = || turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(shared) = tui_stream {
@@ -2211,7 +2211,7 @@ pub async fn run_repl_mode(
         (shared, stop)
     });
 
-    // request_user_input bridge: TUI overlay when interactive, hermes-style
+    // request_user_input bridge: TUI overlay when interactive,
     // stdin prompts when piped.
     let question_bridge: gray_core::questions::QuestionBridge = if interactive {
         let shared = tui.as_ref().map(|(s, _)| s.clone()).expect("interactive implies tui");
@@ -2220,7 +2220,7 @@ pub async fn run_repl_mode(
         gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
     };
 
-    // Cron background — stolen from hermes Scheduler tick (Step 3)
+    // Cron background ticker
     // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward).
     // Footer clock ticks every second via tick_status when next_cron is set.
     {

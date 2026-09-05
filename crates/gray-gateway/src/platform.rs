@@ -33,7 +33,7 @@ impl SendResult {
 /// Delivery hints for [`BasePlatformAdapter::send_ext`].
 #[derive(Debug, Clone, Default)]
 pub struct SendOptions {
-    /// Platform message id to reply to (first chunk only — hermes `reply_to_mode=first`).
+    /// Platform message id to reply to (first chunk only).
     pub reply_to: Option<String>,
     /// Thread to post into (Slack `thread_ts`, Telegram forum topic id).
     pub thread_id: Option<String>,
@@ -133,7 +133,7 @@ impl InboundDedup {
         }
         seen.insert(key, std::time::Instant::now());
         if seen.len() > self.cap {
-            // ponytail: O(n) oldest scan, inbound-only at ~1000 entries; a heap if this ever matters
+            // O(n) oldest scan, inbound-only at ~1000 entries; a heap if this ever matters
             if let Some(oldest) = seen.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
                 seen.remove(&oldest);
             }
