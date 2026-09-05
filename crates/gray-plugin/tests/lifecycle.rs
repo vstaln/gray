@@ -66,7 +66,14 @@ fn endpoint_files(dir: &PathBuf) -> Vec<(PathBuf, String, String)> {
 }
 
 fn child_alive(pid: &str) -> bool {
-    PathBuf::from(format!("/proc/{pid}")).exists()
+    // Portable: macOS has no /proc, so signal 0 via /bin/kill works on
+    // both linux and macos (own child, same user — no EPERM case).
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 async fn poll_until(timeout: Duration, mut f: impl FnMut() -> bool) -> bool {
