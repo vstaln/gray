@@ -360,13 +360,70 @@ mod tests {
         assert_eq!(estimate_context_tokens(&msgs, None), 100);
     }
 
+    /// A message holding one capped tool result (`truncate.rs` allows 50 KiB)
+    /// must not measure as free. Regression guard for `estimate_tokens`
+    /// measuring with a display accessor.
     #[test]
-    fn estimate_counts_tool_blocks_not_just_text() {
-        let result = Message::new(
+    fn tail_budget_counts_tool_results() {
+        // 4 KiB of tool output => 4096/4 = 1024 tokens.
+        let big = Message::new(
             Role::User,
-            vec![ContentBlock::tool_result("c1", "x".repeat(4_000), false)],
+            vec![ContentBlock::tool_result("t1", "x".repeat(4096), false)],
         );
-        assert!(estimate_tokens(&result) >= 1_000, "tool result must not be free");
+        assert_eq!(
+            estimate_tokens(&big),
+            1024,
+            "a 4 KiB tool result is ~1024 tokens; measuring 0 means the \
+             estimator is reading text blocks only"
+        );
+
+        // Ten of them against a 3000-token keep budget: the walk should stop
+        // after two. Before the fix each scored 0, so all ten were retained
+        // and `keep_recent_tokens` was a no-op for tool-heavy history.
+        let msgs: Vec<Message> = (0..10).map(|_| big.clone()).collect();
+        let tail = tail_messages(&msgs, 3000);
+        assert_eq!(
+            tail.len(),
+            2,
+            "tail must stop at the 3000-token budget, kept {}",
+            tail.len()
+        );
+    }
+
+    /// With no provider `Usage` (resumed session, or an OpenAI-compatible
+    /// endpoint that omits usage on streaming), the estimator is the only
+    /// signal deciding whether to compact. A tool-heavy history must cross
+    /// the reserve line.
+    #[test]
+    fn tool_heavy_history_trips_threshold_without_provider_usage() {
+        let msgs: Vec<Message> = (0..10)
+            .map(|i| {
+                Message::new(
+                    Role::User,
+                    vec![ContentBlock::tool_result(
+                        format!("t{i}"),
+                        "y".repeat(8192),
+                        false,
+                    )],
+                )
+            })
+            .collect();
+
+        // 10 x 8 KiB = 80 KiB => 20480 tokens. Before the fix: 0.
+        let tokens = estimate_context_tokens(&msgs, None);
+        assert_eq!(tokens, 20_480, "80 KiB of tool output measured as {tokens}");
+
+        let s = CompactionSettings {
+            enabled: true,
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+        };
+        // 32k window, 16384 reserve => threshold 15616. 20480 is over it.
+        assert!(
+            should_compact(tokens, 32_000, &s),
+            "tool-heavy history must auto-compact; before the fix it measured \
+             zero and the session ran straight into a provider overflow"
+        );
     }
 
     #[test]
