@@ -76,7 +76,16 @@ pub(crate) async fn handle_acp(
 ) {
     let home = gray_acp::gray_home_dir();
     let home_opt = Some(home.as_path());
-    match parse_acp_args(raw) {
+    let action = if raw.trim() == "/acp" && tui.is_some() {
+        let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
+        match super::with_modal_sync(tui, || crate::setup::run_acp_modal(bg.as_ref())) {
+            Ok(Some(cmd)) => parse_acp_args(&cmd),
+            _ => return,
+        }
+    } else {
+        parse_acp_args(raw)
+    };
+    match action {
         AcpAction::List => {
             for line in acp_table(home_opt) {
                 say(tui, &line);
