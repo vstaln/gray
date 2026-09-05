@@ -68,49 +68,36 @@ pub fn take_profile_warnings() -> Vec<String> {
     PROFILE_WARNINGS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
 }
 
-/// Ordered plugins named by the `gray.yml` profile, or `None` when the
-/// profile is missing/unparseable (caller falls back to builtin).
-/// A missing file is silent (default state); parse errors and unknown names
-/// queue warnings for the UI to drain. Sidecar spawn failure is a hard `Err`
-/// naming entry index + argv (boot aborts).
+/// Home dir for lockfile boot (`$GRAY_HOME` or `$HOME/.gray`).
+/// Mirrors [`sys_prompt_path`] resolution without the `AGENTS.md` join.
+fn gray_home() -> PathBuf {
+    std::env::var("GRAY_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Ordered plugins named by the `gray.yml` profile + lockfile, or `None`
+/// when both are missing/unparseable (caller falls back to builtin).
+/// Thin wrapper over [`gray_plugin::boot`]: the gray-tools resolver closure
+/// matches manifest names, same as before. Boot warnings bridge into
+/// [`PROFILE_WARNINGS`] so [`take_profile_warnings`] output is unchanged.
+/// Sidecar spawn failure on the profile path is a hard `Err` naming entry
+/// index + argv (boot aborts); lock-path failures warn and continue.
 /// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
 /// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
 async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
     let defaults = default_plugins();
-    match gray_plugin::profile::load_entries("gray.yml") {
-        Ok(entries) => {
-            let mut plugins = Vec::new();
-            for (i, e) in entries.iter().enumerate() {
-                match e {
-                    gray_plugin::profile::PluginEntry::Builtin(n) => {
-                        match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
-                            Some(p) => plugins.push(p),
-                            None => queue_profile_warning(format!("unknown plugin {n:?} in gray.yml — ignoring")),
-                        }
-                    }
-                    gray_plugin::profile::PluginEntry::Sidecar(spec) => {
-                        use anyhow::Context;
-                        let label = spec.0.join(" ");
-                        let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone())
-                            .await
-                            .with_context(|| format!("sidecar[{i}] ({label}) failed to spawn"))?;
-                        plugins.push(std::sync::Arc::new(plugin)
-                            as std::sync::Arc<dyn gray_plugin::Plugin>);
-                    }
-                }
-            }
-            Ok(Some(plugins))
-        }
-        Err(e) => {
-            // Missing file is the default state — silent. Anything else
-            // (parse error) warns once via the UI drain.
-            let missing = e.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
-            if !missing {
-                queue_profile_warning(format!("cannot load gray.yml profile ({e}); using builtin plugins"));
-            }
-            Ok(None)
-        }
+    let home = gray_home();
+    let profile_path = Path::new("gray.yml");
+    let (plugins, report) = gray_plugin::boot::active_plugins(Some(profile_path), &home, &|name| {
+        defaults.iter().find(|p| p.manifest().name == name).cloned()
+    })
+    .await?;
+    for w in report.warnings {
+        queue_profile_warning(w);
     }
+    if report.used_fallback { Ok(None) } else { Ok(Some(plugins)) }
 }
 
 /// Ordered active plugins: the `gray.yml` profile order, or builtins when
