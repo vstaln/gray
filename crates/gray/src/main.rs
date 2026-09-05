@@ -1,10 +1,10 @@
 //! Gray binary entry point.
 
 use clap::Parser;
+use gray::Cli;
 use gray::config::Config;
 use gray::print::run_print_mode;
 use gray::repl::run_repl_mode;
-use gray::Cli;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -14,14 +14,16 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if cli.dump_manifest {
         match gray::build_registry().await {
-            Ok((registry, fallback)) => {
+            Ok((_registry, manifests, fallback)) => {
                 if fallback {
-                    eprintln!("note: gray.yml profile missing/unresolvable — showing builtin manifests");
+                    eprintln!(
+                        "note: gray.yml profile missing/unresolvable — showing builtin manifests"
+                    );
                 }
                 for w in gray::take_profile_warnings() {
                     eprintln!("warning: {w}");
                 }
-                println!("{}", serde_json::to_string_pretty(registry.manifests())?);
+                println!("{}", serde_json::to_string_pretty(&manifests)?);
                 return Ok(());
             }
             Err(e) => {
@@ -34,23 +36,23 @@ async fn main() -> anyhow::Result<()> {
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
-    gray::oauth::apply_saved_oauth(&mut config).await;
     if let Some(cmd) = cli.command {
         match cmd {
-            gray::Commands::Resume { session_id, last, all } => {
+            gray::Commands::Resume {
+                session_id,
+                last,
+                all,
+            } => {
                 return run_resume_subcommand(&mut config, session_id.as_deref(), last, all).await;
-            }
-            gray::Commands::Cron { cmd } => {
-                return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
-            }
-            gray::Commands::Proxy { cmd } => {
-                return gray::proxy::run_cli(cmd, &config).await;
             }
             gray::Commands::Update => {
                 return gray::update::update_now().await;
             }
             gray::Commands::Gateway { cmd } => {
                 return run_gateway(cmd).await;
+            }
+            gray::Commands::Plugin { cmd } => {
+                return run_plugin(cmd).await;
             }
         }
     }
@@ -69,7 +71,7 @@ async fn run_resume_subcommand(
     last: bool,
     all: bool,
 ) -> anyhow::Result<()> {
-    use gray_session::{default_root, JsonlSessionStore};
+    use gray_session::{JsonlSessionStore, default_root};
     let Some(root) = default_root() else {
         anyhow::bail!("cannot resolve home");
     };
@@ -127,11 +129,25 @@ fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
     use gray::PairingCmd;
     use gray_gateway::pairing::{pairing_approve, pairing_list, pairing_revoke};
     match cmd {
-        PairingCmd::Approve { platform, code } => println!("{}", pairing_approve(&platform, &code)?),
+        PairingCmd::Approve { platform, code } => {
+            println!("{}", pairing_approve(&platform, &code)?)
+        }
         PairingCmd::List { platform } => println!("{}", pairing_list(Some(&platform))?),
         PairingCmd::Revoke { platform, user } => println!("{}", pairing_revoke(&platform, &user)?),
     }
     Ok(())
+}
+
+async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
+    match cmd {
+        gray::PluginCmd::Check { dir } => {
+            if let Err(e) = gray::plugin_check::check_plugin_dir(&dir).await {
+                eprintln!("error: {e:#}");
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+    }
 }
 
 fn print_invite(platform: &str) -> anyhow::Result<()> {
@@ -143,7 +159,9 @@ fn print_invite(platform: &str) -> anyhow::Result<()> {
             let id = plat
                 .and_then(|c| c.token.clone())
                 .and_then(|t| gray_gateway::discord::client_id_from_token(&t))
-                .ok_or_else(|| anyhow::anyhow!("set platforms.discord.token in ~/.gray/gateway.yaml"))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("set platforms.discord.token in ~/.gray/gateway.yaml")
+                })?;
             println!("{}", gray_gateway::discord::invite_url(&id)?);
             Ok(())
         }

@@ -1,0 +1,29 @@
+[package]
+name = "gray-extras"
+version.workspace = true
+edition.workspace = true
+description = "gray extras outside the default build: proxy, OAuth signin, cron CLI."
+license.workspace = true
+
+[dependencies]
+gray = { workspace = true }
+gray-cron = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+percent-encoding = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tower = { workspace = true }
+uuid = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

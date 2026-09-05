@@ -124,6 +124,7 @@ When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray 
 | `GRAY_AUTO_UPDATE=1` | background self-update, no prompt |
 | `GRAY_INSTALL_DIR` | installer destination dir (overrides default `~/.local/bin`; `--system` installs system-wide) |
 | `GRAY_GUARD_BYPASS=1` | disable the destructive-command guard entirely (CI/piped mode) |
+| `GRAY_PERMISSION` | tool permission: `ask` (prompt before risky commands, default) or `auto` (no prompts; default in `-p` print mode) |
 
 ## Platform support
 
@@ -136,6 +137,10 @@ When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray 
 `gray gateway install` (systemd user service) is Linux-only. Single static binary —
 "zero runtime deps" means no sidecar services; you still need `sh`, `curl`/`wget`,
 `tar`, and `sha256sum`/`shasum` for the installer.
+
+## Stability
+
+Stable in 1.x: CLI flags, session JSONL schema, plugin wire v1, ~/.gray layout. Not stable: TUI, internal crate APIs, gray-markdown.
 
 ## Gateway
 
@@ -162,8 +167,6 @@ Key config keys (under `platforms.<telegram|discord|slack>` plus top level):
 Pairing flow (no `gateway.yaml` edit needed): the user DMs the bot, gray prints
 a code, the operator runs `gray gateway pairing approve <platform> <CODE>`;
 `pairing list` shows pending + approved users, `pairing revoke` drops one.
-
-<img src="docs/img/hokusai-kajikazawa.jpg" width="520" alt=""/>
 
 ## Acknowledgements
 

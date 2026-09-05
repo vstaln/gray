@@ -35,15 +35,37 @@ impl DeliveryTarget {
             anyhow::bail!("empty delivery target");
         }
         if t.eq_ignore_ascii_case("origin") {
-            let Some(o) = origin else { anyhow::bail!("`origin` target needs an originating message") };
-            return Ok(Self { platform: o.platform, chat_id: Some(o.chat_id.clone()), thread_id: o.thread_id.clone(), is_origin: true });
+            let Some(o) = origin else {
+                anyhow::bail!("`origin` target needs an originating message")
+            };
+            return Ok(Self {
+                platform: o.platform,
+                chat_id: Some(o.chat_id.clone()),
+                thread_id: o.thread_id.clone(),
+                is_origin: true,
+            });
         }
         let mut parts = t.splitn(3, ':');
         let plat = parts.next().unwrap_or_default();
-        let platform: Platform = plat.parse().map_err(|_| anyhow::anyhow!("unknown platform {plat:?} in target {t:?} (telegram|discord|slack)"))?;
-        let chat_id = parts.next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-        let thread_id = parts.next().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-        Ok(Self { platform, chat_id, thread_id, is_origin: false })
+        let platform: Platform = plat.parse().map_err(|_| {
+            anyhow::anyhow!("unknown platform {plat:?} in target {t:?} (telegram|discord|slack)")
+        })?;
+        let chat_id = parts
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let thread_id = parts
+            .next()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        Ok(Self {
+            platform,
+            chat_id,
+            thread_id,
+            is_origin: false,
+        })
     }
 
     pub fn to_target_string(&self) -> String {
@@ -117,22 +139,34 @@ impl DeliveryLedger {
         let map = match std::fs::read_to_string(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
             Err(e) => {
-                log::warn!("delivery ledger unreadable {}: {e}; starting fresh", path.display());
+                log::warn!(
+                    "delivery ledger unreadable {}: {e}; starting fresh",
+                    path.display()
+                );
                 HashMap::new()
             }
             Ok(s) => match serde_json::from_str(&s) {
                 Ok(m) => m,
                 Err(e) => {
-                    log::warn!("delivery ledger corrupt {}: {e}; starting fresh", path.display());
+                    log::warn!(
+                        "delivery ledger corrupt {}: {e}; starting fresh",
+                        path.display()
+                    );
                     HashMap::new()
                 }
             },
         };
-        Self { path: Some(path), lock: Mutex::new(map) }
+        Self {
+            path: Some(path),
+            lock: Mutex::new(map),
+        }
     }
 
     pub fn in_memory() -> Self {
-        Self { path: None, lock: Mutex::new(HashMap::new()) }
+        Self {
+            path: None,
+            lock: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn open_default() -> Self {
@@ -156,7 +190,14 @@ impl DeliveryLedger {
 
     /// Record a pending obligation BEFORE sending. Idempotent on the id;
     /// starts replayable (`retryable: true`) until a send proves otherwise.
-    pub fn record(&self, session_key: &str, message_ref: &str, target: &DeliveryTarget, text: &str, reply_to: Option<&str>) -> String {
+    pub fn record(
+        &self,
+        session_key: &str,
+        message_ref: &str,
+        target: &DeliveryTarget,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> String {
         let id = obligation_id(session_key, message_ref, text);
         {
             let mut map = self.lock.lock().unwrap();
@@ -205,7 +246,10 @@ impl DeliveryLedger {
                 o.updated_at = now_ts();
                 if !retryable || o.attempts >= MAX_DELIVERY_ATTEMPTS {
                     o.status = ObligationStatus::Failed;
-                    log::warn!("delivery ledger abandoning {id} after {} attempts: {error}", o.attempts);
+                    log::warn!(
+                        "delivery ledger abandoning {id} after {} attempts: {error}",
+                        o.attempts
+                    );
                 }
             }
         }
@@ -219,7 +263,11 @@ impl DeliveryLedger {
             .lock()
             .unwrap()
             .values()
-            .filter(|o| o.status == ObligationStatus::Pending && o.retryable && o.attempts < MAX_DELIVERY_ATTEMPTS)
+            .filter(|o| {
+                o.status == ObligationStatus::Pending
+                    && o.retryable
+                    && o.attempts < MAX_DELIVERY_ATTEMPTS
+            })
             .cloned()
             .collect()
     }
@@ -251,22 +299,34 @@ impl DeadTargets {
         let map = match std::fs::read_to_string(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => HashMap::new(),
             Err(e) => {
-                log::warn!("dead targets unreadable {}: {e}; starting fresh", path.display());
+                log::warn!(
+                    "dead targets unreadable {}: {e}; starting fresh",
+                    path.display()
+                );
                 HashMap::new()
             }
             Ok(s) => match serde_json::from_str(&s) {
                 Ok(m) => m,
                 Err(e) => {
-                    log::warn!("dead targets corrupt {}: {e}; starting fresh", path.display());
+                    log::warn!(
+                        "dead targets corrupt {}: {e}; starting fresh",
+                        path.display()
+                    );
                     HashMap::new()
                 }
             },
         };
-        Self { path: Some(path), lock: Mutex::new(map) }
+        Self {
+            path: Some(path),
+            lock: Mutex::new(map),
+        }
     }
 
     pub fn in_memory() -> Self {
-        Self { path: None, lock: Mutex::new(HashMap::new()) }
+        Self {
+            path: None,
+            lock: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn open_default() -> Self {
@@ -305,7 +365,13 @@ impl DeadTargets {
     pub fn mark(&self, key: &str, reason: &str) {
         {
             let mut map = self.lock.lock().unwrap();
-            map.insert(key.to_string(), DeadEntry { reason: reason.to_string(), ts: now_ts() });
+            map.insert(
+                key.to_string(),
+                DeadEntry {
+                    reason: reason.to_string(),
+                    ts: now_ts(),
+                },
+            );
         }
         self.persist();
     }
@@ -325,8 +391,15 @@ pub struct DeliveryRouter {
 }
 
 impl DeliveryRouter {
-    pub fn new(config: GatewayConfig, adapters: HashMap<Platform, Arc<dyn BasePlatformAdapter>>) -> Self {
-        Self { config, adapters, dead: None }
+    pub fn new(
+        config: GatewayConfig,
+        adapters: HashMap<Platform, Arc<dyn BasePlatformAdapter>>,
+    ) -> Self {
+        Self {
+            config,
+            adapters,
+            dead: None,
+        }
     }
 
     /// Attach dead-target tracking: [`deliver`] skips dead chats, clears on success.
@@ -349,12 +422,22 @@ impl DeliveryRouter {
         if let Some(c) = &target.chat_id {
             return Ok(c.clone());
         }
-        self.home_channel(target.platform)
-            .ok_or_else(|| anyhow::anyhow!("no home_channel configured for {} (set platforms.{}.home_channel)", target.platform, target.platform))
+        self.home_channel(target.platform).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no home_channel configured for {} (set platforms.{}.home_channel)",
+                target.platform,
+                target.platform
+            )
+        })
     }
 
     /// Deliver `text` to `target`. Chunking is the adapter's job.
-    pub async fn deliver(&self, target: &DeliveryTarget, text: &str, reply_to: Option<&str>) -> SendResult {
+    pub async fn deliver(
+        &self,
+        target: &DeliveryTarget,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> SendResult {
         let Some(adapter) = self.adapters.get(&target.platform) else {
             return SendResult::fail(format!("no live adapter for {}", target.platform), false);
         };
@@ -366,8 +449,18 @@ impl DeliveryRouter {
         if self.dead.as_ref().is_some_and(|d| d.is_dead(&key)) {
             return SendResult::fail(format!("skipping dead target {key}"), false);
         }
-        let opts = SendOptions { reply_to: reply_to.map(str::to_string), thread_id: target.thread_id.clone() };
-        let res = Self::send_to(adapter.as_ref(), &target.to_target_string(), &chat, text, &opts).await;
+        let opts = SendOptions {
+            reply_to: reply_to.map(str::to_string),
+            thread_id: target.thread_id.clone(),
+        };
+        let res = Self::send_to(
+            adapter.as_ref(),
+            &target.to_target_string(),
+            &chat,
+            text,
+            &opts,
+        )
+        .await;
         self.note_result(&key, &res);
         res
     }
@@ -380,7 +473,12 @@ impl DeliveryRouter {
             if self.home_channel(plat).is_none() {
                 continue;
             }
-            let target = DeliveryTarget { platform: plat, chat_id: None, thread_id: None, is_origin: false };
+            let target = DeliveryTarget {
+                platform: plat,
+                chat_id: None,
+                thread_id: None,
+                is_origin: false,
+            };
             let r = self.deliver(&target, text, None).await;
             out.push((plat, r));
         }
@@ -388,8 +486,15 @@ impl DeliveryRouter {
     }
 
     /// Raw send with timeout; no dead-target bookkeeping (see [`deliver`]).
-    async fn send_to(adapter: &dyn BasePlatformAdapter, what: &str, chat: &str, text: &str, opts: &SendOptions) -> SendResult {
-        let res = tokio::time::timeout(Duration::from_secs(60), adapter.send_ext(chat, text, opts)).await;
+    async fn send_to(
+        adapter: &dyn BasePlatformAdapter,
+        what: &str,
+        chat: &str,
+        text: &str,
+        opts: &SendOptions,
+    ) -> SendResult {
+        let res =
+            tokio::time::timeout(Duration::from_secs(60), adapter.send_ext(chat, text, opts)).await;
         match res {
             Ok(r) => r,
             Err(_) => SendResult::fail(format!("delivery to {what} timed out"), true),
@@ -428,14 +533,24 @@ impl DeliveryRouter {
                 return (id, SendResult::ok(None));
             }
             if ob.status == ObligationStatus::Failed {
-                return (id, SendResult::fail(ob.last_error.unwrap_or_else(|| "already failed".into()), false));
+                return (
+                    id,
+                    SendResult::fail(
+                        ob.last_error.unwrap_or_else(|| "already failed".into()),
+                        false,
+                    ),
+                );
             }
         }
         let res = self.deliver(target, text, reply_to).await;
         if res.success {
             ledger.mark_delivered(&id);
         } else {
-            ledger.mark_failed(&id, res.error.as_deref().unwrap_or("unknown error"), res.retryable);
+            ledger.mark_failed(
+                &id,
+                res.error.as_deref().unwrap_or("unknown error"),
+                res.retryable,
+            );
         }
         (id, res)
     }
@@ -470,14 +585,28 @@ impl DeliveryRouter {
                     continue;
                 }
             };
-            let opts = SendOptions { reply_to: ob.reply_to.clone(), thread_id: target.thread_id.clone() };
-            let res = Self::send_to(adapter.as_ref(), &target.to_target_string(), &chat, &ob.text, &opts).await;
+            let opts = SendOptions {
+                reply_to: ob.reply_to.clone(),
+                thread_id: target.thread_id.clone(),
+            };
+            let res = Self::send_to(
+                adapter.as_ref(),
+                &target.to_target_string(),
+                &chat,
+                &ob.text,
+                &opts,
+            )
+            .await;
             let key = DeadTargets::dead_key(target.platform, &chat);
             self.note_result(&key, &res);
             if res.success {
                 ledger.mark_delivered(&ob.id);
             } else {
-                ledger.mark_failed(&ob.id, res.error.as_deref().unwrap_or("unknown error"), res.retryable);
+                ledger.mark_failed(
+                    &ob.id,
+                    res.error.as_deref().unwrap_or("unknown error"),
+                    res.retryable,
+                );
             }
             out.push((ob.id, res));
         }
@@ -486,7 +615,10 @@ impl DeliveryRouter {
 }
 
 /// Build an adapter for `platform` from config (no event channel → send-only).
-pub fn build_adapter(config: &GatewayConfig, platform: Platform) -> anyhow::Result<Arc<dyn BasePlatformAdapter>> {
+pub fn build_adapter(
+    config: &GatewayConfig,
+    platform: Platform,
+) -> anyhow::Result<Arc<dyn BasePlatformAdapter>> {
     let pc = config
         .platforms
         .get(&platform)
@@ -520,7 +652,10 @@ pub async fn send_once(config: &GatewayConfig, target: &str, text: &str) -> anyh
     if res.success {
         Ok(())
     } else {
-        anyhow::bail!("send failed: {}", res.error.unwrap_or_else(|| "unknown error".into()))
+        anyhow::bail!(
+            "send failed: {}",
+            res.error.unwrap_or_else(|| "unknown error".into())
+        )
     }
 }
 
@@ -545,7 +680,15 @@ mod tests {
     #[test]
     fn parse_targets() {
         let t = DeliveryTarget::parse("telegram:123", None).unwrap();
-        assert_eq!(t, DeliveryTarget { platform: Platform::Telegram, chat_id: Some("123".into()), thread_id: None, is_origin: false });
+        assert_eq!(
+            t,
+            DeliveryTarget {
+                platform: Platform::Telegram,
+                chat_id: Some("123".into()),
+                thread_id: None,
+                is_origin: false
+            }
+        );
         assert_eq!(t.to_target_string(), "telegram:123");
         let t = DeliveryTarget::parse("Slack:C1:17.5", None).unwrap();
         assert_eq!(t.thread_id.as_deref(), Some("17.5"));
@@ -566,9 +709,15 @@ mod tests {
         let mut cfg = GatewayConfig::default();
         cfg.platforms.insert(
             Platform::Telegram,
-            PlatformConfig { home_channel: Some("555".into()), ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890") },
+            PlatformConfig {
+                home_channel: Some("555".into()),
+                ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")
+            },
         );
-        cfg.platforms.insert(Platform::Discord, PlatformConfig::with_token(&"x".repeat(40)));
+        cfg.platforms.insert(
+            Platform::Discord,
+            PlatformConfig::with_token(&"x".repeat(40)),
+        );
         cfg
     }
 
@@ -576,8 +725,14 @@ mod tests {
     async fn router_resolves_home_and_explicit() {
         let cfg = cfg_with_home();
         let mut adapters: HashMap<Platform, Arc<dyn BasePlatformAdapter>> = HashMap::new();
-        adapters.insert(Platform::Telegram, build_adapter(&cfg, Platform::Telegram).unwrap());
-        adapters.insert(Platform::Discord, build_adapter(&cfg, Platform::Discord).unwrap());
+        adapters.insert(
+            Platform::Telegram,
+            build_adapter(&cfg, Platform::Telegram).unwrap(),
+        );
+        adapters.insert(
+            Platform::Discord,
+            build_adapter(&cfg, Platform::Discord).unwrap(),
+        );
         let router = DeliveryRouter::new(cfg, adapters);
         let home = DeliveryTarget::parse("telegram", None).unwrap();
         assert_eq!(router.resolve_chat(&home).unwrap(), "555");
@@ -620,7 +775,11 @@ mod tests {
     impl ScriptAdapter {
         /// Results are consumed in order (first element = first send).
         fn with_script(plat: Platform, script: Vec<SendResult>) -> Self {
-            Self { plat, script: Mutex::new(script.into_iter().rev().collect()), calls: Mutex::new(0) }
+            Self {
+                plat,
+                script: Mutex::new(script.into_iter().rev().collect()),
+                calls: Mutex::new(0),
+            }
         }
         fn calls(&self) -> usize {
             *self.calls.lock().unwrap()
@@ -643,7 +802,11 @@ mod tests {
         }
         async fn send(&self, _chat: &str, _text: &str) -> SendResult {
             *self.calls.lock().unwrap() += 1;
-            self.script.lock().unwrap().pop().unwrap_or(SendResult::ok(None))
+            self.script
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or(SendResult::ok(None))
         }
     }
 
@@ -651,7 +814,10 @@ mod tests {
         let adapter = Arc::new(ScriptAdapter::with_script(Platform::Telegram, script));
         let mut adapters: HashMap<Platform, Arc<dyn BasePlatformAdapter>> = HashMap::new();
         adapters.insert(Platform::Telegram, adapter.clone());
-        (adapter, DeliveryRouter::new(GatewayConfig::default(), adapters))
+        (
+            adapter,
+            DeliveryRouter::new(GatewayConfig::default(), adapters),
+        )
     }
 
     #[test]
@@ -679,13 +845,20 @@ mod tests {
         assert_eq!(ob.attempts, 0);
 
         // Success path clears the obligation.
-        let (id2, res) = router.deliver_recorded(&ledger, "sess", "m2", &target, "hi", None).await;
+        let (id2, res) = router
+            .deliver_recorded(&ledger, "sess", "m2", &target, "hi", None)
+            .await;
         assert!(res.success);
-        assert_eq!(ledger.get(&id2).unwrap().status, ObligationStatus::Delivered);
+        assert_eq!(
+            ledger.get(&id2).unwrap().status,
+            ObligationStatus::Delivered
+        );
         assert!(ledger.sweep().iter().all(|o| o.id != id2));
 
         // Retryable failure stays pending and shows up in sweep.
-        let (id3, res) = router.deliver_recorded(&ledger, "sess", "m3", &target, "hi", None).await;
+        let (id3, res) = router
+            .deliver_recorded(&ledger, "sess", "m3", &target, "hi", None)
+            .await;
         assert!(!res.success);
         let ob = ledger.get(&id3).unwrap();
         assert_eq!(ob.status, ObligationStatus::Pending);
@@ -707,7 +880,9 @@ mod tests {
         let (_a, router) = script_router(vec![SendResult::fail("no live adapter", false)]);
         let ledger = DeliveryLedger::in_memory();
         let target = DeliveryTarget::parse("telegram:123", None).unwrap();
-        let (id, res) = router.deliver_recorded(&ledger, "sess", "m9", &target, "hi", None).await;
+        let (id, res) = router
+            .deliver_recorded(&ledger, "sess", "m9", &target, "hi", None)
+            .await;
         assert!(!res.success);
         let ob = ledger.get(&id).unwrap();
         assert_eq!(ob.status, ObligationStatus::Failed);
@@ -732,7 +907,13 @@ mod tests {
 
     #[test]
     fn dead_error_classification_is_substring_only() {
-        for e in ["chat not found", "FORBIDDEN: bot was kicked", "blocked by user", "user deactivated", "kicked from group"] {
+        for e in [
+            "chat not found",
+            "FORBIDDEN: bot was kicked",
+            "blocked by user",
+            "user deactivated",
+            "kicked from group",
+        ] {
             assert!(DeadTargets::is_dead_error(e), "{e}");
         }
         for e in ["timeout", "not connected", "no live adapter", ""] {
@@ -782,7 +963,11 @@ mod tests {
         }
         let ob = ledger.get(&id).unwrap();
         assert_eq!(ob.status, ObligationStatus::Failed);
-        assert!(ob.attempts <= MAX_DELIVERY_ATTEMPTS, "clamped: {}", ob.attempts);
+        assert!(
+            ob.attempts <= MAX_DELIVERY_ATTEMPTS,
+            "clamped: {}",
+            ob.attempts
+        );
         assert_eq!(ob.attempts, MAX_DELIVERY_ATTEMPTS);
     }
 
@@ -791,12 +976,16 @@ mod tests {
         let (adapter, router) = script_router(vec![SendResult::ok(None), SendResult::ok(None)]);
         let ledger = DeliveryLedger::in_memory();
         let target = DeliveryTarget::parse("telegram:123", None).unwrap();
-        let (id, res) = router.deliver_recorded(&ledger, "sess", "m1", &target, "hi", None).await;
+        let (id, res) = router
+            .deliver_recorded(&ledger, "sess", "m1", &target, "hi", None)
+            .await;
         assert!(res.success);
         assert_eq!(ledger.get(&id).unwrap().status, ObligationStatus::Delivered);
         let calls = adapter.calls();
         // Same obligation again: already Delivered → skip send, no attempt bump.
-        let (id2, res2) = router.deliver_recorded(&ledger, "sess", "m1", &target, "hi", None).await;
+        let (id2, res2) = router
+            .deliver_recorded(&ledger, "sess", "m1", &target, "hi", None)
+            .await;
         assert_eq!(id, id2);
         assert!(res2.success);
         assert_eq!(adapter.calls(), calls, "non-Pending must skip the send");

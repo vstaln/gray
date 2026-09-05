@@ -44,10 +44,26 @@ pub fn classify_connect_error(err: &str) -> Fatal {
         return Fatal::Retryable(err.to_string());
     }
     // Revoked/dead Slack tokens never recover — no hot retry.
-    if ["invalid_auth", "account_inactive", "token_revoked", "not_authed"].iter().any(|m| lower.contains(m)) {
+    if [
+        "invalid_auth",
+        "account_inactive",
+        "token_revoked",
+        "not_authed",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+    {
         return Fatal::Terminal(err.to_string());
     }
-    let auth = ["unauthorized", "forbidden", "token rejected", "bad token", "invalid token", "401", "403"];
+    let auth = [
+        "unauthorized",
+        "forbidden",
+        "token rejected",
+        "bad token",
+        "invalid token",
+        "401",
+        "403",
+    ];
     if auth.iter().any(|m| lower.contains(m)) {
         Fatal::Terminal(err.to_string())
     } else {
@@ -119,21 +135,27 @@ pub(crate) async fn connect_adapter_with_retry(
                     fast_failures = if fast { fast_failures + 1 } else { 1 };
                     last_failure = Some(Instant::now());
                     if crash_loop_tripped(fast_failures) {
-                        log::error!("gateway {plat} crash-loop ({fast_failures} fast failures), giving up: {m}");
+                        log::error!(
+                            "gateway {plat} crash-loop ({fast_failures} fast failures), giving up: {m}"
+                        );
                         if let Some(b) = board {
                             b.mark_failed(plat, m);
                         }
                         return;
                     }
                     if attempt == cap {
-                        log::error!("gateway {plat} connect failed after {attempt} attempts, giving up: {m}");
+                        log::error!(
+                            "gateway {plat} connect failed after {attempt} attempts, giving up: {m}"
+                        );
                         if let Some(b) = board {
                             b.mark_failed(plat, m);
                         }
                         return;
                     }
                     let d = crate::platform::backoff_delay(attempt);
-                    log::warn!("gateway {plat} connect failed (attempt {attempt}): {m}; retry in {d:?}");
+                    log::warn!(
+                        "gateway {plat} connect failed (attempt {attempt}): {m}; retry in {d:?}"
+                    );
                     tokio::time::sleep(d).await;
                 }
             },

@@ -55,7 +55,16 @@ impl ProgressBubble {
                     }
                     ProgressMsg::Done => break,
                 }
-                Self::pump(&adapter, &chat, &opts, max, &lines, &mut bubble_ids, &mut last_pump).await;
+                Self::pump(
+                    &adapter,
+                    &chat,
+                    &opts,
+                    max,
+                    &lines,
+                    &mut bubble_ids,
+                    &mut last_pump,
+                )
+                .await;
             }
             // Hermes cleanup_msg_ids: progress bubbles are ephemeral — the
             // chat ends with just the final answer.
@@ -108,7 +117,10 @@ impl ProgressBubble {
                 } else if r.retryable {
                     // Transient (flood control) — skip this tick, retry next.
                 } else {
-                    log::warn!("progress bubble edit failed permanently, sending fresh: {:?}", r.error);
+                    log::warn!(
+                        "progress bubble edit failed permanently, sending fresh: {:?}",
+                        r.error
+                    );
                     Self::send_fresh(adapter, chat, opts, first, bubble_ids).await;
                     *last_pump = Instant::now();
                 }
@@ -149,4 +161,3 @@ impl ProgressBubble {
         text
     }
 }
-

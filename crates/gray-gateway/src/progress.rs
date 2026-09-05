@@ -1,4 +1,3 @@
-
 //! Hermes-style progress bubbles (port of `hermes-gateway/src/turn.rs`
 //! `on_tool_event` composition + `drain_progress_messages` grouping).
 //!
@@ -112,7 +111,14 @@ impl ProgressLines {
 /// `"foo (×3)"` → `"foo"`; anything else unchanged.
 fn strip_count_suffix(line: &str) -> &str {
     match line.rfind(" (×") {
-        Some(i) if line.ends_with(')') && line[i + 4..line.len() - 1].chars().all(|c| c.is_ascii_digit()) => &line[..i],
+        Some(i)
+            if line.ends_with(')')
+                && line[i + 4..line.len() - 1]
+                    .chars()
+                    .all(|c| c.is_ascii_digit()) =>
+        {
+            &line[..i]
+        }
         _ => line,
     }
 }
@@ -203,6 +209,9 @@ mod tests {
         p.push_start("aaaa");
         p.push_start("bbbb");
         // "⏳ aaaa…" is 7 UTF-16 units; cap 10 forces a split.
-        assert_eq!(p.split_groups(10), vec!["⏳ aaaa…".to_string(), "⏳ bbbb…".to_string()]);
+        assert_eq!(
+            p.split_groups(10),
+            vec!["⏳ aaaa…".to_string(), "⏳ bbbb…".to_string()]
+        );
     }
 }

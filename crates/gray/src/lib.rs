@@ -3,123 +3,33 @@
 pub mod compact;
 pub mod composer;
 pub mod config;
-pub mod cron_cli;
+pub mod host;
 pub mod logging;
-pub mod oauth;
+pub mod plugin_check;
 pub mod print;
-pub mod setup;
-pub mod skills;
-pub mod sys_editor;
-pub mod proxy;
+pub mod profile;
 pub mod repl;
 pub mod resume;
+pub mod setup;
+pub mod skills;
+pub mod skills_tool;
+pub mod sys_editor;
 pub mod system_prompt;
-pub mod update;
 pub mod tool_fmt;
 pub mod tui;
+pub mod update;
 
-use std::path::{Path, PathBuf};
 use clap::Parser;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use config::Config;
 pub use print::run_print_mode;
-pub use repl::{parse_command, run_repl_mode, ReplCommand};
+pub use profile::{build_registry, take_profile_warnings};
+pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
-use gray_core::agent::Agent;
-use gray_provider::OpenAiProvider;
-use gray_tools::Registry;
-
-/// Single source of truth for the default (builtin) plugins.
-/// Used by [`profile_plugins`] and [`build_registry`] so the registry cannot
-/// drift from the profile resolution.
-fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
-    vec![
-        std::sync::Arc::new(gray_tools::plugin::ToolsBasicPlugin)
-            as std::sync::Arc<dyn gray_plugin::Plugin>,
-        std::sync::Arc::new(gray_tools::plugin::ToolsSearchPlugin)
-            as std::sync::Arc<dyn gray_plugin::Plugin>,
-        std::sync::Arc::new(gray_tools::plugin::CronPlugin)
-            as std::sync::Arc<dyn gray_plugin::Plugin>,
-    ]
-}
-
-/// Profile warnings queued for transcript display. Raw `eprintln!` while the
-/// composer viewport is live collides with the next draw (ghost/overlapped
-/// rows), so lib code never prints — it queues here and the UI drains.
-/// One lock, one Vec: each distinct message is queued once per drain cycle
-/// (N is tiny; Vec scan is fine). A rebuild re-queues a still-broken profile
-/// warning — correct, like a compiler re-emitting warnings.
-static PROFILE_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-fn queue_profile_warning(msg: String) {
-    PROFILE_WARNINGS
-        .lock()
-        .map(|mut q| {
-            if !q.contains(&msg) {
-                q.push(msg);
-            }
-        })
-        .ok();
-}
-
-/// Drains queued profile warnings (transcript/non-TUI display owns rendering).
-pub fn take_profile_warnings() -> Vec<String> {
-    PROFILE_WARNINGS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
-}
-
-/// Home dir for lockfile boot (`$GRAY_HOME` or `$HOME/.gray`).
-/// Mirrors [`sys_prompt_path`] resolution without the `AGENTS.md` join.
-fn gray_home() -> PathBuf {
-    std::env::var("GRAY_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-}
-
-/// Ordered plugins named by the `gray.yml` profile + lockfile, or `None`
-/// when both are missing/unparseable (caller falls back to builtin).
-/// Thin wrapper over [`gray_plugin::boot`]: the gray-tools resolver closure
-/// matches manifest names, same as before. Boot warnings bridge into
-/// [`PROFILE_WARNINGS`] so [`take_profile_warnings`] output is unchanged.
-/// Sidecar spawn failure on the profile path is a hard `Err` naming entry
-/// index + argv (boot aborts); lock-path failures warn and continue.
-/// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
-/// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
-async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
-    let defaults = default_plugins();
-    let home = gray_home();
-    let profile_path = Path::new("gray.yml");
-    let (plugins, report) = gray_plugin::boot::active_plugins(Some(profile_path), &home, &|name| {
-        defaults.iter().find(|p| p.manifest().name == name).cloned()
-    })
-    .await?;
-    for w in report.warnings {
-        queue_profile_warning(w);
-    }
-    if report.used_fallback { Ok(None) } else { Ok(Some(plugins)) }
-}
-
-/// Ordered active plugins: the `gray.yml` profile order, or builtins when
-/// the profile is missing/unparseable/empty. Single spawn site shared by
-/// [`build_registry`] and [`build_agent`] so sidecar children spawn once
-/// per build. Returns `(plugins, used_fallback)`.
-async fn active_plugins() -> anyhow::Result<(Vec<std::sync::Arc<dyn gray_plugin::Plugin>>, bool)> {
-    match profile_plugins().await? {
-        Some(plugins) if !plugins.is_empty() => Ok((plugins, false)),
-        _ => Ok((default_plugins(), true)),
-    }
-}
-
-/// Builds the tool registry from the `gray.yml` profile plugin order,
-/// falling back to [`Registry::builtin`] when no profile file is present.
-/// Returns `(registry, used_fallback)` — the flag feeds `--dump-manifest`'s note.
-/// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
-/// (Manifests travel on the registry via [`Registry::manifests`].)
-pub async fn build_registry() -> anyhow::Result<(Registry, bool)> {
-    let (plugins, fallback) = active_plugins().await?;
-    Ok((Registry::from_plugins(&plugins), fallback))
-}
+use crate::skills_tool::SkillTool;
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
@@ -192,9 +102,21 @@ pub fn rule(label: &str) -> String {
     format!("{prefix}{}", "\u{2500}".repeat(fill))
 }
 
-/// Builds an [`Agent`] wired with the OpenAI provider, builtin tools, and system prompt.
-/// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
-/// pass it whenever known (resume, /new); `None` uses a per-process stable id.
+/// Prompt cache-key helpers live in the shared builder (single definition);
+/// re-exported here so existing imports keep working.
+pub use gray_plugin::builder::{
+    PROMPT_CACHE_KEY_MAX_LENGTH, clamp_prompt_cache_key, provider_cache_key,
+};
+
+/// Builds the interactive [`gray_core::agent::Agent`]: thin surface wrapper
+/// over [`gray_plugin::builder::build_agent`] (the single profile-aware
+/// builder for REPL, `-p`, gateway, and cron).
+///
+/// Surface policy owned here: missing-model help text, `AGENTS.md` body,
+/// skills + context-file discovery, the `skill` tool default, and the
+/// REPL/`-p` host handler. `session_id` pins the Responses
+/// `prompt_cache_key` for cache affinity — pass it whenever known (resume,
+/// /new); `None` uses a per-process stable id.
 /// (A single function: earlier split variants had an unused `None` leg.)
 ///
 /// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
@@ -206,46 +128,11 @@ pub fn rule(label: &str) -> String {
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
-/// Max `prompt_cache_key` length (matches the Responses API cache-key limit).
-pub const PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
-
-/// Clamp a cache key to the max length (truncate, don't hash —
-/// the prefix stays human-grepable in logs).
-pub fn clamp_prompt_cache_key(key: &str) -> &str {
-    if key.len() <= PROMPT_CACHE_KEY_MAX_LENGTH {
-        return key;
-    }
-    // UUIDs are ASCII so byte cut == char cut; walk back over a boundary just in case.
-    let mut end = PROMPT_CACHE_KEY_MAX_LENGTH;
-    while !key.is_char_boundary(end) {
-        end -= 1;
-    }
-    &key[..end]
-}
-
-/// Resolves the Responses `prompt_cache_key` (the backend pins one cache
-/// shard per session id for the agent's lifetime). Gray rebuilds its provider per
-/// `build_agent`, so the session id is threaded in at build time instead:
-/// the gray session id when known (stable across resumes, so a resumed
-/// session keeps hitting its cache shard), else a per-process stable id
-/// (so rebuilds mid-session — reload, lazy builds — don't bust the shard).
-/// A fresh random key per build guaranteed 0% cache after every
-/// resume/rebuild; never do that.
-pub fn provider_cache_key(session_id: Option<&str>) -> String {
-    if let Some(s) = session_id.filter(|s| !s.is_empty()) {
-        return clamp_prompt_cache_key(s).to_string();
-    }
-    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    FALLBACK
-        .get_or_init(|| uuid::Uuid::new_v4().to_string())
-        .clone()
-}
-
 pub async fn build_agent(
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
-) -> anyhow::Result<Agent> {
+) -> anyhow::Result<gray_core::agent::Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
             "no model configured yet — run /provider (or set --model <provider/model>), then try again"
@@ -255,48 +142,55 @@ pub async fn build_agent(
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
 
-    // Discover skills + AGENTS.md / CLAUDE.md context
+    // Discover skills + AGENTS.md / CLAUDE.md context (prompt needs the
+    // resolved registry, so this becomes a builder closure below).
     let discovered = skills::discover_skills(cwd);
     let context_files = system_prompt::discover_context_files(cwd);
+    let prompt_cwd = cwd.to_path_buf();
 
-    // Tools only appear in the prompt when they have a snippet.
-    // Same plugins feed the registry and the agent hooks (protocol v1:
-    // prompt/context, tool/before, command/run reach the loop + REPL).
-    let (plugins, _) = active_plugins().await?;
-    let registry = Registry::from_plugins(&plugins);
-    let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
-    let tool_snippets = registry.prompt_snippets();
-    let selected_tools = registry.tool_names();
-    let prompt_guidelines = {
-        let g = registry.prompt_guidelines();
-        if g.is_empty() { None } else { Some(g) }
-    };
-
-    let system_prompt = system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
-        custom_prompt: Some(body),
-        selected_tools: Some(selected_tools),
-        tool_snippets: Some(tool_snippets),
-        prompt_guidelines,
-        append_system_prompt: None,
+    let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
+        model: model.clone(),
+        api_key: api_key.to_string(),
+        base_url: config.base_url.clone(),
+        reasoning_effort: config.thinking_effort.clone(),
+        session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        context_files: Some(context_files),
-        skills: Some(discovered.skills),
-    });
-
-    let provider = OpenAiProvider::builder(api_key, model)
-        .base_url(&config.base_url)
-        .reasoning_effort(config.thinking_effort.clone())
-        .session_id(provider_cache_key(session_id))
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
-
-    let tool_defs = registry.defs();
-
-    let agent = Agent::new(Box::new(provider), Box::new(registry))
-        .with_system(system_prompt)
-        .with_tools(tool_defs)
-        .with_hooks(hooks);
-
+        system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
+            move |registry: &gray_tools::Registry| {
+                // Tools only appear in the prompt when they have a snippet.
+                // Same plugins feed the registry and the agent hooks.
+                let tool_snippets = registry.prompt_snippets();
+                let selected_tools = registry.tool_names();
+                let guidelines = registry.prompt_guidelines();
+                let prompt_guidelines = if guidelines.is_empty() {
+                    None
+                } else {
+                    Some(guidelines)
+                };
+                system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
+                    custom_prompt: Some(body),
+                    selected_tools: Some(selected_tools),
+                    tool_snippets: Some(tool_snippets),
+                    prompt_guidelines,
+                    append_system_prompt: None,
+                    cwd: prompt_cwd,
+                    context_files: Some(context_files),
+                    skills: Some(discovered.skills),
+                })
+            },
+        )),
+        // Sidecars get the host runner so plugin-initiated `host/run`
+        // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
+        extra_tools: vec![Arc::new(SkillTool)],
+        host_handler: Some(host::default_handler(cwd.to_path_buf())),
+        profile_path: "gray.yml".to_string(),
+        abort_on_spawn_failure: true,
+        wrap_executor: None,
+    })
+    .await?;
+    for w in gray_plugin::builder::take_builder_warnings() {
+        profile::queue_profile_warning(w);
+    }
     Ok(agent)
 }
 
@@ -355,7 +249,8 @@ pub struct Cli {
 }
 
 fn parse_context_window_cli(s: &str) -> Result<usize, String> {
-    crate::setup::parse_context_window(s).ok_or_else(|| format!("invalid context window '{s}' — use e.g. 128000, 128k, 1m"))
+    crate::setup::parse_context_window(s)
+        .ok_or_else(|| format!("invalid context window '{s}' — use e.g. 128000, 128k, 1m"))
 }
 
 /// Subcommands mirroring `codex resume` / `codex fork` ergonomics.
@@ -373,22 +268,15 @@ pub enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Manage cron jobs (schedule recurring prompts)
-    #[command(alias = "cronjobs")]
-    Cron {
-        #[command(subcommand)]
-        cmd: Option<crate::cron_cli::CronCmd>,
-    },
-    /// Share Codex/Grok/OpenRouter auth via http://127.0.0.1:8645/v1 (any bearer forwarded)
-    #[command(alias = "portal")]
-    Proxy {
-        #[command(subcommand)]
-        cmd: Option<crate::proxy::ProxyCmd>,
-    },
     /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
     Gateway {
         #[command(subcommand)]
         cmd: Option<GatewayCmd>,
+    },
+    /// Plugin tools (conformance check)
+    Plugin {
+        #[command(subcommand)]
+        cmd: PluginCmd,
     },
     /// Update gray to the latest release
     Update,
@@ -414,6 +302,16 @@ pub enum GatewayCmd {
     Pairing {
         #[command(subcommand)]
         cmd: PairingCmd,
+    },
+}
+
+/// `gray plugin ...` — plugin-side tooling.
+#[derive(Parser, Debug, Clone)]
+pub enum PluginCmd {
+    /// Run the sidecar conformance checks against a plugin dir
+    Check {
+        /// Plugin directory (executable, plugin.sh, or single executable)
+        dir: String,
     },
 }
 

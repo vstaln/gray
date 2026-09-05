@@ -155,6 +155,8 @@ mod tests {
                 hooks: vec![],
                 provider: None,
                 protocol: None,
+                capabilities: vec![],
+                subcommands: vec![],
             }
         }
     }

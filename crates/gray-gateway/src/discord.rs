@@ -6,7 +6,9 @@
 //! commands /ask /reset /status /stop.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendOptions, SendResult};
+use crate::platform::{
+    BasePlatformAdapter, MessageEvent, SendOptions, SendResult, check_token_shape, utf16_len,
+};
 use crate::session::SessionSource;
 use crate::status::GatewayStatusBoard;
 use std::collections::HashMap;
@@ -25,7 +27,9 @@ pub fn client_id_from_token(token: &str) -> Option<String> {
     let raw = token.trim().strip_prefix("Bot ").unwrap_or(token.trim());
     let seg = raw.split('.').next()?;
     use base64::Engine as _;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(seg).ok()?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(seg)
+        .ok()?;
     let id = String::from_utf8(bytes).ok()?;
     if id.chars().all(|c| c.is_ascii_digit()) && (15..=21).contains(&id.len()) {
         Some(id)
@@ -40,7 +44,9 @@ pub fn client_id_from_token(token: &str) -> Option<String> {
 pub fn invite_url(client_id: &str) -> anyhow::Result<String> {
     let id = client_id.trim();
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) || id.len() < 15 {
-        anyhow::bail!("discord client_id must be the numeric Application ID (portal → General Information)");
+        anyhow::bail!(
+            "discord client_id must be the numeric Application ID (portal → General Information)"
+        );
     }
     Ok(format!(
         "https://discord.com/oauth2/authorize?client_id={id}&permissions={}&scope=bot+applications.commands",
@@ -79,13 +85,16 @@ pub struct DiscordAdapter {
 }
 
 /// How long `connect()` waits for the first Ready before failing.
+#[cfg(any(feature = "discord", test))]
 pub(crate) const READY_TIMEOUT_SECS: u64 = 30;
 
 /// Wait for the first Ready event; timeout surfaces as a retryable error.
+#[cfg(feature = "discord")]
 pub(crate) async fn wait_for_ready(rx: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
     wait_for_ready_with(rx, std::time::Duration::from_secs(READY_TIMEOUT_SECS)).await
 }
 
+#[cfg(any(feature = "discord", test))]
 pub(crate) async fn wait_for_ready_with(
     rx: tokio::sync::oneshot::Receiver<()>,
     timeout: std::time::Duration,
@@ -93,15 +102,18 @@ pub(crate) async fn wait_for_ready_with(
     match tokio::time::timeout(timeout, rx).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(_)) => anyhow::bail!("discord shard ended before ready"),
-        Err(_) => anyhow::bail!("timed out waiting for discord ready (timeout {}s)", timeout.as_secs()),
+        Err(_) => anyhow::bail!(
+            "timed out waiting for discord ready (timeout {}s)",
+            timeout.as_secs()
+        ),
     }
 }
 
 impl DiscordAdapter {
     pub fn new(cfg: PlatformConfig) -> anyhow::Result<Self> {
-        let token = cfg
-            .token
-            .ok_or_else(|| anyhow::anyhow!("discord token not set (set platforms.discord.token in gateway.yaml)"))?;
+        let token = cfg.token.ok_or_else(|| {
+            anyhow::anyhow!("discord token not set (set platforms.discord.token in gateway.yaml)")
+        })?;
         validate_discord_token(&token)?;
         Ok(Self {
             token: token.trim().trim_start_matches("Bot ").to_string(),
@@ -134,6 +146,7 @@ impl DiscordAdapter {
 /// otherwise the last error, annotated with the attempt count. Keeps slow
 /// steps (token validation) fail-fast with log breadcrumbs instead of one
 /// long silent hang against the daemon's outer timeout.
+#[cfg(any(feature = "discord", test))]
 async fn retry_with_timeout<F, Fut, T>(
     attempts: u32,
     per_attempt: std::time::Duration,
@@ -176,7 +189,12 @@ pub fn validate_discord_token(token: &str) -> anyhow::Result<()> {
 /// @mention or reply-to-bot (resolved inline by the gateway), else `None`
 /// meaning stay silent. DMs bypass this entirely.
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
-fn guild_answer(mentioned: bool, reply_to_bot: bool, content: &str, bot_id: &str) -> Option<String> {
+fn guild_answer(
+    mentioned: bool,
+    reply_to_bot: bool,
+    content: &str,
+    bot_id: &str,
+) -> Option<String> {
     if !(mentioned || reply_to_bot) {
         return None;
     }
@@ -189,7 +207,12 @@ fn guild_answer(mentioned: bool, reply_to_bot: bool, content: &str, bot_id: &str
 }
 
 #[cfg_attr(not(feature = "discord"), allow(dead_code))]
-fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u64) -> SessionSource {
+fn source_for(
+    msg_channel: u64,
+    guild: Option<u64>,
+    user_id: u64,
+    message_id: u64,
+) -> SessionSource {
     SessionSource {
         platform: Platform::Discord,
         chat_id: msg_channel.to_string(),
@@ -203,7 +226,13 @@ fn source_for(msg_channel: u64, guild: Option<u64>, user_id: u64, message_id: u6
 }
 
 #[cfg(feature = "discord")]
-fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: UnboundedSender<MessageEvent>, last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>, ready_tx: Option<tokio::sync::oneshot::Sender<()>>) -> tokio::task::JoinHandle<()> {
+fn spawn_shard(
+    token: String,
+    http: std::sync::Arc<twilight_http::Client>,
+    tx: UnboundedSender<MessageEvent>,
+    last_inbound: std::sync::Arc<Mutex<HashMap<String, u64>>>,
+    ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ready_tx = ready_tx;
         use twilight_gateway::{Event, EventTypeFlags, Intents, Shard, ShardId, StreamExt};
@@ -212,7 +241,8 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
         let intents = Intents::GUILD_MESSAGES | Intents::DIRECT_MESSAGES | Intents::MESSAGE_CONTENT;
         let mut shard = Shard::new(ShardId::ONE, token, intents);
         let mut app_id = None;
-        let mut bot_id: Option<twilight_model::id::Id<twilight_model::id::marker::UserMarker>> = None;
+        let mut bot_id: Option<twilight_model::id::Id<twilight_model::id::marker::UserMarker>> =
+            None;
         while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
             let event = match item {
                 Ok(e) => e,
@@ -230,41 +260,77 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                         let _ = tx.send(());
                     }
                     // Register global slash commands.
-                    let commands: Vec<twilight_model::application::command::Command> = SLASH_COMMANDS
-                        .iter()
-                        .map(|(name, desc)| {
-                            let b = twilight_util::builder::command::CommandBuilder::new(
-                                *name, *desc, twilight_model::application::command::CommandType::ChatInput);
-                            if *name == "ask" {
-                                b.option(twilight_util::builder::command::StringBuilder::new("prompt", "What to ask gray").required(true)).build()
-                            } else {
-                                b.build()
-                            }
-                        })
-                        .collect();
-                    match http.interaction(r.application.id).set_global_commands(&commands).await {
-                        Ok(_) => log::info!("[discord] registered {} slash commands", commands.len()),
+                    let commands: Vec<twilight_model::application::command::Command> =
+                        SLASH_COMMANDS
+                            .iter()
+                            .map(|(name, desc)| {
+                                let b = twilight_util::builder::command::CommandBuilder::new(
+                                    *name,
+                                    *desc,
+                                    twilight_model::application::command::CommandType::ChatInput,
+                                );
+                                if *name == "ask" {
+                                    b.option(
+                                        twilight_util::builder::command::StringBuilder::new(
+                                            "prompt",
+                                            "What to ask gray",
+                                        )
+                                        .required(true),
+                                    )
+                                    .build()
+                                } else {
+                                    b.build()
+                                }
+                            })
+                            .collect();
+                    match http
+                        .interaction(r.application.id)
+                        .set_global_commands(&commands)
+                        .await
+                    {
+                        Ok(_) => {
+                            log::info!("[discord] registered {} slash commands", commands.len())
+                        }
                         Err(e) => log::warn!("[discord] slash command registration failed: {e}"),
                     }
                 }
                 Event::MessageCreate(msg) => {
                     let m = msg.0;
-                    if m.author.bot { continue; }
+                    if m.author.bot {
+                        continue;
+                    }
                     let mut content = m.content.clone();
-                    if content.is_empty() { continue; }
+                    if content.is_empty() {
+                        continue;
+                    }
                     if m.guild_id.is_some() {
                         let Some(bot) = bot_id else { continue };
                         let mentioned = m.mentions.iter().any(|u| u.id == bot);
-                        let reply_to_bot = m.referenced_message.as_deref().is_some_and(|r| r.author.id == bot);
-                        let Some(text) = guild_answer(mentioned, reply_to_bot, &content, &bot.to_string()) else { continue };
+                        let reply_to_bot = m
+                            .referenced_message
+                            .as_deref()
+                            .is_some_and(|r| r.author.id == bot);
+                        let Some(text) =
+                            guild_answer(mentioned, reply_to_bot, &content, &bot.to_string())
+                        else {
+                            continue;
+                        };
                         content = text;
                     }
                     let cid = m.channel_id.get();
-                    last_inbound.lock().unwrap().insert(cid.to_string(), m.id.get());
+                    last_inbound
+                        .lock()
+                        .unwrap()
+                        .insert(cid.to_string(), m.id.get());
                     let ev = MessageEvent {
                         text: content,
                         message_id: Some(m.id.get().to_string()),
-                        source: source_for(cid, m.guild_id.map(|g| g.get()), m.author.id.get(), m.id.get()),
+                        source: source_for(
+                            cid,
+                            m.guild_id.map(|g| g.get()),
+                            m.author.id.get(),
+                            m.id.get(),
+                        ),
                         media_urls: vec![],
                         user_name: Some(m.author.name.clone()),
                     };
@@ -272,9 +338,15 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                 }
                 Event::InteractionCreate(interaction) => {
                     let Some(app) = app_id else { continue };
-                    let Some(ref data) = interaction.0.data else { continue };
-                    let InteractionData::ApplicationCommand(cmd) = data else { continue };
-                    let Some(channel_id) = interaction.0.channel.as_ref().map(|c| c.id) else { continue };
+                    let Some(ref data) = interaction.0.data else {
+                        continue;
+                    };
+                    let InteractionData::ApplicationCommand(cmd) = data else {
+                        continue;
+                    };
+                    let Some(channel_id) = interaction.0.channel.as_ref().map(|c| c.id) else {
+                        continue;
+                    };
                     let user_id = interaction.0.author_id().map(|u| u.get()).unwrap_or(0);
                     let name = cmd.name.as_str();
                     let cid = channel_id.get();
@@ -293,21 +365,36 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                         continue;
                     }
                     // Ack the interaction immediately so Discord doesn't show "failure".
-                    use twilight_model::http::interaction::{InteractionResponse, InteractionResponseData, InteractionResponseType};
+                    use twilight_model::http::interaction::{
+                        InteractionResponse, InteractionResponseData, InteractionResponseType,
+                    };
                     let resp = InteractionResponse {
                         kind: InteractionResponseType::ChannelMessageWithSource,
                         data: Some(InteractionResponseData {
-                            content: if name == "ask" { Some(format!("🤖 {text}")) } else { Some("…".into()) },
+                            content: if name == "ask" {
+                                Some(format!("🤖 {text}"))
+                            } else {
+                                Some("…".into())
+                            },
                             ..Default::default()
                         }),
                     };
-                    if let Err(e) = http.interaction(app).create_response(interaction.0.id, &interaction.0.token, &resp).await {
+                    if let Err(e) = http
+                        .interaction(app)
+                        .create_response(interaction.0.id, &interaction.0.token, &resp)
+                        .await
+                    {
                         log::warn!("[discord] interaction ack failed: {e}");
                     }
                     let ev = MessageEvent {
                         text,
                         message_id: Some(interaction.0.id.get().to_string()),
-                        source: source_for(cid, interaction.0.guild_id.map(|g| g.get()), user_id, interaction.0.id.get()),
+                        source: source_for(
+                            cid,
+                            interaction.0.guild_id.map(|g| g.get()),
+                            user_id,
+                            interaction.0.id.get(),
+                        ),
                         media_urls: vec![],
                         user_name: interaction.0.author().map(|u| u.name.clone()),
                     };
@@ -384,7 +471,13 @@ impl BasePlatformAdapter for DiscordAdapter {
                         old.abort();
                     }
                     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-                    let h = spawn_shard(self.token.clone(), http, tx, std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())), Some(ready_tx));
+                    let h = spawn_shard(
+                        self.token.clone(),
+                        http,
+                        tx,
+                        std::sync::Arc::new(Mutex::new(self.last_inbound.lock().unwrap().clone())),
+                        Some(ready_tx),
+                    );
                     *self.shard.lock().unwrap() = Some(h);
                     self.stage("waiting for ready");
                     if let Err(e) = wait_for_ready(ready_rx).await {
@@ -407,9 +500,13 @@ impl BasePlatformAdapter for DiscordAdapter {
             // Stub shard: pends forever so disconnect-abort is testable without network.
             // On real shards death the task exits and the next supervised
             // `connect_adapter_with_retry` restarts it (see daemon ladder).
-            *self.shard.lock().unwrap() = Some(tokio::spawn(async { std::future::pending::<()>().await }));
+            *self.shard.lock().unwrap() =
+                Some(tokio::spawn(async { std::future::pending::<()>().await }));
             self.stage("waiting for ready");
-            log::info!("[discord] stub connect (token {}…)", &self.token[..self.token.len().min(6)]);
+            log::info!(
+                "[discord] stub connect (token {}…)",
+                &self.token[..self.token.len().min(6)]
+            );
         }
         Ok(())
     }
@@ -436,7 +533,9 @@ impl BasePlatformAdapter for DiscordAdapter {
         {
             let client = self.client.lock().unwrap().clone();
             if let (Some(client), Ok(cid)) = (client, chat.parse::<u64>()) {
-                let _ = client.create_typing_trigger(twilight_model::id::Id::new(cid)).await;
+                let _ = client
+                    .create_typing_trigger(twilight_model::id::Id::new(cid))
+                    .await;
             }
         }
         #[cfg(not(feature = "discord"))]
@@ -454,13 +553,19 @@ impl BasePlatformAdapter for DiscordAdapter {
                 return SendResult::fail("discord not connected", false);
             };
             let (Ok(cid), Ok(mid)) = (chat.parse::<u64>(), message_id.parse::<u64>()) else {
-                return SendResult::fail(format!("invalid discord ids {chat:?}/{message_id:?}"), false);
+                return SendResult::fail(
+                    format!("invalid discord ids {chat:?}/{message_id:?}"),
+                    false,
+                );
             };
             if utf16_len(text) > MAX_LENGTH {
                 return SendResult::fail("edit text exceeds 2000 utf16 units", false);
             }
             return match client
-                .update_message(twilight_model::id::Id::new(cid), twilight_model::id::Id::new(mid))
+                .update_message(
+                    twilight_model::id::Id::new(cid),
+                    twilight_model::id::Id::new(mid),
+                )
                 .content(Some(text))
                 .await
             {
@@ -470,7 +575,10 @@ impl BasePlatformAdapter for DiscordAdapter {
         }
         #[cfg(not(feature = "discord"))]
         {
-            log::info!("[discord] edit {chat}/{message_id} ({} utf16)", utf16_len(text));
+            log::info!(
+                "[discord] edit {chat}/{message_id} ({} utf16)",
+                utf16_len(text)
+            );
             SendResult::ok(Some(message_id.to_string()))
         }
     }
@@ -482,10 +590,16 @@ impl BasePlatformAdapter for DiscordAdapter {
                 return SendResult::fail("discord not connected", false);
             };
             let (Ok(cid), Ok(mid)) = (chat.parse::<u64>(), message_id.parse::<u64>()) else {
-                return SendResult::fail(format!("invalid discord ids {chat:?}/{message_id:?}"), false);
+                return SendResult::fail(
+                    format!("invalid discord ids {chat:?}/{message_id:?}"),
+                    false,
+                );
             };
             return match client
-                .delete_message(twilight_model::id::Id::new(cid), twilight_model::id::Id::new(mid))
+                .delete_message(
+                    twilight_model::id::Id::new(cid),
+                    twilight_model::id::Id::new(mid),
+                )
                 .await
             {
                 Ok(_) => SendResult::ok(Some(message_id.to_string())),
@@ -501,8 +615,21 @@ impl BasePlatformAdapter for DiscordAdapter {
 
     async fn send(&self, chat: &str, text: &str) -> SendResult {
         // Default reply target: last inbound message in this channel.
-        let reply_to = self.last_inbound.lock().unwrap().get(chat).map(|m| m.to_string());
-        self.send_ext(chat, text, &SendOptions { reply_to, thread_id: None }).await
+        let reply_to = self
+            .last_inbound
+            .lock()
+            .unwrap()
+            .get(chat)
+            .map(|m| m.to_string());
+        self.send_ext(
+            chat,
+            text,
+            &SendOptions {
+                reply_to,
+                thread_id: None,
+            },
+        )
+        .await
     }
 
     async fn send_ext(&self, chat: &str, text: &str, opts: &SendOptions) -> SendResult {
@@ -537,10 +664,16 @@ impl BasePlatformAdapter for DiscordAdapter {
                 };
                 match create.await {
                     Ok(resp) => {
-                        if let Ok(m) = resp.model().await { last_id = Some(m.id.get().to_string()); }
+                        if let Ok(m) = resp.model().await {
+                            last_id = Some(m.id.get().to_string());
+                        }
                     }
                     Err(e) => {
-                        log::warn!("[discord] send chunk {}/{} failed: {e}", i + 1, chunks.len());
+                        log::warn!(
+                            "[discord] send chunk {}/{} failed: {e}",
+                            i + 1,
+                            chunks.len()
+                        );
                         return SendResult::fail(format!("discord send: {e}"), true);
                     }
                 }
@@ -553,7 +686,12 @@ impl BasePlatformAdapter for DiscordAdapter {
                 debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
                 log::info!(
                     "[discord] send to {} chunk {}/{} ({} utf16, reply_to={:?}): {:?}",
-                    chat, i + 1, chunks.len(), utf16_len(chunk), opts.reply_to, crate::platform::preview_80(chunk)
+                    chat,
+                    i + 1,
+                    chunks.len(),
+                    utf16_len(chunk),
+                    opts.reply_to,
+                    crate::platform::preview_80(chunk)
                 );
             }
             SendResult::ok(None)
@@ -596,7 +734,9 @@ mod tests {
         assert!(!res.success && res.error.as_deref() == Some("discord not connected"));
         let chunks = crate::platform::split_message(&long, MAX_LENGTH);
         assert_eq!(chunks.len(), 3); // 2000*2 +1000
-        for c in &chunks { assert!(utf16_len(c) <= MAX_LENGTH); }
+        for c in &chunks {
+            assert!(utf16_len(c) <= MAX_LENGTH);
+        }
     }
 
     #[test]
@@ -608,7 +748,9 @@ mod tests {
     #[test]
     fn invite_url_good_bad() {
         let url = invite_url("123456789012345678").unwrap();
-        assert!(url.starts_with("https://discord.com/oauth2/authorize?client_id=123456789012345678"));
+        assert!(
+            url.starts_with("https://discord.com/oauth2/authorize?client_id=123456789012345678")
+        );
         assert!(url.contains("scope=bot+applications.commands"));
         assert!(invite_url("").is_err());
         assert!(invite_url("notanid").is_err());
@@ -619,36 +761,63 @@ mod tests {
     fn client_id_from_token_roundtrip() {
         use base64::Engine as _;
         let id = "123456789012345678";
-        let tok = format!("{}.fake.sig", base64::engine::general_purpose::URL_SAFE.encode(id));
+        let tok = format!(
+            "{}.fake.sig",
+            base64::engine::general_purpose::URL_SAFE.encode(id)
+        );
         assert_eq!(client_id_from_token(&tok), Some(id.to_string()));
-        assert_eq!(client_id_from_token(&("Bot ".to_string() + &tok)), Some(id.to_string()));
+        assert_eq!(
+            client_id_from_token(&("Bot ".to_string() + &tok)),
+            Some(id.to_string())
+        );
         assert_eq!(client_id_from_token("short"), None);
         assert_eq!(client_id_from_token(""), None);
     }
 
     #[test]
     fn guild_answer_gate() {
-        assert_eq!(guild_answer(true, false, "<@123> hello", "123").as_deref(), Some("hello"));
-        assert_eq!(guild_answer(false, true, "reply hi", "123").as_deref(), Some("reply hi"));
+        assert_eq!(
+            guild_answer(true, false, "<@123> hello", "123").as_deref(),
+            Some("hello")
+        );
+        assert_eq!(
+            guild_answer(false, true, "reply hi", "123").as_deref(),
+            Some("reply hi")
+        );
         assert_eq!(guild_answer(false, false, "noise", "123"), None);
         assert_eq!(guild_answer(true, false, "<@!123>", "123"), None); // mention-only
-        assert_eq!(guild_answer(true, false, "hey <@123> yo", "123").as_deref(), Some("hey  yo"));
+        assert_eq!(
+            guild_answer(true, false, "hey <@123> yo", "123").as_deref(),
+            Some("hey  yo")
+        );
     }
 
     #[test]
     fn session_key_routing() {
         use crate::session::build_session_key;
         let dm = source_for(100, None, 7, 1);
-        assert_eq!(build_session_key(&dm, true, false), "gray:main:discord:dm:100");
+        assert_eq!(
+            build_session_key(&dm, true, false),
+            "gray:main:discord:dm:100"
+        );
         let g = source_for(200, Some(999), 7, 2);
-        assert_eq!(build_session_key(&g, true, false), "gray:main:discord:group:999:200:7");
-        assert_eq!(build_session_key(&g, false, false), "gray:main:discord:group:999:200");
+        assert_eq!(
+            build_session_key(&g, true, false),
+            "gray:main:discord:group:999:200:7"
+        );
+        assert_eq!(
+            build_session_key(&g, false, false),
+            "gray:main:discord:group:999:200"
+        );
     }
 
     #[test]
     fn shard_end_is_retryable_via_ladder() {
         // A dropped shard is never auth: it must re-enter the supervised ladder.
-        assert!(matches!(crate::daemon::classify_shard_end(), crate::daemon::Fatal::Retryable(_)));
+        assert!(matches!(
+            crate::daemon::classify_shard_end(),
+            crate::daemon::Fatal::Retryable(_)
+        ));
     }
 
     #[tokio::test]
@@ -658,7 +827,10 @@ mod tests {
         *a.shard.lock().unwrap() = Some(tokio::spawn(async { std::future::pending::<()>().await }));
         assert!(a.has_shard(), "shard must be stored");
         a.disconnect().await.unwrap();
-        assert!(!a.has_shard(), "disconnect must abort/take the stored handle");
+        assert!(
+            !a.has_shard(),
+            "disconnect must abort/take the stored handle"
+        );
     }
 
     #[test]
@@ -670,17 +842,26 @@ mod tests {
     async fn ready_wait_resolves_on_first_ready() {
         let (tx, rx) = tokio::sync::oneshot::channel::<()>();
         tx.send(()).unwrap();
-        assert!(wait_for_ready_with(rx, std::time::Duration::from_secs(5)).await.is_ok());
+        assert!(
+            wait_for_ready_with(rx, std::time::Duration::from_secs(5))
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
     async fn ready_wait_timeout_is_retryable_not_terminal() {
         // Sender kept alive so the wait actually times out (no instant cancel).
         let (_keep, rx) = tokio::sync::oneshot::channel::<()>();
-        let err = wait_for_ready_with(rx, std::time::Duration::from_millis(10)).await.unwrap_err();
+        let err = wait_for_ready_with(rx, std::time::Duration::from_millis(10))
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("ready"), "error surfaces: {err}");
         assert!(
-            matches!(crate::daemon::classify_connect_error(&err.to_string()), crate::daemon::Fatal::Retryable(_)),
+            matches!(
+                crate::daemon::classify_connect_error(&err.to_string()),
+                crate::daemon::Fatal::Retryable(_)
+            ),
             "ready timeout must retry, never terminal: {err}"
         );
     }
@@ -698,7 +879,9 @@ mod tests {
             assert!(a.has_shard(), "connect must store the shard task");
             assert_eq!(
                 board.snapshot()[0].1,
-                PlatformConnState::Connecting { stage: "waiting for ready" },
+                PlatformConnState::Connecting {
+                    stage: "waiting for ready"
+                },
                 "stub ends on the last pre-connected stage; the daemon marks connected"
             );
             a.disconnect().await.unwrap();
@@ -707,7 +890,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_connect_stores_shard_for_supervision() {        // Stub-only: no network, connect must store the shard task.
+    async fn stub_connect_stores_shard_for_supervision() {
+        // Stub-only: no network, connect must store the shard task.
         #[cfg(not(feature = "discord"))]
         {
             let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();

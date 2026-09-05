@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-
 /// Provider entry from the vendored catalog.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogProvider {
@@ -168,23 +167,82 @@ pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()
     Ok(())
 }
 
-
 /// Per-provider API-key store (`~/.gray/auth.json`, mode 0600), mirroring
 /// opencode's credential file: `{ "<provider-id>": "<key>", ... }`.
 fn auth_store_path() -> anyhow::Result<PathBuf> {
     Ok(gray_home()?.join("auth.json"))
 }
 
+/// Persisted OAuth credential store. Lives here (not `gray-extras::oauth`)
+/// so API-key helpers can read through the mixed `auth.json` store without
+/// depending on the out-of-default-build OAuth signin flow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredAuth {
+    pub provider: String,
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: String,
+    pub expires_at: i64,
+    #[serde(default)]
+    pub email: Option<String>,
+}
+
+/// One `auth.json` entry: a plaintext API key or an OAuth credential. The
+/// file is a mixed map `{pid: String | StoredAuth}` (plus a legacy
+/// single-object form); key helpers and OAuth saves share it so neither
+/// writer clobbers the other's shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum AuthEntry {
+    Key(String),
+    OAuth(StoredAuth),
+}
+
+pub fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    if let Ok(single) = serde_json::from_str::<StoredAuth>(&body) {
+        let mut map = BTreeMap::new();
+        map.insert(single.provider.clone(), AuthEntry::OAuth(single));
+        return map;
+    }
+    serde_json::from_str::<BTreeMap<String, AuthEntry>>(&body).unwrap_or_default()
+}
+
+pub fn save_mixed_store(path: &Path, store: &BTreeMap<String, AuthEntry>) -> anyhow::Result<()> {
+    use std::io::Write as _;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    let json = serde_json::to_string_pretty(&store)?;
+    file.write_all(json.as_bytes())?;
+    file.flush()?;
+    Ok(())
+}
+
 /// All stored keys keyed by provider id; missing file yields an empty map.
 /// Reads through the mixed auth store so OAuth objects in the same file are
-/// left untouched (see `oauth::AuthEntry`).
-pub(crate) fn load_auth_keys() -> BTreeMap<String, String> {
+/// left untouched (see [`AuthEntry`]).
+pub fn load_auth_keys() -> BTreeMap<String, String> {
     let path = auth_store_path().unwrap_or_else(|_| PathBuf::from("/dev/null"));
-    crate::oauth::load_mixed_store(&path)
+    load_mixed_store(&path)
         .into_iter()
         .filter_map(|(k, v)| match v {
-            crate::oauth::AuthEntry::Key(key) => Some((k, key)),
-            crate::oauth::AuthEntry::OAuth(_) => None,
+            AuthEntry::Key(key) => Some((k, key)),
+            AuthEntry::OAuth(_) => None,
         })
         .collect()
 }
@@ -193,9 +251,9 @@ pub(crate) fn load_auth_keys() -> BTreeMap<String, String> {
 /// preserving any OAuth entries in the same file.
 pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
     let path = auth_store_path()?;
-    let mut store = crate::oauth::load_mixed_store(&path);
-    store.insert(pid.to_string(), crate::oauth::AuthEntry::Key(key.to_string()));
-    crate::oauth::save_mixed_store(&path, &store)
+    let mut store = load_mixed_store(&path);
+    store.insert(pid.to_string(), AuthEntry::Key(key.to_string()));
+    save_mixed_store(&path, &store)
 }
 
 /// Provider item displayed in the "Connect a provider" modal.
@@ -216,16 +274,86 @@ pub struct ConnectItem {
 /// Popular section on top, followed by all catalog providers under Providers.
 pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
-        ("openai", "OpenAI", "(ChatGPT login or API key)", "https://api.openai.com/v1", "OPENAI_API_KEY", false),
-        ("anthropic", "Anthropic", "(API key)", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", false),
-        ("google", "Google", "(Gemini API key)", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false),
-        ("openrouter", "OpenRouter", "(Access 300+ models)", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", false),
-        ("deepseek", "DeepSeek", "", "https://api.deepseek.com", "DEEPSEEK_API_KEY", false),
-        ("groq", "Groq", "(Fast inference)", "https://api.groq.com/openai/v1", "GROQ_API_KEY", false),
-        ("ollama", "Ollama", "(Local http://localhost:11434)", "http://localhost:11434/v1", "", true),
-        ("github-copilot", "GitHub Copilot", "", "https://api.githubcopilot.com", "COPILOT_API_KEY", false),
-        ("xai", "xAI (Grok)", "(Grok login or API key)", "https://api.x.ai/v1", "XAI_API_KEY", false),
-        ("mistral", "Mistral", "(API key)", "https://api.mistral.ai/v1", "MISTRAL_API_KEY", false),
+        (
+            "openai",
+            "OpenAI",
+            "(ChatGPT login or API key)",
+            "https://api.openai.com/v1",
+            "OPENAI_API_KEY",
+            false,
+        ),
+        (
+            "anthropic",
+            "Anthropic",
+            "(API key)",
+            "https://api.anthropic.com/v1",
+            "ANTHROPIC_API_KEY",
+            false,
+        ),
+        (
+            "google",
+            "Google",
+            "(Gemini API key)",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "GEMINI_API_KEY",
+            false,
+        ),
+        (
+            "openrouter",
+            "OpenRouter",
+            "(Access 300+ models)",
+            "https://openrouter.ai/api/v1",
+            "OPENROUTER_API_KEY",
+            false,
+        ),
+        (
+            "deepseek",
+            "DeepSeek",
+            "",
+            "https://api.deepseek.com",
+            "DEEPSEEK_API_KEY",
+            false,
+        ),
+        (
+            "groq",
+            "Groq",
+            "(Fast inference)",
+            "https://api.groq.com/openai/v1",
+            "GROQ_API_KEY",
+            false,
+        ),
+        (
+            "ollama",
+            "Ollama",
+            "(Local http://localhost:11434)",
+            "http://localhost:11434/v1",
+            "",
+            true,
+        ),
+        (
+            "github-copilot",
+            "GitHub Copilot",
+            "",
+            "https://api.githubcopilot.com",
+            "COPILOT_API_KEY",
+            false,
+        ),
+        (
+            "xai",
+            "xAI (Grok)",
+            "(Grok login or API key)",
+            "https://api.x.ai/v1",
+            "XAI_API_KEY",
+            false,
+        ),
+        (
+            "mistral",
+            "Mistral",
+            "(API key)",
+            "https://api.mistral.ai/v1",
+            "MISTRAL_API_KEY",
+            false,
+        ),
     ];
 
     let mut items = Vec::new();
@@ -283,7 +411,11 @@ mod tests {
     fn only_openai_and_xai_offer_oauth() {
         let catalog = load_catalog().expect("bundled catalog parses");
         let items = build_connect_items(&catalog);
-        let dual: Vec<_> = items.iter().filter(|i| i.oauth_capable).map(|i| i.id.as_str()).collect();
+        let dual: Vec<_> = items
+            .iter()
+            .filter(|i| i.oauth_capable)
+            .map(|i| i.id.as_str())
+            .collect();
         assert_eq!(dual, vec!["openai", "xai"], "{dual:?}");
     }
 
@@ -301,25 +433,33 @@ mod tests {
         // wipe OAuth entries sharing auth.json.
         let dir = tempfile::tempdir().expect("tmp");
         let path = dir.path().join("auth.json");
-        let oauth = crate::oauth::StoredAuth {
+        let oauth = StoredAuth {
             provider: "xai".to_string(),
             access_token: "tok".to_string(),
             refresh_token: String::new(),
             expires_at: 9_999_999_999,
             email: None,
         };
-        crate::oauth::save_auth_at(&path, &oauth).expect("oauth save");
-        let mut store = crate::oauth::load_mixed_store(&path);
-        store.insert("openrouter".to_string(), crate::oauth::AuthEntry::Key("sk-or-1".to_string()));
-        crate::oauth::save_mixed_store(&path, &store).expect("key save");
-        let reloaded = crate::oauth::load_mixed_store(&path);
-        assert!(matches!(reloaded.get("xai"), Some(crate::oauth::AuthEntry::OAuth(_))), "{reloaded:?}");
+        let mut store = load_mixed_store(&path);
+        store.insert(oauth.provider.clone(), AuthEntry::OAuth(oauth));
+        save_mixed_store(&path, &store).expect("oauth save");
+        let mut store = load_mixed_store(&path);
+        store.insert(
+            "openrouter".to_string(),
+            AuthEntry::Key("sk-or-1".to_string()),
+        );
+        save_mixed_store(&path, &store).expect("key save");
+        let reloaded = load_mixed_store(&path);
+        assert!(
+            matches!(reloaded.get("xai"), Some(AuthEntry::OAuth(_))),
+            "{reloaded:?}"
+        );
         // And the key-only view exposes just the key.
         let keys: BTreeMap<String, String> = reloaded
             .into_iter()
             .filter_map(|(k, v)| match v {
-                crate::oauth::AuthEntry::Key(key) => Some((k, key)),
-                crate::oauth::AuthEntry::OAuth(_) => None,
+                AuthEntry::Key(key) => Some((k, key)),
+                AuthEntry::OAuth(_) => None,
             })
             .collect();
         assert_eq!(keys.get("openrouter").map(String::as_str), Some("sk-or-1"));

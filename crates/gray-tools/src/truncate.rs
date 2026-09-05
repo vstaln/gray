@@ -57,7 +57,7 @@ pub fn truncate_head_with_limits(
     max_lines: usize,
     max_bytes: usize,
 ) -> TruncationResult {
-    let total_bytes = content.as_bytes().len();
+    let total_bytes = content.len();
     let lines = split_lines_for_counting(content);
     let total_lines = lines.len();
 
@@ -77,7 +77,7 @@ pub fn truncate_head_with_limits(
     }
 
     if !lines.is_empty() {
-        let first_line_bytes = lines[0].as_bytes().len();
+        let first_line_bytes = lines[0].len();
         if first_line_bytes > max_bytes {
             return TruncationResult {
                 content: String::new(),
@@ -103,7 +103,7 @@ pub fn truncate_head_with_limits(
             truncated_by = TruncatedBy::Lines;
             break;
         }
-        let line_bytes = line.as_bytes().len() + if output.is_empty() { 0 } else { 1 };
+        let line_bytes = line.len() + if output.is_empty() { 0 } else { 1 };
         if bytes_used + line_bytes > max_bytes {
             truncated_by = TruncatedBy::Bytes;
             break;
@@ -117,7 +117,7 @@ pub fn truncate_head_with_limits(
     }
 
     let out_content = output.join("\n");
-    let out_bytes = out_content.as_bytes().len();
+    let out_bytes = out_content.len();
     let truncated_by = if output.len() < total_lines || out_bytes < total_bytes {
         Some(truncated_by)
     } else {

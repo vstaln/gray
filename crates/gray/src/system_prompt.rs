@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::skills::{format_skills_for_prompt, Skill};
+use crate::skills::{Skill, format_skills_for_prompt};
 
 // ---------------------------------------------------------------------------
 // AGENTS.md / CLAUDE.md discovery — walk up to git root
@@ -50,10 +50,10 @@ pub fn discover_context_files(cwd: &Path) -> Vec<ContextFile> {
     let mut ancestors: Vec<PathBuf> = Vec::new();
     while let Some(dir) = cur {
         ancestors.push(dir.clone());
-        if let Some(root) = &git_root {
-            if &dir == root {
-                break;
-            }
+        if let Some(root) = &git_root
+            && &dir == root
+        {
+            break;
         }
         cur = dir.parent().map(|p| p.to_path_buf());
     }
@@ -64,10 +64,10 @@ pub fn discover_context_files(cwd: &Path) -> Vec<ContextFile> {
             if !seen.insert(p.clone()) {
                 continue;
             }
-            if let Ok(content) = fs::read_to_string(&p) {
-                if !content.trim().is_empty() {
-                    out.push(ContextFile { path: p, content });
-                }
+            if let Ok(content) = fs::read_to_string(&p)
+                && !content.trim().is_empty()
+            {
+                out.push(ContextFile { path: p, content });
             }
         }
     }
@@ -99,7 +99,12 @@ pub struct BuildSystemPromptOptions {
 }
 
 fn default_selected_tools() -> Vec<String> {
-    vec!["read".to_string(), "bash".to_string(), "edit".to_string(), "write".to_string()]
+    vec![
+        "read".to_string(),
+        "bash".to_string(),
+        "edit".to_string(),
+        "write".to_string(),
+    ]
 }
 
 /// Build the system prompt.
@@ -141,7 +146,10 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
             prompt.push_str("</project_context>\n");
         }
         let selected = options.selected_tools.clone();
-        let has_read = selected.as_ref().map(|t| t.iter().any(|n| n == "read")).unwrap_or(true);
+        let has_read = selected
+            .as_ref()
+            .map(|t| t.iter().any(|n| n == "read"))
+            .unwrap_or(true);
         if has_read && !skills.is_empty() {
             prompt.push_str(&format_skills_for_prompt(&skills));
         }
@@ -154,11 +162,16 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
     let docs_path = get_docs_path();
     let examples_path = get_examples_path();
 
-    let tools = options.selected_tools.unwrap_or_else(default_selected_tools);
+    let tools = options
+        .selected_tools
+        .unwrap_or_else(default_selected_tools);
     let snippets = options.tool_snippets.unwrap_or_default();
 
     // Only tools WITH a snippet appear
-    let visible_tools: Vec<&String> = tools.iter().filter(|name| snippets.contains_key(*name as &str)).collect();
+    let visible_tools: Vec<&String> = tools
+        .iter()
+        .filter(|name| snippets.contains_key(*name as &str))
+        .collect();
     let tools_list = if visible_tools.is_empty() {
         "(none)".to_string()
     } else {
@@ -189,7 +202,10 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
         if has_bash && has_powershell {
             add_guideline("Use bash or PowerShell for file operations like listing, searching, and finding files".to_string());
         } else if has_powershell {
-            add_guideline("Use PowerShell for file operations like listing, searching, and finding files".to_string());
+            add_guideline(
+                "Use PowerShell for file operations like listing, searching, and finding files"
+                    .to_string(),
+            );
         } else {
             add_guideline("Use bash for file operations like ls, rg, find".to_string());
         }
@@ -205,7 +221,11 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
     add_guideline("Be concise in your responses".to_string());
     add_guideline("Show file paths clearly with clickable file:// or markdown links (e.g. file:///path/to/file or [filename](file:///path/to/file)) so users can click to open them".to_string());
 
-    let guidelines = guidelines_list.iter().map(|g| format!("- {g}")).collect::<Vec<_>>().join("\n");
+    let guidelines = guidelines_list
+        .iter()
+        .map(|g| format!("- {g}"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let mut prompt = format!(
         "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n{tools_list}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n{guidelines}\n\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: {readme_path}\n- Additional docs: {docs_path}\n- Examples: {examples_path} (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"
@@ -246,4 +266,3 @@ fn get_docs_path() -> String {
 fn get_examples_path() -> String {
     std::env::var("PI_EXAMPLES_PATH").unwrap_or_else(|_| "examples".to_string())
 }
-
