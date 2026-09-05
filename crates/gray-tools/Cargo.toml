@@ -18,4 +18,5 @@ tempfile = { workspace = true }
 uuid = { workspace = true }
 libc = { workspace = true }
 infer = "0.19"
+regex = "1"
 
