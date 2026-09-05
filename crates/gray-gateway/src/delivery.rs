@@ -1,4 +1,4 @@
-//! Delivery routing (hermes `gateway/delivery.py`).
+//! Delivery routing.
 //!
 //! Targets:
 //! - `origin`                → back to the originating chat (reply-to + thread preserved)
