@@ -18,7 +18,7 @@ permissions:
 
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-deploy:
@@ -76,6 +76,8 @@ jobs:
           tool: cross
 
       - name: build
+        env:
+          GRAY_CHANNEL: ${{ steps.meta.outputs.channel }}
         shell: bash
         run: |
           if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
@@ -93,18 +95,15 @@ jobs:
         run: |
           TAR=gray-${{ steps.meta.outputs.channel }}-${{ matrix.plat }}.tar.gz
           tar czf "$TAR" -C target/${{ matrix.target }}/release gray
+          sha256sum "$TAR" > "SHA256SUMS-${{ matrix.plat }}"
           echo "TAR=$TAR" >> "$GITHUB_ENV"
 
-      - name: github release (tags only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          PRERELEASE=""
-          case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" "$TAR" $PRERELEASE --generate-notes 2>/dev/null \
-            || gh release upload "$GITHUB_REF_NAME" "$TAR" --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.plat }}
+          path: |
+            gray-*.tar.gz
+            SHA256SUMS-*
 
       - name: deploy to gray.alignment.id
         env:
@@ -115,7 +114,7 @@ jobs:
           mkdir -p ~/.ssh ~/.config/gray-deploy
           install -m 600 /dev/null ~/.config/gray-deploy/key
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
-          ssh-keyscan -H 168.110.210.65 >> ~/.ssh/known_hosts 2>/dev/null
+          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           DEPLOY_KEY=~/.config/gray-deploy/key scripts/deploy.sh "$TAR"
 
       - name: sync installers to gray.alignment.id (once)
@@ -128,6 +127,46 @@ jobs:
           mkdir -p ~/.ssh ~/.config/gray-deploy
           install -m 600 /dev/null ~/.config/gray-deploy/key
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
-          ssh-keyscan -H 168.110.210.65 >> ~/.ssh/known_hosts 2>/dev/null
+          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
           ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
+
+  publish:
+    needs: build-deploy
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-all
+          merge-multiple: true
+      - name: assemble sums + notes
+        shell: bash
+        run: |
+          cat dist-all/SHA256SUMS-* > dist-all/SHA256SUMS
+          sha256sum -c dist-all/SHA256SUMS
+          awk '/^## \[/{if (++n==2) exit} n==1' CHANGELOG.md | sed '1d' > dist-all/NOTES.md
+          [ -s dist-all/NOTES.md ] || { echo "::error::no CHANGELOG entry for $GITHUB_REF_NAME"; exit 1; }
+      - name: create release once
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          PRERELEASE=""; case "$GITHUB_REF_NAME" in *-*) PRERELEASE="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist-all/gray-*.tar.gz dist-all/SHA256SUMS \
+            $PRERELEASE --title "$GITHUB_REF_NAME" --notes-file dist-all/NOTES.md
+      - name: sync sums + installers to CDN
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        shell: bash
+        run: |
+          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
+          mkdir -p ~/.ssh ~/.config/gray-deploy
+          install -m 600 /dev/null ~/.config/gray-deploy/key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
+          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/SHA256SUMS /tmp/install.sh /tmp/install.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS'"
