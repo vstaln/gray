@@ -184,6 +184,11 @@ pub async fn compact_with_keep(
     let mut next = vec![summary_user, summary_asst];
     next.extend(tail);
     agent.set_messages(next);
+    // T3.4 lifecycle: entries stay for the write guard, but no dedup stub
+    // may reference a compacted-away result.
+    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+        ledger.disarm_all_dedup();
+    }
     Ok(true)
 }
 
@@ -204,6 +209,10 @@ pub async fn compact_with_instructions(
         .await?;
     let [summary_user, summary_asst] = gray_core::agent::summary_pair(&summary);
     agent.set_messages(vec![summary_user, summary_asst]);
+    // T3.4 lifecycle: see compact_with_keep.
+    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+        ledger.disarm_all_dedup();
+    }
     Ok(true)
 }
 
