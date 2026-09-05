@@ -193,3 +193,53 @@ Windows over 50 KiB go through `middle_out` with the window's start as base
 offset, so the marker's `from_offset` stays absolute and pages chain via
 `next_offset`. A window that ends mid-line on a running task keeps the bytes
 and adds `(last line incomplete — the task is still writing it)`.
+
+## sleep + notify_on + usage guidelines (3B+3D)
+
+`sleep(seconds, reason?)` waits without holding a process or spending turns:
+`seconds` 1..=600 required, `reason` optional (shown in the UI). Never
+`is_error`. Wakes early on this session's task exit / `notify_on` match, on
+any user typing, or on cancel:
+
+```text
+slept 60s · no events
+```
+
+```text
+slept 0.5s of 60s · woken early: t5 exit 0
+```
+
+```text
+slept 0.3s of 60s · woken early: user typed
+```
+
+```text
+sleep cancelled after 0.5s
+```
+
+Dropped wake events (lagged broadcast) wake with
+`{n} task events were dropped; shell_output() to list` instead of sleeping
+through them. For servers/watchers: `bash(background=true,
+notify_on='error|ready')`, then `sleep` or keep working — never poll with
+sleep+tail.
+
+`notify_on` is a regex (size-limited, 1 MiB) matched against complete log
+lines. Invalid → the tool fails with the regex error and an example.
+Rate-limited: ≥ 10 s between wakes per task, max 5 per task, then disabled —
+the log gains `[gray: notify_on disabled after 5 matches]` plus one final
+`notify_on disabled for tN after 5 matches; read the log directly` wake.
+Only meaningful with `background=true` or after promotion; a short
+foreground command that exits before matching ignores it silently.
+
+Usage guidelines (system prompt, ≤ 6 bullets — every word ships on every
+request):
+
+- bash output: first line is the verdict (exit, duration, size, log path).
+  Non-zero exit is data, not a tool error; read the header.
+- Long or server-like commands: background=true. You are woken when they
+  exit; do not poll.
+- Read new output with shell_output(task_id, from_offset=\<next_offset\>,
+  wait='output'|'exit'). Never re-read the same bytes.
+- Port in use: shell_kill(port=N). Stop a task: shell_kill(task_id).
+- Waiting on something: sleep(seconds) — it ends early when anything happens.
+- Truncated output names the log path; grep the log instead of rerunning.

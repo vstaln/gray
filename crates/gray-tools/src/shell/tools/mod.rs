@@ -3,3 +3,4 @@
 pub mod bash;
 pub mod shell_output;
 pub mod shell_kill;
+pub mod sleep;
