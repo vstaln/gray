@@ -126,13 +126,55 @@ pub async fn update_now() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Seconds between update checks.
+const CHECK_INTERVAL_SECS: u64 = 24 * 3600;
+
+fn update_check_due(last_check_secs: Option<u64>, now_secs: u64) -> bool {
+    match last_check_secs {
+        None => true,
+        // Clock skew (last check in the future) never blocks: check is due.
+        Some(t) => match now_secs.checked_sub(t) {
+            None => true,
+            Some(elapsed) => elapsed >= CHECK_INTERVAL_SECS,
+        },
+    }
+}
+
+fn last_check_path() -> Option<PathBuf> {
+    crate::setup::gray_home().ok().map(|h| h.join("logs").join("last_update_check"))
+}
+
+fn read_last_check() -> Option<u64> {
+    let p = last_check_path()?;
+    std::fs::read_to_string(p).ok()?.trim().parse().ok()
+}
+
+fn write_last_check(now_secs: u64) {
+    if let Some(p) = last_check_path() {
+        if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
+        let _ = std::fs::write(p, now_secs.to_string());
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 /// Called before the REPL starts. Checks for a newer release, prompts y/n.
 /// Errors are silent — update checks must never break startup.
 pub async fn startup_check() {
     let current = env!("CARGO_PKG_VERSION");
+    if std::env::var("GRAY_NO_UPDATE_CHECK").as_deref() == Ok("1") {
+        return;
+    }
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
     }
+    let now = now_secs();
+    if !update_check_due(read_last_check(), now) {
+        return;
+    }
+    write_last_check(now);
     let Ok(Ok(latest)) = tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await else { return };
     if !is_newer(&latest, current) {
         return;
@@ -235,6 +277,14 @@ mod tests {
         // latest.json still a single doc with the newest receipt.
         let v: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
         assert_eq!(v["reason"], "run-204");
+    }
+
+    #[test]
+    fn check_due_logic() {
+        assert!(update_check_due(None, 1_000_000));
+        assert!(!update_check_due(Some(1_000_000), 1_000_000 + 3600));
+        assert!(update_check_due(Some(1_000_000), 1_000_000 + 24 * 3600));
+        assert!(update_check_due(Some(2_000_000), 1_000_000)); // clock skew never blocks
     }
 
     #[test]
