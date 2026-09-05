@@ -1,7 +1,9 @@
 //! The `read` tool: reads a UTF-8 text file with optional line windowing.
 
 pub mod args;
+pub mod hygiene;
 mod guard;
+mod tail;
 #[cfg(test)]
 pub(crate) mod testkit;
 
@@ -36,7 +38,7 @@ impl Tool for ReadTool {
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "1-based starting line number"
+                        "description": "1-based starting line number (negative -N reads the last N lines)"
                     },
                     "limit": {
                         "type": "integer",
@@ -64,9 +66,11 @@ impl Tool for ReadTool {
             Ok(p) => p,
             Err(e) => return e,
         };
-        let offset = match get_opt_u64(&args, "offset") {
+        // T1.5: signed offset so offset<0 reads the tail (get_opt_u64
+        // rejects negatives). Non-tail behavior is unchanged.
+        let offset = match tail::get_offset(&args) {
             Ok(v) => v,
-            Err(e) => return e,
+            Err(e) => return fail(e),
         };
         let limit = match get_opt_u64(&args, "limit") {
             Ok(v) => v,
@@ -97,14 +101,12 @@ impl Tool for ReadTool {
             Ok(d) => d,
             Err(e) => return fail(format!("read failed for {}: {e}", full.display())),
         };
-        let text = match String::from_utf8(data) {
+        // T1.4 hygiene: BOM strip → magic-byte/NUL sniff → lossy decode →
+        // CRLF normalize, before any line counting. Binary notes are facts
+        // (is_error=false), not failures.
+        let text = match hygiene::prepare(&data, &display) {
             Ok(t) => t,
-            Err(_) => {
-                return fail(format!(
-                    "{}: not valid UTF-8 (binary file?)",
-                    full.display()
-                ));
-            }
+            Err(note) => return ToolOutput::ok(note),
         };
 
         let total_lines = text.lines().count();
