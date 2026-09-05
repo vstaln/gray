@@ -105,10 +105,13 @@ pub fn dim_color(c: ratatui::style::Color) -> ratatui::style::Color {
     }
 }
 
-/// Opaque backdrop for alternate-screen modals. Every dimmed style carries
-/// an explicit bg so terminal transparency / stale alt-screen cells can't
-/// bleed through the backdrop ("broken thing behind the popup").
-pub(crate) const BACKDROP_BG: ratatui::style::Color = ratatui::style::Color::Rgb(0, 0, 0);
+/// Backdrop for alternate-screen modals: the terminal default (`Reset`), so the
+/// dimmed background matches the inline composer (transparent transcript over
+/// the terminal bg) instead of painting a mismatched pure-black screen. Every
+/// dimmed style still carries an explicit bg so no unpainted cells remain; the
+/// initial `Clear` plus full-height row-by-row rendering keeps stale
+/// alt-screen cells from bleeding through behind the popup.
+pub(crate) const BACKDROP_BG: ratatui::style::Color = ratatui::style::Color::Reset;
 
 pub fn dim_style(style: ratatui::style::Style) -> ratatui::style::Style {
     use ratatui::style::{Color, Modifier, Style};
