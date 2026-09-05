@@ -155,7 +155,9 @@ pub fn output_too_big_note(cell: usize, output: usize, chars: usize, display: &s
 /// position + payload size; the pixels travel via the T5.2 attach path, never
 /// as base64 in the text.
 pub fn image_stub_note(cell: usize, output: usize, b64_chars: usize) -> String {
-    format!("[cell {cell} output {output}: image/png ({b64_chars} chars base64, attached as vision image)]")
+    format!(
+        "[cell {cell} output {output}: image/png ({b64_chars} chars base64, attached as vision image)]"
+    )
 }
 
 /// Render parsed notebook JSON to window-ready text. `None` = not a notebook
@@ -169,7 +171,10 @@ pub fn render_value(value: &Value, display: &str) -> Option<String> {
     let cells = value.get("cells")?.as_array()?;
     let mut blocks: Vec<String> = Vec::new();
     for (i, cell) in cells.iter().enumerate() {
-        let ctype = cell.get("cell_type").and_then(Value::as_str).unwrap_or("unknown");
+        let ctype = cell
+            .get("cell_type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         blocks.push(cell_header(i, ctype));
         let source = cell.get("source").map(join_source).unwrap_or_default();
         if !source.is_empty() {
@@ -326,7 +331,12 @@ mod tests {
         );
         assert!(!rendered.contains(&dump), "raw dump must not leak");
         // Accept: ≥5× smaller than raw JSON, total < 20 KiB.
-        assert!(raw.len() >= 5 * rendered.len(), "{} vs {}", raw.len(), rendered.len());
+        assert!(
+            raw.len() >= 5 * rendered.len(),
+            "{} vs {}",
+            raw.len(),
+            rendered.len()
+        );
         assert!(rendered.len() < 20 * 1024, "{}", rendered.len());
     }
 
@@ -345,13 +355,21 @@ mod tests {
             })
         };
         let exact: String = "y".repeat(OUTPUT_CHARS_MAX);
-        assert!(render(&serde_json::to_string(&cell_with(exact.clone())).unwrap(), "b.ipynb")
+        assert!(
+            render(
+                &serde_json::to_string(&cell_with(exact.clone())).unwrap(),
+                "b.ipynb"
+            )
             .unwrap()
-            .contains(&exact));
+            .contains(&exact)
+        );
         let over: String = "y".repeat(OUTPUT_CHARS_MAX + 1);
         let rendered =
             render(&serde_json::to_string(&cell_with(over)).unwrap(), "b.ipynb").unwrap();
-        assert!(rendered.contains(&format!("[output 0 is {} chars;", OUTPUT_CHARS_MAX + 1)), "{rendered}");
+        assert!(
+            rendered.contains(&format!("[output 0 is {} chars;", OUTPUT_CHARS_MAX + 1)),
+            "{rendered}"
+        );
     }
 
     #[test]
@@ -374,7 +392,9 @@ mod tests {
         assert!(rendered.contains("--- output 0 ---"), "{rendered}");
         assert!(rendered.contains("<Figure>"), "{rendered}");
         assert!(
-            rendered.contains("[cell 0 output 0: image/png (16 chars base64, attached as vision image)]"),
+            rendered.contains(
+                "[cell 0 output 0: image/png (16 chars base64, attached as vision image)]"
+            ),
             "{rendered}"
         );
         assert!(!rendered.contains("aGVsbG8"), "base64 must not leak");
@@ -408,7 +428,10 @@ mod tests {
             }]
         });
         let rendered = render_value(&nb, "e.ipynb").unwrap();
-        assert!(rendered.contains("ZeroDivisionError: division by zero"), "{rendered}");
+        assert!(
+            rendered.contains("ZeroDivisionError: division by zero"),
+            "{rendered}"
+        );
         assert!(rendered.contains("line 1"), "{rendered}");
     }
 

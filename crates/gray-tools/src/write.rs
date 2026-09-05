@@ -220,7 +220,11 @@ impl Tool for WriteTool {
 mod tests {
     use super::*;
 
-    fn entry_for(path: &std::path::Path, full_view: bool, content_hash: Option<u64>) -> LedgerEntry {
+    fn entry_for(
+        path: &std::path::Path,
+        full_view: bool,
+        content_hash: Option<u64>,
+    ) -> LedgerEntry {
         let meta = std::fs::metadata(path).unwrap();
         LedgerEntry {
             mtime: meta.modified().unwrap(),

@@ -52,8 +52,7 @@ pub fn canonical_name(alias: &str) -> Option<&'static str> {
 }
 
 /// Note returned (is_error=false) when `limit` is explicitly 0.
-pub const LIMIT_ZERO_NOTE: &str =
-    "[read: limit=0 shows nothing; omit limit or use limit>=1]";
+pub const LIMIT_ZERO_NOTE: &str = "[read: limit=0 shows nothing; omit limit or use limit>=1]";
 
 /// True when the (already coerced) arg value is numeric zero.
 pub fn is_limit_zero(value: &Value) -> bool {
