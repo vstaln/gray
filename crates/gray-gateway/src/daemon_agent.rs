@@ -46,21 +46,19 @@ impl GatewayRunner {
         // spawn failures warn + continue (the daemon must stay up).
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let mut plugins: Vec<std::sync::Arc<dyn gray_plugin::Plugin>> = Vec::new();
-        match gray_plugin::profile::load_entries("gray.yml") {
-            Ok(entries) => {
-                for e in &entries {
-                    if let gray_plugin::profile::PluginEntry::Sidecar(spec) = e {
-                        match gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone()).await {
-                            Ok(p) => plugins.push(std::sync::Arc::new(p)),
-                            Err(err) => log::warn!(target: "gray_gateway", "sidecar spawn failed, skipping: {err:#}"),
+        if let Ok(entries) = gray_plugin::profile::load_entries("gray.yml") {
+            for e in &entries {
+                if let gray_plugin::profile::PluginEntry::Sidecar(spec) = e {
+                    match gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone()).await {
+                        Ok(p) => plugins.push(std::sync::Arc::new(p)),
+                        Err(err) => {
+                            log::warn!(target: "gray_gateway", "sidecar spawn failed, skipping: {err:#}")
                         }
                     }
                 }
             }
-            Err(_) => {}
         }
-        let hooks =
-            gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
+        let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
 
         Ok(Agent::new(Box::new(provider), Box::new(executor))
             .with_system(load_system_prompt())

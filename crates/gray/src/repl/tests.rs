@@ -309,11 +309,7 @@ impl gray_core::agent::PluginHooks for EchoHook {
         }]
     }
 
-    async fn run_command(
-        &self,
-        name: &str,
-        argv: Vec<String>,
-    ) -> Option<super::CommandOutcome> {
+    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<super::CommandOutcome> {
         (name == "/echo").then(|| super::CommandOutcome::Say(argv.join(" ")))
     }
 }
@@ -331,11 +327,7 @@ impl gray_core::agent::PluginHooks for PromptHook {
         }]
     }
 
-    async fn run_command(
-        &self,
-        name: &str,
-        argv: Vec<String>,
-    ) -> Option<super::CommandOutcome> {
+    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<super::CommandOutcome> {
         (name == "/ask").then(|| super::CommandOutcome::Prompt(argv.join(" ")))
     }
 }
@@ -379,12 +371,18 @@ async fn plugin_command_prompt_reply_takes_prompt_path() {
     let out = super::run_plugin_command(&hooks, &name, argv).await;
     // Prompt replies stay distinct from Say: the `Unknown` handler
     // routes this into `pending_command = ReplCommand::Prompt`, not `say()`.
-    assert!(matches!(out, Some(CommandOutcome::Prompt(ref p)) if p == "write tests"), "got {out:?}");
+    assert!(
+        matches!(out, Some(CommandOutcome::Prompt(ref p)) if p == "write tests"),
+        "got {out:?}"
+    );
     // And the text path is untouched.
     let hooks = echo_hooks();
     let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
     let out = super::run_plugin_command(&hooks, &name, argv).await;
-    assert!(matches!(out, Some(CommandOutcome::Say(ref s)) if s == "hi"), "got {out:?}");
+    assert!(
+        matches!(out, Some(CommandOutcome::Say(ref s)) if s == "hi"),
+        "got {out:?}"
+    );
 }
 
 #[tokio::test]

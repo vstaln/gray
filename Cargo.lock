@@ -1344,6 +1344,7 @@ dependencies = [
  "futures",
  "gray-core",
  "gray-cron",
+ "gray-plugin",
  "gray-provider",
  "gray-session",
  "gray-tools",

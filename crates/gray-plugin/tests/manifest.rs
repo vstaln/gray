@@ -79,7 +79,10 @@ fn capabilities_and_subcommands_parse_lenient() {
         "subcommands": ["/cron"],
     });
     let m = Manifest::from_result(&v);
-    assert_eq!(m.capabilities, vec!["session".to_string(), "bogus-cap".to_string()]);
+    assert_eq!(
+        m.capabilities,
+        vec!["session".to_string(), "bogus-cap".to_string()]
+    );
     assert_eq!(m.subcommands, vec!["/cron".to_string()]);
     // Absent → empty (pre-v1 sidecars keep working).
     let m2 = Manifest::from_result(&serde_json::json!({"name": "x", "tools": []}));
