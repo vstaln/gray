@@ -155,12 +155,12 @@ pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
 }
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else { return GatewayConfig::default(); };
-    std::fs::read_to_string(&path).ok().and_then(|s| serde_yaml::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(&path).ok().and_then(|s| serde_yaml_ng::from_str(&s).ok()).unwrap_or_default()
 }
 pub fn save_gateway_config(cfg: &GatewayConfig) -> anyhow::Result<()> {
     let path = gray_gateway_path()?;
     if let Some(p) = path.parent() { std::fs::create_dir_all(p)?; }
-    let s = serde_yaml::to_string(cfg)?;
+    let s = serde_yaml_ng::to_string(cfg)?;
     std::fs::write(&path, s)?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?; }
     Ok(())
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn legacy_yaml_loads_with_secure_defaults() {
         let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
-        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let t = &cfg.platforms[&Platform::Telegram];
         assert!(t.allowed_users.is_empty());
         assert_eq!(t.dm_policy, DmPolicy::Pairing);
@@ -193,8 +193,8 @@ mod tests {
 
     #[test]
     fn dm_policy_serde_lowercase() {
-        assert_eq!(serde_yaml::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
-        assert_eq!(serde_yaml::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
+        assert_eq!(serde_yaml_ng::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
+        assert_eq!(serde_yaml_ng::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
     }
 
     #[test]
@@ -203,23 +203,23 @@ mod tests {
         assert_eq!(cfg.reset_policy.mode, ResetMode::None);
         // Legacy yaml without the key still loads and never resets.
         let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
-        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.reset_policy.mode, ResetMode::None);
     }
 
     #[test]
     fn reset_policy_serde_roundtrip() {
         let yaml = "mode: idle\nidle_secs: 60\nat_hour: 3\n";
-        let p: ResetPolicy = serde_yaml::from_str(yaml).unwrap();
+        let p: ResetPolicy = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(p.mode, ResetMode::Idle);
         assert_eq!(p.idle_secs, 60);
         assert_eq!(p.at_hour, 3);
         let yaml = "mode: daily\nat_hour: 4\n";
-        let p: ResetPolicy = serde_yaml::from_str(yaml).unwrap();
+        let p: ResetPolicy = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(p.mode, ResetMode::Daily);
         assert_eq!(p.idle_secs, default_idle_secs());
         // Missing keys default, never fail old configs.
-        let p: ResetPolicy = serde_yaml::from_str("{}\n").unwrap();
+        let p: ResetPolicy = serde_yaml_ng::from_str("{}\n").unwrap();
         assert_eq!(p.mode, ResetMode::None);
     }
 }
