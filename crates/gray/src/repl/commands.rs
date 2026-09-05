@@ -10,7 +10,7 @@ pub(crate) struct CmdDef {
 }
 
 pub(crate) const REGISTRY: &[CmdDef] = &[
-    CmdDef { name: "connect", desc: "setup provider & API key", aliases: &["keys", "key", "providers", "provider", "login"], args_hint: "" },
+    CmdDef { name: "connect", desc: "setup provider login", aliases: &["keys", "key", "providers", "provider", "login"], args_hint: "" },
     CmdDef { name: "model", desc: "switch model", aliases: &[], args_hint: "" },
     CmdDef { name: "thinking", desc: "reasoning effort", aliases: &["effort", "reasoning"], args_hint: "" },
     CmdDef { name: "context", desc: "set context window", aliases: &[], args_hint: "" },

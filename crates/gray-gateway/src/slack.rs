@@ -7,7 +7,7 @@
 //! inbound requires the app token.
 //!
 //! Enable: `cargo check -p gray-gateway --features slack` (slack-morphism 2, hyper+rustls).
-//! Features (hermes `plugins/platforms/slack/adapter.py` parity): channels,
+//! Features: channels,
 //! DMs (`im`), group DMs (`mpim`), thread replies (`thread_ts` → session
 //! `thread_id`), 39000-unit chunking, edit-in-place streaming, bot-echo
 //! suppression via `auth.test` user id. Socket Mode reconnects are handled by

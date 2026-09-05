@@ -107,7 +107,7 @@ pub trait Plugin: Send + Sync {
     fn tools(&self) -> Vec<Arc<dyn gray_core::agent::Tool>> {
         vec![]
     }
-    // NOTE (ponytail-audit #6): an earlier `provider()` hook was deleted — every
+    // NOTE: an earlier `provider()` hook was deleted — every
     // impl returned None and nothing called it. `on_event`/`CoreEvent` stay:
     // SidecarPlugin dispatches them to the subprocess over stdio.
     async fn on_event(&self, _e: CoreEvent) -> Option<CoreEvent> {

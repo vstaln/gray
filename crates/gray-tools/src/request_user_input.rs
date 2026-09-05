@@ -45,7 +45,7 @@ fn answers_to_json(answers: &[UserAnswer]) -> Value {
 pub const OTHER_OPTION_LABEL: &str = "None of the above";
 pub const OTHER_OPTION_DESCRIPTION: &str = "Optionally, add details in notes (tab).";
 
-/// Piped-mode bridge: hermes `clarify_callback` port — prints each question,
+/// Piped-mode bridge — prints each question,
 /// reads one stdin line; number picks an option, free text becomes a note,
 /// EOF/blank → "use your best judgement". Non-blocking resolves immediately
 /// with no answers (mirrors codex auto-resolution for unattended clients).

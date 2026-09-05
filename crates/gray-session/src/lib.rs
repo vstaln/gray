@@ -41,7 +41,7 @@ impl SessionId {
     }
 }
 
-// NOTE (ponytail-audit #11): earlier `From<String>`/`From<&str>`/`AsRef<str>`
+// NOTE: earlier `From<String>`/`From<&str>`/`AsRef<str>`
 // impls were deleted — every caller uses `new`/`generate`/`as_str`.
 // `Display` stays: it formats `{sid}` in status lines and `NotFound`.
 
@@ -106,7 +106,7 @@ pub struct SessionEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<gray_core::event::Usage>,
     /// Wall-clock turn duration in milliseconds, if measured.
-    /// Tokens stay in `usage` (Codex/Pi parity); time lives alongside it.
+    /// Tokens stay in `usage`; time lives alongside it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
 }
@@ -315,7 +315,7 @@ impl JsonlSessionStore {
 }
 
 impl JsonlSessionStore {
-    // ponytail-audit #11: returns Result — callers decide what a failed
+    // Returns Result — callers decide what a failed
     // session write means instead of five nested warn-and-continue arms.
     pub async fn create(&self, meta: SessionMeta) -> Result<SessionId> {
         let _guard = self.lock.lock().await;

@@ -12,7 +12,7 @@ pub struct ToolsBasicPlugin;
 
 impl Plugin for ToolsBasicPlugin {
     fn manifest(&self) -> Manifest {
-        // ponytail-audit #6: names derived from tools() so the two can't drift.
+        // Names derived from tools() so the two can't drift.
         let tools = self.tools();
         Manifest {
             name: "tools-basic".to_string(),
