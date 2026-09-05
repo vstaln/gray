@@ -1,8 +1,8 @@
-//! Phase 1D contract tests: foreground bash on the new output contract.
+//! Phase 2B contract tests: bash with background mode + timeout promotion.
 //!
-//! Replaces WP0's `shell_baseline.rs` (record-only snapshots of the old
-//! behaviour). These assert the new contract: honest header first, fenced
-//! body, `is_error` only for harness failures, timeout/cancel kill arms.
+//! Foreground keeps the 1D shape (honest header first, fenced body,
+//! `is_error` only for harness failures). Timeout promotes instead of
+//! killing; cancel still kills; every spawn registers a registry task.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -104,17 +104,43 @@ async fn spew_is_bounded_but_logged_whole() {
 }
 
 #[tokio::test]
-async fn timeout_kills_and_keeps_output() {
-    let cmd = format!("sh {}", fixture("slow.sh").display());
+async fn timeout_promotes_instead_of_killing() {
+    use gray_tools::shell::contract::{TaskId, TaskState};
+    use gray_tools::shell::registry::registry;
+    // Exits on its own after ~5 s; the tool must return at ~1 s without killing it.
     let t0 = Instant::now();
     let out = BashTool
-        .execute(&ToolContext::default(), json!({"command": cmd, "timeout": 1}))
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "echo tick 1; sleep 5", "timeout": 1}),
+        )
         .await;
     let dt = t0.elapsed();
-    assert!(dt < Duration::from_millis(3500), "returned in {dt:?}");
+    assert!(dt < Duration::from_millis(1500), "returned in {dt:?}");
     assert!(!out.is_error, "{}", out.content);
-    assert!(out.content.contains("killed after 1s"), "{}", first_line(&out));
+    let head = first_line(&out).to_string();
+    assert!(
+        head.starts_with("still running after 1s → promoted to background as t"),
+        "{head}"
+    );
     assert!(out.content.contains("tick 1"), "partial output kept: {}", out.content);
+    let n: u32 = head
+        .split(" as t")
+        .nth(1)
+        .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+        .expect("promotion line names the task");
+    // Still alive and registered …
+    let info = registry().get("nosession", TaskId(n)).expect("promoted task registered");
+    assert!(matches!(info.state, TaskState::Running), "not killed by the timeout");
+    // … and next_offset matches the log length at return (log may grow after).
+    let claimed: u64 = out
+        .content
+        .split("next_offset=")
+        .nth(1)
+        .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+        .expect("promotion names next_offset");
+    let len = std::fs::metadata(&info.log_path).expect("log exists").len();
+    assert!(claimed <= len && len - claimed < 1024, "next_offset={claimed} vs log len {len}");
 }
 
 #[tokio::test]
@@ -131,6 +157,25 @@ async fn cancel_returns_promptly() {
     let dt = t0.elapsed();
     assert!(dt < Duration::from_secs(10), "returned in {dt:?}");
     assert!(out.content.contains("cancelled"), "{}", first_line(&out));
+}
+
+#[tokio::test]
+async fn foreground_registers_task_for_later_paging() {
+    use gray_tools::shell::contract::{TaskId, TaskState};
+    use gray_tools::shell::registry::registry;
+    let out = BashTool
+        .execute(&ToolContext::default(), json!({"command": "echo page-me"}))
+        .await;
+    assert!(!out.is_error, "{}", out.content);
+    // Header names …/tN.log; the registry holds it as Exited for 2C reads.
+    let head = first_line(&out).to_string();
+    let n: u32 = head
+        .split("/t")
+        .last()
+        .and_then(|s| s.split('.').next()?.parse().ok())
+        .expect("header names the log task");
+    let info = registry().get("nosession", TaskId(n)).expect("foreground task registered");
+    assert!(matches!(info.state, TaskState::Exited { .. }), "marked exited");
 }
 
 #[tokio::test]
@@ -171,13 +216,50 @@ async fn empty_output_is_header_only() {
 }
 
 #[tokio::test]
-async fn background_flag_notes_foreground_fallback() {
+async fn background_returns_immediately_and_exits_later() {
+    use gray_tools::shell::contract::{TaskId, TaskState, WakeEvent};
+    use gray_tools::shell::registry::registry;
+    let reg = registry();
+    let mut wake = reg.wake_tx().subscribe();
+    let t0 = Instant::now();
     let out = BashTool
         .execute(
             &ToolContext::default(),
-            json!({"command": "echo hi", "background": true}),
+            json!({"command": "echo bg-hi; sleep 2", "background": true}),
         )
         .await;
+    let dt = t0.elapsed();
+    assert!(dt < Duration::from_millis(1500), "detached, returned in {dt:?}");
     assert!(!out.is_error, "{}", out.content);
-    assert!(out.content.contains("background not yet available"), "{}", out.content);
+    let head = first_line(&out).to_string();
+    assert!(head.starts_with("started t") && head.contains(" · pid "), "{head}");
+    let n: u32 = head
+        .split("started t")
+        .nth(1)
+        .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+        .expect("background start names the task");
+    let id = TaskId(n);
+    assert!(
+        matches!(reg.get("nosession", id).map(|t| t.state), Some(TaskState::Running)),
+        "Running right after start"
+    );
+    // Exit arrives on the watch channel …
+    let mut rx = reg.exit_rx("nosession", id).expect("exit channel");
+    tokio::time::timeout(Duration::from_secs(5), rx.changed())
+        .await
+        .expect("exits within ~2 s")
+        .expect("watch ok");
+    assert!(rx.borrow().as_ref().is_some_and(|r| r.effective == 0));
+    // … exactly one Exited wake names this task (other tests' tasks filtered).
+    let found = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match wake.recv().await {
+                Ok(WakeEvent::Exited { id: got, .. }) if got == id => break,
+                Ok(_) => continue,
+                Err(_) => continue,
+            }
+        }
+    })
+    .await;
+    assert!(found.is_ok(), "wake subscriber saw Exited for t{n}");
 }
