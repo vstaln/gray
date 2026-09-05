@@ -280,8 +280,7 @@ pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
 
 /// Wraps the profile-built registry executor (gateway: `GatedExecutor`;
 /// `None` = plain registry).
-pub type ExecutorWrap =
-    Box<dyn FnOnce(Box<dyn ToolExecutor>) -> Box<dyn ToolExecutor> + Send>;
+pub type ExecutorWrap = Box<dyn FnOnce(Box<dyn ToolExecutor>) -> Box<dyn ToolExecutor> + Send>;
 
 pub struct BuilderOptions {
     pub model: String,
@@ -325,7 +324,13 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         Arc::new(ToolsBasicPlugin { extra: extra_tools }) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
-    let (plugins, _) = active_plugins(defaults, &profile_path, host_handler, abort_on_spawn_failure).await?;
+    let (plugins, _) = active_plugins(
+        defaults,
+        &profile_path,
+        host_handler,
+        abort_on_spawn_failure,
+    )
+    .await?;
     let (registry, _) = from_plugins(&plugins);
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,
