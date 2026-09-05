@@ -262,16 +262,16 @@ impl Tool for EditTool {
         let normalized = normalize_to_lf(&bom.text);
         // T1.6: exact (then existing fuzzy) first; only on failure retry once
         // with cat -n prefixes stripped from oldText/newText together.
-        let (applied, repaired) = match apply_edits_to_normalized_content(&normalized, &edits, &path)
-        {
-            Ok(r) => (r, false),
-            Err(msg) => match strip_edit_prefixes(&edits)
-                .and_then(|s| apply_edits_to_normalized_content(&normalized, &s, &path).ok())
-            {
-                Some(r) => (r, true),
-                None => return fail(format!("edit failed for {}: {msg}", full.display())),
-            },
-        };
+        let (applied, repaired) =
+            match apply_edits_to_normalized_content(&normalized, &edits, &path) {
+                Ok(r) => (r, false),
+                Err(msg) => match strip_edit_prefixes(&edits)
+                    .and_then(|s| apply_edits_to_normalized_content(&normalized, &s, &path).ok())
+                {
+                    Some(r) => (r, true),
+                    None => return fail(format!("edit failed for {}: {msg}", full.display())),
+                },
+            };
         let final_content = bom.bom + &restore_line_endings(&applied.new_content, ending);
         if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
             return fail(format!("edit failed for {}: {e}", full.display()));

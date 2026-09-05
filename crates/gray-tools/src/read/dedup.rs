@@ -114,13 +114,23 @@ mod tests {
         let ledger = FileLedger::new();
         record(&ledger, &p, true, (1, None), true);
         let hit = check(&ledger, &p, "a.txt", 1, None, true).expect("first repeat must stub");
-        assert!(hit.content.contains("unchanged since your previous read"), "{}", hit.content);
+        assert!(
+            hit.content.contains("unchanged since your previous read"),
+            "{}",
+            hit.content
+        );
         assert!(!hit.is_error);
         assert!(!ledger.get(&p).unwrap().dedup_armed, "hit consumes the arm");
-        assert!(check(&ledger, &p, "a.txt", 1, None, true).is_none(), "consumed arm misses");
+        assert!(
+            check(&ledger, &p, "a.txt", 1, None, true).is_none(),
+            "consumed arm misses"
+        );
         // A normal read re-arms (what read/mod.rs does on the miss path)…
         record(&ledger, &p, true, (1, None), true);
-        assert!(check(&ledger, &p, "a.txt", 1, None, true).is_some(), "re-armed hit stubs again");
+        assert!(
+            check(&ledger, &p, "a.txt", 1, None, true).is_some(),
+            "re-armed hit stubs again"
+        );
     }
 
     #[test]
@@ -130,7 +140,10 @@ mod tests {
         // lockfile shape: lines 1-2000 shown, cut before the end.
         record(&ledger, &p, false, (1, None), true);
         assert!(check(&ledger, &p, "a.txt", 1, None, true).is_none());
-        assert!(ledger.get(&p).unwrap().dedup_armed, "miss leaves the arm alone");
+        assert!(
+            ledger.get(&p).unwrap().dedup_armed,
+            "miss leaves the arm alone"
+        );
     }
 
     #[test]

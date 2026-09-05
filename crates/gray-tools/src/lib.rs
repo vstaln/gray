@@ -532,8 +532,7 @@ mod tests {
             cwd: dir.path().to_path_buf(),
             ..ToolContext::default()
         };
-        let out =
-            ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
+        let out = ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
         assert!(!out.is_error, "{out:?}");
         assert!(
             reg.file_ledger().get(&p).is_some(),
