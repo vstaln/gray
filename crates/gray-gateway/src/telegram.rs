@@ -12,13 +12,15 @@
 //! `TELEGRAM_ALLOWED_USERS` / `allowed_users` / pairing).
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendOptions, SendResult};
+use crate::platform::{
+    BasePlatformAdapter, MessageEvent, SendOptions, SendResult, check_token_shape, utf16_len,
+};
 use crate::session::SessionSource;
 use crate::status::GatewayStatusBoard;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "telegram")]
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 #[cfg(feature = "telegram")]
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
@@ -95,9 +97,9 @@ pub(crate) fn poller_initial_offset(drop_pending: bool) -> Option<i32> {
 
 impl TelegramAdapter {
     pub fn new(cfg: PlatformConfig) -> anyhow::Result<Self> {
-        let token = cfg
-            .token
-            .ok_or_else(|| anyhow::anyhow!("telegram token not set (set platforms.telegram.token in gateway.yaml)"))?;
+        let token = cfg.token.ok_or_else(|| {
+            anyhow::anyhow!("telegram token not set (set platforms.telegram.token in gateway.yaml)")
+        })?;
         validate_telegram_token(&token)?;
         Ok(Self {
             token: token.trim().to_string(),
@@ -177,16 +179,29 @@ pub fn parse_chat_target(chat: &str) -> anyhow::Result<(i64, Option<i32>)> {
         Some((c, t)) => (c, Some(t)),
         None => (chat, None),
     };
-    let cid: i64 = c.trim().parse().map_err(|_| anyhow::anyhow!("invalid telegram chat id {chat:?} (expected integer, e.g. 123456 or -1001234567890)"))?;
+    let cid: i64 = c.trim().parse().map_err(|_| {
+        anyhow::anyhow!(
+            "invalid telegram chat id {chat:?} (expected integer, e.g. 123456 or -1001234567890)"
+        )
+    })?;
     let tid = match t {
-        Some(t) => Some(t.trim().parse::<i32>().map_err(|_| anyhow::anyhow!("invalid telegram thread id in {chat:?}"))?),
+        Some(t) => Some(
+            t.trim()
+                .parse::<i32>()
+                .map_err(|_| anyhow::anyhow!("invalid telegram thread id in {chat:?}"))?,
+        ),
         None => None,
     };
     Ok((cid, tid))
 }
 
 #[cfg(feature = "telegram")]
-fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>, drop_pending: bool, first_ok: Option<tokio::sync::oneshot::Sender<()>>) -> tokio::task::JoinHandle<()> {
+fn spawn_poller(
+    bot: teloxide::Bot,
+    tx: UnboundedSender<MessageEvent>,
+    drop_pending: bool,
+    first_ok: Option<tokio::sync::oneshot::Sender<()>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         use teloxide::prelude::*;
         use teloxide::types::{AllowedUpdate, UpdateKind};
@@ -195,7 +210,10 @@ fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>, drop_pend
         let mut offset: Option<i32> = poller_initial_offset(drop_pending);
         let mut failures: u32 = 0;
         loop {
-            let mut req = bot.get_updates().timeout(30).allowed_updates(vec![AllowedUpdate::Message]);
+            let mut req = bot
+                .get_updates()
+                .timeout(30)
+                .allowed_updates(vec![AllowedUpdate::Message]);
             if let Some(o) = offset {
                 req = req.offset(o);
             }
@@ -208,7 +226,9 @@ fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>, drop_pend
                     }
                     for upd in updates {
                         offset = Some(upd.id.as_offset());
-                        let UpdateKind::Message(m) = upd.kind else { continue };
+                        let UpdateKind::Message(m) = upd.kind else {
+                            continue;
+                        };
                         // Ignore other bots — prevents loops.
                         if m.from.as_ref().map(|u| u.is_bot).unwrap_or(false) {
                             continue;
@@ -220,10 +240,17 @@ fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>, drop_pend
                         let chat_type = chat_type_for(m.chat.is_private(), m.chat.is_channel());
                         let user_id = m.from.as_ref().map(|u| u.id.0);
                         let user_name = m.from.as_ref().map(|u| {
-                            u.username.clone().map(|n| format!("@{n}")).unwrap_or_else(|| u.first_name.clone())
+                            u.username
+                                .clone()
+                                .map(|n| format!("@{n}"))
+                                .unwrap_or_else(|| u.first_name.clone())
                         });
                         // Only forum topics carry a meaningful thread id.
-                        let thread_id = if m.is_topic_message { m.thread_id.map(|t| t.0 .0) } else { None };
+                        let thread_id = if m.is_topic_message {
+                            m.thread_id.map(|t| t.0.0)
+                        } else {
+                            None
+                        };
                         let ev = MessageEvent {
                             text,
                             message_id: Some(m.id.0.to_string()),
@@ -243,7 +270,9 @@ fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>, drop_pend
                         teloxide::RequestError::RetryAfter(s) => s.duration(),
                         _ => crate::platform::backoff_delay(failures),
                     };
-                    log::warn!("[telegram] getUpdates failed ({failures}): {e}; retry in {delay:?}");
+                    log::warn!(
+                        "[telegram] getUpdates failed ({failures}): {e}; retry in {delay:?}"
+                    );
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -274,7 +303,10 @@ fn spawn_heartbeat(
                 Err(e) => {
                     let msg = e.to_string();
                     // Revoked token is Terminal: stop respawning, don't loop forever.
-                    if matches!(crate::daemon::classify_connect_error(&msg), crate::daemon::Fatal::Terminal(_)) {
+                    if matches!(
+                        crate::daemon::classify_connect_error(&msg),
+                        crate::daemon::Fatal::Terminal(_)
+                    ) {
                         log::error!("[telegram] heartbeat terminal (not respawning): {e}");
                         return;
                     }
@@ -283,13 +315,16 @@ fn spawn_heartbeat(
                     if heartbeat_should_respawn_error(&msg, misses) {
                         let d = crate::platform::backoff_delay(respawns);
                         respawns += 1;
-                        log::warn!("[telegram] heartbeat missed {misses}x, respawning poller in {d:?}");
+                        log::warn!(
+                            "[telegram] heartbeat missed {misses}x, respawning poller in {d:?}"
+                        );
                         tokio::time::sleep(d).await;
                         if let Some(old) = poller.lock().unwrap().take() {
                             old.abort();
                         }
                         // Respawn resumes the live queue (cold-boot drop happened once).
-                        *poller.lock().unwrap() = Some(spawn_poller(bot.clone(), tx.clone(), false, None));
+                        *poller.lock().unwrap() =
+                            Some(spawn_poller(bot.clone(), tx.clone(), false, None));
                         misses = 0;
                     }
                 }
@@ -352,7 +387,10 @@ impl BasePlatformAdapter for TelegramAdapter {
             let bot = teloxide::Bot::new(self.token.clone());
             self.stage("identifying");
             // Fail fast on a rejected token.
-            let me = bot.get_me().await.map_err(|e| anyhow::anyhow!("telegram token rejected: {e}"))?;
+            let me = bot
+                .get_me()
+                .await
+                .map_err(|e| anyhow::anyhow!("telegram token rejected: {e}"))?;
             log::info!("[telegram] authenticated as @{}", me.username());
             *self.identity.lock().unwrap() = Some(format!("@{}", me.username()));
             *self.client.lock().unwrap() = Some(bot.clone());
@@ -378,7 +416,9 @@ impl BasePlatformAdapter for TelegramAdapter {
                         old.abort();
                     }
                     self.stage("confirming");
-                    ok_rx.await.map_err(|_| anyhow::anyhow!("telegram poller ended before first updates batch"))?;
+                    ok_rx.await.map_err(|_| {
+                        anyhow::anyhow!("telegram poller ended before first updates batch")
+                    })?;
                     log::info!("[telegram] long-polling started");
                 }
                 None => log::info!("[telegram] send-only mode (no event channel wired)"),
@@ -390,7 +430,10 @@ impl BasePlatformAdapter for TelegramAdapter {
             self.stage("clearing webhook");
             self.stage("polling");
             self.stage("confirming");
-            log::info!("[telegram] stub connect (token {}…)", &self.token[..self.token.len().min(6)]);
+            log::info!(
+                "[telegram] stub connect (token {}…)",
+                &self.token[..self.token.len().min(6)]
+            );
         }
         Ok(())
     }
@@ -445,21 +488,32 @@ impl BasePlatformAdapter for TelegramAdapter {
                 return SendResult::fail(format!("invalid telegram chat id {chat:?}"), false);
             };
             let Ok(mid) = message_id.parse::<i32>() else {
-                return SendResult::fail(format!("invalid telegram message id {message_id:?}"), false);
+                return SendResult::fail(
+                    format!("invalid telegram message id {message_id:?}"),
+                    false,
+                );
             };
             if utf16_len(text) > MAX_LENGTH {
                 return SendResult::fail("edit text exceeds 4096 utf16 units", false);
             }
-            return match bot.edit_message_text(ChatId(cid), MessageId(mid), text).await {
+            return match bot
+                .edit_message_text(ChatId(cid), MessageId(mid), text)
+                .await
+            {
                 Ok(_) => SendResult::ok(Some(message_id.to_string())),
                 // "message is not modified" is a no-op success for our purposes.
-                Err(e) if e.to_string().contains("not modified") => SendResult::ok(Some(message_id.to_string())),
+                Err(e) if e.to_string().contains("not modified") => {
+                    SendResult::ok(Some(message_id.to_string()))
+                }
                 Err(e) => SendResult::fail(format!("telegram edit: {e}"), true),
             };
         }
         #[cfg(not(feature = "telegram"))]
         {
-            log::info!("[telegram] edit {chat}/{message_id} ({} utf16)", utf16_len(text));
+            log::info!(
+                "[telegram] edit {chat}/{message_id} ({} utf16)",
+                utf16_len(text)
+            );
             SendResult::ok(Some(message_id.to_string()))
         }
     }
@@ -489,7 +543,11 @@ impl BasePlatformAdapter for TelegramAdapter {
                 Ok(v) => v,
                 Err(e) => return SendResult::fail(e.to_string(), false),
             };
-            let thread = opts.thread_id.as_deref().and_then(|t| t.parse::<i32>().ok()).or(target_thread);
+            let thread = opts
+                .thread_id
+                .as_deref()
+                .and_then(|t| t.parse::<i32>().ok())
+                .or(target_thread);
             let reply_to = opts.reply_to.as_deref().and_then(|r| r.parse::<i32>().ok());
             let mut last_id = None;
             for (i, chunk) in chunks.iter().enumerate() {
@@ -505,7 +563,11 @@ impl BasePlatformAdapter for TelegramAdapter {
                         }
                     }
                     Err(e) => {
-                        log::warn!("[telegram] send chunk {}/{} failed: {e}", i + 1, chunks.len());
+                        log::warn!(
+                            "[telegram] send chunk {}/{} failed: {e}",
+                            i + 1,
+                            chunks.len()
+                        );
                         return SendResult::fail(format!("telegram send: {e}"), true);
                     }
                 }
@@ -518,7 +580,12 @@ impl BasePlatformAdapter for TelegramAdapter {
                 debug_assert!(utf16_len(chunk) <= MAX_LENGTH, "chunk exceeds limit");
                 log::info!(
                     "[telegram] send to {} chunk {}/{} ({} utf16, reply_to={:?}, thread={:?}): {:?}",
-                    chat, i + 1, chunks.len(), utf16_len(chunk), opts.reply_to, opts.thread_id,
+                    chat,
+                    i + 1,
+                    chunks.len(),
+                    utf16_len(chunk),
+                    opts.reply_to,
+                    opts.thread_id,
                     crate::platform::preview_80(chunk)
                 );
             }
@@ -531,7 +598,7 @@ impl BasePlatformAdapter for TelegramAdapter {
 mod tests {
     use super::*;
     use crate::config::PlatformConfig;
-    use crate::platform::{utf16_len, BasePlatformAdapter};
+    use crate::platform::{BasePlatformAdapter, utf16_len};
     use crate::session::build_session_key;
 
     fn cfg(token: &str) -> PlatformConfig {
@@ -556,7 +623,14 @@ mod tests {
     fn new_rejects_invalid() {
         assert!(TelegramAdapter::new(cfg("bad")).is_err());
         assert!(TelegramAdapter::new(cfg("123:short")).is_err());
-        assert!(TelegramAdapter::new(PlatformConfig { enabled: true, token: None, ..Default::default() }).is_err());
+        assert!(
+            TelegramAdapter::new(PlatformConfig {
+                enabled: true,
+                token: None,
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -566,7 +640,9 @@ mod tests {
         let long = "a".repeat(5000);
         let chunks = crate::platform::split_message_smart(&long, MAX_LENGTH);
         assert_eq!(chunks.len(), 2);
-        for c in &chunks { assert!(utf16_len(c) <= MAX_LENGTH); }
+        for c in &chunks {
+            assert!(utf16_len(c) <= MAX_LENGTH);
+        }
         // Live send only when the real client is compiled in and connected.
         #[cfg(not(feature = "telegram"))]
         {
@@ -606,15 +682,30 @@ mod tests {
     fn session_key_routing() {
         // DM: keyed by chat only (user ignored).
         let dm = source_for(42, "dm", Some(42), None, 7);
-        assert_eq!(build_session_key(&dm, true, false), "gray:main:telegram:dm:42");
+        assert_eq!(
+            build_session_key(&dm, true, false),
+            "gray:main:telegram:dm:42"
+        );
         // Supergroup without topics: per-user by default.
         let g = source_for(-1001, "group", Some(42), None, 8);
-        assert_eq!(build_session_key(&g, true, false), "gray:main:telegram:group:-1001:42");
-        assert_eq!(build_session_key(&g, false, false), "gray:main:telegram:group:-1001");
+        assert_eq!(
+            build_session_key(&g, true, false),
+            "gray:main:telegram:group:-1001:42"
+        );
+        assert_eq!(
+            build_session_key(&g, false, false),
+            "gray:main:telegram:group:-1001"
+        );
         // Forum topic: thread id in key; thread_per_user governs user suffix.
         let t = source_for(-1001, "group", Some(42), Some(99), 9);
-        assert_eq!(build_session_key(&t, true, false), "gray:main:telegram:group:-1001:thread_99");
-        assert_eq!(build_session_key(&t, true, true), "gray:main:telegram:group:-1001:thread_99:42");
+        assert_eq!(
+            build_session_key(&t, true, false),
+            "gray:main:telegram:group:-1001:thread_99"
+        );
+        assert_eq!(
+            build_session_key(&t, true, true),
+            "gray:main:telegram:group:-1001:thread_99:42"
+        );
         assert_eq!(chat_type_for(true, false), "dm");
         assert_eq!(chat_type_for(false, true), "channel");
         assert_eq!(chat_type_for(false, false), "group");
@@ -623,7 +714,10 @@ mod tests {
     #[test]
     fn parse_targets() {
         assert_eq!(parse_chat_target("123").unwrap(), (123, None));
-        assert_eq!(parse_chat_target("-1001234:55").unwrap(), (-1001234, Some(55)));
+        assert_eq!(
+            parse_chat_target("-1001234:55").unwrap(),
+            (-1001234, Some(55))
+        );
         assert!(parse_chat_target("abc").is_err());
         assert!(parse_chat_target("1:x").is_err());
     }
@@ -647,20 +741,44 @@ mod tests {
     #[test]
     fn heartbeat_terminal_never_respawns_retryable_does() {
         // Revoked token: Terminal → no respawn even past the miss threshold.
-        for err in ["401 Unauthorized", "telegram token rejected: forbidden", "invalid token"] {
-            assert!(!heartbeat_should_respawn_error(err, 2), "terminal must not respawn: {err}");
-            assert!(!heartbeat_should_respawn_error(err, 10), "terminal must not respawn: {err}");
+        for err in [
+            "401 Unauthorized",
+            "telegram token rejected: forbidden",
+            "invalid token",
+        ] {
+            assert!(
+                !heartbeat_should_respawn_error(err, 2),
+                "terminal must not respawn: {err}"
+            );
+            assert!(
+                !heartbeat_should_respawn_error(err, 10),
+                "terminal must not respawn: {err}"
+            );
         }
         // Transient: Retryable → respawn once misses hit the threshold.
-        assert!(!heartbeat_should_respawn_error("connection reset by peer", 1));
-        assert!(heartbeat_should_respawn_error("connection reset by peer", 2));
+        assert!(!heartbeat_should_respawn_error(
+            "connection reset by peer",
+            1
+        ));
+        assert!(heartbeat_should_respawn_error(
+            "connection reset by peer",
+            2
+        ));
         assert!(heartbeat_should_respawn_error("connect timeout 45s", 3));
     }
 
     #[test]
     fn poller_offset_flag_cold_boot_drops_reconnect_resumes() {
-        assert_eq!(poller_initial_offset(true), Some(-1), "cold boot starts at live head");
-        assert_eq!(poller_initial_offset(false), None, "reconnect resumes the live queue");
+        assert_eq!(
+            poller_initial_offset(true),
+            Some(-1),
+            "cold boot starts at live head"
+        );
+        assert_eq!(
+            poller_initial_offset(false),
+            None,
+            "reconnect resumes the live queue"
+        );
     }
 
     #[tokio::test]
@@ -675,7 +793,9 @@ mod tests {
             a.connect().await.unwrap();
             assert_eq!(
                 board.snapshot()[0].1,
-                PlatformConnState::Connecting { stage: "confirming" },
+                PlatformConnState::Connecting {
+                    stage: "confirming"
+                },
                 "stub ends on the last pre-connected stage; the daemon marks connected"
             );
         }

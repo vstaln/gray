@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-
 /// Provider entry from the vendored catalog.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogProvider {
@@ -168,7 +167,6 @@ pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()
     Ok(())
 }
 
-
 /// Per-provider API-key store (`~/.gray/auth.json`, mode 0600), mirroring
 /// opencode's credential file: `{ "<provider-id>": "<key>", ... }`.
 fn auth_store_path() -> anyhow::Result<PathBuf> {
@@ -194,7 +192,10 @@ pub(crate) fn load_auth_keys() -> BTreeMap<String, String> {
 pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
     let path = auth_store_path()?;
     let mut store = crate::oauth::load_mixed_store(&path);
-    store.insert(pid.to_string(), crate::oauth::AuthEntry::Key(key.to_string()));
+    store.insert(
+        pid.to_string(),
+        crate::oauth::AuthEntry::Key(key.to_string()),
+    );
     crate::oauth::save_mixed_store(&path, &store)
 }
 
@@ -216,16 +217,86 @@ pub struct ConnectItem {
 /// Popular section on top, followed by all catalog providers under Providers.
 pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
-        ("openai", "OpenAI", "(ChatGPT login or API key)", "https://api.openai.com/v1", "OPENAI_API_KEY", false),
-        ("anthropic", "Anthropic", "(API key)", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", false),
-        ("google", "Google", "(Gemini API key)", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false),
-        ("openrouter", "OpenRouter", "(Access 300+ models)", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", false),
-        ("deepseek", "DeepSeek", "", "https://api.deepseek.com", "DEEPSEEK_API_KEY", false),
-        ("groq", "Groq", "(Fast inference)", "https://api.groq.com/openai/v1", "GROQ_API_KEY", false),
-        ("ollama", "Ollama", "(Local http://localhost:11434)", "http://localhost:11434/v1", "", true),
-        ("github-copilot", "GitHub Copilot", "", "https://api.githubcopilot.com", "COPILOT_API_KEY", false),
-        ("xai", "xAI (Grok)", "(Grok login or API key)", "https://api.x.ai/v1", "XAI_API_KEY", false),
-        ("mistral", "Mistral", "(API key)", "https://api.mistral.ai/v1", "MISTRAL_API_KEY", false),
+        (
+            "openai",
+            "OpenAI",
+            "(ChatGPT login or API key)",
+            "https://api.openai.com/v1",
+            "OPENAI_API_KEY",
+            false,
+        ),
+        (
+            "anthropic",
+            "Anthropic",
+            "(API key)",
+            "https://api.anthropic.com/v1",
+            "ANTHROPIC_API_KEY",
+            false,
+        ),
+        (
+            "google",
+            "Google",
+            "(Gemini API key)",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "GEMINI_API_KEY",
+            false,
+        ),
+        (
+            "openrouter",
+            "OpenRouter",
+            "(Access 300+ models)",
+            "https://openrouter.ai/api/v1",
+            "OPENROUTER_API_KEY",
+            false,
+        ),
+        (
+            "deepseek",
+            "DeepSeek",
+            "",
+            "https://api.deepseek.com",
+            "DEEPSEEK_API_KEY",
+            false,
+        ),
+        (
+            "groq",
+            "Groq",
+            "(Fast inference)",
+            "https://api.groq.com/openai/v1",
+            "GROQ_API_KEY",
+            false,
+        ),
+        (
+            "ollama",
+            "Ollama",
+            "(Local http://localhost:11434)",
+            "http://localhost:11434/v1",
+            "",
+            true,
+        ),
+        (
+            "github-copilot",
+            "GitHub Copilot",
+            "",
+            "https://api.githubcopilot.com",
+            "COPILOT_API_KEY",
+            false,
+        ),
+        (
+            "xai",
+            "xAI (Grok)",
+            "(Grok login or API key)",
+            "https://api.x.ai/v1",
+            "XAI_API_KEY",
+            false,
+        ),
+        (
+            "mistral",
+            "Mistral",
+            "(API key)",
+            "https://api.mistral.ai/v1",
+            "MISTRAL_API_KEY",
+            false,
+        ),
     ];
 
     let mut items = Vec::new();
@@ -283,7 +354,11 @@ mod tests {
     fn only_openai_and_xai_offer_oauth() {
         let catalog = load_catalog().expect("bundled catalog parses");
         let items = build_connect_items(&catalog);
-        let dual: Vec<_> = items.iter().filter(|i| i.oauth_capable).map(|i| i.id.as_str()).collect();
+        let dual: Vec<_> = items
+            .iter()
+            .filter(|i| i.oauth_capable)
+            .map(|i| i.id.as_str())
+            .collect();
         assert_eq!(dual, vec!["openai", "xai"], "{dual:?}");
     }
 
@@ -310,10 +385,16 @@ mod tests {
         };
         crate::oauth::save_auth_at(&path, &oauth).expect("oauth save");
         let mut store = crate::oauth::load_mixed_store(&path);
-        store.insert("openrouter".to_string(), crate::oauth::AuthEntry::Key("sk-or-1".to_string()));
+        store.insert(
+            "openrouter".to_string(),
+            crate::oauth::AuthEntry::Key("sk-or-1".to_string()),
+        );
         crate::oauth::save_mixed_store(&path, &store).expect("key save");
         let reloaded = crate::oauth::load_mixed_store(&path);
-        assert!(matches!(reloaded.get("xai"), Some(crate::oauth::AuthEntry::OAuth(_))), "{reloaded:?}");
+        assert!(
+            matches!(reloaded.get("xai"), Some(crate::oauth::AuthEntry::OAuth(_))),
+            "{reloaded:?}"
+        );
         // And the key-only view exposes just the key.
         let keys: BTreeMap<String, String> = reloaded
             .into_iter()

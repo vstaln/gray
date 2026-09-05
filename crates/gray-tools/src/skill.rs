@@ -7,11 +7,11 @@
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
-use crate::{fail, finish, Tool};
+use crate::{Tool, fail, finish};
 
 pub const SKILL_SNIPPET: &str = "Load a skill's instructions into context";
 
@@ -132,15 +132,15 @@ impl Tool for SkillTool {
     }
 
     fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(&["When a task matches a skill in <available_skills>, load it with the skill tool and follow its instructions."])
+        Some(&[
+            "When a task matches a skill in <available_skills>, load it with the skill tool and follow its instructions.",
+        ])
     }
 
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let path = match args.get("path") {
-            Some(Value::String(s)) if !s.is_empty() => {
-                crate::resolve_path(&ctx.cwd, s)
-            }
+            Some(Value::String(s)) if !s.is_empty() => crate::resolve_path(&ctx.cwd, s),
             _ => match args.get("name").and_then(|v| v.as_str()) {
                 Some(name) if !name.is_empty() => match resolve_skill_name(&ctx.cwd, name) {
                     Some(p) => p,
@@ -149,7 +149,10 @@ impl Tool for SkillTool {
                 _ => return fail("missing required argument: 'path' or 'name'".to_string()),
             },
         };
-        let args_str = args.get("args").and_then(|v| v.as_str()).map(str::to_string);
+        let args_str = args
+            .get("args")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
 
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,

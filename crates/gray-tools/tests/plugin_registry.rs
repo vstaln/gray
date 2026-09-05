@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use gray_tools::plugin::{ToolsBasicPlugin, ToolsSearchPlugin};
 use gray_tools::Registry;
+use gray_tools::plugin::{ToolsBasicPlugin, ToolsSearchPlugin};
 
 #[test]
 fn registry_from_plugins_collects_in_order() {

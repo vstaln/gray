@@ -7,12 +7,16 @@
 //! - `dm_policy: open` is only honored when `allowed_users` literally contains
 //!   `"*"` — there is no `allow_all: true` switch;
 //! - groups never pair: an unknown sender in a group is silently ignored.
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Platform { Telegram, Discord, Slack }
+pub enum Platform {
+    Telegram,
+    Discord,
+    Slack,
+}
 impl std::str::FromStr for Platform {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -26,24 +30,40 @@ impl std::str::FromStr for Platform {
 }
 impl std::fmt::Display for Platform {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { Self::Telegram => write!(f, "telegram"), Self::Discord => write!(f, "discord"), Self::Slack => write!(f, "slack") }
+        match self {
+            Self::Telegram => write!(f, "telegram"),
+            Self::Discord => write!(f, "discord"),
+            Self::Slack => write!(f, "slack"),
+        }
     }
 }
 impl Platform {
     /// Human-facing name for menus and status lines. `Display` stays lowercase:
     /// it feeds command strings and persisted session keys (`gray:main:telegram:…`).
     pub fn label(&self) -> &'static str {
-        match self { Self::Telegram => "Telegram", Self::Discord => "Discord", Self::Slack => "Slack" }
+        match self {
+            Self::Telegram => "Telegram",
+            Self::Discord => "Discord",
+            Self::Slack => "Slack",
+        }
     }
     /// All platforms, for iteration in status/onboarding code.
     pub const ALL: [Platform; 3] = [Platform::Telegram, Platform::Discord, Platform::Slack];
     /// Outbound hard limit in UTF-16 code units (Telegram 4096, Discord 2000, Slack 39000).
     pub fn max_message_len(&self) -> usize {
-        match self { Self::Telegram => 4096, Self::Discord => 2000, Self::Slack => 39000 }
+        match self {
+            Self::Telegram => 4096,
+            Self::Discord => 2000,
+            Self::Slack => 39000,
+        }
     }
     /// Env var consulted for the user allowlist.
     pub fn allowed_users_env(&self) -> &'static str {
-        match self { Self::Telegram => "TELEGRAM_ALLOWED_USERS", Self::Discord => "DISCORD_ALLOWED_USERS", Self::Slack => "SLACK_ALLOWED_USERS" }
+        match self {
+            Self::Telegram => "TELEGRAM_ALLOWED_USERS",
+            Self::Discord => "DISCORD_ALLOWED_USERS",
+            Self::Slack => "SLACK_ALLOWED_USERS",
+        }
     }
 }
 
@@ -60,28 +80,34 @@ pub enum DmPolicy {
     Open,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlatformConfig {
-    #[serde(default)] pub enabled: bool,
-    #[serde(default)] pub token: Option<String>,
-    #[serde(default)] pub app_token: Option<String>,
-    #[serde(default)] pub home_channel: Option<String>,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub app_token: Option<String>,
+    #[serde(default)]
+    pub home_channel: Option<String>,
     /// Operator allowlist of platform user ids (numeric for Telegram/Discord, `U…` for Slack).
     /// `"*"` means everyone (only meaningful with `dm_policy: open`).
-    #[serde(default)] pub allowed_users: Vec<String>,
+    #[serde(default)]
+    pub allowed_users: Vec<String>,
     /// Extra allowlist for group/channel senders (in addition to `allowed_users`).
-    #[serde(default)] pub group_allowed_users: Vec<String>,
-    #[serde(default)] pub dm_policy: DmPolicy,
-}
-impl Default for PlatformConfig {
-    fn default() -> Self {
-        Self { enabled: false, token: None, app_token: None, home_channel: None, allowed_users: Vec::new(), group_allowed_users: Vec::new(), dm_policy: DmPolicy::default() }
-    }
+    #[serde(default)]
+    pub group_allowed_users: Vec<String>,
+    #[serde(default)]
+    pub dm_policy: DmPolicy,
 }
 impl PlatformConfig {
     /// Convenience for tests and REPL wiring: enabled + token, everything else default.
     pub fn with_token(token: impl Into<String>) -> Self {
-        Self { enabled: true, token: Some(token.into()), ..Default::default() }
+        Self {
+            enabled: true,
+            token: Some(token.into()),
+            ..Default::default()
+        }
     }
 }
 
@@ -113,7 +139,11 @@ pub struct ResetPolicy {
 
 impl Default for ResetPolicy {
     fn default() -> Self {
-        Self { mode: ResetMode::None, idle_secs: default_idle_secs(), at_hour: 0 }
+        Self {
+            mode: ResetMode::None,
+            idle_secs: default_idle_secs(),
+            at_hour: 0,
+        }
     }
 }
 
@@ -123,53 +153,91 @@ fn default_idle_secs() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GatewayConfig {
-    #[serde(default)] pub platforms: HashMap<Platform, PlatformConfig>,
-    #[serde(default="default_group_per_user")] pub group_per_user: bool,
-    #[serde(default)] pub thread_per_user: bool,
+    #[serde(default)]
+    pub platforms: HashMap<Platform, PlatformConfig>,
+    #[serde(default = "default_group_per_user")]
+    pub group_per_user: bool,
+    #[serde(default)]
+    pub thread_per_user: bool,
     /// Auto-start the in-process gateway when gray launches (toggle: /gateway autostart on|off).
-    #[serde(default = "default_autostart")] pub autostart: bool,
+    #[serde(default = "default_autostart")]
+    pub autostart: bool,
     /// Tools the agent may never call while driven from a chat platform
     /// (no interactive operator to confirm). Merged with the built-in deny set.
-    #[serde(default)] pub denied_tools: Vec<String>,
+    #[serde(default)]
+    pub denied_tools: Vec<String>,
     /// Stream partial replies via edit-in-place where the platform supports it.
-    #[serde(default = "default_true")] pub streaming: bool,
+    #[serde(default = "default_true")]
+    pub streaming: bool,
     /// Run due cron jobs inside the gateway and deliver output to each platform's home channel.
-    #[serde(default = "default_true")] pub cron_delivery: bool,
+    #[serde(default = "default_true")]
+    pub cron_delivery: bool,
     /// Auto-reset policy for gateway sessions (default: never).
-    #[serde(default)] pub reset_policy: ResetPolicy,
+    #[serde(default)]
+    pub reset_policy: ResetPolicy,
 }
-fn default_group_per_user() -> bool { true }
-fn default_autostart() -> bool { false }
-fn default_true() -> bool { true }
+fn default_group_per_user() -> bool {
+    true
+}
+fn default_autostart() -> bool {
+    false
+}
+fn default_true() -> bool {
+    true
+}
 impl Default for GatewayConfig {
     fn default() -> Self {
-        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: false, denied_tools: Vec::new(), streaming: true, cron_delivery: true, reset_policy: ResetPolicy::default() }
+        Self {
+            platforms: HashMap::new(),
+            group_per_user: true,
+            thread_per_user: false,
+            autostart: false,
+            denied_tools: Vec::new(),
+            streaming: true,
+            cron_delivery: true,
+            reset_policy: ResetPolicy::default(),
+        }
     }
 }
 pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
-    let base = std::env::var("GRAY_HOME").or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray"))).map_err(|_| anyhow::anyhow!("cannot resolve home"))?;
+    let base = std::env::var("GRAY_HOME")
+        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
+        .map_err(|_| anyhow::anyhow!("cannot resolve home"))?;
     Ok(PathBuf::from(base))
 }
 pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
     gray_home_dir().map(|b| b.join("gateway.yaml"))
 }
 pub fn load_gateway_config() -> GatewayConfig {
-    let Ok(path) = gray_gateway_path() else { return GatewayConfig::default(); };
-    let Ok(text) = std::fs::read_to_string(&path) else { return GatewayConfig::default(); };
+    let Ok(path) = gray_gateway_path() else {
+        return GatewayConfig::default();
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return GatewayConfig::default();
+    };
     match serde_yaml_ng::from_str(&text) {
         Ok(cfg) => cfg,
         Err(e) => {
-            eprintln!("warning: ignoring {}: failed to parse gateway config: {e}", path.display());
+            eprintln!(
+                "warning: ignoring {}: failed to parse gateway config: {e}",
+                path.display()
+            );
             GatewayConfig::default()
         }
     }
 }
 pub fn save_gateway_config(cfg: &GatewayConfig) -> anyhow::Result<()> {
     let path = gray_gateway_path()?;
-    if let Some(p) = path.parent() { std::fs::create_dir_all(p)?; }
+    if let Some(p) = path.parent() {
+        std::fs::create_dir_all(p)?;
+    }
     let s = serde_yaml_ng::to_string(cfg)?;
     std::fs::write(&path, s)?;
-    #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?; }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -180,7 +248,11 @@ mod tests {
     #[test]
     fn platform_display_and_serde_are_byte_identical() {
         // Persisted session keys depend on these strings — never change them.
-        for (p, s) in [(Platform::Telegram, "telegram"), (Platform::Discord, "discord"), (Platform::Slack, "slack")] {
+        for (p, s) in [
+            (Platform::Telegram, "telegram"),
+            (Platform::Discord, "discord"),
+            (Platform::Slack, "slack"),
+        ] {
             assert_eq!(p.to_string(), s);
             assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{s}\""));
             assert_eq!(s.parse::<Platform>().unwrap(), p);
@@ -200,8 +272,16 @@ mod tests {
 
     #[test]
     fn dm_policy_serde_lowercase() {
-        assert_eq!(serde_yaml_ng::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
-        assert_eq!(serde_yaml_ng::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
+        assert_eq!(
+            serde_yaml_ng::to_string(&DmPolicy::Allowlist)
+                .unwrap()
+                .trim(),
+            "allowlist"
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<DmPolicy>("open").unwrap(),
+            DmPolicy::Open
+        );
     }
 
     #[test]

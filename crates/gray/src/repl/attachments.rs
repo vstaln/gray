@@ -33,8 +33,12 @@ pub fn attachment_kind(path: &Path) -> AttachmentKind {
         Some("png") | Some("jpg") | Some("jpeg") | Some("webp") | Some("gif") | Some("bmp")
         | Some("heic") | Some("heif") => AttachmentKind::Image,
         Some("pdf") => AttachmentKind::Pdf,
-        Some("mp4") | Some("mov") | Some("mkv") | Some("webm") | Some("m4v") => AttachmentKind::Video,
-        Some("mp3") | Some("wav") | Some("m4a") | Some("ogg") | Some("flac") => AttachmentKind::Audio,
+        Some("mp4") | Some("mov") | Some("mkv") | Some("webm") | Some("m4v") => {
+            AttachmentKind::Video
+        }
+        Some("mp3") | Some("wav") | Some("m4a") | Some("ogg") | Some("flac") => {
+            AttachmentKind::Audio
+        }
         _ => AttachmentKind::Unsupported,
     }
 }
@@ -69,10 +73,13 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
         ImageFormat::Jpeg => ImageFormat::Jpeg,
         ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP => ImageFormat::Png,
         // bmp/heic/etc: not in our decoder set — loud, like opencode DecodeError.
-        other => return Err(MediaError::Decode(format!("{other:?} decoding not enabled"))),
+        other => {
+            return Err(MediaError::Decode(format!(
+                "{other:?} decoding not enabled"
+            )));
+        }
     };
-    let mut img =
-        image::load_from_memory(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
+    let mut img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
     for _ in 0..4 {
         if img.width().max(img.height()) > MAX_IMAGE_SIDE {
             img = img.resize(
@@ -98,9 +105,7 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
     }
     Err(MediaError::TooBig(format!(
         "{} bytes",
-        base64_len(
-            &img.to_rgba8().into_raw()
-        )
+        base64_len(&img.to_rgba8().into_raw())
     )))
 }
 
@@ -187,7 +192,10 @@ mod tests {
             attachment_kind(Path::new("a.zip")),
             AttachmentKind::Unsupported
         );
-        assert_eq!(attachment_kind(Path::new("noext")), AttachmentKind::Unsupported);
+        assert_eq!(
+            attachment_kind(Path::new("noext")),
+            AttachmentKind::Unsupported
+        );
     }
 
     #[test]
@@ -218,5 +226,4 @@ mod tests {
             Err(MediaError::Extract(_))
         ));
     }
-
 }

@@ -3,8 +3,8 @@
 //! Slack uses two tokens in Socket Mode:
 //! - `token` = bot token `xoxb-...` (Web API: chat.postMessage / chat.update / auth.test)
 //! - `app_token` = app-level token `xapp-...` (Socket Mode websocket, `connections:write`)
-//! Bot-token-only mode still works for *sending* (`gray send slack:C123 …`);
-//! inbound requires the app token.
+//!   Bot-token-only mode still works for *sending* (`gray send slack:C123 …`);
+//!   inbound requires the app token.
 //!
 //! Enable: `cargo check -p gray-gateway --features slack` (slack-morphism 2, hyper+rustls).
 //! Features: channels,
@@ -19,9 +19,11 @@
 //! `message.channels`, `message.groups`, `message.mpim`.
 
 use crate::config::{Platform, PlatformConfig};
-use crate::platform::{check_token_shape, utf16_len, BasePlatformAdapter, MessageEvent, SendOptions, SendResult};
-use crate::status::GatewayStatusBoard;
+use crate::platform::{
+    BasePlatformAdapter, MessageEvent, SendOptions, SendResult, check_token_shape, utf16_len,
+};
 use crate::session::SessionSource;
+use crate::status::GatewayStatusBoard;
 use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -52,11 +54,17 @@ pub(crate) fn slack_identity_display(id: &(String, String, String)) -> String {
 
 impl SlackAdapter {
     pub fn new(cfg: PlatformConfig) -> anyhow::Result<Self> {
-        let bot_token = cfg
-            .token
-            .ok_or_else(|| anyhow::anyhow!("slack token not set (set platforms.slack.token to xoxb-... in gateway.yaml)"))?;
+        let bot_token = cfg.token.ok_or_else(|| {
+            anyhow::anyhow!(
+                "slack token not set (set platforms.slack.token to xoxb-... in gateway.yaml)"
+            )
+        })?;
         validate_slack_bot_token(&bot_token)?;
-        let app_token = cfg.app_token.clone().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        let app_token = cfg
+            .app_token
+            .clone()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
         if let Some(ref t) = app_token {
             validate_slack_app_token(t)?;
         }
@@ -79,7 +87,11 @@ impl SlackAdapter {
 
     pub fn is_authenticated(&self) -> bool {
         validate_slack_bot_token(&self.bot_token).is_ok()
-            && self.app_token.as_ref().map(|t| validate_slack_app_token(t).is_ok()).unwrap_or(true)
+            && self
+                .app_token
+                .as_ref()
+                .map(|t| validate_slack_app_token(t).is_ok())
+                .unwrap_or(true)
     }
 
     pub fn has_socket_mode(&self) -> bool {
@@ -90,7 +102,10 @@ impl SlackAdapter {
 pub fn validate_slack_bot_token(token: &str) -> anyhow::Result<()> {
     let t = check_token_shape(token, "slack bot token")?;
     if !(t.starts_with("xoxb-") || t.starts_with("xoxp-")) {
-        anyhow::bail!("slack token must start with xoxb- (bot) or xoxp- (user); got prefix {:?}", &t[..t.len().min(5)]);
+        anyhow::bail!(
+            "slack token must start with xoxb- (bot) or xoxp- (user); got prefix {:?}",
+            &t[..t.len().min(5)]
+        );
     }
     if t.len() < 10 {
         anyhow::bail!("slack token too short");
@@ -101,7 +116,10 @@ pub fn validate_slack_bot_token(token: &str) -> anyhow::Result<()> {
 pub fn validate_slack_app_token(token: &str) -> anyhow::Result<()> {
     let t = check_token_shape(token, "slack app token")?;
     if !t.starts_with("xapp-") {
-        anyhow::bail!("slack app_token must start with xapp- (Socket Mode); got {:?}", &t[..t.len().min(5)]);
+        anyhow::bail!(
+            "slack app_token must start with xapp- (Socket Mode); got {:?}",
+            &t[..t.len().min(5)]
+        );
     }
     if t.len() < 10 {
         anyhow::bail!("slack app_token too short");
@@ -148,7 +166,9 @@ pub fn parse_chat_target(chat: &str) -> anyhow::Result<(String, Option<String>)>
         None => (chat.trim(), None),
     };
     if c.is_empty() || !c.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-        anyhow::bail!("invalid slack channel id {chat:?} (expected e.g. C0123456789 or D0123456789)");
+        anyhow::bail!(
+            "invalid slack channel id {chat:?} (expected e.g. C0123456789 or D0123456789)"
+        );
     }
     Ok((c.to_string(), t.filter(|t| !t.is_empty())))
 }
@@ -171,19 +191,29 @@ mod live {
         _client: Arc<SlackHyperClient>,
         states: SlackClientEventsUserState,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let SlackEventCallbackBody::Message(m) = event.event else { return Ok(()) };
+        let SlackEventCallbackBody::Message(m) = event.event else {
+            return Ok(());
+        };
         // Skip edits/deletes/joins/bot posts — only fresh human text.
         if m.subtype.is_some() || m.sender.bot_id.is_some() {
             return Ok(());
         }
-        let Some(channel) = m.origin.channel.as_ref() else { return Ok(()) };
-        let text = m.content.as_ref().and_then(|c| c.text.clone()).unwrap_or_default();
+        let Some(channel) = m.origin.channel.as_ref() else {
+            return Ok(());
+        };
+        let text = m
+            .content
+            .as_ref()
+            .and_then(|c| c.text.clone())
+            .unwrap_or_default();
         if text.trim().is_empty() {
             return Ok(());
         }
         let user_id = m.sender.user.as_ref().map(|u| u.to_string());
         let guard = states.read().await;
-        let Some(st) = guard.get_user_state::<ListenerState>() else { return Ok(()) };
+        let Some(st) = guard.get_user_state::<ListenerState>() else {
+            return Ok(());
+        };
         if user_id.as_deref() == Some(st.bot_user_id.as_str()) {
             return Ok(());
         }
@@ -192,11 +222,22 @@ mod live {
         let chat_type = chat_type_for(ctype.as_deref(), &channel_id);
         let thread_ts = m.origin.thread_ts.as_ref().map(|t| t.to_string());
         let ts = m.origin.ts.to_string();
-        let user_name = m.sender.user_profile.as_ref().and_then(|p| p.display_name.clone().or(p.real_name.clone()));
+        let user_name = m
+            .sender
+            .user_profile
+            .as_ref()
+            .and_then(|p| p.display_name.clone().or(p.real_name.clone()));
         let ev = MessageEvent {
             text,
             message_id: Some(ts.clone()),
-            source: source_for(&event.team_id.to_string(), &channel_id, chat_type, user_id.as_deref(), thread_ts.as_deref(), &ts),
+            source: source_for(
+                &event.team_id.to_string(),
+                &channel_id,
+                chat_type,
+                user_id.as_deref(),
+                thread_ts.as_deref(),
+                &ts,
+            ),
             media_urls: vec![],
             user_name,
         };
@@ -221,9 +262,15 @@ mod live {
         tokio::spawn(async move {
             let callbacks = SlackSocketModeListenerCallbacks::new().with_push_events(on_push_event);
             let env = Arc::new(
-                SlackClientEventsListenerEnvironment::new(client).with_error_handler(on_error).with_user_state(state),
+                SlackClientEventsListenerEnvironment::new(client)
+                    .with_error_handler(on_error)
+                    .with_user_state(state),
             );
-            let listener = SlackClientSocketModeListener::new(&SlackClientSocketModeConfig::new(), env, callbacks);
+            let listener = SlackClientSocketModeListener::new(
+                &SlackClientSocketModeConfig::new(),
+                env,
+                callbacks,
+            );
             let token = SlackApiToken::new(app_token.into());
             let mut attempt = 0u32;
             loop {
@@ -232,7 +279,9 @@ mod live {
                     Err(e) => {
                         attempt += 1;
                         let d = crate::platform::backoff_delay(attempt);
-                        log::warn!("[slack] socket mode connect failed ({attempt}): {e}; retry in {d:?}");
+                        log::warn!(
+                            "[slack] socket mode connect failed ({attempt}): {e}; retry in {d:?}"
+                        );
                         tokio::time::sleep(d).await;
                     }
                 }
@@ -255,7 +304,11 @@ impl BasePlatformAdapter for SlackAdapter {
     }
 
     fn bot_identity(&self) -> Option<String> {
-        self.identity.lock().ok().and_then(|g| g.clone()).map(|id| slack_identity_display(&id))
+        self.identity
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .map(|id| slack_identity_display(&id))
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
@@ -276,21 +329,34 @@ impl BasePlatformAdapter for SlackAdapter {
                 .auth_test()
                 .await
                 .map_err(|e| anyhow::anyhow!("slack bot token rejected: {e}"))?;
-            log::info!("[slack] authenticated as {} in {}", me.user.as_deref().unwrap_or("?"), me.team);
-            let bot = me.user.clone().filter(|s| !s.trim().is_empty()).unwrap_or_default();
+            log::info!(
+                "[slack] authenticated as {} in {}",
+                me.user.as_deref().unwrap_or("?"),
+                me.team
+            );
+            let bot = me
+                .user
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_default();
             *self.identity.lock().unwrap() = Some((bot, me.team.clone(), me.team_id.to_string()));
             *self.client.lock().unwrap() = Some(client.clone());
             let tx = self.event_tx.lock().unwrap().clone();
             match (tx, self.app_token.clone()) {
                 (Some(tx), Some(app)) => {
                     self.stage("starting socket");
-                    let state = live::ListenerState { tx, bot_user_id: me.user_id.to_string() };
+                    let state = live::ListenerState {
+                        tx,
+                        bot_user_id: me.user_id.to_string(),
+                    };
                     let handle = live::spawn_socket_mode(client, app, state);
                     if let Some(old) = self.listener.lock().unwrap().replace(handle) {
                         old.abort();
                     }
                 }
-                (Some(_), None) => log::warn!("[slack] no app_token (xapp-…): inbound disabled, send-only"),
+                (Some(_), None) => {
+                    log::warn!("[slack] no app_token (xapp-…): inbound disabled, send-only")
+                }
                 (None, _) => log::info!("[slack] send-only mode (no event channel wired)"),
             }
         }
@@ -298,7 +364,11 @@ impl BasePlatformAdapter for SlackAdapter {
         {
             self.stage("authenticating");
             self.stage("starting socket");
-            log::info!("[slack] stub connect bot={}… app_token={}", &self.bot_token[..self.bot_token.len().min(8)], self.has_socket_mode());
+            log::info!(
+                "[slack] stub connect bot={}… app_token={}",
+                &self.bot_token[..self.bot_token.len().min(8)],
+                self.has_socket_mode()
+            );
         }
         Ok(())
     }
@@ -350,7 +420,10 @@ impl BasePlatformAdapter for SlackAdapter {
         }
         #[cfg(not(feature = "slack"))]
         {
-            log::info!("[slack] edit {chat}/{message_id} ({} utf16)", utf16_len(text));
+            log::info!(
+                "[slack] edit {chat}/{message_id} ({} utf16)",
+                utf16_len(text)
+            );
             SendResult::ok(Some(message_id.to_string()))
         }
     }
@@ -408,7 +481,11 @@ impl BasePlatformAdapter for SlackAdapter {
                 debug_assert!(utf16_len(chunk) <= MAX_LENGTH);
                 log::info!(
                     "[slack] send to {} chunk {}/{} ({} utf16, thread={:?}): {:?}",
-                    chat, i + 1, chunks.len(), utf16_len(chunk), opts.thread_id,
+                    chat,
+                    i + 1,
+                    chunks.len(),
+                    utf16_len(chunk),
+                    opts.thread_id,
                     crate::platform::preview_80(chunk)
                 );
             }
@@ -421,11 +498,14 @@ impl BasePlatformAdapter for SlackAdapter {
 mod tests {
     use super::*;
     use crate::config::PlatformConfig;
-    use crate::platform::{utf16_len, BasePlatformAdapter};
+    use crate::platform::{BasePlatformAdapter, utf16_len};
     use crate::session::build_session_key;
 
     fn cfg(bot: &str, app: Option<&str>) -> PlatformConfig {
-        PlatformConfig { app_token: app.map(str::to_string), ..PlatformConfig::with_token(bot) }
+        PlatformConfig {
+            app_token: app.map(str::to_string),
+            ..PlatformConfig::with_token(bot)
+        }
     }
 
     #[test]
@@ -458,7 +538,9 @@ mod tests {
         let long = "a".repeat(80_000);
         let chunks = crate::platform::split_message_smart(&long, MAX_LENGTH);
         assert_eq!(chunks.len(), 3); // 39000*2 + 2000
-        for c in &chunks { assert!(utf16_len(c) <= MAX_LENGTH); }
+        for c in &chunks {
+            assert!(utf16_len(c) <= MAX_LENGTH);
+        }
         #[cfg(not(feature = "slack"))]
         assert!(a.send("C123", &long).await.success);
         #[cfg(feature = "slack")]
@@ -472,12 +554,24 @@ mod tests {
     #[test]
     fn session_key_routing() {
         let dm = source_for("T1", "D42", "dm", Some("U1"), None, "1.0");
-        assert_eq!(build_session_key(&dm, true, false), "gray:main:slack:dm:T1:D42");
+        assert_eq!(
+            build_session_key(&dm, true, false),
+            "gray:main:slack:dm:T1:D42"
+        );
         let ch = source_for("T1", "C9", "channel", Some("U1"), None, "1.0");
-        assert_eq!(build_session_key(&ch, true, false), "gray:main:slack:channel:T1:C9:U1");
+        assert_eq!(
+            build_session_key(&ch, true, false),
+            "gray:main:slack:channel:T1:C9:U1"
+        );
         let th = source_for("T1", "C9", "channel", Some("U1"), Some("1700.5"), "1701.0");
-        assert_eq!(build_session_key(&th, true, false), "gray:main:slack:channel:T1:C9:thread_1700.5");
-        assert_eq!(build_session_key(&th, true, true), "gray:main:slack:channel:T1:C9:thread_1700.5:U1");
+        assert_eq!(
+            build_session_key(&th, true, false),
+            "gray:main:slack:channel:T1:C9:thread_1700.5"
+        );
+        assert_eq!(
+            build_session_key(&th, true, true),
+            "gray:main:slack:channel:T1:C9:thread_1700.5:U1"
+        );
         assert_eq!(chat_type_for(Some("im"), "D1"), "dm");
         assert_eq!(chat_type_for(Some("mpim"), "G1"), "channel");
         assert_eq!(chat_type_for(None, "D1"), "dm");
@@ -487,14 +581,21 @@ mod tests {
     #[test]
     fn parse_targets() {
         assert_eq!(parse_chat_target("C123").unwrap(), ("C123".into(), None));
-        assert_eq!(parse_chat_target("C123:1700.1").unwrap(), ("C123".into(), Some("1700.1".into())));
+        assert_eq!(
+            parse_chat_target("C123:1700.1").unwrap(),
+            ("C123".into(), Some("1700.1".into()))
+        );
         assert!(parse_chat_target("").is_err());
         assert!(parse_chat_target("#general").is_err());
     }
 
     #[test]
     fn slack_identity_triple_formats_boot_row() {
-        let id = ("graybot".to_string(), "Acme".to_string(), "T123".to_string());
+        let id = (
+            "graybot".to_string(),
+            "Acme".to_string(),
+            "T123".to_string(),
+        );
         assert_eq!(slack_identity_display(&id), "@graybot in Acme");
         let a = SlackAdapter::new(cfg("xoxb-1234567890-abc", None)).unwrap();
         assert_eq!(a.bot_identity(), None, "no identity before connect");
@@ -512,7 +613,9 @@ mod tests {
             a.connect().await.unwrap();
             assert_eq!(
                 board.snapshot()[0].1,
-                PlatformConnState::Connecting { stage: "starting socket" },
+                PlatformConnState::Connecting {
+                    stage: "starting socket"
+                },
                 "stub ends on the last pre-connected stage; the daemon marks connected"
             );
         }

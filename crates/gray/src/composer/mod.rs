@@ -11,14 +11,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
-use ratatui::Terminal;
 
 use gray_markdown::HyperlinkTarget;
-
 
 pub(crate) const PANEL_ROWS: usize = 6;
 pub(crate) const VIEWPORT_H: u16 = 10;
@@ -27,8 +26,8 @@ type Term = Terminal<CrosstermBackend<Stdout>>;
 
 mod draw;
 pub(crate) use draw::thinking_style;
-pub(crate) mod transcript;
 pub(crate) mod input;
+pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
@@ -36,8 +35,8 @@ mod text_area;
 pub(crate) use text_area::TextArea;
 
 mod question;
-pub(crate) use question::{handle_question_key, tick_question};
 pub use question::ComposerQuestionAsker;
+pub(crate) use question::{handle_question_key, tick_question};
 
 pub struct Tui {
     pub(crate) terminal: Term,
@@ -115,7 +114,11 @@ pub(crate) struct GatewayBootPanel {
 pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
     let logo_raw = crate::tui::logo_lines();
     let l_rows = logo_raw.len().max(1) as f32;
-    let max_logo_w = logo_raw.iter().map(|l| l.trim().chars().count()).max().unwrap_or(0);
+    let max_logo_w = logo_raw
+        .iter()
+        .map(|l| l.trim().chars().count())
+        .max()
+        .unwrap_or(0);
     let l_cols = (max_logo_w as f32).max(1.0);
     let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
@@ -139,13 +142,25 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
         welcome_lines.push(Line::from(spans));
     }
     welcome_lines.push(Line::from(""));
-    let banner_raw = format!("gray {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION"));
+    let banner_raw = format!(
+        "gray {} \u{b7} Run /help for commands",
+        env!("CARGO_PKG_VERSION")
+    );
     let banner_len = banner_raw.chars().count();
     let pad = w.saturating_sub(banner_len) / 2;
     welcome_lines.push(Line::from(vec![
         Span::raw(" ".repeat(pad)),
-        Span::styled("gray", Style::default().bold().fg(Color::Rgb(225, 225, 225))),
-        Span::styled(format!(" {} \u{b7} Run /help for commands", env!("CARGO_PKG_VERSION")), Style::default().fg(Color::Rgb(140, 140, 140))),
+        Span::styled(
+            "gray",
+            Style::default().bold().fg(Color::Rgb(225, 225, 225)),
+        ),
+        Span::styled(
+            format!(
+                " {} \u{b7} Run /help for commands",
+                env!("CARGO_PKG_VERSION")
+            ),
+            Style::default().fg(Color::Rgb(140, 140, 140)),
+        ),
     ]));
     welcome_lines.push(Line::from(""));
     welcome_lines
@@ -204,7 +219,10 @@ impl Tui {
             last_width: cols,
             latest_usage: None,
             cumulative_usage: None,
-            markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
+            markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(
+                gray_markdown::gray_markdown_style(),
+                true,
+            ),
             committed_markdown_lines: 0,
             pending_resize: None,
             live_streamed_tokens: 0,
@@ -270,18 +288,23 @@ impl Tui {
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::UserPrompt(text, attached) => {
-                    let lines = crate::composer::transcript::format_user_prompt_lines(text, attached, w);
+                    let lines =
+                        crate::composer::transcript::format_user_prompt_lines(text, attached, w);
                     let th = lines.len() as u16;
                     let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
                     let _ = self.terminal.insert_before(th, |buf| {
-                        Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
+                        Paragraph::new(lines.clone())
+                            .block(block)
+                            .render(buf.area, buf);
                     });
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::ToolBox { header, body } => {
                     if crate::composer::transcript::is_gateway_boot_header(header) {
                         let lines = crate::composer::transcript::format_gateway_boot_card(
-                            header.clone(), body, w,
+                            header.clone(),
+                            body,
+                            w,
                         );
                         let th = lines.len() as u16;
                         let _ = self.terminal.insert_before(th, |buf| {
@@ -290,12 +313,17 @@ impl Tui {
                         new_transcript.extend(lines);
                     } else {
                         let lines = crate::composer::transcript::format_tool_box_lines(
-                            header.clone(), body, w,
+                            header.clone(),
+                            body,
+                            w,
                         );
                         let th = lines.len() as u16;
-                        let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                        let block =
+                            Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
                         let _ = self.terminal.insert_before(th, |buf| {
-                            Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
+                            Paragraph::new(lines.clone())
+                                .block(block)
+                                .render(buf.area, buf);
                         });
                         new_transcript.extend(lines);
                     }
@@ -305,12 +333,20 @@ impl Tui {
                     new_transcript.extend(lines_only);
                 }
                 TranscriptEntry::Gap(need) => {
-                    let trailing = new_transcript.iter().rev().take_while(|l| {
-                        l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
-                    }).count();
+                    let trailing = new_transcript
+                        .iter()
+                        .rev()
+                        .take_while(|l| {
+                            l.style.bg.is_none()
+                                && l.spans
+                                    .iter()
+                                    .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+                        })
+                        .count();
                     let need_actual = need.saturating_sub(trailing);
                     if need_actual > 0 {
-                        let blank: Vec<Line<'static>> = (0..need_actual).map(|_| Line::from("")).collect();
+                        let blank: Vec<Line<'static>> =
+                            (0..need_actual).map(|_| Line::from("")).collect();
                         let th = need_actual as u16;
                         let _ = self.terminal.insert_before(th, |buf| {
                             Paragraph::new(blank.clone()).render(buf.area, buf);
@@ -326,10 +362,20 @@ impl Tui {
         let _ = self.draw();
     }
 
-    pub fn set_model(&mut self, model: String) { self.model_name = model; }
-    pub fn set_cwd(&mut self, cwd: String) { self.cwd = cwd; }
-    pub fn set_thinking_effort(&mut self, effort: String) { self.thinking_effort = effort; }
-    pub fn set_next_cron(&mut self, name: Option<String>, next: Option<chrono::DateTime<chrono::Utc>>) {
+    pub fn set_model(&mut self, model: String) {
+        self.model_name = model;
+    }
+    pub fn set_cwd(&mut self, cwd: String) {
+        self.cwd = cwd;
+    }
+    pub fn set_thinking_effort(&mut self, effort: String) {
+        self.thinking_effort = effort;
+    }
+    pub fn set_next_cron(
+        &mut self,
+        name: Option<String>,
+        next: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
         match (name, next) {
             (Some(n), Some(t)) => self.next_cron = Some((n, t)),
             _ => self.next_cron = None,
@@ -347,7 +393,9 @@ impl Tui {
         self.live_streamed_tokens = 0;
     }
 
-    pub(crate) fn width(&self) -> usize { self.last_width.max(20) as usize }
+    pub(crate) fn width(&self) -> usize {
+        self.last_width.max(20) as usize
+    }
 
     pub(crate) fn draw(&mut self) -> anyhow::Result<()> {
         draw::draw(self)
@@ -387,7 +435,11 @@ impl Tui {
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            let style = if self.thinking { thinking_style() } else { Style::default() };
+            let style = if self.thinking {
+                thinking_style()
+            } else {
+                Style::default()
+            };
             for line in rest.split('\n') {
                 if !line.is_empty() {
                     self.push_line_styled(line.to_string(), style);
@@ -396,13 +448,18 @@ impl Tui {
         }
         let output = std::mem::replace(
             &mut self.markdown_renderer,
-            gray_markdown::StreamingMarkdownRenderer::new(gray_markdown::gray_markdown_style(), true),
-        ).finish_into_output(Some(gray_markdown::get_syntect()));
+            gray_markdown::StreamingMarkdownRenderer::new(
+                gray_markdown::gray_markdown_style(),
+                true,
+            ),
+        )
+        .finish_into_output(Some(gray_markdown::get_syntect()));
         if output.lines.len() > self.committed_markdown_lines {
             if self.committed_markdown_lines == 0 {
                 self.ensure_gap(1);
             }
-            let remaining_lines: Vec<Line<'static>> = output.lines[self.committed_markdown_lines..].to_vec();
+            let remaining_lines: Vec<Line<'static>> =
+                output.lines[self.committed_markdown_lines..].to_vec();
             let offset = self.committed_markdown_lines;
             self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
         }
@@ -439,8 +496,14 @@ impl Tui {
 
         let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
-            let elapsed_str = crate::repl::format::fmt_duration_ms(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
-            let verb = if had_thinking { "Thought for" } else { "Worked for" };
+            let elapsed_str = crate::repl::format::fmt_duration_ms(
+                elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+            );
+            let verb = if had_thinking {
+                "Thought for"
+            } else {
+                "Worked for"
+            };
             let tok_suffix = if let Some(u) = self.latest_usage {
                 format!(" · {} tok", crate::repl::fmt_usage(u.total()))
             } else {
@@ -469,18 +532,21 @@ impl Tui {
     /// top/bottom margins, no middle blank), so `starting` and `autostarted`
     /// never look different.
     pub(crate) fn gateway_panel_lines(&self, w: usize) -> Vec<Line<'static>> {
-        let Some(panel) = &self.gateway_boot else { return Vec::new(); };
+        let Some(panel) = &self.gateway_boot else {
+            return Vec::new();
+        };
         let (header, body) =
             crate::composer::transcript::gateway_boot_card_parts(&panel.header, &panel.rows);
         crate::composer::transcript::format_gateway_boot_card(header, &body, w)
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
-        let (used_tokens, cache_hit_rate) = if let Some(u) = self.latest_usage.or(self.cumulative_usage) {
-            (u.total(), u.cache_hit_rate())
-        } else {
-            (0, 0.0)
-        };
+        let (used_tokens, cache_hit_rate) =
+            if let Some(u) = self.latest_usage.or(self.cumulative_usage) {
+                (u.total(), u.cache_hit_rate())
+            } else {
+                (0, 0.0)
+            };
         crate::setup::BackgroundSnapshot {
             transcript: self.transcript.clone(),
             history_entries: self.history_entries.clone(),
@@ -506,8 +572,14 @@ impl Tui {
         let needs_cron_tick = if let Some((_, next)) = &self.next_cron {
             let now = chrono::Utc::now();
             let secs = (*next - now).num_seconds();
-            let interval = if secs.abs() < 3600 { Duration::from_secs(1) } else { Duration::from_secs(5) };
-            self.last_cron_tick.map(|t| t.elapsed() >= interval).unwrap_or(true)
+            let interval = if secs.abs() < 3600 {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(5)
+            };
+            self.last_cron_tick
+                .map(|t| t.elapsed() >= interval)
+                .unwrap_or(true)
         } else {
             false
         };
@@ -520,12 +592,12 @@ impl Tui {
                     return;
                 }
             }
-        } else if let Ok((cols, _)) = crossterm::terminal::size() {
-            if cols != self.last_width {
-                self.pending_resize = Some((cols, Instant::now() + Duration::from_millis(75)));
-                if !needs_cron_tick && self.status.is_none() {
-                    return;
-                }
+        } else if let Ok((cols, _)) = crossterm::terminal::size()
+            && cols != self.last_width
+        {
+            self.pending_resize = Some((cols, Instant::now() + Duration::from_millis(75)));
+            if !needs_cron_tick && self.status.is_none() {
+                return;
             }
         }
         if self.status.is_none() && !needs_cron_tick && self.gateway_boot.is_none() {
@@ -557,4 +629,3 @@ impl Drop for Tui {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }
-

@@ -9,7 +9,7 @@ use gray_core::error::CoreError;
 use gray_core::message::ToolDef;
 use gray_core::questions::{UserAnswer, UserQuestion};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -56,7 +56,8 @@ impl gray_core::questions::QuestionAsker for StdinQuestionAsker {
         &self,
         questions: Vec<UserQuestion>,
         blocking: bool,
-    ) -> futures::future::BoxFuture<'static, Result<Vec<UserAnswer>, gray_core::error::CoreError>> {
+    ) -> futures::future::BoxFuture<'static, Result<Vec<UserAnswer>, gray_core::error::CoreError>>
+    {
         Box::pin(async move {
             if !blocking {
                 return Ok(Vec::new());
@@ -67,11 +68,23 @@ impl gray_core::questions::QuestionAsker for StdinQuestionAsker {
                 let total = questions.len();
                 let mut out = Vec::new();
                 for (idx, q) in questions.iter().enumerate() {
-                    println!("\x1b[2m\x1b[1mQuestion {}/{total}: {}\x1b[0m", idx + 1, q.question);
+                    println!(
+                        "\x1b[2m\x1b[1mQuestion {}/{total}: {}\x1b[0m",
+                        idx + 1,
+                        q.question
+                    );
                     for (i, opt) in q.options.iter().enumerate() {
-                        println!("\x1b[2m  {}. {} — {}\x1b[0m", i + 1, opt.label, opt.description);
+                        println!(
+                            "\x1b[2m  {}. {} — {}\x1b[0m",
+                            i + 1,
+                            opt.label,
+                            opt.description
+                        );
                     }
-                    println!("\x1b[2m  {}. {OTHER_OPTION_LABEL} — {OTHER_OPTION_DESCRIPTION}\x1b[0m", q.options.len() + 1);
+                    println!(
+                        "\x1b[2m  {}. {OTHER_OPTION_LABEL} — {OTHER_OPTION_DESCRIPTION}\x1b[0m",
+                        q.options.len() + 1
+                    );
                     print!("\x1b[2m  answer (number, or free text; blank = skip): \x1b[0m");
                     use std::io::Write;
                     let _ = std::io::stdout().flush();
@@ -92,12 +105,19 @@ impl gray_core::questions::QuestionAsker for StdinQuestionAsker {
                         _ if t.is_empty() => Vec::new(),
                         _ => vec![format!("user_note: {t}")],
                     };
-                    out.push(UserAnswer { id: q.id.clone(), answers });
+                    out.push(UserAnswer {
+                        id: q.id.clone(),
+                        answers,
+                    });
                 }
                 Ok(out)
             })
             .await
-            .unwrap_or_else(|e| Err(gray_core::error::CoreError::Provider(format!("stdin asker failed: {e}"))))
+            .unwrap_or_else(|e| {
+                Err(gray_core::error::CoreError::Provider(format!(
+                    "stdin asker failed: {e}"
+                )))
+            })
         })
     }
 }
@@ -152,7 +172,9 @@ impl super::Tool for RequestUserInputTool {
     }
 
     fn prompt_snippet(&self) -> Option<&'static str> {
-        Some("request_user_input — ask the user 1-3 multiple-choice questions when a decision blocks progress")
+        Some(
+            "request_user_input — ask the user 1-3 multiple-choice questions when a decision blocks progress",
+        )
     }
 
     fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
@@ -177,12 +199,15 @@ impl super::Tool for RequestUserInputTool {
         let blocking = parsed.blocking.unwrap_or(true);
         let Some(bridge) = &ctx.questions else {
             return ToolOutput::error(
-                "request_user_input requires an interactive session (no user reachable)".to_string(),
+                "request_user_input requires an interactive session (no user reachable)"
+                    .to_string(),
             );
         };
         match bridge.0.ask(questions, blocking).await {
             Ok(answers) => ToolOutput::ok(answers_to_json(&answers).to_string()),
-            Err(CoreError::Cancelled) => ToolOutput::error("request_user_input cancelled".to_string()),
+            Err(CoreError::Cancelled) => {
+                ToolOutput::error("request_user_input cancelled".to_string())
+            }
             Err(e) => ToolOutput::error(format!("request_user_input failed: {e}")),
         }
     }
@@ -199,7 +224,10 @@ mod tests {
             header: "H".into(),
             question: "q?".into(),
             options: (0..options)
-                .map(|i| UserOption { label: format!("o{i}"), description: "d".into() })
+                .map(|i| UserOption {
+                    label: format!("o{i}"),
+                    description: "d".into(),
+                })
                 .collect(),
             is_other: false,
         }
@@ -219,7 +247,10 @@ mod tests {
 
     #[test]
     fn answers_json_shape() {
-        let out = answers_to_json(&[UserAnswer { id: "mode".into(), answers: vec!["fast".into(), "user_note: hurry".into()] }]);
+        let out = answers_to_json(&[UserAnswer {
+            id: "mode".into(),
+            answers: vec!["fast".into(), "user_note: hurry".into()],
+        }]);
         assert_eq!(out["answers"]["mode"]["answers"][0], "fast");
         assert_eq!(out["answers"]["mode"]["answers"][1], "user_note: hurry");
     }

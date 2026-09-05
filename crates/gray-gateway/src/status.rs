@@ -40,9 +40,19 @@ impl GatewayStatusBoard {
     pub fn new(platforms: &[Platform]) -> Self {
         let inner = platforms
             .iter()
-            .map(|p| (*p, PlatformConnState::Connecting { stage: "connecting" }))
+            .map(|p| {
+                (
+                    *p,
+                    PlatformConnState::Connecting {
+                        stage: "connecting",
+                    },
+                )
+            })
             .collect();
-        Self { inner: Arc::new(Mutex::new(inner)), notify: Arc::new(tokio::sync::Notify::new()) }
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
     }
 
     /// Advance the [`PlatformConnState::Connecting`] stage (e.g. `"polling"`).
@@ -142,20 +152,22 @@ mod tests {
         assert_eq!(snap.len(), 2);
         assert_eq!(snap[0].0, Platform::Telegram);
         assert_eq!(snap[1].0, Platform::Discord);
-        assert!(snap.iter().all(|(_, s)| matches!(s, PlatformConnState::Connecting { .. })));
+        assert!(
+            snap.iter()
+                .all(|(_, s)| matches!(s, PlatformConnState::Connecting { .. }))
+        );
 
         b.mark_connected(Platform::Discord, Some("GrayBot".into()));
         assert!(!b.all_terminal());
         b.mark_failed(Platform::Telegram, "timeout");
         assert!(b.all_terminal());
         let snap = b.snapshot();
-        assert_eq!(
-            snap[0].1,
-            PlatformConnState::Failed("timeout".to_string())
-        );
+        assert_eq!(snap[0].1, PlatformConnState::Failed("timeout".to_string()));
         assert_eq!(
             snap[1].1,
-            PlatformConnState::Connected { identity: Some("GrayBot".into()) }
+            PlatformConnState::Connected {
+                identity: Some("GrayBot".into())
+            }
         );
     }
 
@@ -184,9 +196,17 @@ mod tests {
         let b = GatewayStatusBoard::new(&[Platform::Discord]);
         assert_eq!(
             b.snapshot(),
-            vec![(Platform::Discord, PlatformConnState::Connecting { stage: "connecting" })]
+            vec![(
+                Platform::Discord,
+                PlatformConnState::Connecting {
+                    stage: "connecting"
+                }
+            )]
         );
-        assert!(!b.snapshot()[0].1.terminal(), "staged Connecting stays non-terminal");
+        assert!(
+            !b.snapshot()[0].1.terminal(),
+            "staged Connecting stays non-terminal"
+        );
         assert!(!b.all_terminal());
     }
 
@@ -195,14 +215,21 @@ mod tests {
         let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Telegram]);
         b.mark_stage(Platform::Telegram, "validating token");
         let snap = b.snapshot();
-        assert_eq!(snap[0].1, PlatformConnState::Connecting { stage: "validating token" });
+        assert_eq!(
+            snap[0].1,
+            PlatformConnState::Connecting {
+                stage: "validating token"
+            }
+        );
         assert!(!b.all_terminal(), "staged Connecting stays non-terminal");
         // Terminal states are never clobbered by a late stage.
         b.mark_connected(Platform::Telegram, Some("GrayBot".into()));
         b.mark_stage(Platform::Telegram, "polling");
         assert_eq!(
             b.snapshot()[0].1,
-            PlatformConnState::Connected { identity: Some("GrayBot".into()) }
+            PlatformConnState::Connected {
+                identity: Some("GrayBot".into())
+            }
         );
         b.mark_failed(Platform::Discord, "boom");
         b.mark_stage(Platform::Discord, "polling");
@@ -213,7 +240,8 @@ mod tests {
     }
 
     #[test]
-    fn fail_unresolved_covers_staged_connecting() {        let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Slack]);
+    fn fail_unresolved_covers_staged_connecting() {
+        let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Slack]);
         b.mark_stage(Platform::Discord, "waiting for ready");
         b.mark_connected(Platform::Slack, None);
         b.fail_unresolved("gateway exited");
@@ -221,7 +249,9 @@ mod tests {
         // Canonical order has no Telegram here; match by platform.
         for (p, s) in &snap {
             match p {
-                Platform::Discord => assert_eq!(*s, PlatformConnState::Failed("gateway exited".to_string())),
+                Platform::Discord => {
+                    assert_eq!(*s, PlatformConnState::Failed("gateway exited".to_string()))
+                }
                 Platform::Slack => assert_eq!(*s, PlatformConnState::Connected { identity: None }),
                 Platform::Telegram => unreachable!(),
             }

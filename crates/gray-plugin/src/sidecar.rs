@@ -68,15 +68,23 @@ pub struct SidecarPlugin {
 }
 
 fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
-    let (prog, args) = argv.split_first().ok_or_else(|| anyhow::anyhow!("empty argv"))?;
+    let (prog, args) = argv
+        .split_first()
+        .ok_or_else(|| anyhow::anyhow!("empty argv"))?;
     let mut child = Command::new(prog)
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
-    let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("no stdout"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no stdout"))?;
     Ok((child, stdin, stdout))
 }
 
@@ -87,8 +95,12 @@ fn spawn_reader(stdout: ChildStdout, pending: Arc<Mutex<Pending>>, epoch: u64) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
-            let Some(id) = v.get("id").and_then(|i| i.as_u64()) else { continue };
+            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(id) = v.get("id").and_then(|i| i.as_u64()) else {
+                continue;
+            };
             let tx = pending.lock().await.map.remove(&id);
             if let Some(tx) = tx {
                 let _ = tx.send(v.get("result").cloned().unwrap_or(Value::Null));
@@ -103,9 +115,18 @@ fn spawn_reader(stdout: ChildStdout, pending: Arc<Mutex<Pending>>, epoch: u64) {
 
 impl Transport {
     fn new(child: Child, stdin: ChildStdin, stdout: ChildStdout, argv: Vec<String>) -> Arc<Self> {
-        let pending = Arc::new(Mutex::new(Pending { epoch: 0, map: HashMap::new() }));
+        let pending = Arc::new(Mutex::new(Pending {
+            epoch: 0,
+            map: HashMap::new(),
+        }));
         spawn_reader(stdout, pending.clone(), 0);
-        Arc::new(Self { child: Mutex::new(child), stdin: Mutex::new(stdin), pending, next_id: AtomicU64::new(1), argv })
+        Arc::new(Self {
+            child: Mutex::new(child),
+            stdin: Mutex::new(stdin),
+            pending,
+            next_id: AtomicU64::new(1),
+            argv,
+        })
     }
 
     /// Respawn a dead child (new stdio + reader; old generation's in-flight
@@ -174,18 +195,27 @@ impl SidecarPlugin {
     pub async fn spawn(argv: Vec<String>) -> anyhow::Result<Self> {
         let (child, stdin, stdout) = spawn_child(&argv)?;
         let transport = Transport::new(child, stdin, stdout, argv.clone());
-        let result = transport.request("plugin/manifest", None, Duration::from_secs(30)).await?;
+        let result = transport
+            .request("plugin/manifest", None, Duration::from_secs(30))
+            .await?;
         let mut manifest = Manifest::from_result(&result);
         let name = manifest.name.trim().to_string();
         if name.is_empty() {
-            anyhow::bail!("sidecar manifest has missing/empty name (argv: {})", argv.join(" "));
+            anyhow::bail!(
+                "sidecar manifest has missing/empty name (argv: {})",
+                argv.join(" ")
+            );
         }
         manifest.name = name;
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         for entry in manifest_tools(&result) {
             tools.push(Arc::new(SidecarTool::new(entry, transport.clone())));
         }
-        Ok(Self { manifest, tools, transport })
+        Ok(Self {
+            manifest,
+            tools,
+            transport,
+        })
     }
     /// v1 request methods are gated on the manifest's `hooks`/`commands`:
     /// pre-v1 sidecars ignore unknown lines and would never reply, so
@@ -209,7 +239,11 @@ impl Plugin for SidecarPlugin {
         }
         let v = self
             .transport
-            .request("prompt/context", Some(json!({"cwd": cwd})), Duration::from_secs(30))
+            .request(
+                "prompt/context",
+                Some(json!({"cwd": cwd})),
+                Duration::from_secs(30),
+            )
             .await
             .ok()?;
         v.get("text")
@@ -223,7 +257,11 @@ impl Plugin for SidecarPlugin {
         }
         match self
             .transport
-            .request("tool/before", Some(json!({"name": name, "args": args})), Duration::from_secs(30))
+            .request(
+                "tool/before",
+                Some(json!({"name": name, "args": args})),
+                Duration::from_secs(30),
+            )
             .await
         {
             Ok(v) => ToolBefore::from_result(&v, args),
@@ -239,16 +277,25 @@ impl Plugin for SidecarPlugin {
         }
         let v = self
             .transport
-            .request("command/run", Some(json!({"name": name, "argv": argv})), Duration::from_secs(30))
+            .request(
+                "command/run",
+                Some(json!({"name": name, "argv": argv})),
+                Duration::from_secs(30),
+            )
             .await
             .ok()?;
-        v.get("text").and_then(|t| t.as_str()).filter(|t| !t.is_empty()).map(|t| t.to_string())
+        v.get("text")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.to_string())
     }
     async fn on_event(&self, e: CoreEvent) -> Option<CoreEvent> {
         // Minimal tagged JSON (see protocol v1 doc comment above).
         let params = match &e {
             CoreEvent::PreStep { .. } => json!({"type": "pre_step"}),
-            CoreEvent::PreTool { name, args } => json!({"type": "pre_tool", "name": name, "args": args}),
+            CoreEvent::PreTool { name, args } => {
+                json!({"type": "pre_tool", "name": name, "args": args})
+            }
             CoreEvent::PostTool { name, output } => {
                 json!({"type": "post_tool", "name": name, "content": output.content, "is_error": output.is_error})
             }
@@ -262,7 +309,13 @@ impl Plugin for SidecarPlugin {
             if !self.transport.ensure_alive().await {
                 return false;
             }
-            self.transport.stdin.lock().await.write_all(format!("{req}\n").as_bytes()).await.is_ok()
+            self.transport
+                .stdin
+                .lock()
+                .await
+                .write_all(format!("{req}\n").as_bytes())
+                .await
+                .is_ok()
         })
         .await
         {
@@ -296,7 +349,11 @@ impl SidecarTool {
             .filter(|s| !s.is_empty())
             .or_else(|| (!entry.def.description.is_empty()).then(|| entry.def.description.clone()));
         let snippet = text.map(|s| Box::leak(s.into_boxed_str()) as &'static str);
-        Self { def: entry.def, snippet, transport }
+        Self {
+            def: entry.def,
+            snippet,
+            transport,
+        }
     }
 }
 
@@ -320,7 +377,11 @@ impl Tool for SidecarTool {
             .await
         {
             Ok(v) => ToolOutput {
-                content: v.get("content").and_then(|c| c.as_str()).unwrap_or_default().into(),
+                content: v
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or_default()
+                    .into(),
                 is_error: v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false),
             },
             Err(e) => {
@@ -347,20 +408,34 @@ mod tests {
 
     #[tokio::test]
     async fn hanging_hook_times_out_and_skips() {
-        let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()]).await.unwrap();
+        let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()])
+            .await
+            .unwrap();
         let t = std::time::Instant::now();
         assert!(
-            p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await.is_none()
+            p.on_event(CoreEvent::TurnEnd {
+                usage: Usage::default()
+            })
+            .await
+            .is_none()
         );
         assert!(t.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[tokio::test]
     async fn crashed_plugin_returns_error_not_panic() {
-        let p = SidecarPlugin::spawn(vec!["testdata/crash_plugin.sh".into()]).await.unwrap();
-        let out = p.tools()[0].execute(&ToolContext::default(), serde_json::json!({})).await;
+        let p = SidecarPlugin::spawn(vec!["testdata/crash_plugin.sh".into()])
+            .await
+            .unwrap();
+        let out = p.tools()[0]
+            .execute(&ToolContext::default(), serde_json::json!({}))
+            .await;
         assert!(out.is_error);
-        assert!(out.content.contains("plugin crashed: crash"), "got: {}", out.content);
+        assert!(
+            out.content.contains("plugin crashed: crash"),
+            "got: {}",
+            out.content
+        );
     }
 
     #[tokio::test]
@@ -376,10 +451,16 @@ mod tests {
     async fn notify_sends_no_id_and_needs_no_reply() {
         // hang fixture never replies to event/notify; if on_event waited for a
         // reply it would hit the 5s timeout. True notification returns fast.
-        let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()]).await.unwrap();
+        let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()])
+            .await
+            .unwrap();
         let t = std::time::Instant::now();
         assert!(
-            p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await.is_none()
+            p.on_event(CoreEvent::TurnEnd {
+                usage: Usage::default()
+            })
+            .await
+            .is_none()
         );
         assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }

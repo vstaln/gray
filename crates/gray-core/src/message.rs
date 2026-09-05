@@ -26,10 +26,7 @@ pub enum ContentBlock {
     /// Plain text content.
     Text { text: String },
     /// Image content (base64-encoded).
-    Image {
-        media_type: String,
-        data: String,
-    },
+    Image { media_type: String, data: String },
     /// A tool invocation requested by the model.
     ToolUse {
         id: String,
@@ -82,7 +79,12 @@ impl ContentBlock {
     /// Creates a new thinking block (no replay data; the provider attaches
     /// that when it captures a reasoning item from the stream).
     pub fn thinking(text: impl Into<String>) -> Self {
-        Self::Thinking { text: text.into(), encrypted_content: None, item_id: None, model: None }
+        Self::Thinking {
+            text: text.into(),
+            encrypted_content: None,
+            item_id: None,
+            model: None,
+        }
     }
 
     /// Creates a new image block (base64 data).
@@ -94,18 +96,13 @@ impl ContentBlock {
     }
 
     /// Creates a new tool result block.
-    pub fn tool_result(
-        id: impl Into<String>,
-        content: impl Into<String>,
-        is_error: bool,
-    ) -> Self {
+    pub fn tool_result(id: impl Into<String>, content: impl Into<String>, is_error: bool) -> Self {
         Self::ToolResult {
             id: id.into(),
             content: content.into(),
             is_error,
         }
     }
-
 }
 
 /// A conversation turn message.
@@ -179,7 +176,11 @@ impl Message {
                 ContentBlock::ToolUse { name, args, .. } => {
                     format!("{name}{args}")
                 }
-                ContentBlock::Thinking { text, encrypted_content, .. } => {
+                ContentBlock::Thinking {
+                    text,
+                    encrypted_content,
+                    ..
+                } => {
                     // The encrypted blob is replayed verbatim next turn to
                     // keep the provider's cache shard warm, and is billed
                     // like any other input token. It must be counted.
@@ -259,4 +260,3 @@ impl ChatRequest {
         self
     }
 }
-

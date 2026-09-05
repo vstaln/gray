@@ -68,17 +68,22 @@ pub fn syntect_to_ratatui_fg(style: syntect::highlighting::Style) -> ratatui::st
     use ratatui::style::{Color, Modifier, Style};
     let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
     let mut s = Style::default().fg(fg);
-    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+    if style
+        .font_style
+        .contains(syntect::highlighting::FontStyle::BOLD)
+    {
         s = s.add_modifier(Modifier::BOLD);
     }
-    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+    if style
+        .font_style
+        .contains(syntect::highlighting::FontStyle::ITALIC)
+    {
         s = s.add_modifier(Modifier::ITALIC);
     }
     s
 }
 
 impl Syntect {
-
     /// Find a syntax definition by file path extension.
     pub fn find_syntax_by_file_path(&self, file_path: &Path) -> Option<&SyntaxReference> {
         let ext = file_path.extension()?.to_str()?;
@@ -207,4 +212,3 @@ pub fn test_syntect() -> &'static Syntect {
     static TEST_SYNTECT: OnceLock<Syntect> = OnceLock::new();
     TEST_SYNTECT.get_or_init(|| Syntect::new(include_bytes!("../assets/tokyo-night.tmTheme")))
 }
-

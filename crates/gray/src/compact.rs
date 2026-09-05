@@ -54,13 +54,13 @@ pub fn build_summarization_prompt(transcript: &str, custom_instructions: Option<
     let mut prompt = format!(
         "{BASE_SUMMARIZATION_PROMPT}\n\n<conversation-transcript>\n{transcript}\n</conversation-transcript>"
     );
-    if let Some(instructions) = custom_instructions {
-        if !instructions.trim().is_empty() {
-            prompt.push_str(&format!(
+    if let Some(instructions) = custom_instructions
+        && !instructions.trim().is_empty()
+    {
+        prompt.push_str(&format!(
                 "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority while keeping the section format above:\n{}\n</user-instructions>",
                 instructions.trim()
             ));
-        }
     }
     prompt
 }
@@ -113,7 +113,12 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 
         // Also check if any tool result blocks were stored in the message
         for block in &msg.content {
-            if let ContentBlock::ToolResult { id, content, is_error } = block {
+            if let ContentBlock::ToolResult {
+                id,
+                content,
+                is_error,
+            } = block
+            {
                 let text = content.as_str();
                 let truncated = if text.chars().count() > MAX_TOOL_CHARS {
                     let s: String = text.chars().take(MAX_TOOL_CHARS).collect();
@@ -140,7 +145,8 @@ pub struct CompactionSettings {
 /// `auto_compact_if_needed`). Manual entry points (`compact_with_keep`,
 /// `compact_with_instructions`) always run, so an `enabled=false` session keeps
 /// its manual escape hatch.
-static AUTO_COMPACT_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static AUTO_COMPACT_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
 /// Disables/enables automatic compaction for this session. Manual `/compact` ignores this.
 pub fn set_auto_compact_enabled(on: bool) {
@@ -156,7 +162,12 @@ pub fn is_auto_compact_enabled() -> bool {
 /// `0`/`false`/`no`/`off`/unset leave it enabled. Manual `/compact` still runs.
 pub fn init_auto_compact_from_env() {
     let disabled = std::env::var("GRAY_NO_AUTO_COMPACT")
-        .map(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "" | "0" | "false" | "no" | "off"))
+        .map(|s| {
+            !matches!(
+                s.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "false" | "no" | "off"
+            )
+        })
         .unwrap_or(false);
     set_auto_compact_enabled(!disabled);
 }
@@ -218,7 +229,11 @@ pub fn tail_messages(messages: &[Message], keep_tokens: usize) -> Vec<Message> {
 }
 
 pub fn calculate_context_tokens(u: &Usage) -> usize {
-    if u.total() > 0 { u.total() } else { u.input_tokens + u.output_tokens }
+    if u.total() > 0 {
+        u.total()
+    } else {
+        u.input_tokens + u.output_tokens
+    }
 }
 
 pub fn estimate_tokens(msg: &Message) -> usize {
@@ -229,10 +244,10 @@ pub fn estimate_tokens(msg: &Message) -> usize {
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
-    if let Some(u) = last {
-        if u.total() > 0 {
-            return u.total();
-        }
+    if let Some(u) = last
+        && u.total() > 0
+    {
+        return u.total();
     }
     messages.iter().map(estimate_tokens).sum()
 }
@@ -329,7 +344,10 @@ mod tests {
         assert!(!should_compact(
             200_000,
             128_000,
-            &CompactionSettings { enabled: false, ..s }
+            &CompactionSettings {
+                enabled: false,
+                ..s
+            }
         ));
     }
 
@@ -469,29 +487,42 @@ mod tests {
             ..Default::default()
         };
         let tokens2 = estimate_context_tokens(&[Message::user("hi")], Some(usage2));
-        assert!(!should_compact(tokens2, window, &DEFAULT_COMPACTION_SETTINGS));
+        assert!(!should_compact(
+            tokens2,
+            window,
+            &DEFAULT_COMPACTION_SETTINGS
+        ));
     }
 
     #[tokio::test]
     async fn auto_compact_triggers_on_threshold() {
         let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+        use crate::config::Config;
         use async_trait::async_trait;
         use futures::stream::BoxStream;
         use gray_core::agent::{Agent, Provider, ToolContext, ToolExecutor};
         use gray_core::event::{StopReason, Usage};
         use gray_core::message::ChatRequest;
-        use crate::config::Config;
 
         struct FakeProvider {
             summary: String,
         }
         #[async_trait]
         impl Provider for FakeProvider {
-            fn stream(&self, _req: ChatRequest) -> BoxStream<'static, Result<gray_core::event::StreamEvent, gray_core::agent::ProviderError>> {
+            fn stream(
+                &self,
+                _req: ChatRequest,
+            ) -> BoxStream<
+                'static,
+                Result<gray_core::event::StreamEvent, gray_core::agent::ProviderError>,
+            > {
                 let summary = self.summary.clone();
                 let events = vec![
                     gray_core::event::StreamEvent::TextDelta { delta: summary },
-                    gray_core::event::StreamEvent::MessageComplete { stop_reason: Some(StopReason::EndTurn), usage: Some(Usage::new(10, 5)) },
+                    gray_core::event::StreamEvent::MessageComplete {
+                        stop_reason: Some(StopReason::EndTurn),
+                        usage: Some(Usage::new(10, 5)),
+                    },
                 ];
                 Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
             }
@@ -500,12 +531,19 @@ mod tests {
         struct NoopExecutor;
         #[async_trait]
         impl ToolExecutor for NoopExecutor {
-            fn execute(&self, _ctx: &ToolContext, _name: &str, _args: serde_json::Value) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
+            fn execute(
+                &self,
+                _ctx: &ToolContext,
+                _name: &str,
+                _args: serde_json::Value,
+            ) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
                 Box::pin(async { gray_core::agent::ToolOutput::ok("") })
             }
         }
 
-        let provider = FakeProvider { summary: "Test summary content".to_string() };
+        let provider = FakeProvider {
+            summary: "Test summary content".to_string(),
+        };
         let executor = NoopExecutor;
         crate::setup::set_user_keep_recent_tokens(Some(0));
         let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_messages(vec![
@@ -523,11 +561,21 @@ mod tests {
             context_reserve: None,
             context_keep: None,
         };
-        let compacted = auto_compact_if_needed(&mut agent, &config, None, "threshold").await.expect("compact should succeed");
+        let compacted = auto_compact_if_needed(&mut agent, &config, None, "threshold")
+            .await
+            .expect("compact should succeed");
         crate::setup::set_user_keep_recent_tokens(None);
         assert!(compacted, "should have compacted");
-        assert_eq!(agent.messages().len(), 2, "should be 2 messages after compact");
-        assert!(agent.messages()[0].text_content().contains("Test summary content"));
+        assert_eq!(
+            agent.messages().len(),
+            2,
+            "should be 2 messages after compact"
+        );
+        assert!(
+            agent.messages()[0]
+                .text_content()
+                .contains("Test summary content")
+        );
     }
 
     #[test]
@@ -538,7 +586,12 @@ mod tests {
             Message::user("c".repeat(400)), // ~100 tok
         ];
         let tail = tail_messages(&msgs, 150);
-        assert_eq!(tail.len(), 1, "only last msg fits in 150 tok budget, got {}", tail.len());
+        assert_eq!(
+            tail.len(),
+            1,
+            "only last msg fits in 150 tok budget, got {}",
+            tail.len()
+        );
         assert!(tail[0].text_content().contains('c'));
         let tail_all = tail_messages(&msgs, 10_000);
         assert_eq!(tail_all.len(), 3);
@@ -558,20 +611,31 @@ mod tests {
 
     mod switch_tests {
         use super::*;
+        use crate::config::Config;
         use async_trait::async_trait;
         use futures::stream::BoxStream;
         use gray_core::agent::{Agent, Provider, ToolContext, ToolExecutor};
         use gray_core::event::{StopReason, Usage};
         use gray_core::message::ChatRequest;
-        use crate::config::Config;
 
         struct FakeProvider;
         #[async_trait]
         impl Provider for FakeProvider {
-            fn stream(&self, _req: ChatRequest) -> BoxStream<'static, Result<gray_core::event::StreamEvent, gray_core::agent::ProviderError>> {
+            fn stream(
+                &self,
+                _req: ChatRequest,
+            ) -> BoxStream<
+                'static,
+                Result<gray_core::event::StreamEvent, gray_core::agent::ProviderError>,
+            > {
                 let events = vec![
-                    gray_core::event::StreamEvent::TextDelta { delta: "summarized".to_string() },
-                    gray_core::event::StreamEvent::MessageComplete { stop_reason: Some(StopReason::EndTurn), usage: Some(Usage::new(10, 5)) },
+                    gray_core::event::StreamEvent::TextDelta {
+                        delta: "summarized".to_string(),
+                    },
+                    gray_core::event::StreamEvent::MessageComplete {
+                        stop_reason: Some(StopReason::EndTurn),
+                        usage: Some(Usage::new(10, 5)),
+                    },
                 ];
                 Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
             }
@@ -580,16 +644,19 @@ mod tests {
         struct NoopExecutor;
         #[async_trait]
         impl ToolExecutor for NoopExecutor {
-            fn execute(&self, _ctx: &ToolContext, _name: &str, _args: serde_json::Value) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
+            fn execute(
+                &self,
+                _ctx: &ToolContext,
+                _name: &str,
+                _args: serde_json::Value,
+            ) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
                 Box::pin(async { gray_core::agent::ToolOutput::ok("") })
             }
         }
 
         fn agent() -> Agent {
-            Agent::new(Box::new(FakeProvider), Box::new(NoopExecutor)).with_messages(vec![
-                Message::user("hello"),
-                Message::assistant("hi there"),
-            ])
+            Agent::new(Box::new(FakeProvider), Box::new(NoopExecutor))
+                .with_messages(vec![Message::user("hello"), Message::assistant("hi there")])
         }
 
         fn config() -> Config {
@@ -611,9 +678,15 @@ mod tests {
             let _guard = EnableGuard;
             set_auto_compact_enabled(false);
             let mut ag = agent();
-            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("must not error when disabled");
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
+                .await
+                .expect("must not error when disabled");
             assert!(!out);
-            assert_eq!(ag.messages().len(), 2, "disabled auto-compact must leave history untouched");
+            assert_eq!(
+                ag.messages().len(),
+                2,
+                "disabled auto-compact must leave history untouched"
+            );
         }
 
         #[tokio::test]
@@ -624,9 +697,15 @@ mod tests {
             unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", "1") };
             init_auto_compact_from_env();
             let mut ag = agent();
-            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("must not error when disabled");
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
+                .await
+                .expect("must not error when disabled");
             assert!(!out);
-            assert_eq!(ag.messages().len(), 2, "env-disabled auto-compact must leave history untouched");
+            assert_eq!(
+                ag.messages().len(),
+                2,
+                "env-disabled auto-compact must leave history untouched"
+            );
             match prev {
                 Some(v) => unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", v) },
                 None => unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") },
@@ -641,7 +720,9 @@ mod tests {
             unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") };
             init_auto_compact_from_env();
             let mut ag = agent();
-            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold").await.expect("compact should succeed");
+            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
+                .await
+                .expect("compact should succeed");
             assert!(out);
             assert!(ag.messages()[0].text_content().contains("summarized"));
             match prev {
@@ -656,14 +737,17 @@ mod tests {
             let _guard = EnableGuard;
             set_auto_compact_enabled(false);
             let mut ag = agent();
-            let out = compact_with_keep(&mut ag, None, 0).await.expect("manual compact must run when disabled");
+            let out = compact_with_keep(&mut ag, None, 0)
+                .await
+                .expect("manual compact must run when disabled");
             assert!(out);
             assert!(ag.messages()[0].text_content().contains("summarized"));
             let mut ag2 = agent();
-            let out2 = compact_with_instructions(&mut ag2, None).await.expect("manual compact must run when disabled");
+            let out2 = compact_with_instructions(&mut ag2, None)
+                .await
+                .expect("manual compact must run when disabled");
             assert!(out2);
             assert!(ag2.messages()[0].text_content().contains("summarized"));
         }
     }
 }
-

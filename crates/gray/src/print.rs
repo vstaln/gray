@@ -52,16 +52,31 @@ pub fn render_event_with_context<W: Write>(
             Ok(())
         }
         AgentEvent::ToolCallEnd { args, .. } => {
-            let name = current_tool.as_ref().map(|t| t.name.clone()).unwrap_or_else(|| "tool".to_string());
+            let name = current_tool
+                .as_ref()
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "tool".to_string());
             if let Some(t) = current_tool {
                 t.args = Some(args.clone());
             }
-            writeln!(w, "\n{}", crate::tool_fmt::format_tool_call_header_plain(&name, args, cwd))?;
+            writeln!(
+                w,
+                "\n{}",
+                crate::tool_fmt::format_tool_call_header_plain(&name, args, cwd)
+            )?;
             w.flush()
         }
-        AgentEvent::ToolResult { output, is_error, .. } => {
+        AgentEvent::ToolResult {
+            output, is_error, ..
+        } => {
             let tool = current_tool.take().unwrap_or_default();
-            let res = crate::tool_fmt::format_tool_result_plain_with_context(&tool.name, tool.args.as_ref(), output, *is_error, cwd);
+            let res = crate::tool_fmt::format_tool_result_plain_with_context(
+                &tool.name,
+                tool.args.as_ref(),
+                output,
+                *is_error,
+                cwd,
+            );
             if !res.is_empty() {
                 write!(w, "{res}")?;
             }
@@ -79,7 +94,11 @@ pub fn render_event_with_context<W: Write>(
         }
         AgentEvent::TurnEnd { usage, .. } => {
             if usage.total() > 0 {
-                writeln!(w, "\n\x1b[2m\u{2b22} {} tok\x1b[0m", crate::repl::fmt_usage(usage.total()))?;
+                writeln!(
+                    w,
+                    "\n\x1b[2m\u{2b22} {} tok\x1b[0m",
+                    crate::repl::fmt_usage(usage.total())
+                )?;
             }
             w.flush()
         }
@@ -110,20 +129,31 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         let stdout = std::io::stdout();
         let mut current_tool = None;
         let mut on_event = |ev: &AgentEvent| {
-            if let Err(e) = render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut current_tool) {
+            if let Err(e) =
+                render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut current_tool)
+            {
                 eprintln!("render error: {e}");
             }
         };
-        agent.run_streaming(user_msg, ctx, &mut on_event).await.map_err(|e| {
-            let msg = crate::repl::format_core_error(&e, &config.base_url);
-            anyhow::anyhow!(msg)
-        })?
+        agent
+            .run_streaming(user_msg, ctx, &mut on_event)
+            .await
+            .map_err(|e| {
+                let msg = crate::repl::format_core_error(&e, &config.base_url);
+                anyhow::anyhow!(msg)
+            })?
     };
     drop(result);
 
     // Persist session to JSONL store
     let store = JsonlSessionStore::default();
-    save_session(&store, config.model.as_deref().unwrap_or("unset"), &cwd, agent.messages()).await?;
+    save_session(
+        &store,
+        config.model.as_deref().unwrap_or("unset"),
+        &cwd,
+        agent.messages(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -158,4 +188,3 @@ pub async fn save_session(
 
     Ok(session_id)
 }
-

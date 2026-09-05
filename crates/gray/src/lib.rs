@@ -7,23 +7,23 @@ pub mod cron_cli;
 pub mod logging;
 pub mod oauth;
 pub mod print;
-pub mod setup;
-pub mod skills;
-pub mod sys_editor;
 pub mod proxy;
 pub mod repl;
 pub mod resume;
+pub mod setup;
+pub mod skills;
+pub mod sys_editor;
 pub mod system_prompt;
-pub mod update;
 pub mod tool_fmt;
 pub mod tui;
+pub mod update;
 
-use std::path::{Path, PathBuf};
 use clap::Parser;
+use std::path::{Path, PathBuf};
 
 pub use config::Config;
 pub use print::run_print_mode;
-pub use repl::{parse_command, run_repl_mode, ReplCommand};
+pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
 use gray_core::agent::Agent;
@@ -65,7 +65,10 @@ fn queue_profile_warning(msg: String) {
 
 /// Drains queued profile warnings (transcript/non-TUI display owns rendering).
 pub fn take_profile_warnings() -> Vec<String> {
-    PROFILE_WARNINGS.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
+    PROFILE_WARNINGS
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
 }
 
 /// Ordered plugins named by the `gray.yml` profile, or `None` when the
@@ -85,7 +88,9 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_
                     gray_plugin::profile::PluginEntry::Builtin(n) => {
                         match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
                             Some(p) => plugins.push(p),
-                            None => queue_profile_warning(format!("unknown plugin {n:?} in gray.yml — ignoring")),
+                            None => queue_profile_warning(format!(
+                                "unknown plugin {n:?} in gray.yml — ignoring"
+                            )),
                         }
                     }
                     gray_plugin::profile::PluginEntry::Sidecar(spec) => {
@@ -94,8 +99,9 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_
                         let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone())
                             .await
                             .with_context(|| format!("sidecar[{i}] ({label}) failed to spawn"))?;
-                        plugins.push(std::sync::Arc::new(plugin)
-                            as std::sync::Arc<dyn gray_plugin::Plugin>);
+                        plugins
+                            .push(std::sync::Arc::new(plugin)
+                                as std::sync::Arc<dyn gray_plugin::Plugin>);
                     }
                 }
             }
@@ -104,9 +110,13 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_
         Err(e) => {
             // Missing file is the default state — silent. Anything else
             // (parse error) warns once via the UI drain.
-            let missing = e.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+            let missing = e
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
             if !missing {
-                queue_profile_warning(format!("cannot load gray.yml profile ({e}); using builtin plugins"));
+                queue_profile_warning(format!(
+                    "cannot load gray.yml profile ({e}); using builtin plugins"
+                ));
             }
             Ok(None)
         }
@@ -285,16 +295,17 @@ pub async fn build_agent(
         if g.is_empty() { None } else { Some(g) }
     };
 
-    let system_prompt = system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
-        custom_prompt: Some(body),
-        selected_tools: Some(selected_tools),
-        tool_snippets: Some(tool_snippets),
-        prompt_guidelines,
-        append_system_prompt: None,
-        cwd: cwd.to_path_buf(),
-        context_files: Some(context_files),
-        skills: Some(discovered.skills),
-    });
+    let system_prompt =
+        system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
+            custom_prompt: Some(body),
+            selected_tools: Some(selected_tools),
+            tool_snippets: Some(tool_snippets),
+            prompt_guidelines,
+            append_system_prompt: None,
+            cwd: cwd.to_path_buf(),
+            context_files: Some(context_files),
+            skills: Some(discovered.skills),
+        });
 
     let provider = OpenAiProvider::builder(api_key, model)
         .base_url(&config.base_url)
@@ -368,7 +379,8 @@ pub struct Cli {
 }
 
 fn parse_context_window_cli(s: &str) -> Result<usize, String> {
-    crate::setup::parse_context_window(s).ok_or_else(|| format!("invalid context window '{s}' — use e.g. 128000, 128k, 1m"))
+    crate::setup::parse_context_window(s)
+        .ok_or_else(|| format!("invalid context window '{s}' — use e.g. 128000, 128k, 1m"))
 }
 
 /// Subcommands mirroring `codex resume` / `codex fork` ergonomics.

@@ -12,8 +12,8 @@
 //! panel renders in the fixed inline viewport instead of a dynamic bottom pane.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -84,7 +84,7 @@ pub(crate) struct QuestionSession {
     current_resolved: Arc<AtomicBool>,
     pub queue: VecDeque<QueuedRequest>,
     answers: Vec<AnswerState>,
-        current_idx: usize,
+    current_idx: usize,
     pub(crate) focus: Focus,
     confirm_unanswered: Option<usize>,
     request_started_at: Instant,
@@ -93,7 +93,7 @@ pub(crate) struct QuestionSession {
 }
 
 #[derive(Debug)]
-    pub(crate) enum QuestionOutcome {
+pub(crate) enum QuestionOutcome {
     /// Key ignored / nothing changed.
     None,
     /// State changed; redraw and keep the session.
@@ -203,7 +203,9 @@ impl QuestionSession {
                 remaining: AUTO_RESOLUTION_HIDDEN_GRACE.saturating_sub(elapsed),
             };
         }
-        let visible = elapsed.checked_sub(AUTO_RESOLUTION_HIDDEN_GRACE).unwrap_or_default();
+        let visible = elapsed
+            .checked_sub(AUTO_RESOLUTION_HIDDEN_GRACE)
+            .unwrap_or_default();
         if visible < AUTO_RESOLUTION_VISIBLE_COUNTDOWN {
             AutoResolutionTiming::VisibleCountdown {
                 remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN.saturating_sub(visible),
@@ -221,7 +223,12 @@ impl QuestionSession {
                 let questions = self.questions.clone();
                 let blocking = self.blocking;
                 let session_done = self.resolve_with(Vec::new());
-                TickOutcome::AutoResolved { answers: Vec::new(), questions, blocking, session_done }
+                TickOutcome::AutoResolved {
+                    answers: Vec::new(),
+                    questions,
+                    blocking,
+                    session_done,
+                }
             }
             AutoResolutionTiming::VisibleCountdown { remaining } => {
                 let text = format!("auto-resolves in {}", format_remaining(remaining));
@@ -344,7 +351,10 @@ impl QuestionSession {
         for (idx, q) in self.questions.iter().enumerate() {
             let a = &self.answers[idx];
             let mut list = Vec::new();
-            if a.answer_committed && let Some(sel) = a.selected_idx && let Some(label) = self.option_label_for_index_for(idx, sel) {
+            if a.answer_committed
+                && let Some(sel) = a.selected_idx
+                && let Some(label) = self.option_label_for_index_for(idx, sel)
+            {
                 list.push(label);
             }
             if a.answer_committed {
@@ -353,7 +363,10 @@ impl QuestionSession {
                     list.push(format!("user_note: {notes}"));
                 }
             }
-            out.push(UserAnswer { id: q.id.clone(), answers: list });
+            out.push(UserAnswer {
+                id: q.id.clone(),
+                answers: list,
+            });
         }
         let session_done = self.resolve_with(out.clone());
         QuestionOutcome::Resolved {
@@ -425,7 +438,12 @@ impl QuestionSession {
         }
     }
 
-    pub(crate) fn on_key(&mut self, code: KeyCode, mods: KeyModifiers, ta: &mut TextArea) -> QuestionOutcome {
+    pub(crate) fn on_key(
+        &mut self,
+        code: KeyCode,
+        mods: KeyModifiers,
+        ta: &mut TextArea,
+    ) -> QuestionOutcome {
         if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
             return QuestionOutcome::None; // global Ctrl-C policy handles the turn
         }
@@ -447,7 +465,8 @@ impl QuestionSession {
                 self.move_question(false, ta);
                 return QuestionOutcome::Redraw;
             }
-            (KeyCode::Char('n'), KeyModifiers::CONTROL) | (KeyCode::PageDown, KeyModifiers::NONE) => {
+            (KeyCode::Char('n'), KeyModifiers::CONTROL)
+            | (KeyCode::PageDown, KeyModifiers::NONE) => {
                 self.move_question(true, ta);
                 return QuestionOutcome::Redraw;
             }
@@ -484,9 +503,7 @@ impl QuestionSession {
                     self.select_current_option(true);
                     QuestionOutcome::Redraw
                 }
-                KeyCode::Backspace | KeyCode::Delete => {
-                    self.skip_current(ta)
-                }
+                KeyCode::Backspace | KeyCode::Delete => self.skip_current(ta),
                 KeyCode::Tab => {
                     // Seed the highlight so Tab works on a fresh question too.
                     self.select_current_option(false);
@@ -502,7 +519,9 @@ impl QuestionSession {
                     self.go_next_or_submit(ta)
                 }
                 KeyCode::Char(c) => {
-                    if let Some(idx) = c.to_digit(10).and_then(|d| (d >= 1).then(|| d as usize - 1))
+                    if let Some(idx) = c
+                        .to_digit(10)
+                        .and_then(|d| (d >= 1).then(|| d as usize - 1))
                         && idx < self.options_len()
                     {
                         self.answers[self.current_idx].selected_idx = Some(idx);
@@ -537,8 +556,20 @@ impl QuestionSession {
                     let a = &mut self.answers[self.current_idx];
                     let cur = a.selected_idx.take().unwrap_or(0);
                     a.selected_idx = Some(match code {
-                        KeyCode::Up => if cur == 0 { len - 1 } else { cur - 1 },
-                        _ => if cur + 1 >= len { 0 } else { cur + 1 },
+                        KeyCode::Up => {
+                            if cur == 0 {
+                                len - 1
+                            } else {
+                                cur - 1
+                            }
+                        }
+                        _ => {
+                            if cur + 1 >= len {
+                                0
+                            } else {
+                                cur + 1
+                            }
+                        }
                     });
                     QuestionOutcome::Redraw
                 }
@@ -574,7 +605,12 @@ pub(crate) fn attach_request(
 ) {
     let resolved = Arc::new(AtomicBool::new(false));
     if let Some(q) = t.active_question.as_mut() {
-        q.queue.push_back(QueuedRequest { questions, blocking, tx, resolved });
+        q.queue.push_back(QueuedRequest {
+            questions,
+            blocking,
+            tx,
+            resolved,
+        });
         let _ = t.draw();
         return;
     }
@@ -587,14 +623,21 @@ pub(crate) fn attach_request(
 
 /// Watcher entry: routes a key event into the active session.
 pub(crate) fn handle_question_key(t: &mut Tui, code: KeyCode, mods: KeyModifiers) {
-    let Some(mut q) = t.active_question.take() else { return };
+    let Some(mut q) = t.active_question.take() else {
+        return;
+    };
     match q.on_key(code, mods, &mut t.textarea) {
         QuestionOutcome::None => t.active_question = Some(q),
         QuestionOutcome::Redraw => {
             t.active_question = Some(q);
             let _ = t.draw();
         }
-        QuestionOutcome::Resolved { answers, questions, blocking, session_done } => {
+        QuestionOutcome::Resolved {
+            answers,
+            questions,
+            blocking,
+            session_done,
+        } => {
             finish_resolution(t, q, answers, questions, blocking, session_done);
         }
     }
@@ -602,14 +645,21 @@ pub(crate) fn handle_question_key(t: &mut Tui, code: KeyCode, mods: KeyModifiers
 
 /// Ticker entry: drives auto-resolution for non-blocking requests.
 pub(crate) fn tick_question(t: &mut Tui) {
-    let Some(mut q) = t.active_question.take() else { return };
+    let Some(mut q) = t.active_question.take() else {
+        return;
+    };
     match q.tick(Instant::now()) {
         TickOutcome::Idle => t.active_question = Some(q),
         TickOutcome::Redraw => {
             t.active_question = Some(q);
             let _ = t.draw();
         }
-        TickOutcome::AutoResolved { answers, questions, blocking, session_done } => {
+        TickOutcome::AutoResolved {
+            answers,
+            questions,
+            blocking,
+            session_done,
+        } => {
             finish_resolution(t, q, answers, questions, blocking, session_done);
         }
     }
@@ -625,7 +675,8 @@ fn finish_resolution(
 ) {
     push_result_summary(t, &questions, &answers, answers.is_empty() && !blocking);
     if !blocking && answers.iter().any(|a| !a.answers.is_empty()) {
-        t.pending_question_answers.push(format_answers_text(&questions, &answers));
+        t.pending_question_answers
+            .push(format_answers_text(&questions, &answers));
     }
     if session_done {
         // Restore the composer to a clean prompt state.
@@ -642,7 +693,9 @@ fn finish_resolution(
 fn format_answers_text(questions: &[UserQuestion], answers: &[UserAnswer]) -> String {
     let mut out = String::from("[user answered your earlier questions]");
     for q in questions {
-        if let Some(a) = answers.iter().find(|a| a.id == q.id) && !a.answers.is_empty() {
+        if let Some(a) = answers.iter().find(|a| a.id == q.id)
+            && !a.answers.is_empty()
+        {
             out.push_str(&format!("\n{} → {}", q.question, a.answers.join(" · ")));
         }
     }
@@ -669,7 +722,12 @@ fn result_summary_lines(questions: &[UserQuestion], answers: &[UserAnswer]) -> V
     lines
 }
 
-fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserAnswer], _auto: bool) {
+fn push_result_summary(
+    t: &mut Tui,
+    questions: &[UserQuestion],
+    answers: &[UserAnswer],
+    _auto: bool,
+) {
     let lines = result_summary_lines(questions, answers);
     if !lines.is_empty() {
         t.ensure_gap(1);
@@ -693,7 +751,8 @@ impl gray_core::questions::QuestionAsker for ComposerQuestionAsker {
         &self,
         questions: Vec<UserQuestion>,
         blocking: bool,
-    ) -> futures::future::BoxFuture<'static, Result<Vec<UserAnswer>, gray_core::error::CoreError>> {
+    ) -> futures::future::BoxFuture<'static, Result<Vec<UserAnswer>, gray_core::error::CoreError>>
+    {
         let tui = self.tui.clone();
         Box::pin(async move {
             let (tx, rx) = tokio::sync::oneshot::channel();
@@ -724,8 +783,17 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         )));
         let n = q.unanswered_count();
         let rows = [
-            ("Submit anyway", format!("Submit with {n} unanswered question{}.", if n == 1 { "" } else { "s" })),
-            ("Go back", "Return to the first unanswered question.".to_string()),
+            (
+                "Submit anyway",
+                format!(
+                    "Submit with {n} unanswered question{}.",
+                    if n == 1 { "" } else { "s" }
+                ),
+            ),
+            (
+                "Go back",
+                "Return to the first unanswered question.".to_string(),
+            ),
         ];
         for (i, (label, desc)) in rows.iter().enumerate() {
             let prefix = if i == sel { icon("arrow") } else { " " };
@@ -748,7 +816,10 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     let wrapped = wrap_plain(&question_text, w);
     let q_lines = wrapped.len();
     lines.extend(wrapped.into_iter().map(|l| {
-        Line::from(Span::styled(l, Style::default().fg(TEXT).add_modifier(Modifier::BOLD)))
+        Line::from(Span::styled(
+            l,
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+        ))
     }));
 
     // Budget: top(1) + progress(1) + question + tips(1) + bottom margin(1);
@@ -774,7 +845,14 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         } else {
             Some(OTHER_OPTION_DESCRIPTION.to_string())
         };
-        for row in option_rows(prefix, i + 1, &label, desc.as_deref(), is_cursor && picked, w) {
+        for row in option_rows(
+            prefix,
+            i + 1,
+            &label,
+            desc.as_deref(),
+            is_cursor && picked,
+            w,
+        ) {
             lines.push(row);
         }
     }
@@ -788,9 +866,20 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
 
 /// One option as wrapped rows: the head row keeps the picked styling, long
 /// descriptions wrap onto dim continuation rows instead of clipping off-screen.
-fn option_rows(prefix: &str, num: usize, label: &str, desc: Option<&str>, selected: bool, w: usize) -> Vec<Line<'static>> {
-    let accent = Style::default().fg(if selected { ACCENT } else { DIM }).add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(if selected { ACCENT } else { TEXT }).add_modifier(Modifier::BOLD);
+fn option_rows(
+    prefix: &str,
+    num: usize,
+    label: &str,
+    desc: Option<&str>,
+    selected: bool,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let accent = Style::default()
+        .fg(if selected { ACCENT } else { DIM })
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default()
+        .fg(if selected { ACCENT } else { TEXT })
+        .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(DIM);
     let head = format!(" {prefix} {num}. {label}");
     let Some(d) = desc.filter(|d| !d.is_empty()) else {
@@ -805,7 +894,10 @@ fn option_rows(prefix: &str, num: usize, label: &str, desc: Option<&str>, select
     let mut rows = vec![Line::from(vec![
         Span::styled(format!(" {prefix} {num}. "), accent),
         Span::styled(label.to_string(), label_style),
-        Span::styled(format!(" — {}", chunks.first().cloned().unwrap_or_default()), dim_style),
+        Span::styled(
+            format!(" — {}", chunks.first().cloned().unwrap_or_default()),
+            dim_style,
+        ),
     ])];
     let indent = " ".repeat(head.chars().count() + 3);
     for c in chunks.iter().skip(1) {
@@ -814,28 +906,36 @@ fn option_rows(prefix: &str, num: usize, label: &str, desc: Option<&str>, select
     rows
 }
 
-fn option_row(prefix: &str, num: usize, label: &str, desc: Option<&str>, selected: bool) -> Line<'static> {
+fn option_row(
+    prefix: &str,
+    num: usize,
+    label: &str,
+    desc: Option<&str>,
+    selected: bool,
+) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
             format!(" {prefix} {num}. "),
-            Style::default().fg(if selected { ACCENT } else { DIM }).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(if selected { ACCENT } else { DIM })
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             label.to_string(),
-            Style::default().fg(if selected { ACCENT } else { TEXT }).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(if selected { ACCENT } else { TEXT })
+                .add_modifier(Modifier::BOLD),
         ),
     ];
     if let Some(d) = desc {
-        spans.push(Span::styled(
-            format!(" — {d}"),
-            Style::default().fg(DIM),
-        ));
+        spans.push(Span::styled(format!(" — {d}"), Style::default().fg(DIM)));
     }
     Line::from(spans)
 }
 
 fn tips_line(q: &QuestionSession) -> Line<'static> {
-    let notes_visible = q.answers[q.current_idx].notes_visible || !q.answers[q.current_idx].draft.trim().is_empty();
+    let notes_visible =
+        q.answers[q.current_idx].notes_visible || !q.answers[q.current_idx].draft.trim().is_empty();
     let mut tips: Vec<(String, bool)> = Vec::new();
     let sel = q.answers[q.current_idx].selected_idx.is_some();
     if sel && !notes_visible {
@@ -857,7 +957,10 @@ fn tips_line(q: &QuestionSession) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
     for (i, (text, highlight)) in tips.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(TIP_SEPARATOR, Style::default().fg(Color::Rgb(80, 80, 80))));
+            spans.push(Span::styled(
+                TIP_SEPARATOR,
+                Style::default().fg(Color::Rgb(80, 80, 80)),
+            ));
         }
         spans.push(Span::styled(
             text.clone(),
@@ -907,14 +1010,23 @@ mod tests {
                 header: "H".into(),
                 question: format!("question {i}?"),
                 options: vec![
-                    UserOption { label: "Alpha".into(), description: "first".into() },
-                    UserOption { label: "Beta (Recommended)".into(), description: "second".into() },
+                    UserOption {
+                        label: "Alpha".into(),
+                        description: "first".into(),
+                    },
+                    UserOption {
+                        label: "Beta (Recommended)".into(),
+                        description: "second".into(),
+                    },
                 ],
                 is_other: true,
             })
             .collect();
         let (tx, rx) = oneshot::channel();
-        (QuestionSession::new(qs, true, tx, Arc::new(AtomicBool::new(false))), rx)
+        (
+            QuestionSession::new(qs, true, tx, Arc::new(AtomicBool::new(false))),
+            rx,
+        )
     }
 
     #[test]
@@ -923,13 +1035,20 @@ mod tests {
         let mut ta = TextArea::new();
         let out = q.on_key(KeyCode::Char('2'), KeyModifiers::NONE, &mut ta);
         match out {
-            QuestionOutcome::Resolved { answers, session_done, .. } => {
+            QuestionOutcome::Resolved {
+                answers,
+                session_done,
+                ..
+            } => {
                 assert!(session_done);
                 assert_eq!(answers[0].answers, vec!["Beta (Recommended)".to_string()]);
             }
             _ => panic!("expected resolution"),
         }
-        assert_eq!(rx.try_recv().unwrap()[0].answers, vec!["Beta (Recommended)".to_string()]);
+        assert_eq!(
+            rx.try_recv().unwrap()[0].answers,
+            vec!["Beta (Recommended)".to_string()]
+        );
     }
 
     #[test]
@@ -942,7 +1061,10 @@ mod tests {
         ta.insert_str("hurry");
         q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta);
         let answers = rx.try_recv().unwrap();
-        assert_eq!(answers[0].answers, vec!["Alpha".to_string(), "user_note: hurry".to_string()]);
+        assert_eq!(
+            answers[0].answers,
+            vec!["Alpha".to_string(), "user_note: hurry".to_string()]
+        );
     }
 
     #[test]
@@ -1019,10 +1141,7 @@ mod tests {
         assert_eq!(rows.concat(), text);
         for row in &rows[..rows.len() - 1] {
             // Mid-word break only allowed for a single overlong word.
-            let ends_mid_word = row
-                .chars()
-                .last()
-                .is_some_and(|c| c != ' ')
+            let ends_mid_word = row.chars().last().is_some_and(|c| c != ' ')
                 && rows
                     .iter()
                     .skip_while(|r| *r != row)
@@ -1031,7 +1150,10 @@ mod tests {
                     .unwrap_or(false);
             assert!(!ends_mid_word, "mid-word break: {rows:?}");
         }
-        assert!(rows.iter().any(|r| r.contains("light")), "light must stay intact: {rows:?}");
+        assert!(
+            rows.iter().any(|r| r.contains("light")),
+            "light must stay intact: {rows:?}"
+        );
     }
 
     #[test]
@@ -1042,20 +1164,28 @@ mod tests {
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
-        let idx = head.iter().position(|t| t.contains("1.") && t.contains("Alpha")).expect("option 1 row");
-        let accent = lines[idx]
-            .spans
+        let idx = head
             .iter()
-            .any(|s| s.style.fg == Some(ACCENT));
-        assert!(accent, "first option must be highlighted on entry: {:?}", head[idx]);
+            .position(|t| t.contains("1.") && t.contains("Alpha"))
+            .expect("option 1 row");
+        let accent = lines[idx].spans.iter().any(|s| s.style.fg == Some(ACCENT));
+        assert!(
+            accent,
+            "first option must be highlighted on entry: {:?}",
+            head[idx]
+        );
     }
 
     #[test]
     fn wrapped_option_rows_never_exceed_width() {
-        let desc = "a very long description that would previously clip off the edge of the panel ".repeat(4);
+        let desc = "a very long description that would previously clip off the edge of the panel "
+            .repeat(4);
         let w = 60;
         let rows = option_rows("›", 1, "Long", Some(&desc), false, w);
-        assert!(rows.len() > 1, "long description should wrap onto continuations");
+        assert!(
+            rows.len() > 1,
+            "long description should wrap onto continuations"
+        );
         for row in &rows {
             let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(text.chars().count() <= w, "option row overflows: {text:?}");
@@ -1083,13 +1213,25 @@ mod tests {
     #[test]
     fn auto_resolution_times_out_non_blocking_only() {
         let (qb, _rx) = mk(1);
-        assert!(!matches!(qb.auto_resolution_timing_at(Instant::now()), AutoResolutionTiming::Due));
+        assert!(!matches!(
+            qb.auto_resolution_timing_at(Instant::now()),
+            AutoResolutionTiming::Due
+        ));
         // blocking never auto-resolves
         let (tx, _rx2) = oneshot::channel::<Vec<UserAnswer>>();
-        let mut nb = QuestionSession::new(qb.questions.clone(), false, tx, Arc::new(AtomicBool::new(false)));
+        let mut nb = QuestionSession::new(
+            qb.questions.clone(),
+            false,
+            tx,
+            Arc::new(AtomicBool::new(false)),
+        );
         nb.request_started_at = Instant::now() - Duration::from_secs(121);
         match nb.tick(Instant::now()) {
-            TickOutcome::AutoResolved { answers, session_done, .. } => {
+            TickOutcome::AutoResolved {
+                answers,
+                session_done,
+                ..
+            } => {
                 assert!(answers.is_empty());
                 assert!(session_done);
             }
@@ -1110,7 +1252,11 @@ mod tests {
         let mut ta = TextArea::new();
         let out = q.on_key(KeyCode::Char('1'), KeyModifiers::NONE, &mut ta);
         match out {
-            QuestionOutcome::Resolved { session_done, blocking, .. } => {
+            QuestionOutcome::Resolved {
+                session_done,
+                blocking,
+                ..
+            } => {
                 assert!(!session_done);
                 assert!(!blocking);
             }
@@ -1148,7 +1294,10 @@ mod tests {
             result_summary_lines(&qs, &[]),
             vec!["? question 0?".to_string(), "  → skipped".to_string()]
         );
-        let answered = vec![UserAnswer { id: "q0".into(), answers: vec!["Alpha".into()] }];
+        let answered = vec![UserAnswer {
+            id: "q0".into(),
+            answers: vec!["Alpha".into()],
+        }];
         assert_eq!(
             result_summary_lines(&qs, &answered),
             vec!["? question 0?".to_string(), "  → Alpha".to_string()]
