@@ -440,7 +440,7 @@ mod tests {
         assert!(is_context_overflow_error(&CoreError::Provider(
             "max_tokens exceeded".into()
         )));
-        // pi parity: generic "length" truncation is NOT overflow via this helper (handled via stopReason in pi)
+        // Generic "length" truncation is NOT overflow via this helper (handled via stopReason by the caller)
         assert!(!is_context_overflow_error(&CoreError::Provider(
             "length truncation: output was cut off".into()
         )));

@@ -636,9 +636,13 @@ pub(crate) fn format_tool_box_lines(
                 }
             }
             if line_bg != bg_color {
+                // Diff rows (red/green) must run edge-to-edge: Paragraph only
+                // paints span cells, so padding to max_w leaves the last
+                // `width - max_w` cells in the card bg (dark strip on the
+                // right). Same unstyled-cells cause as the footer band.
                 let current_w: usize = l.spans.iter().map(|s| s.width()).sum();
-                if current_w < max_w {
-                    l.spans.push(Span::styled(" ".repeat(max_w - current_w), Style::default().bg(line_bg)));
+                if current_w < width {
+                    l.spans.push(Span::styled(" ".repeat(width - current_w), Style::default().bg(line_bg)));
                 }
             }
             box_lines.push(l);
@@ -1081,6 +1085,32 @@ mod tests {
         for b in &bodies[..bodies.len() - 1] {
             assert!(b.ends_with(' ') || b.chars().count() == max_w, "mid-word break: {b:?}");
         }
+    }
+
+    #[test]
+    fn diff_rows_pad_edge_to_edge() {
+        use crate::tool_fmt::{DIFF_DELETE_BG, DIFF_INSERT_BG};
+        let header = Line::from("Ran edit");
+        let body = vec![
+            Line::from(vec![
+                Span::styled("  1 | - old", Style::default().bg(DIFF_DELETE_BG)),
+            ])
+            .style(Style::default().bg(DIFF_DELETE_BG)),
+            Line::from(vec![
+                Span::styled("  1 | + new", Style::default().bg(DIFF_INSERT_BG)),
+            ])
+            .style(Style::default().bg(DIFF_INSERT_BG)),
+            Line::from(vec![Span::raw("  2 |   same")]),
+        ];
+        let lines = format_tool_box_lines(header, &body, 80);
+        let row_w = |l: &Line<'static>| l.spans.iter().map(|s| s.width()).sum::<usize>();
+        // margin, header, breathing row, then the three body rows
+        assert_eq!(lines.len(), 7);
+        // tinted rows span the full width (no dark strip on the right)
+        assert_eq!(row_w(&lines[3]), 80);
+        assert_eq!(row_w(&lines[4]), 80);
+        // untinted rows are untouched (card block bg shows through, same color)
+        assert!(row_w(&lines[5]) < 80);
     }
 
     #[test]

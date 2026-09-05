@@ -4,7 +4,6 @@
 //! stale-claim sweep). Every caller runs due jobs inline in a single loop, so a
 //! claim was always released before the next scan — the guard could never
 //! dedup. Deleted; if concurrent dispatch ever arrives, add it back then.
-//! (ponytail-audit #1)
 
 use chrono::Utc;
 
@@ -60,7 +59,6 @@ impl Scheduler {
 
     /// Scan due jobs. Load/parse and repair-persist go through `store` so the
     /// envelope/bare-array/map compat lives in exactly one place.
-    /// (ponytail-audit #16)
     pub fn scan_due_jobs(&self) -> anyhow::Result<Vec<CronJob>> {
         let mut due = Vec::new();
         with_jobs_lock(&self.store, || -> anyhow::Result<()> {

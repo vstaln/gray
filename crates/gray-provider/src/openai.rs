@@ -32,7 +32,7 @@ pub struct OpenAiProvider {
     initial_backoff: Duration,
     reasoning_effort: Option<String>,
     /// Stable per-process id sent as `prompt_cache_key` (Responses API) so the
-    /// gateway pins one cache shard — pi parity for prompt caching.
+    /// gateway pins one cache shard for prompt caching.
     session_id: Option<String>,
 }
 
@@ -63,7 +63,7 @@ impl OpenAiProviderBuilder {
     }
 
     /// Sets a stable session id sent as `prompt_cache_key` on the Responses
-    /// API so consecutive requests hit the same cache shard (pi parity).
+    /// API so consecutive requests hit the same cache shard.
     pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
@@ -290,7 +290,7 @@ struct OpenAiUsageChunk {
     /// DeepSeek / OpenRouter / Kimi top-level fields
     #[serde(default, alias = "prompt_cache_hit_tokens", alias = "promptCacheHitTokens")]
     cached_tokens: usize,
-    /// DeepSeek explicit miss count — preferred over prompt-minus-cached (pi parity)
+    /// DeepSeek explicit miss count — preferred over prompt-minus-cached
     #[serde(default, alias = "promptCacheMissTokens")]
     prompt_cache_miss_tokens: usize,
 
@@ -697,7 +697,7 @@ fn map_usage(u: &OpenAiUsageChunk) -> Usage {
         (inclusive, u.prompt_tokens)
     } else {
         // OpenAI: prompt_tokens is inclusive. DeepSeek reports an explicit
-        // miss count — prefer it over subtraction (pi parity).
+        // miss count — prefer it over subtraction.
         let non_cached = if u.prompt_cache_miss_tokens != 0 {
             u.prompt_cache_miss_tokens
         } else {
@@ -749,10 +749,10 @@ struct ResponsesRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ResponsesTool>,
     stream: bool,
-    /// Cache-shard affinity (pi sends the session id here).
+    /// Cache-shard affinity (the session id goes here).
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
-    /// Server-side retention off (pi parity): with store enabled the backend
+    /// Server-side retention off: with store enabled the backend
     /// folds generated reasoning into its cached prompt, which breaks the
     /// exact-prefix match on later turns (measured: turn 3+ misses at 0%).
     store: bool,
@@ -1268,7 +1268,6 @@ fn stream_unfold_step(
                         Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
-                                let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
                                 let next = StreamState::Init {
                                     client,
                                     url,
@@ -1278,7 +1277,15 @@ fn stream_unfold_step(
                                     attempt: attempt + 1,
                                     retry_after: floor,
                                 };
-                                return Some((Ok(notice), next));
+                                // One notice per burst: the transcript is
+                                // append-only, so retries 2+ stay silent
+                                // instead of stacking `Reconnecting...` cells.
+                                if attempt == 1 {
+                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                    return Some((Ok(notice), next));
+                                }
+                                state = next;
+                                continue;
                             }
                             log::error!(target: "gray_provider", "stream request failed: {err}");
                             return Some((Err(err), StreamState::Done));
@@ -1299,7 +1306,6 @@ fn stream_unfold_step(
                         Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
-                                let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
                                 let next = StreamState::ResponsesInit {
                                     client,
                                     url,
@@ -1309,7 +1315,13 @@ fn stream_unfold_step(
                                     attempt: attempt + 1,
                                     retry_after: floor,
                                 };
-                                return Some((Ok(notice), next));
+                                // One notice per burst (see Init above).
+                                if attempt == 1 {
+                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                    return Some((Ok(notice), next));
+                                }
+                                state = next;
+                                continue;
                             }
                             log::error!(target: "gray_provider", "responses request failed: {err}");
                             return Some((Err(err), StreamState::Done));
@@ -1806,6 +1818,33 @@ mod tests {
             }
             other => panic!("expected StreamError, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn retry_burst_emits_a_single_reconnect_notice() {
+        // Screenshot bug: attempts 1/3, 2/3 each pushed a `⚠ Reconnecting`
+        // cell so the transcript showed the same failure twice. One burst =
+        // one notice; the burst still ends with the terminal error.
+        use futures::StreamExt;
+        use gray_core::message::ChatRequest;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::builder("key", "test-model")
+            .base_url(server.uri())
+            .initial_backoff(Duration::from_millis(1))
+            .build()
+            .expect("provider builds");
+        let req = ChatRequest { system: None, messages: Vec::new(), tools: Vec::new() };
+        let events: Vec<_> = provider.stream(req).collect().await;
+        let notices = events
+            .iter()
+            .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+            .count();
+        assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
+        assert!(matches!(events.last(), Some(Err(_))), "burst ends with terminal error: {events:?}");
     }
 
     fn responses_req_with_thinking(model: &str) -> ChatRequest {

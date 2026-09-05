@@ -1,10 +1,10 @@
-//! DM pairing (hermes `gateway/pairing.py` / OpenClaw `dmPolicy: pairing`).
+//! DM pairing for unknown senders.
 //!
 //! Unknown DM senders receive a one-time code; the operator approves it from
 //! the CLI (`gray gateway pairing approve <platform> <code>`). Until then the
 //! sender's messages are *not* processed.
 //!
-//! Security properties (mirrors hermes, which follows OWASP / NIST 800-63-4):
+//! Security properties (follows OWASP / NIST 800-63-4):
 //! - 8-char codes from a 32-char unambiguous alphabet (no 0/O/1/I);
 //! - codes are stored only as salted SHA-256 hashes;
 //! - codes expire after 1 hour; max 3 pending codes per platform;
@@ -321,8 +321,7 @@ impl PairingStore {
 
 // ---------------------------------------------------------------------------
 // Operator actions shared by the `gray gateway pairing` CLI and the
-// `/gateway pairing` REPL command (hermes `pairing approve`, openclaw
-// `pairing approve <channel> <code>`).
+// `/gateway pairing` REPL command.
 // ---------------------------------------------------------------------------
 
 fn parse_platform(raw: &str) -> anyhow::Result<Platform> {
@@ -331,7 +330,7 @@ fn parse_platform(raw: &str) -> anyhow::Result<Platform> {
 
 /// Approve a pending code, returning a human line. Approving the first-ever
 /// user on a platform with an empty allowlist also writes them into
-/// `allowed_users` (openclaw bootstrapCommandOwnerFromPairing) so the owner
+/// `allowed_users` so the owner
 /// bind happens with no file editing. `cfg` is mutated; the caller saves it.
 pub fn pairing_approve_with(
     store: &PairingStore,

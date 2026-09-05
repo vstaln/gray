@@ -110,7 +110,7 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
             "✗ Connection failed: Unable to reach {base_url} (request timed out: {detail})\n  Please check your internet connection or run /connect to configure provider settings."
         ),
         CoreError::Provider(detail) => {
-            // pi parity: bounded detail (never raw multi-KB dumps) + explicit
+            // Bounded detail (never raw multi-KB dumps) + explicit
             // retryability on the first line of each classified arm.
             // Codex steal: extract Status/Code/Type/Message from JSON blobs
             // instead of dumping {"model":..,"error":{...}} raw.

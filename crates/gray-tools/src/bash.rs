@@ -111,7 +111,7 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_TIMEOUT_SECS: u64 = 300;
 
 pub const BASH_SNIPPET: &str = "Execute bash commands (ls, grep, find, etc.)";
-pub const BASH_GUIDELINES: &[&str] = &["You can inspect PI_* environment variables for current model and session details."];
+pub const BASH_GUIDELINES: &[&str] = &[];
 
 /// Runs a command through the shell (`sh -c`).
 pub struct BashTool;
@@ -265,7 +265,7 @@ async fn join_drain_bytes(handle: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
     handle.await.unwrap_or_default()
 }
 
-/// Guard verdict (codex tri-state as data: Allow / Prompt / Forbidden).
+/// Guard verdict as data: Allow / Prompt / Forbidden.
 enum Decision {
     Allow,
     /// Ask the user (first 2 occurrences per process, then auto-deny).
@@ -273,8 +273,8 @@ enum Decision {
     Deny(String),
 }
 
-/// Repeat counts for Prompt rules — graduated response (dcg idea, minimal).
-/// ponytail: per-process memory (resets on restart) — persist when a real incident demands it.
+/// Repeat counts for Prompt rules — graduated response.
+/// Per-process memory (resets on restart) — persist when a real incident demands it.
 static PROMPT_SEEN: std::sync::Mutex<Vec<(&'static str, usize)>> = std::sync::Mutex::new(Vec::new());
 
 fn prompt_allowance(rule: &'static str) -> bool {
@@ -296,7 +296,7 @@ fn prompt_allowance(rule: &'static str) -> bool {
 /// Never-legit destructive commands, evaluated before spawn (dcg core-pack ideas,
 /// reimplemented std-only).
 /// Bypass: `GRAY_GUARD_BYPASS=1` (dcg `DCG_BYPASS=1` parity, for CI/piped mode).
-/// ponytail: token/substring matching, no regex/AST; heredoc/`python -c`
+/// Token/substring matching, no regex/AST; heredoc/`python -c`
 /// payloads are unscanned — upgrade when a real incident hits.
 fn classify(command: &str) -> Decision {
     if std::env::var("GRAY_GUARD_BYPASS").as_deref() == Ok("1") {

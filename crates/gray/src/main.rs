@@ -104,7 +104,7 @@ async fn run_resume_subcommand(
         }
     };
     let _ = crossterm::terminal::disable_raw_mode();
-    // NOTE (ponytail-audit #12): an earlier `PROMPT` positional was deleted —
+    // NOTE: an earlier `PROMPT` positional was deleted —
     // it was accepted and then discarded. To send a first message on resume,
     // pipe it in or type it after the REPL opens.
     run_repl_mode(config, false, Some(target_id.as_str())).await?;
