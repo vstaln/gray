@@ -225,7 +225,10 @@ async fn with_modal<T>(
     r
 }
 
-fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce() -> T) -> T {
+pub(crate) fn with_modal_sync<T>(
+    tui: Option<&crate::composer::SharedTui>,
+    f: impl FnOnce() -> T,
+) -> T {
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").modal_open = true;
     }

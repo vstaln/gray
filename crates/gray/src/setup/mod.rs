@@ -28,6 +28,7 @@ pub use ui::{BackgroundSnapshot, dim_color, dim_line, dim_style, render_dimmed_b
 pub mod icons;
 pub use icons::{has_nerd_font, icon, init_nerd_font, set_nerd_font};
 
+mod acp_modal;
 mod context_modal;
 mod effort;
 mod gateway_modal;
@@ -39,6 +40,7 @@ mod connect;
 mod connect_draw;
 mod connect_models;
 
+pub use acp_modal::run_acp_modal;
 pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
 pub use gateway_modal::run_gateway_modal;
