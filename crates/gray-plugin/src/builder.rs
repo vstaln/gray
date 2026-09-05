@@ -50,10 +50,16 @@ impl Plugin for ToolsBasicPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        // T3.2/T3.3 wiring: read/write/edit share one ledger per tools() call
+        // (from_plugins calls once per build, so the session tools agree).
+        // No struct field: ToolsBasicPlugin literals also live in gray::profile,
+        // which must keep compiling untouched — T3.4 adopts this ledger into
+        // Registry::file_ledger for /new + compaction.
+        let ledger = Arc::new(gray_tools::FileLedger::new());
         let mut out: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(gray_tools::ReadTool),
-            Arc::new(gray_tools::WriteTool),
-            Arc::new(gray_tools::EditTool),
+            Arc::new(gray_tools::ReadTool::new(ledger.clone())),
+            Arc::new(gray_tools::WriteTool::new(ledger.clone())),
+            Arc::new(gray_tools::EditTool::new(ledger.clone())),
             Arc::new(gray_tools::BashTool),
             Arc::new(gray_tools::RequestUserInputTool),
         ];
@@ -126,7 +132,54 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
             }
         }
     }
-    (Registry::new(tools), manifests)
+    // T3.4 adoption: one ledger shared by the session tools AND
+    // Registry::file_ledger, so the binary's /new + compaction lifecycle acts
+    // on the same state the tools use. ToolsBasicPlugin::tools() already
+    // shares one ledger per build, but Registry::new makes its own — rebuild
+    // the tools-basic read/write/edit on the adopted ledger instead (a
+    // sidecar-owned name is left alone). Fresh per build on purpose: a reused
+    // ledger would leak reads across sessions in multi-session hosts.
+    let ledger = Arc::new(gray_tools::FileLedger::new());
+    for t in tools.iter_mut() {
+        let name = t.def().name.clone();
+        if owners.get(&name).map(|o| o.as_str()) != Some("tools-basic") {
+            continue;
+        }
+        let fresh: Option<Arc<dyn Tool>> = match name.as_str() {
+            "read" => Some(Arc::new(gray_tools::ReadTool::new(ledger.clone()))),
+            "write" => Some(Arc::new(gray_tools::WriteTool::new(ledger.clone()))),
+            "edit" => Some(Arc::new(gray_tools::EditTool::new(ledger.clone()))),
+            _ => None,
+        };
+        if let Some(f) = fresh {
+            *t = f;
+        }
+    }
+    let mut registry = Registry::new(tools);
+    registry.set_file_ledger(ledger.clone());
+    track_current_ledger(&ledger);
+    (registry, manifests)
+}
+
+// ---------------------------------------------------------------------------
+// Session ledger lifecycle (T3.4)
+// ---------------------------------------------------------------------------
+
+// Latest build's FileLedger (Weak: builds own their ledger; the binary
+// clears/disarms via this handle for /new, resume, and compaction while
+// gray-core stays ignorant of tools).
+static CURRENT_LEDGER: std::sync::Mutex<Option<std::sync::Weak<gray_tools::FileLedger>>> =
+    std::sync::Mutex::new(None);
+
+/// The ledger adopted by the latest [`from_plugins`] build, if still alive.
+pub fn current_file_ledger() -> Option<Arc<gray_tools::FileLedger>> {
+    CURRENT_LEDGER.lock().ok()?.as_ref()?.upgrade()
+}
+
+fn track_current_ledger(ledger: &Arc<gray_tools::FileLedger>) {
+    if let Ok(mut g) = CURRENT_LEDGER.lock() {
+        *g = Some(Arc::downgrade(ledger));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -353,4 +406,42 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_system(system)
         .with_tools(tool_defs)
         .with_hooks(hooks))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::agent::{ToolContext, ToolExecutor};
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn from_plugins_adopts_one_ledger_into_registry() {
+        // Deferred T3.2 item: the registry's file_ledger must be the same
+        // state the session read/write/edit tools use.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("note.txt");
+        std::fs::write(&p, "hello\n").unwrap();
+        let (reg, _) = from_plugins(&default_plugins());
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+            ..ToolContext::default()
+        };
+        let out = ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
+        assert!(!out.is_error, "{out:?}");
+        assert!(
+            reg.file_ledger().get(&p).is_some(),
+            "read must record into Registry::file_ledger"
+        );
+        // ... and the write tool honors it (no force needed after a full read).
+        let out = ToolExecutor::execute(
+            &reg,
+            &ctx,
+            "write",
+            json!({"path": "note.txt", "content": "hello\nworld\n"}),
+        )
+        .await;
+        assert!(!out.is_error, "{out:?}");
+        // Lifecycle handle tracks this build's ledger.
+        assert!(current_file_ledger().is_some());
+    }
 }
