@@ -57,7 +57,7 @@ impl Zoo {
             cwd: self.root(),
             ..ToolContext::default()
         };
-        ReadTool.execute(&ctx, Value::Object(map)).await
+        ReadTool::default().execute(&ctx, Value::Object(map)).await
     }
 }
 

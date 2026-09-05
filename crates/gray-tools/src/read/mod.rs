@@ -5,10 +5,14 @@ pub mod hygiene;
 pub mod notices;
 pub mod stream;
 pub mod window;
+mod dedup;
 mod guard;
 mod tail;
 #[cfg(test)]
 pub(crate) mod testkit;
+
+use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
@@ -17,13 +21,34 @@ use serde_json::Value;
 use serde_json::json;
 
 use crate::truncate::{DEFAULT_MAX_BYTES, format_size, truncate_head};
-use crate::{Tool, fail, get_opt_u64, get_str, resolve_path};
+use crate::{FileLedger, LedgerEntry, Tool, fail, get_opt_u64, get_str, resolve_path};
 
 pub const READ_SNIPPET: &str = "Read file contents";
 pub const READ_GUIDELINES: &[&str] = &["Use read to examine files instead of cat or sed."];
 
 /// Reads a text file (`path`, optional 1-based `offset`, optional `limit`).
-pub struct ReadTool;
+///
+/// Shares a [`FileLedger`] with the write/edit tools so repeat reads can be
+/// stubbed (T3.3) and writes can verify the file was seen (T3.2).
+pub struct ReadTool {
+    ledger: Arc<FileLedger>,
+}
+
+impl ReadTool {
+    /// Share `ledger` (the registry/plugin wiring); [`Default`] keeps a
+    /// private ledger so existing tests compile.
+    pub fn new(ledger: Arc<FileLedger>) -> Self {
+        Self { ledger }
+    }
+}
+
+impl Default for ReadTool {
+    fn default() -> Self {
+        Self {
+            ledger: Arc::new(FileLedger::new()),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ReadTool {
@@ -106,6 +131,15 @@ impl Tool for ReadTool {
                 Ok(guard::MetadataDecision::RegularFile) => {}
             }
         }
+        // T3.3 ledger: consume-on-hit dedup (same window, unchanged file).
+        // Runs after the device/dir gates above, before any content I/O.
+        // Absent offset normalizes to 1 — the same key the record path uses.
+        let win_off = offset.unwrap_or(1);
+        if let Some(stub) =
+            dedup::check(&self.ledger, &full, &display, win_off, limit, dedup::enabled())
+        {
+            return stub;
+        }
         let data = match tokio::fs::read(&full).await {
             Ok(d) => d,
             Err(e) => return fail(format!("read failed for {}: {e}", full.display())),
@@ -113,6 +147,24 @@ impl Tool for ReadTool {
         // T1.3: empty files name the fact + recovery (is_error=false);
         // never return ok("").
         if data.is_empty() {
+            // T3.3 ledger: an empty file is a full view (nothing unseen), so
+            // a later write is allowed without a re-read.
+            if let Ok(meta) = std::fs::metadata(&full) {
+                self.ledger.record_read(
+                    &full,
+                    LedgerEntry {
+                        mtime: meta.modified().unwrap_or_else(|_| SystemTime::now()),
+                        size: 0,
+                        content_hash: FileLedger::hash_bytes(&data),
+                        full_view: true,
+                        window: (win_off, limit),
+                        first_line: 1,
+                        last_line: 0,
+                        dedup_armed: true,
+                        read_at: Instant::now(),
+                    },
+                );
+            }
             return ToolOutput::ok(notices::empty(&display));
         }
         // T1.4 hygiene: BOM strip → magic-byte/NUL sniff → lossy decode →
@@ -226,6 +278,36 @@ impl Tool for ReadTool {
             output
         };
 
+        // T3.3 ledger: record what was shown (a miss re-arms dedup).
+        // `full_view` = the window covered lines 1..=T with no line/byte cut
+        // (a clamped-but-complete read still counts as full — the T3.2
+        // relational fix — once the T1.1 clamp lands; today only the
+        // truncation flags can cut).
+        if let Ok(meta) = std::fs::metadata(&full) {
+            let covers_all = match (tail_n, limit_opt) {
+                (Some(_), _) => selected.len() == total_lines,
+                (None, Some(lim)) => start.saturating_add(lim) >= total_lines,
+                (None, None) => start == 0,
+            };
+            self.ledger.record_read(
+                &full,
+                LedgerEntry {
+                    mtime: meta.modified().unwrap_or_else(|_| SystemTime::now()),
+                    size: data.len() as u64,
+                    content_hash: FileLedger::hash_bytes(&data),
+                    full_view: covers_all
+                        && !truncation.truncated
+                        && !truncation.first_line_exceeds_limit,
+                    window: (win_off, limit),
+                    first_line: first_shown,
+                    last_line: first_shown
+                        .saturating_add(selected.len())
+                        .saturating_sub(1),
+                    dedup_armed: true,
+                    read_at: Instant::now(),
+                },
+            );
+        }
         // T0.2 meter: no-op unless GRAY_TOOL_STATS=1, so zero behavior change.
         crate::stats::ToolStats {
             tool: "read",
