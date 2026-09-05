@@ -1,4 +1,5 @@
-//! Sidecar plugin protocol (v1).
+//! Sidecar plugin protocol (v1). See `docs/protocol-v1.md` for the
+//! versioned spec (methods, TTLs, gating, host-emission audit).
 //!
 //! Transport: newline-delimited JSON over child stdio. Requests the host
 //! sends are `{"id", "method", "params?"}`; sidecars reply with
