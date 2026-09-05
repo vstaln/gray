@@ -1268,7 +1268,6 @@ fn stream_unfold_step(
                         Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
-                                let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
                                 let next = StreamState::Init {
                                     client,
                                     url,
@@ -1278,7 +1277,15 @@ fn stream_unfold_step(
                                     attempt: attempt + 1,
                                     retry_after: floor,
                                 };
-                                return Some((Ok(notice), next));
+                                // One notice per burst: the transcript is
+                                // append-only, so retries 2+ stay silent
+                                // instead of stacking `Reconnecting...` cells.
+                                if attempt == 1 {
+                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                    return Some((Ok(notice), next));
+                                }
+                                state = next;
+                                continue;
                             }
                             log::error!(target: "gray_provider", "stream request failed: {err}");
                             return Some((Err(err), StreamState::Done));
@@ -1299,7 +1306,6 @@ fn stream_unfold_step(
                         Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
-                                let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
                                 let next = StreamState::ResponsesInit {
                                     client,
                                     url,
@@ -1309,7 +1315,13 @@ fn stream_unfold_step(
                                     attempt: attempt + 1,
                                     retry_after: floor,
                                 };
-                                return Some((Ok(notice), next));
+                                // One notice per burst (see Init above).
+                                if attempt == 1 {
+                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                    return Some((Ok(notice), next));
+                                }
+                                state = next;
+                                continue;
                             }
                             log::error!(target: "gray_provider", "responses request failed: {err}");
                             return Some((Err(err), StreamState::Done));
@@ -1806,6 +1818,33 @@ mod tests {
             }
             other => panic!("expected StreamError, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn retry_burst_emits_a_single_reconnect_notice() {
+        // Screenshot bug: attempts 1/3, 2/3 each pushed a `⚠ Reconnecting`
+        // cell so the transcript showed the same failure twice. One burst =
+        // one notice; the burst still ends with the terminal error.
+        use futures::StreamExt;
+        use gray_core::message::ChatRequest;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::builder("key", "test-model")
+            .base_url(server.uri())
+            .initial_backoff(Duration::from_millis(1))
+            .build()
+            .expect("provider builds");
+        let req = ChatRequest { system: None, messages: Vec::new(), tools: Vec::new() };
+        let events: Vec<_> = provider.stream(req).collect().await;
+        let notices = events
+            .iter()
+            .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+            .count();
+        assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
+        assert!(matches!(events.last(), Some(Err(_))), "burst ends with terminal error: {events:?}");
     }
 
     fn responses_req_with_thinking(model: &str) -> ChatRequest {

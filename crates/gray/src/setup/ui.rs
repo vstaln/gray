@@ -170,20 +170,37 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let footer_model_color = Color::Rgb(58, 58, 58);
 
     let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_arrow_color).add_modifier(Modifier::DIM).bg(box_bg));
-    let prompt_line = if bg.prompt_text.is_empty() {
-        Line::from(vec![arrow_span]).style(Style::default().bg(box_bg))
+    let cont_span = Span::styled("  ", Style::default().bg(box_bg));
+    // Mirror the composer input box: wrap the live prompt so a long /
+    // multi-line draft grows the box instead of breaking a single row.
+    let content_w = w.saturating_sub(4).max(1);
+    let mut prompt_rows: Vec<Line<'static>> = Vec::new();
+    if bg.prompt_text.is_empty() {
+        prompt_rows.push(Line::from(vec![arrow_span]).style(Style::default().bg(box_bg)));
     } else {
-        Line::from(vec![
-            arrow_span,
-            Span::styled(bg.prompt_text.clone(), Style::default().fg(text_dimmed_color).add_modifier(Modifier::DIM).bg(box_bg)),
-        ]).style(Style::default().bg(box_bg))
-    };
+        for (li, logical) in bg.prompt_text.split('\n').enumerate() {
+            let prefix = if li == 0 { arrow_span.clone() } else { cont_span.clone() };
+            if logical.is_empty() {
+                prompt_rows.push(Line::from(vec![prefix]).style(Style::default().bg(box_bg)));
+                continue;
+            }
+            let chars: Vec<char> = logical.chars().collect();
+            for (ci, chunk) in chars.chunks(content_w).enumerate() {
+                let s: String = chunk.iter().collect();
+                let p = if li == 0 && ci == 0 { arrow_span.clone() } else { cont_span.clone() };
+                prompt_rows.push(Line::from(vec![
+                    p,
+                    Span::styled(s, Style::default().fg(text_dimmed_color).add_modifier(Modifier::DIM).bg(box_bg)),
+                ]).style(Style::default().bg(box_bg)));
+            }
+        }
+    }
 
-    let bottom_box_lines = vec![
-        Line::from("").style(Style::default().bg(box_bg)),
-        prompt_line,
+    let mut bottom_box_lines = vec![
         Line::from("").style(Style::default().bg(box_bg)),
     ];
+    bottom_box_lines.extend(prompt_rows);
+    bottom_box_lines.push(Line::from("").style(Style::default().bg(box_bg)));
 
     let (_, max_label) = model_context_info(&bg.model_name);
     let ctx_display = format!("{}/{}", format_context_length(bg.used_tokens), max_label);
@@ -209,7 +226,10 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     ])
     .style(Style::default().bg(BACKDROP_BG));
 
-    let composer_h = 4usize;
+    // Dynamic: the box grows with wrapped prompt rows (fixed 4 was the
+    // old blank+prompt+blank+footer); reserving fewer rows than pushed made
+    // truncate() eat the footer + box bottom behind modals.
+    let composer_h = bottom_box_lines.len() + 1;
     let transcript_avail_h = h.saturating_sub(composer_h);
 
     let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
@@ -251,5 +271,37 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
             Paragraph::new(line),
             Rect::new(area.x, y, area.width, 1),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buffer_rows(backend: &ratatui::backend::TestBackend, w: u16, h: u16) -> Vec<String> {
+        let buf = backend.buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn backdrop_keeps_footer_with_multiline_prompt() {
+        // A long draft wraps the backdrop box, but the reserved height stayed
+        // at the old fixed 4 rows so truncate() ate the footer + box bottom
+        // behind modals. The footer must survive box growth.
+        let backend = ratatui::backend::TestBackend::new(40, 10);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        let bg = BackgroundSnapshot {
+            transcript: Vec::new(),
+            history_entries: Vec::new(),
+            prompt_text: "abcdefghijklmnopqrstuvwxyz0123456789!@#$ ".repeat(3),
+            ..Default::default()
+        };
+        terminal
+            .draw(|frame| render_dimmed_background(frame, &bg))
+            .expect("draw");
+        let rows = buffer_rows(terminal.backend(), 40, 10);
+        assert!(rows[9].contains("cache"), "footer survives box growth: {rows:?}");
     }
 }
