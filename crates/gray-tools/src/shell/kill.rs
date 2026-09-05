@@ -161,8 +161,7 @@ fn comm_for(pid: u32) -> String {
 pub fn pid_for_port(port: u16) -> io::Result<Option<(u32, String)>> {
     #[cfg(target_os = "macos")]
     {
-        let _ = port;
-        return pid_for_port_macos(port);
+        pid_for_port_macos(port)
     }
     #[cfg(not(target_os = "macos"))]
     {
