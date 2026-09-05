@@ -88,9 +88,7 @@ pub fn is_blocklisted(path: &Path) -> bool {
 /// Name gate: no I/O, safe to call before `open()`. `canonical` is the
 /// `std::fs::canonicalize` result when it exists (`None` skips that half).
 pub fn check_name(literal: &Path, canonical: Option<&Path>, display: &str) -> Result<(), String> {
-    if is_blocklisted(literal)
-        || canonical.is_some_and(|c| c != literal && is_blocklisted(c))
-    {
+    if is_blocklisted(literal) || canonical.is_some_and(|c| c != literal && is_blocklisted(c)) {
         return Err(refusal(display, "device/FIFO/socket"));
     }
     Ok(())
@@ -176,14 +174,14 @@ mod tests {
     #[test]
     fn innocent_names_pass() {
         for p in [
-            "zero",               // regular file merely named `zero`
-            "/home/u/zero",       // anchored: only a leading `dev` counts
-            "/tmp/x.txt",         //
-            "/dev",               // dir itself: metadata gate decides
-            "/dev/null",          // not in the name list (char device via metadata)
-            "/proc/abc/fd/3",     // non-numeric pid is not the fd-dir shape
-            "/proc/1234/task",    // proc, but not an fd dir
-            "/proc/self/maps",    //
+            "zero",            // regular file merely named `zero`
+            "/home/u/zero",    // anchored: only a leading `dev` counts
+            "/tmp/x.txt",      //
+            "/dev",            // dir itself: metadata gate decides
+            "/dev/null",       // not in the name list (char device via metadata)
+            "/proc/abc/fd/3",  // non-numeric pid is not the fd-dir shape
+            "/proc/1234/task", // proc, but not an fd dir
+            "/proc/self/maps", //
         ] {
             assert!(!is_blocklisted(Path::new(p)), "{p}");
         }
@@ -234,8 +232,7 @@ mod tests {
         let fifo = dir.path().join("f.fifo");
         let cstr = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(cstr.as_ptr(), 0o600) }, 0);
-        let err =
-            check_metadata(&std::fs::metadata(&fifo).unwrap(), "f.fifo").unwrap_err();
+        let err = check_metadata(&std::fs::metadata(&fifo).unwrap(), "f.fifo").unwrap_err();
         assert!(err.contains("is a FIFO;"), "{err}");
 
         let sock = dir.path().join("s.sock");

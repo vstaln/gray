@@ -707,8 +707,7 @@ pub fn generate_unified_patch_default(path: &str, old_content: &str, new_content
 
 /// Note appended to a successful edit when the prefix repair fired, so the
 /// model learns to quote unprefixed text next time.
-pub const EDIT_PREFIX_STRIP_NOTE: &str =
-    "[edit: stripped cat -n prefixes from oldText/newText]";
+pub const EDIT_PREFIX_STRIP_NOTE: &str = "[edit: stripped cat -n prefixes from oldText/newText]";
 
 /// Strip one leading `cat -n` prefix (`^\s*\d+\t`) from each line that has
 /// one; lines without that shape are returned unchanged.
@@ -756,11 +755,7 @@ pub fn strip_edit_prefixes(edits: &[Edit]) -> Option<Vec<Edit>> {
             }
         })
         .collect();
-    if changed {
-        Some(out)
-    } else {
-        None
-    }
+    if changed { Some(out) } else { None }
 }
 
 #[cfg(test)]

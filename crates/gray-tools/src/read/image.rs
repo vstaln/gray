@@ -178,7 +178,11 @@ mod tests {
         assert!((scale - 2.4489).abs() < 0.01, "{scale}");
         assert_eq!(format!("{scale:.2}"), "2.45");
         let p = plan("image/png", 3840, 2160);
-        assert!(scale_note(&p).contains("attached at 1568x882"), "{}", scale_note(&p));
+        assert!(
+            scale_note(&p).contains("attached at 1568x882"),
+            "{}",
+            scale_note(&p)
+        );
     }
 
     #[test]

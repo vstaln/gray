@@ -90,7 +90,10 @@ pub fn write_fixtures(root: &Path, big: bool) -> std::io::Result<()> {
 
     std::fs::write(root.join("empty.txt"), b"")?;
     std::fs::write(root.join("crlf.txt"), b"alpha\r\nbeta\r\ngamma\r\n")?;
-    std::fs::write(root.join("bom.txt"), "\u{FEFF}fn main() {}\nprintln!(\"hi\");\n")?;
+    std::fs::write(
+        root.join("bom.txt"),
+        "\u{FEFF}fn main() {}\nprintln!(\"hi\");\n",
+    )?;
 
     // emoji.txt: multibyte chars straddling the byte cap (400 bytes/line).
     let emoji: Vec<String> = (1..=200).map(|_| "\u{1F600}".repeat(100)).collect();
@@ -109,13 +112,7 @@ pub fn write_fixtures(root: &Path, big: bool) -> std::io::Result<()> {
 
     // nul.bin: 4 KiB laced with NUL bytes.
     let nul: Vec<u8> = (0..4096)
-        .map(|i| {
-            if i % 8 == 7 {
-                0
-            } else {
-                b'A' + (i % 26) as u8
-            }
-        })
+        .map(|i| if i % 8 == 7 { 0 } else { b'A' + (i % 26) as u8 })
         .collect();
     std::fs::write(root.join("nul.bin"), nul)?;
 
