@@ -99,6 +99,7 @@ crates/
 ```
 
 - Plugin wire spec (methods, TTLs, manifest gates, host-emission audit): [docs/protocol-v1.md](docs/protocol-v1.md).
+- Read-tool token bench (before/after, `est_tokens = bytes/4`): [docs/read-tool-bench.md](docs/read-tool-bench.md).
 
 - **Streaming first** — text deltas, tool calls, and usage arrive as typed events over SSE.
 - **Sessions persist** to `~/.gray/sessions/*.jsonl`; `-c` reopens the latest.
