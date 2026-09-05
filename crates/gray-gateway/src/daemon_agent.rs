@@ -12,7 +12,12 @@ use crate::daemon_stream::StreamMsg;
 use crate::session::{SessionSource, build_session_key};
 
 impl GatewayRunner {
-    fn build_agent(
+    /// Same agent every entry point builds (p2-7): provider + full
+    /// registry + `gray.yml` sidecar hooks. The REPL/`-p` spelling of this
+    /// lives in `gray::build_agent` (skills + cache-key pinning are
+    /// interactive-only); a shared crate is still owed to truly unify them
+    /// (`gray → gray-gateway` edge forbids calling it from here).
+    async fn build_agent(
         &self,
         prior: Vec<gray_core::Message>,
     ) -> anyhow::Result<gray_core::agent::Agent> {
@@ -37,9 +42,30 @@ impl GatewayRunner {
         let tool_defs = registry.defs();
         let executor = GatedExecutor::new(Box::new(registry), self.config.denied_tools.clone());
 
+        // Sidecar hooks from the same `gray.yml` profile the REPL reads;
+        // spawn failures warn + continue (the daemon must stay up).
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let mut plugins: Vec<std::sync::Arc<dyn gray_plugin::Plugin>> = Vec::new();
+        match gray_plugin::profile::load_entries("gray.yml") {
+            Ok(entries) => {
+                for e in &entries {
+                    if let gray_plugin::profile::PluginEntry::Sidecar(spec) = e {
+                        match gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone()).await {
+                            Ok(p) => plugins.push(std::sync::Arc::new(p)),
+                            Err(err) => log::warn!(target: "gray_gateway", "sidecar spawn failed, skipping: {err:#}"),
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+        let hooks =
+            gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
+
         Ok(Agent::new(Box::new(provider), Box::new(executor))
             .with_system(load_system_prompt())
             .with_tools(tool_defs)
+            .with_hooks(hooks)
             .with_messages(prior))
     }
 
@@ -74,7 +100,7 @@ impl GatewayRunner {
             }
         };
         let prior_len = prior_messages.len();
-        let mut agent = self.build_agent(prior_messages)?;
+        let mut agent = self.build_agent(prior_messages).await?;
 
         // Cancel token registered under the session key so /stop and interrupts can abort.
         let token = tokio_util::sync::CancellationToken::new();
@@ -86,6 +112,7 @@ impl GatewayRunner {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             cancel: token,
             questions: None, // no interactive user → request_user_input is denied anyway
+            session_id: Some(sid_str.to_string()),
         };
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {

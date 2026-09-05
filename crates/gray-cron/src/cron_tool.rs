@@ -107,6 +107,12 @@ impl gray_plugin::Plugin for CronPlugin {
             commands: vec![],
             hooks: vec![],
             provider: None,
+            // In-process plugin: no wire, so no protocol/capabilities/
+            // subcommands. `/cron` lives on the future cron SIDECAR
+            // (plugins/cron/cron.sh), not here.
+            protocol: None,
+            capabilities: vec![],
+            subcommands: vec![],
         }
     }
 

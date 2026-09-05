@@ -21,6 +21,14 @@ const MAX_EMPTY_RETRIES: u8 = 2;
 const MAX_CONTINUATIONS: u8 = 2;
 
 impl Agent {
+    /// Best-effort `turn_end` fan-out: hook failures must never fail the turn
+    /// (hooks are infallible by signature, same as `tool_before`).
+    async fn emit_turn_end(&self, usage: &Usage) {
+        for hook in &self.hooks {
+            hook.turn_end(usage).await;
+        }
+    }
+
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///
@@ -93,11 +101,13 @@ impl Agent {
             // half-finished assistant message would leave the transcript
             // inconsistent for the provider.
             if ctx.cancel.is_cancelled() {
+                self.emit_turn_end(&total_usage).await;
                 return Err(CoreError::Cancelled);
             }
             if let Some(m) = self.max_rounds
                 && round >= m
             {
+                self.emit_turn_end(&total_usage).await;
                 return Err(CoreError::LoopDetected(format!(
                     "max rounds ({m}) exceeded"
                 )));
@@ -152,6 +162,7 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
+                            self.emit_turn_end(&total_usage).await;
                             return Err(CoreError::Cancelled);
                         }
                     };
@@ -180,6 +191,7 @@ impl Agent {
                             // sending index = 2^40 would otherwise allocate gigabytes here.
                             const MAX_TOOL_CALL_INDEX: usize = 4096;
                             if index > MAX_TOOL_CALL_INDEX {
+                                self.emit_turn_end(&total_usage).await;
                                 return Err(CoreError::Provider(format!(
                                     "tool-call index {index} exceeds limit ({MAX_TOOL_CALL_INDEX})"
                                 )));
@@ -237,10 +249,16 @@ impl Agent {
                                 compact_attempted = true;
                                 match self.try_compact_once().await {
                                     Ok(true) => continue 'turn,
-                                    _ => return Err(CoreError::from(e)),
+                                    _ => {
+                                        let err = CoreError::from(e);
+                                        self.emit_turn_end(&total_usage).await;
+                                        return Err(err);
+                                    }
                                 }
                             }
-                            return Err(CoreError::from(e));
+                            let err = CoreError::from(e);
+                            self.emit_turn_end(&total_usage).await;
+                            return Err(err);
                         }
                         None => {
                             // Provider closed without a completion event;
@@ -361,6 +379,7 @@ impl Agent {
                 };
                 log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, total_usage));
+                self.emit_turn_end(&total_usage).await;
                 return Ok(events);
             }
 
@@ -379,6 +398,7 @@ impl Agent {
                 }
                 if repeat >= 3 {
                     answer_pending_tools(self, &tool_uses, 0, "aborted: tool loop detected");
+                    self.emit_turn_end(&total_usage).await;
                     return Err(CoreError::LoopDetected(format!(
                         "same tool call 3× in a row: {sig}"
                     )));
@@ -403,6 +423,7 @@ impl Agent {
             }
             if stall_rounds >= STALL_ABORT_ROUNDS {
                 answer_pending_tools(self, &tool_uses, 0, "aborted: exploration stall");
+                self.emit_turn_end(&total_usage).await;
                 return Err(CoreError::LoopDetected(format!(
                     "exploration stall: {stall_rounds} read-only tool rounds with no file changes"
                 )));
@@ -415,6 +436,7 @@ impl Agent {
             for (idx, (id, name, args)) in tool_uses.iter().enumerate() {
                 if ctx.cancel.is_cancelled() {
                     answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
+                    self.emit_turn_end(&total_usage).await;
                     return Err(CoreError::Cancelled);
                 }
                 if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
@@ -499,6 +521,9 @@ impl Agent {
                     continue;
                 }
 
+                for hook in &self.hooks {
+                    hook.pre_tool(name, &effective_args).await;
+                }
                 let output = tokio::select! {
                     out = tokio::time::timeout(
                         self.tool_timeout,
@@ -512,9 +537,13 @@ impl Agent {
                     },
                     _ = ctx.cancel.cancelled() => {
                         answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
+                        self.emit_turn_end(&total_usage).await;
                         return Err(CoreError::Cancelled);
                     },
                 };
+                for hook in &self.hooks {
+                    hook.post_tool(name, &output).await;
+                }
 
                 emit!(AgentEvent::tool_result(
                     id.clone(),
