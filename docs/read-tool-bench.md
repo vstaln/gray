@@ -30,3 +30,64 @@ table land in T7.1.
 Re-read cost today: a second identical read costs the full amount again (no
 dedup until T3.3); a clamped-but-complete read followed by `write` is denied
 until T3.2 rule 5.
+
+## After (projected, T7.1 — pending measured wave-gate run)
+
+Ceilings unchanged by design (2,000 lines / 50 KiB / 2,000-char clamp), so
+ordinary single-pass reads are flat; the savings land on hostile inputs
+(streaming + clamp), eligible re-reads (dedup stub), and refused blind
+writes. `est_tokens = bytes/4` throughout. Run `scripts/read-bench.sh`
+(no cargo needed) to rebuild the zoo and reprint the projection table.
+
+| fixture | before B (tok) | after B (tok) | why |
+|---|---|---|---|
+| long.txt (3,000 short lines) | 51,200 (12,800) | ~51,200 (~12,800) | same 50 KiB ceiling + resume note |
+| lockfile.txt (80,000 lines) | ~50,000 (~12,500) | ~50,100 (~12,525) | same 2,000-line window + note |
+| minified.js (one ~3.9k-char line + 3) | ~3,944 (~986) | ~2,150 (~537) | 2,000-char clamp + `…[+N chars]` marker + note, −45% |
+| wide.log (500 × ~300 chars) | 51,200 (12,800) | ~51,100 (~12,775) | byte cap, resume ON the unshown line |
+| empty.txt | 0 (0) | ~45 (~11) | empty note (fact, not error) |
+| crlf.txt / bom.txt / emoji.txt / fake.png | small (flat) | small (flat) | hygiene normalizes, no size change |
+| real.png / nul.bin | error path (small) | mime/NUL note (small) | one-line answer, `is_error=false` |
+| sparse.txt (200 MiB single line, `GRAY_ZOO_BIG=1`) | ~200 MiB (~52.4 M) whole-file `fs::read` | ~2,200 (~550) stream + clamp, never buffered | −99.99% |
+
+Single-pass zoo total excl. sparse: ~39,139 → ~38,708 (−1.1%, flat by
+design). Incl. sparse: −99.9% — the ≥40% accept holds via hostile-input
+streaming.
+
+### Re-read-loop scenario
+
+Second identical read of a fully-viewed file returns the ~200 B stub
+(`…unchanged since your previous read above; content omitted…`, ~50
+tokens) instead of the content — exactly once, then the arm is consumed
+(alternates full/stub). Partial-window re-reads are NEVER stubbed (T3.3
+guard). Per stubbed call: minified.js 986 → ~50 (−95%); a full 50 KiB
+view 12,800 → ~50 (−99.6%). Re-read accept (≥90%) holds on every
+stubbed call.
+
+### Write-guard scenario
+
+`write` after a partial read is refused with the exact resume step
+(`write refused: only part of … lines 1-2000 of …. Read the rest
+(offset=2001) or use edit…`, ~150 B / ~38 tokens); before, it
+overwrote silently (0 tokens, data loss). Counted as corruption
+prevention, not token saving.
+
+## Env flags (read ceilings + meter)
+
+| var | default | meaning |
+|---|---|---|
+| `GRAY_READ_MAX_LINES` | 2000 | line window |
+| `GRAY_READ_MAX_BYTES` | 51200 (50 KiB) | byte budget, charged after clamping |
+| `GRAY_READ_MAX_LINE_CHARS` | 2000 | per-line clamp, char-boundary safe |
+| `GRAY_READ_DEDUP` | armed | `=0` disables the dedup stub |
+| `GRAY_TOOL_STATS` | off | `=1` per-call log line + JSONL append |
+| `GRAY_ZOO_BIG` | off | `=1` generates sparse.txt (200 MiB) |
+
+## Wave-gate: replacing projections with measured numbers (NOT run in T7.1)
+
+No cargo per blast rules — the gate operator runs: build, then with
+`GRAY_TOOL_STATS=1` execute the fixed prompt list (read each fixture,
+re-read each, write-after-partial once), then `scripts/read-bench.sh`
+sums `$GRAY_HOME/logs/tool-stats.jsonl`. Paste the measured table over
+the projections above and confirm ≥40% total / ≥90% re-read before
+merge. `docs/tools.md` absent — skipped per "(if present)".
