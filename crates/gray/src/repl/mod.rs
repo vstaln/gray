@@ -470,6 +470,11 @@ pub async fn run_repl_mode(
             let texts = std::mem::take(&mut t.pending_question_answers);
             pending_command = Some(ReplCommand::Prompt(texts.join("\n\n")));
         }
+        // Plugin-initiated `host/say` lines queued while a turn ran (cron
+        // reports) surface here, through the composer when it owns the screen.
+        for line in crate::host::take_host_say() {
+            say(tui.as_ref().map(|(s, _)| s), &line);
+        }
         let cmd = if let Some(c) = pending_command.take() {
             c
         } else {

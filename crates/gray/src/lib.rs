@@ -3,6 +3,7 @@
 pub mod compact;
 pub mod composer;
 pub mod config;
+pub mod host;
 pub mod logging;
 pub mod plugin_check;
 pub mod print;
@@ -171,7 +172,11 @@ pub async fn build_agent(
     // Tools only appear in the prompt when they have a snippet.
     // Same plugins feed the registry and the agent hooks (protocol v1:
     // prompt/context, tool/before, command/run reach the loop + REPL).
-    let (plugins, _) = profile::active_plugins().await?;
+    // Sidecars also get the host runner so plugin-initiated `host/run`
+    // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
+    let (plugins, _) =
+        profile::active_plugins_with_handler(Some(host::default_handler(cwd.to_path_buf())))
+            .await?;
     let (registry, _) = profile::from_plugins(&plugins);
     let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
     let tool_snippets = registry.prompt_snippets();

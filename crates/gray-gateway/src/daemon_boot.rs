@@ -184,7 +184,11 @@ async fn run_gateway_inner(
                             // Sequential inline dispatch — no dedup guard needed
                             // (a claim would always release before the next scan).
                             for job in due {
-                                let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
+                                // Atomic claim (flock): the cron sidecar may
+                                // have fired it first — skip, never double-fire.
+                                if !gray_cron::store::claim_job_run(&job.id, chrono::Utc::now()) {
+                                    continue;
+                                }
                                 r.run_cron_job(&job).await;
                             }
                         }
