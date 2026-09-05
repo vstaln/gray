@@ -12,6 +12,9 @@
 use std::os::unix::process::ExitStatusExt;
 
 use super::contract::ExitReport;
+// Shared quote-aware `|` splitter (4B dedupes the NOTE(1A) local copy:
+// `||` stays literal, quotes/backslashes/$(…)/heredocs respected).
+use super::split::split_pipeline;
 
 /// Build an honest [`ExitReport`] from a wait status and the command that
 /// produced it. Never lies about 128+N; annotates what a model would
@@ -162,48 +165,6 @@ fn masked_note(command: &str) -> Option<String> {
         "`{}` reports {last}'s exit, not {first}'s; rerun with `set -o pipefail;` to see the real status",
         command.trim()
     ))
-}
-
-// NOTE(1A): minimal quote-aware `|` splitter — ignores `||` and pipes
-// inside quotes/backslashes. Dedupe with shell/split.rs when 4B lands.
-fn split_pipeline(cmd: &str) -> Vec<String> {
-    let mut segs = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    let mut chars = cmd.chars().peekable();
-    while let Some(c) = chars.next() {
-        if let Some(q) = quote {
-            cur.push(c);
-            if c == '\\' {
-                if let Some(n) = chars.next() {
-                    cur.push(n);
-                }
-            } else if c == q {
-                quote = None;
-            }
-            continue;
-        }
-        match c {
-            '\'' | '"' => {
-                quote = Some(c);
-                cur.push(c);
-            }
-            '\\' => {
-                cur.push(c);
-                if let Some(n) = chars.next() {
-                    cur.push(n);
-                }
-            }
-            '|' if chars.peek() == Some(&'|') => {
-                cur.push(c);
-                cur.push(chars.next().unwrap_or('|'));
-            }
-            '|' => segs.push(std::mem::take(&mut cur)),
-            _ => cur.push(c),
-        }
-    }
-    segs.push(cur);
-    segs
 }
 
 #[cfg(test)]
