@@ -1,9 +1,9 @@
 //! T1.5 tail unit for the `read` tool: negative `offset` reads the tail.
 //!
-//! Pure functions only (std + `serde_json`, both already gray-tools deps).
 //! Wired in `read/mod.rs` (`mod tail;`): `offset` is parsed with
 //! [`get_offset`] instead of `get_opt_u64` (which rejects negatives), the
-//! selection uses [`last_n`], and the notes below are appended to the output.
+//! selection rings over the stream with [`drain_tail`], and the notes below
+//! are appended to the output.
 //!
 //! Spec: plan.ts T1.5 ("Negative offset reads the tail"). `limit` is ignored
 //! when a tail is requested ([`limit_ignored_note`]).
@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use serde_json::Value;
 
 use super::args;
+use super::stream::{LineStream, RawLine};
 
 /// Parses the `offset` arg as a signed integer.
 ///
@@ -43,21 +44,28 @@ pub fn get_offset(args: &Value) -> Result<Option<i64>, String> {
     Ok(Some(o))
 }
 
-/// Last `n` items of the line iterator via a ring buffer.
+/// Drain the stream keeping only the last `n` lines (T2.2: rings over the
+/// stream instead of `tail::last_n` over whole-file text, so a tail never
+/// materializes the file).
 ///
 /// Never holds more than `min(n, total)` lines; deliberately no
 /// `with_capacity(n)` — `n` is untrusted (up to `i64::MAX`) and must not
-/// drive allocation. (The file text itself is already in RAM today; bounding
-/// the read stream is T2.1's job — this bounds only the tail window.)
-pub fn last_n<'a>(lines: impl Iterator<Item = &'a str>, n: u64) -> VecDeque<&'a str> {
+/// drive allocation. Cancel surfaces as `Ok` with the stream's cancelled
+/// flag set (the caller renders the cancelled note).
+pub async fn drain_tail(s: &mut LineStream, n: u64) -> std::io::Result<VecDeque<RawLine>> {
     let mut buf = VecDeque::new();
-    for line in lines {
-        buf.push_back(line);
-        while buf.len() as u64 > n {
-            buf.pop_front();
+    loop {
+        match s.next_line().await? {
+            None => break,
+            Some(line) => {
+                buf.push_back(line);
+                while buf.len() as u64 > n {
+                    buf.pop_front();
+                }
+            }
         }
     }
-    buf
+    Ok(buf)
 }
 
 /// `[read: last <shown> lines of <T> (lines <a>-<T>)]`.
@@ -84,18 +92,30 @@ mod tests {
         json!({ "path": "f", "offset": offset })
     }
 
-    #[test]
-    fn ring_keeps_only_the_last_n() {
-        let lines = ["a", "b", "c", "d", "e"];
-        let got: Vec<_> = last_n(lines.into_iter(), 3).into_iter().collect();
-        assert_eq!(got, ["c", "d", "e"]);
+    #[tokio::test]
+    async fn ring_keeps_only_the_last_n() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.txt");
+        std::fs::write(&p, b"a\nb\nc\nd\ne\n").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut s = LineStream::open(&p, "t.txt", cancel).await.unwrap();
+        let got = drain_tail(&mut s, 3).await.unwrap();
+        let texts: Vec<String> = got.iter().map(|l| l.text().into_owned()).collect();
+        assert_eq!(texts, ["c", "d", "e"]);
+        assert_eq!(got[0].line_no, 3);
+        assert_eq!(s.line_no(), 5);
     }
 
-    #[test]
-    fn ring_larger_than_input_keeps_everything_in_order() {
-        let lines = ["a", "b", "c", "d"];
-        let got: Vec<_> = last_n(lines.into_iter(), 10).into_iter().collect();
-        assert_eq!(got, ["a", "b", "c", "d"]);
+    #[tokio::test]
+    async fn ring_larger_than_input_keeps_everything_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("t.txt");
+        std::fs::write(&p, b"a\nb\nc\nd\n").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut s = LineStream::open(&p, "t.txt", cancel).await.unwrap();
+        let got = drain_tail(&mut s, 10).await.unwrap();
+        let texts: Vec<String> = got.iter().map(|l| l.text().into_owned()).collect();
+        assert_eq!(texts, ["a", "b", "c", "d"]);
     }
 
     #[test]
