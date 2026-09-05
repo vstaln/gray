@@ -504,7 +504,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {
-            frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
+            // Same full-bleed band as the input box above: without it the pad
+            // cells keep the terminal default bg (dark gap on the right).
+            let footer_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            frame.render_widget(
+                Paragraph::new(Line::from(footer_spans)).block(footer_block),
+                Rect::new(area.x, footer_y, area.width, 1),
+            );
         }
 
         let used_bottom = footer_y + 1;
