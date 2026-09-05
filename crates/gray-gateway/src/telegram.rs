@@ -518,6 +518,35 @@ impl BasePlatformAdapter for TelegramAdapter {
         }
     }
 
+    async fn delete_message(&self, chat: &str, message_id: &str) -> SendResult {
+        #[cfg(feature = "telegram")]
+        {
+            use teloxide::prelude::*;
+            use teloxide::types::MessageId;
+            let Some(bot) = self.client.lock().unwrap().clone() else {
+                return SendResult::fail("telegram not connected", false);
+            };
+            let Ok((cid, _)) = parse_chat_target(chat) else {
+                return SendResult::fail(format!("invalid telegram chat id {chat:?}"), false);
+            };
+            let Ok(mid) = message_id.parse::<i32>() else {
+                return SendResult::fail(
+                    format!("invalid telegram message id {message_id:?}"),
+                    false,
+                );
+            };
+            return match bot.delete_message(ChatId(cid), MessageId(mid)).await {
+                Ok(_) => SendResult::ok(Some(message_id.to_string())),
+                Err(e) => SendResult::fail(format!("telegram delete: {e}"), true),
+            };
+        }
+        #[cfg(not(feature = "telegram"))]
+        {
+            log::info!("[telegram] delete {chat}/{message_id}");
+            SendResult::ok(Some(message_id.to_string()))
+        }
+    }
+
     async fn send(&self, chat: &str, text: &str) -> SendResult {
         self.send_ext(chat, text, &SendOptions::default()).await
     }

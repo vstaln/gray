@@ -98,6 +98,8 @@ crates/
 └── gray-tools     read · write · edit · bash · find · grep · ls · cron_tool · plugin loader (gray.yml profiles)
 ```
 
+- Plugin wire spec (methods, TTLs, manifest gates, host-emission audit): [docs/protocol-v1.md](docs/protocol-v1.md).
+
 - **Streaming first** — text deltas, tool calls, and usage arrive as typed events over SSE.
 - **Sessions persist** to `~/.gray/sessions/*.jsonl`; `-c` reopens the latest.
 - **Ctrl-C means cancel** mid-turn (first press) and exit at the prompt; interrupted turns still persist what reached memory.

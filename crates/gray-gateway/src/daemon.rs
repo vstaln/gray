@@ -7,7 +7,7 @@
 //! 3. **interrupt** — a new message for a session with a running agent cancels
 //!    that run first (level 2); `/stop` cancels without replacing (level 1);
 //! 4. **run** — agent with the [`crate::authz::GatedExecutor`] (dangerous
-//!    tools auto-denied), streaming edit-in-place where the platform allows;
+//!    tools auto-denied), Hermes-style progress bubbles where the platform allows;
 //! 5. **deliver** — reply to the originating chat/thread, chunked to the
 //!    platform limit. Cron output goes to each platform's `home_channel`.
 use std::collections::HashMap;
@@ -27,8 +27,11 @@ use crate::discord::DiscordAdapter;
 use crate::slack::SlackAdapter;
 use crate::telegram::TelegramAdapter;
 
-use crate::daemon_stream::Streamer;
+use crate::daemon_stream::ProgressBubble;
 
+/// Minimum interval between progress-bubble EDITS while working
+/// (Discord/Telegram edit rate limits sit around 1/s per chat).
+/// The first send is always immediate; only edits are throttled.
 pub use super::daemon_boot::{run_gateway, run_gateway_shutdown, run_gateway_shutdown_with_board};
 pub use super::daemon_supervise::{
     BOOT_MAX_ATTEMPTS, FAST_FAILURE_WINDOW, Fatal, MAX_FAST_FAILURES, MAX_RECONNECT_ATTEMPTS,
@@ -351,8 +354,8 @@ impl GatewayRunner {
             })
         });
 
-        let streamer = match &adapter {
-            Some(a) if self.config.streaming && a.supports_edit() => Some(Streamer::spawn(
+        let progress = match &adapter {
+            Some(a) if self.config.streaming && a.supports_edit() => Some(ProgressBubble::spawn(
                 Arc::clone(a),
                 chat_id.clone(),
                 Self::reply_opts(&ev),
@@ -360,7 +363,7 @@ impl GatewayRunner {
             )),
             _ => None,
         };
-        let sink = streamer.as_ref().map(|s| s.tx.clone());
+        let sink = progress.as_ref().map(|p| p.tx.clone());
 
         let result = self.run_agent(&sid, &key, &ev.text, sink).await;
         done.notify_one();
@@ -376,9 +379,13 @@ impl GatewayRunner {
             }
         };
 
-        // 5. Deliver — streaming finalizes in place, otherwise chunked send.
-        let res = match streamer {
-            Some(s) => s.finish(reply_text).await,
+        // 5. Deliver — progress bubbles are deleted, then the final answer
+        // goes out as fresh message(s) on the normal chunked path.
+        let res = match progress {
+            Some(p) => {
+                let final_text = p.finish(reply_text).await;
+                self.reply(&ev, &final_text).await
+            }
             None => self.reply(&ev, &reply_text).await,
         };
         Ok(res)
@@ -442,7 +449,7 @@ struct SavedConfig {
 mod tests {
     use super::*;
     use crate::config::{GatewayConfig, Platform, PlatformConfig};
-    use crate::daemon_stream::finalize_stream;
+    use crate::daemon_stream::ProgressMsg;
     use crate::session::SessionSource;
     use std::collections::HashMap;
 
@@ -689,37 +696,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_stream_chunks_after_edit() {
+    async fn progress_bubble_tracks_tool_lines_and_finishes() {
+        use crate::progress::{tool_end_line, tool_start_line};
+        // Pure composition sanity inside the IO test's world.
+        assert_eq!(tool_start_line("terminal"), "⏳ terminal…");
+        assert_eq!(
+            tool_end_line("terminal", &serde_json::json!({"command": "ls"})),
+            "🔧 terminal: \"{\"command\":\"ls\"}\""
+        );
+        // End-to-end through the bubble task on the stub adapter (no network):
+        // tool events → bubble sends → Done deletes → final text returned.
         let a: Adapter = Arc::new(
             TelegramAdapter::new(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"))
                 .unwrap(),
         );
-        let long = "x".repeat(5000);
-        // Stub edit succeeds → first chunk edited, second sent.
-        let r = finalize_stream(
-            a.as_ref(),
-            "100",
-            &SendOptions::default(),
-            Some("9"),
-            &long,
-            4096,
-        )
-        .await;
-        #[cfg(not(feature = "telegram"))]
-        assert!(r.success);
-        #[cfg(feature = "telegram")]
-        assert!(!r.success); // not connected
-        // Empty text with a placeholder is a no-op success.
-        let r = finalize_stream(
-            a.as_ref(),
-            "100",
-            &SendOptions::default(),
-            Some("9"),
-            "",
-            4096,
-        )
-        .await;
-        assert!(r.success);
+        let b = ProgressBubble::spawn(a, "100".into(), SendOptions::default(), 4096);
+        b.tx.send(ProgressMsg::ToolStart {
+            id: "1".into(),
+            name: "terminal".into(),
+        })
+        .unwrap();
+        b.tx.send(ProgressMsg::ToolEnd {
+            id: "1".into(),
+            args: serde_json::json!({"command": "ls"}),
+        })
+        .unwrap();
+        let out = b.finish("done".into()).await;
+        assert_eq!(out, "done");
     }
 
     #[tokio::test]

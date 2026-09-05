@@ -8,8 +8,10 @@ use gray_core::agent::{PluginCommand, PluginHooks};
 use gray_core::event::Usage;
 use gray_core::message::{Message, ToolDef};
 
+pub mod boot;
 pub mod builder;
 pub mod host;
+pub mod lock;
 pub mod profile;
 pub mod sidecar;
 
