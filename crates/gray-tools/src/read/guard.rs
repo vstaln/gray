@@ -124,7 +124,7 @@ pub fn check_metadata(meta: &fs::Metadata, display: &str) -> Result<MetadataDeci
         if ft.is_socket() {
             return Err(refusal(display, "socket"));
         }
-        return Ok(MetadataDecision::RegularFile);
+        Ok(MetadataDecision::RegularFile)
     }
     #[cfg(not(unix))]
     {
