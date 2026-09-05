@@ -10,6 +10,7 @@ members = [
     "crates/gray-session",
     "crates/gray-tools",
     "crates/gray-plugin",
+    "crates/gray-pkg",
 ]
 
 [workspace.package]
@@ -27,6 +28,7 @@ gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }
 gray-session = { path = "crates/gray-session" }
 gray-markdown = { path = "crates/gray-markdown" }
+gray-pkg = { path = "crates/gray-pkg" }
 
 # External dependencies
 tokio = { version = "1", features = ["full"] }
@@ -54,6 +56,8 @@ axum = { version = "0.7", features = ["json"] }
 tower-http = { version = "0.6", features = ["limit", "cors"] }
 tower = { version = "0.5" }
 sha2 = "0.10"
+flate2 = "1.1"
+tar = "0.4"
 base64 = "0.22"
 percent-encoding = "2.3"
 unicode-width = "0.2"
