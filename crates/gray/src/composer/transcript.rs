@@ -489,6 +489,77 @@ impl Tui {
     }
 }
 
+/// Shared gateway boot card content: single source for the live viewport
+/// panel and the committed final card so `Gateway started` /
+/// `Gateway autostarted` never drift (same header style, same dim rows,
+/// same two-space indent from [`crate::repl::gateway_boot_rows`]).
+pub(crate) fn gateway_boot_dim() -> Style {
+    Style::default().fg(Color::Rgb(140, 140, 140))
+}
+
+pub(crate) fn gateway_boot_card_parts(header: &str, rows: &[String]) -> (Line<'static>, Vec<Line<'static>>) {
+    let header = Line::from(Span::styled(
+        header.to_string(),
+        Style::default().fg(Color::Rgb(225, 225, 225)).add_modifier(Modifier::BOLD),
+    ));
+    let dim = gateway_boot_dim();
+    let body = rows.iter().map(|r| Line::from(Span::styled(r.clone(), dim))).collect();
+    (header, body)
+}
+
+/// Tight gateway boot card: top margin, header with ONE leading space, rows
+/// directly below (no breathing row), bottom margin. Same gray block as tool
+/// cards, but denser — the boot status reads as one unit.
+pub(crate) fn format_gateway_boot_card(
+    header: Line<'static>,
+    body: &[Line<'static>],
+    width: usize,
+) -> Vec<Line<'static>> {
+    let bg_color = Color::Rgb(22, 22, 22);
+    let bg_style = Style::default().bg(bg_color);
+    let max_w = width.saturating_sub(4).max(1);
+
+    let mut box_lines: Vec<Line<'static>> = Vec::new();
+    box_lines.push(Line::from("").style(bg_style));
+
+    for mut l in wrap_styled_line(header, max_w) {
+        l.style = l.style.patch(bg_style);
+        l.spans.insert(0, Span::styled(" ", bg_style));
+        for span in l.spans.iter_mut() {
+            span.style = span.style.bg(bg_color);
+        }
+        box_lines.push(l);
+    }
+
+    for line in body {
+        let mut line = line.clone();
+        for span in line.spans.iter_mut() {
+            if span.content.contains('\t') {
+                let expanded = crate::tool_fmt::expand_tabs(&span.content, 4);
+                *span = Span::styled(expanded, span.style);
+            }
+        }
+        for mut l in wrap_styled_line(line, max_w) {
+            l.style = l.style.bg(bg_color);
+            for span in l.spans.iter_mut() {
+                if span.style.bg.is_none() {
+                    span.style = span.style.bg(bg_color);
+                }
+            }
+            box_lines.push(l);
+        }
+    }
+    box_lines.push(Line::from("").style(bg_style));
+    box_lines
+}
+
+/// True for the two gateway boot headers, so resize reflow can re-render
+/// the tight boot card instead of the generic tool box.
+pub(crate) fn is_gateway_boot_header(header: &Line<'static>) -> bool {
+    let text: String = header.spans.iter().map(|s| s.content.as_ref()).collect();
+    text == "Gateway started" || text == "Gateway autostarted"
+}
+
 pub(crate) fn format_tool_box_lines(
     header: Line<'static>,
     body: &[Line<'static>],
@@ -586,7 +657,7 @@ impl Tui {
     /// Live gateway boot panel: rendered in the viewport above the input
     /// while platforms connect, then committed as ONE static card.
     /// `header` is e.g. "Gateway autostarted"; rows come from
-    /// [`crate::repl::gateway_boot_rows`] (` └─ Discord — connecting…`).
+    /// [`crate::repl::gateway_boot_rows`] (`  └─ Discord — connecting…`).
     pub fn begin_gateway_boot(&mut self, header: &str, board: &gray_gateway::status::GatewayStatusBoard) {
         self.gateway_boot = Some(GatewayBootPanel {
             header: header.to_string(),
@@ -612,16 +683,26 @@ impl Tui {
         if self.status_is_gateway_or_empty() {
             self.status = None;
         }
-        let header = Line::from(Span::styled(
-            panel.header,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ));
-        let dim = Style::default().fg(Color::Rgb(140, 140, 140));
-        let body: Vec<Line<'static>> = crate::repl::gateway_boot_rows(board)
-            .into_iter()
-            .map(|r| Line::from(Span::styled(r, dim)))
-            .collect();
-        self.push_tool_box_no_gap(header, body);
+        let (header, body) =
+            gateway_boot_card_parts(&panel.header, &crate::repl::gateway_boot_rows(board));
+        // Tight boot card (no middle blank, one-space header) with the
+        // usual hug-the-input commit: no trailing gap here, one breathing
+        // row after so the gray block never fuses with the input band.
+        self.ensure_gap(1);
+        let w = self.width().max(10);
+        let box_lines = format_gateway_boot_card(header.clone(), &body, w);
+        let height = box_lines.len() as u16;
+        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let _ = self.terminal.insert_before(height, |buf| {
+            Paragraph::new(box_lines.clone()).block(block).render(buf.area, buf);
+        });
+        self.history_entries.push(super::TranscriptEntry::ToolBox {
+            header,
+            body,
+        });
+        self.transcript.extend(box_lines);
+        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        let _ = std::io::stdout().flush();
         self.ensure_gap(1);
         let _ = self.draw();
     }
@@ -887,6 +968,25 @@ impl Tui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_boot_card_is_tight_with_one_space_header() {
+        let (header, body) =
+            gateway_boot_card_parts("Gateway autostarted", &["  └─ Discord — connected as Gray".to_string()]);
+        assert!(is_gateway_boot_header(&header));
+        assert!(!is_gateway_boot_header(&Line::from("Ran foo")));
+        let lines = format_gateway_boot_card(header, &body, 80);
+        // top margin, header, row directly below (no middle blank), bottom margin.
+        assert_eq!(lines.len(), 4);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(text[0], "");
+        assert_eq!(text[1], " Gateway autostarted");
+        assert_eq!(text[2], "  └─ Discord — connected as Gray");
+        assert_eq!(text[3], "");
+    }
 
     #[test]
     fn redact_command_echo_hides_connect_token() {
