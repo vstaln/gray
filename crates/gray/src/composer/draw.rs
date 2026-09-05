@@ -270,9 +270,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         } else {
             queued_preview_lines(&tui.queued_inputs, w)
         };
+        // Live gateway boot panel rides the slot above the input box. Its rows
+        // come pre-padded with the card bg (transcript::format_gateway_boot_card)
+        // and ONE bare row separates the card from the input band so the two
+        // gray blocks never fuse — the same `ensure_gap(1)` the committed card
+        // gets, so the commit never shifts the input by a row.
         let boot_lines: &[Line<'static>] = if question_active { &[] } else { &boot_panel_lines };
-        let queued_h = (queued_preview.len() + boot_lines.len()) as u16;
-    let box_y = status_y + status_h + queued_h;
+        let boot_gap_h: u16 = u16::from(!boot_lines.is_empty());
+        let queued_h = (queued_preview.len() + boot_lines.len()) as u16 + boot_gap_h;
+        let box_y = status_y + status_h + queued_h;
     // Bare breathing row between the band (or panel/attachments below it)
     // and the footer, so the input never melts into it. The box's own pads
     // share the band bg and can't do this job. Question panels carry their
@@ -339,18 +345,22 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             }
             frame.render_widget(Paragraph::new(line.clone()), Rect::new(area.x, y, area.width, 1));
         }
-        // Boot panel as a card: same gray block + margins as the committed
-        // `Gateway autostarted` / `Gateway started` card.
-        let boot_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
-        for (i, line) in boot_lines.iter().enumerate() {
-            let y = status_y + status_h + queued_preview.len() as u16 + i as u16;
-            if y < area.y || y >= area.y + area.height {
-                continue;
+        // Boot panel painted by the SAME helper the committed card uses
+        // (paint_card floods the rect with the card bg, then lays the rows), so
+        // live `validating token…` is pixel-identical to committed
+        // `connected as …`. The bare gap row below it is simply left unpainted.
+        if !boot_lines.is_empty() {
+            let boot_y = status_y + status_h + queued_preview.len() as u16;
+            if boot_y < area.bottom() {
+                let boot_h = (boot_lines.len() as u16).min(area.bottom() - boot_y);
+                if boot_h > 0 {
+                    super::transcript::paint_card(
+                        boot_lines,
+                        Rect::new(area.x, boot_y, area.width, boot_h),
+                        frame.buffer_mut(),
+                    );
+                }
             }
-            frame.render_widget(
-                Paragraph::new(line.clone()).block(boot_block.clone()),
-                Rect::new(area.x, y, area.width, 1),
-            );
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
