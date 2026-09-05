@@ -16,10 +16,20 @@
 //!    [`byte_cap`] with `next` = first unshown line; clamp arm → [`clamped`].
 //!    Join content + note with [`join`]. Existing `read failed for …` call
 //!    sites already comply — route them through [`read_failed`] when touched.
-//! 2. Integrator: move T1.4 `hygiene.rs` (`mime_note`, `nul_note`) and T1.5
-//!    `tail.rs` ([`tail_note`], [`limit_ignored_note`]) contract strings here
-//!    verbatim; those files stage them locally on purpose until this file
-//!    landed. Do NOT duplicate them here first (one owner per string).
+//!    (Wave-C INT-C wired the empty/EOF/cap/clamp arms; this list stays as the
+//!    wording index.)
+//! 2. Done (wave gate): T1.4 `hygiene.rs` (`mime_note`, `nul_note`), T1.5
+//!    `tail.rs` ([`tail_note`], [`limit_ignored_note`]), T2.1 `stream.rs`
+//!    ([`cancelled_note`], [`count_skipped_total`]), T4.1 `resolve.rs`
+//!    ([`repaired_note`]), T4.2/T6.1 `bulk.rs` ([`aggregate_note`],
+//!    [`MISSING_INPUT_MESSAGE`], [`no_files_matched`]) moved here verbatim;
+//!    those modules keep thin delegates so their unit tests still pin the
+//!    strings. One owner per string: no `[read:` literal lives outside this
+//!    file (image/notebook stay staged — unwired units with no caller yet).
+//! 3. Remaining: `write.rs`/`edit.rs` resolve-retry + device-guard reuse,
+//!    `ignore`-crate walk upgrade, T4.2 did-you-mean, pixel/vision ops.
+
+use crate::truncate::format_size;
 
 /// `[read: <path> is a directory. Use ls or find.]` — a fact (`is_error=false`).
 pub fn directory(display: &str) -> String {
@@ -68,6 +78,92 @@ pub fn clamped(count: usize) -> String {
     format!(
         "[read: {count} line(s) longer than 2000 chars were clamped; \
          use grep -n or bash cut -c to inspect a specific one.]"
+    )
+}
+
+/// `[read: last <shown> lines of <T> (lines <a>-<T>)]` (T1.5, verbatim).
+/// `<shown>` is the lines actually shown (`min(|offset|, T)`).
+pub fn tail_note(shown: u64, total: usize) -> String {
+    let first = total as u64 - shown + 1;
+    format!("[read: last {shown} lines of {total} (lines {first}-{total})]")
+}
+
+/// One-line note when `limit` accompanies a negative offset (T1.5, verbatim).
+pub fn limit_ignored_note(limit: u64) -> String {
+    format!(
+        "[read: limit={limit} ignored with negative offset; showing the tail instead. \
+         Omit limit when offset is negative.]"
+    )
+}
+
+/// Magic-byte sniff hit (T1.4, verbatim): `[read: <path> is <mime> (<size>), not shown]`.
+pub fn mime_note(display: &str, mime: &str, size: usize) -> String {
+    format!(
+        "[read: {display} is {mime} ({}), not shown]",
+        format_size(size)
+    )
+}
+
+/// NUL-byte sniff hit (T1.4, verbatim).
+pub fn nul_note(display: &str) -> String {
+    format!("[read: {display} looks binary (NUL bytes), not shown]")
+}
+
+/// `[read: cancelled after <n> lines]` (T2.1, verbatim).
+pub fn cancelled_note(lines_read: usize) -> String {
+    format!("[read: cancelled after {lines_read} lines]")
+}
+
+/// `≥<min> lines (file is <size>, count skipped)` fragment for totals over
+/// the stream's exact-count limit (T2.1, verbatim).
+pub fn count_skipped_total(min_total: usize, file_size: u64) -> String {
+    format!(
+        "≥{min_total} lines (file is {}, count skipped)",
+        format_size(file_size as usize)
+    )
+}
+
+/// `[read: opened <actual> (path repaired from <given>)]` (T4.1, verbatim).
+pub fn repaired_note(actual: &str, given: &str) -> String {
+    format!("[read: opened {actual} (path repaired from {given})]")
+}
+
+/// Enforced when neither `path` nor `paths` is given (T6.1, verbatim).
+pub const MISSING_INPUT_MESSAGE: &str =
+    "read: provide path (one file) or paths (list of files/globs)";
+
+/// Skipped names printed in [`aggregate_note`] before the `…`.
+const MAX_NOTE_NAMES: usize = 10;
+
+/// Trailing summary once the bulk budget stops the list (T6.1, verbatim).
+pub fn aggregate_note(shown: usize, total: usize, skipped: &[String]) -> String {
+    let left = total.saturating_sub(shown);
+    let names: Vec<&str> = skipped
+        .iter()
+        .take(MAX_NOTE_NAMES)
+        .map(String::as_str)
+        .collect();
+    let list = if skipped.len() > MAX_NOTE_NAMES {
+        format!("{}, …", names.join(", "))
+    } else {
+        names.join(", ")
+    };
+    format!(
+        "[read: showed {shown} of {total} files; {left} skipped (over 100 KiB total): {list}. \
+         Read them individually or narrow the glob.]"
+    )
+}
+
+/// Bulk no-match failure (staged in `read/mod.rs`, verbatim wording).
+pub fn no_files_matched(paths: &[String]) -> String {
+    let mut shown = paths.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+    if paths.len() > 3 {
+        shown.push_str(", …");
+    }
+    format!(
+        "read failed: no files matched {} pattern(s): {shown}. \
+         Check the globs and exclude[].",
+        paths.len()
     )
 }
 
@@ -143,7 +239,10 @@ mod tests {
 
     #[test]
     fn empty_note_is_contract_exact() {
-        assert_eq!(empty("docs/TODO.md"), "[read: docs/TODO.md is empty (0 bytes)]");
+        assert_eq!(
+            empty("docs/TODO.md"),
+            "[read: docs/TODO.md is empty (0 bytes)]"
+        );
     }
 
     #[test]
@@ -203,6 +302,15 @@ mod tests {
             edit_changed("p"),
             write_partial("p", 1, 2000, 80412),
             dedup_stub("p", 1, 2000),
+            tail_note(3, 3000),
+            limit_ignored_note(2),
+            mime_note("p", "image/png", 1032),
+            nul_note("p"),
+            cancelled_note(2),
+            count_skipped_total(2001, 200 * 1024 * 1024),
+            repaired_note("a/café.txt", "a/cafe.txt"),
+            aggregate_note(100, 300, &["a.rs".to_string()]),
+            no_files_matched(&["*.rs".to_string()]),
         ] {
             assert!(!s.contains("Error:"), "{s}");
         }

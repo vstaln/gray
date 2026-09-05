@@ -1,18 +1,19 @@
 //! The `read` tool: reads a UTF-8 text file with optional line windowing.
 
 pub mod args;
+mod bulk;
+mod dedup;
+mod guard;
 pub mod hygiene;
 pub mod image;
 pub mod notebook;
 pub mod notices;
+mod resolve;
 pub mod stream;
-pub mod window;
-mod bulk;
-mod dedup;
-mod guard;
 mod tail;
 #[cfg(test)]
 pub(crate) mod testkit;
+pub mod window;
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -126,7 +127,14 @@ impl Tool for ReadTool {
             Err(e) => return e,
         };
 
-        let full = resolve_path(&ctx.cwd, &path);
+        // T4.1 unicode retry: invisible respellings before failing (same
+        // parent only — a repair never changes directories). Guard + I/O run
+        // on `full`; `repaired` is prepended to ok outputs below.
+        let given = resolve_path(&ctx.cwd, &path);
+        let full = resolve::resolve_existing(&given).unwrap_or_else(|| given.clone());
+        let repaired = (full != given).then(|| {
+            resolve::repaired_note(&full.display().to_string(), &given.display().to_string())
+        });
         // T2.3 device/FIFO/socket refusal before any content I/O. Missing paths
         // skip both gates (canonicalize/metadata fail) and keep today's error.
         // Directories fall through: today's I/O-error path handles them (T1.3 owns the note).
@@ -146,7 +154,7 @@ impl Tool for ReadTool {
                 Err(msg) => return fail(msg),
                 // T1.3 directory note: a fact, not an error (is_error=false).
                 Ok(guard::MetadataDecision::Directory) => {
-                    return ToolOutput::ok(notices::directory(&display));
+                    return ToolOutput::ok(with_repaired(&repaired, notices::directory(&display)));
                 }
                 Ok(guard::MetadataDecision::RegularFile) => {}
             }
@@ -155,10 +163,15 @@ impl Tool for ReadTool {
         // Runs after the device/dir gates above, before any content I/O.
         // Absent offset normalizes to 1 — the same key the record path uses.
         let win_off = offset.unwrap_or(1);
-        if let Some(stub) =
-            dedup::check(&self.ledger, &full, &display, win_off, limit, dedup::enabled())
-        {
-            return stub;
+        if let Some(stub) = dedup::check(
+            &self.ledger,
+            &full,
+            &display,
+            win_off,
+            limit,
+            dedup::enabled(),
+        ) {
+            return ToolOutput::ok(with_repaired(&repaired, stub.content));
         }
         let data = match tokio::fs::read(&full).await {
             Ok(d) => d,
@@ -185,14 +198,14 @@ impl Tool for ReadTool {
                     },
                 );
             }
-            return ToolOutput::ok(notices::empty(&display));
+            return ToolOutput::ok(with_repaired(&repaired, notices::empty(&display)));
         }
         // T1.4 hygiene: BOM strip → magic-byte/NUL sniff → lossy decode →
         // CRLF normalize, before any line counting. Binary notes are facts
         // (is_error=false), not failures.
         let text = match hygiene::prepare(&data, &display) {
             Ok(t) => t,
-            Err(note) => return ToolOutput::ok(note),
+            Err(note) => return ToolOutput::ok(with_repaired(&repaired, note)),
         };
 
         let total_lines = text.lines().count();
@@ -202,10 +215,9 @@ impl Tool for ReadTool {
         if tail_n.is_none() && start > 0 && start >= total_lines {
             // T1.3: past-EOF is a fact (is_error=false) with a tail retry;
             // `start + 1` recovers the requested 1-indexed offset.
-            return ToolOutput::ok(notices::offset_past_eof(
-                &display,
-                start as u64 + 1,
-                total_lines,
+            return ToolOutput::ok(with_repaired(
+                &repaired,
+                notices::offset_past_eof(&display, start as u64 + 1, total_lines),
             ));
         }
 
@@ -228,8 +240,7 @@ impl Tool for ReadTool {
         // so a minified line can't eat the budget. Char-boundary safe.
         let max_chars = window::max_line_chars();
         let (clamped_lines, clamped_count) = window::clamp_lines(&selected, max_chars);
-        let clamped_refs: Vec<&str> =
-            clamped_lines.iter().map(|s| s.as_str()).collect();
+        let clamped_refs: Vec<&str> = clamped_lines.iter().map(|s| s.as_str()).collect();
         // T1.2: cat -n prefixes with absolute numbers, before the caps so
         // truncation math (output_lines, next_offset) is unchanged.
         let selected_content = window::prefix_lines(first_shown, &clamped_refs).join("\n");
@@ -257,7 +268,9 @@ impl Tool for ReadTool {
             }
         // T1.5: in tail mode `limit` is ignored (noted below), so the
         // head-window "more lines" hint must not fire here.
-        } else if tail_n.is_none() && let Some(lim) = limit_opt {
+        } else if tail_n.is_none()
+            && let Some(lim) = limit_opt
+        {
             if start + lim < total_lines {
                 let remaining = total_lines - (start + lim);
                 let next_offset = start + lim + 1;
@@ -323,9 +336,7 @@ impl Tool for ReadTool {
                         && !truncation.first_line_exceeds_limit,
                     window: (win_off, limit),
                     first_line: first_shown,
-                    last_line: first_shown
-                        .saturating_add(selected.len())
-                        .saturating_sub(1),
+                    last_line: first_shown.saturating_add(selected.len()).saturating_sub(1),
                     dedup_armed: true,
                     read_at: Instant::now(),
                 },
@@ -347,7 +358,7 @@ impl Tool for ReadTool {
         .report();
         // Already truncated via truncate_head with actionable hint; bypass the
         // generic head+tail truncation that would hide it.
-        ToolOutput::ok(output)
+        ToolOutput::ok(with_repaired(&repaired, output))
     }
 }
 
@@ -368,6 +379,14 @@ fn get_str_list(args: &Value, key: &str) -> Vec<String> {
     }
 }
 
+/// Prepend the T4.1 repair note (when the path was respelled) above content.
+fn with_repaired(repaired: &Option<String>, content: String) -> String {
+    match repaired {
+        Some(note) => format!("{note}\n\n{content}"),
+        None => content,
+    }
+}
+
 impl ReadTool {
     /// Bulk `paths[]` mode. `None` = not a bulk call (no `paths`), so
     /// `execute` falls through to the single-`path` code untouched. Neither
@@ -383,16 +402,7 @@ impl ReadTool {
         let excludes = get_str_list(args, "exclude");
         let rels = bulk::expand(&ctx.cwd, &paths, &excludes);
         if rels.is_empty() {
-            // ponytail: wording staged here; notices.rs owner may adopt it.
-            let mut shown = paths.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-            if paths.len() > 3 {
-                shown.push_str(", …");
-            }
-            return Some(fail(format!(
-                "read failed: no files matched {} pattern(s): {shown}. \
-                 Check the globs and exclude[].",
-                paths.len()
-            )));
+            return Some(fail(notices::no_files_matched(&paths)));
         }
         // Per-file render reuses the single-path path above (one recursive
         // call per file, offset/limit forwarded raw): guards, hygiene,
@@ -411,9 +421,7 @@ impl ReadTool {
             let mut out = self.execute(ctx, single.clone()).await;
             // Spec: bulk never stubs the first file. A stub consumes the T3.3
             // arm, so one retry returns it in full (no dedup code touched).
-            if i == 0
-                && !out.is_error
-                && out.content.contains("unchanged since your previous read")
+            if i == 0 && !out.is_error && out.content.contains("unchanged since your previous read")
             {
                 out = self.execute(ctx, single).await;
             }

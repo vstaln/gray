@@ -114,12 +114,7 @@ impl FileLedger {
     /// and dedup stays disarmed so the next read returns full content.
     pub fn mark_written(&self, path: &Path, new_bytes: &[u8]) {
         let (mtime, size) = std::fs::metadata(path)
-            .map(|m| {
-                (
-                    m.modified().unwrap_or_else(|_| SystemTime::now()),
-                    m.len(),
-                )
-            })
+            .map(|m| (m.modified().unwrap_or_else(|_| SystemTime::now()), m.len()))
             .unwrap_or_else(|_| (SystemTime::now(), new_bytes.len() as u64));
         let newlines = new_bytes.iter().filter(|&&b| b == b'\n').count();
         let lines = if new_bytes.is_empty() {
@@ -158,10 +153,7 @@ impl FileLedger {
 
     /// On `/new` / session resume: the new session saw nothing yet (T3.4).
     pub fn clear(&self) {
-        self.inner
-            .lock()
-            .expect("FileLedger lock poisoned")
-            .clear();
+        self.inner.lock().expect("FileLedger lock poisoned").clear();
     }
 }
 
@@ -204,7 +196,11 @@ mod tests {
         let p = dir.path().join("a.rs");
         std::fs::write(&p, b"abc").unwrap();
         let dotted = dir.path().join(".").join("a.rs");
-        assert_ne!(p, dotted, "precondition: spellings differ lexically");
+        assert_ne!(
+            p.as_os_str(),
+            dotted.as_os_str(),
+            "precondition: spellings differ lexically"
+        );
         let ledger = FileLedger::new();
         ledger.record_read(&p, entry(false));
         assert!(

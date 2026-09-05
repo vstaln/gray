@@ -5,8 +5,11 @@
 //! task living in `resolve.rs` — NOT touched here.
 //!
 //! Std only (+ `tempfile` in tests, already a gray-tools dep): no new deps.
-//! UNWIRED: `read/mod.rs` has no `mod bulk;` yet (sibling owns `mod.rs` —
-//! same staging as `tail.rs`/`args.rs`/`resolve.rs`). Intended wiring:
+//! WIRED (wave gate): `read/mod.rs` has `mod bulk;`, the `paths`/`exclude`
+//! schema, the per-file render loop (recursive `execute`, per-file
+//! ledger/dedup), `fit_within_cap` on rendered bytes + trailing
+//! `aggregate_note`, and `MISSING_INPUT_MESSAGE` when neither `path` nor
+//! `paths` is given.
 //!
 //! ```ignore
 //! mod bulk;
@@ -15,23 +18,22 @@
 //! // for rel in &rels { /* same windowed render as `path`, with
 //! //   bulk::header(rel) on top, per-file ledger/dedup (T3.1/T3.3 owners) */ }
 //! // fit rendered bytes with bulk::fit_within_cap, trailing note via
-//! // bulk::aggregate_note; neither path nor paths -> bulk::MISSING_INPUT_MESSAGE.
+//! // notices::aggregate_note; neither path nor paths -> notices::MISSING_INPUT_MESSAGE.
 //! ```
 //!
 //! Spec: plan.ts T6.1. `limit` applies per file; headers are sorted; the
 //! aggregate budget (~100 KiB) applies to rendered bytes.
 //!
-//! Contract strings live HERE until the `mod.rs`/`notices.rs` integrator moves
-//! them verbatim (one owner per string — same staging as `resolve.rs`).
+//! Contract strings live in `notices.rs` (moved verbatim at the wave gate);
+//! [`aggregate_note`]/[`MISSING_INPUT_MESSAGE`] below delegate there (one
+//! owner per string — same staging as `resolve.rs`).
 //!
 //! FOLLOW-UPS (not done here — files outside T4.2 ownership):
-//! 1. `read/mod.rs`: add `mod bulk;`, `paths`/`exclude` schema (single scalar
-//!    `type` per property — NO union types; static test), `required` → `[]`,
-//!    per-file render loop + ledger/dedup calls. Owner: Wave-F integrator.
-//! 2. `notices.rs` (T1.3 owner): move [`aggregate_note`]/[`MISSING_INPUT_MESSAGE`]
-//!    wording there verbatim.
+//! 1. Done (T6.1): `read/mod.rs` wiring above.
+//! 2. Done (wave gate): `notices.rs` owns [`aggregate_note`]/
+//!    [`MISSING_INPUT_MESSAGE`] verbatim.
 //! 3. Walk performance: workspace already has `ignore`; switching the walk to
-//!    it is the integrator's call (needs manifest + `mod.rs` — outside here).
+//!    it is a follow-up (needs manifest + `mod.rs` — outside here).
 //!
 //! // ponytail: hand-rolled `*`/`?`/`**` matcher instead of `ignore`/`globset` —
 //! // zero new deps, covers the spec's globs. `[...]`/`{a,b}` are literals.
@@ -50,12 +52,8 @@ pub const AGGREGATE_BYTES: u64 = 100 * 1024;
 /// Dirs excluded unless an input pattern names them (spec-fixed list).
 pub const DEFAULT_DIR_EXCLUDES: &[&str] = &["node_modules", "target", ".git", "dist"];
 
-/// Enforced when neither `path` nor `paths` is given (`required` is `[]`).
-pub const MISSING_INPUT_MESSAGE: &str =
-    "read: provide path (one file) or paths (list of files/globs)";
-
-/// Skipped names printed in [`aggregate_note`] before the `…`.
-const MAX_NOTE_NAMES: usize = 10;
+/// Enforced when neither `path` nor `paths` is given — delegates to `notices.rs`.
+pub const MISSING_INPUT_MESSAGE: &str = super::notices::MISSING_INPUT_MESSAGE;
 
 /// `==> <relative path> <==` — per-file header above the windowed output.
 pub fn header(rel: &str) -> String {
@@ -67,34 +65,24 @@ pub fn is_glob(s: &str) -> bool {
     s.chars().any(|c| c == '*' || c == '?')
 }
 
-/// Trailing summary once the budget stops the list (spec-exact). Only the
-/// first 10 skipped names are printed; the count covers all of them.
+/// Trailing summary once the budget stops the list — delegates to `notices.rs`.
 pub fn aggregate_note(shown: usize, total: usize, skipped: &[String]) -> String {
-    let left = total.saturating_sub(shown);
-    let names: Vec<&str> = skipped
-        .iter()
-        .take(MAX_NOTE_NAMES)
-        .map(String::as_str)
-        .collect();
-    let list = if skipped.len() > MAX_NOTE_NAMES {
-        format!("{}, …", names.join(", "))
-    } else {
-        names.join(", ")
-    };
-    format!(
-        "[read: showed {shown} of {total} files; {left} skipped (over 100 KiB total): {list}. \
-         Read them individually or narrow the glob.]"
-    )
+    super::notices::aggregate_note(shown, total, skipped)
 }
 
 /// Raw default-exclude probe: dir segments + `*.lock`, no bypass logic.
 /// The bypass lives in [`is_excluded`] (needs the inputs).
 pub fn is_default_excluded(rel: &str) -> bool {
     let norm = rel.strip_prefix("./").unwrap_or(rel);
-    if norm.split('/').any(|seg| DEFAULT_DIR_EXCLUDES.contains(&seg)) {
+    if norm
+        .split('/')
+        .any(|seg| DEFAULT_DIR_EXCLUDES.contains(&seg))
+    {
         return true;
     }
-    norm.rsplit('/').next().is_some_and(|base| base.ends_with(".lock"))
+    norm.rsplit('/')
+        .next()
+        .is_some_and(|base| base.ends_with(".lock"))
 }
 
 /// True when a pattern names a dir as a path segment (`node_modules/**/*.js`
@@ -122,7 +110,9 @@ pub fn is_excluded(rel: &str, inputs: &[String]) -> bool {
     {
         return true;
     }
-    norm.rsplit('/').next().is_some_and(|base| base.ends_with(".lock"))
+    norm.rsplit('/')
+        .next()
+        .is_some_and(|base| base.ends_with(".lock"))
 }
 
 /// Classic `*`/`?` matcher over one path segment (never crosses `/`).
@@ -309,10 +299,7 @@ pub fn fit_within_cap(files: &[(String, u64)]) -> (Vec<String>, Vec<String>) {
     let mut total: u64 = 0;
     for (i, (name, size)) in files.iter().enumerate() {
         if i > 0 && total.saturating_add(*size) > AGGREGATE_BYTES {
-            return (
-                shown,
-                files[i..].iter().map(|(n, _)| n.clone()).collect(),
-            );
+            return (shown, files[i..].iter().map(|(n, _)| n.clone()).collect());
         }
         total = total.saturating_add(*size);
         shown.push(name.clone());
@@ -467,9 +454,7 @@ mod tests {
         assert_eq!(skipped[0], "f100.rs");
         let note = aggregate_note(shown.len(), files.len(), &skipped);
         assert!(
-            note.starts_with(
-                "[read: showed 100 of 300 files; 200 skipped (over 100 KiB total): "
-            ),
+            note.starts_with("[read: showed 100 of 300 files; 200 skipped (over 100 KiB total): "),
             "{note}"
         );
         assert!(note.contains("f100.rs"), "{note}");
