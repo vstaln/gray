@@ -12,65 +12,55 @@ use crate::daemon_stream::StreamMsg;
 use crate::session::{SessionSource, build_session_key};
 
 impl GatewayRunner {
-    /// Same agent every entry point builds (p2-7): provider + full
-    /// registry + `gray.yml` sidecar hooks. The REPL/`-p` spelling of this
-    /// lives in `gray::build_agent` (skills + cache-key pinning are
-    /// interactive-only); a shared crate is still owed to truly unify them
-    /// (`gray → gray-gateway` edge forbids calling it from here).
+    /// Same agent every entry point builds: thin surface wrapper over
+    /// [`gray_plugin::builder::build_agent`] (the single profile-aware
+    /// builder for REPL, `-p`, gateway, and cron — F8 resolved the `gray →
+    /// gray-gateway` cycle by moving it to the lowest common crate).
+    /// Surface policy owned here: provider config, gateway system prompt,
+    /// [`GatedExecutor`] wrapping, and warn-and-skip on sidecar spawn
+    /// failure (the daemon must stay up). `session_id` pins the Responses
+    /// cache shard per session instead of colliding all daemon sessions on
+    /// one per-process key.
     async fn build_agent(
         &self,
         prior: Vec<gray_core::Message>,
+        session_id: Option<&str>,
     ) -> anyhow::Result<gray_core::agent::Agent> {
-        use gray_core::agent::Agent;
-        use gray_provider::OpenAiProvider;
-        use gray_tools::Registry;
-
         let (base_url, api_key, model) = self.resolve_provider_config();
         let model = model.ok_or_else(|| {
             anyhow::anyhow!("no model configured — set ~/.gray/config.json model")
         })?;
-        let api_key = api_key.unwrap_or_default();
-        let base_url = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-        let provider = OpenAiProvider::builder(&api_key, &model)
-            .base_url(&base_url)
-            .build()
-            .map_err(|e| anyhow::anyhow!("provider init: {e}"))?;
-
-        let registry = Registry::builtin();
-        // Advertise the full registry: denials belong to GatedExecutor so the
-        // model gets the gate's accurate reason instead of "does not exist".
-        let tool_defs = registry.defs();
-        let executor = GatedExecutor::new(Box::new(registry), self.config.denied_tools.clone());
-
-        // Sidecar hooks from the same `gray.yml` profile the REPL reads;
-        // spawn failures warn + continue (the daemon must stay up).
         // Every sidecar gets the host runner so plugin-initiated `host/run`
         // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let host_handler = cron_host_handler(cwd.clone());
-        let mut plugins: Vec<std::sync::Arc<dyn gray_plugin::Plugin>> = Vec::new();
-        if let Ok(entries) = gray_plugin::profile::load_entries("gray.yml") {
-            for e in &entries {
-                if let gray_plugin::profile::PluginEntry::Sidecar(spec) = e {
-                    match gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone()).await {
-                        Ok(p) => {
-                            p.set_host_handler(host_handler.clone()).await;
-                            plugins.push(std::sync::Arc::new(p))
-                        }
-                        Err(err) => {
-                            log::warn!(target: "gray_gateway", "sidecar spawn failed, skipping: {err:#}")
-                        }
-                    }
-                }
-            }
+        let denied = self.config.denied_tools.clone();
+        let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
+            model,
+            api_key: api_key.unwrap_or_default(),
+            base_url: base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
+            reasoning_effort: None,
+            session_id: session_id.map(str::to_string),
+            cwd,
+            system_prompt: gray_plugin::builder::SystemPrompt::Literal(load_system_prompt()),
+            extra_tools: Vec::new(),
+            host_handler: Some(host_handler),
+            profile_path: "gray.yml".to_string(),
+            abort_on_spawn_failure: false,
+            // Advertise the full registry: denials belong to GatedExecutor so the
+            // model gets the gate's accurate reason instead of "does not exist".
+            wrap_executor: Some(Box::new(
+                move |inner: Box<dyn gray_core::agent::ToolExecutor>| {
+                    Box::new(GatedExecutor::new(inner, denied))
+                        as Box<dyn gray_core::agent::ToolExecutor>
+                },
+            )),
+        })
+        .await?;
+        for w in gray_plugin::builder::take_builder_warnings() {
+            log::warn!(target: "gray_gateway", "{w}");
         }
-        let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
-
-        Ok(Agent::new(Box::new(provider), Box::new(executor))
-            .with_system(load_system_prompt())
-            .with_tools(tool_defs)
-            .with_hooks(hooks)
-            .with_messages(prior))
+        Ok(agent.with_messages(prior))
     }
 
     /// Run one agent turn in session `sid`, streaming text deltas to `sink`.
@@ -104,7 +94,7 @@ impl GatewayRunner {
             }
         };
         let prior_len = prior_messages.len();
-        let mut agent = self.build_agent(prior_messages).await?;
+        let mut agent = self.build_agent(prior_messages, Some(sid_str)).await?;
 
         // Cancel token registered under the session key so /stop and interrupts can abort.
         let token = tokio_util::sync::CancellationToken::new();
