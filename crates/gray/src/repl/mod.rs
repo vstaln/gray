@@ -303,6 +303,11 @@ pub async fn run_repl_mode(
                 if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
                     agent = Some(built.with_messages(history));
                 }
+                // T3.4 lifecycle: resumed sessions start with no ledger state
+                // (fresh builds start empty; clear anyway — see dispatch /new).
+                if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+                    ledger.clear();
+                }
                 session_state = Some(SessionState {
                     session_id: sid.clone(),
                     store,
@@ -337,6 +342,10 @@ pub async fn run_repl_mode(
                     pending_history = history.clone();
                     if let Ok(built) = build_agent(config, &cwd, Some(latest.id.as_str())).await {
                         agent = Some(built.with_messages(history));
+                    }
+                    // T3.4 lifecycle: see the --session resume above.
+                    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+                        ledger.clear();
                     }
                     session_state = Some(SessionState {
                         session_id: latest.id.clone(),

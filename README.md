@@ -99,6 +99,7 @@ crates/
 ```
 
 - Plugin wire spec (methods, TTLs, manifest gates, host-emission audit): [docs/protocol-v1.md](docs/protocol-v1.md).
+- Read-tool token bench (before/after, `est_tokens = bytes/4`): [docs/read-tool-bench.md](docs/read-tool-bench.md).
 
 - **Streaming first** — text deltas, tool calls, and usage arrive as typed events over SSE.
 - **Sessions persist** to `~/.gray/sessions/*.jsonl`; `-c` reopens the latest.
@@ -125,6 +126,7 @@ When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray 
 | `GRAY_INSTALL_DIR` | installer destination dir (overrides default `~/.local/bin`; `--system` installs system-wide) |
 | `GRAY_GUARD_BYPASS=1` | disable the destructive-command guard entirely (CI/piped mode) |
 | `GRAY_PERMISSION` | tool permission: `ask` (prompt before risky commands, default) or `auto` (no prompts; default in `-p` print mode) |
+| `GRAY_READ_DEDUP=0` | disable the read dedup stub (repeat reads always return full content) |
 
 ## Platform support
 

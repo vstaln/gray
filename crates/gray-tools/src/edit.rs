@@ -1,12 +1,16 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 use serde_json::{Value, json};
 
 use crate::edit_diff::{
-    Edit, apply_edits_to_normalized_content, detect_line_ending, normalize_to_lf,
-    restore_line_endings, split_bom,
+    EDIT_PREFIX_STRIP_NOTE, Edit, apply_edits_to_normalized_content, detect_line_ending,
+    normalize_to_lf, restore_line_endings, split_bom, strip_edit_prefixes,
 };
+use crate::ledger::{FileLedger, LedgerEntry};
+use crate::read::notices;
 use crate::{Tool, fail, get_opt_bool, resolve_path};
 
 pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
@@ -17,7 +21,31 @@ pub const EDIT_GUIDELINES: &[&str] = &[
     "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
 ];
 
-pub struct EditTool;
+pub struct EditTool {
+    ledger: Arc<FileLedger>,
+}
+
+impl EditTool {
+    /// Share `ledger` (the registry/plugin wiring); [`Default`] keeps a
+    /// private ledger so existing tests compile.
+    pub fn new(ledger: Arc<FileLedger>) -> Self {
+        Self { ledger }
+    }
+
+    /// T3.2: only the staleness rule applies to edit (it reads the file to
+    /// match, so unread/partial needs no guard).
+    pub(crate) fn is_stale(entry: &LedgerEntry, meta: &std::fs::Metadata) -> bool {
+        meta.modified().is_ok_and(|t| t != entry.mtime) || meta.len() != entry.size
+    }
+}
+
+impl Default for EditTool {
+    fn default() -> Self {
+        Self {
+            ledger: Arc::new(FileLedger::new()),
+        }
+    }
+}
 
 fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
     if let Some(edits_val) = args.get("edits") {
@@ -173,13 +201,32 @@ impl Tool for EditTool {
         }
 
         let full = resolve_path(&ctx.cwd, &path);
+        // T3.2 ledger: refuse only when the file changed since it was read.
+        if let Some(entry) = self.ledger.get(&full)
+            && let Ok(meta) = std::fs::metadata(&full)
+            && Self::is_stale(&entry, &meta)
+        {
+            return fail(notices::edit_changed(&full.display().to_string()));
+        }
         if replace_all && edits.len() == 1 {
             let content = match tokio::fs::read_to_string(&full).await {
                 Ok(c) => c,
                 Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
             };
-            let old = &edits[0].old_text;
-            let new = &edits[0].new_text;
+            let old0 = &edits[0].old_text;
+            let new0 = &edits[0].new_text;
+            // T1.6: exact first; on a miss retry once with cat -n prefixes stripped.
+            let stripped = strip_edit_prefixes(&edits[..1]);
+            let (old, new, repaired) = match &stripped {
+                Some(s) if content.matches(old0.as_str()).count() == 0 => {
+                    if content.matches(s[0].old_text.as_str()).count() > 0 {
+                        (&s[0].old_text, &s[0].new_text, true)
+                    } else {
+                        (old0, new0, false)
+                    }
+                }
+                _ => (old0, new0, false),
+            };
             let matches = content.matches(old.as_str()).count();
             if matches == 0 {
                 return fail(format!(
@@ -191,10 +238,18 @@ impl Tool for EditTool {
             if let Err(e) = tokio::fs::write(&full, updated.as_bytes()).await {
                 return fail(format!("edit failed for {}: {e}", full.display()));
             }
+            // T3.2 ledger: the whole new content is known — the next write is
+            // allowed without a re-read.
+            self.ledger.mark_written(&full, updated.as_bytes());
             return ToolOutput::ok(format!(
-                "edited {}: {} occurrence(s) replaced",
+                "edited {}: {} occurrence(s) replaced{}",
                 full.display(),
-                matches
+                matches,
+                if repaired {
+                    format!("\n{EDIT_PREFIX_STRIP_NOTE}")
+                } else {
+                    String::new()
+                }
             ));
         }
 
@@ -205,28 +260,71 @@ impl Tool for EditTool {
         let bom = split_bom(&raw);
         let ending = detect_line_ending(&bom.text);
         let normalized = normalize_to_lf(&bom.text);
-        let applied = match apply_edits_to_normalized_content(&normalized, &edits, &path) {
-            Ok(r) => r,
-            Err(msg) => return fail(format!("edit failed for {}: {msg}", full.display())),
-        };
+        // T1.6: exact (then existing fuzzy) first; only on failure retry once
+        // with cat -n prefixes stripped from oldText/newText together.
+        let (applied, repaired) =
+            match apply_edits_to_normalized_content(&normalized, &edits, &path) {
+                Ok(r) => (r, false),
+                Err(msg) => match strip_edit_prefixes(&edits)
+                    .and_then(|s| apply_edits_to_normalized_content(&normalized, &s, &path).ok())
+                {
+                    Some(r) => (r, true),
+                    None => return fail(format!("edit failed for {}: {msg}", full.display())),
+                },
+            };
         let final_content = bom.bom + &restore_line_endings(&applied.new_content, ending);
         if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
             return fail(format!("edit failed for {}: {e}", full.display()));
         }
+        // T3.2 ledger: see the replace_all path above.
+        self.ledger.mark_written(&full, final_content.as_bytes());
         let patch = crate::edit_diff::generate_unified_patch(
             &path,
             &applied.base_content,
             &applied.new_content,
             3,
         );
+        let repair_note = if repaired {
+            format!("\n{EDIT_PREFIX_STRIP_NOTE}")
+        } else {
+            String::new()
+        };
         if patch.is_empty() {
             ToolOutput::ok(format!(
-                "Successfully replaced {} block(s) in {}.",
+                "Successfully replaced {} block(s) in {}.{repair_note}",
                 edits.len(),
                 path
             ))
         } else {
-            ToolOutput::ok(patch)
+            ToolOutput::ok(format!("{patch}{repair_note}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_only_when_mtime_or_size_drift() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("f.txt");
+        std::fs::write(&p, b"one\ntwo\n").unwrap();
+        let meta = std::fs::metadata(&p).unwrap();
+        let entry = LedgerEntry {
+            mtime: meta.modified().unwrap(),
+            size: meta.len(),
+            content_hash: FileLedger::hash_bytes(b"one\ntwo\n"),
+            full_view: true,
+            window: (1, None),
+            first_line: 1,
+            last_line: 2,
+            dedup_armed: true,
+            read_at: std::time::Instant::now(),
+        };
+        assert!(!EditTool::is_stale(&entry, &meta));
+        std::fs::write(&p, b"one\ntwo\nthree\n").unwrap();
+        let grown = std::fs::metadata(&p).unwrap();
+        assert!(EditTool::is_stale(&entry, &grown));
     }
 }
