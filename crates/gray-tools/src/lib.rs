@@ -167,6 +167,22 @@ static ALIASES: &[(&str, &str)] = &[
     ("data", "content"),
     ("old_text", "oldText"),
     ("new_text", "newText"),
+    ("cmd", "command"),
+    ("script", "command"),
+    ("shell_command", "command"),
+    ("command_line", "command"),
+    ("run_in_background", "background"),
+    ("is_background", "background"),
+    ("detach", "background"),
+    ("bg", "background"),
+    ("timeout_secs", "timeout"),
+    ("timeout_seconds", "timeout"),
+    ("timeoutSec", "timeout"),
+    ("task", "task_id"),
+    ("taskId", "task_id"),
+    ("shell_id", "task_id"),
+    ("duration", "seconds"),
+    ("secs", "seconds"),
 ];
 
 /// Strips trivial framing: markdown fences, then outer prose around `{…}`.
