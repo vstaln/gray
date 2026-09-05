@@ -128,8 +128,8 @@ jobs:
           install -m 600 /dev/null ~/.config/gray-deploy/key
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
           cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
-          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=accept-new -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
+          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
 
   publish:
     needs: build-deploy
@@ -147,7 +147,7 @@ jobs:
         shell: bash
         run: |
           cat dist-all/SHA256SUMS-* > dist-all/SHA256SUMS
-          sha256sum -c dist-all/SHA256SUMS
+          cd dist-all && sha256sum -c SHA256SUMS
           awk '/^## \[/{if (++n==2) exit} n==1' CHANGELOG.md | sed '1d' > dist-all/NOTES.md
           [ -s dist-all/NOTES.md ] || { echo "::error::no CHANGELOG entry for $GITHUB_REF_NAME"; exit 1; }
       - name: create release once
