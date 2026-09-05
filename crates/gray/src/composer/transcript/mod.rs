@@ -247,8 +247,7 @@ mod tests {
         for l in &lines {
             assert_eq!(l.width(), 80, "row must span the full card width");
             assert!(
-                l.style.bg.is_none()
-                    && l.spans.iter().all(|s| s.style.bg.is_none()),
+                l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none()),
                 "no span carries a bg"
             );
         }
