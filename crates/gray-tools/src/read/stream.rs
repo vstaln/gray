@@ -32,14 +32,24 @@
 //! reader to drop with the stream (never a half-read buffer handed on).
 //!
 //! Total counting: after the window is filled the driver calls
-//! [`LineStream::count_rest`] (newline-counting `fill_buf`/`consume` pass,
-//! no per-line buffering). Files over [`COUNT_SKIP_LIMIT_BYTES`] skip the
-//! count: report [`count_skipped_total`] and still provide `next_offset`.
-//! `count_rest` counts `\n` bytes; the driver adds one when the last yielded
-//! line had `had_newline == false` (unterminated tail).
+//! [`LineStream::count_rest_lines`] (exact remaining lines: newlines plus one
+//! for a trailing unterminated line; `fill_buf`/`consume` pass, no per-line
+//! buffering). Files over [`COUNT_SKIP_LIMIT_BYTES`] skip the count: report
+//! [`count_skipped_total`] and still provide `next_offset`. The legacy
+//! [`LineStream::count_rest`] (newline count only) stays for its unit tests.
+//!
+//! T2.2 deferred cut: the driver reads one line past a filled window before
+//! claiming more remains (empty → complete; non-empty → the cut names that
+//! line), and one line past the pre-offset skip before claiming past-EOF.
+//! So a cut/resume offset always names an observed line.
+//!
+//! Raw-byte hashing: every byte flows through the inner [`HashRead`] exactly
+//! once, so [`LineStream::content_hash`] is byte-identical to
+//! `FileLedger::hash_bytes` over `fs::read` output once fully drained
+//! (`None` past [`crate::ledger::MAX_HASH_BYTES`]).
 //!
 //! Cancellation: `cancel` is checked at open, on every `next_line` entry,
-//! on every backlog chunk, and inside `count_rest`. A hit marks the stream
+//! on every backlog chunk, and inside the drain. A hit marks the stream
 //! done and yields `None`; the driver renders [`cancelled_note`].
 //!
 //! Notice strings live in `notices.rs` (moved verbatim at the wave gate);
@@ -47,25 +57,27 @@
 //! `MAX_LINE_CHARS` is re-exported from `window.rs` (canonical home, same
 //! spec-fixed value 2000 — do not drift).
 //!
-//! Integrator swap recipe (`read/mod.rs`, one hunk replacing the
-//! `tokio::fs::read` → `prepare` → `text.lines()` chain):
-//! 1. `let mut s = LineStream::open(&full, &display, ctx.cancel.clone()).await?`
-//!    (open error → today's `read failed …` path).
-//! 2. `if let Some(note) = s.binary_note() { return ok(note); }`
-//! 3. empty file: `s.file_size() == 0` → today's empty note (no lines read).
-//! 4. advance to `offset` with `next_line` (count, don't store); collect the
-//!    window; tail mode (`offset < 0`) rings over the stream instead of
-//!    `tail::last_n` over `text.lines()`.
-//! 5. total = shown + `count_rest()` (+1 if last line unterminated), or the
-//!    `count_skipped_total` fragment when `!should_count_exact(file_size)`.
-//! 6. cancel: loop ends with `s.cancelled()` → `cancelled_note(s.line_no())`.
-//! Until then this module is additive only: no caller changes behavior.
+//! Driver contract (`read/mod.rs::execute_streamed`, which replaced the
+//! `tokio::fs::read` → `prepare` → `text.lines()` chain in T2.2):
+//!
+//! 1. `LineStream::open` (open error → the `read failed …` path).
+//! 2. `binary_note()` → return as-is; `file_size() == 0` → the empty note.
+//! 3. Skip to `offset` with `next_line` (count, don't store), plus the
+//!    deferred skip peek; tail mode rings with `tail::drain_tail`.
+//! 4. Collect the window, plus the deferred window peek; total via
+//!    `count_rest_lines()` (exact) or the skipped fragment for huge files.
+//! 5. `window::window` renders; a loop ending with `cancelled()` renders
+//!    `cancelled_note(line_no())`.
 
 use std::borrow::Cow;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::path::Path;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use tokio::fs::File;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio_util::sync::CancellationToken;
 
 use super::hygiene;
@@ -102,10 +114,46 @@ pub fn should_count_exact(file_size: u64) -> bool {
     file_size <= COUNT_SKIP_LIMIT_BYTES
 }
 
+/// Codepoints in `bytes` via the leading-byte count — exact for valid UTF-8
+/// (every codepoint has exactly one byte with the top bits != `10`). Used
+/// only for the clamp marker on over-long lines, where the full text never
+/// materializes; splitting the count across chunks stays exact because a
+/// split codepoint's leading byte is counted exactly once.
+fn count_chars(bytes: &[u8]) -> u64 {
+    bytes.iter().filter(|&&b| b & 0xC0 != 0x80).count() as u64
+}
+
+/// `AsyncRead` wrapper that feeds every raw byte through a hasher exactly
+/// once (reads happen once per byte no matter how `fill_buf`/`consume`
+/// slice the buffer). `hash == None` past [`crate::ledger::MAX_HASH_BYTES`].
+struct HashRead<R> {
+    inner: R,
+    hash: Option<DefaultHasher>,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for HashRead<R> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let n = buf.filled().len();
+        match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if let Some(h) = self.hash.as_mut() {
+                    h.write(&buf.filled()[n..]);
+                }
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
+
 /// One hygiene-cleaned line. `bytes` never holds more than
 /// [`LINE_BYTE_CAP`] + 1 (cap plus the kept `\n` before stripping… in
 /// practice ≤ cap after terminator/CRLF/BOM strips); the remainder of an
-/// over-long line is counted in `overflow_bytes`, never stored.
+/// over-long line is counted in `overflow_bytes`/`overflow_chars`, never stored.
 pub struct RawLine {
     /// Absolute 1-based file line number.
     pub line_no: usize,
@@ -115,6 +163,10 @@ pub struct RawLine {
     /// Discarded content bytes of this line past [`LINE_BYTE_CAP`]
     /// (terminating `\n` excluded).
     pub overflow_bytes: u64,
+    /// Codepoints in the discarded bytes ([`count_chars`]).
+    /// `text().chars().count() + overflow_chars` is the line's full char
+    /// count (exact for valid UTF-8), so the clamp marker stays exact.
+    pub overflow_chars: u64,
     /// False for a final line with no trailing newline (and for an
     /// overflow line cut by EOF rather than `\n`).
     pub had_newline: bool,
@@ -130,7 +182,7 @@ impl RawLine {
 
 /// Bounded-memory forward line reader over a regular file.
 pub struct LineStream {
-    reader: BufReader<File>,
+    reader: BufReader<HashRead<File>>,
     display: String,
     cancel: CancellationToken,
     line_no: usize,
@@ -152,7 +204,9 @@ impl LineStream {
     ) -> std::io::Result<Self> {
         let file = File::open(path).await?;
         let file_size = file.metadata().await?.len();
-        let mut reader = BufReader::with_capacity(READ_CHUNK_BYTES, file);
+        // Hash gate mirrors FileLedger::hash_bytes (whole file or None).
+        let hash = (file_size <= crate::ledger::MAX_HASH_BYTES).then(DefaultHasher::new);
+        let mut reader = BufReader::with_capacity(READ_CHUNK_BYTES, HashRead { inner: file, hash });
         let binary_note = {
             let chunk = reader.fill_buf().await?;
             let sample = &chunk[..chunk.len().min(hygiene::SNIFF_SAMPLE_BYTES)];
@@ -185,6 +239,7 @@ impl LineStream {
         }
         self.scratch.clear();
         let mut overflow_bytes: u64 = 0;
+        let mut overflow_chars: u64 = 0;
         let mut had_newline = false;
         loop {
             if self.cancel.is_cancelled() {
@@ -201,12 +256,14 @@ impl LineStream {
                 match chunk.iter().position(|&b| b == b'\n') {
                     Some(p) => {
                         overflow_bytes += p as u64;
+                        overflow_chars += count_chars(&chunk[..p]);
                         self.reader.consume(p + 1);
                         had_newline = true;
                         break;
                     }
                     None => {
                         overflow_bytes += chunk.len() as u64;
+                        overflow_chars += count_chars(chunk);
                         let len = chunk.len();
                         self.reader.consume(len);
                     }
@@ -255,15 +312,18 @@ impl LineStream {
             line_no: self.line_no,
             bytes,
             overflow_bytes,
+            overflow_chars,
             had_newline,
         }))
     }
 
-    /// Newline-count-only drain of the rest of the file (no per-line
-    /// buffering). Call at a line boundary (the invariant `next_line`
-    /// maintains); the caller adds one if the last line was unterminated.
-    pub async fn count_rest(&mut self) -> std::io::Result<u64> {
+    /// Drain of the rest of the file (no per-line buffering): newline count,
+    /// whether any byte was seen, and whether the tail ends with `\n`.
+    /// Bytes flow through the hasher, so the full-file hash stays complete.
+    async fn drain_rest(&mut self) -> std::io::Result<(u64, bool, bool)> {
         let mut newlines: u64 = 0;
+        let mut saw_any = false;
+        let mut ended_newline = true;
         loop {
             if self.cancel.is_cancelled() {
                 self.abandon();
@@ -274,11 +334,36 @@ impl LineStream {
                 self.done = true;
                 break;
             }
+            saw_any = true;
             newlines += chunk.iter().filter(|&&b| b == b'\n').count() as u64;
+            ended_newline = chunk.last() == Some(&b'\n');
             let len = chunk.len();
             self.reader.consume(len);
         }
-        Ok(newlines)
+        Ok((newlines, saw_any, ended_newline))
+    }
+
+    /// Newline-count-only drain of the rest of the file (no per-line
+    /// buffering). Call at a line boundary (the invariant `next_line`
+    /// maintains); the caller adds one if the last line was unterminated.
+    pub async fn count_rest(&mut self) -> std::io::Result<u64> {
+        Ok(self.drain_rest().await?.0)
+    }
+
+    /// Exact remaining line count after the last yielded line: newlines plus
+    /// one for a trailing unterminated line. Call at a line boundary; the
+    /// total is then `line_no() + count_rest_lines()`.
+    pub async fn count_rest_lines(&mut self) -> std::io::Result<u64> {
+        let (newlines, saw_any, ended_newline) = self.drain_rest().await?;
+        Ok(newlines + u64::from(saw_any && !ended_newline))
+    }
+
+    /// Incremental raw-byte hash for the T3.2 write guard (rule 5): `Some`
+    /// only when the driver consumed the whole file (EOF / `count_rest*`
+    /// drained) and the file fit [`crate::ledger::MAX_HASH_BYTES`].
+    /// Byte-identical to `FileLedger::hash_bytes` over `fs::read` output.
+    pub fn content_hash(&mut self) -> Option<u64> {
+        self.reader.get_mut().hash.take().map(|h| h.finish())
     }
 
     /// Mark done and drop any half-read state (cancel path): the reader is
@@ -540,5 +625,75 @@ mod tests {
         assert_eq!(MAX_LINE_CHARS, 2000);
         assert_eq!(LINE_BYTE_CAP, 8000);
         assert_eq!(COUNT_SKIP_LIMIT_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn overflow_chars_count_codepoints_not_bytes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // ASCII: chars == bytes.
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, vec![b'x'; 20_000]).unwrap();
+        let mut s = LineStream::open(&path, "a.txt", token()).await.unwrap();
+        let line = s.next_line().await.unwrap().unwrap();
+        assert_eq!(line.overflow_bytes, 20_000 - (LINE_BYTE_CAP + 1) as u64);
+        assert_eq!(line.overflow_chars, line.overflow_bytes);
+        // Emoji (4 bytes each): 5000 chars over 20,000 bytes.
+        let path = dir.path().join("e.txt");
+        std::fs::write(&path, "😀".repeat(5000)).unwrap();
+        let mut s = LineStream::open(&path, "e.txt", token()).await.unwrap();
+        let line = s.next_line().await.unwrap().unwrap();
+        let buffered_chars = line.text().chars().count() as u64;
+        assert_eq!(
+            buffered_chars + line.overflow_chars,
+            5000,
+            "prefix chars + discard chars = full count"
+        );
+    }
+
+    #[tokio::test]
+    async fn content_hash_matches_whole_file_read() {
+        let dir = tempfile::TempDir::new().unwrap();
+        super::super::testkit::write_fixtures(dir.path(), false).unwrap();
+        for name in ["long.txt", "crlf.txt", "bom.txt", "minified.js"] {
+            let path = dir.path().join(name);
+            let raw = std::fs::read(&path).unwrap();
+            let mut s = LineStream::open(&path, name, token()).await.unwrap();
+            // Drain the way the driver does (some lines + the count pass).
+            s.next_line().await.unwrap();
+            s.count_rest_lines().await.unwrap();
+            assert_eq!(
+                s.content_hash(),
+                crate::ledger::FileLedger::hash_bytes(&raw),
+                "{name}"
+            );
+        }
+        // Empty file hashes like hash_bytes(b"").
+        let path = dir.path().join("empty.txt");
+        let mut s = LineStream::open(&path, "empty.txt", token()).await.unwrap();
+        assert_eq!(s.content_hash(), crate::ledger::FileLedger::hash_bytes(b""));
+    }
+
+    #[tokio::test]
+    async fn count_rest_lines_adds_one_for_unterminated_tail() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("u.txt");
+        std::fs::write(&p, b"a\nb\nc").unwrap();
+        let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
+        s.next_line().await.unwrap().unwrap();
+        assert_eq!(s.count_rest().await.unwrap(), 1);
+        let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
+        s.next_line().await.unwrap().unwrap();
+        assert_eq!(s.count_rest_lines().await.unwrap(), 2);
+        // Terminated tail: lines == newlines.
+        std::fs::write(&p, b"a\nb\n").unwrap();
+        let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
+        s.next_line().await.unwrap().unwrap();
+        assert_eq!(s.count_rest_lines().await.unwrap(), 1);
+        // Nothing left: zero.
+        let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
+        s.next_line().await.unwrap().unwrap();
+        let l2 = s.next_line().await.unwrap().unwrap();
+        assert!(l2.had_newline);
+        assert_eq!(s.count_rest_lines().await.unwrap(), 0);
     }
 }

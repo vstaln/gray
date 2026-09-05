@@ -73,6 +73,22 @@ pub fn byte_cap(first: usize, last: usize, next: usize) -> String {
     )
 }
 
+/// Line-cap note when the file exceeds the stream's exact-count limit (T2.2):
+/// the total is a lower bound, but `next` still names an observed line, so
+/// resuming there returns content.
+pub fn line_cap_count_skipped(
+    first: usize,
+    last: usize,
+    min_total: usize,
+    file_size: u64,
+    next: usize,
+) -> String {
+    format!(
+        "[read: showing lines {first}-{last} of {}. Continue with offset={next}.]",
+        count_skipped_total(min_total, file_size)
+    )
+}
+
 /// Per-line clamp note. `line(s)` stays literal for every count (no plural logic).
 pub fn clamped(count: usize) -> String {
     format!(
@@ -270,6 +286,11 @@ mod tests {
             "[read: showing lines 1-1846 (50 KiB budget). \
              Continue with offset=1847 — that line was not shown.]"
         );
+        assert_eq!(
+            line_cap_count_skipped(1, 2000, 2001, 200 * 1024 * 1024, 2001),
+            "[read: showing lines 1-2000 of ≥2001 lines (file is 200.0MB, count skipped). \
+             Continue with offset=2001.]"
+        );
     }
 
     #[test]
@@ -295,6 +316,7 @@ mod tests {
             offset_past_eof("p", 9999, 3000),
             line_cap(1, 2, 3),
             byte_cap(1, 2, 3),
+            line_cap_count_skipped(1, 2, 3, 200 * 1024 * 1024, 3),
             clamped(1),
             read_failed("p", "No such file or directory (os error 2)"),
             write_unread("p"),
