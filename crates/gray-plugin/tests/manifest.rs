@@ -13,6 +13,7 @@ fn manifest_a() -> Manifest {
         commands: vec![],
         hooks: vec![],
         provider: None,
+        protocol: None,
     }
 }
 
@@ -24,6 +25,7 @@ fn manifest_b() -> Manifest {
         commands: vec![],
         hooks: vec![],
         provider: None,
+        protocol: None,
     }
 }
 

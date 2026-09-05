@@ -559,7 +559,7 @@ mod tests {
             }
         }
         let ex = GatedExecutor::new(Box::new(Inner), vec!["write".to_string()]);
-        let ctx = ToolContext { cwd: std::path::PathBuf::from("."), cancel: tokio_util::sync::CancellationToken::new(), questions: None };
+        let ctx = ToolContext { cwd: std::path::PathBuf::from("."), cancel: tokio_util::sync::CancellationToken::new(), questions: None, session_id: None };
         let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
         assert!(out.is_error);
         assert!(out.content.contains("disabled in gateway mode"), "got: {}", out.content);
