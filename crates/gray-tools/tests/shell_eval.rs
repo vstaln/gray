@@ -449,8 +449,15 @@ async fn s8_no_dup_bytes() -> Row {
         .unwrap_or(0);
     let total = (b1.len() + b2.len()) as u64;
     let ratio = total as f64 / unique.max(1) as f64;
+    // Fence join-newline floor: `fence()` emits `{body}\n</close>`, so each
+    // non-empty page's extracted body carries exactly 1 byte over the raw log
+    // (body already ends in `\n`). On a 14 B fixture over 2 pages that is
+    // 2 B / 1.14x with zero duplicated log bytes — a relative threshold alone
+    // cannot distinguish this constant per-page overhead from real overlap.
+    // Gate real duplication (overlapping windows) while flooring the constant.
+    let pages = u64::from(!b1.is_empty()) + u64::from(!b2.is_empty());
     assert!(
-        ratio <= 1.1,
+        ratio <= 1.1 || total <= unique + pages,
         "scenario 8 regressed: {total} body bytes vs {unique} unique ({ratio:.2}×)"
     );
     Row {
