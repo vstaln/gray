@@ -700,3 +700,128 @@ pub fn generate_unified_patch(
 pub fn generate_unified_patch_default(path: &str, old_content: &str, new_content: &str) -> String {
     generate_unified_patch(path, old_content, new_content, 3)
 }
+
+// ---------------------------------------------------------------------------
+// T1.6: cat -n prefix tolerance (relational fix for T1.2)
+// ---------------------------------------------------------------------------
+
+/// Note appended to a successful edit when the prefix repair fired, so the
+/// model learns to quote unprefixed text next time.
+pub const EDIT_PREFIX_STRIP_NOTE: &str =
+    "[edit: stripped cat -n prefixes from oldText/newText]";
+
+/// Strip one leading `cat -n` prefix (`^\s*\d+\t`) from each line that has
+/// one; lines without that shape are returned unchanged.
+pub fn strip_cat_n_prefixes(text: &str) -> String {
+    text.split('\n')
+        .map(strip_one_prefix)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Strip the prefix from a single line, or return it unchanged. The head
+/// before the first tab must be whitespace followed by digits (`cat -n`
+/// layout); anything else — tab-indented code, `12 \t` with a stray space,
+/// `abc\t` — is left alone.
+fn strip_one_prefix(line: &str) -> &str {
+    let Some(tab) = line.find('\t') else {
+        return line;
+    };
+    let (head, _) = line.split_at(tab);
+    let digits = head.trim_start_matches(|c: char| c.is_whitespace());
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return line;
+    }
+    &line[tab + 1..]
+}
+
+/// Strip prefixes from a set of edits for the T1.6 retry. Each edit's
+/// `old_text` drives: its `new_text` is stripped only when its `old_text`
+/// was (both or neither, never new alone). Returns `None` when no edit's
+/// `old_text` changed, i.e. there is nothing to retry.
+pub fn strip_edit_prefixes(edits: &[Edit]) -> Option<Vec<Edit>> {
+    let mut changed = false;
+    let out: Vec<Edit> = edits
+        .iter()
+        .map(|e| {
+            let stripped_old = strip_cat_n_prefixes(&e.old_text);
+            if stripped_old != e.old_text {
+                changed = true;
+                Edit {
+                    old_text: stripped_old,
+                    new_text: strip_cat_n_prefixes(&e.new_text),
+                }
+            } else {
+                e.clone()
+            }
+        })
+        .collect();
+    if changed {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    #[test]
+    fn strips_cat_n_prefixes_per_line() {
+        assert_eq!(strip_cat_n_prefixes("   412\tfoo"), "foo");
+        assert_eq!(strip_cat_n_prefixes("     1\t# Agents"), "# Agents");
+        assert_eq!(strip_cat_n_prefixes("   100\ta\n   101\tb"), "a\nb");
+    }
+
+    #[test]
+    fn leaves_non_prefix_lines_alone() {
+        assert_eq!(strip_cat_n_prefixes("plain"), "plain");
+        assert_eq!(strip_cat_n_prefixes("\tindented"), "\tindented");
+        assert_eq!(strip_cat_n_prefixes("12 \tspaced"), "12 \tspaced");
+        assert_eq!(strip_cat_n_prefixes("abc\tdef"), "abc\tdef");
+    }
+
+    #[test]
+    fn strip_set_gates_on_old_text_both_or_neither() {
+        // oldText without a prefix → nothing to retry (None): newText alone
+        // is never stripped.
+        let only_new = vec![Edit {
+            old_text: "foo".to_string(),
+            new_text: "   3\tbar".to_string(),
+        }];
+        assert!(strip_edit_prefixes(&only_new).is_none());
+        // oldText with a prefix → both stripped together.
+        let both = vec![Edit {
+            old_text: "   3\tfoo".to_string(),
+            new_text: "   3\tbar".to_string(),
+        }];
+        let got = strip_edit_prefixes(&both).unwrap();
+        assert_eq!(got[0].old_text, "foo");
+        assert_eq!(got[0].new_text, "bar");
+    }
+
+    #[test]
+    fn stripped_retry_order_exact_first() {
+        // A file whose real content starts with `12\t` still matches
+        // exactly — the repair must never fire first (edit.rs retries only
+        // on failure; here the exact apply already succeeds).
+        let content = "12\tfoo\n";
+        let exact = vec![Edit {
+            old_text: "12\tfoo".to_string(),
+            new_text: "12\tbaz".to_string(),
+        }];
+        let applied = apply_edits_to_normalized_content(content, &exact, "f").unwrap();
+        assert!(applied.new_content.contains("12\tbaz"));
+        // A prefixed oldText fails exact, but its stripped form matches —
+        // the two calls below are exactly what edit.rs does (try, then retry).
+        let prefixed = vec![Edit {
+            old_text: "   412\tfoo".to_string(),
+            new_text: "   412\tbaz".to_string(),
+        }];
+        assert!(apply_edits_to_normalized_content(content, &prefixed, "f").is_err());
+        let stripped = strip_edit_prefixes(&prefixed).unwrap();
+        let repaired = apply_edits_to_normalized_content(content, &stripped, "f").unwrap();
+        assert!(repaired.new_content.contains("12\tbaz"));
+    }
+}

@@ -2,8 +2,9 @@
 
 pub mod args;
 pub mod hygiene;
-mod guard;
 pub mod notices;
+pub mod window;
+mod guard;
 mod tail;
 #[cfg(test)]
 pub(crate) mod testkit;
@@ -29,7 +30,8 @@ impl Tool for ReadTool {
         ToolDef::new(
             "read",
             "Read a UTF-8 text file. Returns file contents, capped at \
-             2000 lines / 50 KiB.",
+             2000 lines / 50 KiB. Lines are prefixed with `<n>\\t` like \
+             cat -n; do not include the prefix when quoting text for edit.",
             json!({
                 "type": "object",
                 "properties": {
@@ -131,7 +133,9 @@ impl Tool for ReadTool {
             Some(lim) => text.lines().skip(start).take(lim).collect(),
             None => text.lines().skip(start).collect(),
         };
-        let selected_content = selected.join("\n");
+        // T1.2: cat -n prefixes with absolute numbers, before the caps so
+        // truncation math (output_lines, next_offset) is unchanged.
+        let selected_content = window::prefix_lines(start + 1, &selected).join("\n");
         let truncation = truncate_head(&selected_content);
         let start_display = start + 1; // 1-indexed for messages
 

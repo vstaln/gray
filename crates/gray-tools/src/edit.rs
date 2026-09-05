@@ -4,8 +4,8 @@ use gray_core::message::ToolDef;
 use serde_json::{Value, json};
 
 use crate::edit_diff::{
-    Edit, apply_edits_to_normalized_content, detect_line_ending, normalize_to_lf,
-    restore_line_endings, split_bom,
+    EDIT_PREFIX_STRIP_NOTE, Edit, apply_edits_to_normalized_content, detect_line_ending,
+    normalize_to_lf, restore_line_endings, split_bom, strip_edit_prefixes,
 };
 use crate::{Tool, fail, get_opt_bool, resolve_path};
 
@@ -178,8 +178,20 @@ impl Tool for EditTool {
                 Ok(c) => c,
                 Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
             };
-            let old = &edits[0].old_text;
-            let new = &edits[0].new_text;
+            let old0 = &edits[0].old_text;
+            let new0 = &edits[0].new_text;
+            // T1.6: exact first; on a miss retry once with cat -n prefixes stripped.
+            let stripped = strip_edit_prefixes(&edits[..1]);
+            let (old, new, repaired) = match &stripped {
+                Some(s) if content.matches(old0.as_str()).count() == 0 => {
+                    if content.matches(s[0].old_text.as_str()).count() > 0 {
+                        (&s[0].old_text, &s[0].new_text, true)
+                    } else {
+                        (old0, new0, false)
+                    }
+                }
+                _ => (old0, new0, false),
+            };
             let matches = content.matches(old.as_str()).count();
             if matches == 0 {
                 return fail(format!(
@@ -192,9 +204,14 @@ impl Tool for EditTool {
                 return fail(format!("edit failed for {}: {e}", full.display()));
             }
             return ToolOutput::ok(format!(
-                "edited {}: {} occurrence(s) replaced",
+                "edited {}: {} occurrence(s) replaced{}",
                 full.display(),
-                matches
+                matches,
+                if repaired {
+                    format!("\n{EDIT_PREFIX_STRIP_NOTE}")
+                } else {
+                    String::new()
+                }
             ));
         }
 
@@ -205,9 +222,17 @@ impl Tool for EditTool {
         let bom = split_bom(&raw);
         let ending = detect_line_ending(&bom.text);
         let normalized = normalize_to_lf(&bom.text);
-        let applied = match apply_edits_to_normalized_content(&normalized, &edits, &path) {
-            Ok(r) => r,
-            Err(msg) => return fail(format!("edit failed for {}: {msg}", full.display())),
+        // T1.6: exact (then existing fuzzy) first; only on failure retry once
+        // with cat -n prefixes stripped from oldText/newText together.
+        let (applied, repaired) = match apply_edits_to_normalized_content(&normalized, &edits, &path)
+        {
+            Ok(r) => (r, false),
+            Err(msg) => match strip_edit_prefixes(&edits)
+                .and_then(|s| apply_edits_to_normalized_content(&normalized, &s, &path).ok())
+            {
+                Some(r) => (r, true),
+                None => return fail(format!("edit failed for {}: {msg}", full.display())),
+            },
         };
         let final_content = bom.bom + &restore_line_endings(&applied.new_content, ending);
         if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
@@ -219,14 +244,19 @@ impl Tool for EditTool {
             &applied.new_content,
             3,
         );
+        let repair_note = if repaired {
+            format!("\n{EDIT_PREFIX_STRIP_NOTE}")
+        } else {
+            String::new()
+        };
         if patch.is_empty() {
             ToolOutput::ok(format!(
-                "Successfully replaced {} block(s) in {}.",
+                "Successfully replaced {} block(s) in {}.{repair_note}",
                 edits.len(),
                 path
             ))
         } else {
-            ToolOutput::ok(patch)
+            ToolOutput::ok(format!("{patch}{repair_note}"))
         }
     }
 }
