@@ -43,7 +43,7 @@ fn parse_entry(entry: &str) -> Option<PluginEntry> {
                 .map(|a| unquote(a.trim()).to_string())
                 .filter(|a| !a.is_empty())
                 .collect();
-            return (!argv.is_empty()).then(|| PluginEntry::Sidecar(SidecarSpec(argv)));
+            return (!argv.is_empty()).then_some(PluginEntry::Sidecar(SidecarSpec(argv)));
         }
         // String path form: `sidecar: ~/.gray/plugins/my-tools` (single argv).
         let path = unquote(v);
