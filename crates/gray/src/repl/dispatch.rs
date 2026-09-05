@@ -137,6 +137,11 @@ pub(crate) async fn dispatch_command(
             *agent = build_agent(config, cwd, new_sid.as_ref().map(|s| s.as_str()))
                 .await
                 .ok();
+            // T3.4 lifecycle: the new session saw nothing yet (fresh builds
+            // start empty; clear anyway so shared state can't leak across).
+            if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+                ledger.clear();
+            }
 
             if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
