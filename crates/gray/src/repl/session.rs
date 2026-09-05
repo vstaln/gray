@@ -113,6 +113,11 @@ pub(crate) async fn handle_resume(
             match build_agent(config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
+                    // T3.4 lifecycle: a resumed session has no guarantee the
+                    // old tool results survived — it saw nothing yet.
+                    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+                        ledger.clear();
+                    }
                     *session_state = Some(SessionState {
                         session_id: sid.clone(),
                         store,
