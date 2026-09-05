@@ -67,7 +67,7 @@ impl Registry {
 
     /// Collects tools from plugins in order; on name conflict later entries win.
     /// Manifests travel with the registry so `--dump-manifest` can't drift
-    /// from what's actually registered. (ponytail-audit #13)
+    /// from what's actually registered.
     pub fn from_plugins(plugins: &[Arc<dyn gray_plugin::Plugin>]) -> Self {
         let manifests: Vec<gray_plugin::Manifest> =
             plugins.iter().map(|p| p.manifest()).collect();
@@ -478,7 +478,13 @@ mod tests {
             gray_plugin::Manifest {
                 name: self.name.to_string(),
                 version: "0.0.0".to_string(),
-                tools: vec![self.tool_name.to_string()],
+                tools: vec![gray_core::message::ToolDef::new(
+                    self.tool_name,
+                    "stub",
+                    serde_json::json!({"type": "object"}),
+                )],
+                commands: vec![],
+                hooks: vec![],
                 provider: None,
             }
         }
@@ -603,7 +609,7 @@ mod tests {
         }
         impl gray_plugin::Plugin for ProbePlugin {
             fn manifest(&self) -> gray_plugin::Manifest {
-                gray_plugin::Manifest { name: "p".to_string(), version: "0.0.0".to_string(), tools: vec!["probe".to_string()], provider: None }
+                gray_plugin::Manifest { name: "p".to_string(), version: "0.0.0".to_string(), tools: vec![scalar_def()], commands: vec![], hooks: vec![], provider: None }
             }
             fn tools(&self) -> Vec<Arc<dyn Tool>> {
                 vec![self.probe.clone()]

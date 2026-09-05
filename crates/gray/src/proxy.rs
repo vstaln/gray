@@ -1,4 +1,4 @@
-//! Local proxy — steal hermes_cli/proxy/server.py + adapters/base.py
+//! Local proxy with per-upstream adapters.
 use std::sync::Arc;
 use async_trait::async_trait;
 use axum::{body::Body, extract::{Request, State}, http::{HeaderMap, HeaderValue, StatusCode}, response::{IntoResponse, Response}, routing::{any, get}, Json, Router};

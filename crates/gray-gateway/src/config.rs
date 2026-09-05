@@ -1,6 +1,6 @@
 //! Gateway config
 //!
-//! Security model (OpenClaw-style "trusted gateway, explicit operator allowlist"):
+//! Security model ("trusted gateway, explicit operator allowlist"):
 //! - every platform is deny-by-default; nobody talks to the agent unless an
 //!   operator put them on an allowlist (config, `{PLATFORM}_ALLOWED_USERS` env)
 //!   or approved a pairing code via `gray gateway pairing approve`;
@@ -41,13 +41,13 @@ impl Platform {
     pub fn max_message_len(&self) -> usize {
         match self { Self::Telegram => 4096, Self::Discord => 2000, Self::Slack => 39000 }
     }
-    /// Env var consulted for the user allowlist (hermes `TELEGRAM_ALLOWED_USERS` style).
+    /// Env var consulted for the user allowlist.
     pub fn allowed_users_env(&self) -> &'static str {
         match self { Self::Telegram => "TELEGRAM_ALLOWED_USERS", Self::Discord => "DISCORD_ALLOWED_USERS", Self::Slack => "SLACK_ALLOWED_USERS" }
     }
 }
 
-/// How unknown DM senders are treated (OpenClaw `dmPolicy`).
+/// How unknown DM senders are treated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DmPolicy {
@@ -139,11 +139,11 @@ pub struct GatewayConfig {
     #[serde(default)] pub reset_policy: ResetPolicy,
 }
 fn default_group_per_user() -> bool { true }
-fn default_autostart() -> bool { true }
+fn default_autostart() -> bool { false }
 fn default_true() -> bool { true }
 impl Default for GatewayConfig {
     fn default() -> Self {
-        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true, denied_tools: Vec::new(), streaming: true, cron_delivery: true, reset_policy: ResetPolicy::default() }
+        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: false, denied_tools: Vec::new(), streaming: true, cron_delivery: true, reset_policy: ResetPolicy::default() }
     }
 }
 pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
@@ -155,12 +155,19 @@ pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
 }
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else { return GatewayConfig::default(); };
-    std::fs::read_to_string(&path).ok().and_then(|s| serde_yaml::from_str(&s).ok()).unwrap_or_default()
+    let Ok(text) = std::fs::read_to_string(&path) else { return GatewayConfig::default(); };
+    match serde_yaml_ng::from_str(&text) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("warning: ignoring {}: failed to parse gateway config: {e}", path.display());
+            GatewayConfig::default()
+        }
+    }
 }
 pub fn save_gateway_config(cfg: &GatewayConfig) -> anyhow::Result<()> {
     let path = gray_gateway_path()?;
     if let Some(p) = path.parent() { std::fs::create_dir_all(p)?; }
-    let s = serde_yaml::to_string(cfg)?;
+    let s = serde_yaml_ng::to_string(cfg)?;
     std::fs::write(&path, s)?;
     #[cfg(unix)] { use std::os::unix::fs::PermissionsExt; std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?; }
     Ok(())
@@ -183,7 +190,7 @@ mod tests {
     #[test]
     fn legacy_yaml_loads_with_secure_defaults() {
         let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
-        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let t = &cfg.platforms[&Platform::Telegram];
         assert!(t.allowed_users.is_empty());
         assert_eq!(t.dm_policy, DmPolicy::Pairing);
@@ -193,8 +200,8 @@ mod tests {
 
     #[test]
     fn dm_policy_serde_lowercase() {
-        assert_eq!(serde_yaml::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
-        assert_eq!(serde_yaml::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
+        assert_eq!(serde_yaml_ng::to_string(&DmPolicy::Allowlist).unwrap().trim(), "allowlist");
+        assert_eq!(serde_yaml_ng::from_str::<DmPolicy>("open").unwrap(), DmPolicy::Open);
     }
 
     #[test]
@@ -203,23 +210,31 @@ mod tests {
         assert_eq!(cfg.reset_policy.mode, ResetMode::None);
         // Legacy yaml without the key still loads and never resets.
         let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
-        let cfg: GatewayConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.reset_policy.mode, ResetMode::None);
+    }
+
+    #[test]
+    fn autostart_defaults_off_and_parse_errors_are_loud() {
+        assert!(!GatewayConfig::default().autostart);
+        let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!cfg.autostart);
     }
 
     #[test]
     fn reset_policy_serde_roundtrip() {
         let yaml = "mode: idle\nidle_secs: 60\nat_hour: 3\n";
-        let p: ResetPolicy = serde_yaml::from_str(yaml).unwrap();
+        let p: ResetPolicy = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(p.mode, ResetMode::Idle);
         assert_eq!(p.idle_secs, 60);
         assert_eq!(p.at_hour, 3);
         let yaml = "mode: daily\nat_hour: 4\n";
-        let p: ResetPolicy = serde_yaml::from_str(yaml).unwrap();
+        let p: ResetPolicy = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(p.mode, ResetMode::Daily);
         assert_eq!(p.idle_secs, default_idle_secs());
         // Missing keys default, never fail old configs.
-        let p: ResetPolicy = serde_yaml::from_str("{}\n").unwrap();
+        let p: ResetPolicy = serde_yaml_ng::from_str("{}\n").unwrap();
         assert_eq!(p.mode, ResetMode::None);
     }
 }
