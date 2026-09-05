@@ -52,9 +52,14 @@ never collide. Gated methods are only sent to sidecars claiming them, so
 pre-v1 plugins (ignore unknown lines) keep working. `command/run`:
 `{"prompt"}` wins over `{"text"}` — prompt makes the host run a turn,
 text just prints. Without a host handler, `host/*` replies `{"error":…}`
-(loud, never a hang). Today the default host handler answers `host/say`
-(print) and `host/run` with an error — a real runner is groomed
-follow-up (needed by the cron port below).
+(loud, never a hang). Both hosts install a real runner
+(`gray::host::default_handler`, gateway `cron_host_handler`): `host/say`
+queues for display (REPL-loop drain) or logs + saves under
+`cron/output` (gateway); `host/run` replays the prompt through a fresh
+`gray -p` child of the running binary and returns its stdout as
+`{"text"}` (shared core: `gray_plugin::host::run_prompt_child`).
+Ceiling: the 30 s per-request TTL still applies — a longer turn reports
+a loud timeout (its side effects already happened).
 
 Every v1.1 request/notification carries
 `"session": {"id": <id or "">, "cwd": <cwd>}`.
@@ -80,8 +85,16 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 
 ## Links
 
-- Cron port (stub): [`plugins/cron/cron.sh`](../plugins/cron/cron.sh) —
-  intended scheduler-behind-`host/run` shape; live path is still
-  in-process `gray-cron` until the host wires a `host/run` runner.
+- Cron ([`plugins/cron/cron.sh`](../plugins/cron/cron.sh), exec wrapper
+  over the `gray-cron-sidecar` binary): the scheduler lives in the
+  sidecar — same store/parser as in-process `gray-cron` (no
+  reimplementation), manifest `capabilities:["session"]` +
+  `subcommands:["/cron"]`, real `cron.add`/`cron.list`/`cron.remove` +
+  `/cron` argv, due jobs fire via `host/run` and report via `host/say`
+  (first scan waits a full 60 s tick so `plugin check`/`-p`/manifest
+  dumps exit clean). The gateway keeps its claim-guarded in-process
+  ticker until the sidecar goes persistent (owed); every ticker claims
+  atomically (`store::claim_job_run`), so concurrent firers never
+  double-run.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
 - Gateway (chat delivery, shares the agent builder): `crates/gray-gateway/`.

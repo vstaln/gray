@@ -567,6 +567,37 @@ pub fn update_job_run(id: &str, now: DateTime<Utc>) -> anyhow::Result<()> {
     })
 }
 
+/// Atomic check-and-claim for due jobs: under one lock, verify `next_run`
+/// is still due, stamp `last_run`/`next_run`, persist. Returns `true` when
+/// this caller won the job. Concurrent tickers (sidecar + gateway loop, two
+/// REPLs) must claim before dispatch — the loser skips, never double-fires.
+pub fn claim_job_run(id: &str, now: DateTime<Utc>) -> bool {
+    claim_job_run_inner(&CronStorePaths::active(), id, now)
+}
+
+pub(crate) fn claim_job_run_inner(store: &CronStorePaths, id: &str, now: DateTime<Utc>) -> bool {
+    with_jobs_lock(store, || {
+        let mut jobs = load_jobs_inner(store);
+        let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
+            return false;
+        };
+        match job.next_run {
+            Some(next) if next <= now => {}
+            _ => return false,
+        }
+        job.last_run = Some(now);
+        let is_once = crate::schedule::parse_schedule(&job.schedule)
+            .map(|s| s.is_once())
+            .unwrap_or(false);
+        job.next_run = if is_once {
+            None
+        } else {
+            crate::schedule::compute_next_run(&job.schedule, now)
+        };
+        save_jobs_inner(store, jobs, &[], false).is_ok()
+    })
+}
+
 /// For scheduler internals — paths pinned to active home
 pub fn cron_store_paths() -> CronStorePaths {
     CronStorePaths::active()
@@ -659,6 +690,26 @@ mod tests {
         let jobs = load_jobs_inner(&store);
         assert_eq!(jobs.len(), 1);
         assert!(jobs[0].last_run.is_none());
+    }
+
+    #[test]
+    fn claim_job_run_claims_once_then_loses() {
+        let (_tmp, store) = test_store();
+        let now = Utc::now();
+        let past = (now - ChronoDuration::seconds(60)).to_rfc3339();
+        let created = now.to_rfc3339();
+        write_jobs(
+            &store,
+            &format!(
+                r#"[{{"id":"c1","name":"c","schedule":"every 10m","prompt":"p","enabled":true,"created_at":"{created}","last_run":null,"next_run":"{past}"}}]"#
+            ),
+        );
+        assert!(claim_job_run_inner(&store, "c1", now));
+        assert!(
+            !claim_job_run_inner(&store, "c1", now),
+            "second claim must lose (next_run advanced)"
+        );
+        assert!(!claim_job_run_inner(&store, "missing", now));
     }
 
     #[test]
