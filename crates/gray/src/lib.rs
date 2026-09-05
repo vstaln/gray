@@ -21,6 +21,7 @@ pub mod update;
 
 use clap::Parser;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub use config::Config;
 pub use print::run_print_mode;
@@ -28,8 +29,7 @@ pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
-use gray_core::agent::Agent;
-use gray_provider::OpenAiProvider;
+use crate::skills_tool::SkillTool;
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
@@ -102,9 +102,21 @@ pub fn rule(label: &str) -> String {
     format!("{prefix}{}", "\u{2500}".repeat(fill))
 }
 
-/// Builds an [`Agent`] wired with the OpenAI provider, builtin tools, and system prompt.
-/// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
-/// pass it whenever known (resume, /new); `None` uses a per-process stable id.
+/// Prompt cache-key helpers live in the shared builder (single definition);
+/// re-exported here so existing imports keep working.
+pub use gray_plugin::builder::{
+    PROMPT_CACHE_KEY_MAX_LENGTH, clamp_prompt_cache_key, provider_cache_key,
+};
+
+/// Builds the interactive [`gray_core::agent::Agent`]: thin surface wrapper
+/// over [`gray_plugin::builder::build_agent`] (the single profile-aware
+/// builder for REPL, `-p`, gateway, and cron).
+///
+/// Surface policy owned here: missing-model help text, `AGENTS.md` body,
+/// skills + context-file discovery, the `skill` tool default, and the
+/// REPL/`-p` host handler. `session_id` pins the Responses
+/// `prompt_cache_key` for cache affinity — pass it whenever known (resume,
+/// /new); `None` uses a per-process stable id.
 /// (A single function: earlier split variants had an unused `None` leg.)
 ///
 /// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
@@ -116,46 +128,11 @@ pub fn rule(label: &str) -> String {
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
-/// Max `prompt_cache_key` length (matches the Responses API cache-key limit).
-pub const PROMPT_CACHE_KEY_MAX_LENGTH: usize = 64;
-
-/// Clamp a cache key to the max length (truncate, don't hash —
-/// the prefix stays human-grepable in logs).
-pub fn clamp_prompt_cache_key(key: &str) -> &str {
-    if key.len() <= PROMPT_CACHE_KEY_MAX_LENGTH {
-        return key;
-    }
-    // UUIDs are ASCII so byte cut == char cut; walk back over a boundary just in case.
-    let mut end = PROMPT_CACHE_KEY_MAX_LENGTH;
-    while !key.is_char_boundary(end) {
-        end -= 1;
-    }
-    &key[..end]
-}
-
-/// Resolves the Responses `prompt_cache_key` (the backend pins one cache
-/// shard per session id for the agent's lifetime). Gray rebuilds its provider per
-/// `build_agent`, so the session id is threaded in at build time instead:
-/// the gray session id when known (stable across resumes, so a resumed
-/// session keeps hitting its cache shard), else a per-process stable id
-/// (so rebuilds mid-session — reload, lazy builds — don't bust the shard).
-/// A fresh random key per build guaranteed 0% cache after every
-/// resume/rebuild; never do that.
-pub fn provider_cache_key(session_id: Option<&str>) -> String {
-    if let Some(s) = session_id.filter(|s| !s.is_empty()) {
-        return clamp_prompt_cache_key(s).to_string();
-    }
-    static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    FALLBACK
-        .get_or_init(|| uuid::Uuid::new_v4().to_string())
-        .clone()
-}
-
 pub async fn build_agent(
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
-) -> anyhow::Result<Agent> {
+) -> anyhow::Result<gray_core::agent::Agent> {
     let Some(model) = &config.model else {
         anyhow::bail!(
             "no model configured yet — run /provider (or set --model <provider/model>), then try again"
@@ -165,53 +142,55 @@ pub async fn build_agent(
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
 
-    // Discover skills + AGENTS.md / CLAUDE.md context
+    // Discover skills + AGENTS.md / CLAUDE.md context (prompt needs the
+    // resolved registry, so this becomes a builder closure below).
     let discovered = skills::discover_skills(cwd);
     let context_files = system_prompt::discover_context_files(cwd);
+    let prompt_cwd = cwd.to_path_buf();
 
-    // Tools only appear in the prompt when they have a snippet.
-    // Same plugins feed the registry and the agent hooks (protocol v1:
-    // prompt/context, tool/before, command/run reach the loop + REPL).
-    // Sidecars also get the host runner so plugin-initiated `host/run`
-    // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
-    let (plugins, _) =
-        profile::active_plugins_with_handler(Some(host::default_handler(cwd.to_path_buf())))
-            .await?;
-    let (registry, _) = profile::from_plugins(&plugins);
-    let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
-    let tool_snippets = registry.prompt_snippets();
-    let selected_tools = registry.tool_names();
-    let prompt_guidelines = {
-        let g = registry.prompt_guidelines();
-        if g.is_empty() { None } else { Some(g) }
-    };
-
-    let system_prompt =
-        system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
-            custom_prompt: Some(body),
-            selected_tools: Some(selected_tools),
-            tool_snippets: Some(tool_snippets),
-            prompt_guidelines,
-            append_system_prompt: None,
-            cwd: cwd.to_path_buf(),
-            context_files: Some(context_files),
-            skills: Some(discovered.skills),
-        });
-
-    let provider = OpenAiProvider::builder(api_key, model)
-        .base_url(&config.base_url)
-        .reasoning_effort(config.thinking_effort.clone())
-        .session_id(provider_cache_key(session_id))
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
-
-    let tool_defs = registry.defs();
-
-    let agent = Agent::new(Box::new(provider), Box::new(registry))
-        .with_system(system_prompt)
-        .with_tools(tool_defs)
-        .with_hooks(hooks);
-
+    let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
+        model: model.clone(),
+        api_key: api_key.to_string(),
+        base_url: config.base_url.clone(),
+        reasoning_effort: config.thinking_effort.clone(),
+        session_id: session_id.map(str::to_string),
+        cwd: cwd.to_path_buf(),
+        system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
+            move |registry: &gray_tools::Registry| {
+                // Tools only appear in the prompt when they have a snippet.
+                // Same plugins feed the registry and the agent hooks.
+                let tool_snippets = registry.prompt_snippets();
+                let selected_tools = registry.tool_names();
+                let guidelines = registry.prompt_guidelines();
+                let prompt_guidelines = if guidelines.is_empty() {
+                    None
+                } else {
+                    Some(guidelines)
+                };
+                system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
+                    custom_prompt: Some(body),
+                    selected_tools: Some(selected_tools),
+                    tool_snippets: Some(tool_snippets),
+                    prompt_guidelines,
+                    append_system_prompt: None,
+                    cwd: prompt_cwd,
+                    context_files: Some(context_files),
+                    skills: Some(discovered.skills),
+                })
+            },
+        )),
+        // Sidecars get the host runner so plugin-initiated `host/run`
+        // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
+        extra_tools: vec![Arc::new(SkillTool)],
+        host_handler: Some(host::default_handler(cwd.to_path_buf())),
+        profile_path: "gray.yml".to_string(),
+        abort_on_spawn_failure: true,
+        wrap_executor: None,
+    })
+    .await?;
+    for w in gray_plugin::builder::take_builder_warnings() {
+        profile::queue_profile_warning(w);
+    }
     Ok(agent)
 }
 

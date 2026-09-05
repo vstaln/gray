@@ -1,6 +1,7 @@
 //! REPL/`-p` side of the plugin→host channel (`host/run` + `host/say`).
 //!
-//! Installed on every sidecar at spawn (`profile::active_plugins_with_handler`);
+//! Installed on every sidecar at spawn by [`crate::build_agent`] via the
+//! shared builder;
 //! the transport replies `{"error":…}` when no handler is set, so a missing
 //! install fails loudly instead of hanging the plugin. `host/run` delegates
 //! to the shared subprocess runner (`gray_plugin::host::run_prompt_child`);
