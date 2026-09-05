@@ -13,6 +13,7 @@ pub mod grep;
 pub mod ls;
 pub mod read;
 pub mod request_user_input;
+pub mod stats;
 pub mod truncate;
 pub mod write;
 
