@@ -77,6 +77,48 @@ pub fn read_failed(display: &str, detail: &str) -> String {
     format!("read failed for {display}: {detail}")
 }
 
+/// Write refused: the file exists but was never read this session (T3.2 rule
+/// 2). Names the recovery (`read <path>`) and the `force=true` escape.
+pub fn write_unread(display: &str) -> String {
+    format!(
+        "write refused: {display} exists and has not been read this session. \
+         Read it first (read {display}), or pass force=true to overwrite blind."
+    )
+}
+
+/// Write refused: the file changed on disk since it was read (T3.2 rule 3).
+pub fn write_changed(display: &str) -> String {
+    format!("write refused: {display} changed on disk since you read it. Re-read it.")
+}
+
+/// Edit refused: the same staleness rule as [`write_changed`], with the tool name.
+pub fn edit_changed(display: &str) -> String {
+    format!("edit refused: {display} changed on disk since you read it. Re-read it.")
+}
+
+/// Write refused: only part of the file was read (T3.2 rule 6). This wording
+/// — never the rule-2 wording — is used whenever an entry exists: partial is
+/// not unread. `next` resume offset is always `last + 1`.
+pub fn write_partial(display: &str, first: usize, last: usize, total: usize) -> String {
+    format!(
+        "write refused: only part of {display} has been read \
+         (lines {first}-{last} of {total}). Read the rest (offset={}) \
+         or use edit for a targeted change.",
+        last + 1
+    )
+}
+
+/// Repeat-read stub (T3.3): this window is unchanged since the previous read.
+/// A fact (`is_error=false`); consumed on hit, so a compacted-away result
+/// comes back in full on the next identical read.
+pub fn dedup_stub(display: &str, first: usize, last: usize) -> String {
+    format!(
+        "[read: {display} lines {first}-{last} unchanged since your previous read above; \
+         content omitted. If that result is no longer visible (compacted), \
+         call read again and it will be returned in full.]"
+    )
+}
+
 /// Joins windowed content with its trailing note: blank-line separated; the
 /// note alone when there is no content (so no path returns `ok("")`).
 pub fn join(content: &str, note: &str) -> String {
@@ -156,8 +198,48 @@ mod tests {
             byte_cap(1, 2, 3),
             clamped(1),
             read_failed("p", "No such file or directory (os error 2)"),
+            write_unread("p"),
+            write_changed("p"),
+            edit_changed("p"),
+            write_partial("p", 1, 2000, 80412),
+            dedup_stub("p", 1, 2000),
         ] {
             assert!(!s.contains("Error:"), "{s}");
         }
+    }
+
+    #[test]
+    fn write_guard_notes_are_contract_exact() {
+        assert_eq!(
+            write_unread("src/new.rs"),
+            "write refused: src/new.rs exists and has not been read this session. \
+             Read it first (read src/new.rs), or pass force=true to overwrite blind."
+        );
+        assert_eq!(
+            write_changed("src/new.rs"),
+            "write refused: src/new.rs changed on disk since you read it. Re-read it."
+        );
+        assert_eq!(
+            edit_changed("src/new.rs"),
+            "edit refused: src/new.rs changed on disk since you read it. Re-read it."
+        );
+        assert_eq!(
+            write_partial("Cargo.lock", 1, 2000, 80412),
+            "write refused: only part of Cargo.lock has been read (lines 1-2000 of 80412). \
+             Read the rest (offset=2001) or use edit for a targeted change."
+        );
+    }
+
+    #[test]
+    fn dedup_stub_is_contract_exact_and_small() {
+        let s = dedup_stub("src/agent.rs", 1, 2000);
+        assert_eq!(
+            s,
+            "[read: src/agent.rs lines 1-2000 unchanged since your previous read above; \
+             content omitted. If that result is no longer visible (compacted), \
+             call read again and it will be returned in full.]"
+        );
+        // T3.3 accept: stub < 60 tokens (bytes/4).
+        assert!((s.len() as u64) / 4 < 60, "{s}");
     }
 }
