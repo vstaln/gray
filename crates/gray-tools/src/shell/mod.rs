@@ -5,6 +5,7 @@ pub mod exit;
 pub mod fence;
 pub mod guard;
 pub mod pump;
+pub mod registry;
 pub mod spawn;
 pub mod tools;
 pub mod view;
