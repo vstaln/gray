@@ -55,16 +55,21 @@ impl Registry {
     /// All builtin tools that live in this crate (no Skill/Cron: those are
     /// wired by `gray::profile` from their home crates).
     pub fn builtin() -> Self {
-        Self::new(vec![
-            Arc::new(ReadTool),
-            Arc::new(WriteTool),
-            Arc::new(EditTool),
+        // T3.2/T3.3 wiring: read/write/edit share one ledger (pointer-eq with
+        // file_ledger() below), so reads authorize writes and arm dedup.
+        let ledger = Arc::new(FileLedger::new());
+        let mut out = Self::new(vec![
+            Arc::new(ReadTool::new(ledger.clone())),
+            Arc::new(WriteTool::new(ledger.clone())),
+            Arc::new(EditTool::new(ledger.clone())),
             Arc::new(BashTool),
             Arc::new(RequestUserInputTool),
             Arc::new(GrepTool),
             Arc::new(FindTool),
             Arc::new(LsTool),
-        ])
+        ]);
+        out.file_ledger = ledger;
+        out
     }
 
     /// Collects tools in order; on name conflict later entries win.
@@ -505,5 +510,37 @@ mod tests {
         let args = seen.lock().unwrap().clone().expect("tool should see args");
         assert_eq!(args.get("path"), Some(&json!("/tmp/x")), "{args}");
         assert_eq!(args.get("limit"), Some(&json!(7)), "{args}");
+    }
+
+    #[tokio::test]
+    async fn builtin_tools_share_the_registry_ledger() {
+        // Pointer-eq by behavior: the read tool records into the registry Arc
+        // and the write tool honors it — no force needed after a full read,
+        // and the second write rides on mark_written.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("note.txt");
+        std::fs::write(&p, "hello\n").unwrap();
+        let reg = Registry::builtin();
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+            ..ToolContext::default()
+        };
+        let out =
+            ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
+        assert!(!out.is_error, "{out:?}");
+        assert!(
+            reg.file_ledger().get(&p).is_some(),
+            "read must record into Registry::file_ledger"
+        );
+        for content in ["hello\nworld\n", "hello\nworld\nagain\n"] {
+            let out = ToolExecutor::execute(
+                &reg,
+                &ctx,
+                "write",
+                json!({"path": "note.txt", "content": content}),
+            )
+            .await;
+            assert!(!out.is_error, "{out:?}");
+        }
     }
 }

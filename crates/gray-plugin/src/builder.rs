@@ -50,10 +50,16 @@ impl Plugin for ToolsBasicPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        // T3.2/T3.3 wiring: read/write/edit share one ledger per tools() call
+        // (from_plugins calls once per build, so the session tools agree).
+        // No struct field: ToolsBasicPlugin literals also live in gray::profile,
+        // which must keep compiling untouched — T3.4 adopts this ledger into
+        // Registry::file_ledger for /new + compaction.
+        let ledger = Arc::new(gray_tools::FileLedger::new());
         let mut out: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(gray_tools::ReadTool),
-            Arc::new(gray_tools::WriteTool),
-            Arc::new(gray_tools::EditTool),
+            Arc::new(gray_tools::ReadTool::new(ledger.clone())),
+            Arc::new(gray_tools::WriteTool::new(ledger.clone())),
+            Arc::new(gray_tools::EditTool::new(ledger.clone())),
             Arc::new(gray_tools::BashTool),
             Arc::new(gray_tools::RequestUserInputTool),
         ];
