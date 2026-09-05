@@ -108,6 +108,24 @@ pub struct SavedConfig {
     pub context_keep: Option<usize>,
 }
 
+/// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
+pub const AUTH_MODE_API_KEY: &str = "api_key";
+pub const AUTH_MODE_OAUTH: &str = "oauth";
+pub const AUTH_MODE_NONE: &str = "none";
+
+/// Unknown/missing modes behave as today: API key.
+pub fn normalize_auth_mode(mode: Option<&str>) -> &'static str {
+    match mode {
+        Some("oauth") => AUTH_MODE_OAUTH,
+        Some("none") => AUTH_MODE_NONE,
+        _ => AUTH_MODE_API_KEY,
+    }
+}
+
+/// Provider ids with an OAuth login flow (`oauth.rs` implements both).
+/// Table, not an if-ladder (Hermes `_OAUTH_CAPABLE_PROVIDERS` parity).
+pub const OAUTH_CAPABLE: &[&str] = &["openai", "xai"];
+
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
 pub fn gray_home() -> anyhow::Result<PathBuf> {
     let base = std::env::var("GRAY_HOME")
@@ -158,34 +176,26 @@ fn auth_store_path() -> anyhow::Result<PathBuf> {
 }
 
 /// All stored keys keyed by provider id; missing file yields an empty map.
+/// Reads through the mixed auth store so OAuth objects in the same file are
+/// left untouched (see `oauth::AuthEntry`).
 pub(crate) fn load_auth_keys() -> BTreeMap<String, String> {
-    std::fs::read_to_string(auth_store_path().unwrap_or_else(|_| PathBuf::from("/dev/null")))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let path = auth_store_path().unwrap_or_else(|_| PathBuf::from("/dev/null"));
+    crate::oauth::load_mixed_store(&path)
+        .into_iter()
+        .filter_map(|(k, v)| match v {
+            crate::oauth::AuthEntry::Key(key) => Some((k, key)),
+            crate::oauth::AuthEntry::OAuth(_) => None,
+        })
+        .collect()
 }
 
-/// Upserts `key` under provider id `pid` (read-modify-write, 0600).
+/// Upserts `key` under provider id `pid` (read-modify-write, 0600),
+/// preserving any OAuth entries in the same file.
 pub(crate) fn save_auth_key(pid: &str, key: &str) -> anyhow::Result<()> {
-    use std::io::Write as _;
     let path = auth_store_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut keys = load_auth_keys();
-    keys.insert(pid.to_string(), key.to_string());
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    f.write_all(serde_json::to_string_pretty(&keys)?.as_bytes())?;
-    Ok(())
+    let mut store = crate::oauth::load_mixed_store(&path);
+    store.insert(pid.to_string(), crate::oauth::AuthEntry::Key(key.to_string()));
+    crate::oauth::save_mixed_store(&path, &store)
 }
 
 /// Provider item displayed in the "Connect a provider" modal.
@@ -198,13 +208,15 @@ pub struct ConnectItem {
     pub base_url: String,
     pub env_key: String,
     pub no_auth: bool,
+    /// True when the provider also offers browser OAuth login.
+    pub oauth_capable: bool,
 }
 
 /// Builds the full list of providers for the connect modal:
 /// Popular section on top, followed by all catalog providers under Providers.
 pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
-        ("openai", "OpenAI", "(ChatGPT Plus/Pro or API key)", "https://api.openai.com/v1", "OPENAI_API_KEY", false),
+        ("openai", "OpenAI", "(ChatGPT login or API key)", "https://api.openai.com/v1", "OPENAI_API_KEY", false),
         ("anthropic", "Anthropic", "(API key)", "https://api.anthropic.com/v1", "ANTHROPIC_API_KEY", false),
         ("google", "Google", "(Gemini API key)", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY", false),
         ("openrouter", "OpenRouter", "(Access 300+ models)", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", false),
@@ -212,7 +224,7 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
         ("groq", "Groq", "(Fast inference)", "https://api.groq.com/openai/v1", "GROQ_API_KEY", false),
         ("ollama", "Ollama", "(Local http://localhost:11434)", "http://localhost:11434/v1", "", true),
         ("github-copilot", "GitHub Copilot", "", "https://api.githubcopilot.com", "COPILOT_API_KEY", false),
-        ("xai", "xAI (Grok)", "(Grok API key)", "https://api.x.ai/v1", "XAI_API_KEY", false),
+        ("xai", "xAI (Grok)", "(Grok login or API key)", "https://api.x.ai/v1", "XAI_API_KEY", false),
         ("mistral", "Mistral", "(API key)", "https://api.mistral.ai/v1", "MISTRAL_API_KEY", false),
     ];
 
@@ -235,6 +247,7 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             base_url: url.to_string(),
             env_key: env,
             no_auth,
+            oauth_capable: OAUTH_CAPABLE.contains(&id),
         });
     }
 
@@ -255,8 +268,61 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             base_url: p.base_url.clone(),
             env_key: env_hint(p),
             no_auth: p.no_auth,
+            oauth_capable: OAUTH_CAPABLE.contains(&id.as_str()),
         });
     }
 
     items
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_openai_and_xai_offer_oauth() {
+        let catalog = load_catalog().expect("bundled catalog parses");
+        let items = build_connect_items(&catalog);
+        let dual: Vec<_> = items.iter().filter(|i| i.oauth_capable).map(|i| i.id.as_str()).collect();
+        assert_eq!(dual, vec!["openai", "xai"], "{dual:?}");
+    }
+
+    #[test]
+    fn normalize_auth_mode_defaults_to_api_key() {
+        assert_eq!(normalize_auth_mode(None), AUTH_MODE_API_KEY);
+        assert_eq!(normalize_auth_mode(Some("oauth")), AUTH_MODE_OAUTH);
+        assert_eq!(normalize_auth_mode(Some("none")), AUTH_MODE_NONE);
+        assert_eq!(normalize_auth_mode(Some("bogus")), AUTH_MODE_API_KEY);
+    }
+
+    #[test]
+    fn saving_key_preserves_oauth_objects() {
+        // Mirror of the oauth-side clobber regression: key saves must not
+        // wipe OAuth entries sharing auth.json.
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("auth.json");
+        let oauth = crate::oauth::StoredAuth {
+            provider: "xai".to_string(),
+            access_token: "tok".to_string(),
+            refresh_token: String::new(),
+            expires_at: 9_999_999_999,
+            email: None,
+        };
+        crate::oauth::save_auth_at(&path, &oauth).expect("oauth save");
+        let mut store = crate::oauth::load_mixed_store(&path);
+        store.insert("openrouter".to_string(), crate::oauth::AuthEntry::Key("sk-or-1".to_string()));
+        crate::oauth::save_mixed_store(&path, &store).expect("key save");
+        let reloaded = crate::oauth::load_mixed_store(&path);
+        assert!(matches!(reloaded.get("xai"), Some(crate::oauth::AuthEntry::OAuth(_))), "{reloaded:?}");
+        // And the key-only view exposes just the key.
+        let keys: BTreeMap<String, String> = reloaded
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                crate::oauth::AuthEntry::Key(key) => Some((k, key)),
+                crate::oauth::AuthEntry::OAuth(_) => None,
+            })
+            .collect();
+        assert_eq!(keys.get("openrouter").map(String::as_str), Some("sk-or-1"));
+        assert!(!keys.contains_key("xai"));
+    }
 }

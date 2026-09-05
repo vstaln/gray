@@ -1,8 +1,9 @@
 pub mod catalog;
 pub use catalog::{
     build_connect_items, gray_home, load_catalog, load_saved_config_at, mask_key_pretty,
-    save_saved_config_at, saved_config_path, Catalog, CatalogModel, CatalogProvider,
-    ConnectItem, SavedConfig, PROVIDERS_JSON,
+    normalize_auth_mode, save_saved_config_at, saved_config_path, Catalog, CatalogModel,
+    CatalogProvider, ConnectItem, SavedConfig, AUTH_MODE_API_KEY, AUTH_MODE_NONE,
+    AUTH_MODE_OAUTH, OAUTH_CAPABLE, PROVIDERS_JSON,
 };
 pub(crate) use catalog::{load_auth_keys, save_auth_key};
 
@@ -52,6 +53,11 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
 
     enum ModalState {
         Selecting,
+        ChoosingAuthMethod {
+            item: ConnectItem,
+            sel: usize,
+            status_msg: Option<String>,
+        },
         EnteringKey {
             item: ConnectItem,
             key_buf: String,
@@ -69,6 +75,7 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
 
     let mut state = ModalState::Selecting;
     let mut connected_name: Option<(String, String)> = None;
+    let mut authed_via_oauth = false;
 
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     if !was_raw {
@@ -91,6 +98,10 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
     let result = (|| -> anyhow::Result<bool> {
         loop {
             let auth_keys = load_auth_keys();
+            let oauth_ok: std::collections::HashSet<&str> = ["xai", "codex"]
+                .into_iter()
+                .filter(|p| crate::oauth::has_oauth(p))
+                .collect();
 
             terminal.draw(|frame| {
                 let area = frame.area();
@@ -184,7 +195,9 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                 let is_selected = idx == safe_sel;
 
                                 let is_connected = auth_keys.contains_key(&item.id)
-                                    || (config.base_url == item.base_url && config.api_key.is_some());
+                                    || (config.base_url == item.base_url && config.api_key.is_some())
+                                    || crate::oauth::oauth_provider_for_connect_id(&item.id)
+                                        .is_some_and(|p| oauth_ok.contains(p));
 
                                 let check_glyph = if is_connected { "✓ " } else { "  " };
 
@@ -314,6 +327,72 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                         let footer = Line::from(vec![
                             Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
                             Span::styled(action_label, Style::default().fg(text_dim).bg(box_bg)),
+                        ]);
+                        frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
+                    }
+                    ModalState::ChoosingAuthMethod { item, sel, status_msg } => {
+                        let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
+                        let dialog_h = 10.min(area.height.saturating_sub(2)).max(8).min(area.height);
+                        let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
+                        let dialog_y = (area.height.saturating_sub(dialog_h)) / 3;
+                        let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
+
+                        frame.render_widget(Clear, dialog_rect);
+
+                        let box_block = Block::default()
+                            .style(Style::default().bg(box_bg));
+                        frame.render_widget(box_block, dialog_rect);
+
+                        let pad_x = 3u16;
+                        let inner_w = dialog_w.saturating_sub(pad_x * 2);
+                        let inner = Rect::new(dialog_x + pad_x, dialog_y + 1, inner_w, dialog_h.saturating_sub(2));
+
+                        let title_str = format!("Connect {}", item.name);
+                        let esc_str = "esc";
+                        let pad_len = (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
+                        frame.render_widget(
+                            Paragraph::new(Line::from(vec![
+                                Span::styled(title_str, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                                Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
+                                Span::styled(esc_str, Style::default().fg(text_dim).bg(box_bg)),
+                            ])),
+                            Rect::new(inner.x, inner.y, inner.width, 1),
+                        );
+
+                        let rows = ["Log in with browser (recommended)", "Paste an API key instead"];
+                        for (r, label) in rows.iter().enumerate() {
+                            let raw = format!("  {label}");
+                            let fill = (inner.width as usize).saturating_sub(raw.chars().count());
+                            let line = if *sel == r {
+                                Line::from(Span::styled(
+                                    format!("{raw}{}", " ".repeat(fill)),
+                                    Style::default().fg(Color::Black).bg(accent_peach).add_modifier(Modifier::BOLD),
+                                ))
+                            } else {
+                                Line::from(vec![
+                                    Span::styled(format!("  {label}"), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                                    Span::styled(" ".repeat(fill), Style::default().bg(box_bg)),
+                                ])
+                            };
+                            frame.render_widget(Paragraph::new(line), Rect::new(inner.x, inner.y + 2 + r as u16, inner.width, 1));
+                        }
+
+                        if let Some(msg) = status_msg {
+                            let trunc: String = msg.chars().take(80).collect();
+                            frame.render_widget(
+                                Paragraph::new(Line::from(Span::styled(
+                                    format!(" • {trunc}"),
+                                    Style::default().fg(Color::Rgb(239, 68, 68)).bg(box_bg),
+                                ))),
+                                Rect::new(inner.x, inner.y + 4, inner.width, 1),
+                            );
+                        }
+
+                        let footer = Line::from(vec![
+                            Span::styled("↑↓ ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("navigate    ", Style::default().fg(text_dim).bg(box_bg)),
+                            Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                            Span::styled("select", Style::default().fg(text_dim).bg(box_bg)),
                         ]);
                         frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
                     }
@@ -531,6 +610,12 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                             sel: 0,
                                             scroll_top: 0,
                                         };
+                                    } else if item.oauth_capable {
+                                        state = ModalState::ChoosingAuthMethod {
+                                            item: item.clone(),
+                                            sel: 0,
+                                            status_msg: None,
+                                        };
                                     } else {
                                         let existing = load_auth_keys()
                                             .get(&item.id)
@@ -591,7 +676,7 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                 config.api_key = Some(final_key.clone());
                                 saved.base_url = Some(config.base_url.clone());
                                 saved.api_key = config.api_key.clone();
-                                saved.auth_mode = Some("api_key".into());
+                                saved.auth_mode = Some(AUTH_MODE_API_KEY.into());
                                 if is_switching {
                                     let models = get_provider_models_with_live(&item.id, &item.base_url, Some(&final_key), &catalog);
                                     saved.model = models.first().map(|(id, _)| id.clone());
@@ -621,6 +706,88 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                     sel: 0,
                                     scroll_top: 0,
                                 };
+                            }
+                        }
+                        _ => {}
+                    },
+                    Event::Resize(_, _) => {}
+                    _ => {}
+                },
+                ModalState::ChoosingAuthMethod { item, sel, status_msg } => match read()? {
+                    Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
+                        if modifiers.contains(KeyModifiers::CONTROL) => {
+                        state = ModalState::Selecting;
+                    }
+                    Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => match code {
+                        KeyCode::Esc => {
+                            state = ModalState::Selecting;
+                        }
+                        KeyCode::Up => {
+                            *sel = sel.saturating_sub(1);
+                        }
+                        KeyCode::Down => {
+                            *sel = (*sel + 1).min(1);
+                        }
+                        KeyCode::Enter => {
+                            let use_oauth = *sel == 0
+                                && crate::oauth::oauth_provider_for_connect_id(&item.id).is_some();
+                            if !use_oauth {
+                                let existing = load_auth_keys()
+                                    .get(&item.id)
+                                    .cloned()
+                                    .or_else(|| if config.base_url == item.base_url { config.api_key.clone() } else { None });
+                                state = ModalState::EnteringKey {
+                                    item: item.clone(),
+                                    key_buf: String::new(),
+                                    existing_key: existing,
+                                    status_msg: None,
+                                };
+                            } else if let Some(provider) =
+                                crate::oauth::oauth_provider_for_connect_id(&item.id)
+                            {
+                                // Browser login prints its URL and blocks on the
+                                // loopback callback, so it runs outside the
+                                // alternate screen, then the modal re-enters.
+                                let _ = terminal.clear();
+                                let _ = crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+                                if !was_raw {
+                                    let _ = disable_raw_mode();
+                                }
+                                let _ = std::io::stdout().flush();
+                                // All callers run under multi-thread tokio::main.
+                                let auth_result = tokio::task::block_in_place(|| {
+                                    tokio::runtime::Handle::current().block_on(async {
+                                        match provider {
+                                            "xai" => crate::oauth::run_xai_signin().await,
+                                            _ => crate::oauth::run_codex_signin().await,
+                                        }?;
+                                        crate::oauth::ensure_access_token(provider).await
+                                    })
+                                });
+                                if !was_raw {
+                                    let _ = enable_raw_mode();
+                                }
+                                let mut stdout_handle = std::io::stdout();
+                                let _ = crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide);
+                                match auth_result {
+                                    Ok(token) => {
+                                        config.base_url = item.base_url.clone();
+                                        config.api_key = Some(token.clone());
+                                        authed_via_oauth = true;
+                                        let models = get_provider_models_with_live(&item.id, &item.base_url, Some(&token), &catalog);
+                                        state = ModalState::SelectingModel {
+                                            item: item.clone(),
+                                            models,
+                                            filter: String::new(),
+                                            sel: 0,
+                                            scroll_top: 0,
+                                        };
+                                    }
+                                    Err(e) => {
+                                        let short: String = format!("{e:#}").chars().take(100).collect();
+                                        *status_msg = Some(short.replace('\n', " "));
+                                    }
+                                }
                             }
                         }
                         _ => {}
@@ -703,7 +870,13 @@ pub fn run_connect_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -
                                 saved.base_url = Some(config.base_url.clone());
                                 saved.api_key = config.api_key.clone();
                                 saved.model = config.model.clone();
-                                saved.auth_mode = Some(if item.no_auth { "none".into() } else { "api_key".into() });
+                                if authed_via_oauth && !item.no_auth {
+                                    // OAuth bearer lives in auth.json, never config.json.
+                                    saved.api_key = None;
+                                    saved.auth_mode = Some(AUTH_MODE_OAUTH.into());
+                                } else {
+                                    saved.auth_mode = Some(if item.no_auth { AUTH_MODE_NONE.into() } else { AUTH_MODE_API_KEY.into() });
+                                }
                                 save_saved_config_at(&path, &saved)?;
 
                                 connected_name = Some((item.name.clone(), chosen_model));
@@ -767,6 +940,7 @@ pub fn run_model_modal(config: &mut Config, bg: Option<&BackgroundSnapshot>) -> 
         category: "Providers",
         env_key: String::new(),
         no_auth: false,
+        oauth_capable: crate::setup::catalog::OAUTH_CAPABLE.contains(&item_id.as_str()),
     };
 
     let models = get_provider_models_with_live(&item_id, &config.base_url, config.api_key.as_deref(), &catalog);
