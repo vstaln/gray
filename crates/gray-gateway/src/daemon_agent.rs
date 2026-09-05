@@ -8,7 +8,7 @@
 use crate::authz::GatedExecutor;
 use crate::config::Platform;
 use crate::daemon::GatewayRunner;
-use crate::daemon_stream::StreamMsg;
+use crate::daemon_stream::ProgressMsg;
 use crate::session::{SessionSource, build_session_key};
 
 impl GatewayRunner {
@@ -63,14 +63,15 @@ impl GatewayRunner {
         Ok(agent.with_messages(prior))
     }
 
-    /// Run one agent turn in session `sid`, streaming text deltas to `sink`.
-    /// Returns the final assistant text. Persists the full turn (tool calls included).
+    /// Run one agent turn in session `sid`, forwarding tool events to `sink`
+    /// for the progress bubble. The final answer is returned, never streamed.
+    /// Persists the full turn (tool calls included).
     pub(crate) async fn run_agent(
         &self,
         sid_str: &str,
         key: &str,
         text: &str,
-        sink: Option<tokio::sync::mpsc::UnboundedSender<StreamMsg>>,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<ProgressMsg>>,
     ) -> anyhow::Result<String> {
         use gray_core::Message;
         use gray_core::agent::{PermissionMode, ToolContext};
@@ -112,12 +113,17 @@ impl GatewayRunner {
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {
                 match e {
-                    AgentEvent::TextDelta { delta } => {
-                        let _ = tx.send(StreamMsg::Delta(delta.clone()));
+                    AgentEvent::ToolCallStart { id, name } => {
+                        let _ = tx.send(ProgressMsg::ToolStart {
+                            id: id.clone(),
+                            name: name.clone(),
+                        });
                     }
-                    // Text before a tool call is narration; the reply is what comes after.
-                    AgentEvent::ToolResult { .. } => {
-                        let _ = tx.send(StreamMsg::Reset);
+                    AgentEvent::ToolCallEnd { id, args, .. } => {
+                        let _ = tx.send(ProgressMsg::ToolEnd {
+                            id: id.clone(),
+                            args: args.clone(),
+                        });
                     }
                     _ => {}
                 }
