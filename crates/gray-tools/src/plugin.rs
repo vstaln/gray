@@ -21,6 +21,7 @@ impl Plugin for ToolsBasicPlugin {
             commands: vec![],
             hooks: vec![],
             provider: None,
+            protocol: None,
         }
     }
 
@@ -48,6 +49,7 @@ impl Plugin for ToolsSearchPlugin {
             commands: vec![],
             hooks: vec![],
             provider: None,
+            protocol: None,
         }
     }
 
@@ -68,6 +70,7 @@ impl Plugin for CronPlugin {
             commands: vec![],
             hooks: vec![],
             provider: None,
+            protocol: None,
         }
     }
 
