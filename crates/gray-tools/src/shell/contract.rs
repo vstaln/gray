@@ -18,8 +18,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-// NOTE: `regex` is not a gray-tools dep yet; brief 3C adds it via Cargo
-// (orchestrator approves deps) and swaps `NotifyPattern` for it.
+// NOTE: `regex` backs `NotifyPattern` (brief 3C, 1 MiB size limit).
 // `tokio` sync/task/process come from the existing workspace dep.
 use gray_core::agent::ToolContext;
 use tokio::process::{Child, ChildStderr, ChildStdout};
@@ -50,21 +49,29 @@ impl std::fmt::Display for TaskId {
     }
 }
 
-/// Substring stand-in for `regex::Regex` until brief 3C owns the `regex`
-/// dep (P1D ruling: the contract's `Regex` breaks compile today).
-/// 3C swaps the type; call sites are the constructor + `matches`.
+/// Compiled `notify_on` regex (brief 3C): size-limited to 1 MiB.
+/// Invalid expressions fail here so the tool can report the regex error
+/// plus an example. Empty never matches (preserved stub rule — a bare
+/// empty regex would match every line).
 #[derive(Clone, Debug)]
-pub struct NotifyPattern(String);
+pub struct NotifyPattern {
+    expr: String,
+    regex: regex::Regex,
+}
 
 impl NotifyPattern {
-    pub fn new(expr: &str) -> Self {
-        Self(expr.to_string())
+    pub fn new(expr: &str) -> Result<Self, regex::Error> {
+        let regex = regex::RegexBuilder::new(expr).size_limit(1 << 20).build()?;
+        Ok(Self {
+            expr: expr.to_string(),
+            regex,
+        })
     }
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.expr
     }
     pub fn matches(&self, line: &str) -> bool {
-        !self.0.is_empty() && line.contains(self.0.as_str())
+        !self.expr.is_empty() && self.regex.is_match(line)
     }
 }
 
