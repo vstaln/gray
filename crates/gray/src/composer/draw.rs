@@ -225,10 +225,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let w = cols as usize;
 
     // Snapshot the live boot panel before the draw closure borrows the terminal.
+    // Same card content as the committed final card (bg + margins), so the
+    // `starting` view never looks different from `autostarted`.
     let boot_panel_lines: Vec<Line<'static>> = if tui.active_question.is_some() {
         Vec::new()
     } else {
-        tui.gateway_panel_lines()
+        tui.gateway_panel_lines(w)
     };
 
     let text = tui.textarea.text().to_string();
@@ -261,16 +263,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let status_y = area.y;
         // Queued preview sits between status and input (codex PendingInputPreview
         // parity). Hidden while a question owns the viewport.
-        let queued_lines: Vec<Line<'static>> = if question_active {
+        // Live gateway boot panel rides the same slot (above the input box):
+        // card rows with the committed card's bg, zero transcript lines.
+        let queued_preview: Vec<Line<'static>> = if question_active {
             Vec::new()
         } else {
-            let mut lines = queued_preview_lines(&tui.queued_inputs, w);
-            // Live gateway boot panel rides the same slot (above the input
-            // box): one live card's worth of rows, zero transcript lines.
-            lines.extend(boot_panel_lines);
-            lines
+            queued_preview_lines(&tui.queued_inputs, w)
         };
-        let queued_h = queued_lines.len() as u16;
+        let boot_lines: &[Line<'static>] = if question_active { &[] } else { &boot_panel_lines };
+        let queued_h = (queued_preview.len() + boot_lines.len()) as u16;
     let box_y = status_y + status_h + queued_h;
     // Bare breathing row between the band (or panel/attachments below it)
     // and the footer, so the input never melts into it. The box's own pads
@@ -331,12 +332,25 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        for (i, line) in queued_lines.iter().enumerate() {
+        for (i, line) in queued_preview.iter().enumerate() {
             let y = status_y + status_h + i as u16;
             if y < area.y || y >= area.y + area.height {
                 continue;
             }
             frame.render_widget(Paragraph::new(line.clone()), Rect::new(area.x, y, area.width, 1));
+        }
+        // Boot panel as a card: same gray block + margins as the committed
+        // `Gateway autostarted` / `Gateway started` card.
+        let boot_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        for (i, line) in boot_lines.iter().enumerate() {
+            let y = status_y + status_h + queued_preview.len() as u16 + i as u16;
+            if y < area.y || y >= area.y + area.height {
+                continue;
+            }
+            frame.render_widget(
+                Paragraph::new(line.clone()).block(boot_block.clone()),
+                Rect::new(area.x, y, area.width, 1),
+            );
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
