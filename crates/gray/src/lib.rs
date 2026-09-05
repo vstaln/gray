@@ -11,6 +11,7 @@ pub mod profile;
 pub mod repl;
 pub mod resume;
 pub mod setup;
+pub mod shell_drain;
 pub mod skills;
 pub mod skills_tool;
 pub mod sys_editor;
@@ -191,7 +192,9 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    Ok(agent)
+    // Bash + sleep self-bound at 600 s (promotion, never kill), so the
+    // agent-level timeout must sit above them (P2B requirement).
+    Ok(agent.with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT))
 }
 
 /// Command-line arguments for the Gray harness.
