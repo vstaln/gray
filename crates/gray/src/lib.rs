@@ -246,6 +246,10 @@ pub struct Cli {
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,
 
+    /// External ACP agent for this run (e.g. --acp opencode); works with -p too
+    #[arg(long, value_name = "AGENT")]
+    pub acp: Option<String>,
+
     /// Resume subcommand (picker by default; see `gray resume --help`)
     #[command(subcommand)]
     pub command: Option<Commands>,
