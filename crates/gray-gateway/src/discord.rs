@@ -1,7 +1,7 @@
 //! Discord adapter — stub by default, real gateway+REST behind `discord` feature.
 //!
 //! Enable: `cargo check -p gray-gateway --features discord` (twilight 0.16).
-//! Features (hermes parity): inbound messages via twilight-gateway, replies via
+//! Features: inbound messages via twilight-gateway, replies via
 //! twilight-http with reply-on-first-chunk, persistent typing loop, slash
 //! commands /ask /reset /status /stop.
 
@@ -48,7 +48,7 @@ pub fn invite_url(client_id: &str) -> anyhow::Result<String> {
     ))
 }
 
-/// Slash commands we register and handle (hermes: /ask /reset /status /stop).
+/// Slash commands we register and handle (/ask /reset /status /stop).
 #[cfg(feature = "discord")]
 const SLASH_COMMANDS: [(&str, &str); 4] = [
     ("ask", "Send a prompt to gray"),
@@ -66,7 +66,7 @@ pub struct DiscordAdapter {
     token: String,
     client: Mutex<Option<HttpClient>>,
     event_tx: Mutex<Option<UnboundedSender<MessageEvent>>>,
-    /// Last inbound message id per channel — reply target for the first chunk (hermes reply_to_mode=first).
+    /// Last inbound message id per channel — reply target for the first chunk.
     #[cfg_attr(not(feature = "discord"), allow(dead_code))]
     last_inbound: Mutex<HashMap<String, u64>>,
     /// Bot name from `current_user` (set on connect, read by the boot card).
@@ -229,7 +229,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                     if let Some(tx) = ready_tx.take() {
                         let _ = tx.send(());
                     }
-                    // Register global slash commands (hermes _register_slash_commands).
+                    // Register global slash commands.
                     let commands: Vec<twilight_model::application::command::Command> = SLASH_COMMANDS
                         .iter()
                         .map(|(name, desc)| {
@@ -292,7 +292,7 @@ fn spawn_shard(token: String, http: std::sync::Arc<twilight_http::Client>, tx: U
                         log::warn!("[discord] /ask without prompt from {user_id}");
                         continue;
                     }
-                    // Ack the interaction so Discord doesn't show "failure" (hermes responds immediately).
+                    // Ack the interaction immediately so Discord doesn't show "failure".
                     use twilight_model::http::interaction::{InteractionResponse, InteractionResponseData, InteractionResponseType};
                     let resp = InteractionResponse {
                         kind: InteractionResponseType::ChannelMessageWithSource,
@@ -344,7 +344,7 @@ impl BasePlatformAdapter for DiscordAdapter {
         #[cfg(feature = "discord")]
         {
             let http = std::sync::Arc::new(twilight_http::Client::new(self.token.clone()));
-            // Validate the token early so misconfigurations fail fast (hermes get_me parity).
+            // Validate the token early so misconfigurations fail fast.
             // Bounded attempts: a hung API call must surface in seconds, not sit
             // on "validating token" until the daemon's 45s outer timeout.
             // The display name is user-chosen at bot creation — the boot card shows it verbatim.
@@ -476,7 +476,7 @@ impl BasePlatformAdapter for DiscordAdapter {
     }
 
     async fn send(&self, chat: &str, text: &str) -> SendResult {
-        // Default reply target: last inbound message in this channel (hermes reply_to_mode=first).
+        // Default reply target: last inbound message in this channel.
         let reply_to = self.last_inbound.lock().unwrap().get(chat).map(|m| m.to_string());
         self.send_ext(chat, text, &SendOptions { reply_to, thread_id: None }).await
     }

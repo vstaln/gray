@@ -3,7 +3,6 @@ use crate::scheduler::Scheduler;
 
 /// Simple ticker loop with grace + fast-forward via Scheduler::scan_due_jobs.
 /// Due jobs run inline, sequentially — no concurrency, so no dedup guard.
-/// (ponytail-audit #1)
 pub async fn run_ticker<F, Fut>(mut on_due: F)
 where
     F: FnMut(crate::store::CronJob) -> Fut + Send,

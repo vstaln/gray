@@ -1,4 +1,4 @@
-//! GatewayRunner (hermes `gateway/run.py` parity, OpenClaw control-plane model).
+//! GatewayRunner.
 //!
 //! Inbound pipeline for every [`MessageEvent`]:
 //! 1. **authorize** — deny-by-default ([`crate::authz`]); unknown DM senders
@@ -173,11 +173,11 @@ pub struct GatewayRunner {
     pub dedup: InboundDedup,
     pub ledger: DeliveryLedger,
     pub dead: Arc<DeadTargets>,
-    /// Per-session cancellation for /stop and message interrupts (hermes parity).
+    /// Per-session cancellation for /stop and message interrupts.
     cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 }
 
-/// Restart ping-back marker (hermes parity: `~/.hermes/.restart_notify.json`).
+/// Restart ping-back marker.
 /// Written by `/restart` before exit; consumed on next boot, always unlinked.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RestartNotify {
@@ -207,7 +207,7 @@ fn take_restart_marker_in(home: &std::path::Path) -> Option<RestartNotify> {
     data
 }
 
-/// Slash commands understood on every platform (hermes: /reset /status /stop /restart).
+/// Slash commands understood on every platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlashCommand {
     Reset,
@@ -373,7 +373,7 @@ impl GatewayRunner {
                     if self.cancel_key(&key) { "Stop requested.".into() } else { "Nothing running.".into() }
                 }
                 SlashCommand::Restart => {
-                    // hermes parity: remember the requester, reply, then exit;
+                    // Remember the requester, reply, then exit;
                     // systemd (Restart=always) revives us and boot pings back.
                     if let Ok(home) = crate::config::gray_home_dir() {
                         let _ = write_restart_marker_in(&home, platform, &chat_id);
@@ -553,7 +553,7 @@ impl GatewayRunner {
     }
 
     /// Run a due cron job through the agent and deliver its output to every
-    /// platform's home channel (hermes `DeliveryRouter` cron path). Output is
+    /// platform's home channel. Output is
     /// also saved under `~/.gray/cron/output/` so nothing is lost when no
     /// home channel is configured.
     pub async fn run_cron_job(&self, job: &gray_cron::CronJob) {
@@ -570,7 +570,7 @@ impl GatewayRunner {
             message_id: None,
         };
         let key = build_session_key(&src, false, false);
-        // Cron jobs start fresh each run (hermes: isolated per-run session).
+        // Cron jobs start fresh each run (isolated per-run session).
         let sid = self.store.reset(&key);
         log::info!("gateway cron '{}' ({}) running as {sid}", job.name, job.id);
         let output = match self.run_agent(&sid, &key, &job.prompt, None).await {
@@ -592,7 +592,7 @@ impl GatewayRunner {
         }
     }
 
-    /// hermes parity (`gateway/run.py` boot sequence): ping the `/restart`
+    /// Boot sequence: ping the `/restart`
     /// requester, then DM each platform's `home_channel`. Sends are timeout-
     /// bounded so a flood-control sleep can't freeze boot.
     pub async fn send_startup_notifications(&self) {
@@ -612,7 +612,7 @@ impl GatewayRunner {
                 }
             }
         }
-        // Settle beat (hermes: 1s helps fresh reconnect deliveries).
+        // Settle beat (1s helps fresh reconnect deliveries).
         tokio::time::sleep(Duration::from_secs(1)).await;
         for (plat, r) in self.router.deliver_home_all("● Gray gateway online.").await {
             if r.success {

@@ -123,7 +123,7 @@ pub fn normalize_auth_mode(mode: Option<&str>) -> &'static str {
 }
 
 /// Provider ids with an OAuth login flow (`oauth.rs` implements both).
-/// Table, not an if-ladder (Hermes `_OAUTH_CAPABLE_PROVIDERS` parity).
+/// Table, not an if-ladder.
 pub const OAUTH_CAPABLE: &[&str] = &["openai", "xai"];
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.

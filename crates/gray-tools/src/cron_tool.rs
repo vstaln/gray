@@ -1,5 +1,4 @@
-//! Cron tool — steal from hermes model_tools.py + hermes-cron CreateJobArgs
-//! Lets AI self-schedule timed actions: `schedule_task(schedule, prompt)`
+//! Cron tool: lets AI self-schedule timed actions: `schedule_task(schedule, prompt)`
 
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
@@ -66,7 +65,7 @@ impl Tool for CronTool {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("job-{}", &prompt.chars().take(12).collect::<String>()));
 
-        // Validate via gray-cron parser (hermes compatible)
+        // Validate via gray-cron parser
         if let Err(e) = gray_cron::parse_schedule(&schedule) {
             return fail(format!("invalid schedule '{schedule}': {e}"));
         }
