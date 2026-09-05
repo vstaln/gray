@@ -71,8 +71,7 @@ pub(crate) struct InputBox {
 pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     let content_w = w.saturating_sub(4).max(1);
 
-    // Neutral Gray palette (no blue)
-    let bg_color = Color::Rgb(22, 22, 22);
+    // Neutral Gray palette (no blue, transparent bg — text only)
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
 
@@ -87,8 +86,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
         prompt_arrow,
         Style::default()
             .fg(prompt_color)
-            .add_modifier(Modifier::BOLD)
-            .bg(bg_color),
+            .add_modifier(Modifier::BOLD),
     );
 
     let mut cur_row = 0usize;
@@ -106,7 +104,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
             let prefix_span = if i == 0 {
                 arrow_span.clone()
             } else {
-                Span::styled("   ", Style::default().bg(bg_color))
+                Span::raw("   ")
             };
 
             let line_len_bytes = raw_line.len();
@@ -133,12 +131,12 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
                     if chunk_idx == 0 {
                         box_lines.push(Line::from(vec![
                             prefix_span.clone(),
-                            Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                            Span::styled(s, Style::default().fg(text_primary)),
                         ]));
                     } else {
                         box_lines.push(Line::from(vec![
-                            Span::styled("   ", Style::default().bg(bg_color)),
-                            Span::styled(s, Style::default().fg(text_primary).bg(bg_color)),
+                            Span::raw("   "),
+                            Span::styled(s, Style::default().fg(text_primary)),
                         ]));
                     }
 

@@ -22,7 +22,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let w = cols as usize;
 
     // Snapshot the live boot panel before the draw closure borrows the terminal.
-    // Same card content as the committed final card (bg + margins), so the
+    // Same card content as the committed final card (margins), so the
     // `starting` view never looks different from `autostarted`.
     let boot_panel_lines: Vec<Line<'static>> = if tui.active_question.is_some() {
         Vec::new()
@@ -65,17 +65,17 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // Queued preview sits between status and input (codex PendingInputPreview
         // parity). Hidden while a question owns the viewport.
         // Live gateway boot panel rides the same slot (above the input box):
-        // card rows with the committed card's bg, zero transcript lines.
+        // card rows with no bg (text only), zero transcript lines.
         let queued_preview: Vec<Line<'static>> = if question_active {
             Vec::new()
         } else {
             queued_preview_lines(&tui.queued_inputs, w)
         };
         // Live gateway boot panel rides the slot above the input box. Its rows
-        // come pre-padded with the card bg (transcript::format_gateway_boot_card)
-        // and ONE bare row separates the card from the input band so the two
-        // gray blocks never fuse — the same `ensure_gap(1)` the committed card
-        // gets, so the commit never shifts the input by a row.
+        // come pre-padded (transcript::format_gateway_boot_card, no bg) and
+        // ONE bare row separates the card from the input band — the same
+        // `ensure_gap(1)` the committed card gets, so the commit never shifts
+        // the input by a row.
         let boot_lines: &[Line<'static>] = if question_active {
             &[]
         } else {
@@ -85,7 +85,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let queued_h = (queued_preview.len() + boot_lines.len()) as u16 + boot_gap_h;
         let box_y = status_y + status_h + queued_h;
         // No gap between the input band and the footer: the footer sits directly
-        // below the band (its own gray block keeps the two visually separate).
+        // below the band.
         let avail = area.height.saturating_sub(
             status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1,
         );
@@ -171,9 +171,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
         // Boot panel painted by the SAME helper the committed card uses
-        // (paint_card floods the rect with the card bg, then lays the rows), so
-        // live `validating token…` is pixel-identical to committed
-        // `connected as …`. The bare gap row below it is simply left unpainted.
+        // (paint_card lays the rows, no bg), so live `validating token…` is
+        // pixel-identical to committed `connected as …`.
         if !boot_lines.is_empty() {
             let boot_y = status_y + status_h + queued_preview.len() as u16;
             if boot_y < area.bottom() {
@@ -190,9 +189,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 && !question_active {
-            let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
             frame.render_widget(
-                Paragraph::new(ibox.lines).block(box_block),
+                Paragraph::new(ibox.lines),
                 Rect::new(area.x, box_y, area.width, rendered_box_h),
             );
         }
@@ -410,11 +408,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {
-            // Same full-bleed band as the input box above: without it the pad
-            // cells keep the terminal default bg (dark gap on the right).
-            let footer_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            // Transparent footer: text only, no full-bleed band.
             frame.render_widget(
-                Paragraph::new(Line::from(footer_spans)).block(footer_block),
+                Paragraph::new(Line::from(footer_spans)),
                 Rect::new(area.x, footer_y, area.width, 1),
             );
         }

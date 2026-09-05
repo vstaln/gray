@@ -57,6 +57,7 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/usage` | session tokens & cost |
 | `/context [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
 | `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
+| `/acp [agent] [prompt]` | run as an external ACP agent (claude, codex, cursor, opencode…) |
 | `/help`, `/quit` | you know these |
 
 Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing. Suffixes too — e.g. `/context r` suggests `reserve`.
@@ -81,13 +82,14 @@ run gray in a container/VM for untrusted work.
 | `gray gateway run\|status\|install\|uninstall\|invite\|pairing` | messaging gateway daemon — `run` (foreground), `status`, `install`/`uninstall` (systemd user service, Linux-only), `invite` (OAuth2 invite URL), `pairing approve\|list\|revoke` (bind the owner without editing `gateway.yaml`) |
 | `gray update` | update gray to the latest release |
 
-Global flags: `-p/--print` (one-shot prompt mode), `-c/--continue` (reopen latest session), `--session <ID>` (resume by id), `--context-window <TOKENS>` (e.g. `128000`, `128k`), `--context-reserve`, `--context-keep`, `--dump-manifest` (print merged plugin manifest as JSON and exit).
+Global flags: `-p/--print` (one-shot prompt mode), `-c/--continue` (reopen latest session), `--session <ID>` (resume by id), `--acp <AGENT>` (run as an external ACP agent, works with `-p`), `--context-window <TOKENS>` (e.g. `128000`, `128k`), `--context-reserve`, `--context-keep`, `--dump-manifest` (print merged plugin manifest as JSON and exit).
 
 ## Shape
 
 ```
 crates/
 ├── gray           REPL · onboarding · config · TUI
+├── gray-acp        Agent Client Protocol client (external agents)
 ├── gray-core      agent loop · events · messages
 ├── gray-cron      cron scheduling · job store · ticker
 ├── gray-gateway   Telegram/Discord/Slack gateway daemon
@@ -105,6 +107,26 @@ crates/
 - **Sessions persist** to `~/.gray/sessions/*.jsonl`; `-c` reopens the latest.
 - **Ctrl-C means cancel** mid-turn (first press) and exit at the prompt; interrupted turns still persist what reached memory.
 - **Logs** go to `~/.gray/logs/gray.log` — set `GRAY_LOG=debug` for the firehose.
+
+## ACP agents
+
+`/acp` turns gray into any external coding agent over the [Agent Client
+Protocol](https://agentclientprotocol.com) (same mechanism as T3 Code):
+bare `/acp` opens a picker, `/acp <agent> <prompt>` delegates one-shot,
+`/acp list` shows installed agents, `/acp off` returns to native.
+`gray -p 'prompt' --acp opencode` works in print mode too.
+
+Known agents (probed via `which`): `codex` (`npx -y
+@zed-industries/codex-acp`), `claude` (`npx -y
+@zed-industries/claude-code-acp`), `opencode` (`opencode acp`), `cursor`
+(`cursor-agent acp`), `gemini` (`gemini --experimental-acp`), `copilot`
+(`copilot --acp`), `grok` (`grok agent stdio`), `goose`/`kimi`/`kiro`.
+Custom agents go in `~/.gray/acp.json` (Zed `agent_servers` shape,
+mode `0600` like `gateway.yaml`). Design doc: [docs/ACP_PLAN.md](docs/ACP_PLAN.md).
+
+Safety: permission requests are **denied by default** (read-only posture);
+`--yolo` or `GRAY_ACP_AUTO_APPROVE=1` auto-approves. The external agent's
+own permission model applies — gray's bash guard does not run in ACP mode.
 
 ## Context window & auto-compact
 
@@ -126,6 +148,8 @@ When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray 
 | `GRAY_INSTALL_DIR` | installer destination dir (overrides default `~/.local/bin`; `--system` installs system-wide) |
 | `GRAY_GUARD_BYPASS=1` | disable the destructive-command guard entirely (CI/piped mode) |
 | `GRAY_PERMISSION` | tool permission: `ask` (prompt before risky commands, default) or `auto` (no prompts; default in `-p` print mode) |
+| `GRAY_ACP_AUTO_APPROVE=1` | auto-approve ACP permission requests (same as `/acp <agent> --yolo`) |
+| `GRAY_ACP_ALLOW_ANY_PATH=1` | allow ACP `fs/*` handlers outside the workspace (default: workspace only) |
 | `GRAY_READ_DEDUP=0` | disable the read dedup stub (repeat reads always return full content) |
 
 ## Platform support
@@ -174,6 +198,7 @@ a code, the operator runs `gray gateway pairing approve <platform> <CODE>`;
 
 Ideas and designs informed by [pi](https://github.com/badlogic/pi-mono), Codex,
 OpenClaw, hermes, and dcg — thanks to those projects and their authors.
+ACP support builds on [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) (Apache-2.0) and the t3code ACP provider layer.
 
 A naming note: `cargo install gray` belongs to another crate, so the install
 path is the installer script above (or a source build); the binary stays `gray`.

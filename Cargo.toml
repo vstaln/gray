@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/gray",
+    "crates/gray-acp",
     "crates/gray-core",
     "crates/gray-cron",
     "crates/gray-extras",
@@ -27,13 +28,14 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
 # Workspace crates
 gray = { path = "crates/gray" }
+gray-acp = { path = "crates/gray-acp" }
 gray-core = { path = "crates/gray-core" }
 gray-gateway = { path = "crates/gray-gateway", default-features = false }
 gray-cron = { path = "crates/gray-cron" }
@@ -46,6 +48,8 @@ gray-markdown = { path = "crates/gray-markdown" }
 gray-pkg = { path = "crates/gray-pkg" }
 
 # External dependencies
+agent-client-protocol = "2"
+which = "7"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 eventsource-stream = "0.2"

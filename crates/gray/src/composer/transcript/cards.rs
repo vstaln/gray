@@ -28,36 +28,22 @@ pub(crate) fn gateway_boot_card_parts(
     (header, body)
 }
 
-/// Card surface color shared by tool boxes, prompt echoes, the input band
-/// and the gateway boot card.
-pub(crate) const CARD_BG: Color = Color::Rgb(22, 22, 22);
-
-/// Bakes the card bg into every cell of one row: patches the line style and
-/// every span that has no bg of its own, then pads to `width` with bg-filled
-/// spaces. Rows that carry their own bg (diff red/green) keep it. After this
-/// a row looks the same whether ratatui paints it through `insert_before`
-/// or through the inline viewport's frame buffer — no reliance on
-/// `Line`/`Block` style inheritance, which the inline viewport drops.
-pub(crate) fn pad_card_row(mut line: Line<'static>, width: usize) -> Line<'static> {
-    let bg_style = Style::default().bg(CARD_BG);
-    line.style = line.style.patch(bg_style);
-    for span in line.spans.iter_mut() {
-        if span.style.bg.is_none() {
-            span.style = span.style.bg(CARD_BG);
-        }
-    }
+/// Gateway boot rows carry no bg (transparent terminal bg, text only):
+/// just pads to `width` with plain spaces. Rows that carry their own bg
+/// (diff red/green) keep it.
+pub(crate) fn pad_card_row(line: Line<'static>, width: usize) -> Line<'static> {
+    let mut line = line;
     let used: usize = line.spans.iter().map(|s| s.width()).sum();
     if used < width {
-        line.spans
-            .push(Span::styled(" ".repeat(width - used), bg_style));
+        line.spans.push(Span::raw(" ".repeat(width - used)));
     }
     line
 }
 
-/// Paints card rows into `area`: floods the whole area with the card bg
-/// first (so clipped or short rows never leak terminal bg), then lays the
-/// rows on top. The ONE painter for both surfaces — `insert_before` for the
-/// committed card and `frame.buffer_mut()` for the live viewport panel.
+/// Paints gateway boot rows into `area` with no bg flood (transparent
+/// terminal bg, text only). The ONE painter for both surfaces —
+/// `insert_before` for the committed card and `frame.buffer_mut()` for the
+/// live viewport panel.
 pub(crate) fn paint_card(
     lines: &[Line<'static>],
     area: ratatui::layout::Rect,
@@ -67,14 +53,12 @@ pub(crate) fn paint_card(
     if area.width == 0 || area.height == 0 {
         return;
     }
-    buf.set_style(area, Style::default().bg(CARD_BG));
     Paragraph::new(lines.to_vec()).render(area, buf);
 }
 
 /// Tight gateway boot card: top margin, header with ONE leading space, rows
-/// directly below (no breathing row), bottom margin. Every row is padded to
-/// the full `width` with the card bg baked in — see [`pad_card_row`] — so
-/// the live panel and the committed card are byte-for-byte the same block.
+/// directly below (no breathing row), bottom margin. Transparent bg, text
+/// only — see [`pad_card_row`].
 pub(crate) fn format_gateway_boot_card(
     header: Line<'static>,
     body: &[Line<'static>],

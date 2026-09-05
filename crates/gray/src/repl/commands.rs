@@ -63,6 +63,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         args_hint: "",
     },
     CmdDef {
+        name: "acp",
+        desc: "run as an external ACP agent (claude, codex, cursor…)",
+        aliases: &[],
+        args_hint: "",
+    },
+    CmdDef {
         name: "agentsmd",
         desc: "edit system prompt",
         aliases: &["sys"],
@@ -188,8 +194,33 @@ pub(crate) fn complete_command_args(
 ) -> Vec<(String, String)> {
     match cmd {
         "context" => complete_context_args(arg_text),
+        "acp" => complete_acp_args(arg_text),
         _ => Vec::new(),
     }
+}
+
+/// Suffixes for `/acp`: subcommands plus installed agent names.
+fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = vec![
+        ("acp list".to_string(), "list agents".to_string()),
+        ("acp status".to_string(), "show ACP session".to_string()),
+        ("acp off".to_string(), "back to native".to_string()),
+    ];
+    for spec in gray_acp::all_specs(None) {
+        let status = if gray_acp::installed(&spec) {
+            "installed"
+        } else {
+            "not found"
+        };
+        out.push((
+            format!("acp {}", spec.key),
+            format!("{} ({status})", spec.display),
+        ));
+    }
+    let f = arg_text.to_lowercase();
+    out.into_iter()
+        .filter(|(n, _)| f.is_empty() || n.to_lowercase().contains(&f))
+        .collect()
 }
 
 /// Suffixes for `/context`: L1 (`[number]|auto|status|reserve|keep`) and L2
@@ -286,6 +317,8 @@ pub enum ReplCommand {
     Unknown(String),
     /// Messaging gateway: /gateway, /gateway status|run|install
     Gateway(String),
+    /// External ACP agent: /acp (picker), /acp <agent> [--yolo], /acp off|status|list
+    Acp(String),
     /// Skills: /skills lists; /skills:<name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
@@ -355,6 +388,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some(d.name)
     } else if lower_t.starts_with("/model") {
         Some("model")
+    } else if lower_t.starts_with("/acp") {
+        Some("acp")
     } else if lower_t.starts_with("/gateway") || lower_t.starts_with("/gw") {
         Some("gateway")
     } else {
@@ -392,6 +427,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
         }
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
+        Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("gateway") => ReplCommand::Gateway(t.to_string()),
         Some("skills") => {
             if lower_t == "/skills" {
@@ -505,7 +541,7 @@ mod tests {
     fn registry_resolve_canonical_and_aliases() {
         for name in [
             "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "gateway", "agentsmd", "skills", "help", "quit",
+            "gateway", "acp", "agentsmd", "skills", "help", "quit",
         ] {
             let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
             assert_eq!(d.name, name);
@@ -542,15 +578,15 @@ mod tests {
         let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
         for expected in [
             "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "gateway", "agentsmd", "skills", "help", "quit",
+            "gateway", "acp", "agentsmd", "skills", "help", "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 13);
+        assert_eq!(super::REGISTRY.len(), 14);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 13);
+        assert_eq!(all.len(), 14);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -603,6 +639,17 @@ mod tests {
             parse_command("/skills foo"),
             ReplCommand::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn acp_parse_variants() {
+        assert!(matches!(parse_command("/acp"), ReplCommand::Acp(_)));
+        assert!(matches!(parse_command("/acp claude"), ReplCommand::Acp(_)));
+        assert!(matches!(
+            parse_command("/ACP Codex --yolo"),
+            ReplCommand::Acp(_)
+        ));
+        assert!(matches!(parse_command("/acp off"), ReplCommand::Acp(_)));
     }
 
     #[test]
