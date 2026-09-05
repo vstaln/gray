@@ -9,8 +9,8 @@
 //! ```
 //! Bare names (`- tools-basic`) are accepted as builtins.
 
-// ponytail: hand-rolled line parser instead of a serde_yaml dependency;
-// switch to serde_yaml if profiles grow beyond a flat entry list.
+// Hand-rolled line parser instead of a YAML dependency;
+// switch to serde_yaml_ng if profiles grow beyond a flat entry list.
 
 /// A sidecar plugin spec: argv to spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +43,7 @@ fn parse_entry(entry: &str) -> Option<PluginEntry> {
                 .map(|a| unquote(a.trim()).to_string())
                 .filter(|a| !a.is_empty())
                 .collect();
-            return (!argv.is_empty()).then(|| PluginEntry::Sidecar(SidecarSpec(argv)));
+            return (!argv.is_empty()).then_some(PluginEntry::Sidecar(SidecarSpec(argv)));
         }
         // String path form: `sidecar: ~/.gray/plugins/my-tools` (single argv).
         let path = unquote(v);

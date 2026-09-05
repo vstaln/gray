@@ -286,7 +286,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let gap_h: u16 = if question_active { 0 } else { 1 };
     let avail = area.height.saturating_sub(status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + gap_h + 1);
         // Grow viewport to fit full question; fall back to PANEL_ROWS min when short on space.
-        // ponytail: two-pass (uncapped then capped), no new layout engine.
+        // Two-pass (uncapped then capped), no new layout engine.
         let need = if question_active {
             tui.active_question.as_ref().map(|q| super::question::panel_lines(q, w, 100).len() as u16).unwrap_or(PANEL_ROWS as u16)
         } else { PANEL_ROWS as u16 };
@@ -468,7 +468,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Span::styled(effort_display.clone(), Style::default().fg(Color::Rgb(108, 108, 108))),
             ]
         };
-        // Cron ticking clock — hermes-style next due countdown, ticks via tick_status
+        // Cron ticking clock — next due countdown, ticks via tick_status
         let cron_display: Option<(String, Color)> = tui.next_cron.as_ref().and_then(|(name, next)| {
             let now = chrono::Utc::now();
             let secs = (*next - now).num_seconds();
@@ -514,7 +514,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {
-            frame.render_widget(Paragraph::new(Line::from(footer_spans)), Rect::new(area.x, footer_y, area.width, 1));
+            // Same full-bleed band as the input box above: without it the pad
+            // cells keep the terminal default bg (dark gap on the right).
+            let footer_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            frame.render_widget(
+                Paragraph::new(Line::from(footer_spans)).block(footer_block),
+                Rect::new(area.x, footer_y, area.width, 1),
+            );
         }
 
         let used_bottom = footer_y + 1;

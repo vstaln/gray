@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{Agent, ToolContext};
+use gray_core::agent::{Agent, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
@@ -15,6 +15,7 @@ use gray_session::{
 };
 
 use std::sync::Mutex as StdMutex;
+use std::sync::Arc;
 
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
@@ -74,6 +75,39 @@ fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     } else {
         println!("{msg}");
     }
+}
+
+/// Split a `/name argv…` line into (`/name`, argv words) for plugin
+/// slash-command routing. `None` when the line isn't a slash command.
+fn split_plugin_command(line: &str) -> Option<(String, Vec<String>)> {
+    let mut words = line.trim().strip_prefix('/')?.split_whitespace();
+    let first = words.next()?;
+    if first.is_empty() {
+        return None;
+    }
+    Some((format!("/{first}"), words.map(|w| w.to_string()).collect()))
+}
+
+/// Claimed plugin slash commands for `/help`, in hook order. Names drop
+/// the leading slash for display (`echo`, not `/echo`).
+fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> {
+    hooks
+        .iter()
+        .flat_map(|h| h.commands())
+        .map(|c| (c.name.strip_prefix('/').unwrap_or(&c.name).to_string(), c.description))
+        .collect()
+}
+
+/// Protocol v1 `command/run`: the first hook claiming `/name` owns it.
+/// `None` when no hook claims the command (the caller keeps the
+/// unknown-command message) or the owner declines to handle it.
+async fn run_plugin_command(
+    hooks: &[Arc<dyn PluginHooks>],
+    name: &str,
+    argv: Vec<String>,
+) -> Option<String> {
+    let owner = hooks.iter().find(|h| h.commands().iter().any(|c| c.name == name))?;
+    owner.run_command(name, argv).await
 }
 
 /// Restores the inline viewport after an alternate-screen modal (model/provider/etc).
@@ -1818,7 +1852,7 @@ fn dispatch_agent_event(
     turn_start: std::time::Instant,
     turn_duration_ms: &mut Option<u64>,
 ) {
-    // ponytail: single elapsed source — TurnEnd stamps duration once so footer,
+    // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
     let elapsed_ms = || turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(shared) = tui_stream {
@@ -1863,11 +1897,13 @@ fn dispatch_agent_event(
                 AgentEvent::StepUsage { usage } => {
                     t.set_usage(*usage);
                 }
-                // Codex steal: `⚠ Reconnecting... n/m` + `└ details` dim cell.
-                AgentEvent::StreamError { message, details } => {
+                // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
+                // like Thinking/Working instead of a static cell; the cause
+                // lands as one dim detail row (single notice per burst).
+                AgentEvent::StreamError { details, .. } => {
                     t.flush_markdown();
                     t.end_thinking();
-                    t.push_dim(format!("⚠ {message}"));
+                    t.set_status(Some("Reconnecting"));
                     if !details.is_empty() {
                         let trunc = crate::repl::format::truncate_chars(details, 200);
                         t.push_dim(format!("└ {trunc}"));
@@ -2209,7 +2245,7 @@ pub async fn run_repl_mode(
         (shared, stop)
     });
 
-    // request_user_input bridge: TUI overlay when interactive, hermes-style
+    // request_user_input bridge: TUI overlay when interactive,
     // stdin prompts when piped.
     let question_bridge: gray_core::questions::QuestionBridge = if interactive {
         let shared = tui.as_ref().map(|(s, _)| s.clone()).expect("interactive implies tui");
@@ -2218,7 +2254,7 @@ pub async fn run_repl_mode(
         gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
     };
 
-    // Cron background — stolen from hermes Scheduler tick (Step 3)
+    // Cron background ticker
     // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward).
     // Footer clock ticks every second via tick_status when next_cron is set.
     {
@@ -2286,7 +2322,8 @@ pub async fn run_repl_mode(
             }
         }
     }
-    // Gateway autostart (default on): boot the in-process daemon when any
+    // Gateway autostart (default off; /gateway autostart on to enable): boot the
+    // in-process daemon when any
     // platform is enabled. Silent when nothing is configured. Shows a LIVE
     // boot panel above the input (per-platform connecting → connected as …
     // plus a shimmer-bar line); when every platform resolves, the final
@@ -2597,11 +2634,21 @@ pub async fn run_repl_mode(
                     for d in REGISTRY {
                         out.push_str(&format!("  /{:<10} {}\n", d.name, d.desc));
                     }
+                    if let Some(a) = agent.as_ref() {
+                        for (n, d) in plugin_help_entries(a.hooks()) {
+                            out.push_str(&format!("  /{n:<10} {d}\n"));
+                        }
+                    }
                     shared.lock().expect("tui lock").push_dim(out.trim_end().to_string());
                 } else {
                     println!("{}", crate::rule("commands"));
                     for d in REGISTRY {
                         println!("  /{:<8} {}", d.name, d.desc);
+                    }
+                    if let Some(a) = agent.as_ref() {
+                        for (n, d) in plugin_help_entries(a.hooks()) {
+                            println!("  /{n:<8} {d}");
+                        }
                     }
                 }
                 continue;
@@ -2768,7 +2815,20 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Unknown(cmd) => {
-                say(tui.as_ref().map(|(s, _)| s), &format!("unknown command '{cmd}' — type /help for available commands"));
+                // Protocol v1 `command/run`: a claimed `/cmd` runs on its
+                // owning plugin; anything else keeps the unknown message.
+                let hooks: Vec<Arc<dyn PluginHooks>> =
+                    agent.as_ref().map(|a| a.hooks().to_vec()).unwrap_or_default();
+                let mut handled = false;
+                if let Some((name, argv)) = split_plugin_command(&cmd)
+                    && let Some(text) = run_plugin_command(&hooks, &name, argv).await
+                {
+                    say(tui.as_ref().map(|(s, _)| s), &text);
+                    handled = true;
+                }
+                if !handled {
+                    say(tui.as_ref().map(|(s, _)| s), &format!("unknown command '{cmd}' — type /help for available commands"));
+                }
                 continue;
             }
             ReplCommand::Prompt(prompt_text) => {
@@ -3419,8 +3479,8 @@ mod tests {
         assert!(matches!(super::parse_gateway_args("/gateway autostart OFF"), G::Autostart(false)));
         assert!(matches!(super::parse_gateway_args("/gateway autostart"), G::Help));
         assert!(matches!(super::parse_gateway_args("/gateway autostart maybe"), G::Help));
-        // default-on: fresh config autostarts
-        assert!(gray_gateway::config::GatewayConfig::default().autostart);
+        // default-off: fresh config does not autostart (S2)
+        assert!(!gray_gateway::config::GatewayConfig::default().autostart);
     }
 
     #[test]
@@ -3549,5 +3609,66 @@ mod tests {
         // No identity leak: rows never contain tokens, only display names.
         assert!(!rows.join("\n").contains("secret"));
         let _ = S::Connecting { stage: "connecting" };
+    }
+
+    /// Stub plugin claiming `/echo`, like a sidecar manifest with
+    /// `commands:["/echo"]` answering `command/run`.
+    struct EchoHook;
+
+    #[async_trait::async_trait]
+    impl gray_core::agent::PluginHooks for EchoHook {
+        fn commands(&self) -> Vec<gray_core::agent::PluginCommand> {
+            vec![gray_core::agent::PluginCommand {
+                name: "/echo".to_string(),
+                description: "echo back argv".to_string(),
+            }]
+        }
+
+        async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
+            (name == "/echo").then(|| argv.join(" "))
+        }
+    }
+
+    fn echo_hooks() -> Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> {
+        vec![std::sync::Arc::new(EchoHook)]
+    }
+
+    #[test]
+    fn plugin_command_split_parses_name_and_argv() {
+        assert_eq!(
+            super::split_plugin_command("/echo hi there"),
+            Some(("/echo".to_string(), vec!["hi".to_string(), "there".to_string()]))
+        );
+        assert_eq!(super::split_plugin_command("/echo"), Some(("/echo".to_string(), vec![])));
+        assert_eq!(super::split_plugin_command("hi"), None);
+        assert_eq!(super::split_plugin_command("/"), None);
+        assert_eq!(super::split_plugin_command(""), None);
+    }
+
+    #[tokio::test]
+    async fn plugin_command_routes_claimed_to_owner() {
+        let hooks = echo_hooks();
+        let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
+        let out = super::run_plugin_command(&hooks, &name, argv).await;
+        assert_eq!(out.as_deref(), Some("hi"));
+    }
+
+    #[tokio::test]
+    async fn plugin_command_unclaimed_returns_none() {
+        let hooks = echo_hooks();
+        let (name, argv) = super::split_plugin_command("/nope hi").expect("splits");
+        assert_eq!(super::run_plugin_command(&hooks, &name, argv).await, None);
+        // No hooks at all: same None, so the unknown-command message stays.
+        let empty: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> = Vec::new();
+        let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
+        assert_eq!(super::run_plugin_command(&empty, &name, argv).await, None);
+    }
+
+    #[test]
+    fn plugin_help_lists_claimed_commands() {
+        let entries = super::plugin_help_entries(&echo_hooks());
+        assert!(entries.iter().any(|(n, _)| n == "echo"), "got {entries:?}");
+        let empty: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> = Vec::new();
+        assert!(super::plugin_help_entries(&empty).is_empty());
     }
 }

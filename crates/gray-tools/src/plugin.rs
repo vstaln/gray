@@ -12,12 +12,14 @@ pub struct ToolsBasicPlugin;
 
 impl Plugin for ToolsBasicPlugin {
     fn manifest(&self) -> Manifest {
-        // ponytail-audit #6: names derived from tools() so the two can't drift.
+        // Names derived from tools() so the two can't drift.
         let tools = self.tools();
         Manifest {
             name: "tools-basic".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: tools.iter().map(|t| t.def().name.clone()).collect(),
+            tools: tools.iter().map(|t| t.def()).collect(),
+            commands: vec![],
+            hooks: vec![],
             provider: None,
         }
     }
@@ -42,7 +44,9 @@ impl Plugin for ToolsSearchPlugin {
         Manifest {
             name: "tools-search".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: tools.iter().map(|t| t.def().name.clone()).collect(),
+            tools: tools.iter().map(|t| t.def()).collect(),
+            commands: vec![],
+            hooks: vec![],
             provider: None,
         }
     }
@@ -60,7 +64,9 @@ impl Plugin for CronPlugin {
         Manifest {
             name: "cron".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: tools.iter().map(|t| t.def().name.clone()).collect(),
+            tools: tools.iter().map(|t| t.def()).collect(),
+            commands: vec![],
+            hooks: vec![],
             provider: None,
         }
     }

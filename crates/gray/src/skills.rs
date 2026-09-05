@@ -661,7 +661,7 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
         let global_skills = resolved_agent_dir.join("skills");
         do_add(load_skills_from_dir(&global_skills, "user"), &mut skill_map, &mut real_path_set, &mut all_diagnostics, &mut collision_diagnostics);
         if let Some(home) = resolve_home() {
-            // OpenCode global skills & plugins (e.g. ponytail, superpowers)
+            // OpenCode global skills & plugins (e.g. superpowers)
             let config_base = std::env::var("XDG_CONFIG_HOME")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| home.join(".config"));

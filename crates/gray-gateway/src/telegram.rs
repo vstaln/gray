@@ -1,7 +1,7 @@
 //! Telegram adapter — stub by default, real long-polling behind `telegram` feature.
 //!
 //! Enable: `cargo check -p gray-gateway --features telegram` (teloxide 0.17, rustls).
-//! Features (hermes `plugins/platforms/telegram/adapter.py` parity): inbound
+//! Features: inbound
 //! text/captions via `getUpdates` long-polling with exponential-backoff
 //! reconnect, replies chunked at 4096 utf16 units with reply-on-first-chunk,
 //! forum-topic threads, persistent typing action, edit-in-place streaming,
@@ -151,7 +151,7 @@ pub(crate) fn chat_type_for(is_private: bool, is_channel: bool) -> &'static str 
 }
 
 /// Build the session source. Forum topics (supergroup threads) become
-/// `thread_id`, so `thread_per_user` applies (hermes `thread_id=message_thread_id`).
+/// `thread_id`, so `thread_per_user` applies.
 #[cfg_attr(not(feature = "telegram"), allow(dead_code))]
 pub(crate) fn source_for(
     chat_id: i64,
@@ -209,7 +209,7 @@ fn spawn_poller(bot: teloxide::Bot, tx: UnboundedSender<MessageEvent>, drop_pend
                     for upd in updates {
                         offset = Some(upd.id.as_offset());
                         let UpdateKind::Message(m) = upd.kind else { continue };
-                        // Ignore other bots (hermes: skip bot senders) — prevents loops.
+                        // Ignore other bots — prevents loops.
                         if m.from.as_ref().map(|u| u.is_bot).unwrap_or(false) {
                             continue;
                         }
@@ -351,7 +351,7 @@ impl BasePlatformAdapter for TelegramAdapter {
             use teloxide::prelude::*;
             let bot = teloxide::Bot::new(self.token.clone());
             self.stage("identifying");
-            // Fail fast on a rejected token (hermes get_me parity).
+            // Fail fast on a rejected token.
             let me = bot.get_me().await.map_err(|e| anyhow::anyhow!("telegram token rejected: {e}"))?;
             log::info!("[telegram] authenticated as @{}", me.username());
             *self.identity.lock().unwrap() = Some(format!("@{}", me.username()));
@@ -502,7 +502,7 @@ impl BasePlatformAdapter for TelegramAdapter {
             return SendResult::ok(None);
         }
 
-        // Split long messages into 4096-unit chunks (hermes split_long_messages).
+        // Split long messages into 4096-unit chunks.
         let chunks = crate::platform::split_message_smart(text, MAX_LENGTH);
 
         #[cfg(feature = "telegram")]

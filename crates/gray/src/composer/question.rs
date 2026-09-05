@@ -753,7 +753,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
 
     // Budget: top(1) + progress(1) + question + tips(1) + bottom margin(1);
     // rest goes to options.
-    // ponytail: min 3 options so long questions don't squeeze to 1.
+    // Min 3 options so long questions don't squeeze to 1.
     let budget = max_rows.saturating_sub(4 + q_lines.min(max_rows.saturating_sub(4)));
     let len = q.options_len();
     // Cursor position vs committed pick are different things: the cursor row
