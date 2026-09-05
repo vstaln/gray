@@ -743,6 +743,7 @@ mod tests {
             cwd: std::path::PathBuf::from("."),
             cancel: tokio_util::sync::CancellationToken::new(),
             questions: None,
+            session_id: None,
         };
         let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
         assert!(out.is_error);

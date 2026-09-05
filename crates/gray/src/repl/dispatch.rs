@@ -26,6 +26,7 @@ pub(crate) async fn dispatch_command(
     Ok(match cmd {
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
         ReplCommand::Quit => {
+            shutdown_hooks(agent.as_ref()).await;
             if let Some((shared, stop)) = tui {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut t = shared.lock().expect("tui lock");
@@ -100,6 +101,7 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::New(initial_prompt) => {
+            shutdown_hooks(agent.as_ref()).await;
             pending_history.clear();
             *session_totals = SessionTotals::default();
             *session_state = None;
@@ -286,9 +288,19 @@ pub(crate) async fn dispatch_command(
                 .unwrap_or_default();
             let mut handled = false;
             if let Some((name, argv)) = split_plugin_command(&cmd)
-                && let Some(text) = run_plugin_command(&hooks, &name, argv).await
+                && let Some(outcome) = run_plugin_command(&hooks, &name, argv).await
             {
-                say(tui.as_ref().map(|(s, _)| s), &text);
+                match outcome {
+                    CommandOutcome::Say(text) => {
+                        say(tui.as_ref().map(|(s, _)| s), &text);
+                    }
+                    // Same path as a typed prompt: the next loop
+                    // iteration dispatches `ReplCommand::Prompt` (no
+                    // turn-running logic duplicated here).
+                    CommandOutcome::Prompt(prompt) => {
+                        *pending_command = Some(ReplCommand::Prompt(prompt));
+                    }
+                }
                 handled = true;
             }
             if !handled {
