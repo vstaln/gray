@@ -14,154 +14,26 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::authz::{Authorizer, Decision, GatedExecutor};
-use crate::config::{GatewayConfig, Platform, load_gateway_config};
+use crate::authz::{Authorizer, Decision};
+use crate::config::{GatewayConfig, Platform};
 use crate::delivery::{DeadTargets, DeliveryLedger, DeliveryRouter, DeliveryTarget};
 use crate::pairing::{PairingOffer, PairingStore};
-use crate::platform::{BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80, split_message_smart, utf16_len};
-use crate::status::GatewayStatusBoard;
-use crate::session::{build_session_key, shared_store, FileGatewayStore, SessionSource};
+use crate::platform::{BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80};
+use crate::session::{FileGatewayStore, build_session_key, shared_store};
 
 use crate::discord::DiscordAdapter;
 use crate::slack::SlackAdapter;
 use crate::telegram::TelegramAdapter;
 
-type Adapter = Arc<dyn BasePlatformAdapter>;
+use crate::daemon_stream::Streamer;
 
-/// Minimum interval between edit-in-place updates while streaming
-/// (Telegram/Discord edit rate limits sit around 1/s per chat).
-const STREAM_EDIT_INTERVAL: Duration = Duration::from_millis(1500);
-/// Don't create the placeholder message until this much text exists.
-const STREAM_MIN_CHARS: usize = 24;
-const STREAM_CURSOR: &str = " ▍";
+pub use super::daemon_boot::{run_gateway, run_gateway_shutdown, run_gateway_shutdown_with_board};
+pub use super::daemon_supervise::{
+    BOOT_MAX_ATTEMPTS, FAST_FAILURE_WINDOW, Fatal, MAX_FAST_FAILURES, MAX_RECONNECT_ATTEMPTS,
+    classify_connect_error, classify_shard_end, crash_loop_tripped,
+};
 
-// ---------------------------------------------------------------------------
-// Supervised reconnect ladder
-// ---------------------------------------------------------------------------
-
-/// How a failed `connect()` (or a dropped shard) feeds the reconnect ladder.
-pub enum Fatal {
-    /// Transient failure: retry with [`crate::platform::backoff_delay`].
-    Retryable(String),
-    /// Auth/config failure: log once and STOP retrying.
-    Terminal(String),
-}
-
-/// Upper bound on connect attempts per adapter (steady-state reconnects).
-pub const MAX_RECONNECT_ATTEMPTS: u32 = 8;
-/// Lower boot cap so one wedged platform can't stall startup; steady-state
-/// reconnects use [`MAX_RECONNECT_ATTEMPTS`]. Crash-loop guard still applies.
-pub const BOOT_MAX_ATTEMPTS: u32 = 3;
-/// Give up after this many consecutive fast failures (crash-loop guard).
-pub const MAX_FAST_FAILURES: u32 = 5;
-/// Failures spaced closer than this count as "fast".
-pub const FAST_FAILURE_WINDOW: Duration = Duration::from_secs(60);
-
-/// Auth failures (bad token / forbidden) are terminal; everything else
-/// (timeouts, resets, shard ends) is retryable.
-pub fn classify_connect_error(err: &str) -> Fatal {
-    let lower = err.to_ascii_lowercase();
-    // Privileged-intents close (4014 contains "401") is reconnectable, never terminal.
-    if lower.contains("4014") || lower.contains("intent") {
-        return Fatal::Retryable(err.to_string());
-    }
-    // Revoked/dead Slack tokens never recover — no hot retry.
-    if ["invalid_auth", "account_inactive", "token_revoked", "not_authed"].iter().any(|m| lower.contains(m)) {
-        return Fatal::Terminal(err.to_string());
-    }
-    let auth = ["unauthorized", "forbidden", "token rejected", "bad token", "invalid token", "401", "403"];
-    if auth.iter().any(|m| lower.contains(m)) {
-        Fatal::Terminal(err.to_string())
-    } else {
-        Fatal::Retryable(err.to_string())
-    }
-}
-
-/// A dropped discord shard is never auth: always re-enter the ladder.
-/// (The adapter stores the shard `JoinHandle`; when the task dies the next
-/// supervised `connect_adapter_with_retry` restarts it, `disconnect()` aborts it.)
-pub fn classify_shard_end() -> Fatal {
-    Fatal::Retryable("shard ended".to_string())
-}
-
-/// Crash-loop guard: true once fast failures hit the limit.
-pub fn crash_loop_tripped(consecutive_fast_failures: u32) -> bool {
-    consecutive_fast_failures >= MAX_FAST_FAILURES
-}
-
-/// Supervised `connect()` for one adapter: timeout-bounded attempts through
-/// the ladder, terminal errors stop immediately, fast-failure crash loop
-/// gives up with a log. Reports progress on `board` like before.
-/// On success replays the delivery ledger (boot and reconnects alike).
-/// `max_attempts` is [`BOOT_MAX_ATTEMPTS`] at boot, [`MAX_RECONNECT_ATTEMPTS`]
-/// for steady-state reconnects.
-async fn connect_adapter_with_retry(
-    adapter: &Adapter,
-    plat: Platform,
-    board: Option<&GatewayStatusBoard>,
-    router: &DeliveryRouter,
-    ledger: &DeliveryLedger,
-    max_attempts: u32,
-) {
-    // Wire the board so adapters report staged progress (`validating token` → …).
-    if let Some(b) = board {
-        adapter.set_status_board(b.clone());
-    }
-    let cap = max_attempts.max(1);
-    let mut fast_failures = 0u32;
-    let mut last_failure: Option<Instant> = None;
-    for attempt in 1..=cap {
-        let res = tokio::time::timeout(Duration::from_secs(45), adapter.connect()).await;
-        let err: Option<String> = match res {
-            Ok(Ok(())) => None,
-            Ok(Err(e)) => Some(e.to_string()),
-            Err(_) => Some("connect timeout 45s".to_string()),
-        };
-        match err {
-            None => {
-                log::info!("gateway {plat} connected");
-                if let Some(b) = board {
-                    b.mark_connected(plat, adapter.bot_identity());
-                }
-                // Reconnect (and boot) replay: a fresh connection may have
-                // fixed the cause of pending obligations.
-                router.sweep_ledger(ledger).await;
-                return;
-            }
-            Some(e) => match classify_connect_error(&e) {
-                Fatal::Terminal(m) => {
-                    log::error!("gateway {plat} connect failed (terminal, not retrying): {m}");
-                    if let Some(b) = board {
-                        b.mark_failed(plat, m);
-                    }
-                    return;
-                }
-                Fatal::Retryable(m) => {
-                    let fast = last_failure.is_some_and(|t| t.elapsed() < FAST_FAILURE_WINDOW);
-                    fast_failures = if fast { fast_failures + 1 } else { 1 };
-                    last_failure = Some(Instant::now());
-                    if crash_loop_tripped(fast_failures) {
-                        log::error!("gateway {plat} crash-loop ({fast_failures} fast failures), giving up: {m}");
-                        if let Some(b) = board {
-                            b.mark_failed(plat, m);
-                        }
-                        return;
-                    }
-                    if attempt == cap {
-                        log::error!("gateway {plat} connect failed after {attempt} attempts, giving up: {m}");
-                        if let Some(b) = board {
-                            b.mark_failed(plat, m);
-                        }
-                        return;
-                    }
-                    let d = crate::platform::backoff_delay(attempt);
-                    log::warn!("gateway {plat} connect failed (attempt {attempt}): {m}; retry in {d:?}");
-                    tokio::time::sleep(d).await;
-                }
-            },
-        }
-    }
-}
+pub(crate) type Adapter = Arc<dyn BasePlatformAdapter>;
 
 pub struct GatewayRunner {
     pub config: GatewayConfig,
@@ -174,15 +46,15 @@ pub struct GatewayRunner {
     pub ledger: DeliveryLedger,
     pub dead: Arc<DeadTargets>,
     /// Per-session cancellation for /stop and message interrupts.
-    cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    pub(crate) cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
 }
 
 /// Restart ping-back marker.
 /// Written by `/restart` before exit; consumed on next boot, always unlinked.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct RestartNotify {
-    platform: String,
-    chat_id: String,
+pub(crate) struct RestartNotify {
+    pub(crate) platform: String,
+    pub(crate) chat_id: String,
 }
 
 fn restart_notify_path_in(home: &std::path::Path) -> std::path::PathBuf {
@@ -197,7 +69,7 @@ fn write_restart_marker_in(home: &std::path::Path, platform: Platform, chat_id: 
 
 /// Read + unlink the marker. Always unlinks when present (even on parse
 /// failure) so one bad file can't spam every boot.
-fn take_restart_marker_in(home: &std::path::Path) -> Option<RestartNotify> {
+pub(crate) fn take_restart_marker_in(home: &std::path::Path) -> Option<RestartNotify> {
     let path = restart_notify_path_in(home);
     if !path.exists() {
         return None;
@@ -460,175 +332,12 @@ impl GatewayRunner {
         }
     }
 
-    fn build_agent(&self, prior: Vec<gray_core::Message>) -> anyhow::Result<gray_core::agent::Agent> {
-        use gray_core::agent::Agent;
-        use gray_provider::OpenAiProvider;
-        use gray_tools::Registry;
-
-        let (base_url, api_key, model) = self.resolve_provider_config();
-        let model = model.ok_or_else(|| anyhow::anyhow!("no model configured — set ~/.gray/config.json model"))?;
-        let api_key = api_key.unwrap_or_default();
-        let base_url = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-        let provider = OpenAiProvider::builder(&api_key, &model).base_url(&base_url).build().map_err(|e| anyhow::anyhow!("provider init: {e}"))?;
-
-        let registry = Registry::builtin();
-        // Advertise the full registry: denials belong to GatedExecutor so the
-        // model gets the gate's accurate reason instead of "does not exist".
-        let tool_defs = registry.defs();
-        let executor = GatedExecutor::new(Box::new(registry), self.config.denied_tools.clone());
-
-        Ok(Agent::new(Box::new(provider), Box::new(executor))
-            .with_system(load_system_prompt())
-            .with_tools(tool_defs)
-            .with_messages(prior))
-    }
-
-    /// Run one agent turn in session `sid`, streaming text deltas to `sink`.
-    /// Returns the final assistant text. Persists the full turn (tool calls included).
-    async fn run_agent(&self, sid_str: &str, key: &str, text: &str, sink: Option<tokio::sync::mpsc::UnboundedSender<StreamMsg>>) -> anyhow::Result<String> {
-        use gray_core::Message;
-        use gray_core::agent::ToolContext;
-        use gray_core::event::AgentEvent;
-        use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
-
-        let root = default_root().unwrap_or_else(|| std::path::PathBuf::from(".gray/sessions"));
-        let store = JsonlSessionStore::new(root);
-        let sid = SessionId::new(sid_str.to_string());
-
-        let prior_messages: Vec<Message> = match store.load(&sid).await {
-            Ok((_meta, entries)) => entries.into_iter().map(|e| e.message).collect(),
-            Err(_) => {
-                let model = self.resolve_model().unwrap_or_else(|| "unknown".to_string());
-                let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let meta = SessionMeta::new(sid.clone(), now_millis(), cwd, model);
-                let _ = store.create(meta).await;
-                Vec::new()
-            }
-        };
-        let prior_len = prior_messages.len();
-        let mut agent = self.build_agent(prior_messages)?;
-
-        // Cancel token registered under the session key so /stop and interrupts can abort.
-        let token = tokio_util::sync::CancellationToken::new();
-        self.cancel_tokens.lock().unwrap().insert(key.to_string(), token.clone());
-        let ctx = ToolContext {
-            cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            cancel: token,
-            questions: None, // no interactive user → request_user_input is denied anyway
-        };
-        let mut on_event = |e: &AgentEvent| {
-            if let Some(tx) = &sink {
-                match e {
-                    AgentEvent::TextDelta { delta } => {
-                        let _ = tx.send(StreamMsg::Delta(delta.clone()));
-                    }
-                    // Text before a tool call is narration; the reply is what comes after.
-                    AgentEvent::ToolResult { .. } => {
-                        let _ = tx.send(StreamMsg::Reset);
-                    }
-                    _ => {}
-                }
-            }
-        };
-        let run = agent.run_streaming(Message::user(text.to_string()), ctx, &mut on_event).await.map_err(|e| anyhow::anyhow!("agent run: {e}"));
-        self.cancel_tokens.lock().unwrap().remove(key);
-
-        // Persist whatever the agent produced (also on cancel — partial turns are still history).
-        for m in agent.messages().iter().skip(prior_len) {
-            let _ = store.append(&sid, m).await;
-        }
-        run?;
-
-        let mut reply = agent
-            .messages()
-            .iter()
-            .rev()
-            .find(|m| m.role == gray_core::Role::Assistant)
-            .map(|m| m.text_content())
-            .unwrap_or_default();
-        if reply.trim().is_empty() {
-            reply = "(no reply)".to_string();
-        }
-        Ok(reply)
-    }
-
-    /// Run a due cron job through the agent and deliver its output to every
-    /// platform's home channel. Output is
-    /// also saved under `~/.gray/cron/output/` so nothing is lost when no
-    /// home channel is configured.
-    pub async fn run_cron_job(&self, job: &gray_cron::CronJob) {
-        // Session keyed through build_session_key (never hand-built): the
-        // "platform" is the first home-channel platform, chat_type "cron".
-        let platform = Platform::ALL.into_iter().find(|p| self.adapters.contains_key(p) && self.router.home_channel(*p).is_some());
-        let src = SessionSource {
-            platform: platform.unwrap_or(Platform::Telegram),
-            chat_id: job.id.clone(),
-            chat_type: "cron".into(),
-            user_id: None,
-            thread_id: None,
-            scope_id: None,
-            message_id: None,
-        };
-        let key = build_session_key(&src, false, false);
-        // Cron jobs start fresh each run (isolated per-run session).
-        let sid = self.store.reset(&key);
-        log::info!("gateway cron '{}' ({}) running as {sid}", job.name, job.id);
-        let output = match self.run_agent(&sid, &key, &job.prompt, None).await {
-            Ok(t) => t,
-            Err(e) => format!("cron job '{}' failed: {e}", job.name),
-        };
-        save_cron_output(&job.id, &job.name, &output);
-        let text = format!("⏰ {}\n\n{}", job.name, output);
-        if platform.is_none() {
-            log::info!("gateway cron '{}' done (no home_channel; output saved locally)", job.name);
-            return;
-        }
-        for (p, r) in self.router.deliver_home_all(&text).await {
-            if r.success {
-                log::info!("gateway cron '{}' delivered to {p} home", job.name);
-            } else {
-                log::warn!("gateway cron '{}' delivery to {p} failed: {:?}", job.name, r.error);
-            }
-        }
-    }
-
-    /// Boot sequence: ping the `/restart`
-    /// requester, then DM each platform's `home_channel`. Sends are timeout-
-    /// bounded so a flood-control sleep can't freeze boot.
-    pub async fn send_startup_notifications(&self) {
-        if let Ok(home) = crate::config::gray_home_dir() {
-            if let Some(m) = take_restart_marker_in(&home) {
-                match m.platform.parse::<Platform>() {
-                    Ok(p) if self.adapters.contains_key(&p) => {
-                        let target = DeliveryTarget { platform: p, chat_id: Some(m.chat_id.clone()), thread_id: None, is_origin: false };
-                        let r = self.router.deliver(&target, "♻ Gateway restarted successfully. Your session continues.", None).await;
-                        if r.success {
-                            log::info!("gateway restart ping sent to {p}:{}", m.chat_id);
-                        } else {
-                            log::warn!("gateway restart ping failed: {:?}", r.error);
-                        }
-                    }
-                    _ => log::warn!("gateway restart marker: no live adapter for '{}'", m.platform),
-                }
-            }
-        }
-        // Settle beat (1s helps fresh reconnect deliveries).
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        for (plat, r) in self.router.deliver_home_all("● Gray gateway online.").await {
-            if r.success {
-                log::info!("gateway online notice sent to {plat}");
-            } else {
-                log::warn!("gateway online notice failed for {plat}: {:?}", r.error);
-            }
-        }
-    }
-
-    fn resolve_model(&self) -> Option<String> {
+    pub(crate) fn resolve_model(&self) -> Option<String> {
         let (_, _, m) = self.resolve_provider_config();
         m
     }
 
-    fn resolve_provider_config(&self) -> (Option<String>, Option<String>, Option<String>) {
+    pub(crate) fn resolve_provider_config(&self) -> (Option<String>, Option<String>, Option<String>) {
         let saved = load_saved_config();
         let base_url = std::env::var("GRAY_BASE_URL").ok().or(saved.as_ref().and_then(|s| s.base_url.clone()));
         let api_key = std::env::var("GRAY_API_KEY").ok().or_else(|| std::env::var("OPENAI_API_KEY").ok()).or(saved.as_ref().and_then(|s| s.api_key.clone()));
@@ -636,119 +345,6 @@ impl GatewayRunner {
         (base_url, api_key, model)
     }
 }
-
-fn save_cron_output(job_id: &str, name: &str, output: &str) {
-    let Ok(home) = crate::config::gray_home_dir() else { return };
-    let dir = home.join("cron").join("output");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
-    let path = dir.join(format!("{job_id}-{ts}.md"));
-    let _ = std::fs::write(path, format!("# {name}\n\n{output}\n"));
-}
-
-// ---------------------------------------------------------------------------
-// Streaming (edit-in-place) reply
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-pub enum StreamMsg {
-    Delta(String),
-    /// A tool ran; whatever was streamed so far was narration, start over.
-    Reset,
-    Done(String),
-}
-
-struct Streamer {
-    tx: tokio::sync::mpsc::UnboundedSender<StreamMsg>,
-    task: tokio::task::JoinHandle<SendResult>,
-}
-
-impl Streamer {
-    fn spawn(adapter: Adapter, chat: String, opts: SendOptions, max: usize) -> Self {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamMsg>();
-        let task = tokio::spawn(async move {
-            let mut buf = String::new();
-            let mut msg_id: Option<String> = None;
-            let mut last_edit = Instant::now() - STREAM_EDIT_INTERVAL;
-            let mut final_text: Option<String> = None;
-            while let Some(m) = rx.recv().await {
-                match m {
-                    StreamMsg::Delta(d) => buf.push_str(&d),
-                    StreamMsg::Reset => buf.clear(),
-                    StreamMsg::Done(t) => {
-                        final_text = Some(t);
-                        break;
-                    }
-                }
-                let preview = format!("{}{STREAM_CURSOR}", buf.trim_end());
-                // Stop live-updating once the reply outgrows one message; the final
-                // chunked send handles it.
-                if buf.trim().chars().count() < STREAM_MIN_CHARS || utf16_len(&preview) > max {
-                    continue;
-                }
-                if last_edit.elapsed() < STREAM_EDIT_INTERVAL {
-                    continue;
-                }
-                match &msg_id {
-                    None => {
-                        let r = adapter.send_ext(&chat, &preview, &opts).await;
-                        if r.success {
-                            msg_id = r.message_id;
-                        }
-                    }
-                    Some(id) => {
-                        let _ = adapter.edit_message(&chat, id, &preview).await;
-                    }
-                }
-                last_edit = Instant::now();
-            }
-            let text = final_text.unwrap_or_else(|| if buf.is_empty() { "(no reply)".into() } else { buf.clone() });
-            finalize_stream(adapter.as_ref(), &chat, &opts, msg_id.as_deref(), &text, max).await
-        });
-        Self { tx, task }
-    }
-
-    async fn finish(self, text: String) -> SendResult {
-        let _ = self.tx.send(StreamMsg::Done(text));
-        drop(self.tx);
-        match self.task.await {
-            Ok(r) => r,
-            Err(e) => SendResult::fail(format!("stream task failed: {e}"), true),
-        }
-    }
-}
-
-/// Final delivery for a streamed reply: overwrite the placeholder with the first
-/// chunk, then send any remaining chunks as normal messages. Falls back to a
-/// plain send if the edit fails (e.g. placeholder deleted).
-async fn finalize_stream(adapter: &dyn BasePlatformAdapter, chat: &str, opts: &SendOptions, msg_id: Option<&str>, text: &str, max: usize) -> SendResult {
-    let chunks = split_message_smart(text, max);
-    let Some(first) = chunks.first() else {
-        return SendResult::ok(msg_id.map(str::to_string));
-    };
-    let mut rest_start = 0;
-    let mut last = SendResult::ok(msg_id.map(str::to_string));
-    if let Some(id) = msg_id {
-        let r = adapter.edit_message(chat, id, first).await;
-        if r.success {
-            rest_start = 1;
-            last = r;
-        }
-    }
-    for (i, chunk) in chunks.iter().enumerate().skip(rest_start) {
-        // Only the very first message replies to the origin.
-        let o = if i == 0 { opts.clone() } else { SendOptions { reply_to: None, thread_id: opts.thread_id.clone() } };
-        last = adapter.send_ext(chat, chunk, &o).await;
-        if !last.success {
-            return last;
-        }
-    }
-    last
-}
-
-// ---------------------------------------------------------------------------
 
 fn load_saved_config() -> Option<SavedConfig> {
     let path = crate::config::gray_home_dir().ok()?.join("config.json");
@@ -762,182 +358,11 @@ struct SavedConfig {
     model: Option<String>,
 }
 
-fn load_system_prompt() -> String {
-    let base = crate::config::gray_home_dir().map(|b| b.join("AGENTS.md")).unwrap_or_else(|_| std::path::PathBuf::from("AGENTS.md"));
-    // migrate legacy sys.md if needed (same one-time path as lib.rs)
-    if !base.exists() {
-        if let Some(parent) = base.parent() {
-            let legacy = parent.join("sys.md");
-            if let Ok(body) = std::fs::read_to_string(&legacy) {
-                let _ = std::fs::write(&base, &body);
-            }
-        }
-    }
-    let body = std::fs::read_to_string(&base).unwrap_or_else(|_| {
-        r#"You are gray, a minimal agent running on the user's machine.
-You help by using tools: read files, run commands, edit code, search.
-
-Guidelines:
-- Be concise.
-- Read surrounding code, types, and tests before changing anything; match existing patterns.
-- Give error and edge cases the same care as happy paths; fix root causes.
-- Verify by building and testing; only claim what you actually ran.
-- When referencing files or URLs in responses, format them with absolute paths or file:// links (e.g. file:///path/to/file or [label](file:///path/to/file)) and standard web URLs so they are clickable in the terminal.
-- Keep going until done or truly blocked. A failed tool call means try differently, not give up."#
-            .to_string()
-    });
-    format!(
-        "{body}\n\n# Gateway mode\nYou are talking through a chat platform (Telegram/Discord/Slack), not a terminal.\n- Nobody can answer interactive prompts; destructive shell commands are auto-denied by policy — say so instead of retrying.\n- Keep replies short; long output is split into multiple messages.\n- Plain text or light markdown only; no ANSI escapes."
-    )
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
-
-/// CLI entry: run until SIGINT/SIGTERM.
-pub async fn run_gateway() -> anyhow::Result<()> {
-    let token = tokio_util::sync::CancellationToken::new();
-    let res = run_gateway_inner(token.clone(), None).await;
-    token.cancel();
-    res
-}
-
-/// Like [`run_gateway`], but also exits when `shutdown` resolves (REPL `/gateway stop`).
-pub async fn run_gateway_shutdown(shutdown: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
-    run_gateway_shutdown_with_board(shutdown, None).await
-}
-
-/// Like [`run_gateway_shutdown`], but reports per-platform connect progress
-/// on `board` for the REPL's live boot card (`connecting…` → `connected as …`).
-pub async fn run_gateway_shutdown_with_board(
-    shutdown: tokio::sync::oneshot::Receiver<()>,
-    board: Option<GatewayStatusBoard>,
-) -> anyhow::Result<()> {
-    let token = tokio_util::sync::CancellationToken::new();
-    let t = token.clone();
-    let relay = tokio::spawn(async move {
-        let _ = shutdown.await;
-        t.cancel();
-    });
-    let res = run_gateway_inner(token.clone(), board).await;
-    token.cancel();
-    let _ = relay.await;
-    res
-}
-
-async fn run_gateway_inner(token: tokio_util::sync::CancellationToken, board: Option<GatewayStatusBoard>) -> anyhow::Result<()> {
-    let cfg = load_gateway_config();
-    let mut runner = GatewayRunner::from_config(cfg)?;
-    if runner.adapters.is_empty() {
-        anyhow::bail!("no gateway platforms enabled — edit ~/.gray/gateway.yaml");
-    }
-    // Warn loudly when a platform has no operator allowlist: everyone will pair.
-    for (plat, pc) in &runner.config.platforms {
-        if pc.enabled && pc.allowed_users.is_empty() && std::env::var(plat.allowed_users_env()).is_err() {
-            log::warn!(
-                "gateway {plat}: no allowed_users / {} set — unknown DMs get a pairing code, groups are ignored (dm_policy={:?})",
-                plat.allowed_users_env(), pc.dm_policy
-            );
-        }
-    }
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<MessageEvent>();
-    // The router holds clones of the adapter Arcs; drop it so get_mut works, then rebuild.
-    // Preserve dead-target tracking across the rebuild.
-    let dead = Arc::clone(&runner.dead);
-    runner.router = DeliveryRouter::new(runner.config.clone(), HashMap::new()).with_dead_targets(dead);
-    for adapter in runner.adapters.values_mut() {
-        match Arc::get_mut(adapter) {
-            Some(a) => a.set_event_tx(tx.clone()),
-            None => log::warn!("gateway: could not wire event channel (adapter shared)"),
-        }
-    }
-    runner.rebuild_router();
-    // Boot uses the lower cap so one wedged platform can't stall startup;
-    // steady-state reconnects (shard/heartbeat) use MAX_RECONNECT_ATTEMPTS.
-    for (plat, adapter) in runner.adapters.iter() {
-        connect_adapter_with_retry(adapter, *plat, board.as_ref(), &runner.router, &runner.ledger, BOOT_MAX_ATTEMPTS).await;
-    }
-    // Boot replay: crash-recovered obligations go out before online notices.
-    // (Per-adapter reconnects already swept on success above.)
-    runner.sweep_pending().await;
-
-    runner.send_startup_notifications().await;
-
-    let runner = Arc::new(runner);
-    // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
-    // dedicated LocalSet thread; spawn_local per event keeps /stop responsive mid-run.
-    // The thread exits when `token` cancels, dropping adapters (closing connections).
-    let _worker = {
-        let token = token.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("gateway runtime");
-            rt.block_on(tokio::task::LocalSet::new().run_until(async move {
-                // Cron: run due jobs here and deliver to home channels.
-                if runner.config.cron_delivery {
-                    let r = Arc::clone(&runner);
-                    tokio::task::spawn_local(async move {
-                        let scheduler = gray_cron::Scheduler::from_active();
-                        let mut interval = tokio::time::interval(Duration::from_secs(60));
-                        loop {
-                            interval.tick().await;
-                            let due = match scheduler.scan_due_jobs() {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    log::warn!("gateway cron scan failed: {e}");
-                                    continue;
-                                }
-                            };
-                            // Sequential inline dispatch — no dedup guard needed
-                            // (a claim would always release before the next scan).
-                            for job in due {
-                                let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
-                                r.run_cron_job(&job).await;
-                            }
-                        }
-                    });
-                }
-                loop {
-                    tokio::select! {
-                        ev = rx.recv() => match ev {
-                            Some(ev) => {
-                                let r = Arc::clone(&runner);
-                                tokio::task::spawn_local(async move {
-                                    if let Err(e) = r.handle_inbound(ev).await { log::warn!("gateway handle error: {e}"); }
-                                });
-                            }
-                            None => break,
-                        },
-                        _ = token.cancelled() => break,
-                    }
-                }
-            }));
-        })
-    };
-
-    #[cfg(unix)]
-    {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-        tokio::select! {
-            _ = token.cancelled() => {},
-            _ = sigterm.recv() => {},
-            _ = sigint.recv() => {},
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        tokio::select! {
-            _ = token.cancelled() => {},
-            _ = tokio::signal::ctrl_c() => {},
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::daemon_stream::finalize_stream;
+    use crate::session::SessionSource;
     use crate::config::{GatewayConfig, Platform, PlatformConfig};
     use std::collections::HashMap;
 

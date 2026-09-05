@@ -19,6 +19,10 @@
 pub mod authz;
 pub mod config;
 pub mod daemon;
+mod daemon_agent;
+mod daemon_boot;
+mod daemon_stream;
+mod daemon_supervise;
 pub mod delivery;
 pub mod pairing;
 pub mod platform;
