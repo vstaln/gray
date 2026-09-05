@@ -76,19 +76,19 @@ impl UpstreamAdapter for OpenRouterAdapter {
         "OpenRouter"
     }
     fn is_authenticated(&self) -> bool {
-        let keys = crate::setup::load_auth_keys();
+        let keys = gray::setup::load_auth_keys();
         if keys.contains_key("openrouter") {
             return true;
         }
-        let p = crate::setup::saved_config_path()
+        let p = gray::setup::saved_config_path()
             .unwrap_or_else(|_| std::path::PathBuf::from("/dev/null"));
-        crate::setup::load_saved_config_at(&p).api_key.is_some()
+        gray::setup::load_saved_config_at(&p).api_key.is_some()
     }
     async fn get_credential(&self) -> anyhow::Result<UpstreamCredential> {
-        let keys = crate::setup::load_auth_keys();
-        let p = crate::setup::saved_config_path()
+        let keys = gray::setup::load_auth_keys();
+        let p = gray::setup::saved_config_path()
             .unwrap_or_else(|_| std::path::PathBuf::from("/dev/null"));
-        let saved = crate::setup::load_saved_config_at(&p);
+        let saved = gray::setup::load_saved_config_at(&p);
         let bearer = keys
             .get("openrouter")
             .cloned()
@@ -97,7 +97,7 @@ impl UpstreamAdapter for OpenRouterAdapter {
         let base = saved
             .base_url
             .clone()
-            .unwrap_or_else(|| crate::config::DEFAULT_BASE_URL.to_string());
+            .unwrap_or_else(|| gray::config::DEFAULT_BASE_URL.to_string());
         Ok(UpstreamCredential {
             bearer,
             base_url: base.trim_end_matches('/').to_string(),
@@ -182,7 +182,7 @@ fn adapter_from_base(base: &str) -> Arc<dyn UpstreamAdapter> {
         Arc::new(OpenRouterAdapter)
     }
 }
-pub fn default_adapter(c: &crate::config::Config) -> Arc<dyn UpstreamAdapter> {
+pub fn default_adapter(c: &gray::config::Config) -> Arc<dyn UpstreamAdapter> {
     adapter_from_base(&c.base_url)
 }
 pub fn router(a: Arc<dyn UpstreamAdapter>) -> Router {
@@ -330,7 +330,7 @@ pub enum ProxyCmd {
     /// List available proxy providers
     Providers,
 }
-pub async fn run_cli(cmd: Option<ProxyCmd>, cfg: &crate::config::Config) -> anyhow::Result<()> {
+pub async fn run_cli(cmd: Option<ProxyCmd>, cfg: &gray::config::Config) -> anyhow::Result<()> {
     match cmd {
         None | Some(ProxyCmd::Status) => {
             println!("Gray proxy upstream adapters\n");

@@ -3,15 +3,14 @@
 pub mod compact;
 pub mod composer;
 pub mod config;
-pub mod cron_cli;
 pub mod logging;
-pub mod oauth;
 pub mod print;
-pub mod proxy;
+pub mod profile;
 pub mod repl;
 pub mod resume;
 pub mod setup;
 pub mod skills;
+pub mod skills_tool;
 pub mod sys_editor;
 pub mod system_prompt;
 pub mod tool_fmt;
@@ -23,126 +22,12 @@ use std::path::{Path, PathBuf};
 
 pub use config::Config;
 pub use print::run_print_mode;
+pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
 use gray_core::agent::Agent;
 use gray_provider::OpenAiProvider;
-use gray_tools::Registry;
-
-/// Single source of truth for the default (builtin) plugins.
-/// Used by [`profile_plugins`] and [`build_registry`] so the registry cannot
-/// drift from the profile resolution.
-fn default_plugins() -> Vec<std::sync::Arc<dyn gray_plugin::Plugin>> {
-    vec![
-        std::sync::Arc::new(gray_tools::plugin::ToolsBasicPlugin)
-            as std::sync::Arc<dyn gray_plugin::Plugin>,
-        std::sync::Arc::new(gray_tools::plugin::ToolsSearchPlugin)
-            as std::sync::Arc<dyn gray_plugin::Plugin>,
-        std::sync::Arc::new(gray_tools::plugin::CronPlugin)
-            as std::sync::Arc<dyn gray_plugin::Plugin>,
-    ]
-}
-
-/// Profile warnings queued for transcript display. Raw `eprintln!` while the
-/// composer viewport is live collides with the next draw (ghost/overlapped
-/// rows), so lib code never prints — it queues here and the UI drains.
-/// One lock, one Vec: each distinct message is queued once per drain cycle
-/// (N is tiny; Vec scan is fine). A rebuild re-queues a still-broken profile
-/// warning — correct, like a compiler re-emitting warnings.
-static PROFILE_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-
-fn queue_profile_warning(msg: String) {
-    PROFILE_WARNINGS
-        .lock()
-        .map(|mut q| {
-            if !q.contains(&msg) {
-                q.push(msg);
-            }
-        })
-        .ok();
-}
-
-/// Drains queued profile warnings (transcript/non-TUI display owns rendering).
-pub fn take_profile_warnings() -> Vec<String> {
-    PROFILE_WARNINGS
-        .lock()
-        .map(|mut q| std::mem::take(&mut *q))
-        .unwrap_or_default()
-}
-
-/// Ordered plugins named by the `gray.yml` profile, or `None` when the
-/// profile is missing/unparseable (caller falls back to builtin).
-/// A missing file is silent (default state); parse errors and unknown names
-/// queue warnings for the UI to drain. Sidecar spawn failure is a hard `Err`
-/// naming entry index + argv (boot aborts).
-/// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
-/// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
-async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_plugin::Plugin>>>> {
-    let defaults = default_plugins();
-    match gray_plugin::profile::load_entries("gray.yml") {
-        Ok(entries) => {
-            let mut plugins = Vec::new();
-            for (i, e) in entries.iter().enumerate() {
-                match e {
-                    gray_plugin::profile::PluginEntry::Builtin(n) => {
-                        match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
-                            Some(p) => plugins.push(p),
-                            None => queue_profile_warning(format!(
-                                "unknown plugin {n:?} in gray.yml — ignoring"
-                            )),
-                        }
-                    }
-                    gray_plugin::profile::PluginEntry::Sidecar(spec) => {
-                        use anyhow::Context;
-                        let label = spec.0.join(" ");
-                        let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone())
-                            .await
-                            .with_context(|| format!("sidecar[{i}] ({label}) failed to spawn"))?;
-                        plugins
-                            .push(std::sync::Arc::new(plugin)
-                                as std::sync::Arc<dyn gray_plugin::Plugin>);
-                    }
-                }
-            }
-            Ok(Some(plugins))
-        }
-        Err(e) => {
-            // Missing file is the default state — silent. Anything else
-            // (parse error) warns once via the UI drain.
-            let missing = e
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
-            if !missing {
-                queue_profile_warning(format!(
-                    "cannot load gray.yml profile ({e}); using builtin plugins"
-                ));
-            }
-            Ok(None)
-        }
-    }
-}
-
-/// Ordered active plugins: the `gray.yml` profile order, or builtins when
-/// the profile is missing/unparseable/empty. Single spawn site shared by
-/// [`build_registry`] and [`build_agent`] so sidecar children spawn once
-/// per build. Returns `(plugins, used_fallback)`.
-async fn active_plugins() -> anyhow::Result<(Vec<std::sync::Arc<dyn gray_plugin::Plugin>>, bool)> {
-    match profile_plugins().await? {
-        Some(plugins) if !plugins.is_empty() => Ok((plugins, false)),
-        _ => Ok((default_plugins(), true)),
-    }
-}
-
-/// Builds the tool registry from the `gray.yml` profile plugin order,
-/// falling back to [`Registry::builtin`] when no profile file is present.
-/// Returns `(registry, used_fallback)` — the flag feeds `--dump-manifest`'s note.
-/// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
-/// (Manifests travel on the registry via [`Registry::manifests`].)
-pub async fn build_registry() -> anyhow::Result<(Registry, bool)> {
-    let (plugins, fallback) = active_plugins().await?;
-    Ok((Registry::from_plugins(&plugins), fallback))
-}
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
@@ -285,8 +170,8 @@ pub async fn build_agent(
     // Tools only appear in the prompt when they have a snippet.
     // Same plugins feed the registry and the agent hooks (protocol v1:
     // prompt/context, tool/before, command/run reach the loop + REPL).
-    let (plugins, _) = active_plugins().await?;
-    let registry = Registry::from_plugins(&plugins);
+    let (plugins, _) = profile::active_plugins().await?;
+    let (registry, _) = profile::from_plugins(&plugins);
     let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
     let tool_snippets = registry.prompt_snippets();
     let selected_tools = registry.tool_names();
@@ -397,18 +282,6 @@ pub enum Commands {
         /// Show all sessions (disables cwd filtering)
         #[arg(long)]
         all: bool,
-    },
-    /// Manage cron jobs (schedule recurring prompts)
-    #[command(alias = "cronjobs")]
-    Cron {
-        #[command(subcommand)]
-        cmd: Option<crate::cron_cli::CronCmd>,
-    },
-    /// Share Codex/Grok/OpenRouter auth via http://127.0.0.1:8645/v1 (any bearer forwarded)
-    #[command(alias = "portal")]
-    Proxy {
-        #[command(subcommand)]
-        cmd: Option<crate::proxy::ProxyCmd>,
     },
     /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
     Gateway {

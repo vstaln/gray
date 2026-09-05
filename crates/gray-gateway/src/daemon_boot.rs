@@ -164,6 +164,9 @@ async fn run_gateway_inner(
                 .expect("gateway runtime");
             rt.block_on(tokio::task::LocalSet::new().run_until(async move {
                 // Cron: run due jobs here and deliver to home channels.
+                // Gated: the default `gray` build disables the `cron`
+                // feature (lean tree); Task 3 re-drives cron via plugins.
+                #[cfg(feature = "cron")]
                 if runner.config.cron_delivery {
                     let r = Arc::clone(&runner);
                     tokio::task::spawn_local(async move {

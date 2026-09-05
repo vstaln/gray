@@ -1,11 +1,17 @@
 //! Cron tool: lets AI self-schedule timed actions: `schedule_task(schedule, prompt)`
+//!
+//! (Moved from `gray-tools` so `gray-tools` depends on `gray-core` only;
+//! the tool lives with the job store it drives.)
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use gray_core::agent::{ToolContext, ToolOutput};
+use gray_core::agent::{Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
+use gray_core::tool_out::{fail, get_str};
 use serde_json::{Value, json};
 
-use crate::{Tool, fail, get_str};
+use crate::{create_job, parse_schedule};
 
 pub const CRON_SNIPPET: &str = "Schedule a timed action: `schedule_task(schedule, prompt)`";
 pub const CRON_GUIDELINES: &[&str] = &[
@@ -65,18 +71,18 @@ impl Tool for CronTool {
             .map(|s| s.to_string())
             .unwrap_or_else(|| format!("job-{}", prompt.chars().take(12).collect::<String>()));
 
-        // Validate via gray-cron parser
-        if let Err(e) = gray_cron::parse_schedule(&schedule) {
+        // Validate via the local parser
+        if let Err(e) = parse_schedule(&schedule) {
             return fail(format!("invalid schedule '{schedule}': {e}"));
         }
 
-        match gray_cron::create_job(name.clone(), schedule.clone(), prompt.clone()) {
+        match create_job(name.clone(), schedule.clone(), prompt.clone()) {
             Ok(job) => {
                 let next = job
                     .next_run
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "-".to_string());
-                let display = gray_cron::parse_schedule(&schedule)
+                let display = parse_schedule(&schedule)
                     .map(|s| s.display())
                     .unwrap_or(schedule.clone());
                 ToolOutput::ok(format!(
@@ -86,5 +92,25 @@ impl Tool for CronTool {
             }
             Err(e) => fail(format!("schedule_task failed: {e}")),
         }
+    }
+}
+
+pub struct CronPlugin;
+
+impl gray_plugin::Plugin for CronPlugin {
+    fn manifest(&self) -> gray_plugin::Manifest {
+        let tools = self.tools();
+        gray_plugin::Manifest {
+            name: "cron".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            tools: tools.iter().map(|t| t.def()).collect(),
+            commands: vec![],
+            hooks: vec![],
+            provider: None,
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![Arc::new(CronTool)]
     }
 }

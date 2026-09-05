@@ -85,13 +85,16 @@ pub struct DiscordAdapter {
 }
 
 /// How long `connect()` waits for the first Ready before failing.
+#[cfg(any(feature = "discord", test))]
 pub(crate) const READY_TIMEOUT_SECS: u64 = 30;
 
 /// Wait for the first Ready event; timeout surfaces as a retryable error.
+#[cfg(feature = "discord")]
 pub(crate) async fn wait_for_ready(rx: tokio::sync::oneshot::Receiver<()>) -> anyhow::Result<()> {
     wait_for_ready_with(rx, std::time::Duration::from_secs(READY_TIMEOUT_SECS)).await
 }
 
+#[cfg(any(feature = "discord", test))]
 pub(crate) async fn wait_for_ready_with(
     rx: tokio::sync::oneshot::Receiver<()>,
     timeout: std::time::Duration,
@@ -143,6 +146,7 @@ impl DiscordAdapter {
 /// otherwise the last error, annotated with the attempt count. Keeps slow
 /// steps (token validation) fail-fast with log breadcrumbs instead of one
 /// long silent hang against the daemon's outer timeout.
+#[cfg(any(feature = "discord", test))]
 async fn retry_with_timeout<F, Fut, T>(
     attempts: u32,
     per_attempt: std::time::Duration,

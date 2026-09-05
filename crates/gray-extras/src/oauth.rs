@@ -12,9 +12,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+use gray::setup::catalog::{AuthEntry, StoredAuth, load_mixed_store, save_mixed_store};
 
 pub const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 pub const XAI_ISSUER: &str = "https://auth.x.ai";
@@ -245,21 +247,11 @@ pub fn parse_callback_line(request_head: &str) -> anyhow::Result<CallbackParams>
 }
 
 // ---- Storage ---------------------------------------------------------------
-
-/// Persisted OAuth credential store.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StoredAuth {
-    pub provider: String,
-    pub access_token: String,
-    #[serde(default)]
-    pub refresh_token: String,
-    pub expires_at: i64,
-    #[serde(default)]
-    pub email: Option<String>,
-}
+// (Shared `auth.json` types live in `gray::setup::catalog` so API-key
+// helpers keep working without this crate.)
 
 fn auth_path() -> anyhow::Result<PathBuf> {
-    Ok(crate::setup::gray_home()?.join("auth.json"))
+    Ok(gray::setup::gray_home()?.join("auth.json"))
 }
 
 fn load_store(path: &Path) -> BTreeMap<String, StoredAuth> {
@@ -270,54 +262,6 @@ fn load_store(path: &Path) -> BTreeMap<String, StoredAuth> {
             AuthEntry::Key(_) => None,
         })
         .collect()
-}
-
-/// One `auth.json` entry: a plaintext API key or an OAuth credential. The
-/// file is a mixed map `{pid: String | StoredAuth}` (plus a legacy
-/// single-object form); key helpers and OAuth saves share it so neither
-/// writer clobbers the other's shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub(crate) enum AuthEntry {
-    Key(String),
-    OAuth(StoredAuth),
-}
-
-pub(crate) fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
-    let Ok(body) = std::fs::read_to_string(path) else {
-        return BTreeMap::new();
-    };
-    if let Ok(single) = serde_json::from_str::<StoredAuth>(&body) {
-        let mut map = BTreeMap::new();
-        map.insert(single.provider.clone(), AuthEntry::OAuth(single));
-        return map;
-    }
-    serde_json::from_str::<BTreeMap<String, AuthEntry>>(&body).unwrap_or_default()
-}
-
-pub(crate) fn save_mixed_store(
-    path: &Path,
-    store: &BTreeMap<String, AuthEntry>,
-) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    let json = serde_json::to_string_pretty(&store)?;
-    file.write_all(json.as_bytes())?;
-    file.flush()?;
-    Ok(())
 }
 
 pub fn save_auth_at(path: &Path, auth: &StoredAuth) -> anyhow::Result<()> {
@@ -344,7 +288,7 @@ pub fn load_auth(provider: &str) -> anyhow::Result<StoredAuth> {
 
 /// Maps a connect-modal provider id to its OAuth credential key.
 /// `None` = key-only provider.
-pub(crate) fn oauth_provider_for_connect_id(id: &str) -> Option<&'static str> {
+pub fn oauth_provider_for_connect_id(id: &str) -> Option<&'static str> {
     match id {
         "xai" => Some("xai"),
         "openai" | "codex" => Some("codex"),
@@ -353,7 +297,7 @@ pub(crate) fn oauth_provider_for_connect_id(id: &str) -> Option<&'static str> {
 }
 
 /// True when usable OAuth credentials exist for the provider.
-pub(crate) fn has_oauth(provider: &str) -> bool {
+pub fn has_oauth(provider: &str) -> bool {
     load_auth(provider).is_ok()
 }
 
@@ -724,11 +668,11 @@ pub async fn ensure_access_token(provider: &str) -> anyhow::Result<String> {
 }
 
 /// Silently applies cached OAuth token to Config if auth_mode is oauth and api_key is not set.
-pub async fn apply_saved_oauth(config: &mut crate::config::Config) {
-    let Ok(path) = crate::setup::saved_config_path() else {
+pub async fn apply_saved_oauth(config: &mut gray::config::Config) {
+    let Ok(path) = gray::setup::saved_config_path() else {
         return;
     };
-    let saved = crate::setup::load_saved_config_at(&path);
+    let saved = gray::setup::load_saved_config_at(&path);
     let provider = if saved
         .base_url
         .as_deref()
