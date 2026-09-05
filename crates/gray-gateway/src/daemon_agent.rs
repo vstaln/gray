@@ -1,8 +1,9 @@
 //! Agent turns and cron delivery for the gateway (move-only split).
 //!
 //! [`GatewayRunner::run_agent`] runs one agent turn against the persisted
-//! session and streams deltas to the caller; [`GatewayRunner::run_cron_job`]
-//! runs a due cron job fresh and fans its output out to home channels.
+//! session and streams deltas to the caller; `run_cron_job` (with the
+//! `cron` feature) runs a due cron job fresh and fans its output out to
+//! home channels.
 
 use crate::authz::GatedExecutor;
 use crate::config::Platform;
@@ -129,6 +130,7 @@ impl GatewayRunner {
     /// platform's home channel. Output is
     /// also saved under `~/.gray/cron/output/` so nothing is lost when no
     /// home channel is configured.
+    #[cfg(feature = "cron")]
     pub async fn run_cron_job(&self, job: &gray_cron::CronJob) {
         // Session keyed through build_session_key (never hand-built): the
         // "platform" is the first home-channel platform, chat_type "cron".

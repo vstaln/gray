@@ -3,15 +3,17 @@
 //! Reads the file, strips YAML frontmatter, substitutes `$ARGUMENTS` / `${SKILL_DIR}`,
 //! and returns the body wrapped in a `<skill>` envelope so the model treats it as
 //! instructions to follow rather than a program to run.
+//!
+//! (Moved from `gray-tools` so `gray-tools` depends on `gray-core` only;
+//! the tool lives next to skill discovery in [`crate::skills`].)
 
 use async_trait::async_trait;
-use gray_core::agent::{ToolContext, ToolOutput};
+use gray_core::agent::{Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
+use gray_core::tool_out::{fail, finish, resolve_path};
 use serde_json::Value;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-
-use crate::{Tool, fail, finish};
 
 pub const SKILL_SNIPPET: &str = "Load a skill's instructions into context";
 
@@ -140,7 +142,7 @@ impl Tool for SkillTool {
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let path = match args.get("path") {
-            Some(Value::String(s)) if !s.is_empty() => crate::resolve_path(&ctx.cwd, s),
+            Some(Value::String(s)) if !s.is_empty() => resolve_path(&ctx.cwd, s),
             _ => match args.get("name").and_then(|v| v.as_str()) {
                 Some(name) if !name.is_empty() => match resolve_skill_name(&ctx.cwd, name) {
                     Some(p) => p,

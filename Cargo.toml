@@ -4,12 +4,25 @@ members = [
     "crates/gray",
     "crates/gray-core",
     "crates/gray-cron",
+    "crates/gray-extras",
     "crates/gray-gateway",
     "crates/gray-markdown",
     "crates/gray-provider",
     "crates/gray-session",
     "crates/gray-tools",
     "crates/gray-plugin",
+]
+# Phase 1 scope cut: the default build is the harness core only.
+# gray-cron, gray-gateway and gray-extras stay members (built via
+# --workspace or -p) but are out of the default tree.
+default-members = [
+    "crates/gray",
+    "crates/gray-core",
+    "crates/gray-provider",
+    "crates/gray-session",
+    "crates/gray-tools",
+    "crates/gray-plugin",
+    "crates/gray-markdown",
 ]
 
 [workspace.package]
@@ -19,9 +32,11 @@ license = "MIT"
 
 [workspace.dependencies]
 # Workspace crates
+gray = { path = "crates/gray" }
 gray-core = { path = "crates/gray-core" }
-gray-gateway = { path = "crates/gray-gateway" }
+gray-gateway = { path = "crates/gray-gateway", default-features = false }
 gray-cron = { path = "crates/gray-cron" }
+gray-extras = { path = "crates/gray-extras" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }

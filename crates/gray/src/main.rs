@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if cli.dump_manifest {
         match gray::build_registry().await {
-            Ok((registry, fallback)) => {
+            Ok((_registry, manifests, fallback)) => {
                 if fallback {
                     eprintln!(
                         "note: gray.yml profile missing/unresolvable — showing builtin manifests"
@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
                 for w in gray::take_profile_warnings() {
                     eprintln!("warning: {w}");
                 }
-                println!("{}", serde_json::to_string_pretty(registry.manifests())?);
+                println!("{}", serde_json::to_string_pretty(&manifests)?);
                 return Ok(());
             }
             Err(e) => {
@@ -36,7 +36,6 @@ async fn main() -> anyhow::Result<()> {
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
-    gray::oauth::apply_saved_oauth(&mut config).await;
     if let Some(cmd) = cli.command {
         match cmd {
             gray::Commands::Resume {
@@ -45,12 +44,6 @@ async fn main() -> anyhow::Result<()> {
                 all,
             } => {
                 return run_resume_subcommand(&mut config, session_id.as_deref(), last, all).await;
-            }
-            gray::Commands::Cron { cmd } => {
-                return gray::cron_cli::run_cron(gray::cron_cli::CronArgs { cmd });
-            }
-            gray::Commands::Proxy { cmd } => {
-                return gray::proxy::run_cli(cmd, &config).await;
             }
             gray::Commands::Update => {
                 return gray::update::update_now().await;
