@@ -1852,7 +1852,7 @@ fn dispatch_agent_event(
     turn_start: std::time::Instant,
     turn_duration_ms: &mut Option<u64>,
 ) {
-    // ponytail: single elapsed source — TurnEnd stamps duration once so footer,
+    // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
     let elapsed_ms = || turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
     if let Some(shared) = tui_stream {
@@ -1897,11 +1897,13 @@ fn dispatch_agent_event(
                 AgentEvent::StepUsage { usage } => {
                     t.set_usage(*usage);
                 }
-                // Codex steal: `⚠ Reconnecting... n/m` + `└ details` dim cell.
-                AgentEvent::StreamError { message, details } => {
+                // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
+                // like Thinking/Working instead of a static cell; the cause
+                // lands as one dim detail row (single notice per burst).
+                AgentEvent::StreamError { details, .. } => {
                     t.flush_markdown();
                     t.end_thinking();
-                    t.push_dim(format!("⚠ {message}"));
+                    t.set_status(Some("Reconnecting"));
                     if !details.is_empty() {
                         let trunc = crate::repl::format::truncate_chars(details, 200);
                         t.push_dim(format!("└ {trunc}"));
@@ -2243,7 +2245,7 @@ pub async fn run_repl_mode(
         (shared, stop)
     });
 
-    // request_user_input bridge: TUI overlay when interactive, hermes-style
+    // request_user_input bridge: TUI overlay when interactive,
     // stdin prompts when piped.
     let question_bridge: gray_core::questions::QuestionBridge = if interactive {
         let shared = tui.as_ref().map(|(s, _)| s.clone()).expect("interactive implies tui");
@@ -2252,7 +2254,7 @@ pub async fn run_repl_mode(
         gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
     };
 
-    // Cron background — stolen from hermes Scheduler tick (Step 3)
+    // Cron background ticker
     // Scans every 60s via Scheduler::scan_due_jobs (grace + fast-forward).
     // Footer clock ticks every second via tick_status when next_cron is set.
     {
@@ -2320,7 +2322,8 @@ pub async fn run_repl_mode(
             }
         }
     }
-    // Gateway autostart (default on): boot the in-process daemon when any
+    // Gateway autostart (default off; /gateway autostart on to enable): boot the
+    // in-process daemon when any
     // platform is enabled. Silent when nothing is configured. Shows a LIVE
     // boot panel above the input (per-platform connecting → connected as …
     // plus a shimmer-bar line); when every platform resolves, the final
@@ -3476,8 +3479,8 @@ mod tests {
         assert!(matches!(super::parse_gateway_args("/gateway autostart OFF"), G::Autostart(false)));
         assert!(matches!(super::parse_gateway_args("/gateway autostart"), G::Help));
         assert!(matches!(super::parse_gateway_args("/gateway autostart maybe"), G::Help));
-        // default-on: fresh config autostarts
-        assert!(gray_gateway::config::GatewayConfig::default().autostart);
+        // default-off: fresh config does not autostart (S2)
+        assert!(!gray_gateway::config::GatewayConfig::default().autostart);
     }
 
     #[test]

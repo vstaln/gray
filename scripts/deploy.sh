@@ -15,8 +15,8 @@ HOST="${DEPLOY_HOST:-opc@168.110.210.65}"
 KEY="${DEPLOY_KEY:-$HOME/.ssh/oracle-new.key}"
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
-SSH() { ssh -i "$KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$HOST" "$@"; }
-SCP() { scp -i "$KEY" -o StrictHostKeyChecking=accept-new -o BatchMode=yes "$@"; }
+SSH() { ssh -i "$KEY" -o StrictHostKeyChecking=yes -o BatchMode=yes "$HOST" "$@"; }
+SCP() { scp -i "$KEY" -o StrictHostKeyChecking=yes -o BatchMode=yes "$@"; }
 
 echo "→ deploying $BASE to ${HOST}..."
 UNIQ="$$-$(date +%s)"
@@ -31,4 +31,8 @@ CHANNEL=${BASE#gray-}; CHANNEL=${CHANNEL%%-*}
 VER=$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')
 echo "$VER" | SSH "cat | sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
 echo "✓ latest-$CHANNEL.txt = $VER"
+for f in "latest-$CHANNEL.txt"; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://gray.alignment.id/dl/$f")
+  [ "$code" = "200" ] || { echo "deploy check failed: $f returned $code"; exit 1; }
+done
 echo "✓ live: https://gray.alignment.id/dl/$BASE"

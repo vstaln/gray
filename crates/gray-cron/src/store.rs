@@ -38,7 +38,7 @@ impl CronJob {
 }
 
 // ---------------------------------------------------------------------------
-// Paths — stolen from hermes-rs/crates/hermes-cron/src/jobs.rs:62-90
+// Paths for the on-disk cron store under GRAY_HOME/cron
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -84,8 +84,7 @@ fn ensure_dirs(store: &CronStorePaths) {
 }
 
 // ---------------------------------------------------------------------------
-// Locking — stolen from hermes-rs/crates/hermes-cron/src/jobs.rs:130-252
-// trimmed to GRAY_HOME only, no fire-fence (added in Step 3)
+// Locking scoped to GRAY_HOME only
 // ---------------------------------------------------------------------------
 
 fn job_lock_registry() -> &'static Mutex<HashMap<String, Arc<Mutex<()>>>> {
@@ -178,7 +177,7 @@ pub fn with_jobs_lock<T>(store: &CronStorePaths, f: impl FnOnce() -> T) -> T {
 }
 
 // ---------------------------------------------------------------------------
-// Load / save — with hermes merge + envelope compat (hermes/jobs.rs:1023-1072)
+// Load / save — with merge + envelope compat
 // ---------------------------------------------------------------------------
 
 fn peek_jobs_unlocked(store: &CronStorePaths) -> Option<Vec<CronJob>> {
@@ -187,7 +186,7 @@ fn peek_jobs_unlocked(store: &CronStorePaths) -> Option<Vec<CronJob>> {
     if trimmed.is_empty() {
         return Some(Vec::new());
     }
-    // Handle both Hermes envelope {"jobs": [...]} and Gray bare [...]
+    // Handle both enveloped {"jobs": [...]} and bare [...] files
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
         if let Some(arr) = v.get("jobs").and_then(|j| j.as_array()) {
             return Some(
@@ -250,7 +249,7 @@ pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    // Hermes trims BOM
+    // Trim BOM
     let cleaned = trimmed.trim_start_matches('\u{feff}');
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(cleaned) {
         match v {

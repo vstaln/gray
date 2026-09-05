@@ -8,7 +8,7 @@
 //! Enable: `cargo check -p gray-gateway --features telegram,slack`
 //! All:    `cargo check -p gray-gateway --features all-platforms`
 //!
-//! Architecture (hermes-agent gateway + OpenClaw control plane):
+//! Architecture:
 //! - [`platform`]  — `BasePlatformAdapter` (the one adapter trait) + chunking helpers
 //! - [`session`]   — `SessionSource` → `build_session_key` (never hand-build keys)
 //! - [`authz`]     — deny-by-default authorization + gateway tool policy
@@ -19,6 +19,10 @@
 pub mod authz;
 pub mod config;
 pub mod daemon;
+mod daemon_agent;
+mod daemon_boot;
+mod daemon_stream;
+mod daemon_supervise;
 pub mod delivery;
 pub mod pairing;
 pub mod platform;

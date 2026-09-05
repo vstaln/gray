@@ -67,7 +67,7 @@ impl Registry {
 
     /// Collects tools from plugins in order; on name conflict later entries win.
     /// Manifests travel with the registry so `--dump-manifest` can't drift
-    /// from what's actually registered. (ponytail-audit #13)
+    /// from what's actually registered.
     pub fn from_plugins(plugins: &[Arc<dyn gray_plugin::Plugin>]) -> Self {
         let manifests: Vec<gray_plugin::Manifest> =
             plugins.iter().map(|p| p.manifest()).collect();
