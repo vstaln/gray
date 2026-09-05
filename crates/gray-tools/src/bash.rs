@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use gray_core::agent::{ToolContext, ToolOutput};
+use gray_core::agent::{PermissionMode, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 use serde_json::Value;
 use serde_json::json;
@@ -166,15 +166,19 @@ impl Tool for BashTool {
             Decision::Allow => {}
             Decision::Deny(msg) => return fail(msg),
             Decision::Prompt { rule, why, alt } => {
-                if !prompt_allowance(rule) {
-                    return fail(format!(
-                        "Blocked by destructive-command guard ({rule}): already asked twice this session — have the user run it manually. {why}"
-                    ));
-                }
-                if !ask_allow_once(ctx, &command, rule, &why, &alt).await {
-                    return fail(format!(
-                        "Blocked by destructive-command guard ({rule}): user did not approve. {why} Safe alternative: {alt}."
-                    ));
+                // Auto mode (print/-p, GRAY_PERMISSION=auto) skips the ask;
+                // Deny verdicts still block above regardless of mode.
+                if ctx.permission != PermissionMode::Auto {
+                    if !prompt_allowance(rule) {
+                        return fail(format!(
+                            "Blocked by destructive-command guard ({rule}): already asked twice this session — have the user run it manually. {why}"
+                        ));
+                    }
+                    if !ask_allow_once(ctx, &command, rule, &why, &alt).await {
+                        return fail(format!(
+                            "Blocked by destructive-command guard ({rule}): user did not approve. {why} Safe alternative: {alt}."
+                        ));
+                    }
                 }
             }
         }
