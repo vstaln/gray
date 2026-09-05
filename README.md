@@ -161,8 +161,6 @@ Pairing flow (no `gateway.yaml` edit needed): the user DMs the bot, gray prints
 a code, the operator runs `gray gateway pairing approve <platform> <CODE>`;
 `pairing list` shows pending + approved users, `pairing revoke` drops one.
 
-<img src="docs/img/hokusai-kajikazawa.jpg" width="520" alt=""/>
-
 ## Acknowledgements
 
 Ideas and designs informed by [pi](https://github.com/badlogic/pi-mono), Codex,
