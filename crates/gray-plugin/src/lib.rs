@@ -33,6 +33,10 @@ pub struct Manifest {
     #[serde(default)]
     pub hooks: Vec<String>,
     pub provider: Option<String>,
+    /// Protocol version claimed by the sidecar (`None` = v1 pre-lifecycle).
+    /// v1.1 sidecars send `"1.1"` and handle `plugin/shutdown` + `session`.
+    #[serde(default)]
+    pub protocol: Option<String>,
 }
 
 /// One manifest `tools` entry: the model-facing definition plus the optional
@@ -92,14 +96,15 @@ impl Manifest {
             commands: str_list("commands"),
             hooks: str_list("hooks"),
             provider: v.get("provider").and_then(|s| s.as_str()).map(|s| s.into()),
+            protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
         }
     }
 }
 
-/// Canonical `tool/before` verdict: single source of truth lives in
-/// [`gray_core::agent`] (core owns it so the agent loop never depends on
-/// this crate); re-exported here so sidecar call sites keep one import.
-pub use gray_core::agent::ToolBefore;
+/// Canonical `tool/before` verdict + `command/run` outcome: single source of
+/// truth lives in [`gray_core::agent`] (core owns it so the agent loop never
+/// depends on this crate); re-exported here so sidecar call sites keep one import.
+pub use gray_core::agent::{CommandOutcome, ToolBefore};
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -123,11 +128,15 @@ pub trait Plugin: Send + Sync {
     async fn tool_before(&self, _name: &str, _args: &Value) -> ToolBefore {
         ToolBefore::Allow
     }
-    /// `command/run` hook (`params: {"name":"/x","argv"}` → `result: {"text"}`).
+    /// `command/run` hook (`params: {"name":"/x","argv"}` → `result: {"text"}` or `{"prompt"}`).
     /// Default `None` = command unclaimed (pre-v1 behavior).
-    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<String> {
+    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
         None
     }
+    /// Lifecycle teardown: host is going away (`session_end`/`host_exit`/`reload`
+    /// sent on the wire by the sidecar transport). Default no-op so existing
+    /// impls keep compiling.
+    async fn shutdown(&self) {}
 }
 
 /// Later manifests win on tool-name conflict. Returns owner per tool name.
@@ -180,7 +189,29 @@ impl PluginHooks for PluginHookAdapter {
             .map(|name| PluginCommand { name, description: String::new() })
             .collect()
     }
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
-        self.plugin.run_command(name, argv).await.filter(|t| !t.is_empty())
+    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
+        match self.plugin.run_command(name, argv).await? {
+            CommandOutcome::Say(s) if s.is_empty() => None,
+            CommandOutcome::Prompt(s) if s.is_empty() => None,
+            o => Some(o),
+        }
+    }
+    async fn pre_tool(&self, name: &str, args: &Value) {
+        let _ = self
+            .plugin
+            .on_event(CoreEvent::PreTool { name: name.to_string(), args: args.clone() })
+            .await;
+    }
+    async fn post_tool(&self, name: &str, output: &ToolOutput) {
+        let _ = self
+            .plugin
+            .on_event(CoreEvent::PostTool { name: name.to_string(), output: output.clone() })
+            .await;
+    }
+    async fn turn_end(&self, usage: &Usage) {
+        let _ = self.plugin.on_event(CoreEvent::TurnEnd { usage: *usage }).await;
+    }
+    async fn shutdown(&self) {
+        self.plugin.shutdown().await;
     }
 }
