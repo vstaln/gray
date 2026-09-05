@@ -222,7 +222,17 @@ pub fn calculate_context_tokens(u: &Usage) -> usize {
 }
 
 pub fn estimate_tokens(msg: &Message) -> usize {
-    (msg.text_content().len() as f64 / 4.0).ceil() as usize
+    let chars: usize = msg
+        .content
+        .iter()
+        .map(|b| match b {
+            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.len(),
+            ContentBlock::ToolResult { content, .. } => content.len(),
+            ContentBlock::ToolUse { name, args, .. } => name.len() + args.to_string().len(),
+            ContentBlock::Image { data, .. } => data.len(),
+        })
+        .sum();
+    (chars as f64 / 4.0).ceil() as usize
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
@@ -355,6 +365,15 @@ mod tests {
     fn estimate_falls_back_to_chars() {
         let msgs = vec![Message::user("a".repeat(400))]; // 100 tokens
         assert_eq!(estimate_context_tokens(&msgs, None), 100);
+    }
+
+    #[test]
+    fn estimate_counts_tool_blocks_not_just_text() {
+        let result = Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result("c1", "x".repeat(4_000), false)],
+        );
+        assert!(estimate_tokens(&result) >= 1_000, "tool result must not be free");
     }
 
     #[test]
