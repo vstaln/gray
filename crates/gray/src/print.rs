@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::ToolContext;
+use gray_core::agent::{PermissionMode, ToolContext};
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_session::{JsonlSessionStore, SessionId, SessionMeta};
@@ -117,6 +117,7 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         cancel,
         questions: None,
         session_id: None, // one-shot print mode has no session
+        permission: PermissionMode::resolve(true), // auto for -p unless GRAY_PERMISSION=ask
     };
 
     let mut agent = build_agent(config, &cwd, None).await?;

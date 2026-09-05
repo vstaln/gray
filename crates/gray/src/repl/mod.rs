@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
+use gray_core::agent::{Agent, CommandOutcome, PermissionMode, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;

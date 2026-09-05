@@ -79,7 +79,7 @@ impl GatewayRunner {
         sink: Option<tokio::sync::mpsc::UnboundedSender<StreamMsg>>,
     ) -> anyhow::Result<String> {
         use gray_core::Message;
-        use gray_core::agent::ToolContext;
+        use gray_core::agent::{PermissionMode, ToolContext};
         use gray_core::event::AgentEvent;
         use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
@@ -113,6 +113,7 @@ impl GatewayRunner {
             cancel: token,
             questions: None, // no interactive user → request_user_input is denied anyway
             session_id: Some(sid_str.to_string()),
+            permission: PermissionMode::resolve(false),
         };
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {

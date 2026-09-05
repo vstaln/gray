@@ -744,6 +744,7 @@ mod tests {
             cancel: tokio_util::sync::CancellationToken::new(),
             questions: None,
             session_id: None,
+            permission: gray_core::agent::PermissionMode::Ask,
         };
         let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
         assert!(out.is_error);
