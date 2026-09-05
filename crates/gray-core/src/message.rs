@@ -156,6 +156,52 @@ impl Message {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// Everything in this message that the provider will bill as context —
+    /// not just its prose.
+    ///
+    /// [`text_content`](Self::text_content) is a *display* accessor: it keeps
+    /// `Text` blocks and drops tool results, tool arguments, replayed
+    /// reasoning blobs and image payloads. Those are precisely the blocks
+    /// that dominate a coding session, so any budgeting code that measures
+    /// with `text_content` scores a 50 KiB tool result as zero tokens.
+    /// Size-estimation callers must use this instead.
+    ///
+    /// Concatenation order and separators are irrelevant to callers: only the
+    /// resulting length is meaningful. Kept deliberately allocation-simple —
+    /// it runs once per message per compaction, not per token.
+    pub fn context_text(&self) -> String {
+        let mut out = String::new();
+        for block in &self.content {
+            let piece = match block {
+                ContentBlock::Text { text } => text.clone(),
+                ContentBlock::ToolResult { content, .. } => content.clone(),
+                ContentBlock::ToolUse { name, args, .. } => {
+                    format!("{name}{args}")
+                }
+                ContentBlock::Thinking { text, encrypted_content, .. } => {
+                    // The encrypted blob is replayed verbatim next turn to
+                    // keep the provider's cache shard warm, and is billed
+                    // like any other input token. It must be counted.
+                    match encrypted_content {
+                        Some(blob) => format!("{text}{blob}"),
+                        None => text.clone(),
+                    }
+                }
+                // Base64 payload length is the only size signal available
+                // here; providers re-encode, so this is an approximation in
+                // the same spirit as the chars/4 heuristic downstream.
+                ContentBlock::Image { data, .. } => data.clone(),
+            };
+            if !piece.is_empty() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&piece);
+            }
+        }
+        out
+    }
 }
 
 /// Definition of a tool available to the agent model.
