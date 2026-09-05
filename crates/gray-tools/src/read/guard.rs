@@ -1,7 +1,7 @@
 //! T2.3 — device path blocklist + non-regular-file refusal.
 //!
-//! Self-contained unit: std only, no `crate::` imports. Wire it in by adding
-//! one line to `src/read.rs` (file module `read` owns `src/read/`):
+//! Self-contained unit: std only, no `crate::` imports. Wired by T1.1
+//! (`mod guard;` in `read/mod.rs`, called first in `ReadTool::execute`).
 //!
 //! ```ignore
 //! mod guard;

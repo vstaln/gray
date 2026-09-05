@@ -1,5 +1,10 @@
 //! The `read` tool: reads a UTF-8 text file with optional line windowing.
 
+pub mod args;
+mod guard;
+#[cfg(test)]
+pub(crate) mod testkit;
+
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
@@ -53,10 +58,9 @@ impl Tool for ReadTool {
 
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = match get_str(&args, "path")
-            .or_else(|_| get_str(&args, "file_path"))
-            .or_else(|_| get_str(&args, "filePath"))
-        {
+        // Legacy names (file_path/filePath/…) are renamed by the ALIASES table in
+        // `crate` (coerce_args) before lookup — no per-tool chain here (T4.3).
+        let path = match get_str(&args, "path") {
             Ok(p) => p,
             Err(e) => return e,
         };
@@ -70,6 +74,25 @@ impl Tool for ReadTool {
         };
 
         let full = resolve_path(&ctx.cwd, &path);
+        // T2.3 device/FIFO/socket refusal before any content I/O. Missing paths
+        // skip both gates (canonicalize/metadata fail) and keep today's error.
+        // Directories fall through: today's I/O-error path handles them (T1.3 owns the note).
+        let display = full.display().to_string();
+        if let Err(msg) = guard::check_name(&full, None, &display) {
+            return fail(msg);
+        }
+        if let Err(msg) = guard::check_name(
+            &full,
+            std::fs::canonicalize(&full).ok().as_deref(),
+            &display,
+        ) {
+            return fail(msg);
+        }
+        if let Ok(meta) = std::fs::metadata(&full) {
+            if let Err(msg) = guard::check_metadata(&meta, &display) {
+                return fail(msg);
+            }
+        }
         let data = match tokio::fs::read(&full).await {
             Ok(d) => d,
             Err(e) => return fail(format!("read failed for {}: {e}", full.display())),
@@ -161,6 +184,20 @@ impl Tool for ReadTool {
             truncation.content
         };
 
+        // T0.2 meter: no-op unless GRAY_TOOL_STATS=1, so zero behavior change.
+        crate::stats::ToolStats {
+            tool: "read",
+            path: &path,
+            bytes: output.len() as u64,
+            lines: output.lines().count() as u64,
+            truncated_by: match truncation.truncated_by {
+                Some(crate::truncate::TruncatedBy::Lines) => crate::stats::CUT_LINES,
+                Some(crate::truncate::TruncatedBy::Bytes) => crate::stats::CUT_BYTES,
+                None => crate::stats::CUT_NONE,
+            },
+            notice: "none",
+        }
+        .report();
         // Already truncated via truncate_head with actionable hint; bypass the
         // generic head+tail truncation that would hide it.
         ToolOutput::ok(output)
