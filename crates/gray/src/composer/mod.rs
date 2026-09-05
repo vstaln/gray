@@ -47,6 +47,8 @@ pub struct Tui {
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
+    /// Brief 3B `sleep` countdown: deadline + reason while a sleep tool runs.
+    pub(crate) sleep_until: Option<(Instant, String)>,
     /// An alternate-screen modal owns the terminal: the 100ms ticker must not
     /// draw (its frames land on the modal's screen as duplicated chrome).
     /// Set by with_modal/with_modal_sync around every modal call.
@@ -198,6 +200,7 @@ impl Tui {
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
+            sleep_until: None,
             modal_open: false,
             queued_inputs: std::collections::VecDeque::new(),
             local_command: None,
@@ -432,6 +435,18 @@ impl Tui {
         self.status = label.map(|l| (Instant::now(), l.to_string()));
         let _ = self.draw();
     }
+    /// Brief 3B: `sleep(seconds, reason?)` countdown on the status line.
+    /// `tick_status` refreshes the remaining seconds; [`Self::clear_sleep`]
+    /// (or turn end) removes it.
+    pub fn begin_sleep(&mut self, secs: u64, reason: &str) {
+        let reason = reason.trim().to_string();
+        self.sleep_until = Some((Instant::now() + Duration::from_secs(secs), reason.clone()));
+        self.status = Some((Instant::now(), sleep_label(secs, &reason)));
+        let _ = self.draw();
+    }
+    pub fn clear_sleep(&mut self) {
+        self.sleep_until = None;
+    }
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
@@ -478,6 +493,7 @@ impl Tui {
         self.turn_had_thinking = false;
         self.is_task_running = false;
         self.status = None;
+        self.sleep_until = None;
         self.live_streamed_tokens = 0;
         if self.thinking {
             self.end_thinking_run(true);
@@ -568,6 +584,13 @@ impl Tui {
         if self.active_question.is_some() {
             tick_question(self);
         }
+        // Sleep countdown: repaint once per second with the remaining time.
+        let mut sleep_tick = false;
+        if let Some((deadline, reason)) = self.sleep_until.clone() {
+            let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();
+            self.status = Some((Instant::now(), sleep_label(remaining, &reason)));
+            sleep_tick = true;
+        }
         // Cron ticking clock — needs repaint even when idle, once per second
         let needs_cron_tick = if let Some((_, next)) = &self.next_cron {
             let now = chrono::Utc::now();
@@ -600,7 +623,7 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none() && !needs_cron_tick && self.gateway_boot.is_none() {
+        if self.status.is_none() && !needs_cron_tick && !sleep_tick && self.gateway_boot.is_none() {
             return;
         }
         if needs_cron_tick {
@@ -619,6 +642,15 @@ impl Tui {
             crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
         );
         let _ = std::io::stdout().flush();
+    }
+}
+
+/// Brief 3B status text: `⏸ sleeping {remaining}s — {reason}`.
+fn sleep_label(remaining_secs: u64, reason: &str) -> String {
+    if reason.is_empty() {
+        format!("⏸ sleeping {remaining_secs}s")
+    } else {
+        format!("⏸ sleeping {remaining_secs}s — {reason}")
     }
 }
 

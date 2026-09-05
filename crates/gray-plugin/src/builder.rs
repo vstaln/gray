@@ -61,6 +61,9 @@ impl Plugin for ToolsBasicPlugin {
             Arc::new(gray_tools::WriteTool::new(ledger.clone())),
             Arc::new(gray_tools::EditTool::new(ledger.clone())),
             Arc::new(gray_tools::BashTool),
+            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
+            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
+            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
             Arc::new(gray_tools::RequestUserInputTool),
         ];
         out.extend(self.extra.iter().cloned());
