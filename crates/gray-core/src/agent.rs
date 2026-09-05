@@ -2,6 +2,7 @@
 //! provider/tools leaves. The binary wires implementations together.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -128,6 +129,49 @@ pub trait ToolExecutor: Send + Sync {
 /// Convenience alias used by Agent wiring.
 pub type ProviderStream = BoxStream<'static, Result<StreamEvent, ProviderError>>;
 
+/// Verdict of a `tool/before` plugin hook (protocol v1) for one tool call.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ToolBefore {
+    /// Run the call with the args the model sent.
+    Allow,
+    /// Run the call with rewritten args.
+    Modify(serde_json::Value),
+    /// Skip the executor; the reason becomes an `is_error` tool result.
+    Deny(String),
+}
+
+/// A slash command (`/x`) claimed by a plugin for `/help` + REPL routing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCommand {
+    /// Command name with leading slash, as on the wire (`commands:["/x"]`).
+    pub name: String,
+    pub description: String,
+}
+
+/// Host-side view of a plugin's protocol-v1 hooks (`prompt/context`,
+/// `tool/before`, `command/run`). All methods are no-ops by default, so an
+/// agent without plugins behaves exactly as before. The sidecar transport
+/// behind these (Task 1) maps each method to its wire request.
+#[async_trait]
+pub trait PluginHooks: Send + Sync {
+    /// Text from `prompt/context`, appended to the turn's system prompt.
+    async fn prompt_context(&self) -> Option<String> {
+        None
+    }
+    /// Verdict from `tool/before`, consulted before the executor runs.
+    async fn tool_before(&self, _name: &str, _args: &serde_json::Value) -> ToolBefore {
+        ToolBefore::Allow
+    }
+    /// Slash commands this plugin claims (shown in `/help`).
+    fn commands(&self) -> Vec<PluginCommand> {
+        Vec::new()
+    }
+    /// Runs `command/run`; `None` means "not handled".
+    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<String> {
+        None
+    }
+}
+
 impl From<ProviderError> for CoreError {
     fn from(e: ProviderError) -> Self {
         match e {
@@ -168,6 +212,7 @@ pub struct Agent {
     max_rounds: Option<u32>,
     tool_timeout: Duration,
     pending_steer: Vec<String>,
+    hooks: Vec<Arc<dyn PluginHooks>>,
 }
 
 /// Empty-turn provider retries before nudging or ending on `(empty)`.
@@ -187,6 +232,7 @@ impl Agent {
             max_rounds: Some(50),
             tool_timeout: Duration::from_secs(120),
             pending_steer: Vec::new(),
+            hooks: Vec::new(),
         }
     }
 
@@ -200,6 +246,19 @@ impl Agent {
     pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
         self.tools = tools;
         self
+    }
+
+    /// Attaches plugin hooks (protocol v1). Empty by default: no hooks
+    /// means the loop behaves exactly as before.
+    pub fn with_hooks(mut self, hooks: Vec<Arc<dyn PluginHooks>>) -> Self {
+        self.hooks = hooks;
+        self
+    }
+
+    /// Plugin hooks attached via [`with_hooks`](Self::with_hooks) (REPL
+    /// slash-command routing reads these).
+    pub fn hooks(&self) -> &[Arc<dyn PluginHooks>] {
+        &self.hooks
     }
 
     /// Sets the initial conversation messages (useful for resumed sessions).
@@ -415,8 +474,23 @@ impl Agent {
             round += 1;
             self.drain_steer(round == 1);
 
+            // Protocol v1 `prompt/context`: every hook's reply concatenates
+            // onto this turn's system prompt, in hook order. No hooks (or no
+            // replies) leaves `self.system` untouched.
+            let mut system = self.system.clone();
+            for hook in &self.hooks {
+                if let Some(text) = hook.prompt_context().await
+                    && !text.trim().is_empty()
+                {
+                    if !system.is_empty() {
+                        system.push_str("\n\n");
+                    }
+                    system.push_str(&text);
+                }
+            }
+
             let req = ChatRequest {
-                system: (!self.system.is_empty()).then(|| self.system.clone()),
+                system: (!system.is_empty()).then_some(system),
                 messages: self.messages.clone(),
                 tools: self.tools.clone(),
             };
@@ -707,10 +781,35 @@ impl Agent {
                     continue;
                 }
 
+                // Protocol v1 `tool/before`: each hook sees the call in
+                // order; a modify rewrites args for later hooks and the
+                // executor, the first deny wins and skips the executor.
+                let mut effective_args = args.clone();
+                let mut denial: Option<String> = None;
+                for hook in &self.hooks {
+                    match hook.tool_before(name, &effective_args).await {
+                        ToolBefore::Allow => {}
+                        ToolBefore::Modify(rewritten) => effective_args = rewritten,
+                        ToolBefore::Deny(reason) => {
+                            denial = Some(reason);
+                            break;
+                        }
+                    }
+                }
+                if let Some(reason) = denial {
+                    let err = ToolOutput::error(reason);
+                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    self.messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                    });
+                    continue;
+                }
+
                 let output = tokio::select! {
                     out = tokio::time::timeout(
                         self.tool_timeout,
-                        self.executor.execute(&ctx, &name, args.clone()),
+                        self.executor.execute(&ctx, name, effective_args),
                     ) => match out {
                         Ok(output) => output,
                         Err(_) => ToolOutput::error(format!(
@@ -849,22 +948,29 @@ mod agent_tests {
     struct FakeProvider {
         scripted: Mutex<VecDeque<Vec<StreamEvent>>>,
         failures: Mutex<VecDeque<ProviderError>>,
+        seen_systems: std::sync::Arc<Mutex<Vec<Option<String>>>>,
     }
 
     impl FakeProvider {
         fn new(scripts: Vec<Vec<StreamEvent>>) -> Self {
-            Self { scripted: Mutex::new(VecDeque::from(scripts)), failures: Mutex::new(VecDeque::new()) }
+            Self { scripted: Mutex::new(VecDeque::from(scripts)), failures: Mutex::new(VecDeque::new()), seen_systems: std::sync::Arc::new(Mutex::new(Vec::new())) }
         }
 
         fn with_failures(mut self, errs: Vec<ProviderError>) -> Self {
             self.failures = Mutex::new(VecDeque::from(errs));
             self
         }
+
+        /// System prompts of every request served so far, in order.
+        fn seen_systems(&self) -> std::sync::Arc<Mutex<Vec<Option<String>>>> {
+            self.seen_systems.clone()
+        }
     }
 
     #[async_trait]
     impl Provider for FakeProvider {
-        fn stream(&self, _req: ChatRequest) -> ProviderStream {
+        fn stream(&self, req: ChatRequest) -> ProviderStream {
+            self.seen_systems.lock().expect("seen lock poisoned").push(req.system.clone());
             if let Some(err) = self.failures.lock().expect("failures lock poisoned").pop_front() {
                 return Box::pin(futures::stream::iter(vec![Err(err)]));
             }
@@ -882,6 +988,7 @@ mod agent_tests {
     /// falling back to a default output for unknown tools.
     struct FakeExecutor {
         calls: std::sync::Arc<Mutex<Vec<String>>>,
+        call_args: std::sync::Arc<Mutex<Vec<(String, serde_json::Value)>>>,
         by_name: Vec<(String, ToolOutput)>,
         default_output: ToolOutput,
         on_execute: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
@@ -892,6 +999,7 @@ mod agent_tests {
         fn new(default_output: ToolOutput) -> Self {
             Self {
                 calls: std::sync::Arc::new(Mutex::new(Vec::new())),
+                call_args: std::sync::Arc::new(Mutex::new(Vec::new())),
                 by_name: Vec::new(),
                 default_output,
                 on_execute: None,
@@ -911,12 +1019,16 @@ mod agent_tests {
             &self,
             _ctx: &ToolContext,
             name: &str,
-            _args: serde_json::Value,
+            args: serde_json::Value,
         ) -> BoxFuture<'static, ToolOutput> {
             self.calls
                 .lock()
                 .expect("calls lock poisoned")
                 .push(name.to_string());
+            self.call_args
+                .lock()
+                .expect("args lock poisoned")
+                .push((name.to_string(), args.clone()));
             let output = self
                 .by_name
                 .iter()
@@ -1755,5 +1867,138 @@ mod agent_tests {
         let [u2, a2] = super::summary_pair("hello world");
         assert_eq!(u.text_content().as_bytes(), u2.text_content().as_bytes());
         assert_eq!(a.text_content().as_bytes(), a2.text_content().as_bytes());
+    }
+
+    /// Stub `prompt/context` hook: returns fixed text like a sidecar's
+    /// `{"result":{"text":"…"}}` reply.
+    struct CtxHook {
+        text: Option<String>,
+    }
+
+    #[async_trait]
+    impl PluginHooks for CtxHook {
+        async fn prompt_context(&self) -> Option<String> {
+            self.text.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_context_replies_concatenate_onto_system() {
+        let provider = FakeProvider::new(vec![end_script()]);
+        let seen = provider.seen_systems();
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_system("BASE-SYSTEM")
+        .with_hooks(vec![
+            Arc::new(CtxHook { text: Some("PLUGIN-CTX-AAA".to_string()) }),
+            Arc::new(CtxHook { text: None }),
+            Arc::new(CtxHook { text: Some("PLUGIN-CTX-BBB".to_string()) }),
+        ]);
+
+        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+
+        let seen = seen.lock().expect("seen lock poisoned");
+        assert_eq!(seen.len(), 1, "one turn → one request, got {seen:?}");
+        let system = seen[0].as_deref().unwrap_or("");
+        assert!(system.contains("BASE-SYSTEM"), "base prompt preserved, got: {system}");
+        let (a, b) = (system.find("PLUGIN-CTX-AAA"), system.find("PLUGIN-CTX-BBB"));
+        assert!(a.is_some() && b.is_some(), "both hook replies present, got: {system}");
+        assert!(a.unwrap() < b.unwrap(), "hook order kept, got: {system}");
+    }
+
+    /// Stub `tool/before` hook: denies or rewrites every call, like a
+    /// sidecar's `{"decision":"deny"|"modify",…}` reply.
+    struct VetoHook {
+        deny: Option<String>,
+        rewrite: Option<serde_json::Value>,
+    }
+
+    #[async_trait]
+    impl PluginHooks for VetoHook {
+        async fn tool_before(&self, _name: &str, _args: &serde_json::Value) -> ToolBefore {
+            if let Some(reason) = &self.deny {
+                return ToolBefore::Deny(reason.clone());
+            }
+            if let Some(args) = &self.rewrite {
+                return ToolBefore::Modify(args.clone());
+            }
+            ToolBefore::Allow
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_before_deny_skips_executor_with_error_result() {
+        let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
+        let executor = FakeExecutor::new(ToolOutput::ok("must-not-run"));
+        let call_log = executor.calls.clone();
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+            .with_tools(vec![tool_def()])
+            .with_hooks(vec![Arc::new(VetoHook {
+                deny: Some("DENIED-XYZ".to_string()),
+                rewrite: None,
+            })]);
+
+        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "denied tool must never execute"
+        );
+        let (output, is_error) = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolResult { output, is_error, .. } => Some((output.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("deny must still emit a tool result");
+        assert!(is_error, "deny result is an error, got {output:?}");
+        assert!(output.contains("DENIED-XYZ"), "reason surfaced, got {output:?}");
+        // History carries the same error result so alternation stays intact.
+        let stored = agent
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { content, is_error, .. } => Some((content.clone(), *is_error)),
+                _ => None,
+            })
+            .expect("deny must leave a history tool result");
+        assert!(stored.1 && stored.0.contains("DENIED-XYZ"), "got {stored:?}");
+    }
+
+    #[tokio::test]
+    async fn tool_before_modify_rewrites_executor_args() {
+        let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
+        let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+        let arg_log = executor.call_args.clone();
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+            .with_tools(vec![tool_def()])
+            .with_hooks(vec![Arc::new(VetoHook {
+                deny: None,
+                rewrite: Some(serde_json::json!({"q": "rewritten"})),
+            })]);
+
+        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+
+        let logged = arg_log.lock().expect("args lock poisoned");
+        assert_eq!(logged.len(), 1, "executor runs once, got {logged:?}");
+        assert_eq!(logged[0].1, serde_json::json!({"q": "rewritten"}), "got {logged:?}");
+    }
+
+    #[tokio::test]
+    async fn tool_before_absent_leaves_args_untouched() {
+        let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
+        let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+        let arg_log = executor.call_args.clone();
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+
+        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+
+        let logged = arg_log.lock().expect("args lock poisoned");
+        assert_eq!(logged.len(), 1, "executor runs once, got {logged:?}");
+        assert_eq!(logged[0].0, TOOL_NAME);
+        assert_eq!(logged[0].1, serde_json::json!({"q": "x"}), "got {logged:?}");
     }
 }
