@@ -279,17 +279,26 @@ impl Tui {
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::ToolBox { header, body } => {
-                    let lines = if crate::composer::transcript::is_gateway_boot_header(header) {
-                        crate::composer::transcript::format_gateway_boot_card(header.clone(), body, w)
+                    if crate::composer::transcript::is_gateway_boot_header(header) {
+                        let lines = crate::composer::transcript::format_gateway_boot_card(
+                            header.clone(), body, w,
+                        );
+                        let th = lines.len() as u16;
+                        let _ = self.terminal.insert_before(th, |buf| {
+                            crate::composer::transcript::paint_card(&lines, buf.area, buf);
+                        });
+                        new_transcript.extend(lines);
                     } else {
-                        crate::composer::transcript::format_tool_box_lines(header.clone(), body, w)
-                    };
-                    let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
-                    let _ = self.terminal.insert_before(th, |buf| {
-                        Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
-                    });
-                    new_transcript.extend(lines);
+                        let lines = crate::composer::transcript::format_tool_box_lines(
+                            header.clone(), body, w,
+                        );
+                        let th = lines.len() as u16;
+                        let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                        let _ = self.terminal.insert_before(th, |buf| {
+                            Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
+                        });
+                        new_transcript.extend(lines);
+                    }
                 }
                 TranscriptEntry::StyledLines { lines, hyperlinks } => {
                     let lines_only = self.render_and_insert_styled_lines(lines, hyperlinks, w);
