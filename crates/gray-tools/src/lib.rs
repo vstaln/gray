@@ -10,6 +10,7 @@ pub mod edit;
 pub mod edit_diff;
 pub mod find;
 pub mod grep;
+pub mod ledger;
 pub mod ls;
 pub mod read;
 pub mod request_user_input;
@@ -33,6 +34,7 @@ pub use bash::BashTool;
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
+pub use ledger::{FileLedger, LedgerEntry};
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use request_user_input::{
@@ -46,6 +48,7 @@ pub use write::WriteTool;
 #[derive(Default)]
 pub struct Registry {
     tools: Vec<Arc<dyn Tool>>,
+    file_ledger: Arc<FileLedger>,
 }
 
 impl Registry {
@@ -74,7 +77,16 @@ impl Registry {
                 out.push(t);
             }
         }
-        Self { tools: out }
+        Self {
+            tools: out,
+            file_ledger: Arc::new(FileLedger::new()),
+        }
+    }
+
+    /// Shared read-before-write/dedup state (T3.1 seam). Tools take a clone
+    /// of this `Arc` in the T3.2/T3.3 wiring; `ToolsBasicPlugin` (T3.4) too.
+    pub fn file_ledger(&self) -> &Arc<FileLedger> {
+        &self.file_ledger
     }
 
     /// Tool definitions in registration order (for the chat request).
