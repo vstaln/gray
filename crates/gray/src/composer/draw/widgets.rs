@@ -84,7 +84,9 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     let prompt_arrow = " ❯ ";
     let arrow_span = Span::styled(
         prompt_arrow,
-        Style::default().fg(prompt_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(prompt_color)
+            .add_modifier(Modifier::BOLD),
     );
 
     let mut cur_row = 0usize;
