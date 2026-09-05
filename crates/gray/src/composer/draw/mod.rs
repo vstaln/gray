@@ -84,13 +84,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let boot_gap_h: u16 = u16::from(!boot_lines.is_empty());
         let queued_h = (queued_preview.len() + boot_lines.len()) as u16 + boot_gap_h;
         let box_y = status_y + status_h + queued_h;
-        // Bare breathing row between the band (or panel/attachments below it)
-        // and the footer, so the input never melts into it. The box's own pads
-        // share the band bg and can't do this job. Question panels carry their
-        // own bottom margin.
-        let gap_h: u16 = if question_active { 0 } else { 1 };
+        // No gap between the input band and the footer: the footer sits directly
+        // below the band (its own gray block keeps the two visually separate).
         let avail = area.height.saturating_sub(
-            status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + gap_h + 1,
+            status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1,
         );
         // Grow viewport to fit full question; fall back to PANEL_ROWS min when short on space.
         // Two-pass (uncapped then capped), no new layout engine.
@@ -126,7 +123,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             box_y + box_h
         };
         let attach_y = panel_y + panel_h;
-        let footer_y = attach_y + attach_h + gap_h;
+        let footer_y = attach_y + attach_h;
 
         if let Some((started, label)) = &tui.status
             && !question_active
@@ -309,16 +306,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Paragraph::new(Line::from(spans)),
                 Rect::new(area.x, attach_y, area.width, 1),
             );
-        }
-
-        if gap_h > 0 {
-            let gap_y = attach_y + attach_h;
-            if gap_y >= area.y && gap_y < area.y + area.height {
-                frame.render_widget(
-                    Paragraph::new(Line::from("")),
-                    Rect::new(area.x, gap_y, area.width, 1),
-                );
-            }
         }
 
         let (_, max_label) = crate::setup::model_context_info(&tui.model_name);

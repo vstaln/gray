@@ -27,6 +27,7 @@ pub mod delivery;
 pub mod discord;
 pub mod pairing;
 pub mod platform;
+pub mod progress;
 pub mod session;
 pub mod slack;
 pub mod status;
