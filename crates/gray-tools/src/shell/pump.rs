@@ -2,8 +2,8 @@
 //!
 //! Wired by 1D (`shell::pump`); types come from `super::contract`.
 //! Contract deltas ruled in P1D-report.md (kept here too): `Pump::start`
-//! takes `id: TaskId` first, `pattern` is the `NotifyPattern` substring
-//! stub until 3C swaps in `regex::Regex`, `PumpSummary` carries
+//! takes `id: TaskId` first, `pattern` is the regex-backed `NotifyPattern`
+//! (3C: `regex` crate, 1 MiB size limit), `PumpSummary` carries
 //! `log_write_failed`.
 //! Design: two reader tasks (8 KiB reads, arrival-interleaved) → `mpsc<Vec<u8>>`
 //! → one writer task owning the log file and the memory view. `start` returns the
@@ -41,7 +41,7 @@ const MAX_WAKE_LINE_CHARS: usize = 200;
 pub const NOTIFY_DISABLED_NOTE: &str = "[gray: notify_on disabled after 5 matches]";
 
 // Identity/event/budget types live in `super::contract` (mirrors deleted by
-// 1D wiring; `NotifyPattern` stays there as the std-only stub until 3C).
+// 1D wiring).
 
 // ── pure core (no I/O) ───────────────────────────────────────────────────────
 
@@ -198,7 +198,7 @@ impl Pump {
         stderr: Option<ChildStderr>,
         log_path: PathBuf,
         bytes_tx: watch::Sender<u64>,
-        pattern: Option<NotifyPattern>, // STUB for Option<regex::Regex> until 3C
+        pattern: Option<NotifyPattern>,
         wake: Option<broadcast::Sender<WakeEvent>>,
     ) -> JoinHandle<PumpSummary> {
         tokio::spawn(pump_main(id, stdout, stderr, log_path, bytes_tx, pattern, wake))
@@ -372,6 +372,17 @@ async fn scan_line(line: &str, shared: &Arc<ScanShared>, tx: &mpsc::Sender<Vec<u
         });
     }
     if disabled_by_this {
+        if let Some(wake) = shared.wake.as_ref() {
+            // 3C final wake: one, then silence. Reuses PatternMatched so 3A
+            // needs no new variant; the line text carries the disable notice.
+            let _ = wake.send(WakeEvent::PatternMatched {
+                id: shared.id,
+                line: format!(
+                    "notify_on disabled for {} after 5 matches; read the log directly",
+                    shared.id
+                ),
+            });
+        }
         let mut note = String::from(NOTIFY_DISABLED_NOTE);
         note.push('\n');
         // Into the log via the writer like any other bytes; loss is fine.
@@ -501,11 +512,14 @@ mod tests {
     }
 
     #[test]
-    fn notify_stub_matches_substring_and_truncates_wake_lines() {
-        let p = NotifyPattern::new("ready");
+    fn notify_pattern_is_regex_size_limited_and_truncates_wake_lines() {
+        let p = NotifyPattern::new("error|ready").unwrap();
         assert!(p.matches("server ready on :8080"));
+        assert!(p.matches("fatal error here"));
         assert!(!p.matches("server started"));
-        assert!(!NotifyPattern::new("").matches("ready")); // empty never matches
+        assert_eq!(p.as_str(), "error|ready");
+        assert!(!NotifyPattern::new("").unwrap().matches("ready")); // empty never matches
+        assert!(NotifyPattern::new("(").is_err()); // invalid → tool reports the regex error + example
         let long = "x".repeat(300);
         assert_eq!(truncate_wake_line(&long).chars().count(), 200);
         assert_eq!(truncate_wake_line("short"), "short");
@@ -540,7 +554,7 @@ mod tests {
         let (wake_tx, mut wake_rx) = broadcast::channel(8);
         let shared = Arc::new(ScanShared {
             id: TaskId(7),
-            pattern: NotifyPattern::new("ready"),
+            pattern: NotifyPattern::new("ready").unwrap(),
             state: Mutex::new(PatternState::new()),
             wake: Some(wake_tx),
         });
@@ -589,7 +603,7 @@ mod tests {
             None,
             log.clone(),
             bytes_tx,
-            Some(NotifyPattern::new("ready")),
+            Some(NotifyPattern::new("ready").unwrap()),
             Some(wake_tx),
         );
         assert!(child.wait().await.unwrap().success());
@@ -624,7 +638,7 @@ mod tests {
             None,
             log.clone(),
             bytes_tx,
-            Some(NotifyPattern::new("tick")),
+            Some(NotifyPattern::new("tick").unwrap()),
             Some(wake_tx),
         );
         for _ in 0..5 {
@@ -634,9 +648,21 @@ mod tests {
                 .unwrap();
             assert!(matches!(ev, WakeEvent::PatternMatched { .. }));
         }
+        // 3C: one final disable wake, then silence even though a 6th tick ran.
+        match tokio::time::timeout(Duration::from_secs(5), wake_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            WakeEvent::PatternMatched { id, line } => {
+                assert_eq!(id, TaskId(3));
+                assert!(line.contains("notify_on disabled for t3 after 5 matches"));
+            }
+            ev => panic!("expected disable PatternMatched, got {ev:?}"),
+        }
         assert!(child.wait().await.unwrap().success()); // 6th tick ran, then EOF
         let s = h.await.unwrap();
-        assert!(wake_rx.try_recv().is_err()); // 6th match suppressed: still exactly 5 wakes
+        assert!(wake_rx.try_recv().is_err()); // 6th match suppressed: 5 wakes + 1 disable, nothing more
         let file = std::fs::read(&log).unwrap();
         assert!(String::from_utf8_lossy(&file).contains(NOTIFY_DISABLED_NOTE));
         assert_eq!(s.total_bytes, file.len() as u64);
