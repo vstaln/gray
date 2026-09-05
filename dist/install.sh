@@ -41,10 +41,24 @@ else
     echo "need curl or wget to download"; exit 1
 fi
 
+echo "→ verifying checksum..."
+curl -fsSL "${REPO_URL}/SHA256SUMS" -o "${TMP}/SHA256SUMS"
+if have_cmd sha256sum; then
+    ( cd "$TMP" && grep " ${TARBALL}\$" SHA256SUMS | sha256sum -c - )
+elif have_cmd shasum; then
+    ( cd "$TMP" && grep " ${TARBALL}\$" SHA256SUMS | shasum -a 256 -c - )
+else
+    echo "need sha256sum or shasum to verify download"; exit 1
+fi || { echo "checksum mismatch for ${TARBALL} — refusing to install"; exit 1; }
+
 tar xzf "${TMP}/${TARBALL}" -C "$TMP"
 
-# pick install dir: ~/.local/bin preferred, /usr/local/bin with sudo fallback
-if [ -w "/usr/local/bin" ] || [ "$(id -u)" = "0" ]; then
+# install dir: ~/.local/bin by default; --system or GRAY_INSTALL_DIR for system-wide
+SYSTEM=0
+for a in "$@"; do [ "$a" = "--system" ] && SYSTEM=1; done
+if [ -n "${GRAY_INSTALL_DIR:-}" ]; then
+    DEST="${GRAY_INSTALL_DIR}"
+elif [ "$SYSTEM" = "1" ] || [ "$(id -u)" = "0" ]; then
     DEST="/usr/local/bin"
 else
     DEST="$HOME/.local/bin"
