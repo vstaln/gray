@@ -157,6 +157,11 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     )
     .await?;
 
+    // Cron (or other plugin-initiated) `host/say` lines queued mid-turn.
+    for line in crate::host::take_host_say() {
+        println!("{line}");
+    }
+
     Ok(())
 }
 

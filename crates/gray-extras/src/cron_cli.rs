@@ -122,9 +122,14 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
                                 "→ running cron job {} (\"{}\"): {}",
                                 job.id, job.name, job.prompt
                             );
-                            let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
-                            // Daemon headless: for now log + update; REPL background will run Agent.
-                            // One-shot jobs: next_run=None after update, so they won't refire.
+                            // Atomic claim: skip when another ticker won the race.
+                            if !gray_cron::store::claim_job_run(&job.id, chrono::Utc::now()) {
+                                println!("  (already fired elsewhere — skipping)");
+                                continue;
+                            }
+                            // Daemon headless: for now log + claim; the sidecar's
+                            // host/run path runs the Agent. One-shot jobs get
+                            // next_run=None at claim, so they won't refire.
                         }
                     }
                     Err(e) => eprintln!("cron scan failed: {e}"),

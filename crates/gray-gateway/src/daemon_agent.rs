@@ -44,13 +44,19 @@ impl GatewayRunner {
 
         // Sidecar hooks from the same `gray.yml` profile the REPL reads;
         // spawn failures warn + continue (the daemon must stay up).
+        // Every sidecar gets the host runner so plugin-initiated `host/run`
+        // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let host_handler = cron_host_handler(cwd.clone());
         let mut plugins: Vec<std::sync::Arc<dyn gray_plugin::Plugin>> = Vec::new();
         if let Ok(entries) = gray_plugin::profile::load_entries("gray.yml") {
             for e in &entries {
                 if let gray_plugin::profile::PluginEntry::Sidecar(spec) = e {
                     match gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone()).await {
-                        Ok(p) => plugins.push(std::sync::Arc::new(p)),
+                        Ok(p) => {
+                            p.set_host_handler(host_handler.clone()).await;
+                            plugins.push(std::sync::Arc::new(p))
+                        }
                         Err(err) => {
                             log::warn!(target: "gray_gateway", "sidecar spawn failed, skipping: {err:#}")
                         }
@@ -201,6 +207,50 @@ impl GatewayRunner {
             }
         }
     }
+}
+
+/// Plugin→host handler for gateway-spawned sidecars (`host/run`/`host/say`).
+/// `host/run` replays the prompt through a fresh `gray -p` child of the
+/// running binary (shared runner, no new deps); `host/say` is logged + saved
+/// under `cron/output`. Home-channel fan-out stays with the legacy
+/// `run_cron_job` path until the cron sidecar goes persistent (owed — the
+/// per-turn sidecars here live only for the turn, so the `daemon_boot`
+/// ticker remains the primary gateway firer; all tickers claim atomically).
+fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
+    std::sync::Arc::new(move |method: String, params: serde_json::Value| {
+        let cwd = cwd.clone();
+        let fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = serde_json::Value> + Send>,
+        > = Box::pin(async move {
+            match method.as_str() {
+                gray_plugin::HOST_SAY => {
+                    let text = params
+                        .get("text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if !text.trim().is_empty() {
+                        log::info!(target: "gray_gateway", "cron sidecar says: {text}");
+                        save_cron_output("sidecar", "cron", &text);
+                    }
+                    serde_json::json!({"ok": true})
+                }
+                gray_plugin::HOST_RUN => {
+                    let prompt = params
+                        .get("prompt")
+                        .and_then(|p| p.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if prompt.trim().is_empty() {
+                        return serde_json::json!({"error": "host/run: missing prompt"});
+                    }
+                    gray_plugin::host::run_prompt_child(&cwd, &prompt).await
+                }
+                _ => serde_json::json!({"error": format!("unknown host method {method}")}),
+            }
+        });
+        fut
+    })
 }
 
 fn save_cron_output(job_id: &str, name: &str, output: &str) {

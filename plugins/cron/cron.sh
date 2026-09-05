@@ -1,30 +1,18 @@
 #!/bin/sh
-# STUB (Task 3 p2-6): cron as an out-of-process sidecar plugin.
-#
-# Intended shape: the scheduler lives here, keeps its own flat-file store,
-# and fires due jobs via `host/run` (see docs/plugins.md "cron port").
-# Until the host wires a real `host/run` runner, every schedule operation
-# fails LOUDLY (is_error content, never silent) and in-process cron
-# (`gray-cron`, gateway `run_cron_job`) remains the live path.
-# `event/notify` has no id and gets no reply (ignored below like all unknowns).
-STUB='cron plugin stub: out-of-process scheduler not yet cut over (see docs/plugins.md "cron port"); in-process gray-cron is still live'
-while IFS= read -r line; do
-  case "$line" in
-    *plugin/shutdown*)
-      exit 0
-      ;;
-    *plugin/manifest*)
-      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
-      printf '{"id":%s,"result":{"name":"cron","version":"0.1.0","protocol":"1.1","capabilities":["session"],"subcommands":["/cron"],"tools":[{"name":"cron.add","description":"Schedule a prompt (STUB)","parameters":{"type":"object"},"snippet":"cron.add <prompt>"},{"name":"cron.list","description":"List jobs (STUB)","parameters":{"type":"object"},"snippet":"cron.list"},{"name":"cron.remove","description":"Remove a job (STUB)","parameters":{"type":"object"},"snippet":"cron.remove <id>"}],"commands":[],"hooks":[]}}\n' "$id"
-      ;;
-    *command/run*)
-      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
-      printf '{"id":%s,"result":{"text":"%s"}}\n' "$id" "$STUB"
-      ;;
-    *tool/call*)
-      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
-      # JSON-escape is overkill for a fixed stub string (no quotes in it).
-      printf '{"id":%s,"result":{"content":"%s","is_error":true}}\n' "$id" "$STUB"
-      ;;
-  esac
+# cron sidecar (real): the scheduler is the gray-cron-sidecar binary, which
+# reuses gray-cron's store/parser/scheduler (no shell reimplementation).
+# Manifest declares capabilities ["session"] + subcommands ["/cron"]; due
+# jobs fire via host/run and report via host/say (see docs/plugins.md).
+# Needs the binary on PATH (cargo install -p gray-cron) or a workspace
+# build tree (target/ below); without it spawn fails fast and loud.
+if command -v gray-cron-sidecar >/dev/null 2>&1; then
+  exec gray-cron-sidecar
+fi
+HERE=$(dirname "$0")
+for c in "$HERE/../../target/debug/gray-cron-sidecar" "$HERE/../../target/release/gray-cron-sidecar"; do
+  if [ -x "$c" ]; then
+    exec "$c"
+  fi
 done
+echo "cron sidecar: gray-cron-sidecar not found (cargo install -p gray-cron, or cargo build -p gray-cron)" >&2
+exit 127

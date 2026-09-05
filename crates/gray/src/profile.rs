@@ -115,6 +115,16 @@ pub fn take_profile_warnings() -> Vec<String> {
 /// Async on the ambient runtime: tokio process stdio handles are runtime-bound,
 /// so sidecars must spawn on the same runtime that drives them (main/CLI entry).
 async fn profile_plugins() -> anyhow::Result<Option<Vec<Arc<dyn Plugin>>>> {
+    profile_plugins_with_handler(None).await
+}
+
+/// Same as [`profile_plugins`], installing `handler` (`host/run`/`host/say`)
+/// on every sidecar at spawn. [`crate::build_agent`] passes the real runner;
+/// [`build_registry`] (`--dump-manifest`) passes `None` (manifest-only boot,
+/// no plugin-initiated turns expected).
+async fn profile_plugins_with_handler(
+    handler: Option<gray_plugin::HostHandler>,
+) -> anyhow::Result<Option<Vec<Arc<dyn Plugin>>>> {
     let defaults = default_plugins();
     match gray_plugin::profile::load_entries("gray.yml") {
         Ok(entries) => {
@@ -135,6 +145,9 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<Arc<dyn Plugin>>>> {
                         let plugin = gray_plugin::sidecar::SidecarPlugin::spawn(spec.0.clone())
                             .await
                             .with_context(|| format!("sidecar[{i}] ({label}) failed to spawn"))?;
+                        if let Some(h) = &handler {
+                            plugin.set_host_handler(h.clone()).await;
+                        }
                         plugins.push(Arc::new(plugin) as Arc<dyn Plugin>);
                     }
                 }
@@ -162,7 +175,15 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<Arc<dyn Plugin>>>> {
 /// [`build_registry`] and [`build_agent`] so sidecar children spawn once
 /// per build. Returns `(plugins, used_fallback)`.
 pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
-    match profile_plugins().await? {
+    active_plugins_with_handler(None).await
+}
+
+/// Same as [`active_plugins`], installing the plugin→host runner
+/// (`host/run`/`host/say`) on every sidecar at spawn.
+pub(crate) async fn active_plugins_with_handler(
+    handler: Option<gray_plugin::HostHandler>,
+) -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
+    match profile_plugins_with_handler(handler).await? {
         Some(plugins) if !plugins.is_empty() => Ok((plugins, false)),
         _ => Ok((default_plugins(), true)),
     }
