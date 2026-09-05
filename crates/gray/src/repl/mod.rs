@@ -1277,10 +1277,10 @@ fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> Opti
     Some(board)
 }
 
-/// One boot-card row per platform: ` └─ Discord — connecting…` →
-/// ` └─ Discord — connected as GrayBot`. The leading space is the requested
-/// indent under the card header; shared verbatim by the live viewport panel
-/// and the committed final card.
+/// One boot-card row per platform: `  └─ Discord — connecting…` →
+/// `  └─ Discord — connected as GrayBot`. The two-space indent matches the
+/// card header (`format_tool_box_lines`); shared verbatim by the live
+/// viewport panel and the committed final card.
 pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard) -> Vec<String> {
     use gray_gateway::status::PlatformConnState as S;
     let snap = board.snapshot();
@@ -1294,7 +1294,7 @@ pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard
                 S::Connected { identity: None } => "connected".to_string(),
                 S::Failed(e) => format!("connect failed: {e}"),
             };
-            format!(" {branch} {} — {status}", plat.label())
+            format!("  {branch} {} — {status}", plat.label())
         })
         .collect()
 }
@@ -3515,12 +3515,12 @@ mod tests {
         use gray_gateway::config::Platform;
         use gray_gateway::status::{GatewayStatusBoard, PlatformConnState as S};
         let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Telegram]);
-        // Canonical order (Telegram first), connecting, one leading space.
+        // Canonical order (Telegram first), connecting, two-space card indent.
         assert_eq!(
             super::gateway_boot_rows(&b),
             vec![
-                " ├─ Telegram — connecting…".to_string(),
-                " └─ Discord — connecting…".to_string(),
+                "  ├─ Telegram — connecting…".to_string(),
+                "  └─ Discord — connecting…".to_string(),
             ]
         );
         // Staged progress surfaces inline: `└─ {Platform} — {stage}…`.
@@ -3529,8 +3529,8 @@ mod tests {
         assert_eq!(
             super::gateway_boot_rows(&b),
             vec![
-                " ├─ Telegram — validating token…".to_string(),
-                " └─ Discord — waiting for ready…".to_string(),
+                "  ├─ Telegram — validating token…".to_string(),
+                "  └─ Discord — waiting for ready…".to_string(),
             ]
         );
         b.mark_connected(Platform::Discord, Some("GrayBot".into()));
@@ -3538,14 +3538,14 @@ mod tests {
         assert_eq!(
             super::gateway_boot_rows(&b),
             vec![
-                " ├─ Telegram — connected".to_string(),
-                " └─ Discord — connected as GrayBot".to_string(),
+                "  ├─ Telegram — connected".to_string(),
+                "  └─ Discord — connected as GrayBot".to_string(),
             ]
         );
         // Failed state surfaces the error inline (same single card).
         b.mark_failed(Platform::Telegram, "token rejected");
         let rows = super::gateway_boot_rows(&b);
-        assert_eq!(rows[0], " ├─ Telegram — connect failed: token rejected");
+        assert_eq!(rows[0], "  ├─ Telegram — connect failed: token rejected");
         // No identity leak: rows never contain tokens, only display names.
         assert!(!rows.join("\n").contains("secret"));
         let _ = S::Connecting { stage: "connecting" };
