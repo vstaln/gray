@@ -34,32 +34,31 @@ fn queue_say(text: String) {
 pub fn default_handler(cwd: PathBuf) -> HostHandler {
     std::sync::Arc::new(move |method: String, params: serde_json::Value| {
         let cwd = cwd.clone();
-        let fut: std::pin::Pin<
-            Box<dyn std::future::Future<Output = serde_json::Value> + Send>,
-        > = Box::pin(async move {
-            match method.as_str() {
-                HOST_SAY => {
-                    if let Some(text) = params.get("text").and_then(|t| t.as_str())
-                        && !text.trim().is_empty()
-                    {
-                        queue_say(text.to_string());
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
+            Box::pin(async move {
+                match method.as_str() {
+                    HOST_SAY => {
+                        if let Some(text) = params.get("text").and_then(|t| t.as_str())
+                            && !text.trim().is_empty()
+                        {
+                            queue_say(text.to_string());
+                        }
+                        serde_json::json!({"ok": true})
                     }
-                    serde_json::json!({"ok": true})
-                }
-                HOST_RUN => {
-                    let prompt = params
-                        .get("prompt")
-                        .and_then(|p| p.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if prompt.trim().is_empty() {
-                        return serde_json::json!({"error": "host/run: missing prompt"});
+                    HOST_RUN => {
+                        let prompt = params
+                            .get("prompt")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if prompt.trim().is_empty() {
+                            return serde_json::json!({"error": "host/run: missing prompt"});
+                        }
+                        gray_plugin::host::run_prompt_child(&cwd, &prompt).await
                     }
-                    gray_plugin::host::run_prompt_child(&cwd, &prompt).await
+                    _ => serde_json::json!({"error": format!("unknown host method {method}")}),
                 }
-                _ => serde_json::json!({"error": format!("unknown host method {method}")}),
-            }
-        });
+            });
         fut
     })
 }

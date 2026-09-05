@@ -61,8 +61,7 @@ fn drain_builder_warnings() {
 /// the profile is missing/unparseable/empty. Manifest-only boot (no host
 /// handler); a sidecar spawn failure aborts boot with entry index + argv.
 pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
-    let out =
-        gray_plugin::builder::active_plugins(gray_defaults(), "gray.yml", None, true).await?;
+    let out = gray_plugin::builder::active_plugins(gray_defaults(), "gray.yml", None, true).await?;
     drain_builder_warnings();
     Ok(out)
 }
@@ -77,11 +76,8 @@ pub fn builtin_registry() -> gray_tools::Registry {
 /// Returns `(registry, manifests, used_fallback)` — the flag feeds
 /// `--dump-manifest`'s note.
 /// A sidecar spawn failure is a hard `Err` naming the entry (caller aborts boot).
-pub async fn build_registry() -> anyhow::Result<(
-    gray_tools::Registry,
-    Vec<gray_plugin::Manifest>,
-    bool,
-)> {
+pub async fn build_registry()
+-> anyhow::Result<(gray_tools::Registry, Vec<gray_plugin::Manifest>, bool)> {
     let (plugins, fallback) = active_plugins().await?;
     let (registry, manifests) = from_plugins(&plugins);
     Ok((registry, manifests, fallback))

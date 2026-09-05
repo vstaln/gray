@@ -1394,10 +1394,13 @@ dependencies = [
  "async-trait",
  "futures",
  "gray-core",
+ "gray-provider",
+ "gray-tools",
  "log",
  "serde",
  "serde_json",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

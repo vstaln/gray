@@ -209,36 +209,35 @@ impl GatewayRunner {
 fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
     std::sync::Arc::new(move |method: String, params: serde_json::Value| {
         let cwd = cwd.clone();
-        let fut: std::pin::Pin<
-            Box<dyn std::future::Future<Output = serde_json::Value> + Send>,
-        > = Box::pin(async move {
-            match method.as_str() {
-                gray_plugin::HOST_SAY => {
-                    let text = params
-                        .get("text")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !text.trim().is_empty() {
-                        log::info!(target: "gray_gateway", "cron sidecar says: {text}");
-                        save_cron_output("sidecar", "cron", &text);
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
+            Box::pin(async move {
+                match method.as_str() {
+                    gray_plugin::HOST_SAY => {
+                        let text = params
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if !text.trim().is_empty() {
+                            log::info!(target: "gray_gateway", "cron sidecar says: {text}");
+                            save_cron_output("sidecar", "cron", &text);
+                        }
+                        serde_json::json!({"ok": true})
                     }
-                    serde_json::json!({"ok": true})
-                }
-                gray_plugin::HOST_RUN => {
-                    let prompt = params
-                        .get("prompt")
-                        .and_then(|p| p.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if prompt.trim().is_empty() {
-                        return serde_json::json!({"error": "host/run: missing prompt"});
+                    gray_plugin::HOST_RUN => {
+                        let prompt = params
+                            .get("prompt")
+                            .and_then(|p| p.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if prompt.trim().is_empty() {
+                            return serde_json::json!({"error": "host/run: missing prompt"});
+                        }
+                        gray_plugin::host::run_prompt_child(&cwd, &prompt).await
                     }
-                    gray_plugin::host::run_prompt_child(&cwd, &prompt).await
+                    _ => serde_json::json!({"error": format!("unknown host method {method}")}),
                 }
-                _ => serde_json::json!({"error": format!("unknown host method {method}")}),
-            }
-        });
+            });
         fut
     })
 }
