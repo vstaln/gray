@@ -340,17 +340,24 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             frame.render_widget(Paragraph::new(line.clone()), Rect::new(area.x, y, area.width, 1));
         }
         // Boot panel as a card: same gray block + margins as the committed
-        // `Gateway autostarted` / `Gateway started` card.
-        let boot_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
-        for (i, line) in boot_lines.iter().enumerate() {
-            let y = status_y + status_h + queued_preview.len() as u16 + i as u16;
-            if y < area.y || y >= area.y + area.height {
-                continue;
+        // `Gateway autostarted` / `Gateway started` card. Single Paragraph
+        // like the input box and the committed card (per-line Paragraphs
+        // drop the gray bg in the inline viewport, so live `validating…`
+        // looked bare next to committed `connected as …`).
+        if !boot_lines.is_empty() {
+            let boot_y = status_y + status_h + queued_preview.len() as u16;
+            if boot_y < area.bottom() {
+                let boot_h = (boot_lines.len() as u16).min(area.bottom().saturating_sub(boot_y));
+                if boot_h > 0 {
+                    let boot_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let visible: Vec<Line<'static>> =
+                        boot_lines.iter().take(boot_h as usize).cloned().collect();
+                    frame.render_widget(
+                        Paragraph::new(visible).block(boot_block),
+                        Rect::new(area.x, boot_y, area.width, boot_h),
+                    );
+                }
             }
-            frame.render_widget(
-                Paragraph::new(line.clone()).block(boot_block.clone()),
-                Rect::new(area.x, y, area.width, 1),
-            );
         }
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
