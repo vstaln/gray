@@ -222,17 +222,10 @@ pub fn calculate_context_tokens(u: &Usage) -> usize {
 }
 
 pub fn estimate_tokens(msg: &Message) -> usize {
-    let chars: usize = msg
-        .content
-        .iter()
-        .map(|b| match b {
-            ContentBlock::Text { text } | ContentBlock::Thinking { text, .. } => text.len(),
-            ContentBlock::ToolResult { content, .. } => content.len(),
-            ContentBlock::ToolUse { name, args, .. } => name.len() + args.to_string().len(),
-            ContentBlock::Image { data, .. } => data.len(),
-        })
-        .sum();
-    (chars as f64 / 4.0).ceil() as usize
+    // Must measure billable context, not displayable prose: a message whose
+    // only block is a 50 KiB tool result is ~12.8k tokens, not 0. See
+    // `Message::context_text`.
+    (msg.context_text().len() as f64 / 4.0).ceil() as usize
 }
 
 pub fn estimate_context_tokens(messages: &[Message], last: Option<Usage>) -> usize {
