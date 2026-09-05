@@ -475,6 +475,30 @@ impl BasePlatformAdapter for DiscordAdapter {
         }
     }
 
+    async fn delete_message(&self, chat: &str, message_id: &str) -> SendResult {
+        #[cfg(feature = "discord")]
+        {
+            let Some(client) = self.client.lock().unwrap().clone() else {
+                return SendResult::fail("discord not connected", false);
+            };
+            let (Ok(cid), Ok(mid)) = (chat.parse::<u64>(), message_id.parse::<u64>()) else {
+                return SendResult::fail(format!("invalid discord ids {chat:?}/{message_id:?}"), false);
+            };
+            return match client
+                .delete_message(twilight_model::id::Id::new(cid), twilight_model::id::Id::new(mid))
+                .await
+            {
+                Ok(_) => SendResult::ok(Some(message_id.to_string())),
+                Err(e) => SendResult::fail(format!("discord delete: {e}"), true),
+            };
+        }
+        #[cfg(not(feature = "discord"))]
+        {
+            log::info!("[discord] delete {chat}/{message_id}");
+            SendResult::ok(Some(message_id.to_string()))
+        }
+    }
+
     async fn send(&self, chat: &str, text: &str) -> SendResult {
         // Default reply target: last inbound message in this channel (hermes reply_to_mode=first).
         let reply_to = self.last_inbound.lock().unwrap().get(chat).map(|m| m.to_string());
