@@ -18,7 +18,7 @@ gray-core = { workspace = true }
 gray-session = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
-gray-cron = { workspace = true }
+gray-cron = { workspace = true, optional = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { workspace = true }
@@ -33,7 +33,8 @@ slack-morphism = { version = "2", optional = true, features = ["hyper"] }
 twilight-util = { version = "0.17.0", features = ["builder"], optional = true }
 
 [features]
-default = []
+default = ["cron"]
+cron = ["dep:gray-cron"]
 telegram = ["dep:teloxide"]
 discord = ["dep:twilight-gateway", "dep:twilight-http", "dep:twilight-model", "dep:twilight-util"]
 slack = ["dep:slack-morphism"]
