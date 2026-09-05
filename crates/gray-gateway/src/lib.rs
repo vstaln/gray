@@ -26,6 +26,7 @@ mod daemon_supervise;
 pub mod delivery;
 pub mod pairing;
 pub mod platform;
+pub mod progress;
 pub mod session;
 pub mod status;
 pub mod systemd;
