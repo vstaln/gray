@@ -297,7 +297,7 @@ fn gateway_boot_rows_indent_and_states() {
 }
 
 /// Stub plugin claiming `/echo`, like a sidecar manifest with
-/// `commands:["/echo"]` answering `command/run`.
+/// `commands:["/echo"]` answering `command/run` with `{"text"}`.
 struct EchoHook;
 
 #[async_trait::async_trait]
@@ -309,8 +309,34 @@ impl gray_core::agent::PluginHooks for EchoHook {
         }]
     }
 
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
-        (name == "/echo").then(|| argv.join(" "))
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+    ) -> Option<super::CommandOutcome> {
+        (name == "/echo").then(|| super::CommandOutcome::Say(argv.join(" ")))
+    }
+}
+
+/// Stub plugin claiming `/ask`, answering `command/run` with
+/// `{"prompt"}` (asks the host to submit a turn instead of printing).
+struct PromptHook;
+
+#[async_trait::async_trait]
+impl gray_core::agent::PluginHooks for PromptHook {
+    fn commands(&self) -> Vec<gray_core::agent::PluginCommand> {
+        vec![gray_core::agent::PluginCommand {
+            name: "/ask".to_string(),
+            description: "submit argv as a prompt".to_string(),
+        }]
+    }
+
+    async fn run_command(
+        &self,
+        name: &str,
+        argv: Vec<String>,
+    ) -> Option<super::CommandOutcome> {
+        (name == "/ask").then(|| super::CommandOutcome::Prompt(argv.join(" ")))
     }
 }
 
@@ -341,7 +367,24 @@ async fn plugin_command_routes_claimed_to_owner() {
     let hooks = echo_hooks();
     let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
     let out = super::run_plugin_command(&hooks, &name, argv).await;
-    assert_eq!(out.as_deref(), Some("hi"));
+    assert_eq!(out, Some(super::CommandOutcome::Say("hi".to_string())));
+}
+
+#[tokio::test]
+async fn plugin_command_prompt_reply_takes_prompt_path() {
+    use super::CommandOutcome;
+    let hooks: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> =
+        vec![std::sync::Arc::new(PromptHook)];
+    let (name, argv) = super::split_plugin_command("/ask write tests").expect("splits");
+    let out = super::run_plugin_command(&hooks, &name, argv).await;
+    // Prompt replies stay distinct from Say: the `Unknown` handler
+    // routes this into `pending_command = ReplCommand::Prompt`, not `say()`.
+    assert!(matches!(out, Some(CommandOutcome::Prompt(ref p)) if p == "write tests"), "got {out:?}");
+    // And the text path is untouched.
+    let hooks = echo_hooks();
+    let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
+    let out = super::run_plugin_command(&hooks, &name, argv).await;
+    assert!(matches!(out, Some(CommandOutcome::Say(ref s)) if s == "hi"), "got {out:?}");
 }
 
 #[tokio::test]

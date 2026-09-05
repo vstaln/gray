@@ -9,8 +9,8 @@ pub mod questions;
 pub mod tool_out;
 
 pub use agent::{
-    Agent, PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream, ToolBefore,
-    ToolContext, ToolExecutor, ToolOutput,
+    Agent, CommandOutcome, PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream,
+    ToolBefore, ToolContext, ToolExecutor, ToolOutput,
 };
 pub use error::{CoreError, Result};
 pub use event::{AgentEvent, StopReason, StreamEvent, Usage};

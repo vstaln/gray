@@ -29,6 +29,9 @@ impl Plugin for ToolsBasicPlugin {
             commands: vec![],
             hooks: vec![],
             provider: None,
+            protocol: None,
+            capabilities: vec![],
+            subcommands: vec![],
         }
     }
 
@@ -56,6 +59,9 @@ impl Plugin for ToolsSearchPlugin {
             commands: vec![],
             hooks: vec![],
             provider: None,
+            protocol: None,
+            capabilities: vec![],
+            subcommands: vec![],
         }
     }
 

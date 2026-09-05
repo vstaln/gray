@@ -95,6 +95,7 @@ pub(crate) async fn run_prompt_turn(
         cwd: cwd.to_path_buf(),
         cancel: cancel.clone(),
         questions: Some(question_bridge.clone()),
+        session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
     };
     let images = std::mem::take(&mut *pending_images);
     let user_msg = build_user_message_with_attachments(&prompt_text, &images);
@@ -190,6 +191,7 @@ pub(crate) async fn run_prompt_turn(
                 cwd: cwd.to_path_buf(),
                 cancel: cancel.clone(),
                 questions: Some(question_bridge.clone()),
+                session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
             };
             let mut on_event2 = |ev: &AgentEvent| {
                 dispatch_agent_event(

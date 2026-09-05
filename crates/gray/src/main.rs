@@ -51,6 +51,9 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Gateway { cmd } => {
                 return run_gateway(cmd).await;
             }
+            gray::Commands::Plugin { cmd } => {
+                return run_plugin(cmd).await;
+            }
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
@@ -133,6 +136,18 @@ fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
         PairingCmd::Revoke { platform, user } => println!("{}", pairing_revoke(&platform, &user)?),
     }
     Ok(())
+}
+
+async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
+    match cmd {
+        gray::PluginCmd::Check { dir } => {
+            if let Err(e) = gray::plugin_check::check_plugin_dir(&dir).await {
+                eprintln!("error: {e:#}");
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+    }
 }
 
 fn print_invite(platform: &str) -> anyhow::Result<()> {

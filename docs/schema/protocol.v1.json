@@ -1,0 +1,61 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gray.alignment.id/schema/protocol.v1.json",
+  "title": "gray sidecar wire envelopes (protocol v1.1 + v1.2 additions)",
+  "description": "Newline-delimited JSON over child stdio. Host->sidecar ids are numbers; sidecar->host ids are strings (separate namespaces). Frozen spec: docs/protocol-v1.md.",
+  "definitions": {
+    "session": {
+      "type": "object",
+      "required": ["id", "cwd"],
+      "properties": {
+        "id": {"type": "string"},
+        "cwd": {"type": "string"}
+      }
+    },
+    "hostRequest": {
+      "type": "object",
+      "required": ["id", "method"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "method": {
+          "type": "string",
+          "enum": [
+            "plugin/manifest",
+            "tool/call",
+            "prompt/context",
+            "tool/before",
+            "command/run"
+          ]
+        },
+        "params": {"type": "object"}
+      }
+    },
+    "hostNotification": {
+      "type": "object",
+      "required": ["method", "params"],
+      "not": {"required": ["id"]},
+      "properties": {
+        "method": {"type": "string", "enum": ["event/notify", "plugin/shutdown"]},
+        "params": {"type": "object"}
+      }
+    },
+    "pluginRequest": {
+      "type": "object",
+      "required": ["id", "method", "params"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "method": {"type": "string", "enum": ["host/run", "host/say"]},
+        "params": {"type": "object"}
+      }
+    },
+    "reply": {
+      "type": "object",
+      "required": ["id", "result"],
+      "properties": {
+        "id": {"anyOf": [{"type": "integer"}, {"type": "string"}]},
+        "result": {}
+      }
+    }
+  },
+  "type": "object"
+}

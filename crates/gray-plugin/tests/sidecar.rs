@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use gray_core::agent::{
-    Agent, PluginHooks, Provider, ProviderStream, ToolContext, ToolExecutor, ToolOutput,
+    Agent, CommandOutcome, PluginHooks, Provider, ProviderStream, ToolContext, ToolExecutor,
+    ToolOutput,
 };
 use gray_core::event::{StopReason, StreamEvent};
 use gray_core::message::{ChatRequest, ContentBlock, Message, ToolDef};
@@ -60,9 +61,8 @@ async fn tool_before_allow_and_command_joins_argv() {
     );
     assert_eq!(
         p.run_command("/echo", vec!["hi".into(), "there".into()])
-            .await
-            .as_deref(),
-        Some("hi there")
+            .await,
+        Some(CommandOutcome::Say("hi there".into()))
     );
     // Unclaimed command on a claiming plugin: no RPC, None.
     assert_eq!(p.run_command("/nope", vec![]).await, None);
@@ -136,9 +136,8 @@ async fn echo_reference_plugin_manifest_and_command_round_trip() {
     assert_eq!(out.content, "hi", "{out:?}");
     assert_eq!(
         p.run_command("/echo", vec!["hello".into(), "world".into()])
-            .await
-            .as_deref(),
-        Some("hello world")
+            .await,
+        Some(CommandOutcome::Say("hello world".into()))
     );
 }
 
@@ -307,10 +306,226 @@ async fn e2e_sidecar_command_run_routes_echo() {
     assert_eq!(
         hooks[0]
             .run_command("/echo", vec!["hello".into(), "world".into()])
-            .await
-            .as_deref(),
-        Some("hello world")
+            .await,
+        Some(CommandOutcome::Say("hello world".into()))
     );
     // Empty-text replies filter to None so the REPL never prints a blank line.
     assert_eq!(hooks[0].run_command("/echo", vec![]).await, None);
+}
+
+#[tokio::test]
+async fn command_run_prompt_variant() {
+    let p = SidecarPlugin::spawn(vec!["testdata/prompt_command_plugin.sh".into()]).await.unwrap();
+    assert_eq!(
+        p.run_command("/ask", vec![]).await,
+        Some(CommandOutcome::Prompt("hello from plugin".into()))
+    );
+    // Unclaimed command: no RPC, None.
+    assert_eq!(p.run_command("/nope", vec![]).await, None);
+}
+
+#[tokio::test]
+async fn session_param_present_when_claimed() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let n = N.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "gray-session-{}-{}",
+        std::process::id(),
+        n
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("session.log");
+    let script = dir.join("logger.sh");
+    // Logger sidecar: records every wire line with a session, replies canned.
+    // Claims prompt/context + tool/before + /sess + tool `sess` so all 4
+    // requests + notify are exercised.
+    let body = format!(
+        r#"#!/bin/sh
+LOG="{}"
+while IFS= read -r line; do
+  case "$line" in
+    *plugin/manifest*)
+      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+      printf '{{"id":%s,"result":{{"name":"sess","version":"0.1.0","protocol":"1.1","tools":["sess"],"commands":["/sess"],"hooks":["prompt/context","tool/before"]}}}}\n' "$id"
+      ;;
+    *plugin/shutdown*)
+      exit 0
+      ;;
+    *prompt/context*|*tool/before*|*command/run*|*tool/call*|*event/notify*)
+      printf '%s\n' "$line" >> "$LOG"
+      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+      case "$line" in
+        *prompt/context*) printf '{{"id":%s,"result":{{"text":"CTX"}}}}\n' "$id" ;;
+        *tool/before*) printf '{{"id":%s,"result":{{"decision":"allow"}}}}\n' "$id" ;;
+        *command/run*) printf '{{"id":%s,"result":{{"text":"ok"}}}}\n' "$id" ;;
+        *tool/call*) printf '{{"id":%s,"result":{{"content":"ok"}}}}\n' "$id" ;;
+      esac
+      ;;
+  esac
+done
+"#,
+        log.display()
+    );
+    std::fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()]).await.unwrap();
+
+    // Drive all 4 requests + one notify with distinctive cwd/session.
+    let prompt_cwd = "/tmp/session-prompt-cwd";
+    assert_eq!(p.prompt_context(prompt_cwd).await.as_deref(), Some("CTX"));
+    assert_eq!(p.tool_before("sess", &serde_json::json!({})).await, ToolBefore::Allow);
+    assert_eq!(
+        p.run_command("/sess", vec![]).await,
+        Some(CommandOutcome::Say("ok".into()))
+    );
+    let mut ctx = ToolContext::default();
+    ctx.cwd = "/tmp/session-tool-cwd".into();
+    ctx.session_id = Some("sess-123".into());
+    let out = p.tools()[0].execute(&ctx, serde_json::json!({})).await;
+    assert!(!out.is_error, "{out:?}");
+    use gray_plugin::CoreEvent;
+    use gray_core::event::Usage;
+    p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await;
+    // Notify is fire-and-forget: poll for the log line.
+    let t = std::time::Instant::now();
+    while t.elapsed() < std::time::Duration::from_secs(2) {
+        let Ok(text) = std::fs::read_to_string(&log) else {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+        };
+        if text.lines().count() >= 5 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines.len() >= 5, "4 requests + notify logged, got: {text}");
+    // Every wire line carries a session object with id + cwd.
+    for l in &lines {
+        assert!(l.contains("\"session\""), "session present: {l}");
+        assert!(l.contains("\"cwd\""), "cwd present: {l}");
+    }
+    // tool/call carries ctx session_id + cwd.
+    let tool_line = lines.iter().find(|l| l.contains("tool/call")).expect("tool/call logged");
+    assert!(tool_line.contains("sess-123"), "ctx session_id: {tool_line}");
+    assert!(tool_line.contains("/tmp/session-tool-cwd"), "ctx cwd: {tool_line}");
+    // prompt/context carries its cwd arg.
+    let prompt_line =
+        lines.iter().find(|l| l.contains("prompt/context")).expect("prompt/context logged");
+    assert!(prompt_line.contains(prompt_cwd), "prompt cwd: {prompt_line}");
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn pre_v1_sidecar_never_receives_shutdown_line() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static M: AtomicU64 = AtomicU64::new(0);
+    let n = M.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("gray-prev1-{}-{}", std::process::id(), n));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("pre_v1.log");
+    // Tee wrapper: logs every stdin line, pipes to pre-v1 hooks fixture
+    // (which has no shutdown handling and no `protocol`).
+    let argv = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("tee \"{}\" | testdata/hooks_plugin.sh", log.display()),
+    ];
+    let p = SidecarPlugin::spawn(argv).await.unwrap();
+    assert!(p.manifest().protocol.is_none(), "pre-v1 has no protocol");
+    let t = std::time::Instant::now();
+    p.shutdown(std::time::Duration::from_secs(1)).await;
+    assert!(t.elapsed() < std::time::Duration::from_secs(6), "no hang on pre-v1 shutdown");
+    // Give tee a moment to flush, then prove the shutdown line never arrived.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(logged.contains("plugin/manifest"), "tee saw traffic, got: {logged}");
+    assert!(
+        !logged.contains("plugin/shutdown"),
+        "pre-v1 must never receive shutdown line, got: {logged}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn host_requests_round_trip_with_string_ids() {
+    use gray_plugin::HostHandler;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static H: AtomicU64 = AtomicU64::new(0);
+    let n = H.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("gray-host-{}-{}", std::process::id(), n));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("host.log");
+    let script = dir.join("caller.sh");
+    // Caller sidecar: answers manifest, then issues host/say + host/run
+    // with STRING ids and logs the replies it gets back.
+    let body = format!(
+        r#"#!/bin/sh
+LOG="{}"
+while IFS= read -r line; do
+  case "$line" in
+    *plugin/manifest*)
+      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+      printf '{{"id":%s,"result":{{"name":"caller","version":"0.1.0","protocol":"1.1","tools":[]}}}}\n' "$id"
+      sleep 0.2
+      printf '{{"id":"s1","method":"host/say","params":{{"text":"hello host"}}}}\n'
+      printf '{{"id":"s2","method":"host/run","params":{{"session":{{"id":"","cwd":"/tmp"}},"prompt":"do x"}}}}\n'
+      ;;
+    *'"result"'*)
+      printf '%s\n' "$line" >> "$LOG"
+      ;;
+  esac
+done
+"#,
+        log.display()
+    );
+    std::fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()]).await.unwrap();
+    let seen: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let handler: HostHandler = Arc::new(move |method: String, params: serde_json::Value| {
+        let seen2 = seen2.clone();
+        let fut: std::pin::Pin<
+            Box<dyn std::future::Future<Output = serde_json::Value> + Send>,
+        > = Box::pin(async move {
+            seen2.lock().expect("seen lock").push((method.clone(), params));
+            match method.as_str() {
+                "host/say" => serde_json::json!({"ok": true}),
+                _ => serde_json::json!({"text": "ran it"}),
+            }
+        });
+        fut
+    });
+    p.set_host_handler(handler).await;
+    // Poll for both replies (string ids echoed back, separate namespace).
+    let t = std::time::Instant::now();
+    while t.elapsed() < std::time::Duration::from_secs(5) {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.lines().count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let seen = seen.lock().expect("seen lock").clone();
+    assert_eq!(seen.len(), 2, "host saw say + run, got {seen:?}");
+    assert_eq!(seen[0].0, "host/say");
+    assert_eq!(seen[1].0, "host/run");
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(text.contains("\"s1\"") && text.contains("\"ok\""), "say reply: {text}");
+    assert!(text.contains("\"s2\"") && text.contains("ran it"), "run reply: {text}");
+    p.shutdown(std::time::Duration::from_secs(2)).await;
+    let _ = std::fs::remove_dir_all(&dir);
 }

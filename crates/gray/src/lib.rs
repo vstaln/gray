@@ -4,6 +4,7 @@ pub mod compact;
 pub mod composer;
 pub mod config;
 pub mod logging;
+pub mod plugin_check;
 pub mod print;
 pub mod profile;
 pub mod repl;
@@ -288,6 +289,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<GatewayCmd>,
     },
+    /// Plugin tools (conformance check)
+    Plugin {
+        #[command(subcommand)]
+        cmd: PluginCmd,
+    },
     /// Update gray to the latest release
     Update,
 }
@@ -312,6 +318,16 @@ pub enum GatewayCmd {
     Pairing {
         #[command(subcommand)]
         cmd: PairingCmd,
+    },
+}
+
+/// `gray plugin ...` — plugin-side tooling.
+#[derive(Parser, Debug, Clone)]
+pub enum PluginCmd {
+    /// Run the sidecar conformance checks against a plugin dir
+    Check {
+        /// Plugin directory (executable, plugin.sh, or single executable)
+        dir: String,
     },
 }
 

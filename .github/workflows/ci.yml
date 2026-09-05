@@ -23,6 +23,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo check -p gray-gateway --features all-platforms
+      - run: python3 docs/schema/validate.py
       - run: cargo test --workspace --quiet
       - uses: rustsec/audit-check@v2
         with:

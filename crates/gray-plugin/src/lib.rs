@@ -11,6 +11,8 @@ use gray_core::message::{Message, ToolDef};
 pub mod profile;
 pub mod sidecar;
 
+pub use sidecar::{HOST_RUN, HOST_SAY, HostHandler, SidecarPlugin};
+
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
     PreStep { messages: Vec<Message> },
@@ -33,6 +35,20 @@ pub struct Manifest {
     #[serde(default)]
     pub hooks: Vec<String>,
     pub provider: Option<String>,
+    /// Protocol version claimed by the sidecar (`None` = v1 pre-lifecycle).
+    /// v1.1 sidecars send `"1.1"` and handle `plugin/shutdown` + `session`.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Sandbox capabilities the sidecar declares (`exec`, `http`, `session`,
+    /// `ui`). Advisory today: parsed, surfaced, and schemad — enforcement
+    /// is a later pass (see `docs/plugins.md`).
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Host-owned namespaces this plugin extends (`cron`, `gateway`, …).
+    /// Entries route argv through the same `command/run` wire as `commands`
+    /// (the adapter merges both into [`PluginHooks::commands`]).
+    #[serde(default)]
+    pub subcommands: Vec<String>,
 }
 
 /// One manifest `tools` entry: the model-facing definition plus the optional
@@ -57,24 +73,12 @@ pub fn parse_tool_entry(v: &Value) -> Option<ManifestTool> {
     if name.is_empty() {
         return None;
     }
-    let description = obj
-        .get("description")
-        .and_then(|d| d.as_str())
-        .unwrap_or_default()
-        .to_string();
-    let parameters = obj
-        .get("parameters")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!({}));
-    let snippet = obj
-        .get("snippet")
-        .and_then(|s| s.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    Some(ManifestTool {
-        def: ToolDef::new(name, description, parameters),
-        snippet,
-    })
+    let description =
+        obj.get("description").and_then(|d| d.as_str()).unwrap_or_default().to_string();
+    let parameters = obj.get("parameters").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let snippet =
+        obj.get("snippet").and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string());
+    Some(ManifestTool { def: ToolDef::new(name, description, parameters), snippet })
 }
 
 /// Parse the `tools` array of a `plugin/manifest` result into
@@ -94,36 +98,27 @@ impl Manifest {
         let str_list = |key: &str| {
             v.get(key)
                 .and_then(|t| t.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|e| e.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
+                .map(|a| a.iter().filter_map(|e| e.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default()
         };
         Self {
-            name: v
-                .get("name")
-                .and_then(|s| s.as_str())
-                .unwrap_or_default()
-                .into(),
-            version: v
-                .get("version")
-                .and_then(|s| s.as_str())
-                .unwrap_or_default()
-                .into(),
+            name: v.get("name").and_then(|s| s.as_str()).unwrap_or_default().into(),
+            version: v.get("version").and_then(|s| s.as_str()).unwrap_or_default().into(),
             tools: manifest_tools(v).into_iter().map(|t| t.def).collect(),
             commands: str_list("commands"),
             hooks: str_list("hooks"),
             provider: v.get("provider").and_then(|s| s.as_str()).map(|s| s.into()),
+            protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
+            capabilities: str_list("capabilities"),
+            subcommands: str_list("subcommands"),
         }
     }
 }
 
-/// Canonical `tool/before` verdict: single source of truth lives in
-/// [`gray_core::agent`] (core owns it so the agent loop never depends on
-/// this crate); re-exported here so sidecar call sites keep one import.
-pub use gray_core::agent::ToolBefore;
+/// Canonical `tool/before` verdict + `command/run` outcome: single source of
+/// truth lives in [`gray_core::agent`] (core owns it so the agent loop never
+/// depends on this crate); re-exported here so sidecar call sites keep one import.
+pub use gray_core::agent::{CommandOutcome, ToolBefore};
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -147,11 +142,15 @@ pub trait Plugin: Send + Sync {
     async fn tool_before(&self, _name: &str, _args: &Value) -> ToolBefore {
         ToolBefore::Allow
     }
-    /// `command/run` hook (`params: {"name":"/x","argv"}` → `result: {"text"}`).
+    /// `command/run` hook (`params: {"name":"/x","argv"}` → `result: {"text"}` or `{"prompt"}`).
     /// Default `None` = command unclaimed (pre-v1 behavior).
-    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<String> {
+    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
         None
     }
+    /// Lifecycle teardown: host is going away (`session_end`/`host_exit`/`reload`
+    /// sent on the wire by the sidecar transport). Default no-op so existing
+    /// impls keep compiling.
+    async fn shutdown(&self) {}
 }
 
 /// Later manifests win on tool-name conflict. Returns owner per tool name.
@@ -179,18 +178,12 @@ pub struct PluginHookAdapter {
 
 impl PluginHookAdapter {
     pub fn new(plugin: Arc<dyn Plugin>, cwd: impl Into<String>) -> Self {
-        Self {
-            plugin,
-            cwd: cwd.into(),
-        }
+        Self { plugin, cwd: cwd.into() }
     }
 
     /// One adapter per plugin, in boot order (hook order = plugin order).
     pub fn for_plugins(plugins: &[Arc<dyn Plugin>], cwd: &str) -> Vec<Arc<dyn PluginHooks>> {
-        plugins
-            .iter()
-            .map(|p| Arc::new(Self::new(p.clone(), cwd)) as Arc<dyn PluginHooks>)
-            .collect()
+        plugins.iter().map(|p| Arc::new(Self::new(p.clone(), cwd)) as Arc<dyn PluginHooks>).collect()
     }
 }
 
@@ -203,20 +196,38 @@ impl PluginHooks for PluginHookAdapter {
         self.plugin.tool_before(name, args).await
     }
     fn commands(&self) -> Vec<PluginCommand> {
-        self.plugin
-            .manifest()
-            .commands
+        // `subcommands` ride the same `command/run` wire: the REPL routes
+        // them to the owning plugin with argv untouched.
+        let m = self.plugin.manifest();
+        m.commands
             .into_iter()
-            .map(|name| PluginCommand {
-                name,
-                description: String::new(),
-            })
+            .chain(m.subcommands)
+            .map(|name| PluginCommand { name, description: String::new() })
             .collect()
     }
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
-        self.plugin
-            .run_command(name, argv)
-            .await
-            .filter(|t| !t.is_empty())
+    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
+        match self.plugin.run_command(name, argv).await? {
+            CommandOutcome::Say(s) if s.is_empty() => None,
+            CommandOutcome::Prompt(s) if s.is_empty() => None,
+            o => Some(o),
+        }
+    }
+    async fn pre_tool(&self, name: &str, args: &Value) {
+        let _ = self
+            .plugin
+            .on_event(CoreEvent::PreTool { name: name.to_string(), args: args.clone() })
+            .await;
+    }
+    async fn post_tool(&self, name: &str, output: &ToolOutput) {
+        let _ = self
+            .plugin
+            .on_event(CoreEvent::PostTool { name: name.to_string(), output: output.clone() })
+            .await;
+    }
+    async fn turn_end(&self, usage: &Usage) {
+        let _ = self.plugin.on_event(CoreEvent::TurnEnd { usage: *usage }).await;
+    }
+    async fn shutdown(&self) {
+        self.plugin.shutdown().await;
     }
 }

@@ -99,6 +99,7 @@ pub(crate) async fn run_empty_turn(
             cwd: cwd.to_path_buf(),
             cancel: cancel.clone(),
             questions: Some(question_bridge.clone()),
+            session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
         };
         let user_msg = build_user_message_with_attachments(&prompt_text, &images);
         let user_msg_for_retry = user_msg.clone();
@@ -179,6 +180,7 @@ pub(crate) async fn run_empty_turn(
                     cwd: cwd.to_path_buf(),
                     cancel: cancel.clone(),
                     questions: Some(question_bridge.clone()),
+                    session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
                 };
                 let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
                     dispatch_agent_event(

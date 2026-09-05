@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{Agent, PluginHooks, ToolContext};
+use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
@@ -140,15 +140,25 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
 /// Protocol v1 `command/run`: the first hook claiming `/name` owns it.
 /// `None` when no hook claims the command (the caller keeps the
 /// unknown-command message) or the owner declines to handle it.
+/// The outcome decides the caller's path: `Say` prints via `say()`,
+/// `Prompt` is submitted as a `ReplCommand::Prompt` turn.
 async fn run_plugin_command(
     hooks: &[Arc<dyn PluginHooks>],
     name: &str,
     argv: Vec<String>,
-) -> Option<String> {
+) -> Option<CommandOutcome> {
     let owner = hooks
         .iter()
         .find(|h| h.commands().iter().any(|c| c.name == name))?;
     owner.run_command(name, argv).await
+}
+
+/// Graceful sidecar teardown (`plugin/shutdown`); best-effort, never fails.
+async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
+    let hooks: Vec<Arc<dyn PluginHooks>> = agent.map(|a| a.hooks().to_vec()).unwrap_or_default();
+    for h in &hooks {
+        h.shutdown().await;
+    }
 }
 
 /// Restores the inline viewport after an alternate-screen modal (model/provider/etc).
@@ -473,6 +483,7 @@ pub async fn run_repl_mode(
                         None => {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
+                            shutdown_hooks(agent.as_ref()).await;
                             print_exit_hint(&session_state);
                             break;
                         }
@@ -492,6 +503,7 @@ pub async fn run_repl_mode(
                 }
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
+                    shutdown_hooks(agent.as_ref()).await;
                     break;
                 }
                 (buf.trim().to_string(), Vec::new())
