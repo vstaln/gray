@@ -194,6 +194,51 @@ impl ProcessRegistry {
         self.gc(session);
     }
 
+    /// Start-time ticks for 2D's pid-reuse check. Outer `None` = unknown
+    /// task; inner `None` = unknown ticks (macOS best-effort allow).
+    pub fn start_ticks(&self, session: &str, id: TaskId) -> Option<Option<u64>> {
+        let guard = self.inner.lock().expect("registry lock poisoned");
+        guard
+            .sessions
+            .get(session)?
+            .tasks
+            .get(&id.0)
+            .map(|t| t.start_ticks)
+    }
+
+    /// Id of the task currently holding `pid` in this session, if any (2D:
+    /// pid kills route to the task path). Prefers a Running match.
+    pub fn find_task_by_pid(&self, session: &str, pid: u32) -> Option<TaskId> {
+        let guard = self.inner.lock().expect("registry lock poisoned");
+        let sess = guard.sessions.get(session)?;
+        let mut exited = None;
+        for t in sess.tasks.values() {
+            if t.info.pid != pid {
+                continue;
+            }
+            if matches!(t.info.state, TaskState::Running) {
+                return Some(t.info.id);
+            }
+            exited = Some(t.info.id);
+        }
+        exited
+    }
+
+    /// Test-only: force start_ticks (2D pid-reuse refusal test).
+    #[cfg(test)]
+    pub fn debug_set_start_ticks(&self, session: &str, id: TaskId, ticks: Option<u64>) {
+        if let Some(t) = self
+            .inner
+            .lock()
+            .expect("poisoned")
+            .sessions
+            .get_mut(session)
+            .and_then(|sess| sess.tasks.get_mut(&id.0))
+        {
+            t.start_ticks = ticks;
+        }
+    }
+
     pub fn bytes_rx(&self, session: &str, id: TaskId) -> Option<watch::Receiver<u64>> {
         let guard = self.inner.lock().expect("registry lock poisoned");
         guard
@@ -285,8 +330,8 @@ impl ProcessRegistry {
         }
     }
 
-    /// SIGTERM each Running task's group, 2 s grace, SIGKILL (inline until
-    /// 2D's `kill::term_then_kill` lands), then drop the session.
+    /// SIGTERM each Running task's group via 2D's `kill::term_then_kill`
+    /// (2 s grace, own-group guards inside), then drop the session.
     pub async fn shutdown_session(&self, session: &str) {
         let running: Vec<(u32, i32)> = {
             let guard = self.inner.lock().expect("registry lock poisoned");
@@ -304,8 +349,8 @@ impl ProcessRegistry {
                 })
                 .unwrap_or_default()
         };
-        for (pid, pgid) in running {
-            signal_group(pgid, pid).await;
+        for (_pid, pgid) in running {
+            let _ = super::kill::term_then_kill(pgid, SHUTDOWN_GRACE).await;
         }
         self.inner
             .lock()
@@ -335,37 +380,6 @@ fn clone_info(task: &Task) -> TaskInfo {
         log_path: task.info.log_path.clone(),
         bytes,
         state,
-    }
-}
-
-/// Inline group kill until 2D lands: refuse degenerate/own groups, SIGTERM,
-/// poll every 100 ms via `kill(-pgid, 0)`, SIGKILL after grace.
-async fn signal_group(pgid: i32, _pid: u32) {
-    if pgid <= 1 || pgid == std::process::id() as i32 {
-        return;
-    }
-    let own_pgrp = unsafe { libc::getpgrp() };
-    if pgid == own_pgrp {
-        return;
-    }
-    unsafe {
-        libc::kill(-pgid, libc::SIGTERM);
-    }
-    let t0 = Instant::now();
-    loop {
-        let alive = unsafe { libc::kill(-pgid, 0) } == 0;
-        if !alive {
-            return;
-        }
-        if t0.elapsed() >= SHUTDOWN_GRACE {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    if unsafe { libc::kill(-pgid, 0) } == 0 {
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
-        }
     }
 }
 
@@ -541,7 +555,11 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // test-only serialization with the kill tests; the impl never holds the lock across await
     async fn shutdown_session_kills_group_and_removes_session() {
+        // 2D: shutdown routes through kill::term_then_kill (process-global
+        // signal counter lives there) — serialize with the kill tests.
+        let _serial = crate::shell::kill::KILL_SERIAL.lock().expect("kill serial");
         let reg = ProcessRegistry::new();
         let s = sess("shutdown");
         let log = std::env::temp_dir().join(format!("gray-regtest-{}-shutdown.log", std::process::id()));
