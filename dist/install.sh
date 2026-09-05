@@ -42,7 +42,13 @@ else
 fi
 
 echo "→ verifying checksum..."
-curl -fsSL "${REPO_URL}/SHA256SUMS" -o "${TMP}/SHA256SUMS"
+if have_cmd curl; then
+    curl -fsSL "${REPO_URL}/SHA256SUMS" -o "${TMP}/SHA256SUMS"
+elif have_cmd wget; then
+    wget -qO "${TMP}/SHA256SUMS" "${REPO_URL}/SHA256SUMS"
+else
+    echo "need curl or wget to download"; exit 1
+fi
 if have_cmd sha256sum; then
     ( cd "$TMP" && grep " ${TARBALL}\$" SHA256SUMS | sha256sum -c - )
 elif have_cmd shasum; then
