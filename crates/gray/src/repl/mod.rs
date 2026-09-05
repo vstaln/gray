@@ -513,11 +513,9 @@ pub async fn run_repl_mode(
         }
         // Shell wake drain (brief 3A): point the background subscription at
         // this session, then route queued exit/pattern notes.
-        crate::shell_drain::set_drain_session(
-            &crate::shell_drain::shell_session_key(
-                session_state.as_ref().map(|s| s.session_id.as_str()),
-            ),
-        );
+        crate::shell_drain::set_drain_session(&crate::shell_drain::shell_session_key(
+            session_state.as_ref().map(|s| s.session_id.as_str()),
+        ));
         let mut cmd = if let Some(c) = pending_command.take() {
             c
         } else {

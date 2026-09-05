@@ -59,7 +59,12 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
 #[cfg(target_os = "linux")]
 fn start_ticks_for(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit(')').next()?.split_whitespace().nth(19)?.parse().ok()
+    stat.rsplit(')')
+        .next()?
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
 }
 
 #[cfg(not(target_os = "linux"))]

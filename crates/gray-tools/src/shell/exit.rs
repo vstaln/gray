@@ -112,7 +112,7 @@ fn command_head(normalized: &str, raw: &str) -> String {
 }
 
 fn base_head(cmd: &str) -> &str {
-    let head = cmd.trim_start().split_whitespace().next().unwrap_or("");
+    let head = cmd.split_whitespace().next().unwrap_or("");
     head.rsplit('/').next().unwrap_or(head)
 }
 

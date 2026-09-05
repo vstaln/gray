@@ -87,10 +87,7 @@ impl Tool for ShellOutputTool {
             Err(e) => return e,
         };
 
-        let session = ctx
-            .session_id
-            .clone()
-            .unwrap_or_else(|| "nosession".into());
+        let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
         let Some(task_id) = task_id else {
             return ToolOutput::ok(list_tasks(&session));
         };
@@ -189,7 +186,10 @@ fn unknown_task(session: &str, raw: &str) -> String {
             "unknown task \"{raw}\" this session. No tasks this session yet — bash(background=true) starts one."
         )
     } else {
-        format!("unknown task \"{raw}\" this session. Known tasks: {}.", ids.join(", "))
+        format!(
+            "unknown task \"{raw}\" this session. Known tasks: {}.",
+            ids.join(", ")
+        )
     }
 }
 
@@ -275,7 +275,10 @@ fn nothing_new(
     exited: bool,
 ) -> String {
     if cancelled {
-        return format!("wait cancelled after {}", format_elapsed(info.started.elapsed()));
+        return format!(
+            "wait cancelled after {}",
+            format_elapsed(info.started.elapsed())
+        );
     }
     let done = if exited {
         format!(" {} has exited — this is all the output there is.", info.id)
@@ -307,7 +310,10 @@ async fn wait_for_output(
     timeout: u64,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> bool {
-    let (mut bytes_rx, mut exit_rx) = match (registry().bytes_rx(session, id), registry().exit_rx(session, id)) {
+    let (mut bytes_rx, mut exit_rx) = match (
+        registry().bytes_rx(session, id),
+        registry().exit_rx(session, id),
+    ) {
         (Some(b), Some(e)) => (b, e),
         _ => return false,
     };
@@ -412,7 +418,11 @@ mod tests {
     static SESS_N: AtomicU64 = AtomicU64::new(0);
 
     fn sess(tag: &str) -> String {
-        format!("out-2c-{tag}-{}-{}", std::process::id(), SESS_N.fetch_add(1, Ordering::Relaxed))
+        format!(
+            "out-2c-{tag}-{}-{}",
+            std::process::id(),
+            SESS_N.fetch_add(1, Ordering::Relaxed)
+        )
     }
 
     fn ctx_for(session: &str) -> ToolContext {
@@ -428,7 +438,11 @@ mod tests {
             .next()
             .and_then(|h| h.split(prefix).nth(1))
             .and_then(|s| {
-                s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok()
+                s.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
             })
             .expect("header names the task")
     }
@@ -438,7 +452,11 @@ mod tests {
             .split("next_offset=")
             .nth(1)
             .and_then(|s| {
-                s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok()
+                s.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
             })
             .expect("result names next_offset")
     }
@@ -456,10 +474,16 @@ mod tests {
 
     #[test]
     fn bad_wait_is_an_error() {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             let out = ShellOutputTool
-                .execute(&ctx_for(&sess("wait")), json!({"task_id": "t1", "wait": "soon"}))
+                .execute(
+                    &ctx_for(&sess("wait")),
+                    json!({"task_id": "t1", "wait": "soon"}),
+                )
                 .await;
             assert!(out.is_error, "{}", out.content);
             assert!(out.content.contains("'wait'"), "{}", out.content);
@@ -468,10 +492,20 @@ mod tests {
 
     #[tokio::test]
     async fn empty_list_names_the_way_out() {
-        let out = ShellOutputTool.execute(&ctx_for(&sess("empty")), json!({})).await;
+        let out = ShellOutputTool
+            .execute(&ctx_for(&sess("empty")), json!({}))
+            .await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.contains("no tasks this session"), "{}", out.content);
-        assert!(out.content.contains("bash(background=true)"), "{}", out.content);
+        assert!(
+            out.content.contains("no tasks this session"),
+            "{}",
+            out.content
+        );
+        assert!(
+            out.content.contains("bash(background=true)"),
+            "{}",
+            out.content
+        );
     }
 
     #[tokio::test]
@@ -484,7 +518,9 @@ mod tests {
         assert!(!bg.is_error, "{}", bg.content);
         // Let the waiter reap it so the registry holds an Exited task.
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let out = ShellOutputTool.execute(&ctx, json!({"task_id": "t999"})).await;
+        let out = ShellOutputTool
+            .execute(&ctx, json!({"task_id": "t999"}))
+            .await;
         assert!(out.is_error, "{}", out.content);
         assert!(out.content.contains("unknown task"), "{}", out.content);
         assert!(out.content.contains("Known tasks: t1"), "{}", out.content);
@@ -496,7 +532,10 @@ mod tests {
         let ctx = ctx_for(&session);
         // One burst, 5 s of silence, one more line: every step is deterministic.
         let bg = BashTool
-            .execute(&ctx, json!({"command": "echo first; sleep 5; echo second; sleep 1", "background": true}))
+            .execute(
+                &ctx,
+                json!({"command": "echo first; sleep 5; echo second; sleep 1", "background": true}),
+            )
             .await;
         assert!(!bg.is_error, "{}", bg.content);
         let n = task_n(&bg.content, "started t");
@@ -504,7 +543,10 @@ mod tests {
 
         // First read blocks for the burst: bytes + next_offset.
         let first = ShellOutputTool
-            .execute(&ctx, json!({"task_id": id, "wait": "output", "timeout": 10}))
+            .execute(
+                &ctx,
+                json!({"task_id": id, "wait": "output", "timeout": 10}),
+            )
             .await;
         assert!(!first.is_error, "{}", first.content);
         let at = next_offset(&first.content);
@@ -517,18 +559,32 @@ mod tests {
             .await;
         assert!(!again.is_error, "{}", again.content);
         assert!(again.content.contains("no new output"), "{}", again.content);
-        assert!(again.content.contains("wait=\"output\""), "{}", again.content);
+        assert!(
+            again.content.contains("wait=\"output\""),
+            "{}",
+            again.content
+        );
 
         // wait=output: the second line lands at ~5 s; generous ceiling.
         let t0 = Instant::now();
         let waited = ShellOutputTool
-            .execute(&ctx, json!({"task_id": id, "from_offset": at, "wait": "output", "timeout": 10}))
+            .execute(
+                &ctx,
+                json!({"task_id": id, "from_offset": at, "wait": "output", "timeout": 10}),
+            )
             .await;
         let dt = t0.elapsed();
         assert!(!waited.is_error, "{}", waited.content);
-        assert!(next_offset(&waited.content) > at, "new bytes: {}", waited.content);
+        assert!(
+            next_offset(&waited.content) > at,
+            "new bytes: {}",
+            waited.content
+        );
         assert!(waited.content.contains("second"), "{}", waited.content);
-        assert!(dt < Duration::from_secs(9), "woke on the write, not the timeout: {dt:?}");
+        assert!(
+            dt < Duration::from_secs(9),
+            "woke on the write, not the timeout: {dt:?}"
+        );
 
         // Past-the-end offset is a note, not an error.
         let past = ShellOutputTool
@@ -542,7 +598,9 @@ mod tests {
     async fn wait_exit_returns_on_exit_and_on_timeout() {
         let session = sess("waitexit");
         let ctx = ctx_for(&session);
-        let bg = BashTool.execute(&ctx, json!({"command": "sleep 2", "background": true})).await;
+        let bg = BashTool
+            .execute(&ctx, json!({"command": "sleep 2", "background": true}))
+            .await;
         assert!(!bg.is_error, "{}", bg.content);
         let id = format!("t{}", task_n(&bg.content, "started t"));
 
@@ -554,10 +612,15 @@ mod tests {
         let dt = t0.elapsed();
         assert!(!done.is_error, "{}", done.content);
         assert!(done.content.contains("exit 0"), "{}", done.content);
-        assert!(dt >= Duration::from_millis(1500) && dt < Duration::from_secs(8), "{dt:?}");
+        assert!(
+            dt >= Duration::from_millis(1500) && dt < Duration::from_secs(8),
+            "{dt:?}"
+        );
 
         // A longer sleeper with a 1 s wait: still running + call-again hint.
-        let bg2 = BashTool.execute(&ctx, json!({"command": "sleep 30", "background": true})).await;
+        let bg2 = BashTool
+            .execute(&ctx, json!({"command": "sleep 30", "background": true}))
+            .await;
         let id2 = format!("t{}", task_n(&bg2.content, "started t"));
         let t0 = Instant::now();
         let early = ShellOutputTool
@@ -565,9 +628,20 @@ mod tests {
             .await;
         let dt = t0.elapsed();
         assert!(!early.is_error, "{}", early.content);
-        assert!(early.content.contains("still running after 1s"), "{}", early.content);
-        assert!(early.content.contains("call again with wait=exit"), "{}", early.content);
-        assert!(dt < Duration::from_secs(5), "returned at the timeout: {dt:?}");
+        assert!(
+            early.content.contains("still running after 1s"),
+            "{}",
+            early.content
+        );
+        assert!(
+            early.content.contains("call again with wait=exit"),
+            "{}",
+            early.content
+        );
+        assert!(
+            dt < Duration::from_secs(5),
+            "returned at the timeout: {dt:?}"
+        );
         // Cleanup behind 2D's kill: SIGTERM our own group child directly.
         // The sleeper exits on its own in 30 s; the suite does not wait.
     }
@@ -578,7 +652,10 @@ mod tests {
         let ctx = ctx_for(&session);
         for i in 1..=3 {
             let out = BashTool
-                .execute(&ctx, json!({"command": format!("echo list-{i}"), "background": true}))
+                .execute(
+                    &ctx,
+                    json!({"command": format!("echo list-{i}"), "background": true}),
+                )
                 .await;
             assert!(!out.is_error, "{}", out.content);
         }
@@ -600,7 +677,10 @@ mod tests {
         let session = sess("bigwin");
         let ctx = ctx_for(&session);
         let fg = BashTool
-            .execute(&ctx, json!({"command": format!("sh {} 30000", spew.display())}))
+            .execute(
+                &ctx,
+                json!({"command": format!("sh {} 30000", spew.display())}),
+            )
             .await;
         assert!(!fg.is_error, "{}", fg.content);
         let n = task_n(&fg.content, "/t");
@@ -608,15 +688,25 @@ mod tests {
 
         // Whole 1.2 MiB log through a 50 KiB window: line budget forces the marker.
         let out = ShellOutputTool
-            .execute(&ctx, json!({"task_id": id, "from_offset": 0, "max_bytes": 51200}))
+            .execute(
+                &ctx,
+                json!({"task_id": id, "from_offset": 0, "max_bytes": 51200}),
+            )
             .await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.contains("…more available"), "{}", &out.content[..400]);
+        assert!(
+            out.content.contains("…more available"),
+            "{}",
+            &out.content[..400]
+        );
         let at = next_offset(&out.content);
         assert!(at > 0 && at <= 51200, "next_offset in-window: {at}");
         // … and paging at the returned cursor keeps working.
         let page2 = ShellOutputTool
-            .execute(&ctx, json!({"task_id": id, "from_offset": at, "max_bytes": 51200}))
+            .execute(
+                &ctx,
+                json!({"task_id": id, "from_offset": at, "max_bytes": 51200}),
+            )
             .await;
         assert!(!page2.is_error, "{}", page2.content);
         assert!(page2.content.contains("…more available"), "pages chain");
@@ -626,7 +716,9 @@ mod tests {
     async fn cancel_during_wait_returns_promptly() {
         let session = sess("cancel");
         let ctx = ctx_for(&session);
-        let bg = BashTool.execute(&ctx, json!({"command": "sleep 30", "background": true})).await;
+        let bg = BashTool
+            .execute(&ctx, json!({"command": "sleep 30", "background": true}))
+            .await;
         assert!(!bg.is_error, "{}", bg.content);
         let id = format!("t{}", task_n(&bg.content, "started t"));
         let cancel = ctx.cancel.clone();

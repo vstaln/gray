@@ -161,10 +161,7 @@ impl PatternState {
         if self.disabled || self.wakes >= MAX_PATTERN_MATCHES {
             return false;
         }
-        match self.last_wake {
-            Some(t) if now.duration_since(t) < PATTERN_MIN_INTERVAL => false,
-            _ => true,
-        }
+        !matches!(self.last_wake, Some(t) if now.duration_since(t) < PATTERN_MIN_INTERVAL)
     }
 
     fn record_wake(&mut self, now: Instant) {
@@ -201,7 +198,9 @@ impl Pump {
         pattern: Option<NotifyPattern>,
         wake: Option<broadcast::Sender<WakeEvent>>,
     ) -> JoinHandle<PumpSummary> {
-        tokio::spawn(pump_main(id, stdout, stderr, log_path, bytes_tx, pattern, wake))
+        tokio::spawn(pump_main(
+            id, stdout, stderr, log_path, bytes_tx, pattern, wake,
+        ))
     }
 }
 
@@ -237,10 +236,11 @@ async fn pump_main(
     // Missing parents are created (`~/.gray/shell/<session>/`); anything that
     // fails here (or any later write) sets the flag — never panics.
     let mut log_failed = false;
-    if let Some(parent) = log_path.parent() {
-        if !parent.as_os_str().is_empty() && tokio::fs::create_dir_all(parent).await.is_err() {
-            log_failed = true;
-        }
+    if let Some(parent) = log_path.parent()
+        && !parent.as_os_str().is_empty()
+        && tokio::fs::create_dir_all(parent).await.is_err()
+    {
+        log_failed = true;
     }
     let mut log: Option<BufWriter<tokio::fs::File>> = if log_failed {
         None
@@ -282,10 +282,10 @@ async fn pump_main(
         // there are zero receivers (normal).
         let _ = bytes_tx.send(total);
     }
-    if let Some(f) = log.as_mut() {
-        if f.flush().await.is_err() {
-            log_failed = true;
-        }
+    if let Some(f) = log.as_mut()
+        && f.flush().await.is_err()
+    {
+        log_failed = true;
     }
     mem.into_summary(log_failed)
 }
@@ -317,13 +317,13 @@ where
         }
     }
     // EOF: a trailing partial line still counts as a complete line.
-    if let Some(shared) = scan.as_ref() {
-        if !carry.is_empty() || !pending.is_empty() {
-            pending.push_str(&sanitize_text(&String::from_utf8_lossy(&carry)));
-            if !pending.is_empty() {
-                let line = std::mem::take(&mut pending);
-                scan_line(&line, shared, &tx).await;
-            }
+    if let Some(shared) = scan.as_ref()
+        && (!carry.is_empty() || !pending.is_empty())
+    {
+        pending.push_str(&sanitize_text(&String::from_utf8_lossy(&carry)));
+        if !pending.is_empty() {
+            let line = std::mem::take(&mut pending);
+            scan_line(&line, shared, &tx).await;
         }
     }
 }
@@ -398,7 +398,13 @@ mod tests {
     use tokio::process::Command;
 
     /// Inline POSIX script with both pipes captured; the caller takes what it needs.
-    fn spawn_sh(script: &str) -> (tokio::process::Child, Option<ChildStdout>, Option<ChildStderr>) {
+    fn spawn_sh(
+        script: &str,
+    ) -> (
+        tokio::process::Child,
+        Option<ChildStdout>,
+        Option<ChildStderr>,
+    ) {
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(script)
@@ -419,7 +425,10 @@ mod tests {
 
     #[test]
     fn split_prefix_holds_truncated_tail_only() {
-        assert_eq!(split_complete_prefix(b"hello"), (b"hello".as_slice(), b"".as_slice()));
+        assert_eq!(
+            split_complete_prefix(b"hello"),
+            (b"hello".as_slice(), b"".as_slice())
+        );
         // U+1F600 is 4 bytes; any truncation at the end becomes carry.
         let emoji = "🎉".as_bytes();
         for cut in 1..4 {
@@ -471,7 +480,10 @@ mod tests {
             mem.push(chunk);
         }
         assert_eq!(mem.total_bytes, total as u64);
-        assert_eq!(mem.total_lines, data.iter().filter(|&&b| b == b'\n').count());
+        assert_eq!(
+            mem.total_lines,
+            data.iter().filter(|&&b| b == b'\n').count()
+        );
         assert_eq!(mem.head.len(), MEM_HEAD_BYTES);
         assert_eq!(mem.head, &data[..MEM_HEAD_BYTES]);
         assert_eq!(mem.tail.len(), MEM_TAIL_BYTES);
@@ -542,7 +554,10 @@ mod tests {
         assert_eq!(file.len() as u64, s.total_bytes);
         assert_eq!(*bytes_rx.borrow(), file.len() as u64); // watch final == file length
         for marker in [b"out-1\n", b"err-1\n", b"out-2\n"] {
-            assert!(file.windows(marker.len()).any(|w| w == marker), "log holds {marker:?}");
+            assert!(
+                file.windows(marker.len()).any(|w| w == marker),
+                "log holds {marker:?}"
+            );
         }
         assert_eq!(s.head, file); // under budget: head is the whole stream
         let _ = std::fs::remove_file(&log);
@@ -626,8 +641,7 @@ mod tests {
     #[tokio::test]
     async fn pump_pattern_disables_after_five_and_notes_the_log() {
         // Spacing comes from the script itself (test rate limit is 1 s; release is 10 s).
-        let (mut child, out, err) =
-            spawn_sh("for i in 1 2 3 4 5 6; do echo tick; sleep 1.2; done");
+        let (mut child, out, err) = spawn_sh("for i in 1 2 3 4 5 6; do echo tick; sleep 1.2; done");
         drop(err);
         let log = tmp_log("disable");
         let (bytes_tx, _rx) = watch::channel(0u64);

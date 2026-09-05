@@ -95,26 +95,20 @@ impl ProcessRegistry {
     /// never reused within a session.
     pub fn reserve(&self, session: &str) -> TaskId {
         let mut guard = self.inner.lock().expect("registry lock poisoned");
-        let sess = guard.sessions.entry(session.to_string()).or_insert_with(|| {
-            SessionTasks {
+        let sess = guard
+            .sessions
+            .entry(session.to_string())
+            .or_insert_with(|| SessionTasks {
                 next: 1,
                 tasks: BTreeMap::new(),
-            }
-        });
+            });
         let id = TaskId(sess.next);
         sess.next += 1;
         id
     }
 
     /// Attach a just-spawned child to a reserved id (brief 2B spawn path).
-    pub fn bind(
-        &self,
-        session: &str,
-        id: TaskId,
-        child: &Child,
-        command: &str,
-        log_path: PathBuf,
-    ) {
+    pub fn bind(&self, session: &str, id: TaskId, child: &Child, command: &str, log_path: PathBuf) {
         let pid = child.id().expect("registry::bind: child has no pid");
         // All our spawns use setsid, so the child is its own group leader.
         let pgid = pid as i32;
@@ -123,12 +117,13 @@ impl ProcessRegistry {
         let (bytes_tx, _) = watch::channel(0u64);
         let (exit_tx, _) = watch::channel(None);
         let mut guard = self.inner.lock().expect("registry lock poisoned");
-        let sess = guard.sessions.entry(session.to_string()).or_insert_with(|| {
-            SessionTasks {
+        let sess = guard
+            .sessions
+            .entry(session.to_string())
+            .or_insert_with(|| SessionTasks {
                 next: id.0.saturating_add(1),
                 tasks: BTreeMap::new(),
-            }
-        });
+            });
         // A failed spawn between reserve and bind leaves a gap; keep `next`
         // ahead of every id ever handed out.
         sess.next = sess.next.max(id.0.saturating_add(1));
@@ -276,7 +271,11 @@ impl ProcessRegistry {
     }
 
     pub fn wake_tx(&self) -> broadcast::Sender<WakeEvent> {
-        self.inner.lock().expect("registry lock poisoned").wake.clone()
+        self.inner
+            .lock()
+            .expect("registry lock poisoned")
+            .wake
+            .clone()
     }
 
     /// Broadcast `UserInput`, coalesced: ignored when the last send was
@@ -309,9 +308,7 @@ impl ProcessRegistry {
         let now = Instant::now();
         sess.tasks.retain(|_, t| match &t.info.state {
             TaskState::Running => true,
-            TaskState::Exited { at, .. } => {
-                now.saturating_duration_since(*at) <= EXITED_TASK_TTL
-            }
+            TaskState::Exited { at, .. } => now.saturating_duration_since(*at) <= EXITED_TASK_TTL,
         });
         let mut exited: Vec<(Instant, u32)> = sess
             .tasks
@@ -450,7 +447,11 @@ mod tests {
                 let mut child = true_child();
                 // Per-session command so the isolation check below can tell
                 // a's t1 apart from b's t1 (ids collide numerically by design).
-                let cmd = if s.contains("conc-a") { "true-a" } else { "true-b" };
+                let cmd = if s.contains("conc-a") {
+                    "true-a"
+                } else {
+                    "true-b"
+                };
                 let id = r.register(&s, &child, cmd, PathBuf::from("/tmp/x.log"));
                 let _ = child.wait().await;
                 (s, id)
@@ -521,7 +522,13 @@ mod tests {
         let victim = reg.list(&s)[0].id;
         {
             let mut guard = reg.inner.lock().expect("poisoned");
-            let task = guard.sessions.get_mut(&s).expect("sess").tasks.get_mut(&victim.0).expect("task");
+            let task = guard
+                .sessions
+                .get_mut(&s)
+                .expect("sess")
+                .tasks
+                .get_mut(&victim.0)
+                .expect("task");
             let TaskState::Exited { report, at } = &mut task.info.state else {
                 panic!("expected exited");
             };
@@ -562,13 +569,17 @@ mod tests {
         let _serial = crate::shell::kill::KILL_SERIAL.lock().expect("kill serial");
         let reg = ProcessRegistry::new();
         let s = sess("shutdown");
-        let log = std::env::temp_dir().join(format!("gray-regtest-{}-shutdown.log", std::process::id()));
+        let log =
+            std::env::temp_dir().join(format!("gray-regtest-{}-shutdown.log", std::process::id()));
         let spawned = crate::shell::spawn::spawn("sleep 30", &std::env::temp_dir(), TaskId(999))
             .expect("spawn sleep 30");
         let pid = spawned.pid;
         let mut child = spawned.child;
         let id = reg.register(&s, &child, "sleep 30", log);
-        assert!(matches!(reg.get(&s, id).map(|t| t.state), Some(TaskState::Running)));
+        assert!(matches!(
+            reg.get(&s, id).map(|t| t.state),
+            Some(TaskState::Running)
+        ));
         tokio::time::timeout(Duration::from_secs(5), reg.shutdown_session(&s))
             .await
             .expect("shutdown returns");
@@ -579,7 +590,11 @@ mod tests {
             .expect("child reaped within 3 s")
             .expect("wait ok");
         // Killed by us, not a clean exit 0.
-        assert_ne!(status.code(), Some(0), "sleep 30 must not exit 0 (pid {pid})");
+        assert_ne!(
+            status.code(),
+            Some(0),
+            "sleep 30 must not exit 0 (pid {pid})"
+        );
     }
 
     #[test]

@@ -163,7 +163,10 @@ fn push_seg(segs: &mut Vec<Segment>, cur: &mut String, op: Option<&'static str>)
     let text = cur.trim().to_string();
     cur.clear();
     if !text.is_empty() {
-        segs.push(Segment { text, op_before: op });
+        segs.push(Segment {
+            text,
+            op_before: op,
+        });
     }
 }
 
@@ -289,7 +292,10 @@ fn split(cmd: &str, pipes_only: bool) -> Vec<Segment> {
                 op = Some("&&");
             }
             i += 2;
-        } else if depth == 0 && c == '&' && !pipes_only && (i + 1 == n || chars[i + 1].is_whitespace())
+        } else if depth == 0
+            && c == '&'
+            && !pipes_only
+            && (i + 1 == n || chars[i + 1].is_whitespace())
         {
             push_seg(&mut segs, &mut cur, op);
             op = Some("&");
@@ -334,10 +340,7 @@ mod split_tests {
     use super::*;
 
     fn texts(cmd: &str) -> Vec<String> {
-        split_segments(cmd)
-            .into_iter()
-            .map(|s| s.text)
-            .collect()
+        split_segments(cmd).into_iter().map(|s| s.text).collect()
     }
 
     #[test]
@@ -351,7 +354,10 @@ mod split_tests {
 
     #[test]
     fn chain_ops_and_background() {
-        assert_eq!(texts("echo a && rm -rf /; echo done"), ["echo a", "rm -rf /", "echo done"]);
+        assert_eq!(
+            texts("echo a && rm -rf /; echo done"),
+            ["echo a", "rm -rf /", "echo done"]
+        );
         let segs = split_segments("echo a && rm -rf /; echo done");
         assert_eq!(segs[1].op_before, Some("&&"));
         assert_eq!(segs[2].op_before, Some(";"));

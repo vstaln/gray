@@ -57,6 +57,17 @@ pub(crate) fn classify(command: &str) -> Decision {
 /// Worst verdict across every chain segment (Deny > Prompt > Allow), recursing
 /// one level into `sh -c` payloads and `(…)`/`$(…)` innards (brief 4B).
 fn classify_chain(command: &str, depth: u8) -> Decision {
+    // Fork-bomb signature spans `|`/`&`/`;`, which the 4B splitter separates
+    // into different segments (`:(){ :|:& };:` → [":(){ :", ":", "}", ":"]),
+    // so no single segment ever matches. Check the whole command here.
+    if command.contains(":|:&") && command.contains("()") {
+        return Decision::Deny(
+            "Blocked by destructive-command guard (fork-bomb): fork bomb pattern hangs the host. \
+             Safe alternative: don't run fork bombs. \
+             If the user explicitly asked for this, have them run it manually."
+                .to_string(),
+        );
+    }
     let segments = super::split::split_segments(command);
     let mut deny: Option<(usize, String)> = None;
     let mut prompt: Option<(usize, &'static str, String, String)> = None;
@@ -78,12 +89,12 @@ fn classify_chain(command: &str, depth: u8) -> Decision {
             }
         }
     }
-    if deny.is_none() {
-        if let Some((i, rule, why, alt)) = pipe_to_shell(&segments) {
-            let earlier = prompt.as_ref().map(|(j, ..)| *j < i).unwrap_or(false);
-            if !earlier {
-                prompt = Some((i, rule, why, alt));
-            }
+    if deny.is_none()
+        && let Some((i, rule, why, alt)) = pipe_to_shell(&segments)
+    {
+        let earlier = prompt.as_ref().map(|(j, ..)| *j < i).unwrap_or(false);
+        if !earlier {
+            prompt = Some((i, rule, why, alt));
         }
     }
     // Single-segment verdicts keep their exact pre-4B message (1D relies on it).
@@ -314,12 +325,14 @@ fn classify_normalized(cmd: &str) -> Decision {
     }
     if base == "find" {
         let args: Vec<&str> = cmd.split_whitespace().skip(1).collect();
-        let triggers = args.iter().any(|t| *t == "-delete")
+        let triggers = args.contains(&"-delete")
             || (args.iter().any(|t| *t == "-exec" || *t == "-execdir")
                 && args.iter().any(|t| *t == "rm" || t.ends_with("/rm")));
         if triggers {
             let hits_root = args.iter().any(|t| {
-                !t.starts_with('-') && !matches!(*t, "{}" | ";" | "+" | "rm") && !t.ends_with("/rm")
+                !t.starts_with('-')
+                    && !matches!(*t, "{}" | ";" | "+" | "rm")
+                    && !t.ends_with("/rm")
                     && matches!(
                         *t,
                         "/" | "/*" | "~" | "~/*" | "/root" | "/home" | "/etc" | "/boot"
@@ -525,10 +538,7 @@ mod guard_tests {
 
     #[test]
     fn quoted_chain_is_one_segment() {
-        assert!(matches!(
-            classify("echo 'a && rm -rf /'"),
-            Decision::Allow
-        ));
+        assert!(matches!(classify("echo 'a && rm -rf /'"), Decision::Allow));
     }
 
     #[test]
@@ -549,10 +559,7 @@ mod guard_tests {
     fn find_delete_rules() {
         assert!(is_deny("find / -delete"));
         assert!(is_deny("find / -exec rm {} \\;"));
-        assert!(matches!(
-            classify("find ./build -delete"),
-            Decision::Allow
-        ));
+        assert!(matches!(classify("find ./build -delete"), Decision::Allow));
     }
 
     #[test]
@@ -564,10 +571,7 @@ mod guard_tests {
                 ..
             }
         ));
-        assert!(matches!(
-            classify("seq 5 | xargs echo"),
-            Decision::Allow
-        ));
+        assert!(matches!(classify("seq 5 | xargs echo"), Decision::Allow));
     }
 
     #[test]

@@ -54,10 +54,7 @@ impl Tool for SleepTool {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let session = ctx
-            .session_id
-            .clone()
-            .unwrap_or_else(|| "nosession".into());
+        let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
         // Subscribe BEFORE observing any state, or an exit in between is lost.
         let mut rx = registry().wake_tx().subscribe();
         let start = Instant::now();
@@ -126,7 +123,11 @@ fn ours(session: &str, id: TaskId) -> bool {
 fn parse_sleep_args(args: &Value) -> Result<(u64, Option<String>), ToolOutput> {
     let secs = match get_opt_u64(args, "seconds") {
         Ok(Some(s)) => s,
-        Ok(None) => return Err(fail("missing required argument 'seconds' (1..=600)".to_string())),
+        Ok(None) => {
+            return Err(fail(
+                "missing required argument 'seconds' (1..=600)".to_string(),
+            ));
+        }
         Err(e) => return Err(e),
     };
     if !(1..=MAX_SLEEP_SECS).contains(&secs) {
@@ -137,7 +138,11 @@ fn parse_sleep_args(args: &Value) -> Result<(u64, Option<String>), ToolOutput> {
     let reason = match args.get("reason") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) => Some(s.clone()),
-        Some(_) => return Err(fail("invalid argument 'reason': expected string".to_string())),
+        Some(_) => {
+            return Err(fail(
+                "invalid argument 'reason': expected string".to_string(),
+            ));
+        }
     };
     Ok((secs, reason))
 }
@@ -166,7 +171,7 @@ mod tests {
         // 3D partial gate (full token test needs all four snippets incl.
         // shell_output's, which this brief doesn't own): ≤ 6 bullets.
         assert!(
-            super::bash::BASH_GUIDELINES.len() <= 6,
+            super::super::bash::BASH_GUIDELINES.len() <= 6,
             "guidelines ship on every request — cut, don't add"
         );
     }

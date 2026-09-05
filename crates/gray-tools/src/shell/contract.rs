@@ -258,7 +258,11 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
 }
 
 // kill.rs (brief 2D)
-pub async fn kill(target: KillTarget, session: &str, ctx: &ToolContext) -> Result<KillReport, String> {
+pub async fn kill(
+    target: KillTarget,
+    session: &str,
+    ctx: &ToolContext,
+) -> Result<KillReport, String> {
     todo!()
 }
 pub fn pid_for_port(port: u16) -> io::Result<Option<(u32, String)>> {

@@ -55,7 +55,10 @@ pub(crate) fn queue_shell_wake(text: String) {
 /// unless `GRAY_SHELL_WAKE_ON_EXIT` explicitly enables.
 pub fn wake_on_exit() -> bool {
     match std::env::var("GRAY_SHELL_WAKE_ON_EXIT") {
-        Ok(v) => !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"),
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
         Err(_) => true,
     }
 }
@@ -70,10 +73,10 @@ pub fn shell_session_key(session_id: Option<&str>) -> String {
 
 /// Point the background drain at `session` (call each loop-top; cheap).
 pub fn set_drain_session(session: &str) {
-    if let Ok(mut cur) = CURRENT_SESSION.lock() {
-        if cur.as_str() != session {
-            *cur = session.to_string();
-        }
+    if let Ok(mut cur) = CURRENT_SESSION.lock()
+        && cur.as_str() != session
+    {
+        *cur = session.to_string();
     }
 }
 
@@ -88,11 +91,16 @@ fn drain_session() -> String {
 
 /// Info snapshot for `id` under the current session (or the pre-session
 /// `"nosession"` key, so first-turn tasks still resolve after resume).
-fn info_for(id: gray_tools::shell::contract::TaskId) -> Option<gray_tools::shell::contract::TaskInfo> {
+fn info_for(
+    id: gray_tools::shell::contract::TaskId,
+) -> Option<gray_tools::shell::contract::TaskInfo> {
     let reg = gray_tools::shell::registry::registry();
     let cur = drain_session();
-    reg.get(&cur, id)
-        .or_else(|| (cur != "nosession").then(|| reg.get("nosession", id)).flatten())
+    reg.get(&cur, id).or_else(|| {
+        (cur != "nosession")
+            .then(|| reg.get("nosession", id))
+            .flatten()
+    })
 }
 
 /// Ours iff the id is known under the current session (or `"nosession"`).
@@ -104,7 +112,9 @@ fn ours(id: gray_tools::shell::contract::TaskId) -> bool {
 /// Coalesces 500 ms windows; `Lagged(n)` becomes the brief's drop line.
 pub fn spawn_shell_drain() -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut rx = gray_tools::shell::registry::registry().wake_tx().subscribe();
+        let mut rx = gray_tools::shell::registry::registry()
+            .wake_tx()
+            .subscribe();
         loop {
             let first = match rx.recv().await {
                 Ok(ev) => ev,

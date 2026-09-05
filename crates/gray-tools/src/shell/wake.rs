@@ -147,8 +147,8 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::contract::{ExitReport, TaskId};
+    use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, Instant};
@@ -207,7 +207,10 @@ mod tests {
             m.starts_with("[shell] t5 (`cargo build --release`) exited 0 after 3m12s. "),
             "{m}"
         );
-        assert!(m.contains("shell_output(task_id=\"t5\") for the last lines; log "), "{m}");
+        assert!(
+            m.contains("shell_output(task_id=\"t5\") for the last lines; log "),
+            "{m}"
+        );
         std::fs::remove_file(&log).ok();
     }
 
@@ -220,7 +223,10 @@ mod tests {
             report: report(101, "exit 101"),
         };
         let m = format_wake(&ev, &info);
-        assert!(m.contains("[shell] t5 (`make`) exit 101 after 1m01s — last lines:\n"), "{m}");
+        assert!(
+            m.contains("[shell] t5 (`make`) exit 101 after 1m01s — last lines:\n"),
+            "{m}"
+        );
         assert!(m.contains("<untrusted-output task=\"t5\">"), "{m}");
         assert!(m.contains("line two"), "{m}");
         std::fs::remove_file(&log).ok();
@@ -237,7 +243,10 @@ mod tests {
         };
         let m = format_wake(&ev, &info);
         assert!(!m.contains("untrusted-output"), "{m}");
-        assert!(m.contains("shell_output(task_id=\"t5\") for the last lines; log "), "{m}");
+        assert!(
+            m.contains("shell_output(task_id=\"t5\") for the last lines; log "),
+            "{m}"
+        );
     }
 
     #[test]

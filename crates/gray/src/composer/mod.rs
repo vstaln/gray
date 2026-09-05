@@ -623,11 +623,7 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none()
-            && !needs_cron_tick
-            && !sleep_tick
-            && self.gateway_boot.is_none()
-        {
+        if self.status.is_none() && !needs_cron_tick && !sleep_tick && self.gateway_boot.is_none() {
             return;
         }
         if needs_cron_tick {

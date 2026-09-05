@@ -20,8 +20,8 @@ use tokio::process::Child;
 use tokio::task::JoinHandle;
 
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, MAX_TIMEOUT_SECS, NotifyPattern, PROMOTION_TAIL_BYTES, PumpSummary,
-    TaskId, TaskInfo, TaskState, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View, ExitReport,
+    DEFAULT_TIMEOUT_SECS, ExitReport, MAX_TIMEOUT_SECS, NotifyPattern, PROMOTION_TAIL_BYTES,
+    PumpSummary, TaskId, TaskInfo, TaskState, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
@@ -138,10 +138,7 @@ impl Tool for BashTool {
             }
         }
 
-        let session = ctx
-            .session_id
-            .clone()
-            .unwrap_or_else(|| "nosession".into());
+        let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
         let id = registry().reserve(&session);
         let log_path = shell_dir().join(&session).join(format!("{id}.log"));
         // Fresh task → fresh log. Ids restart every process (cross-process
@@ -214,8 +211,16 @@ impl Tool for BashTool {
                     Err(e) => return fail(format!("output pump failed: {e}")),
                 };
                 finish_inline(
-                    &session, spawned.pid, spawned.pgid, id, &command, &log_path,
-                    status, &summary, start, None,
+                    &session,
+                    spawned.pid,
+                    spawned.pgid,
+                    id,
+                    &command,
+                    &log_path,
+                    status,
+                    &summary,
+                    start,
+                    None,
                 )
             }
             Cause::Promote => {
@@ -237,11 +242,21 @@ impl Tool for BashTool {
                     Ok(s) => s,
                     Err(e) => return fail(format!("output pump failed: {e}")),
                 };
-                let first =
-                    format!("cancelled by user after {}", format_elapsed(start.elapsed()));
+                let first = format!(
+                    "cancelled by user after {}",
+                    format_elapsed(start.elapsed())
+                );
                 finish_inline(
-                    &session, spawned.pid, spawned.pgid, id, &command, &log_path,
-                    status, &summary, start, Some(first),
+                    &session,
+                    spawned.pid,
+                    spawned.pgid,
+                    id,
+                    &command,
+                    &log_path,
+                    status,
+                    &summary,
+                    start,
+                    Some(first),
                 )
             }
         }
@@ -383,9 +398,7 @@ fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
     let start = len.saturating_sub(PROMOTION_TAIL_BYTES as u64);
     let mut buf = Vec::new();
     if f.seek(SeekFrom::Start(start)).is_ok() {
-        let _ = f
-            .take(PROMOTION_TAIL_BYTES as u64)
-            .read_to_end(&mut buf);
+        let _ = f.take(PROMOTION_TAIL_BYTES as u64).read_to_end(&mut buf);
     }
     (buf, len)
 }
