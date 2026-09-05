@@ -92,6 +92,34 @@ reaps the child, drains the pump, and marks the task exited. Cancel (Ctrl-C)
 still kills the foreground command; background tasks die on session shutdown
 (2E) only.
 
+## Kill (2D: `shell_kill(task_id=… | pid=… | port=…)` — exactly one)
+
+Task kills signal the group gray created (SIGTERM → 2 s → SIGKILL);
+foreign pid/port kills ask the user first (fail-closed) and signal the
+single pid only — never a group, never pid ≤ 1 / self / own group.
+
+```text
+t8 (pid 4310) terminated after 0.2s
+```
+
+```text
+t9 already exited (exit 0) — nothing signalled
+```
+
+```text
+kill pid 9912 (python3) needs user approval (foreign process) — refusing
+```
+
+```text
+port 38471 → pid 9912 (python3): foreign pid 9912 (python3) terminated after 0.1s
+```
+
+A task whose pid was reused (or is gone) is refused, never signalled:
+
+```text
+pid 4310 is gone or was reused; not signalling
+```
+
 ## 2B decisions for the orchestrator
 
 - Foreground never blocks longer than `MAX_TIMEOUT_SECS` (600 s): the REPL
