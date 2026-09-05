@@ -863,7 +863,7 @@ pub fn model_max_context(model_name: &str) -> usize {
     fallback_context_length(&lower)
 }
 
-// ponytail: guess fallback, live/models.dev/litellm/disk cache wins when present.
+// Guess fallback; live/models.dev/litellm/disk cache wins when present.
 fn fallback_context_length(lower: &str) -> usize {
     if lower.contains("gemini-1.5-pro") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") || lower.contains("gemini-1.5-flash") || lower.contains("gemini") {
         1_048_576

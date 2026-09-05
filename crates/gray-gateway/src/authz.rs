@@ -1,4 +1,4 @@
-//! Authorization (OpenClaw "trusted gateway, explicit operator allowlist").
+//! Authorization ("trusted gateway, explicit operator allowlist").
 //!
 //! Every inbound event passes through [`Authorizer::check`] before anything
 //! else happens. The decision is deny-by-default:
@@ -12,8 +12,8 @@
 //! | unknown, `dm_policy: pairing`        | offer pairing code       | ignore silently           |
 //! | unknown, otherwise                   | ignore silently          | ignore silently           |
 //!
-//! Group senders never get a pairing prompt (hermes: "In groups: silently
-//! ignore") so a bot added to a public group can't be used to spam codes.
+//! Group senders never get a pairing prompt (silently ignored) so a bot
+//! added to a public group can't be used to spam codes.
 use std::collections::HashSet;
 
 use crate::config::{DmPolicy, GatewayConfig, Platform, PlatformConfig};
@@ -90,8 +90,8 @@ impl Authorizer {
         }
         match cfg.dm_policy {
             DmPolicy::Open if wildcard => Decision::Allow,
-            // `open` without "*" degrades to allowlist semantics (OpenClaw: runtime
-            // still admits only concrete entries) — never silently public.
+            // `open` without "*" degrades to allowlist semantics (only
+            // concrete entries admitted) — never silently public.
             DmPolicy::Open | DmPolicy::Allowlist => {
                 if self.pairing.is_approved(platform, &user) { Decision::Allow } else { Decision::Deny }
             }
@@ -122,8 +122,8 @@ impl Authorizer {
 pub const BUILTIN_DENIED_TOOLS: &[&str] = &["request_user_input"];
 
 /// Shell fragments that require an interactive confirmation in the REPL and
-/// therefore are auto-denied in gateway mode (hermes: dangerous-command
-/// approval has no one to answer it → deny).
+/// therefore are auto-denied in gateway mode (no one is there
+/// to answer an approval → deny).
 pub const DANGEROUS_SHELL_PATTERNS: &[&str] = &[
     "rm -rf /", "rm -rf ~", "rm -rf *", "rm -fr /", "rm -rf --no-preserve-root",
     "sudo ", "doas ", "su -", "su root",

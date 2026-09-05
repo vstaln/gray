@@ -32,7 +32,7 @@ pub struct OpenAiProvider {
     initial_backoff: Duration,
     reasoning_effort: Option<String>,
     /// Stable per-process id sent as `prompt_cache_key` (Responses API) so the
-    /// gateway pins one cache shard — pi parity for prompt caching.
+    /// gateway pins one cache shard for prompt caching.
     session_id: Option<String>,
 }
 
@@ -63,7 +63,7 @@ impl OpenAiProviderBuilder {
     }
 
     /// Sets a stable session id sent as `prompt_cache_key` on the Responses
-    /// API so consecutive requests hit the same cache shard (pi parity).
+    /// API so consecutive requests hit the same cache shard.
     pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
@@ -290,7 +290,7 @@ struct OpenAiUsageChunk {
     /// DeepSeek / OpenRouter / Kimi top-level fields
     #[serde(default, alias = "prompt_cache_hit_tokens", alias = "promptCacheHitTokens")]
     cached_tokens: usize,
-    /// DeepSeek explicit miss count — preferred over prompt-minus-cached (pi parity)
+    /// DeepSeek explicit miss count — preferred over prompt-minus-cached
     #[serde(default, alias = "promptCacheMissTokens")]
     prompt_cache_miss_tokens: usize,
 
@@ -697,7 +697,7 @@ fn map_usage(u: &OpenAiUsageChunk) -> Usage {
         (inclusive, u.prompt_tokens)
     } else {
         // OpenAI: prompt_tokens is inclusive. DeepSeek reports an explicit
-        // miss count — prefer it over subtraction (pi parity).
+        // miss count — prefer it over subtraction.
         let non_cached = if u.prompt_cache_miss_tokens != 0 {
             u.prompt_cache_miss_tokens
         } else {
@@ -749,10 +749,10 @@ struct ResponsesRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ResponsesTool>,
     stream: bool,
-    /// Cache-shard affinity (pi sends the session id here).
+    /// Cache-shard affinity (the session id goes here).
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
-    /// Server-side retention off (pi parity): with store enabled the backend
+    /// Server-side retention off: with store enabled the backend
     /// folds generated reasoning into its cached prompt, which breaks the
     /// exact-prefix match on later turns (measured: turn 3+ misses at 0%).
     store: bool,

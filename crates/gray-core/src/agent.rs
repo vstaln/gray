@@ -107,7 +107,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
-    /// NOTE (ponytail-audit #8): an earlier `is_concurrency_safe` hook was
+    /// NOTE: an earlier `is_concurrency_safe` hook was
     /// deleted — tools run sequentially and nothing read it. If a parallel
     /// executor lands, re-add it then (bash/edit are the unsafe ones).
     async fn execute(&self, ctx: &ToolContext, args: serde_json::Value) -> ToolOutput;
@@ -818,7 +818,6 @@ fn thinking_block(
 /// Push streamed-so-far thinking + text so the transcript matches what the
 /// user already saw on screen. Shared by the cancel and mid-stream-error arms
 /// (the end-of-turn finalize differs: it also appends tool calls).
-/// (ponytail-audit #9)
 fn salvage_partial_text(
     messages: &mut Vec<Message>,
     thinking: String,
