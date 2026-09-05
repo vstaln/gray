@@ -127,7 +127,7 @@ pub fn dim_line(line: &ratatui::text::Line<'_>) -> ratatui::text::Line<'static> 
 
 /// Pads a backdrop line to the full width with opaque spaces so no
 /// transparent cells remain (composer `draw.rs` popup-row parity).
-/// Padding keeps the row's own bg (prompt box stays 10,10,10, transcript black).
+/// Padding keeps the row's own bg (prompt box stays composer gray, transcript black).
 fn pad_backdrop_line(mut line: ratatui::text::Line<'static>, w: usize) -> ratatui::text::Line<'static> {
     use ratatui::style::Style;
     use ratatui::text::Span;
@@ -163,7 +163,9 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         area,
     );
 
-    let box_bg = Color::Rgb(10, 10, 10);
+    // Composer gray: the live input box and every modal use (22,22,22);
+    // near-black here read as "no overlay" behind modals.
+    let box_bg = Color::Rgb(22, 22, 22);
     let prompt_arrow_color = Color::Rgb(70, 70, 70);
     let text_dimmed_color = Color::Rgb(85, 85, 85);
     let footer_cwd_color = Color::Rgb(48, 48, 48);
@@ -234,28 +236,24 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
 
     let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
 
+    // Live-TUI order: transcript, input box right below it, footer, then
+    // empty filler. Pinning the box to the bottom edge (filler in the
+    // middle) moved the text area away from where the live TUI keeps it.
     let transcript = bg.rebuild_transcript(w);
-    if transcript.len() <= transcript_avail_h {
-        for l in &transcript {
-            full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
-        }
-        let empty_needed = transcript_avail_h.saturating_sub(transcript.len());
-        for _ in 0..empty_needed {
-            full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
-        }
-        for l in bottom_box_lines {
-            full_screen_lines.push(pad_backdrop_line(l, w));
-        }
-        full_screen_lines.push(pad_backdrop_line(footer_line, w));
+    let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {
+        &transcript
     } else {
-        let skip = transcript.len() - transcript_avail_h;
-        for l in &transcript[skip..] {
-            full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
-        }
-        for l in bottom_box_lines {
-            full_screen_lines.push(pad_backdrop_line(l, w));
-        }
-        full_screen_lines.push(pad_backdrop_line(footer_line, w));
+        &transcript[transcript.len() - transcript_avail_h..]
+    };
+    for l in tail {
+        full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
+    }
+    for l in bottom_box_lines {
+        full_screen_lines.push(pad_backdrop_line(l, w));
+    }
+    full_screen_lines.push(pad_backdrop_line(footer_line, w));
+    while full_screen_lines.len() < h {
+        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
     }
 
     full_screen_lines.truncate(h);
@@ -286,10 +284,11 @@ mod tests {
     }
 
     #[test]
-    fn backdrop_keeps_footer_with_multiline_prompt() {
-        // A long draft wraps the backdrop box, but the reserved height stayed
-        // at the old fixed 4 rows so truncate() ate the footer + box bottom
-        // behind modals. The footer must survive box growth.
+    fn backdrop_mirrors_live_layout_with_multiline_prompt() {
+        // Live TUI: transcript, input box right below it, footer, then empty
+        // space. The backdrop used to pin the box to the bottom edge (filler
+        // between transcript and box, footer truncated for long drafts) and
+        // painted the box near-black instead of the composer gray.
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
         let bg = BackgroundSnapshot {
@@ -302,6 +301,11 @@ mod tests {
             .draw(|frame| render_dimmed_background(frame, &bg))
             .expect("draw");
         let rows = buffer_rows(terminal.backend(), 40, 10);
-        assert!(rows[9].contains("cache"), "footer survives box growth: {rows:?}");
+        // 4 wrapped prompt rows + top/bottom blank = 6 box rows, footer next.
+        assert!(rows[6].contains("cache"), "footer follows the box: {rows:?}");
+        assert!(rows[7..].iter().all(|r| r.trim().is_empty()), "filler after footer: {rows:?}");
+        assert!(rows[1].contains("❯"), "prompt box right after transcript: {rows:?}");
+        let box_bg = terminal.backend().buffer()[(0, 1)].bg;
+        assert_eq!(box_bg, ratatui::style::Color::Rgb(22, 22, 22), "box matches composer gray");
     }
 }

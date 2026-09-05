@@ -257,21 +257,39 @@ fn auth_path() -> anyhow::Result<PathBuf> {
 }
 
 fn load_store(path: &Path) -> BTreeMap<String, StoredAuth> {
+    load_mixed_store(path)
+        .into_iter()
+        .filter_map(|(k, v)| match v {
+            AuthEntry::OAuth(a) => Some((k, a)),
+            AuthEntry::Key(_) => None,
+        })
+        .collect()
+}
+
+/// One `auth.json` entry: a plaintext API key or an OAuth credential. The
+/// file is a mixed map `{pid: String | StoredAuth}` (plus a legacy
+/// single-object form); key helpers and OAuth saves share it so neither
+/// writer clobbers the other's shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum AuthEntry {
+    Key(String),
+    OAuth(StoredAuth),
+}
+
+pub(crate) fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
     let Ok(body) = std::fs::read_to_string(path) else {
         return BTreeMap::new();
     };
     if let Ok(single) = serde_json::from_str::<StoredAuth>(&body) {
         let mut map = BTreeMap::new();
-        map.insert(single.provider.clone(), single);
+        map.insert(single.provider.clone(), AuthEntry::OAuth(single));
         return map;
     }
-    serde_json::from_str::<BTreeMap<String, StoredAuth>>(&body).unwrap_or_default()
+    serde_json::from_str::<BTreeMap<String, AuthEntry>>(&body).unwrap_or_default()
 }
 
-pub fn save_auth_at(path: &Path, auth: &StoredAuth) -> anyhow::Result<()> {
-    let mut store = load_store(path);
-    store.insert(auth.provider.clone(), auth.clone());
-
+pub(crate) fn save_mixed_store(path: &Path, store: &BTreeMap<String, AuthEntry>) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -293,6 +311,12 @@ pub fn save_auth_at(path: &Path, auth: &StoredAuth) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn save_auth_at(path: &Path, auth: &StoredAuth) -> anyhow::Result<()> {
+    let mut store = load_mixed_store(path);
+    store.insert(auth.provider.clone(), AuthEntry::OAuth(auth.clone()));
+    save_mixed_store(path, &store)
+}
+
 pub fn save_auth(auth: &StoredAuth) -> anyhow::Result<()> {
     save_auth_at(&auth_path()?, auth)
 }
@@ -307,6 +331,21 @@ pub fn load_auth_at(path: &Path, provider: &str) -> anyhow::Result<StoredAuth> {
 
 pub fn load_auth(provider: &str) -> anyhow::Result<StoredAuth> {
     load_auth_at(&auth_path()?, provider)
+}
+
+/// Maps a connect-modal provider id to its OAuth credential key.
+/// `None` = key-only provider.
+pub(crate) fn oauth_provider_for_connect_id(id: &str) -> Option<&'static str> {
+    match id {
+        "xai" => Some("xai"),
+        "openai" | "codex" => Some("codex"),
+        _ => None,
+    }
+}
+
+/// True when usable OAuth credentials exist for the provider.
+pub(crate) fn has_oauth(provider: &str) -> bool {
+    load_auth(provider).is_ok()
 }
 
 // ---- Token HTTP ------------------------------------------------------------
@@ -698,4 +737,66 @@ pub async fn apply_saved_oauth(config: &mut crate::config::Config) {
 }
 
 // ---- Unit tests ------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stored_xai() -> StoredAuth {
+        StoredAuth {
+            provider: "xai".to_string(),
+            access_token: "tok123".to_string(),
+            refresh_token: "ref123".to_string(),
+            expires_at: 9_999_999_999,
+            email: None,
+        }
+    }
+
+    fn write(path: &Path, body: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(path, body).expect("write fixture");
+    }
+
+    #[test]
+    fn mixed_store_keeps_key_strings_and_oauth_objects() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("auth.json");
+        write(&path, r#"{"openrouter": "sk-or-123", "xai": {"provider": "xai", "access_token": "tok123", "refresh_token": "ref123", "expires_at": 9999999999}}"#);
+        let store = load_mixed_store(&path);
+        assert!(matches!(store.get("openrouter"), Some(AuthEntry::Key(k)) if k == "sk-or-123"), "{store:?}");
+        assert!(matches!(store.get("xai"), Some(AuthEntry::OAuth(a)) if a.access_token == "tok123"), "{store:?}");
+    }
+
+    #[test]
+    fn saving_oauth_preserves_existing_key_strings() {
+        // Regression: oauth save rewrote the file as objects-only, wiping keys.
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("auth.json");
+        write(&path, r#"{"openrouter": "sk-or-123"}"#);
+        save_auth_at(&path, &stored_xai()).expect("save");
+        let store = load_mixed_store(&path);
+        assert!(matches!(store.get("openrouter"), Some(AuthEntry::Key(_))), "key survived: {store:?}");
+        assert!(matches!(store.get("xai"), Some(AuthEntry::OAuth(_))), "oauth saved: {store:?}");
+    }
+
+    #[test]
+    fn oauth_provider_mapping_covers_dual_providers() {
+        assert_eq!(oauth_provider_for_connect_id("xai"), Some("xai"));
+        assert_eq!(oauth_provider_for_connect_id("openai"), Some("codex"));
+        assert_eq!(oauth_provider_for_connect_id("codex"), Some("codex"));
+        assert_eq!(oauth_provider_for_connect_id("anthropic"), None);
+        assert_eq!(oauth_provider_for_connect_id("ollama"), None);
+    }
+
+    #[test]
+    fn legacy_single_object_still_loads() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("auth.json");
+        write(&path, r#"{"provider": "codex", "access_token": "tok", "expires_at": 9999999999}"#);
+        let store = load_mixed_store(&path);
+        assert!(matches!(store.get("codex"), Some(AuthEntry::OAuth(_))), "{store:?}");
+    }
+}
 
