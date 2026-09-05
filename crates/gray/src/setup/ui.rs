@@ -44,16 +44,29 @@ impl BackgroundSnapshot {
                     lines.extend(crate::composer::build_welcome_lines(w));
                 }
                 crate::composer::TranscriptEntry::UserPrompt(text, attached) => {
-                    lines.extend(crate::composer::transcript::format_user_prompt_lines(text, attached, w));
+                    lines.extend(crate::composer::transcript::format_user_prompt_lines(
+                        text, attached, w,
+                    ));
                 }
                 crate::composer::TranscriptEntry::ToolBox { header, body } => {
                     if crate::composer::transcript::is_gateway_boot_header(header) {
-                        lines.extend(crate::composer::transcript::format_gateway_boot_card(header.clone(), body, w));
+                        lines.extend(crate::composer::transcript::format_gateway_boot_card(
+                            header.clone(),
+                            body,
+                            w,
+                        ));
                     } else {
-                        lines.extend(crate::composer::transcript::format_tool_box_lines(header.clone(), body, w));
+                        lines.extend(crate::composer::transcript::format_tool_box_lines(
+                            header.clone(),
+                            body,
+                            w,
+                        ));
                     }
                 }
-                crate::composer::TranscriptEntry::StyledLines { lines: styled, hyperlinks: _ } => {
+                crate::composer::TranscriptEntry::StyledLines {
+                    lines: styled,
+                    hyperlinks: _,
+                } => {
                     lines.extend(styled.clone());
                 }
                 crate::composer::TranscriptEntry::Gap(n) => {
@@ -113,9 +126,11 @@ pub fn dim_style(style: ratatui::style::Style) -> ratatui::style::Style {
 
 pub fn dim_line(line: &ratatui::text::Line<'_>) -> ratatui::text::Line<'static> {
     use ratatui::text::{Line, Span};
-    let spans: Vec<Span<'static>> = line.spans.iter().map(|span| {
-        Span::styled(span.content.to_string(), dim_style(span.style))
-    }).collect();
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .iter()
+        .map(|span| Span::styled(span.content.to_string(), dim_style(span.style)))
+        .collect();
     let mut new_line = Line::from(spans);
     let mut st = dim_style(line.style);
     if st.bg.is_none() {
@@ -128,16 +143,17 @@ pub fn dim_line(line: &ratatui::text::Line<'_>) -> ratatui::text::Line<'static> 
 /// Pads a backdrop line to the full width with opaque spaces so no
 /// transparent cells remain (composer `draw.rs` popup-row parity).
 /// Padding keeps the row's own bg (prompt box stays composer gray, transcript black).
-fn pad_backdrop_line(mut line: ratatui::text::Line<'static>, w: usize) -> ratatui::text::Line<'static> {
+fn pad_backdrop_line(
+    mut line: ratatui::text::Line<'static>,
+    w: usize,
+) -> ratatui::text::Line<'static> {
     use ratatui::style::Style;
     use ratatui::text::Span;
     let bg = line.style.bg.unwrap_or(BACKDROP_BG);
     let used = line.width();
     if used < w {
-        line.spans.push(Span::styled(
-            " ".repeat(w - used),
-            Style::default().bg(bg),
-        ));
+        line.spans
+            .push(Span::styled(" ".repeat(w - used), Style::default().bg(bg)));
     }
     line.style = line.style.bg(bg);
     line
@@ -171,7 +187,13 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let footer_cwd_color = Color::Rgb(48, 48, 48);
     let footer_model_color = Color::Rgb(58, 58, 58);
 
-    let arrow_span = Span::styled("❯ ", Style::default().fg(prompt_arrow_color).add_modifier(Modifier::DIM).bg(box_bg));
+    let arrow_span = Span::styled(
+        "❯ ",
+        Style::default()
+            .fg(prompt_arrow_color)
+            .add_modifier(Modifier::DIM)
+            .bg(box_bg),
+    );
     let cont_span = Span::styled("  ", Style::default().bg(box_bg));
     // Mirror the composer input box: wrap the live prompt so a long /
     // multi-line draft grows the box instead of breaking a single row.
@@ -181,7 +203,11 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         prompt_rows.push(Line::from(vec![arrow_span]).style(Style::default().bg(box_bg)));
     } else {
         for (li, logical) in bg.prompt_text.split('\n').enumerate() {
-            let prefix = if li == 0 { arrow_span.clone() } else { cont_span.clone() };
+            let prefix = if li == 0 {
+                arrow_span.clone()
+            } else {
+                cont_span.clone()
+            };
             if logical.is_empty() {
                 prompt_rows.push(Line::from(vec![prefix]).style(Style::default().bg(box_bg)));
                 continue;
@@ -189,18 +215,29 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
             let chars: Vec<char> = logical.chars().collect();
             for (ci, chunk) in chars.chunks(content_w).enumerate() {
                 let s: String = chunk.iter().collect();
-                let p = if li == 0 && ci == 0 { arrow_span.clone() } else { cont_span.clone() };
-                prompt_rows.push(Line::from(vec![
-                    p,
-                    Span::styled(s, Style::default().fg(text_dimmed_color).add_modifier(Modifier::DIM).bg(box_bg)),
-                ]).style(Style::default().bg(box_bg)));
+                let p = if li == 0 && ci == 0 {
+                    arrow_span.clone()
+                } else {
+                    cont_span.clone()
+                };
+                prompt_rows.push(
+                    Line::from(vec![
+                        p,
+                        Span::styled(
+                            s,
+                            Style::default()
+                                .fg(text_dimmed_color)
+                                .add_modifier(Modifier::DIM)
+                                .bg(box_bg),
+                        ),
+                    ])
+                    .style(Style::default().bg(box_bg)),
+                );
             }
         }
     }
 
-    let mut bottom_box_lines = vec![
-        Line::from("").style(Style::default().bg(box_bg)),
-    ];
+    let mut bottom_box_lines = vec![Line::from("").style(Style::default().bg(box_bg))];
     bottom_box_lines.extend(prompt_rows);
     bottom_box_lines.push(Line::from("").style(Style::default().bg(box_bg)));
 
@@ -209,7 +246,11 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let cache_display = format!("{:.1}% cache", bg.cache_hit_rate * 100.0);
 
     let model_display = friendly_model_name(&bg.model_name);
-    let effort_display = if bg.thinking_effort.is_empty() { "high" } else { &bg.thinking_effort };
+    let effort_display = if bg.thinking_effort.is_empty() {
+        "high"
+    } else {
+        &bg.thinking_effort
+    };
     let right_text = if model_display.is_empty() {
         effort_display.to_string()
     } else {
@@ -220,11 +261,35 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
 
     let footer_line = Line::from(vec![
         Span::styled("  ", Style::default().bg(BACKDROP_BG)),
-        Span::styled(ctx_display, Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
-        Span::styled(" · ", Style::default().fg(footer_cwd_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
-        Span::styled(cache_display, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
+        Span::styled(
+            ctx_display,
+            Style::default()
+                .fg(footer_cwd_color)
+                .add_modifier(Modifier::DIM)
+                .bg(BACKDROP_BG),
+        ),
+        Span::styled(
+            " · ",
+            Style::default()
+                .fg(footer_cwd_color)
+                .add_modifier(Modifier::DIM)
+                .bg(BACKDROP_BG),
+        ),
+        Span::styled(
+            cache_display,
+            Style::default()
+                .fg(footer_model_color)
+                .add_modifier(Modifier::DIM)
+                .bg(BACKDROP_BG),
+        ),
         Span::styled(" ".repeat(pad_len), Style::default().bg(BACKDROP_BG)),
-        Span::styled(right_text, Style::default().fg(footer_model_color).add_modifier(Modifier::DIM).bg(BACKDROP_BG)),
+        Span::styled(
+            right_text,
+            Style::default()
+                .fg(footer_model_color)
+                .add_modifier(Modifier::DIM)
+                .bg(BACKDROP_BG),
+        ),
     ])
     .style(Style::default().bg(BACKDROP_BG));
 
@@ -265,10 +330,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         if y >= area.y + area.height {
             break;
         }
-        frame.render_widget(
-            Paragraph::new(line),
-            Rect::new(area.x, y, area.width, 1),
-        );
+        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
     }
 }
 
@@ -302,10 +364,23 @@ mod tests {
             .expect("draw");
         let rows = buffer_rows(terminal.backend(), 40, 10);
         // 4 wrapped prompt rows + top/bottom blank = 6 box rows, footer next.
-        assert!(rows[6].contains("cache"), "footer follows the box: {rows:?}");
-        assert!(rows[7..].iter().all(|r| r.trim().is_empty()), "filler after footer: {rows:?}");
-        assert!(rows[1].contains("❯"), "prompt box right after transcript: {rows:?}");
+        assert!(
+            rows[6].contains("cache"),
+            "footer follows the box: {rows:?}"
+        );
+        assert!(
+            rows[7..].iter().all(|r| r.trim().is_empty()),
+            "filler after footer: {rows:?}"
+        );
+        assert!(
+            rows[1].contains("❯"),
+            "prompt box right after transcript: {rows:?}"
+        );
         let box_bg = terminal.backend().buffer()[(0, 1)].bg;
-        assert_eq!(box_bg, ratatui::style::Color::Rgb(22, 22, 22), "box matches composer gray");
+        assert_eq!(
+            box_bg,
+            ratatui::style::Color::Rgb(22, 22, 22),
+            "box matches composer gray"
+        );
     }
 }

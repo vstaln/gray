@@ -5,7 +5,7 @@ use std::str::FromStr;
 /// Kinds: Cron (recurring), Interval (recurring every X), Once (one-shot at time)
 #[derive(Debug, Clone)]
 pub enum Schedule {
-    Cron(cron::Schedule),
+    Cron(Box<cron::Schedule>),
     Interval(std::time::Duration),
     Once(DateTime<Utc>),
 }
@@ -66,12 +66,16 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
     let lower = trimmed.to_lowercase();
 
     // "in 10m" / "once in 10m" → Once (AI self-scheduling)
-    if let Some(rest) = lower.strip_prefix("once in ").or_else(|| lower.strip_prefix("in ")) {
+    if let Some(rest) = lower
+        .strip_prefix("once in ")
+        .or_else(|| lower.strip_prefix("in "))
+    {
         let dur = parse_duration(rest.trim())?;
         if dur.as_secs() == 0 {
             anyhow::bail!("interval must be > 0");
         }
-        let at = Utc::now() + chrono::Duration::from_std(dur).unwrap_or(chrono::Duration::seconds(0));
+        let at =
+            Utc::now() + chrono::Duration::from_std(dur).unwrap_or(chrono::Duration::seconds(0));
         return Ok(Schedule::Once(at));
     }
     if lower.starts_with("once at ") {
@@ -82,16 +86,18 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
     }
 
     // ISO timestamp like "2026-02-03T14:00" or "2026-02-03 14:30" → Once
-    if looks_like_timestamp(trimmed) {
-        if let Some(dt) = parse_timestamp(trimmed) {
-            return Ok(Schedule::Once(dt));
-        }
+    if looks_like_timestamp(trimmed)
+        && let Some(dt) = parse_timestamp(trimmed)
+    {
+        return Ok(Schedule::Once(dt));
     }
 
     // Try cron first if it looks like 5 fields (first 5 fields digit/*-,/)
     let parts: Vec<&str> = trimmed.split_whitespace().collect();
     if (5..=6).contains(&parts.len())
-        && parts[..5].iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || "*-/,".contains(c)))
+        && parts[..5]
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit() || "*-/,".contains(c)))
     {
         let cron_candidate = if parts.len() == 5 {
             format!("0 {trimmed}")
@@ -99,7 +105,7 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
             trimmed.to_string()
         };
         if let Ok(sched) = cron::Schedule::from_str(&cron_candidate) {
-            return Ok(Schedule::Cron(sched));
+            return Ok(Schedule::Cron(Box::new(sched)));
         }
     }
 
@@ -112,10 +118,10 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
         return Ok(Schedule::Interval(dur));
     }
     // Bare duration like "10m" → Interval (Gray compat)
-    if let Ok(dur) = parse_duration(trimmed) {
-        if dur.as_secs() > 0 {
-            return Ok(Schedule::Interval(dur));
-        }
+    if let Ok(dur) = parse_duration(trimmed)
+        && dur.as_secs() > 0
+    {
+        return Ok(Schedule::Interval(dur));
     }
     // Fallback cron try (5-field gets a prepended sec 0)
     // One attempt, not three — the extra retries re-ran the same parse.
@@ -125,7 +131,7 @@ pub fn parse_schedule(s: &str) -> anyhow::Result<Schedule> {
     ];
     for c in candidates.into_iter().flatten() {
         if let Ok(sched) = cron::Schedule::from_str(&c) {
-            return Ok(Schedule::Cron(sched));
+            return Ok(Schedule::Cron(Box::new(sched)));
         }
     }
     anyhow::bail!(
@@ -157,10 +163,10 @@ fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
             return Some(Utc.from_utc_datetime(&naive));
         }
     }
-    if let Ok(d) = NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d") {
-        if let Some(ndt) = d.and_hms_opt(0, 0, 0) {
-            return Some(Utc.from_utc_datetime(&ndt));
-        }
+    if let Ok(d) = NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+        && let Some(ndt) = d.and_hms_opt(0, 0, 0)
+    {
+        return Some(Utc.from_utc_datetime(&ndt));
     }
     None
 }
@@ -203,7 +209,10 @@ pub fn compute_next_run(schedule_str: &str, from: DateTime<Utc>) -> Option<DateT
 
 /// Compute next run from stored schedule string + last_run
 /// Used by store.rs for updating next_run after a fire
-pub fn compute_next_run_after(schedule_str: &str, last_run: Option<DateTime<Utc>>) -> Option<DateTime<Utc>> {
+pub fn compute_next_run_after(
+    schedule_str: &str,
+    last_run: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
     let sched = parse_schedule(schedule_str).ok()?;
     match &sched {
         Schedule::Once(at) => {
@@ -233,7 +242,7 @@ pub fn split_human_input(input: &str) -> Option<(String, String)> {
             let sched_str = trimmed[idx + 1..].trim(); // keep "every ..." without leading space
             // For "in ", need to keep "in ..."
             let sched_candidate = if marker == " in " {
-                format!("in {}", &trimmed[idx + 4..].trim())
+                format!("in {}", trimmed[idx + 4..].trim())
             } else if marker == " at " {
                 trimmed[idx + 1..].trim().to_string()
             } else {
@@ -258,4 +267,3 @@ pub fn split_human_input(input: &str) -> Option<(String, String)> {
     // Try whole input as schedule? then prompt empty → need prompt
     None
 }
-

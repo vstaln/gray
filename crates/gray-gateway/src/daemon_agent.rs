@@ -11,16 +11,24 @@ use crate::daemon_stream::StreamMsg;
 use crate::session::{SessionSource, build_session_key};
 
 impl GatewayRunner {
-    fn build_agent(&self, prior: Vec<gray_core::Message>) -> anyhow::Result<gray_core::agent::Agent> {
+    fn build_agent(
+        &self,
+        prior: Vec<gray_core::Message>,
+    ) -> anyhow::Result<gray_core::agent::Agent> {
         use gray_core::agent::Agent;
         use gray_provider::OpenAiProvider;
         use gray_tools::Registry;
 
         let (base_url, api_key, model) = self.resolve_provider_config();
-        let model = model.ok_or_else(|| anyhow::anyhow!("no model configured — set ~/.gray/config.json model"))?;
+        let model = model.ok_or_else(|| {
+            anyhow::anyhow!("no model configured — set ~/.gray/config.json model")
+        })?;
         let api_key = api_key.unwrap_or_default();
         let base_url = base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string());
-        let provider = OpenAiProvider::builder(&api_key, &model).base_url(&base_url).build().map_err(|e| anyhow::anyhow!("provider init: {e}"))?;
+        let provider = OpenAiProvider::builder(&api_key, &model)
+            .base_url(&base_url)
+            .build()
+            .map_err(|e| anyhow::anyhow!("provider init: {e}"))?;
 
         let registry = Registry::builtin();
         // Advertise the full registry: denials belong to GatedExecutor so the
@@ -36,7 +44,13 @@ impl GatewayRunner {
 
     /// Run one agent turn in session `sid`, streaming text deltas to `sink`.
     /// Returns the final assistant text. Persists the full turn (tool calls included).
-    pub(crate) async fn run_agent(&self, sid_str: &str, key: &str, text: &str, sink: Option<tokio::sync::mpsc::UnboundedSender<StreamMsg>>) -> anyhow::Result<String> {
+    pub(crate) async fn run_agent(
+        &self,
+        sid_str: &str,
+        key: &str,
+        text: &str,
+        sink: Option<tokio::sync::mpsc::UnboundedSender<StreamMsg>>,
+    ) -> anyhow::Result<String> {
         use gray_core::Message;
         use gray_core::agent::ToolContext;
         use gray_core::event::AgentEvent;
@@ -49,7 +63,9 @@ impl GatewayRunner {
         let prior_messages: Vec<Message> = match store.load(&sid).await {
             Ok((_meta, entries)) => entries.into_iter().map(|e| e.message).collect(),
             Err(_) => {
-                let model = self.resolve_model().unwrap_or_else(|| "unknown".to_string());
+                let model = self
+                    .resolve_model()
+                    .unwrap_or_else(|| "unknown".to_string());
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let meta = SessionMeta::new(sid.clone(), now_millis(), cwd, model);
                 let _ = store.create(meta).await;
@@ -61,7 +77,10 @@ impl GatewayRunner {
 
         // Cancel token registered under the session key so /stop and interrupts can abort.
         let token = tokio_util::sync::CancellationToken::new();
-        self.cancel_tokens.lock().unwrap().insert(key.to_string(), token.clone());
+        self.cancel_tokens
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), token.clone());
         let ctx = ToolContext {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             cancel: token,
@@ -81,7 +100,10 @@ impl GatewayRunner {
                 }
             }
         };
-        let run = agent.run_streaming(Message::user(text.to_string()), ctx, &mut on_event).await.map_err(|e| anyhow::anyhow!("agent run: {e}"));
+        let run = agent
+            .run_streaming(Message::user(text.to_string()), ctx, &mut on_event)
+            .await
+            .map_err(|e| anyhow::anyhow!("agent run: {e}"));
         self.cancel_tokens.lock().unwrap().remove(key);
 
         // Persist whatever the agent produced (also on cancel — partial turns are still history).
@@ -110,7 +132,9 @@ impl GatewayRunner {
     pub async fn run_cron_job(&self, job: &gray_cron::CronJob) {
         // Session keyed through build_session_key (never hand-built): the
         // "platform" is the first home-channel platform, chat_type "cron".
-        let platform = Platform::ALL.into_iter().find(|p| self.adapters.contains_key(p) && self.router.home_channel(*p).is_some());
+        let platform = Platform::ALL
+            .into_iter()
+            .find(|p| self.adapters.contains_key(p) && self.router.home_channel(*p).is_some());
         let src = SessionSource {
             platform: platform.unwrap_or(Platform::Telegram),
             chat_id: job.id.clone(),
@@ -131,21 +155,30 @@ impl GatewayRunner {
         save_cron_output(&job.id, &job.name, &output);
         let text = format!("⏰ {}\n\n{}", job.name, output);
         if platform.is_none() {
-            log::info!("gateway cron '{}' done (no home_channel; output saved locally)", job.name);
+            log::info!(
+                "gateway cron '{}' done (no home_channel; output saved locally)",
+                job.name
+            );
             return;
         }
         for (p, r) in self.router.deliver_home_all(&text).await {
             if r.success {
                 log::info!("gateway cron '{}' delivered to {p} home", job.name);
             } else {
-                log::warn!("gateway cron '{}' delivery to {p} failed: {:?}", job.name, r.error);
+                log::warn!(
+                    "gateway cron '{}' delivery to {p} failed: {:?}",
+                    job.name,
+                    r.error
+                );
             }
         }
     }
 }
 
 fn save_cron_output(job_id: &str, name: &str, output: &str) {
-    let Ok(home) = crate::config::gray_home_dir() else { return };
+    let Ok(home) = crate::config::gray_home_dir() else {
+        return;
+    };
     let dir = home.join("cron").join("output");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -158,14 +191,16 @@ fn save_cron_output(job_id: &str, name: &str, output: &str) {
 // ---------------------------------------------------------------------------
 
 fn load_system_prompt() -> String {
-    let base = crate::config::gray_home_dir().map(|b| b.join("AGENTS.md")).unwrap_or_else(|_| std::path::PathBuf::from("AGENTS.md"));
+    let base = crate::config::gray_home_dir()
+        .map(|b| b.join("AGENTS.md"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("AGENTS.md"));
     // migrate legacy sys.md if needed (same one-time path as lib.rs)
-    if !base.exists() {
-        if let Some(parent) = base.parent() {
-            let legacy = parent.join("sys.md");
-            if let Ok(body) = std::fs::read_to_string(&legacy) {
-                let _ = std::fs::write(&base, &body);
-            }
+    if !base.exists()
+        && let Some(parent) = base.parent()
+    {
+        let legacy = parent.join("sys.md");
+        if let Ok(body) = std::fs::read_to_string(&legacy) {
+            let _ = std::fs::write(&base, &body);
         }
     }
     let body = std::fs::read_to_string(&base).unwrap_or_else(|_| {
@@ -187,5 +222,8 @@ Guidelines:
 }
 
 fn now_millis() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::SystemTime::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }

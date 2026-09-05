@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{fail, finish, get_opt_u64, resolve_path, Tool, MAX_BYTES};
+use crate::{MAX_BYTES, Tool, fail, finish, get_opt_u64, resolve_path};
 
 use crate::truncate::truncate_head;
 
@@ -79,7 +79,7 @@ impl Tool for LsTool {
         }
 
         // Sort case-insensitive
-        entries.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        entries.sort_by_key(|a| a.to_lowercase());
 
         // Build results with directory suffix, respecting limit
         let mut results: Vec<String> = Vec::new();
@@ -99,7 +99,8 @@ impl Tool for LsTool {
             results.push(format!("{name}{suffix}"));
         }
         // If we broke due to limit but there were more entries, mark reached
-        if !entry_limit_reached && results.len() >= effective_limit && entries.len() > results.len() {
+        if !entry_limit_reached && results.len() >= effective_limit && entries.len() > results.len()
+        {
             entry_limit_reached = true;
         }
         // More precise: if total entries exceeds limit, mark reached
@@ -123,7 +124,10 @@ impl Tool for LsTool {
             ));
         }
         if trunc.truncated {
-            notices.push(format!("{} limit reached", crate::truncate::format_size(MAX_BYTES)));
+            notices.push(format!(
+                "{} limit reached",
+                crate::truncate::format_size(MAX_BYTES)
+            ));
         }
         if !notices.is_empty() {
             output.push_str("\n\n[");

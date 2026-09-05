@@ -3,10 +3,10 @@
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 
-use crate::{fail, finish, resolve_path, Tool};
+use crate::{Tool, fail, finish, resolve_path};
 
 pub const WRITE_SNIPPET: &str = "Create or overwrite files";
 pub const WRITE_GUIDELINES: &[&str] = &["Use write only for new files or complete rewrites."];
@@ -59,7 +59,8 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = args.get("path")
+        let path = args
+            .get("path")
             .or_else(|| args.get("file_path"))
             .or_else(|| args.get("filePath"))
             .or_else(|| args.get("file"))
@@ -74,7 +75,8 @@ impl Tool for WriteTool {
             None => return fail("missing required argument 'path'".to_string()),
         };
 
-        let content = args.get("content")
+        let content = args
+            .get("content")
             .or_else(|| args.get("contents"))
             .or_else(|| args.get("text"))
             .or_else(|| args.get("code"))
@@ -91,19 +93,33 @@ impl Tool for WriteTool {
             return fail(format!("write failed for {}: {e}", full.display()));
         }
         let existed = tokio::fs::metadata(&full).await.is_ok();
-        let old = if existed { tokio::fs::read_to_string(&full).await.unwrap_or_default() } else { String::new() };
+        let old = if existed {
+            tokio::fs::read_to_string(&full).await.unwrap_or_default()
+        } else {
+            String::new()
+        };
         match tokio::fs::write(&full, content.as_bytes()).await {
             Ok(()) => {
                 if existed && !old.is_empty() {
                     let patch = crate::edit_diff::generate_unified_patch(&path, &old, &content, 3);
-                    if patch.is_empty() { finish(format!("wrote {} bytes to {} (no change)", content.len(), full.display())) }
-                    else { finish(patch) }
+                    if patch.is_empty() {
+                        finish(format!(
+                            "wrote {} bytes to {} (no change)",
+                            content.len(),
+                            full.display()
+                        ))
+                    } else {
+                        finish(patch)
+                    }
                 } else {
-                    finish(format!("wrote {} bytes to {}", content.len(), full.display()))
+                    finish(format!(
+                        "wrote {} bytes to {}",
+                        content.len(),
+                        full.display()
+                    ))
                 }
             }
             Err(e) => fail(format!("write failed for {}: {e}", full.display())),
         }
     }
 }
-

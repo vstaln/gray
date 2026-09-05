@@ -8,7 +8,6 @@
 //! library with no spans or asynchronous task hierarchies of its own. Warnings
 //! (`log::warn!`) are emitted only on skipped or corrupt data.
 
-
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -173,10 +172,9 @@ pub fn sanitize_title(s: &str) -> String {
         } else {
             match c {
                 // Zero-width, bidi isolates/overrides, word joiner, BOM.
-                '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}' | '\u{200e}'
-                | '\u{200f}' | '\u{202a}' | '\u{202b}' | '\u{202c}' | '\u{202d}'
-                | '\u{202e}' | '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'
-                | '\u{061c}' | '\u{2060}' => {}
+                '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}' | '\u{200e}' | '\u{200f}'
+                | '\u{202a}' | '\u{202b}' | '\u{202c}' | '\u{202d}' | '\u{202e}' | '\u{2066}'
+                | '\u{2067}' | '\u{2068}' | '\u{2069}' | '\u{061c}' | '\u{2060}' => {}
                 _ => kept.push(c),
             }
         }
@@ -200,7 +198,10 @@ pub fn derive_title(text: &str) -> Option<String> {
             return Some(clean);
         }
         let prefix: String = clean.chars().take(60).collect();
-        let cut = prefix.rfind(' ').map(|i| prefix[..i].to_string()).unwrap_or(prefix);
+        let cut = prefix
+            .rfind(' ')
+            .map(|i| prefix[..i].to_string())
+            .unwrap_or(prefix);
         return Some(format!("{}…", cut.trim_end()));
     }
     None
@@ -274,7 +275,10 @@ impl JsonlSessionStore {
                 }
             }
         }
-        if tokio::fs::rename(path, parent.join(format!("{prefix}{}", max_n + 1))).await.is_err() {
+        if tokio::fs::rename(path, parent.join(format!("{prefix}{}", max_n + 1)))
+            .await
+            .is_err()
+        {
             return;
         }
         if max_n + 1 > 3 {
@@ -360,7 +364,8 @@ impl JsonlSessionStore {
         msg: &Message,
         usage: Option<gray_core::event::Usage>,
     ) -> Result<SessionEntryId> {
-        self.append_with_usage_and_duration(id, msg, usage, None).await
+        self.append_with_usage_and_duration(id, msg, usage, None)
+            .await
     }
 
     pub async fn append_with_usage_and_duration(
@@ -451,10 +456,8 @@ impl JsonlSessionStore {
 
         // Empty or whitespace-only file: parse an empty string so the JSON
         // error surfaces as a Corrupt failure at line 1.
-        let (header_line_num, header_str) = all_lines
-            .first()
-            .map(|&(n, s)| (n, s))
-            .unwrap_or((1, ""));
+        let (header_line_num, header_str) =
+            all_lines.first().map(|&(n, s)| (n, s)).unwrap_or((1, ""));
         let header: Header = match serde_json::from_str(header_str) {
             Ok(h) => h,
             Err(e) => {
@@ -597,7 +600,9 @@ impl JsonlSessionStore {
 
     /// Sets an explicit user title; always wins over auto titles.
     pub async fn set_user_title(&self, id: &SessionId, title: &str) -> Result<()> {
-        self.set_title_inner(id, title, "user", true).await.map(|_| ())
+        self.set_title_inner(id, title, "user", true)
+            .await
+            .map(|_| ())
     }
 
     /// Sets a derived title unless a user title is present. Returns whether it wrote.
@@ -623,13 +628,12 @@ impl JsonlSessionStore {
         };
         let header_end = content.find('\n').map(|i| i + 1).unwrap_or(content.len());
         let (header_str, rest) = content.split_at(header_end);
-        let mut header: Header = serde_json::from_str(header_str.trim_end()).map_err(|e| {
-            SessionError::Corrupt {
+        let mut header: Header =
+            serde_json::from_str(header_str.trim_end()).map_err(|e| SessionError::Corrupt {
                 path: path.clone(),
                 line: 1,
                 source: e,
-            }
-        })?;
+            })?;
         if !force && matches!(header.title_source.as_deref(), Some("user")) {
             return Ok(false);
         }
@@ -696,9 +700,7 @@ impl JsonlSessionStore {
                 let mut matched = false;
                 let mut hit = None;
                 for (pos, neg) in &groups {
-                    if pos.iter().all(|t| hay.contains(t))
-                        && neg.iter().all(|t| !hay.contains(t))
-                    {
+                    if pos.iter().all(|t| hay.contains(t)) && neg.iter().all(|t| !hay.contains(t)) {
                         matched = true;
                         hit = char_hit_on_original(&text, &hay, pos);
                         break;
@@ -726,8 +728,12 @@ impl JsonlSessionStore {
 
     /// Returns `base` when unused, else the first unused `base #N` (N >= 2).
     pub async fn next_title_in_lineage(&self, base: &str) -> String {
-        let titles: std::collections::HashSet<String> =
-            self.list().await.into_iter().filter_map(|s| s.title).collect();
+        let titles: std::collections::HashSet<String> = self
+            .list()
+            .await
+            .into_iter()
+            .filter_map(|s| s.title)
+            .collect();
         if !titles.contains(base) {
             return base.to_string();
         }
@@ -787,10 +793,12 @@ fn char_hit_on_original(text: &str, hay: &str, terms: &[String]) -> Option<(usiz
         return terms
             .iter()
             .filter(|t| !t.is_empty())
-            .filter_map(|t| text.find(t.as_str()).map(|b| {
-                let idx = text[..b].chars().count();
-                (idx, t.chars().count())
-            }))
+            .filter_map(|t| {
+                text.find(t.as_str()).map(|b| {
+                    let idx = text[..b].chars().count();
+                    (idx, t.chars().count())
+                })
+            })
             .min();
     }
     terms
@@ -801,12 +809,21 @@ fn char_hit_on_original(text: &str, hay: &str, terms: &[String]) -> Option<(usiz
             if t_chars.is_empty() || t_chars.len() > hay_chars.len() {
                 return None;
             }
-            hay_chars.windows(t_chars.len()).position(|w| w == t_chars.as_slice()).map(|lc_idx| {
-                let orig_idx = *lower_to_orig.get(lc_idx).unwrap_or(&0);
-                let orig_end = lower_to_orig.get(lc_idx + t_chars.len()).copied().unwrap_or(orig_chars.len());
-                let len = orig_end.saturating_sub(orig_idx).max(1).min(orig_chars.len().saturating_sub(orig_idx));
-                (orig_idx, len)
-            })
+            hay_chars
+                .windows(t_chars.len())
+                .position(|w| w == t_chars.as_slice())
+                .map(|lc_idx| {
+                    let orig_idx = *lower_to_orig.get(lc_idx).unwrap_or(&0);
+                    let orig_end = lower_to_orig
+                        .get(lc_idx + t_chars.len())
+                        .copied()
+                        .unwrap_or(orig_chars.len());
+                    let len = orig_end
+                        .saturating_sub(orig_idx)
+                        .max(1)
+                        .min(orig_chars.len().saturating_sub(orig_idx));
+                    (orig_idx, len)
+                })
         })
         .min()
 }
@@ -837,7 +854,14 @@ fn snippet_around(
     }
     let mut out = String::new();
     if let Some(p) = prev.filter(|p| !p.is_empty()) {
-        let tail: String = p.chars().rev().take(60).collect::<String>().chars().rev().collect();
+        let tail: String = p
+            .chars()
+            .rev()
+            .take(60)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         out.push_str(&tail);
         out.push_str(" … ");
     }
@@ -875,7 +899,10 @@ mod tests {
     async fn load_ignores_torn_final_line_but_preserves_prior_entries() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await.unwrap();
+        let id = store
+            .create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test"))
+            .await
+            .unwrap();
         store.append(&id, &Message::user("hello")).await.unwrap();
         let path = store.session_path(&id);
         let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
@@ -889,9 +916,17 @@ mod tests {
     async fn persists_turn_duration_ms() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await.unwrap();
+        let id = store
+            .create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test"))
+            .await
+            .unwrap();
         store
-            .append_with_usage_and_duration(&id, &Message::user("hi"), Some(gray_core::event::Usage::new(10, 5)), Some(6250))
+            .append_with_usage_and_duration(
+                &id,
+                &Message::user("hi"),
+                Some(gray_core::event::Usage::new(10, 5)),
+                Some(6250),
+            )
             .await
             .unwrap();
         let (_, entries) = store.load(&id).await.unwrap();
@@ -903,7 +938,10 @@ mod tests {
     async fn legacy_entry_without_duration_loads_as_none() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await.unwrap();
+        let id = store
+            .create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test"))
+            .await
+            .unwrap();
         let path = store.session_path(&id);
         let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
         // Legacy entry shape: no duration_ms field.
@@ -972,7 +1010,10 @@ mod tests {
         // Two matches, no exact hit: ambiguous.
         assert!(store.resolve_session_id("abcdef").is_none());
         // Exactly one prefix match resolves.
-        assert_eq!(store.resolve_session_id("abcdef1").unwrap().as_str(), "abcdef11");
+        assert_eq!(
+            store.resolve_session_id("abcdef1").unwrap().as_str(),
+            "abcdef11"
+        );
         assert_eq!(store.resolve_session_id("xyz").unwrap().as_str(), "xyz999");
         assert!(store.resolve_session_id("nope").is_none());
     }
@@ -1115,7 +1156,11 @@ mod tests {
         seed(&store, "s1", 1, vec![Message::user(body.clone())]).await;
         let hits = store.search("needle", 10, None).await;
         assert_eq!(hits.len(), 1);
-        assert!(hits[0].2.contains("needle"), "snippet must contain hit, got: {}", hits[0].2);
+        assert!(
+            hits[0].2.contains("needle"),
+            "snippet must contain hit, got: {}",
+            hits[0].2
+        );
     }
 
     #[tokio::test]
@@ -1206,8 +1251,10 @@ mod tests {
             .filter(|n| n.starts_with("bad2.corrupt-"))
             .collect();
         kept.sort();
-        assert_eq!(kept, vec!["bad2.corrupt-3", "bad2.corrupt-4", "bad2.corrupt-5"]);
+        assert_eq!(
+            kept,
+            vec!["bad2.corrupt-3", "bad2.corrupt-4", "bad2.corrupt-5"]
+        );
         assert!(!bad_path.exists());
     }
 }
-

@@ -355,4 +355,3 @@ pub fn analyze(text: &str) -> MarkdownAnalysis {
 
     MarkdownAnalysis { stats, issues }
 }
-

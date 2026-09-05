@@ -161,7 +161,11 @@ pub fn logo_lines() -> Vec<String> {
         .collect()
 }
 
-pub fn blend_color(base: ratatui::style::Color, hilite: ratatui::style::Color, t: f32) -> ratatui::style::Color {
+pub fn blend_color(
+    base: ratatui::style::Color,
+    hilite: ratatui::style::Color,
+    t: f32,
+) -> ratatui::style::Color {
     use ratatui::style::Color;
     match (base, hilite) {
         (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
@@ -213,5 +217,3 @@ pub fn clear_screen() {
         let _ = std::io::stdout().flush();
     }
 }
-
-

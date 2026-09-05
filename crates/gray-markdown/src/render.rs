@@ -8,14 +8,12 @@ use std::borrow::Cow;
 use ratatui::text::{Line, Span};
 
 use crate::buffers::{MarkdownBuffers, RenderEvent, RenderEventKind, unicode_display_width};
-use crate::colors::StyleInto;
 use crate::checkpoint::Checkpoint;
+use crate::colors::StyleInto;
 use crate::hyperlinks::{ChunkLinkRange, chunk_link_offsets, emit_segment_hyperlinks};
 use crate::output::{HyperlinkTarget, MarkdownRenderOutput};
 use crate::parse::ParsedMarkdown;
 use crate::style::{all_hidden, merge_styles};
-
-
 
 impl<'a, 'b> ParsedMarkdown<'a, 'b> {
     fn apply_transforms<'t>(&self, text: &'t str, start: usize, pretty: bool) -> Cow<'t, str> {
@@ -72,8 +70,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         events.clear();
         let capacity = self.buffers.highlights.len() * 2
             + self.buffers.replaces.len() * 2
-            + self.buffers.table_replaces.len() * 2
-            ; // mermaid removed
+            + self.buffers.table_replaces.len() * 2; // mermaid removed
         events.reserve(capacity);
 
         for (i, hl) in self.buffers.highlights.iter().enumerate() {
@@ -190,11 +187,7 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         };
 
         for ev in &render_events {
-            if replace.is_none()
-                && table_replace.is_none()
-               
-                && ev.pos > last_pos
-            {
+            if replace.is_none() && table_replace.is_none() && ev.pos > last_pos {
                 // Check if we need to split text processing at the checkpoint boundary.
                 // If last_pos < cp_byte <= ev.pos, we process in two parts:
                 // 1. Process [last_pos..cp_byte], capture lines.len(), process [cp_byte..ev.pos]
@@ -418,7 +411,8 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             current_source_line = code_start_source_line + line_idx;
 
                             for (syn_style, text) in line_spans {
-                                let ratatui_style = crate::syntax::syntect_to_ratatui_fg(*syn_style);
+                                let ratatui_style =
+                                    crate::syntax::syntect_to_ratatui_fg(*syn_style);
 
                                 for (idx, segment) in text.split('\n').enumerate() {
                                     if idx > 0 {
@@ -728,13 +722,12 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
     }
 }
 
-
 /// Integration tests for LaTeX math rendering across all four delimiter
 /// forms (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`).
 #[cfg(test)]
 mod math_tests {
-    use crate::style::test_style;
     use crate::render_markdown_ratatui_full;
+    use crate::style::test_style;
 
     fn lines_to_text(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
         lines
@@ -1093,8 +1086,8 @@ mod math_tests {
 /// Tests for HTML character-entity decoding in prose (`&lt;` → `<`, etc.).
 #[cfg(test)]
 mod entity_tests {
-    use crate::style::test_style;
     use crate::render_markdown_ratatui_full;
+    use crate::style::test_style;
 
     fn lines_to_text(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
         lines

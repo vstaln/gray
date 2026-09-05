@@ -5,11 +5,11 @@ use std::path::Path;
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::{json, Value};
-use tokio::process::Command;
+use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
+use tokio::process::Command;
 
-use crate::{fail, finish, get_opt_u64, get_str, resolve_path, Tool, MAX_BYTES};
+use crate::{MAX_BYTES, Tool, fail, finish, get_opt_u64, get_str, resolve_path};
 
 use crate::truncate::truncate_head;
 
@@ -17,7 +17,8 @@ const DEFAULT_LIMIT: usize = 1000;
 
 fn relativize(result_path: &str, search_path: &Path) -> String {
     let rp = Path::new(result_path);
-    let had_trailing_sep = result_path.ends_with('/') || result_path.ends_with(std::path::MAIN_SEPARATOR);
+    let had_trailing_sep =
+        result_path.ends_with('/') || result_path.ends_with(std::path::MAIN_SEPARATOR);
     let relative = if rp.is_absolute() {
         rp.strip_prefix(search_path).unwrap_or(rp).to_path_buf()
     } else {
@@ -88,7 +89,7 @@ impl Tool for FindTool {
         let search_path = resolve_path(&ctx.cwd, search_dir.as_deref().unwrap_or("."));
 
         match tokio::fs::metadata(&search_path).await {
-            Ok(m) if m.is_dir() => {},
+            Ok(m) if m.is_dir() => {}
             Ok(_) => return fail(format!("Not a directory: {}", search_path.display())),
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         }
@@ -105,7 +106,11 @@ impl Tool for FindTool {
 
 async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Option<ToolOutput> {
     // Probe fd availability quickly.
-    let mut args: Vec<String> = vec!["--glob".to_string(), "--color=never".to_string(), "--hidden".to_string()];
+    let mut args: Vec<String> = vec![
+        "--glob".to_string(),
+        "--color=never".to_string(),
+        "--hidden".to_string(),
+    ];
 
     // Detect git repo to decide --no-require-git
     let mut inside_git = false;
@@ -179,20 +184,21 @@ async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Op
     let stderr_str = stderr_handle.await.unwrap_or_default();
 
     // If fd exited with error and produced no output, treat as failure and fall back.
-    if let Some(code) = status.code() {
-        if code != 0 && lines.is_empty() {
-            // Check if fd is actually usable; if error is about missing fd, fall back.
-            // Otherwise surface the error.
-            let msg = stderr_str.trim();
-            if !msg.is_empty() && lines.is_empty() {
-                // If no output, let fallback handle it or return no matches.
-                // Only return error if we clearly have no results and an error.
-                // For now, fall through to fallback if we got nothing.
-                if code != 0 && code != 1 {
-                    // Return error only if we have stderr and no fallback would help.
-                    // But still try fallback first by returning None? Let's surface error.
-                    return Some(fail(msg.to_string()));
-                }
+    if let Some(code) = status.code()
+        && code != 0
+        && lines.is_empty()
+    {
+        // Check if fd is actually usable; if error is about missing fd, fall back.
+        // Otherwise surface the error.
+        let msg = stderr_str.trim();
+        if !msg.is_empty() && lines.is_empty() {
+            // If no output, let fallback handle it or return no matches.
+            // Only return error if we clearly have no results and an error.
+            // For now, fall through to fallback if we got nothing.
+            if code != 0 && code != 1 {
+                // Return error only if we have stderr and no fallback would help.
+                // But still try fallback first by returning None? Let's surface error.
+                return Some(fail(msg.to_string()));
             }
         }
     }
@@ -230,7 +236,10 @@ async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Op
         ));
     }
     if trunc.truncated {
-        notices.push(format!("{} limit reached", crate::truncate::format_size(MAX_BYTES)));
+        notices.push(format!(
+            "{} limit reached",
+            crate::truncate::format_size(MAX_BYTES)
+        ));
     }
     if !notices.is_empty() {
         output.push_str("\n\n[");
@@ -279,7 +288,10 @@ async fn fallback_walk(pattern: &str, search_path: &Path, effective_limit: usize
             // Match glob against relative path and basename.
             let rel = path.strip_prefix(search_path).unwrap_or(&path);
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let basename = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let basename = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
 
             if glob_matches(pattern, &rel_str, &basename) {
                 // For directories, include trailing slash like pi does? For find we return files; include dirs with slash.
@@ -316,7 +328,10 @@ async fn fallback_walk(pattern: &str, search_path: &Path, effective_limit: usize
         ));
     }
     if trunc.truncated {
-        notices.push(format!("{} limit reached", crate::truncate::format_size(MAX_BYTES)));
+        notices.push(format!(
+            "{} limit reached",
+            crate::truncate::format_size(MAX_BYTES)
+        ));
     }
     if !notices.is_empty() {
         output.push_str("\n\n[");
@@ -365,7 +380,11 @@ fn glob_matches(pattern: &str, rel_path: &str, basename: &str) -> bool {
     // Supports: *, **, ?, and literal segments.
     // For patterns without '/', match against basename only (like fd default).
     // For patterns with '/', match against rel_path.
-    let target = if pattern.contains('/') { rel_path } else { basename };
+    let target = if pattern.contains('/') {
+        rel_path
+    } else {
+        basename
+    };
     matches_glob(pattern, target)
 }
 

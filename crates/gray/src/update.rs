@@ -8,7 +8,11 @@ pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
     let mut it = v.trim().split('.');
-    Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+    Some((
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+        it.next()?.parse().ok()?,
+    ))
 }
 
 fn is_newer(latest: &str, current: &str) -> bool {
@@ -38,13 +42,22 @@ fn confirm() -> bool {
     if crossterm::terminal::enable_raw_mode().is_err() {
         return false;
     }
-    let yes = matches!(event::read(), Ok(Event::Key(KeyEvent { code: KeyCode::Char('y') | KeyCode::Char('Y'), .. })));
+    let yes = matches!(
+        event::read(),
+        Ok(Event::Key(KeyEvent {
+            code: KeyCode::Char('y') | KeyCode::Char('Y'),
+            ..
+        }))
+    );
     let _ = crossterm::terminal::disable_raw_mode();
     yes
 }
 
 fn run_installer() -> anyhow::Result<()> {
-    let status = Command::new("sh").arg("-c").arg(install_command()).status()?;
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(install_command())
+        .status()?;
     anyhow::ensure!(status.success(), "installer failed");
     Ok(())
 }
@@ -61,7 +74,11 @@ pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<std::fs::Fi
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let f = OpenOptions::new().create(true).write(true).open(path)?;
+    let f = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
     fs2::FileExt::lock_exclusive(&f)?;
     Ok(f)
 }
@@ -80,7 +97,14 @@ fn run_installer_locked() -> anyhow::Result<()> {
 /// `latest.json` is overwritten with the single latest doc (whole-file JSON);
 /// history appends to sibling `history.jsonl`, trimmed to the last 200 lines.
 /// Best effort: receipt failures never fail the update.
-pub(crate) fn write_update_receipt_to(path: &Path, channel: &str, from: &str, to: &str, rc: i32, reason: &str) {
+pub(crate) fn write_update_receipt_to(
+    path: &Path,
+    channel: &str,
+    from: &str,
+    to: &str,
+    rc: i32,
+    reason: &str,
+) {
     const HISTORY_LINES: usize = 200;
     let _ = (|| -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
@@ -91,7 +115,10 @@ pub(crate) fn write_update_receipt_to(path: &Path, channel: &str, from: &str, to
             "channel": channel, "from": from, "to": to, "rc": rc, "reason": reason,
         });
         std::fs::write(path, format!("{receipt}\n"))?;
-        let hist = path.parent().map(|p| p.join("history.jsonl")).unwrap_or_else(|| PathBuf::from("history.jsonl"));
+        let hist = path
+            .parent()
+            .map(|p| p.join("history.jsonl"))
+            .unwrap_or_else(|| PathBuf::from("history.jsonl"));
         let mut f = OpenOptions::new().create(true).append(true).open(&hist)?;
         use std::io::Write as _;
         writeln!(f, "{receipt}")?;
@@ -99,7 +126,10 @@ pub(crate) fn write_update_receipt_to(path: &Path, channel: &str, from: &str, to
         let text = std::fs::read_to_string(&hist)?;
         let lines: Vec<&str> = text.lines().collect();
         if lines.len() > HISTORY_LINES {
-            std::fs::write(&hist, lines[lines.len() - HISTORY_LINES..].join("\n") + "\n")?;
+            std::fs::write(
+                &hist,
+                lines[lines.len() - HISTORY_LINES..].join("\n") + "\n",
+            )?;
         }
         Ok(())
     })();
@@ -108,7 +138,11 @@ pub(crate) fn write_update_receipt_to(path: &Path, channel: &str, from: &str, to
 fn write_update_receipt(channel: &str, from: &str, to: &str, rc: i32, reason: &str) {
     let path = crate::setup::gray_home()
         .map(|h| h.join("logs").join("update_receipts").join("latest.json"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("gray-update-receipts").join("latest.json"));
+        .unwrap_or_else(|_| {
+            std::env::temp_dir()
+                .join("gray-update-receipts")
+                .join("latest.json")
+        });
     write_update_receipt_to(&path, channel, from, to, rc, reason);
 }
 
@@ -141,7 +175,9 @@ fn update_check_due(last_check_secs: Option<u64>, now_secs: u64) -> bool {
 }
 
 fn last_check_path() -> Option<PathBuf> {
-    crate::setup::gray_home().ok().map(|h| h.join("logs").join("last_update_check"))
+    crate::setup::gray_home()
+        .ok()
+        .map(|h| h.join("logs").join("last_update_check"))
 }
 
 fn read_last_check() -> Option<u64> {
@@ -151,13 +187,18 @@ fn read_last_check() -> Option<u64> {
 
 fn write_last_check(now_secs: u64) {
     if let Some(p) = last_check_path() {
-        if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = std::fs::write(p, now_secs.to_string());
     }
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Called before the REPL starts. Checks for a newer release, prompts y/n.
@@ -175,23 +216,43 @@ pub async fn startup_check() {
         return;
     }
     write_last_check(now);
-    let Ok(Ok(latest)) = tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await else { return };
+    let Ok(Ok(latest)) =
+        tokio::time::timeout(std::time::Duration::from_millis(1500), latest_version()).await
+    else {
+        return;
+    };
     if !is_newer(&latest, current) {
         return;
     }
     if std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
         let latest = latest.clone();
         tokio::spawn(async move {
-            let Ok(_lock) = acquire_update_lock() else { return };
-            let ok = Command::new("sh").arg("-c").arg(install_command()).output().is_ok_and(|o| o.status.success());
-            write_update_receipt(CHANNEL, current, &latest, if ok { 0 } else { 1 }, if ok { "ok" } else { "installer failed" });
+            let Ok(_lock) = acquire_update_lock() else {
+                return;
+            };
+            let ok = Command::new("sh")
+                .arg("-c")
+                .arg(install_command())
+                .output()
+                .is_ok_and(|o| o.status.success());
+            write_update_receipt(
+                CHANNEL,
+                current,
+                &latest,
+                if ok { 0 } else { 1 },
+                if ok { "ok" } else { "installer failed" },
+            );
             if ok {
-                eprintln!("\x1b[2mgray {latest} installed in the background — restart to apply\x1b[0m");
+                eprintln!(
+                    "\x1b[2mgray {latest} installed in the background — restart to apply\x1b[0m"
+                );
             }
         });
         return;
     }
-    println!("\x1b[1mgray {latest} available\x1b[0m \x1b[2m(you have {current})\x1b[0m — update now? \x1b[2m[y/N]\x1b[0m");
+    println!(
+        "\x1b[1mgray {latest} available\x1b[0m \x1b[2m(you have {current})\x1b[0m — update now? \x1b[2m[y/N]\x1b[0m"
+    );
     if confirm() {
         match run_installer_locked() {
             Ok(()) => {
@@ -251,7 +312,9 @@ mod tests {
         assert_eq!(v["reason"], "boom");
         assert!(v["ts"].is_string());
         // history.jsonl keeps every receipt.
-        let hist = std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl")).unwrap();
+        let hist =
+            std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl"))
+                .unwrap();
         let lines: Vec<&str> = hist.lines().collect();
         assert_eq!(lines.len(), 2);
         let h0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -267,7 +330,9 @@ mod tests {
         for i in 0..205 {
             write_update_receipt_to(&path, "beta", "0.1.0", "0.2.0", 0, &format!("run-{i}"));
         }
-        let hist = std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl")).unwrap();
+        let hist =
+            std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl"))
+                .unwrap();
         let lines: Vec<&str> = hist.lines().collect();
         assert_eq!(lines.len(), 200);
         let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
@@ -275,7 +340,8 @@ mod tests {
         let last: serde_json::Value = serde_json::from_str(lines[199]).unwrap();
         assert_eq!(last["reason"], "run-204");
         // latest.json still a single doc with the newest receipt.
-        let v: serde_json::Value = serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
         assert_eq!(v["reason"], "run-204");
     }
 
@@ -293,7 +359,10 @@ mod tests {
         let path = dir.path().join("update.lock");
         let guard = acquire_update_lock_at(&path).unwrap();
         let probe = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
-        assert!(fs2::FileExt::try_lock_exclusive(&probe).is_err(), "second exclusive lock must fail while held");
+        assert!(
+            fs2::FileExt::try_lock_exclusive(&probe).is_err(),
+            "second exclusive lock must fail while held"
+        );
         drop(guard);
         assert!(fs2::FileExt::try_lock_exclusive(&probe).is_ok());
         let _ = fs2::FileExt::unlock(&probe);

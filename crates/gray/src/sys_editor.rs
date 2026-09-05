@@ -1,17 +1,19 @@
 //! Built-in lightweight nano-like interactive editor for the Gray system prompt.
 
-use std::io::{stdout, Write};
+use std::io::{Write, stdout};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Terminal;
 
 pub struct SysEditor {
     lines: Vec<String>,
@@ -50,7 +52,12 @@ impl SysEditor {
             enable_raw_mode()?;
         }
 
-        crossterm::execute!(stdout(), EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Show)?;
+        crossterm::execute!(
+            stdout(),
+            EnterAlternateScreen,
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+            crossterm::cursor::Show
+        )?;
         // Some tiling WMs deliver a resize between EnterAlternateScreen and
         // Terminal::new, which ratatui would then map to a zero-sized viewport.
         // Match codex tui::init pattern: re-query after the switch so we anchor correctly.
@@ -61,7 +68,11 @@ impl SysEditor {
         let res = self.event_loop(&mut terminal);
 
         let _ = terminal.clear();
-        crossterm::execute!(std::io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show)?;
+        crossterm::execute!(
+            std::io::stdout(),
+            LeaveAlternateScreen,
+            crossterm::cursor::Show
+        )?;
         // LeaveAlternateScreen already restores the main screen buffer — do NOT
         // emit ClearType::All / blank-line floods here, they race the compositor's
         // own synchronized-update flush and are exactly the ghost-text your 17:22
@@ -87,10 +98,10 @@ impl SysEditor {
     ) -> anyhow::Result<Option<String>> {
         loop {
             // Expire status message after 3 seconds
-            if let Some((_, set_at)) = &self.status_msg {
-                if set_at.elapsed() > Duration::from_secs(3) {
-                    self.status_msg = None;
-                }
+            if let Some((_, set_at)) = &self.status_msg
+                && set_at.elapsed() > Duration::from_secs(3)
+            {
+                self.status_msg = None;
             }
 
             terminal.draw(|frame| self.render(frame))?;
@@ -145,7 +156,8 @@ impl SysEditor {
                                     let cut = std::mem::take(&mut self.lines[0]);
                                     self.cut_buffer = Some(cut);
                                 }
-                                self.cursor_col = self.cursor_col.min(self.current_line_char_count());
+                                self.cursor_col =
+                                    self.cursor_col.min(self.current_line_char_count());
                                 self.modified = true;
                                 self.set_status("Cut line to buffer (^U to paste)");
                             }
@@ -207,13 +219,15 @@ impl SysEditor {
                             KeyCode::PageUp => {
                                 let view_h = terminal.size()?.height.saturating_sub(4) as usize;
                                 self.cursor_row = self.cursor_row.saturating_sub(view_h.max(1));
-                                self.cursor_col = self.cursor_col.min(self.current_line_char_count());
+                                self.cursor_col =
+                                    self.cursor_col.min(self.current_line_char_count());
                             }
                             KeyCode::PageDown => {
                                 let view_h = terminal.size()?.height.saturating_sub(4) as usize;
                                 self.cursor_row = (self.cursor_row + view_h.max(1))
                                     .min(self.lines.len().saturating_sub(1));
-                                self.cursor_col = self.cursor_col.min(self.current_line_char_count());
+                                self.cursor_col =
+                                    self.cursor_col.min(self.current_line_char_count());
                             }
                             _ => {}
                         }
@@ -225,7 +239,10 @@ impl SysEditor {
     }
 
     fn current_line_char_count(&self) -> usize {
-        self.lines.get(self.cursor_row).map(|l| l.chars().count()).unwrap_or(0)
+        self.lines
+            .get(self.cursor_row)
+            .map(|l| l.chars().count())
+            .unwrap_or(0)
     }
 
     fn insert_char(&mut self, c: char) {
@@ -344,20 +361,57 @@ impl SysEditor {
         if self.cursor_col < self.scroll_left {
             self.scroll_left = self.cursor_col;
         } else if self.cursor_col >= self.scroll_left + text_view_w {
-            self.scroll_left = self.cursor_col.saturating_sub(text_view_w.saturating_sub(1));
+            self.scroll_left = self
+                .cursor_col
+                .saturating_sub(text_view_w.saturating_sub(1));
         }
 
         // 1. Render Header Bar
         let title_left = format!(" GRAY SYSTEM PROMPT \u{b7} {}", self.path.display());
-        let mod_tag = if self.modified { " [Modified]" } else { " [Saved]" };
-        let title_right = format!("Ln {}, Col {} ({}) ", self.cursor_row + 1, self.cursor_col + 1, self.lines.len());
-        let header_pad = (area.width as usize).saturating_sub(title_left.chars().count() + mod_tag.chars().count() + title_right.chars().count());
+        let mod_tag = if self.modified {
+            " [Modified]"
+        } else {
+            " [Saved]"
+        };
+        let title_right = format!(
+            "Ln {}, Col {} ({}) ",
+            self.cursor_row + 1,
+            self.cursor_col + 1,
+            self.lines.len()
+        );
+        let header_pad = (area.width as usize).saturating_sub(
+            title_left.chars().count() + mod_tag.chars().count() + title_right.chars().count(),
+        );
 
         let header_spans = vec![
-            Span::styled(title_left, Style::default().fg(Color::Black).bg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
-            Span::styled(mod_tag, Style::default().fg(if self.modified { Color::Rgb(180, 40, 40) } else { Color::Rgb(40, 120, 40) }).bg(Color::Rgb(246, 173, 126)).add_modifier(Modifier::BOLD)),
-            Span::styled(" ".repeat(header_pad), Style::default().bg(Color::Rgb(246, 173, 126))),
-            Span::styled(title_right, Style::default().fg(Color::Black).bg(Color::Rgb(246, 173, 126))),
+            Span::styled(
+                title_left,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(246, 173, 126))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                mod_tag,
+                Style::default()
+                    .fg(if self.modified {
+                        Color::Rgb(180, 40, 40)
+                    } else {
+                        Color::Rgb(40, 120, 40)
+                    })
+                    .bg(Color::Rgb(246, 173, 126))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " ".repeat(header_pad),
+                Style::default().bg(Color::Rgb(246, 173, 126)),
+            ),
+            Span::styled(
+                title_right,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Rgb(246, 173, 126)),
+            ),
         ];
         frame.render_widget(
             Paragraph::new(Line::from(header_spans)),
@@ -382,9 +436,10 @@ impl SysEditor {
                 ]));
             } else {
                 let gutter = format!(" {:>width$} \u{2502} ", "~", width = total_digits);
-                body_lines.push(Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(Color::Rgb(60, 60, 60))),
-                ]));
+                body_lines.push(Line::from(vec![Span::styled(
+                    gutter,
+                    Style::default().fg(Color::Rgb(60, 60, 60)),
+                )]));
             }
         }
         frame.render_widget(
@@ -397,7 +452,12 @@ impl SysEditor {
         let status_line = if let Some((msg, _)) = &self.status_msg {
             Line::from(vec![
                 Span::styled(" \u{2022} ", Style::default().fg(Color::Rgb(246, 173, 126))),
-                Span::styled(msg.as_str(), Style::default().fg(Color::Rgb(230, 230, 230)).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    msg.as_str(),
+                    Style::default()
+                        .fg(Color::Rgb(230, 230, 230))
+                        .add_modifier(Modifier::BOLD),
+                ),
             ])
         } else {
             Line::from(Span::styled(
@@ -413,8 +473,17 @@ impl SysEditor {
         // 4. Render Nano-Style Shortcuts Bar
         let chip = |key: &'static str, desc: &'static str| -> Vec<Span<'static>> {
             vec![
-                Span::styled(format!("^{key}"), Style::default().fg(Color::Black).bg(Color::Rgb(200, 200, 200)).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" {desc}  "), Style::default().fg(Color::Rgb(180, 180, 180))),
+                Span::styled(
+                    format!("^{key}"),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Rgb(200, 200, 200))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {desc}  "),
+                    Style::default().fg(Color::Rgb(180, 180, 180)),
+                ),
             ]
         };
 
@@ -431,8 +500,10 @@ impl SysEditor {
         );
 
         // 5. Position cursor
-        let cur_screen_x = area.x + gutter_w as u16 + (self.cursor_col.saturating_sub(self.scroll_left)) as u16;
-        let cur_screen_y = area.y + header_h + (self.cursor_row.saturating_sub(self.scroll_top)) as u16;
+        let cur_screen_x =
+            area.x + gutter_w as u16 + (self.cursor_col.saturating_sub(self.scroll_left)) as u16;
+        let cur_screen_y =
+            area.y + header_h + (self.cursor_row.saturating_sub(self.scroll_top)) as u16;
         let bounded_x = cur_screen_x.min(area.x + area.width.saturating_sub(1));
         let bounded_y = cur_screen_y.min(area.y + area.height.saturating_sub(footer_h + 1));
         frame.set_cursor_position(Position::new(bounded_x, bounded_y));

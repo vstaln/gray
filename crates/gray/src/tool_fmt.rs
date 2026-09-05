@@ -3,9 +3,9 @@
 //! Provides rich, clean terminal display for tool calls (bash, write, edit, read,
 //! grep, find, ls) with Grok-styled diff rendering and syntax highlighting.
 
-use std::path::Path;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::path::Path;
 
 // ── Palette (GrokNight Theme) ──────────────────────────────────────────────
 pub const ACCENT_TOOL: Color = Color::Rgb(158, 206, 106); // #9ece6a (green bullet)
@@ -55,12 +55,12 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
             rel = s;
         }
     }
-    if rel == path_str {
-        if let Ok(home) = std::env::var("HOME") {
-            let home_path = Path::new(&home);
-            if let Ok(stripped) = path.strip_prefix(home_path) {
-                rel = format!("~/{}", stripped.display());
-            }
+    if rel == path_str
+        && let Ok(home) = std::env::var("HOME")
+    {
+        let home_path = Path::new(&home);
+        if let Ok(stripped) = path.strip_prefix(home_path) {
+            rel = format!("~/{}", stripped.display());
         }
     }
     const MAX: usize = 80;
@@ -101,11 +101,7 @@ pub fn expand_tabs(s: &str, tab_size: usize) -> String {
 
 fn truncate_cmd(cmd: &str) -> &str {
     let line = cmd.lines().next().unwrap_or(cmd);
-    if line.len() > 80 {
-        &line[..80]
-    } else {
-        line
-    }
+    if line.len() > 80 { &line[..80] } else { line }
 }
 
 /// Resolves the display name for a `skill` tool call, matching opencode's
@@ -152,19 +148,36 @@ fn skill_display_name(args: &serde_json::Value) -> String {
 }
 
 /// Formats a tool invocation header line matching Grok CLI styling for Ratatui.
-pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> Line<'static> {
-    let bullet = Span::styled("\u{2b22} ", Style::default().fg(ACCENT_TOOL).add_modifier(Modifier::BOLD));
-    let action_style = Style::default().fg(TEXT_PRIMARY).add_modifier(Modifier::BOLD);
-    let path_style = Style::default().fg(PATH_COLOR).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-    let cmd_style = Style::default().fg(COMMAND_COLOR).add_modifier(Modifier::BOLD);
+pub fn format_tool_call_header(
+    name: &str,
+    args: &serde_json::Value,
+    cwd: Option<&Path>,
+) -> Line<'static> {
+    let bullet = Span::styled(
+        "\u{2b22} ",
+        Style::default()
+            .fg(ACCENT_TOOL)
+            .add_modifier(Modifier::BOLD),
+    );
+    let action_style = Style::default()
+        .fg(TEXT_PRIMARY)
+        .add_modifier(Modifier::BOLD);
+    let path_style = Style::default()
+        .fg(PATH_COLOR)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+    let cmd_style = Style::default()
+        .fg(COMMAND_COLOR)
+        .add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(DIM_COLOR);
 
     match name {
         "bash" => {
-            let cmd = truncate_cmd(args.get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim());
+            let cmd = truncate_cmd(
+                args.get("command")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim(),
+            );
             Line::from(vec![
                 bullet,
                 Span::styled("Ran ", action_style),
@@ -243,18 +256,26 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         "request_user_input" => {
-            let q_summary = args.get("questions")
+            let q_summary = args
+                .get("questions")
                 .and_then(|q| q.as_array())
                 .and_then(|arr| {
                     if arr.len() == 1 {
-                        arr[0].get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\""))
+                        arr[0]
+                            .get("question")
+                            .and_then(|v| v.as_str())
+                            .map(|s| format!("\"{s}\""))
                     } else if arr.len() > 1 {
                         Some(format!("{} questions", arr.len()))
                     } else {
                         None
                     }
                 })
-                .or_else(|| args.get("question").and_then(|v| v.as_str()).map(|s| format!("\"{s}\"")))
+                .or_else(|| {
+                    args.get("question")
+                        .and_then(|v| v.as_str())
+                        .map(|s| format!("\"{s}\""))
+                })
                 .unwrap_or_else(|| "question".to_string());
             let summary = truncate_cmd(&q_summary);
             Line::from(vec![
@@ -272,7 +293,11 @@ pub fn format_tool_call_header(name: &str, args: &serde_json::Value, cwd: Option
             ])
         }
         "cron" => {
-            let sched = args.get("cron").or_else(|| args.get("schedule")).and_then(|v| v.as_str()).unwrap_or("");
+            let sched = args
+                .get("cron")
+                .or_else(|| args.get("schedule"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             Line::from(vec![
                 bullet,
                 Span::styled("Cron ", action_style),
@@ -354,10 +379,10 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
             if let Some(num) = s.split(',').next().and_then(|n| n.parse::<usize>().ok()) {
                 old_start = num;
             }
-        } else if let Some(s) = token.strip_prefix('+') {
-            if let Some(num) = s.split(',').next().and_then(|n| n.parse::<usize>().ok()) {
-                new_start = num;
-            }
+        } else if let Some(s) = token.strip_prefix('+')
+            && let Some(num) = s.split(',').next().and_then(|n| n.parse::<usize>().ok())
+        {
+            new_start = num;
         }
     }
     Some((old_start, new_start))
@@ -414,8 +439,8 @@ pub fn parse_diff_hunks(diff_text: &str) -> Vec<DiffHunk> {
                 tag: DiffTag::Delete,
             });
             old_line += 1;
-        } else if line.starts_with(' ') {
-            let text = line[1..].to_string();
+        } else if let Some(stripped) = line.strip_prefix(' ') {
+            let text = stripped.to_string();
             current_hunk.push(DiffLine {
                 text,
                 lo: old_line,
@@ -455,10 +480,16 @@ fn highlight_line_spans(
             }
             let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
             let mut st = Style::default().fg(fg);
-            if style.font_style.contains(gray_markdown::syntect::highlighting::FontStyle::BOLD) {
+            if style
+                .font_style
+                .contains(gray_markdown::syntect::highlighting::FontStyle::BOLD)
+            {
                 st = st.add_modifier(Modifier::BOLD);
             }
-            if style.font_style.contains(gray_markdown::syntect::highlighting::FontStyle::ITALIC) {
+            if style
+                .font_style
+                .contains(gray_markdown::syntect::highlighting::FontStyle::ITALIC)
+            {
                 st = st.add_modifier(Modifier::ITALIC);
             }
             if let Some(bg_c) = bg {
@@ -614,8 +645,16 @@ pub fn render_diff_hunks(
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled("Updated ", Style::default().fg(Color::Rgb(160, 160, 160))),
-            Span::styled(p_display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" with {additions} additions and {deletions} removals"), Style::default().fg(Color::Rgb(160, 160, 160))),
+            Span::styled(
+                p_display,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" with {additions} additions and {deletions} removals"),
+                Style::default().fg(Color::Rgb(160, 160, 160)),
+            ),
         ]));
     }
 
@@ -626,10 +665,7 @@ pub fn render_diff_hunks(
                 .rev()
                 .find(|l| l.tag != DiffTag::Delete)
                 .map(|l| l.ln);
-            let next_first = hunk
-                .iter()
-                .find(|l| l.tag != DiffTag::Delete)
-                .map(|l| l.ln);
+            let next_first = hunk.iter().find(|l| l.tag != DiffTag::Delete).map(|l| l.ln);
 
             let gap_text = if let (Some(p), Some(n)) = (prev_last, next_first) {
                 if n > p + 1 {
@@ -646,9 +682,10 @@ pub fn render_diff_hunks(
                 "  …".to_string()
             };
 
-            lines.push(Line::from(vec![
-                Span::styled(gap_text, Style::default().fg(DIFF_GUTTER_FG)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                gap_text,
+                Style::default().fg(DIFF_GUTTER_FG),
+            )]));
         }
 
         if hunk.is_empty() {
@@ -663,7 +700,10 @@ pub fn render_diff_hunks(
 
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
-        let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+        let term_w = crossterm::terminal::size()
+            .map(|(w, _)| w as usize)
+            .unwrap_or(120)
+            .max(60);
         let overhead = 2 + gutter_width + 5 + 2;
         let content_w = term_w.saturating_sub(overhead).max(20);
 
@@ -697,8 +737,14 @@ pub fn render_diff_hunks(
             let gutter_pipe_style = gutter_num_style;
             let gutter_sign_style = match line.tag {
                 DiffTag::Equal => gutter_num_style,
-                DiffTag::Delete => Style::default().fg(DIFF_DELETE_FG).bg(DIFF_DELETE_BG).add_modifier(Modifier::BOLD),
-                DiffTag::Insert => Style::default().fg(DIFF_INSERT_FG).bg(DIFF_INSERT_BG).add_modifier(Modifier::BOLD),
+                DiffTag::Delete => Style::default()
+                    .fg(DIFF_DELETE_FG)
+                    .bg(DIFF_DELETE_BG)
+                    .add_modifier(Modifier::BOLD),
+                DiffTag::Insert => Style::default()
+                    .fg(DIFF_INSERT_FG)
+                    .bg(DIFF_INSERT_BG)
+                    .add_modifier(Modifier::BOLD),
             };
 
             let num_str = format!("{:>width$} ", num, width = gutter_width);
@@ -713,14 +759,28 @@ pub fn render_diff_hunks(
             let cont_indent_str = " ".repeat(cont_indent_len);
 
             let row_spans = match line.tag {
-                DiffTag::Delete => {
-                    highlight_line_spans(&expanded, &mut old_highlighter, syntect, DIFF_EQUAL_FG, bg_color)
-                }
-                DiffTag::Insert => {
-                    highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_EQUAL_FG, bg_color)
-                }
+                DiffTag::Delete => highlight_line_spans(
+                    &expanded,
+                    &mut old_highlighter,
+                    syntect,
+                    DIFF_EQUAL_FG,
+                    bg_color,
+                ),
+                DiffTag::Insert => highlight_line_spans(
+                    &expanded,
+                    &mut new_highlighter,
+                    syntect,
+                    DIFF_EQUAL_FG,
+                    bg_color,
+                ),
                 DiffTag::Equal => {
-                    let s = highlight_line_spans(&expanded, &mut new_highlighter, syntect, DIFF_EQUAL_FG, None);
+                    let s = highlight_line_spans(
+                        &expanded,
+                        &mut new_highlighter,
+                        syntect,
+                        DIFF_EQUAL_FG,
+                        None,
+                    );
                     if let Some(hl) = old_highlighter.as_mut() {
                         let _ = hl.highlight_line(&format!("{expanded}\n"), &syntect.syntax_set);
                     }
@@ -731,7 +791,7 @@ pub fn render_diff_hunks(
             let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
             for (ci, chunk_spans) in wrapped_rows.into_iter().enumerate() {
                 let mut spans = Vec::new();
-                spans.push(Span::styled("  ", prefix_style.clone()));
+                spans.push(Span::styled("  ", prefix_style));
                 if ci == 0 {
                     spans.push(Span::styled(num_str.clone(), gutter_num_style));
                     spans.push(Span::styled(pipe_str, gutter_pipe_style));
@@ -741,7 +801,7 @@ pub fn render_diff_hunks(
                     spans.push(Span::styled(pipe_str, gutter_pipe_style));
                     spans.push(Span::styled(cont_sign_str, gutter_num_style));
                     if cont_indent_len > 0 {
-                        spans.push(Span::styled(cont_indent_str.clone(), prefix_style.clone()));
+                        spans.push(Span::styled(cont_indent_str.clone(), prefix_style));
                     }
                 }
                 spans.extend(chunk_spans);
@@ -763,7 +823,11 @@ pub fn render_diff_hunks(
 pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static>> {
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
-    render_numbered_lines(&content.lines().collect::<Vec<_>>(), &mut highlighter, Some(40))
+    render_numbered_lines(
+        &content.lines().collect::<Vec<_>>(),
+        &mut highlighter,
+        Some(40),
+    )
 }
 
 /// Guesses a syntect language token for command output and lightly
@@ -814,9 +878,15 @@ fn push_numbered_wrapped(
         let mut spans = Vec::new();
         spans.push(Span::raw("  "));
         if ci == 0 {
-            spans.push(Span::styled(gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
+            spans.push(Span::styled(
+                gutter_str.clone(),
+                Style::default().fg(DIFF_GUTTER_FG),
+            ));
         } else {
-            spans.push(Span::styled(cont_gutter_str.clone(), Style::default().fg(DIFF_GUTTER_FG)));
+            spans.push(Span::styled(
+                cont_gutter_str.clone(),
+                Style::default().fg(DIFF_GUTTER_FG),
+            ));
             if cont_indent_len > 0 {
                 spans.push(Span::raw(cont_indent_str.clone()));
             }
@@ -842,7 +912,10 @@ fn render_numbered_lines(
     let gutter_width = total.to_string().len().max(3);
     let mut lines = Vec::new();
 
-    let term_w = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(120).max(60);
+    let term_w = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(120)
+        .max(60);
     let overhead = 2 + gutter_width + 3 + 2;
     let content_w = term_w.saturating_sub(overhead).max(20);
 
@@ -852,20 +925,46 @@ fn render_numbered_lines(
         const HEAD: usize = 18;
         const TAIL: usize = 6;
         for (idx, line_text) in raw_lines.iter().take(HEAD).enumerate() {
-            push_numbered_wrapped(&mut lines, idx + 1, line_text, highlighter, gutter_width, content_w);
+            push_numbered_wrapped(
+                &mut lines,
+                idx + 1,
+                line_text,
+                highlighter,
+                gutter_width,
+                content_w,
+            );
         }
         let omitted = total.saturating_sub(HEAD + TAIL);
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("… +{omitted} lines"), Style::default().fg(DIM_COLOR).add_modifier(Modifier::ITALIC)),
+            Span::styled(
+                format!("… +{omitted} lines"),
+                Style::default()
+                    .fg(DIM_COLOR)
+                    .add_modifier(Modifier::ITALIC),
+            ),
         ]));
         for (idx, line_text) in raw_lines.iter().skip(total - TAIL).enumerate() {
-            push_numbered_wrapped(&mut lines, total - TAIL + idx + 1, line_text, highlighter, gutter_width, content_w);
+            push_numbered_wrapped(
+                &mut lines,
+                total - TAIL + idx + 1,
+                line_text,
+                highlighter,
+                gutter_width,
+                content_w,
+            );
         }
         return lines;
     }
     for (idx, line_text) in raw_lines.iter().enumerate() {
-        push_numbered_wrapped(&mut lines, idx + 1, line_text, highlighter, gutter_width, content_w);
+        push_numbered_wrapped(
+            &mut lines,
+            idx + 1,
+            line_text,
+            highlighter,
+            gutter_width,
+            content_w,
+        );
     }
 
     lines
@@ -888,7 +987,12 @@ pub fn format_tool_result_lines_with_context(
         for (i, l) in trimmed.lines().take(8).enumerate() {
             let prefix = if i == 0 { " ✗ " } else { "   " };
             lines.push(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(DIFF_DELETE_FG).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    prefix,
+                    Style::default()
+                        .fg(DIFF_DELETE_FG)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled((*l).to_string(), Style::default().fg(DIFF_DELETE_FG)),
             ]));
         }
@@ -956,7 +1060,11 @@ pub fn format_tool_result_lines_with_context(
 }
 
 /// Formats tool output lines (convenience wrapper).
-pub fn format_tool_result_lines(tool_name: &str, output: &str, is_error: bool) -> Vec<Line<'static>> {
+pub fn format_tool_result_lines(
+    tool_name: &str,
+    output: &str,
+    is_error: bool,
+) -> Vec<Line<'static>> {
     format_tool_result_lines_with_context(tool_name, None, output, is_error, None)
 }
 
@@ -973,10 +1081,10 @@ fn line_to_ansi(l: &Line<'_>) -> String {
                 _ => {}
             }
         }
-        if let Some(bg) = span.style.bg {
-            if let Color::Rgb(r, g, b) = bg {
-                style_prefix.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
-            }
+        if let Some(bg) = span.style.bg
+            && let Color::Rgb(r, g, b) = bg
+        {
+            style_prefix.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
         }
         if span.style.add_modifier.contains(Modifier::BOLD) {
             style_prefix.push_str("\x1b[1m");
@@ -999,7 +1107,11 @@ fn line_to_ansi(l: &Line<'_>) -> String {
 /// Plain ANSI string formatting for one-shot / non-TUI output header.
 // Thin wrapper over `format_tool_call_header`; kept as `String`
 // because print.rs + repl/mod.rs callers (outside this file) need `String`.
-pub fn format_tool_call_header_plain(name: &str, args: &serde_json::Value, cwd: Option<&Path>) -> String {
+pub fn format_tool_call_header_plain(
+    name: &str,
+    args: &serde_json::Value,
+    cwd: Option<&Path>,
+) -> String {
     line_to_ansi(&format_tool_call_header(name, args, cwd))
 }
 
@@ -1040,7 +1152,11 @@ mod tests {
     fn bash_plain_output_is_numbered() {
         let lines = format_tool_result_lines("bash", "hello\nworld", false);
         assert_eq!(lines.len(), 2);
-        assert!(row_text(&lines[0]).contains("1 | "), "got {:?}", row_text(&lines[0]));
+        assert!(
+            row_text(&lines[0]).contains("1 | "),
+            "got {:?}",
+            row_text(&lines[0])
+        );
         assert!(row_text(&lines[0]).contains("hello"));
         assert!(row_text(&lines[1]).contains("2 | "));
     }
@@ -1052,11 +1168,20 @@ mod tests {
 
     #[test]
     fn bash_shows_every_line_uncapped() {
-        let out: String = (1..=60).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let out: String = (1..=60)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let lines = format_tool_result_lines("bash", &out, false);
         let first_rows: Vec<String> = lines.iter().map(row_text).collect();
-        assert!(first_rows.iter().any(|r| r.contains("60 | ")), "last gutter missing");
-        assert!(!first_rows.iter().any(|r| r.contains("… +")), "must not truncate");
+        assert!(
+            first_rows.iter().any(|r| r.contains("60 | ")),
+            "last gutter missing"
+        );
+        assert!(
+            !first_rows.iter().any(|r| r.contains("… +")),
+            "must not truncate"
+        );
     }
 
     #[test]
@@ -1073,7 +1198,11 @@ mod tests {
         let lines = format_tool_result_lines("bash", html, false);
         assert!(lines.len() > 1);
         for l in &lines {
-            assert!(!row_text(l).contains("><"), "still minified: {:?}", row_text(l));
+            assert!(
+                !row_text(l).contains("><"),
+                "still minified: {:?}",
+                row_text(l)
+            );
         }
         let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("<title>Vercel Security</title>"));
@@ -1081,7 +1210,10 @@ mod tests {
 
     #[test]
     fn render_code_block_cap_unchanged() {
-        let content: String = (1..=50).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let content: String = (1..=50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let lines = render_code_block(&content, None);
         // 18 head + 1 omission marker + 6 tail
         assert_eq!(lines.len(), 25);

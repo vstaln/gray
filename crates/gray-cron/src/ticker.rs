@@ -1,5 +1,5 @@
-use chrono::Utc;
 use crate::scheduler::Scheduler;
+use chrono::Utc;
 
 /// Simple ticker loop with grace + fast-forward via Scheduler::scan_due_jobs.
 /// Due jobs run inline, sequentially — no concurrency, so no dedup guard.
@@ -30,7 +30,5 @@ where
 
 /// One-shot scan helper for `gray cron run` headless mode — returns due jobs via Scheduler.
 pub fn scan_due() -> Vec<crate::store::CronJob> {
-    Scheduler::from_active()
-        .scan_due_jobs()
-        .unwrap_or_default()
+    Scheduler::from_active().scan_due_jobs().unwrap_or_default()
 }
