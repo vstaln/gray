@@ -1,16 +1,6 @@
-//! shell/fence.rs — untrusted-output fencing (brief 1B).
-//!
-//! NOT wired into the crate yet (1D adds `pub mod`). Standalone, std only;
-//! `TaskId` is a minimal mirror of `contract.rs` until 1D unifies it.
+//! shell/fence.rs — untrusted-output fencing (brief 1B, wired by 1D).
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TaskId(pub u32);
-
-impl std::fmt::Display for TaskId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "t{}", self.0)
-    }
-}
+use super::contract::TaskId;
 
 /// Wrap process output in `<untrusted-output task="tN">`. Any
 /// `</untrusted-output` in the body is escaped to `<\/untrusted-output`
