@@ -486,6 +486,7 @@ mod tests {
                 commands: vec![],
                 hooks: vec![],
                 provider: None,
+                protocol: None,
             }
         }
         fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -609,7 +610,7 @@ mod tests {
         }
         impl gray_plugin::Plugin for ProbePlugin {
             fn manifest(&self) -> gray_plugin::Manifest {
-                gray_plugin::Manifest { name: "p".to_string(), version: "0.0.0".to_string(), tools: vec![scalar_def()], commands: vec![], hooks: vec![], provider: None }
+                gray_plugin::Manifest { name: "p".to_string(), version: "0.0.0".to_string(), tools: vec![scalar_def()], commands: vec![], hooks: vec![], provider: None, protocol: None }
             }
             fn tools(&self) -> Vec<Arc<dyn Tool>> {
                 vec![self.probe.clone()]

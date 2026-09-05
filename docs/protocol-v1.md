@@ -121,6 +121,55 @@ PR #23's `ProgressBubble` unmerged at audit time). After extraction the
 gateway must build agents with `gray_plugin::boot` (Task 2.1/3.1) to get
 hooks at all.
 
+## v1.1 (additive)
+
+Everything in v1 keeps working: v1.1 only adds a notification, a reply
+variant, a params object, and a manifest field. Pre-v1 sidecars (no
+`protocol` field, ignore unknown lines) never see new traffic they must
+answer, so no v1 behavior changes.
+
+- `plugin/shutdown` (notification, no `id`, no reply) — **additive,
+  gated**: params `{"reason": "session_end"}` (future: `host_exit`,
+  `reload`). Sent only to sidecars whose manifest claims `protocol`
+  (pre-v1 `protocol: None` never receives the line). Host waits a short
+  grace for voluntary exit, then kills what remains. Reference
+  (`plugins/echo/echo.sh`) exits 0 on receipt. Code: `sidecar.rs`
+  `SidecarPlugin::shutdown`, `Plugin::shutdown` (default no-op).
+- `session` object — **additive, ungated**: every v1.1 request/notification
+  params carries `"session": {"id", "cwd"}` (`prompt/context`,
+  `tool/before`, `command/run`, `tool/call`, `event/notify`). Extra field
+  only — old sidecars ignore it. `tool/call` reads both from
+  `ToolContext` (`cwd` + `session_id`); all other wire points use the
+  pinned boot cwd and `""` (no `ToolContext` there to read).
+- `command/run → {prompt}` — **additive, ungated**: reply variant
+  alongside v1's `{"text"}`. `{"prompt"}` wins when both are present and
+  non-empty; empty/missing stays unhandled (`None`). REPL routing
+  (`repl/mod.rs` `run_plugin_command` → `ReplCommand::Unknown`):
+  `Say(text)` prints via `say()` (v1 behavior); `Prompt(text)` is queued
+  as `pending_command = ReplCommand::Prompt` — the same dispatch a typed
+  prompt takes, no turn logic duplicated.
+- `turn_end` emission — **additive, ungated**: the agent loop fans out
+  `PluginHooks::turn_end(usage)` on every turn exit (ok plus all
+  error/cancel/stall paths; best-effort, never fails the turn) →
+  `event/notify {"type":"turn_end","usage":...,"session":...}`. Plain
+  notification, so pre-v1 sidecars drop it harmlessly. Closes the v1
+  "zero `turn_end` constructions" gap; `pre_step` stays unemitted.
+- `manifest.protocol` — **additive**: `"protocol":"1.1"` in the
+  `plugin/manifest` result (absent = pre-v1). Today it gates only
+  `plugin/shutdown` delivery.
+
+Gate verdict: **PASS** — teardown (`plugin/shutdown`) + `TurnEnd`
+emission closed by this PR and proven green: `lifecycle.rs` 4/4
+(`two_sidecars_produce_distinct_endpoints`,
+`shutdown_one_leaves_other_alive`,
+`pre_v1_fixture_survives_shutdown_without_hanging`,
+`bubble_lines_then_cleared`) plus `turn_end_hook_called_once_on_end_and_on_error`,
+`pre_post_hooks_emit_around_tool_execution`,
+`plugin_command_prompt_reply_takes_prompt_path`. Note: gate row 5 flipped
+to **change** during the ① audit (host never emitted `PreTool`/`PostTool`
+either) and is closed by the same emission work. Streaming text +
+plugin-initiated turns remain deferred to v2 as designed.
+
 ## Appendix: edges to cut + publishing path
 
 Dependency edges (via `cargo tree`, audit date):
