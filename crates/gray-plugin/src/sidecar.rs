@@ -242,7 +242,7 @@ impl Plugin for SidecarPlugin {
             .request("command/run", Some(json!({"name": name, "argv": argv})), Duration::from_secs(30))
             .await
             .ok()?;
-        v.get("text").and_then(|t| t.as_str()).map(|t| t.to_string())
+        v.get("text").and_then(|t| t.as_str()).filter(|t| !t.is_empty()).map(|t| t.to_string())
     }
     async fn on_event(&self, e: CoreEvent) -> Option<CoreEvent> {
         // Minimal tagged JSON (see protocol v1 doc comment above).

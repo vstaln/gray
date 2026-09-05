@@ -140,6 +140,24 @@ pub enum ToolBefore {
     Deny(String),
 }
 
+impl ToolBefore {
+    /// Parse a `tool/before` result. Lenient: unknown shapes fail open
+    /// (pre-v1 behavior) so a confused plugin can't wedge the agent loop.
+    pub fn from_result(v: &serde_json::Value, args: &serde_json::Value) -> Self {
+        match v.get("decision").and_then(|d| d.as_str()) {
+            Some("deny") => Self::Deny(
+                v.get("reason")
+                    .and_then(|r| r.as_str())
+                    .filter(|r| !r.is_empty())
+                    .unwrap_or("denied by plugin")
+                    .to_string(),
+            ),
+            Some("modify") => Self::Modify(v.get("args").cloned().unwrap_or_else(|| args.clone())),
+            _ => Self::Allow,
+        }
+    }
+}
+
 /// A slash command (`/x`) claimed by a plugin for `/help` + REPL routing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginCommand {
