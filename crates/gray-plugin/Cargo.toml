@@ -10,6 +10,9 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 gray-core = { workspace = true }
+gray-tools = { workspace = true }
+gray-provider = { workspace = true }
+uuid = { workspace = true }
 log = { workspace = true }
 tempfile.workspace = true
 tokio = { workspace = true }

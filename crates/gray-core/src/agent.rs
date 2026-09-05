@@ -52,10 +52,45 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn ok(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: false }
+        Self {
+            content: content.into(),
+            is_error: false,
+        }
     }
     pub fn error(content: impl Into<String>) -> Self {
-        Self { content: content.into(), is_error: true }
+        Self {
+            content: content.into(),
+            is_error: true,
+        }
+    }
+}
+
+/// Tool permission mode for guard `Prompt` verdicts (the destructive-command
+/// guard in gray-tools asks at the tool/before seam, before the executor runs).
+/// `Ask` prompts the interactive user and fails closed without one; `Auto`
+/// runs without asking. `Deny` verdicts always block regardless of mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PermissionMode {
+    #[default]
+    Ask,
+    Auto,
+}
+
+impl PermissionMode {
+    /// `GRAY_PERMISSION=ask|auto` wins; otherwise interactive defaults to
+    /// `Ask` and print/`-p` mode to `Auto` (no TTY to ask on).
+    pub fn resolve(print_mode: bool) -> Self {
+        match std::env::var("GRAY_PERMISSION").as_deref() {
+            Ok("auto") => Self::Auto,
+            Ok("ask") => Self::Ask,
+            _ => {
+                if print_mode {
+                    Self::Auto
+                } else {
+                    Self::Ask
+                }
+            }
+        }
     }
 }
 
@@ -68,21 +103,25 @@ pub struct ToolContext {
     /// no interactive user is reachable.
     pub questions: Option<crate::questions::QuestionBridge>,
     pub session_id: Option<String>,
+    pub permission: PermissionMode,
 }
 
 impl Default for ToolContext {
     fn default() -> Self {
-        Self { cwd: PathBuf::from("."), cancel: CancellationToken::new(), questions: None, session_id: None }
+        Self {
+            cwd: PathBuf::from("."),
+            cancel: CancellationToken::new(),
+            questions: None,
+            session_id: None,
+            permission: PermissionMode::default(),
+        }
     }
 }
 
 /// A streaming LLM provider (wire protocol behind this seam).
 #[async_trait]
 pub trait Provider: Send + Sync {
-    fn stream(
-        &self,
-        req: ChatRequest,
-    ) -> BoxStream<'static, Result<StreamEvent, ProviderError>>;
+    fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>>;
 
     /// Model id behind this provider ("" when unknown). Used to stamp
     /// captured reasoning items so replay stays same-model-only.
@@ -335,7 +374,11 @@ impl Agent {
     }
 
     /// Single-turn text completion with optional system prompt (used for compaction & summarization).
-    pub async fn complete_prompt(&self, prompt: &str, system: Option<&str>) -> Result<String, CoreError> {
+    pub async fn complete_prompt(
+        &self,
+        prompt: &str,
+        system: Option<&str>,
+    ) -> Result<String, CoreError> {
         let req = ChatRequest {
             system: system.map(|s| s.to_string()),
             messages: vec![Message::user(prompt)],
@@ -396,7 +439,12 @@ pub(crate) fn thinking_block(
         }
         _ => (None, None, None),
     };
-    ContentBlock::Thinking { text, encrypted_content, item_id, model }
+    ContentBlock::Thinking {
+        text,
+        encrypted_content,
+        item_id,
+        model,
+    }
 }
 
 /// Push streamed-so-far thinking + text so the transcript matches what the
@@ -414,7 +462,10 @@ pub(crate) fn salvage_partial_text(
         content.push(thinking_block(thinking, pending_reasoning, model));
     }
     content.push(ContentBlock::Text { text });
-    messages.push(Message { role: Role::Assistant, content });
+    messages.push(Message {
+        role: Role::Assistant,
+        content,
+    });
 }
 
 #[cfg(test)]
@@ -434,7 +485,11 @@ mod agent_tests {
 
     impl FakeProvider {
         fn new(scripts: Vec<Vec<StreamEvent>>) -> Self {
-            Self { scripted: Mutex::new(VecDeque::from(scripts)), failures: Mutex::new(VecDeque::new()), seen_systems: std::sync::Arc::new(Mutex::new(Vec::new())) }
+            Self {
+                scripted: Mutex::new(VecDeque::from(scripts)),
+                failures: Mutex::new(VecDeque::new()),
+                seen_systems: std::sync::Arc::new(Mutex::new(Vec::new())),
+            }
         }
 
         fn with_failures(mut self, errs: Vec<ProviderError>) -> Self {
@@ -451,8 +506,16 @@ mod agent_tests {
     #[async_trait]
     impl Provider for FakeProvider {
         fn stream(&self, req: ChatRequest) -> ProviderStream {
-            self.seen_systems.lock().expect("seen lock poisoned").push(req.system.clone());
-            if let Some(err) = self.failures.lock().expect("failures lock poisoned").pop_front() {
+            self.seen_systems
+                .lock()
+                .expect("seen lock poisoned")
+                .push(req.system.clone());
+            if let Some(err) = self
+                .failures
+                .lock()
+                .expect("failures lock poisoned")
+                .pop_front()
+            {
                 return Box::pin(futures::stream::iter(vec![Err(err)]));
             }
             let script = self
@@ -539,7 +602,12 @@ mod agent_tests {
     fn tool_script(id: &str) -> Vec<StreamEvent> {
         vec![
             StreamEvent::text_delta("checking..."),
-            StreamEvent::tool_call_delta(0, Some(id.to_string()), Some(TOOL_NAME.to_string()), r#"{"q":"#),
+            StreamEvent::tool_call_delta(
+                0,
+                Some(id.to_string()),
+                Some(TOOL_NAME.to_string()),
+                r#"{"q":"#,
+            ),
             StreamEvent::tool_call_delta(0, None, None, r#""x"}"#),
             StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
         ]
@@ -589,13 +657,22 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("unused"));
         let mut agent = Agent::new(Box::new(provider), Box::new(executor));
 
-        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         // Thinking deltas surface in the event stream, before the text.
         assert!(events.contains(&AgentEvent::thinking_delta("hmm ")));
         assert!(events.contains(&AgentEvent::thinking_delta("let me think")));
-        let text_pos = events.iter().position(|e| *e == AgentEvent::text_delta("answer")).unwrap();
-        let think_pos = events.iter().position(|e| *e == AgentEvent::thinking_delta("hmm ")).unwrap();
+        let text_pos = events
+            .iter()
+            .position(|e| *e == AgentEvent::text_delta("answer"))
+            .unwrap();
+        let think_pos = events
+            .iter()
+            .position(|e| *e == AgentEvent::thinking_delta("hmm "))
+            .unwrap();
         assert!(think_pos < text_pos, "reasoning should precede prose");
 
         // ...and land in the transcript as a thinking block ahead of the text.
@@ -603,8 +680,15 @@ mod agent_tests {
         assert_eq!(
             assistant.content,
             vec![
-                ContentBlock::Thinking { text: "hmm let me think".to_string(), encrypted_content: None, item_id: None, model: None },
-                ContentBlock::Text { text: "answer".to_string() },
+                ContentBlock::Thinking {
+                    text: "hmm let me think".to_string(),
+                    encrypted_content: None,
+                    item_id: None,
+                    model: None
+                },
+                ContentBlock::Text {
+                    text: "answer".to_string()
+                },
             ]
         );
     }
@@ -634,11 +718,15 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_1", TOOL_NAME),
-                AgentEvent::StepUsage { usage: Usage::new(10, 5) },
+                AgentEvent::StepUsage {
+                    usage: Usage::new(10, 5)
+                },
                 AgentEvent::tool_call_end("call_1", serde_json::json!({"q": "x"})),
                 AgentEvent::tool_result("call_1", "result payload", false),
                 AgentEvent::text_delta("all done"),
-                AgentEvent::StepUsage { usage: Usage::new(20, 15) },
+                AgentEvent::StepUsage {
+                    usage: Usage::new(20, 15)
+                },
                 AgentEvent::turn_end(StopReason::EndTurn, Usage::new(20, 15)),
             ]
         );
@@ -669,13 +757,10 @@ mod agent_tests {
                 StreamEvent::message_complete(Some(StopReason::EndTurn), None),
             ],
         ]);
-        let executor =
-            FakeExecutor::new(ToolOutput::ok("unused")).with_output(
-                TOOL_NAME,
-                ToolOutput::error("disk on fire"),
-            );
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
-            .with_tools(vec![tool_def()]);
+        let executor = FakeExecutor::new(ToolOutput::ok("unused"))
+            .with_output(TOOL_NAME, ToolOutput::error("disk on fire"));
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
 
         let events = agent
             .run(Message::user("go"), ToolContext::default())
@@ -689,11 +774,15 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_err", TOOL_NAME),
-                AgentEvent::StepUsage { usage: Usage::new(10, 5) },
+                AgentEvent::StepUsage {
+                    usage: Usage::new(10, 5)
+                },
                 AgentEvent::tool_call_end("call_err", serde_json::json!({"q": "x"})),
                 AgentEvent::tool_result("call_err", "disk on fire", true),
                 AgentEvent::text_delta("recovered"),
-                AgentEvent::StepUsage { usage: Usage::new(10, 5) },
+                AgentEvent::StepUsage {
+                    usage: Usage::new(10, 5)
+                },
                 AgentEvent::turn_end(StopReason::EndTurn, Usage::new(10, 5)),
             ]
         );
@@ -709,9 +798,14 @@ mod agent_tests {
     #[tokio::test]
     async fn loop_guard_stops_identical_consecutive_tool_calls() {
         // Same tool+args 3× in a row → LoopDetected (replaces arbitrary max_turns).
-        let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), tool_script("c3")]);
+        let provider = FakeProvider::new(vec![
+            tool_script("c1"),
+            tool_script("c2"),
+            tool_script("c3"),
+        ]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
             .run(Message::user("loop forever"), ToolContext::default())
@@ -759,9 +853,16 @@ mod agent_tests {
             .await
             .expect("nudge should not kill the run");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
         assert!(
-            agent.messages().iter().any(|m| m.text_content().contains("stall guard")),
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
+        assert!(
+            agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("stall guard")),
             "expected a stall-guard nudge message in history"
         );
     }
@@ -788,7 +889,11 @@ mod agent_tests {
             .await
             .expect("a write must reset the stall streak");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
     }
 
     #[tokio::test]
@@ -800,8 +905,10 @@ mod agent_tests {
             StreamEvent::text_delta("still here"),
             StreamEvent::message_complete(Some(StopReason::EndTurn), None),
         ]]);
-        let mut agent =
-            Agent::new(Box::new(provider), Box::new(FakeExecutor::new(ToolOutput::ok(""))));
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+        );
 
         let events = agent
             .run(Message::user("hi"), ToolContext::default())
@@ -809,10 +916,17 @@ mod agent_tests {
             .expect("retry notice must not fail the run");
 
         assert!(
-            events.contains(&AgentEvent::stream_error("Reconnecting... 1/3", "status 503: boom")),
+            events.contains(&AgentEvent::stream_error(
+                "Reconnecting... 1/3",
+                "status 503: boom"
+            )),
             "expected forwarded StreamError, got {events:?}"
         );
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
     }
 
     #[tokio::test]
@@ -823,8 +937,10 @@ mod agent_tests {
             StreamEvent::text_delta("gamma"),
             StreamEvent::message_complete(Some(StopReason::EndTurn), None),
         ]]);
-        let mut agent =
-            Agent::new(Box::new(provider), Box::new(FakeExecutor::new(ToolOutput::ok(""))));
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+        );
 
         let events = agent
             .run(Message::user("hi"), ToolContext::default())
@@ -853,11 +969,20 @@ mod agent_tests {
         let token = cancel_token.clone();
         executor.on_execute = Some(std::sync::Arc::new(move || token.cancel()));
         let call_log = executor.calls.clone();
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
-            .with_tools(vec![tool_def()]);
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
-            .run(Message::user("go"), ToolContext { cwd: ".".into(), cancel: cancel_token, questions: None, session_id: None })
+            .run(
+                Message::user("go"),
+                ToolContext {
+                    cwd: ".".into(),
+                    cancel: cancel_token,
+                    questions: None,
+                    session_id: None,
+                    permission: PermissionMode::Ask,
+                },
+            )
             .await
             .expect_err("cancelled run should surface Cancelled");
 
@@ -901,7 +1026,12 @@ mod agent_tests {
     async fn malformed_tool_args_degrade_to_string_payload() {
         let provider = FakeProvider::new(vec![
             vec![
-                StreamEvent::tool_call_delta(0, Some("c1".into()), Some(TOOL_NAME.into()), "not-json{{"),
+                StreamEvent::tool_call_delta(
+                    0,
+                    Some("c1".into()),
+                    Some(TOOL_NAME.into()),
+                    "not-json{{",
+                ),
                 StreamEvent::message_complete(Some(StopReason::ToolUse), None),
             ],
             vec![
@@ -909,9 +1039,15 @@ mod agent_tests {
                 StreamEvent::message_complete(Some(StopReason::EndTurn), None),
             ],
         ]);
-        let mut agent = Agent::new(Box::new(provider), Box::new(FakeExecutor::new(ToolOutput::ok("ok"))))
-            .with_tools(vec![tool_def()]);
-        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()]);
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
         assert!(events.iter().any(|e| matches!(e, AgentEvent::ToolCallEnd { args: serde_json::Value::String(s), .. } if s == "not-json{{")));
     }
 
@@ -919,7 +1055,12 @@ mod agent_tests {
     async fn unknown_tool_name_skips_executor_with_error_result() {
         let provider = FakeProvider::new(vec![
             vec![
-                StreamEvent::tool_call_delta(0, Some("c-unknown".into()), Some("nope".into()), r#"{"q":"x"}"#),
+                StreamEvent::tool_call_delta(
+                    0,
+                    Some("c-unknown".into()),
+                    Some("nope".into()),
+                    r#"{"q":"x"}"#,
+                ),
                 StreamEvent::message_complete(Some(StopReason::ToolUse), None),
             ],
             end_script(),
@@ -928,21 +1069,37 @@ mod agent_tests {
         let call_log = executor.calls.clone();
         let mut agent =
             Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
-        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
-        assert!(call_log.lock().expect("calls lock poisoned").is_empty(), "executor must not run for unknown tool");
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "executor must not run for unknown tool"
+        );
         let (output, is_error) = events
             .iter()
             .find_map(|e| match e {
-                AgentEvent::ToolResult { id, output, is_error } if id == "c-unknown" => {
-                    Some((output.clone(), *is_error))
-                }
+                AgentEvent::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                } if id == "c-unknown" => Some((output.clone(), *is_error)),
                 _ => None,
             })
             .expect("expected tool result for unknown tool");
         assert!(is_error, "unknown tool must be is_error, got {output}");
-        assert!(output.contains("does not exist") && output.contains("nope") && output.contains(TOOL_NAME), "got {output}");
+        assert!(
+            output.contains("does not exist")
+                && output.contains("nope")
+                && output.contains(TOOL_NAME),
+            "got {output}"
+        );
         assert_eq!(agent.messages()[1].role, Role::Assistant);
-        assert!(matches!(&agent.messages()[2].content[0], ContentBlock::ToolResult { is_error: true, .. }));
+        assert!(matches!(
+            &agent.messages()[2].content[0],
+            ContentBlock::ToolResult { is_error: true, .. }
+        ));
     }
 
     #[tokio::test]
@@ -958,14 +1115,22 @@ mod agent_tests {
         let call_log = executor.calls.clone();
         let mut agent =
             Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
-        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
-        assert!(call_log.lock().expect("calls lock poisoned").is_empty(), "executor must not run for null args");
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "executor must not run for null args"
+        );
         let (output, is_error) = events
             .iter()
             .find_map(|e| match e {
-                AgentEvent::ToolResult { id, output, is_error } if id == "c-null" => {
-                    Some((output.clone(), *is_error))
-                }
+                AgentEvent::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                } if id == "c-null" => Some((output.clone(), *is_error)),
                 _ => None,
             })
             .expect("expected tool result for null args");
@@ -977,7 +1142,12 @@ mod agent_tests {
     async fn malformed_string_args_skips_executor_with_error_result() {
         let provider = FakeProvider::new(vec![
             vec![
-                StreamEvent::tool_call_delta(0, Some("c-bad".into()), Some(TOOL_NAME.into()), "not-json{{"),
+                StreamEvent::tool_call_delta(
+                    0,
+                    Some("c-bad".into()),
+                    Some(TOOL_NAME.into()),
+                    "not-json{{",
+                ),
                 StreamEvent::message_complete(Some(StopReason::ToolUse), None),
             ],
             end_script(),
@@ -986,14 +1156,22 @@ mod agent_tests {
         let call_log = executor.calls.clone();
         let mut agent =
             Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
-        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
-        assert!(call_log.lock().expect("calls lock poisoned").is_empty(), "executor must not run for malformed args");
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "executor must not run for malformed args"
+        );
         let (output, is_error) = events
             .iter()
             .find_map(|e| match e {
-                AgentEvent::ToolResult { id, output, is_error } if id == "c-bad" => {
-                    Some((output.clone(), *is_error))
-                }
+                AgentEvent::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                } if id == "c-bad" => Some((output.clone(), *is_error)),
                 _ => None,
             })
             .expect("expected tool result for malformed args");
@@ -1004,7 +1182,10 @@ mod agent_tests {
     // --- workstream A-core ---
 
     fn empty_script() -> Vec<StreamEvent> {
-        vec![StreamEvent::message_complete(Some(StopReason::EndTurn), None)]
+        vec![StreamEvent::message_complete(
+            Some(StopReason::EndTurn),
+            None,
+        )]
     }
 
     fn maxtokens_script(text: &str) -> Vec<StreamEvent> {
@@ -1047,9 +1228,15 @@ mod agent_tests {
             .await
             .expect("compact+retry should succeed");
 
-        assert!(events.iter().any(|e| *e == AgentEvent::text_delta("continued")));
         assert!(
-            agent.messages()[0].text_content().contains("<conversation_summary>"),
+            events
+                .iter()
+                .any(|e| *e == AgentEvent::text_delta("continued"))
+        );
+        assert!(
+            agent.messages()[0]
+                .text_content()
+                .contains("<conversation_summary>"),
             "history must start with the summary pair"
         );
     }
@@ -1070,7 +1257,10 @@ mod agent_tests {
             .await
             .expect_err("must surface when compact also overflows");
 
-        assert!(err.to_string().contains("context exhausted"), "actionable message, got {err}");
+        assert!(
+            err.to_string().contains("context exhausted"),
+            "actionable message, got {err}"
+        );
     }
 
     #[tokio::test]
@@ -1091,7 +1281,11 @@ mod agent_tests {
             .await
             .expect("empty turn should end gracefully");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
         assert_eq!(agent.messages().last().unwrap().text_content(), "(empty)");
     }
 
@@ -1115,9 +1309,16 @@ mod agent_tests {
             .await
             .expect("nudge should recover the turn");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
         assert!(
-            agent.messages().iter().any(|m| m.text_content().contains("process results")),
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
+        assert!(
+            agent
+                .messages()
+                .iter()
+                .any(|m| m.text_content().contains("process results")),
             "expected the empty-after-tools nudge in history"
         );
     }
@@ -1125,7 +1326,12 @@ mod agent_tests {
     fn tool_script_with_args(id: &str, args: &str) -> Vec<StreamEvent> {
         vec![
             StreamEvent::text_delta("checking..."),
-            StreamEvent::tool_call_delta(0, Some(id.to_string()), Some(TOOL_NAME.to_string()), args),
+            StreamEvent::tool_call_delta(
+                0,
+                Some(id.to_string()),
+                Some(TOOL_NAME.to_string()),
+                args,
+            ),
             StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(10, 5))),
         ]
     }
@@ -1157,7 +1363,11 @@ mod agent_tests {
             .await
             .expect("alternation must terminate");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
         let nudges = agent
             .messages()
             .iter()
@@ -1191,7 +1401,10 @@ mod agent_tests {
             .map(|m| m.text_content())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(joined.contains("part1 ") && joined.contains("part2"), "stitched: {joined}");
+        assert!(
+            joined.contains("part1 ") && joined.contains("part2"),
+            "stitched: {joined}"
+        );
         assert!(
             joined.contains("continue exactly where you left off"),
             "continuation prompt: {joined}"
@@ -1216,11 +1429,18 @@ mod agent_tests {
             .await
             .expect("capped continuation keeps partial");
 
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
         let nudges = agent
             .messages()
             .iter()
-            .filter(|m| m.text_content().contains("continue exactly where you left off"))
+            .filter(|m| {
+                m.text_content()
+                    .contains("continue exactly where you left off")
+            })
             .count();
         assert_eq!(nudges, 2, "continuations must be capped");
     }
@@ -1271,21 +1491,26 @@ mod agent_tests {
         let (output, is_error) = events
             .iter()
             .find_map(|e| match e {
-                AgentEvent::ToolResult { id, output, is_error } if id == "c1" => {
-                    Some((output.clone(), *is_error))
-                }
+                AgentEvent::ToolResult {
+                    id,
+                    output,
+                    is_error,
+                } if id == "c1" => Some((output.clone(), *is_error)),
                 _ => None,
             })
             .expect("expected tool result after timeout");
         assert!(is_error, "timeout must be is_error, got {output}");
         assert!(output.contains("timed out"), "got {output}");
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::TurnEnd { .. })));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
     }
 
     #[tokio::test]
     async fn steer_appends_to_newest_tool_result() {
-        let provider =
-            FakeProvider::new(vec![tool_script("c1"), end_script(), end_script()]);
+        let provider = FakeProvider::new(vec![tool_script("c1"), end_script(), end_script()]);
         let mut agent = Agent::new(
             Box::new(provider),
             Box::new(FakeExecutor::new(ToolOutput::ok("data"))),
@@ -1373,19 +1598,32 @@ mod agent_tests {
         )
         .with_system("BASE-SYSTEM")
         .with_hooks(vec![
-            Arc::new(CtxHook { text: Some("PLUGIN-CTX-AAA".to_string()) }),
+            Arc::new(CtxHook {
+                text: Some("PLUGIN-CTX-AAA".to_string()),
+            }),
             Arc::new(CtxHook { text: None }),
-            Arc::new(CtxHook { text: Some("PLUGIN-CTX-BBB".to_string()) }),
+            Arc::new(CtxHook {
+                text: Some("PLUGIN-CTX-BBB".to_string()),
+            }),
         ]);
 
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         let seen = seen.lock().expect("seen lock poisoned");
         assert_eq!(seen.len(), 1, "one turn → one request, got {seen:?}");
         let system = seen[0].as_deref().unwrap_or("");
-        assert!(system.contains("BASE-SYSTEM"), "base prompt preserved, got: {system}");
+        assert!(
+            system.contains("BASE-SYSTEM"),
+            "base prompt preserved, got: {system}"
+        );
         let (a, b) = (system.find("PLUGIN-CTX-AAA"), system.find("PLUGIN-CTX-BBB"));
-        assert!(a.is_some() && b.is_some(), "both hook replies present, got: {system}");
+        assert!(
+            a.is_some() && b.is_some(),
+            "both hook replies present, got: {system}"
+        );
         assert!(a.unwrap() < b.unwrap(), "hook order kept, got: {system}");
     }
 
@@ -1421,7 +1659,10 @@ mod agent_tests {
                 rewrite: None,
             })]);
 
-        let events = agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         assert!(
             call_log.lock().expect("calls lock poisoned").is_empty(),
@@ -1430,23 +1671,33 @@ mod agent_tests {
         let (output, is_error) = events
             .iter()
             .find_map(|e| match e {
-                AgentEvent::ToolResult { output, is_error, .. } => Some((output.clone(), *is_error)),
+                AgentEvent::ToolResult {
+                    output, is_error, ..
+                } => Some((output.clone(), *is_error)),
                 _ => None,
             })
             .expect("deny must still emit a tool result");
         assert!(is_error, "deny result is an error, got {output:?}");
-        assert!(output.contains("DENIED-XYZ"), "reason surfaced, got {output:?}");
+        assert!(
+            output.contains("DENIED-XYZ"),
+            "reason surfaced, got {output:?}"
+        );
         // History carries the same error result so alternation stays intact.
         let stored = agent
             .messages()
             .iter()
             .flat_map(|m| m.content.iter())
             .find_map(|b| match b {
-                ContentBlock::ToolResult { content, is_error, .. } => Some((content.clone(), *is_error)),
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => Some((content.clone(), *is_error)),
                 _ => None,
             })
             .expect("deny must leave a history tool result");
-        assert!(stored.1 && stored.0.contains("DENIED-XYZ"), "got {stored:?}");
+        assert!(
+            stored.1 && stored.0.contains("DENIED-XYZ"),
+            "got {stored:?}"
+        );
     }
 
     #[tokio::test]
@@ -1461,11 +1712,18 @@ mod agent_tests {
                 rewrite: Some(serde_json::json!({"q": "rewritten"})),
             })]);
 
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         let logged = arg_log.lock().expect("args lock poisoned");
         assert_eq!(logged.len(), 1, "executor runs once, got {logged:?}");
-        assert_eq!(logged[0].1, serde_json::json!({"q": "rewritten"}), "got {logged:?}");
+        assert_eq!(
+            logged[0].1,
+            serde_json::json!({"q": "rewritten"}),
+            "got {logged:?}"
+        );
     }
 
     #[tokio::test]
@@ -1473,9 +1731,13 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let arg_log = executor.call_args.clone();
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+        let mut agent =
+            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
 
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         let logged = arg_log.lock().expect("args lock poisoned");
         assert_eq!(logged.len(), 1, "executor runs once, got {logged:?}");
@@ -1493,13 +1755,20 @@ mod agent_tests {
     #[async_trait]
     impl PluginHooks for LifecycleHook {
         async fn pre_tool(&self, name: &str, _args: &serde_json::Value) {
-            self.calls.lock().expect("calls lock poisoned").push(format!("pre:{name}"));
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push(format!("pre:{name}"));
         }
         async fn post_tool(&self, name: &str, _output: &ToolOutput) {
-            self.calls.lock().expect("calls lock poisoned").push(format!("post:{name}"));
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push(format!("post:{name}"));
         }
         async fn turn_end(&self, _usage: &Usage) {
-            self.turn_ends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.turn_ends
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -1512,22 +1781,46 @@ mod agent_tests {
             Box::new(FakeProvider::new(vec![end_script()])),
             Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
-        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends.clone(), calls })]);
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
-        assert_eq!(ends.load(std::sync::atomic::Ordering::SeqCst), 1, "turn_end once on success");
+        .with_hooks(vec![Arc::new(LifecycleHook {
+            turn_ends: ends.clone(),
+            calls,
+        })]);
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            ends.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "turn_end once on success"
+        );
 
         // Error path (identical-tool loop → LoopDetected): still exactly once.
         let ends_err = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls_err = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let mut agent = Agent::new(
-            Box::new(FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), tool_script("c3")])),
+            Box::new(FakeProvider::new(vec![
+                tool_script("c1"),
+                tool_script("c2"),
+                tool_script("c3"),
+            ])),
             Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
-        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends_err.clone(), calls: calls_err })]);
-        let err = agent.run(Message::user("loop"), ToolContext::default()).await.expect_err("loop must fail");
+        .with_hooks(vec![Arc::new(LifecycleHook {
+            turn_ends: ends_err.clone(),
+            calls: calls_err,
+        })]);
+        let err = agent
+            .run(Message::user("loop"), ToolContext::default())
+            .await
+            .expect_err("loop must fail");
         assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
-        assert_eq!(ends_err.load(std::sync::atomic::Ordering::SeqCst), 1, "turn_end once on error");
+        assert_eq!(
+            ends_err.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "turn_end once on error"
+        );
     }
 
     #[tokio::test]
@@ -1539,12 +1832,22 @@ mod agent_tests {
             Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
-        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends.clone(), calls: calls.clone() })]);
+        .with_hooks(vec![Arc::new(LifecycleHook {
+            turn_ends: ends.clone(),
+            calls: calls.clone(),
+        })]);
 
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         let logged = calls.lock().expect("calls lock poisoned").clone();
-        assert_eq!(logged, vec![format!("pre:{TOOL_NAME}"), format!("post:{TOOL_NAME}")], "order pre→post, got {logged:?}");
+        assert_eq!(
+            logged,
+            vec![format!("pre:{TOOL_NAME}"), format!("post:{TOOL_NAME}")],
+            "order pre→post, got {logged:?}"
+        );
         // Sidecar-provided tools run through the same executor call site as
         // builtin tools, so this emission covers both by construction.
     }

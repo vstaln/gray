@@ -1,4 +1,3 @@
-
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
@@ -18,13 +17,11 @@ pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> &str {
 pub fn fmt_usage(total: usize) -> String {
     let s = total.to_string();
     let mut out = String::with_capacity(s.len() + s.len() / 3);
-    let mut count = 0;
-    for ch in s.chars().rev() {
+    for (count, ch) in s.chars().rev().enumerate() {
         if count != 0 && count % 3 == 0 {
             out.push(',');
         }
         out.push(ch);
-        count += 1;
     }
     out.chars().rev().collect()
 }
@@ -59,17 +56,32 @@ pub fn clean_provider_detail(detail: &str) -> String {
     let typ = err_obj.get("type").and_then(|v| v.as_str()).unwrap_or("");
     let code = err_obj
         .get("code")
-        .and_then(|v| v.as_str().map(|s| s.to_string()).or_else(|| v.as_u64().map(|n| n.to_string())))
+        .and_then(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.as_u64().map(|n| n.to_string()))
+        })
         .unwrap_or_default();
-    let prefix = detail[..start].trim().trim_end_matches(':').trim_end().to_string();
+    let prefix = detail[..start]
+        .trim()
+        .trim_end_matches(':')
+        .trim_end()
+        .to_string();
     // Preserve trailing diagnostics Codex keeps (cf-ray / request-id).
     let mut suffix = String::new();
     for key in ["cf-ray: ", "request-id: ", "request_id: "] {
         if let Some(pos) = detail[end..].find(key) {
             let tail = detail[end + pos + key.len()..].trim();
-            let val: String = tail.chars().take_while(|c| !c.is_whitespace() && *c != ',').collect();
+            let val: String = tail
+                .chars()
+                .take_while(|c| !c.is_whitespace() && *c != ',')
+                .collect();
             if !val.is_empty() {
-                let label = if key.starts_with("cf") { "cf-ray" } else { "request-id" };
+                let label = if key.starts_with("cf") {
+                    "cf-ray"
+                } else {
+                    "request-id"
+                };
                 if !suffix.is_empty() {
                     suffix.push_str(", ");
                 }
@@ -127,7 +139,11 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
                 format!(
                     "✗ Bad request (not retryable): {short}\n  Model may not be supported on {base_url}. Run /model to pick a valid model or /connect to change provider."
                 )
-            } else if lower.contains("auth") || short.contains(" 401") || short.contains(" 403") || lower.contains("unauthorized") {
+            } else if lower.contains("auth")
+                || short.contains(" 401")
+                || short.contains(" 403")
+                || lower.contains("unauthorized")
+            {
                 format!(
                     "✗ Auth failed (not retryable): {short}\n  Check API key or run /connect to reconfigure provider."
                 )
@@ -162,7 +178,7 @@ pub fn format_core_error(e: &CoreError, base_url: &str) -> String {
 
 pub(crate) fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
@@ -170,8 +186,16 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -180,8 +204,11 @@ pub(crate) fn base64_encode(input: &[u8]) -> String {
 /// images normalized (downscaled, capped), PDFs as extracted text, videos
 /// as first-frame stills. Audio/anything else is reported loudly, never
 /// silently dropped.
-pub(crate) fn build_user_message_with_attachments(text: &str, paths: &[std::path::PathBuf]) -> Message {
-    use super::attachments::{attachment_kind, AttachmentKind};
+pub(crate) fn build_user_message_with_attachments(
+    text: &str,
+    paths: &[std::path::PathBuf],
+) -> Message {
+    use super::attachments::{AttachmentKind, attachment_kind};
     if paths.is_empty() {
         return Message::user(text);
     }
@@ -194,29 +221,51 @@ pub(crate) fn build_user_message_with_attachments(text: &str, paths: &[std::path
         match attachment_kind(path) {
             AttachmentKind::Image => match std::fs::read(path) {
                 Ok(bytes) => match super::attachments::normalize_image_bytes(&bytes) {
-                    Ok((mime, out)) => blocks.push(gray_core::message::ContentBlock::image(mime, base64_encode(&out))),
-                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached image {name} skipped: {e})"))),
+                    Ok((mime, out)) => blocks.push(gray_core::message::ContentBlock::image(
+                        mime,
+                        base64_encode(&out),
+                    )),
+                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                        "(attached image {name} skipped: {e})"
+                    ))),
                 },
-                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached image {name} unreadable: {e})"))),
+                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                    "(attached image {name} unreadable: {e})"
+                ))),
             },
             AttachmentKind::Pdf => match super::attachments::pdf_text(path) {
-                Ok(t) => blocks.push(gray_core::message::ContentBlock::text(format!("--- {name} (PDF text) ---\n{t}"))),
-                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached PDF {name} skipped: {e})"))),
+                Ok(t) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                    "--- {name} (PDF text) ---\n{t}"
+                ))),
+                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                    "(attached PDF {name} skipped: {e})"
+                ))),
             },
             AttachmentKind::Video => match super::attachments::video_frame(path) {
                 Ok(frame) => match super::attachments::normalize_image_bytes(&frame) {
                     Ok((mime, out)) => {
-                        blocks.push(gray_core::message::ContentBlock::text(format!("(first frame of {name})")));
-                        blocks.push(gray_core::message::ContentBlock::image(mime, base64_encode(&out)));
+                        blocks.push(gray_core::message::ContentBlock::text(format!(
+                            "(first frame of {name})"
+                        )));
+                        blocks.push(gray_core::message::ContentBlock::image(
+                            mime,
+                            base64_encode(&out),
+                        ));
                     }
-                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached video {name} skipped: {e})"))),
+                    Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                        "(attached video {name} skipped: {e})"
+                    ))),
                 },
-                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!("(attached video {name} skipped: {e})"))),
+                Err(e) => blocks.push(gray_core::message::ContentBlock::text(format!(
+                    "(attached video {name} skipped: {e})"
+                ))),
             },
             // No model-agnostic wire path for audio on our providers — loud skip.
-            AttachmentKind::Audio | AttachmentKind::Unsupported => blocks.push(
-                gray_core::message::ContentBlock::text(format!("(attached file {name} skipped: audio/unsupported type, no model wire path yet)")),
-            ),
+            AttachmentKind::Audio | AttachmentKind::Unsupported => {
+                blocks.push(gray_core::message::ContentBlock::text(format!(
+                    "(attached file {name} skipped: audio/unsupported type, no model wire path yet)"
+                )))
+            }
         }
     }
     if blocks.is_empty() {
@@ -232,7 +281,9 @@ pub const THINKING_STYLE: &str = "\x1b[2m\x1b[3m";
 /// Formats an [`AgentEvent`] for display in the interactive REPL.
 pub fn fmt_event(event: &AgentEvent) -> String {
     match event {
-        AgentEvent::Start | AgentEvent::ToolCallEnd { .. } | AgentEvent::StepUsage { .. } => String::new(),
+        AgentEvent::Start | AgentEvent::ToolCallEnd { .. } | AgentEvent::StepUsage { .. } => {
+            String::new()
+        }
         AgentEvent::TextDelta { delta } => delta.clone(),
         AgentEvent::ThinkingDelta { delta } => {
             // Streamed live, dim+italic like pi's rendered thinking blocks.
@@ -289,12 +340,20 @@ pub fn fmt_duration_ms(ms: u64) -> String {
         format!("{ms}ms")
     } else if secs < 60.0 {
         let s = format!("{secs:.1}s");
-        if s.ends_with(".0s") { s.replacen(".0s", "s", 1) } else { s }
+        if s.ends_with(".0s") {
+            s.replacen(".0s", "s", 1)
+        } else {
+            s
+        }
     } else {
-        let total_s = (ms / 1000) as u64;
+        let total_s = ms / 1000;
         let m = total_s / 60;
         let s = total_s % 60;
-        if s == 0 { format!("{m}m") } else { format!("{m}m {s}s") }
+        if s == 0 {
+            format!("{m}m")
+        } else {
+            format!("{m}m {s}s")
+        }
     }
 }
 
@@ -307,7 +366,10 @@ mod tests {
         // Screenshot case: opencode/zen 503 with {"model":..,"error":{...}} blob.
         // Codex-style: show Status/Code/Type/Message, never the raw JSON dump.
         let detail = r#"server error: status 503 Service Unavailable: {"model":"muse-spark-1.3-contributor","error":{"param":null,"type":"server_error","message":"Error from provider (Console Go): Upstream request failed: [service_overloaded] The backend is temporarily overloaded. Please retry."}}, cf-ray: a35cf09b5c1b7537-SEA"#;
-        let out = format_core_error(&CoreError::Provider(detail.to_string()), "https://opencode.ai/zen/go/v1");
+        let out = format_core_error(
+            &CoreError::Provider(detail.to_string()),
+            "https://opencode.ai/zen/go/v1",
+        );
         assert!(out.contains("(retryable)"), "must stay retryable: {out}");
         assert!(
             out.contains("The backend is temporarily overloaded"),
@@ -327,8 +389,14 @@ mod tests {
             details: "status 503: backend overloaded".to_string(),
         };
         let out = fmt_event(&ev);
-        assert!(out.contains("Reconnecting... 1/3"), "must show attempt: {out}");
-        assert!(out.contains("backend overloaded"), "must show details: {out}");
+        assert!(
+            out.contains("Reconnecting... 1/3"),
+            "must show attempt: {out}"
+        );
+        assert!(
+            out.contains("backend overloaded"),
+            "must show details: {out}"
+        );
     }
 
     #[test]
@@ -348,4 +416,3 @@ mod tests {
         assert_eq!(fmt_duration_ms(120_000), "2m");
     }
 }
-

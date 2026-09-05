@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0] - 2026-09-05
+## [Unreleased]
 
 ### Added
 - Verified installs: SHA256SUMS published per release, checked by install.sh (S1)

@@ -350,8 +350,6 @@ pub(crate) trait StyleInto<T> {
     fn style_into(self) -> T;
 }
 
-
-
 impl StyleInto<ratatui::style::Style> for anstyle::Style {
     fn style_into(self) -> ratatui::style::Style {
         use ratatui::style::{Modifier, Style as RStyle};
@@ -389,7 +387,6 @@ impl StyleInto<ratatui::style::Style> for anstyle::Style {
         style.add_modifier(modifiers)
     }
 }
-
 
 pub(crate) fn anstyle_to_ratatui_color(color: anstyle::Color) -> ratatui::style::Color {
     use ratatui::style::Color;

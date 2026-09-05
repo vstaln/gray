@@ -1252,20 +1252,17 @@ dependencies = [
 
 [[package]]
 name = "gray"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
- "axum",
- "base64 0.22.1",
  "chrono",
  "clap",
  "crossterm",
  "fs2",
  "futures",
  "gray-core",
- "gray-cron",
  "gray-gateway",
  "gray-markdown",
  "gray-plugin",
@@ -1275,24 +1272,20 @@ dependencies = [
  "ignore",
  "image",
  "log",
- "percent-encoding",
  "ratatui",
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
- "tower",
- "tower-http",
  "unicode-width 0.2.0",
  "uuid",
 ]
 
 [[package]]
 name = "gray-core"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1307,12 +1300,15 @@ dependencies = [
 
 [[package]]
 name = "gray-cron"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "cron",
  "fs2",
+ "gray-core",
+ "gray-plugin",
  "log",
  "serde",
  "serde_json",
@@ -1323,8 +1319,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "gray-extras"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "gray",
+ "gray-cron",
+ "log",
+ "percent-encoding",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "uuid",
+]
+
+[[package]]
 name = "gray-gateway"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1333,6 +1354,7 @@ dependencies = [
  "futures",
  "gray-core",
  "gray-cron",
+ "gray-plugin",
  "gray-provider",
  "gray-session",
  "gray-tools",
@@ -1355,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "gray-markdown"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anstyle",
  "anstyle-lossy",
@@ -1395,22 +1417,25 @@ dependencies = [
 
 [[package]]
 name = "gray-plugin"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "futures",
  "gray-core",
+ "gray-provider",
+ "gray-tools",
  "log",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
 name = "gray-provider"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "eventsource-stream",
@@ -1427,7 +1452,7 @@ dependencies = [
 
 [[package]]
 name = "gray-session"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "async-trait",
  "gray-core",
@@ -1442,15 +1467,12 @@ dependencies = [
 
 [[package]]
 name = "gray-tools"
-version = "1.0.0"
+version = "0.9.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "futures",
  "gray-core",
- "gray-cron",
- "gray-plugin",
- "gray-session",
  "libc",
  "log",
  "serde",

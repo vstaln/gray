@@ -23,7 +23,9 @@ impl Log for FileLogger {
     }
 
     fn log(&self, record: &Record) {
-        let Ok(mut file) = self.file.lock() else { return };
+        let Ok(mut file) = self.file.lock() else {
+            return;
+        };
         let _ = writeln!(
             &mut *file,
             "{} {:<5} [{}] {}",
@@ -39,7 +41,10 @@ impl Log for FileLogger {
 }
 
 fn level_from_env() -> LevelFilter {
-    std::env::var("GRAY_LOG").ok().and_then(|s| s.parse().ok()).unwrap_or(log::LevelFilter::Info)
+    std::env::var("GRAY_LOG")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(log::LevelFilter::Info)
 }
 
 /// Replaces secret-looking values with `[REDACTED]`: `sk-…` keys (8+ key
@@ -61,7 +66,9 @@ pub(crate) fn redact(input: &str) -> String {
                 continue;
             }
         }
-        if b.len() - i >= "x-api-key".len() && b[i..i + "x-api-key".len()].eq_ignore_ascii_case(b"x-api-key") {
+        if b.len() - i >= "x-api-key".len()
+            && b[i..i + "x-api-key".len()].eq_ignore_ascii_case(b"x-api-key")
+        {
             let mut k = i + "x-api-key".len();
             if k < b.len() && (b[k] == b'"' || b[k] == b'\'') {
                 k += 1; // quoted key: "x-api-key":
@@ -115,15 +122,20 @@ pub(crate) fn redact(input: &str) -> String {
 /// home cannot be resolved.
 pub fn init() {
     INIT.get_or_init(|| {
-        let Ok(home) = crate::setup::gray_home() else { return };
+        let Ok(home) = crate::setup::gray_home() else {
+            return;
+        };
         let path = home.join("logs").join("gray.log");
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
-            if log::set_boxed_logger(Box::new(FileLogger { file: Mutex::new(file) })).is_ok() {
-                log::set_max_level(level_from_env());
-            }
+        if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path)
+            && log::set_boxed_logger(Box::new(FileLogger {
+                file: Mutex::new(file),
+            }))
+            .is_ok()
+        {
+            log::set_max_level(level_from_env());
         }
     });
 }
@@ -141,14 +153,20 @@ mod tests {
 
     #[test]
     fn redact_bearer_token() {
-        assert_eq!(redact("Authorization: Bearer tok123"), "Authorization: Bearer [REDACTED]");
+        assert_eq!(
+            redact("Authorization: Bearer tok123"),
+            "Authorization: Bearer [REDACTED]"
+        );
         assert_eq!(redact("Bearer "), "Bearer ");
     }
 
     #[test]
     fn redact_x_api_key() {
         assert_eq!(redact("x-api-key: secret123"), "x-api-key: [REDACTED]");
-        assert_eq!(redact(r#""x-api-key": "abc""#), r#""x-api-key": "[REDACTED]""#);
+        assert_eq!(
+            redact(r#""x-api-key": "abc""#),
+            r#""x-api-key": "[REDACTED]""#
+        );
         assert_eq!(redact("X-API-KEY=zzz"), "X-API-KEY=[REDACTED]");
     }
 
@@ -158,4 +176,3 @@ mod tests {
         assert_eq!(redact("my x-api-key is secret"), "my x-api-key is secret");
     }
 }
-

@@ -47,7 +47,20 @@ fn format_relative(ts: u64) -> String {
         y += 1;
     }
     let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_lens = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_lens = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut m = 1;
     for ml in month_lens {
         if d < ml {
@@ -70,7 +83,10 @@ fn cwd_display(cwd: &Path, width: usize) -> String {
     if short.chars().count() <= width {
         short
     } else {
-        let mut t = short.chars().skip(short.chars().count() - width + 1).collect::<String>();
+        let mut t = short
+            .chars()
+            .skip(short.chars().count() - width + 1)
+            .collect::<String>();
         t.insert(0, '…');
         t
     }
@@ -99,7 +115,10 @@ fn paths_match(a: &Path, b: &Path) -> bool {
     ca == cb
 }
 
-pub fn latest_summary<'a>(summaries: &'a [SessionSummary], cwd_filter: Option<&Path>) -> Option<&'a SessionSummary> {
+pub fn latest_summary<'a>(
+    summaries: &'a [SessionSummary],
+    cwd_filter: Option<&Path>,
+) -> Option<&'a SessionSummary> {
     let mut filtered: Vec<&SessionSummary> = summaries
         .iter()
         .filter(|s| {
@@ -114,7 +133,11 @@ pub fn latest_summary<'a>(summaries: &'a [SessionSummary], cwd_filter: Option<&P
     filtered.into_iter().last()
 }
 
-pub async fn resolve_prefix(store: &JsonlSessionStore, input: &str, all: bool) -> Option<SessionId> {
+pub async fn resolve_prefix(
+    store: &JsonlSessionStore,
+    input: &str,
+    all: bool,
+) -> Option<SessionId> {
     let cwd = std::env::current_dir().ok();
     let summaries = store.list().await;
     let lower = input.trim().to_lowercase();
@@ -123,7 +146,10 @@ pub async fn resolve_prefix(store: &JsonlSessionStore, input: &str, all: bool) -
     }
 
     // 1. Exact match across all sessions
-    if let Some(s) = summaries.iter().find(|s| s.id.as_str().to_lowercase() == lower) {
+    if let Some(s) = summaries
+        .iter()
+        .find(|s| s.id.as_str().to_lowercase() == lower)
+    {
         return Some(s.id.clone());
     }
 
@@ -168,8 +194,12 @@ pub fn resume_command_hint(id: &SessionId) -> String {
     format!("gray resume {}", id.as_str())
 }
 
-pub async fn run_resume_picker(show_all: bool, bg: Option<&crate::setup::BackgroundSnapshot>) -> anyhow::Result<Option<SessionId>> {
-    let root = gray_session::default_root().ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
+pub async fn run_resume_picker(
+    show_all: bool,
+    bg: Option<&crate::setup::BackgroundSnapshot>,
+) -> anyhow::Result<Option<SessionId>> {
+    let root =
+        gray_session::default_root().ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
     let store = JsonlSessionStore::new(root);
     let mut summaries = store.list().await;
     summaries.sort_by_key(|s| s.started_at);
@@ -185,26 +215,35 @@ fn run_picker_sync(
     mut show_all: bool,
     bg: Option<&crate::setup::BackgroundSnapshot>,
 ) -> anyhow::Result<Option<SessionId>> {
-    use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
+    use crossterm::terminal::{
+        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    };
+    use ratatui::Terminal;
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Clear, Paragraph};
-    use ratatui::Terminal;
     use std::io::Write as _;
     use std::time::Duration;
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let bg_snapshot = bg.cloned().unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
+    let bg_snapshot = bg
+        .cloned()
+        .unwrap_or_else(crate::setup::BackgroundSnapshot::default_initial);
 
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     if !was_raw {
         enable_raw_mode()?;
     }
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(stdout_handle, EnterAlternateScreen, crossterm::terminal::Clear(crossterm::terminal::ClearType::All), crossterm::cursor::Hide)?;
+    crossterm::execute!(
+        stdout_handle,
+        EnterAlternateScreen,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::Hide
+    )?;
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -260,7 +299,10 @@ fn run_picker_sync(
                 crate::setup::render_dimmed_background(frame, &bg_snapshot);
 
                 let modal_w = 84.min(area.width.saturating_sub(2)).max(40).min(area.width);
-                let modal_h = 20.min(area.height.saturating_sub(2)).max(12).min(area.height);
+                let modal_h = 20
+                    .min(area.height.saturating_sub(2))
+                    .max(12)
+                    .min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                 let modal_y = (area.height.saturating_sub(modal_h)) / 3;
                 let modal_rect = Rect::new(modal_x, modal_y, modal_w, modal_h);
@@ -271,48 +313,105 @@ fn run_picker_sync(
 
                 let pad_x = 2u16;
                 let inner_w = modal_w.saturating_sub(pad_x * 2);
-                let inner = Rect::new(modal_x + pad_x, modal_y + 1, inner_w, modal_h.saturating_sub(2));
+                let inner = Rect::new(
+                    modal_x + pad_x,
+                    modal_y + 1,
+                    inner_w,
+                    modal_h.saturating_sub(2),
+                );
 
-                let title = if show_all { "Resume session — all" } else { "Resume session" };
+                let title = if show_all {
+                    "Resume session — all"
+                } else {
+                    "Resume session"
+                };
                 let esc_str = "esc";
-                let pad_len = (inner.width as usize).saturating_sub(title.chars().count() + esc_str.chars().count() + 8);
+                let pad_len = (inner.width as usize)
+                    .saturating_sub(title.chars().count() + esc_str.chars().count() + 8);
                 let header = Line::from(vec![
-                    Span::styled(title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                    Span::styled(
+                        title,
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(box_bg),
+                    ),
                     Span::styled(" ".repeat(pad_len), Style::default().bg(box_bg)),
                     Span::styled("tab: all/cwd  ", Style::default().fg(text_dim).bg(box_bg)),
                     Span::styled(esc_str, Style::default().fg(text_dim).bg(box_bg)),
                 ]);
-                frame.render_widget(Paragraph::new(header), Rect::new(inner.x, inner.y, inner.width, 1));
+                frame.render_widget(
+                    Paragraph::new(header),
+                    Rect::new(inner.x, inner.y, inner.width, 1),
+                );
 
                 let search_line = if query.is_empty() {
                     Line::from(vec![
-                        Span::styled("Search: ", Style::default().fg(accent_peach).add_modifier(Modifier::BOLD).bg(box_bg)),
-                        Span::styled("Type to filter…", Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg)),
+                        Span::styled(
+                            "Search: ",
+                            Style::default()
+                                .fg(accent_peach)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled(
+                            "Type to filter…",
+                            Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg),
+                        ),
                     ])
                 } else {
                     Line::from(vec![
-                        Span::styled("Search: ", Style::default().fg(accent_peach).add_modifier(Modifier::BOLD).bg(box_bg)),
-                        Span::styled(query.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                        Span::styled(
+                            "Search: ",
+                            Style::default()
+                                .fg(accent_peach)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled(
+                            query.clone(),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
                         Span::styled("▎", Style::default().fg(accent_peach).bg(box_bg)),
                     ])
                 };
-                frame.render_widget(Paragraph::new(search_line), Rect::new(inner.x, inner.y + 1, inner.width, 1));
+                frame.render_widget(
+                    Paragraph::new(search_line),
+                    Rect::new(inner.x, inner.y + 1, inner.width, 1),
+                );
 
                 let filter_line = if show_all {
-                    Line::from(Span::styled("Showing all sessions", Style::default().fg(text_dim).bg(box_bg)))
+                    Line::from(Span::styled(
+                        "Showing all sessions",
+                        Style::default().fg(text_dim).bg(box_bg),
+                    ))
                 } else {
                     Line::from(vec![
                         Span::styled("Filtered to ", Style::default().fg(text_dim).bg(box_bg)),
-                        Span::styled(cwd_display(&cwd, 40), Style::default().fg(Color::White).bg(box_bg)),
-                        Span::styled("  (tab to show all)", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            cwd_display(&cwd, 40),
+                            Style::default().fg(Color::White).bg(box_bg),
+                        ),
+                        Span::styled(
+                            "  (tab to show all)",
+                            Style::default().fg(text_dim).bg(box_bg),
+                        ),
                     ])
                 };
-                frame.render_widget(Paragraph::new(filter_line), Rect::new(inner.x, inner.y + 2, inner.width, 1));
+                frame.render_widget(
+                    Paragraph::new(filter_line),
+                    Rect::new(inner.x, inner.y + 2, inner.width, 1),
+                );
 
                 let date_w = 9usize;
                 let cwd_w = 14usize;
                 let id_w = 8usize;
-                let prev_w = (inner.width as usize).saturating_sub(1 + date_w + 2 + cwd_w + 2 + id_w + 2).max(12);
+                let prev_w = (inner.width as usize)
+                    .saturating_sub(1 + date_w + 2 + cwd_w + 2 + id_w + 2)
+                    .max(12);
 
                 let list_y = inner.y + 4;
                 let list_h = inner.height.saturating_sub(6) as usize;
@@ -326,7 +425,10 @@ fn run_picker_sync(
                         "No matching sessions"
                     };
                     frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(format!("  {msg}"), Style::default().fg(text_dim).bg(box_bg)))),
+                        Paragraph::new(Line::from(Span::styled(
+                            format!("  {msg}"),
+                            Style::default().fg(text_dim).bg(box_bg),
+                        ))),
                         Rect::new(inner.x, list_y, inner.width, 1),
                     );
                 } else {
@@ -361,37 +463,84 @@ fn run_picker_sync(
                         let fill = (inner.width as usize).saturating_sub(content.chars().count());
                         let row_str = format!("{}{}", content, " ".repeat(fill));
                         let line = if is_sel {
-                            Line::from(Span::styled(row_str, Style::default().fg(Color::Black).bg(accent_peach).add_modifier(Modifier::BOLD)))
+                            Line::from(Span::styled(
+                                row_str,
+                                Style::default()
+                                    .fg(Color::Black)
+                                    .bg(accent_peach)
+                                    .add_modifier(Modifier::BOLD),
+                            ))
                         } else {
-                            Line::from(Span::styled(row_str, Style::default().fg(Color::White).bg(box_bg)))
+                            Line::from(Span::styled(
+                                row_str,
+                                Style::default().fg(Color::White).bg(box_bg),
+                            ))
                         };
-                        frame.render_widget(Paragraph::new(line), Rect::new(inner.x, list_y + r as u16, inner.width, 1));
+                        frame.render_widget(
+                            Paragraph::new(line),
+                            Rect::new(inner.x, list_y + r as u16, inner.width, 1),
+                        );
                     }
                 }
 
                 let footer = Line::from(vec![
-                    Span::styled("↑↓ ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                    Span::styled(
+                        "↑↓ ",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(box_bg),
+                    ),
                     Span::styled("navigate  ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled("enter ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                    Span::styled(
+                        "enter ",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(box_bg),
+                    ),
                     Span::styled("resume  ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled("tab ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                    Span::styled(
+                        "tab ",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(box_bg),
+                    ),
                     Span::styled("toggle  ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled("esc ", Style::default().fg(Color::White).add_modifier(Modifier::BOLD).bg(box_bg)),
+                    Span::styled(
+                        "esc ",
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                            .bg(box_bg),
+                    ),
                     Span::styled("cancel", Style::default().fg(text_dim).bg(box_bg)),
                 ]);
-                frame.render_widget(Paragraph::new(footer), Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1));
+                frame.render_widget(
+                    Paragraph::new(footer),
+                    Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+                );
             })?;
 
             if !poll(Duration::from_millis(80))? {
                 continue;
             }
             match read()? {
-                Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, kind: KeyEventKind::Press, .. })
-                    if modifiers.contains(KeyModifiers::CONTROL) =>
-                {
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('c'),
+                    modifiers,
+                    kind: KeyEventKind::Press,
+                    ..
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {
                     return Ok(None);
                 }
-                Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) => match code {
+                Event::Key(KeyEvent {
+                    code,
+                    modifiers,
+                    kind: KeyEventKind::Press,
+                    ..
+                }) => match code {
                     KeyCode::Esc => {
                         if !query.is_empty() {
                             query.clear();
@@ -410,7 +559,13 @@ fn run_picker_sync(
                         let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
                         let count = summaries
                             .iter()
-                            .filter(|s| if let Some(f) = cwd_filter { paths_match(&s.cwd, f) } else { true })
+                            .filter(|s| {
+                                if let Some(f) = cwd_filter {
+                                    paths_match(&s.cwd, f)
+                                } else {
+                                    true
+                                }
+                            })
                             .filter(|s| {
                                 if query.is_empty() {
                                     true
@@ -418,7 +573,11 @@ fn run_picker_sync(
                                     let q = query.to_lowercase();
                                     s.id.as_str().to_lowercase().contains(&q)
                                         || s.cwd.display().to_string().to_lowercase().contains(&q)
-                                        || s.first_user_text.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                                        || s.first_user_text
+                                            .as_deref()
+                                            .unwrap_or("")
+                                            .to_lowercase()
+                                            .contains(&q)
                                 }
                             })
                             .count();
@@ -430,7 +589,13 @@ fn run_picker_sync(
                         let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
                         let filtered: Vec<&SessionSummary> = summaries
                             .iter()
-                            .filter(|s| if let Some(f) = cwd_filter { paths_match(&s.cwd, f) } else { true })
+                            .filter(|s| {
+                                if let Some(f) = cwd_filter {
+                                    paths_match(&s.cwd, f)
+                                } else {
+                                    true
+                                }
+                            })
                             .filter(|s| {
                                 if query.is_empty() {
                                     true
@@ -438,7 +603,11 @@ fn run_picker_sync(
                                     let q = query.to_lowercase();
                                     s.id.as_str().to_lowercase().contains(&q)
                                         || s.cwd.display().to_string().to_lowercase().contains(&q)
-                                        || s.first_user_text.as_deref().unwrap_or("").to_lowercase().contains(&q)
+                                        || s.first_user_text
+                                            .as_deref()
+                                            .unwrap_or("")
+                                            .to_lowercase()
+                                            .contains(&q)
                                 }
                             })
                             .collect();
@@ -450,7 +619,10 @@ fn run_picker_sync(
                         query.pop();
                         sel = 0;
                     }
-                    KeyCode::Char(ch) if !modifiers.contains(KeyModifiers::CONTROL) && !modifiers.contains(KeyModifiers::ALT) => {
+                    KeyCode::Char(ch)
+                        if !modifiers.contains(KeyModifiers::CONTROL)
+                            && !modifiers.contains(KeyModifiers::ALT) =>
+                    {
                         query.push(ch);
                         sel = 0;
                     }

@@ -6,6 +6,7 @@ pub mod error;
 pub mod event;
 pub mod message;
 pub mod questions;
+pub mod tool_out;
 
 pub use agent::{
     Agent, CommandOutcome, PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream,

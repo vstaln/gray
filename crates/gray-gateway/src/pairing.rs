@@ -98,7 +98,10 @@ fn secure_write(path: &Path, data: &str) -> anyhow::Result<()> {
 }
 
 fn load_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
-    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 /// 128 random bits from the OS CSPRNG (uuid v4 is backed by `getrandom`).
@@ -110,7 +113,11 @@ fn random_bytes() -> [u8; 16] {
 /// modulo 32 — the alphabet length divides 256, so there is no modulo bias.
 pub fn generate_code() -> String {
     let bytes = random_bytes();
-    bytes.iter().take(CODE_LENGTH).map(|b| ALPHABET[(*b % 32) as usize] as char).collect()
+    bytes
+        .iter()
+        .take(CODE_LENGTH)
+        .map(|b| ALPHABET[(*b % 32) as usize] as char)
+        .collect()
 }
 
 pub fn hash_code(code: &str, salt_hex: &str) -> String {
@@ -138,7 +145,10 @@ pub fn normalize_user_id(platform: Platform, user_id: &str) -> String {
 
 impl PairingStore {
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir, lock: Mutex::new(()) }
+        Self {
+            dir,
+            lock: Mutex::new(()),
+        }
     }
 
     pub fn default_dir() -> anyhow::Result<PathBuf> {
@@ -164,20 +174,20 @@ impl PairingStore {
         load_json(&self.pending_path(platform))
     }
     fn save_pending(&self, platform: Platform, m: &HashMap<String, PendingEntry>) {
-        if let Ok(s) = serde_json::to_string_pretty(m) {
-            if let Err(e) = secure_write(&self.pending_path(platform), &s) {
-                log::warn!("pairing: write pending failed: {e}");
-            }
+        if let Ok(s) = serde_json::to_string_pretty(m)
+            && let Err(e) = secure_write(&self.pending_path(platform), &s)
+        {
+            log::warn!("pairing: write pending failed: {e}");
         }
     }
     fn load_approved(&self, platform: Platform) -> HashMap<String, ApprovedEntry> {
         load_json(&self.approved_path(platform))
     }
     fn save_approved(&self, platform: Platform, m: &HashMap<String, ApprovedEntry>) {
-        if let Ok(s) = serde_json::to_string_pretty(m) {
-            if let Err(e) = secure_write(&self.approved_path(platform), &s) {
-                log::warn!("pairing: write approved failed: {e}");
-            }
+        if let Ok(s) = serde_json::to_string_pretty(m)
+            && let Err(e) = secure_write(&self.approved_path(platform), &s)
+        {
+            log::warn!("pairing: write approved failed: {e}");
         }
     }
     fn load_rate(&self) -> RateState {
@@ -216,7 +226,9 @@ impl PairingStore {
     pub fn has_pending(&self, platform: Platform, user_id: &str) -> bool {
         let uid = normalize_user_id(platform, user_id);
         let cutoff = now() - CODE_TTL_SECS;
-        self.load_pending(platform).values().any(|e| e.user_id == uid && e.created_at > cutoff)
+        self.load_pending(platform)
+            .values()
+            .any(|e| e.user_id == uid && e.created_at > cutoff)
     }
 
     /// Request a pairing code for an unknown DM sender.
@@ -229,10 +241,10 @@ impl PairingStore {
             return PairingOffer::Unavailable;
         }
         let rate_key = format!("{platform}:{uid}");
-        if let Some(last) = rate.requests.get(&rate_key) {
-            if now() - *last < RATE_LIMIT_SECS {
-                return PairingOffer::RateLimited;
-            }
+        if let Some(last) = rate.requests.get(&rate_key)
+            && now() - *last < RATE_LIMIT_SECS
+        {
+            return PairingOffer::RateLimited;
         }
         // Re-request from the same user replaces their old code instead of eating a slot.
         pending.retain(|_, e| e.user_id != uid);
@@ -244,7 +256,13 @@ impl PairingStore {
         let entry_id = hex(&random_bytes()[..8]);
         pending.insert(
             entry_id,
-            PendingEntry { hash: hash_code(&code, &salt), salt, user_id: uid, user_name: user_name.to_string(), created_at: now() },
+            PendingEntry {
+                hash: hash_code(&code, &salt),
+                salt,
+                user_id: uid,
+                user_name: user_name.to_string(),
+                created_at: now(),
+            },
         );
         self.save_pending(platform, &pending);
         rate.requests.insert(rate_key, now());
@@ -260,9 +278,15 @@ impl PairingStore {
             return None;
         }
         let mut pending = self.cleanup_expired(platform);
-        let found = pending.iter().find(|(_, e)| hash_code(code, &e.salt) == e.hash).map(|(k, _)| k.clone());
+        let found = pending
+            .iter()
+            .find(|(_, e)| hash_code(code, &e.salt) == e.hash)
+            .map(|(k, _)| k.clone());
         let Some(id) = found else {
-            let f = rate.failures.entry(platform.to_string()).or_insert((0, now()));
+            let f = rate
+                .failures
+                .entry(platform.to_string())
+                .or_insert((0, now()));
             if now() - f.1 >= LOCKOUT_SECS {
                 *f = (0, now());
             }
@@ -275,7 +299,11 @@ impl PairingStore {
         rate.failures.remove(&platform.to_string());
         self.save_rate(&rate);
         let mut approved = self.load_approved(platform);
-        let a = ApprovedEntry { user_id: entry.user_id.clone(), user_name: entry.user_name, approved_at: now() };
+        let a = ApprovedEntry {
+            user_id: entry.user_id.clone(),
+            user_name: entry.user_name,
+            approved_at: now(),
+        };
         approved.insert(entry.user_id, a.clone());
         self.save_approved(platform, &approved);
         Some(a)
@@ -289,7 +317,14 @@ impl PairingStore {
         pending.retain(|_, e| e.user_id != uid);
         self.save_pending(platform, &pending);
         let mut approved = self.load_approved(platform);
-        approved.insert(uid.clone(), ApprovedEntry { user_id: uid, user_name: user_name.to_string(), approved_at: now() });
+        approved.insert(
+            uid.clone(),
+            ApprovedEntry {
+                user_id: uid,
+                user_name: user_name.to_string(),
+                approved_at: now(),
+            },
+        );
         self.save_approved(platform, &approved);
     }
 
@@ -339,9 +374,15 @@ pub fn pairing_approve_with(
     code: &str,
 ) -> anyhow::Result<String> {
     let Some(entry) = store.approve_code(platform, code.trim()) else {
-        anyhow::bail!("no pending {platform} code matches — expired or mistyped? (`pairing list {platform}`)");
+        anyhow::bail!(
+            "no pending {platform} code matches — expired or mistyped? (`pairing list {platform}`)"
+        );
     };
-    let who = if entry.user_name.is_empty() { entry.user_id.clone() } else { format!("{} ({})", entry.user_name, entry.user_id) };
+    let who = if entry.user_name.is_empty() {
+        entry.user_id.clone()
+    } else {
+        format!("{} ({})", entry.user_name, entry.user_id)
+    };
     let mut msg = format!("approved {platform} user {who}");
     if let Some(pc) = cfg.platforms.get_mut(&platform)
         && pc.allowed_users.is_empty()
@@ -374,7 +415,11 @@ pub fn pairing_list(platform_raw: Option<&str>) -> anyhow::Result<String> {
     for p in plats {
         let pending = store.list_pending(p);
         let approved = store.list_approved(p);
-        out += &format!("{p}: {} pending, {} approved\n", pending.len(), approved.len());
+        out += &format!(
+            "{p}: {} pending, {} approved\n",
+            pending.len(),
+            approved.len()
+        );
         for e in &pending {
             out += &format!("  pending {} {}\n", e.user_id, e.user_name);
         }
@@ -414,16 +459,23 @@ mod tests {
             panic!("expected a code");
         };
         let mut cfg = GatewayConfig::default();
-        cfg.platforms.insert(Platform::Discord, PlatformConfig::with_token("t"));
+        cfg.platforms
+            .insert(Platform::Discord, PlatformConfig::with_token("t"));
         let msg = pairing_approve_with(&s, &mut cfg, Platform::Discord, &code).unwrap();
         assert!(msg.contains("approved"), "got: {msg}");
-        assert_eq!(cfg.platforms[&Platform::Discord].allowed_users, vec!["4242"]);
+        assert_eq!(
+            cfg.platforms[&Platform::Discord].allowed_users,
+            vec!["4242"]
+        );
         // Second approval must not touch the list.
         let PairingOffer::Code(code2) = s.request_code(Platform::Discord, "9999", "") else {
             panic!("expected a code");
         };
         pairing_approve_with(&s, &mut cfg, Platform::Discord, &code2).unwrap();
-        assert_eq!(cfg.platforms[&Platform::Discord].allowed_users, vec!["4242"]);
+        assert_eq!(
+            cfg.platforms[&Platform::Discord].allowed_users,
+            vec!["4242"]
+        );
     }
 
     #[test]
@@ -448,7 +500,9 @@ mod tests {
     fn request_then_approve_roundtrip() {
         let (_d, s) = store();
         assert!(!s.is_approved(Platform::Telegram, "42"));
-        let PairingOffer::Code(code) = s.request_code(Platform::Telegram, "42", "alice") else { panic!("expected code") };
+        let PairingOffer::Code(code) = s.request_code(Platform::Telegram, "42", "alice") else {
+            panic!("expected code")
+        };
         assert!(s.has_pending(Platform::Telegram, "42"));
         // Plaintext code never touches disk.
         let raw = std::fs::read_to_string(s.pending_path(Platform::Telegram)).unwrap();
@@ -456,7 +510,9 @@ mod tests {
         // Wrong code fails and counts as a failure.
         assert!(s.approve_code(Platform::Telegram, "ZZZZZZZZ").is_none());
         // Case-insensitive approval.
-        let a = s.approve_code(Platform::Telegram, &code.to_lowercase()).unwrap();
+        let a = s
+            .approve_code(Platform::Telegram, &code.to_lowercase())
+            .unwrap();
         assert_eq!(a.user_id, "42");
         assert_eq!(a.user_name, "alice");
         assert!(s.is_approved(Platform::Telegram, "42"));
@@ -470,26 +526,49 @@ mod tests {
     #[test]
     fn rate_limit_and_pending_cap() {
         let (_d, s) = store();
-        assert!(matches!(s.request_code(Platform::Discord, "1", ""), PairingOffer::Code(_)));
-        assert_eq!(s.request_code(Platform::Discord, "1", ""), PairingOffer::RateLimited);
-        assert!(matches!(s.request_code(Platform::Discord, "2", ""), PairingOffer::Code(_)));
-        assert!(matches!(s.request_code(Platform::Discord, "3", ""), PairingOffer::Code(_)));
-        assert_eq!(s.request_code(Platform::Discord, "4", ""), PairingOffer::Unavailable);
+        assert!(matches!(
+            s.request_code(Platform::Discord, "1", ""),
+            PairingOffer::Code(_)
+        ));
+        assert_eq!(
+            s.request_code(Platform::Discord, "1", ""),
+            PairingOffer::RateLimited
+        );
+        assert!(matches!(
+            s.request_code(Platform::Discord, "2", ""),
+            PairingOffer::Code(_)
+        ));
+        assert!(matches!(
+            s.request_code(Platform::Discord, "3", ""),
+            PairingOffer::Code(_)
+        ));
+        assert_eq!(
+            s.request_code(Platform::Discord, "4", ""),
+            PairingOffer::Unavailable
+        );
         assert_eq!(s.list_pending(Platform::Discord).len(), 3);
         // Platforms are isolated.
-        assert!(matches!(s.request_code(Platform::Slack, "U1", ""), PairingOffer::Code(_)));
+        assert!(matches!(
+            s.request_code(Platform::Slack, "U1", ""),
+            PairingOffer::Code(_)
+        ));
     }
 
     #[test]
     fn lockout_after_failures() {
         let (_d, s) = store();
-        let PairingOffer::Code(code) = s.request_code(Platform::Slack, "U9", "") else { panic!() };
+        let PairingOffer::Code(code) = s.request_code(Platform::Slack, "U9", "") else {
+            panic!()
+        };
         for _ in 0..MAX_FAILED_ATTEMPTS {
             assert!(s.approve_code(Platform::Slack, "BADCODE1").is_none());
         }
         // Locked: even the right code is refused now.
         assert!(s.approve_code(Platform::Slack, &code).is_none());
-        assert_eq!(s.request_code(Platform::Slack, "U10", ""), PairingOffer::Unavailable);
+        assert_eq!(
+            s.request_code(Platform::Slack, "U10", ""),
+            PairingOffer::Unavailable
+        );
     }
 
     #[test]
@@ -506,7 +585,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let (_d, s) = store();
         let _ = s.request_code(Platform::Telegram, "7", "");
-        let mode = std::fs::metadata(s.pending_path(Platform::Telegram)).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(s.pending_path(Platform::Telegram))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
     }
 }

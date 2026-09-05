@@ -8,7 +8,9 @@ use crate::Cli;
 pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 fn nonempty(s: Option<&str>) -> Option<String> {
-    s.map(str::trim).filter(|s| !s.is_empty()).map(ToString::to_string)
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Resolved application configuration.
@@ -68,22 +70,33 @@ impl Config {
             nonempty(env("GRAY_THINKING_EFFORT").as_deref()).or(saved.thinking_effort);
 
         let show_reasoning = env("GRAY_SHOW_REASONING")
-            .map(|s| !matches!(s.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no" | "off"))
+            .map(|s| {
+                !matches!(
+                    s.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+            })
             .or(saved.show_reasoning);
 
         let context_window = cli
             .context_window
-            .or_else(|| env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s)))
+            .or_else(|| {
+                env("GRAY_CONTEXT_WINDOW").and_then(|s| crate::setup::parse_context_window(&s))
+            })
             .or(saved.context_window);
 
         let context_reserve = cli
             .context_reserve
-            .or_else(|| env("GRAY_CONTEXT_RESERVE").and_then(|s| crate::setup::parse_context_window(&s)))
+            .or_else(|| {
+                env("GRAY_CONTEXT_RESERVE").and_then(|s| crate::setup::parse_context_window(&s))
+            })
             .or(saved.context_reserve);
 
         let context_keep = cli
             .context_keep
-            .or_else(|| env("GRAY_CONTEXT_KEEP").and_then(|s| crate::setup::parse_context_window(&s)))
+            .or_else(|| {
+                env("GRAY_CONTEXT_KEEP").and_then(|s| crate::setup::parse_context_window(&s))
+            })
             .or(saved.context_keep);
 
         let config = Self {
@@ -106,4 +119,3 @@ impl Config {
         self.thinking_effort.as_deref() == Some("off") || !self.show_reasoning.unwrap_or(true)
     }
 }
-

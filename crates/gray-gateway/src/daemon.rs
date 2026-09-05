@@ -18,7 +18,9 @@ use crate::authz::{Authorizer, Decision};
 use crate::config::{GatewayConfig, Platform};
 use crate::delivery::{DeadTargets, DeliveryLedger, DeliveryRouter, DeliveryTarget};
 use crate::pairing::{PairingOffer, PairingStore};
-use crate::platform::{BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80};
+use crate::platform::{
+    BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80,
+};
 use crate::session::{FileGatewayStore, build_session_key, shared_store};
 
 use crate::discord::DiscordAdapter;
@@ -64,8 +66,15 @@ fn restart_notify_path_in(home: &std::path::Path) -> std::path::PathBuf {
     home.join(".restart_notify.json")
 }
 
-fn write_restart_marker_in(home: &std::path::Path, platform: Platform, chat_id: &str) -> anyhow::Result<()> {
-    let data = RestartNotify { platform: platform.to_string(), chat_id: chat_id.to_string() };
+fn write_restart_marker_in(
+    home: &std::path::Path,
+    platform: Platform,
+    chat_id: &str,
+) -> anyhow::Result<()> {
+    let data = RestartNotify {
+        platform: platform.to_string(),
+        chat_id: chat_id.to_string(),
+    };
     std::fs::write(restart_notify_path_in(home), serde_json::to_string(&data)?)?;
     Ok(())
 }
@@ -77,7 +86,9 @@ pub(crate) fn take_restart_marker_in(home: &std::path::Path) -> Option<RestartNo
     if !path.exists() {
         return None;
     }
-    let data = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let data = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
     let _ = std::fs::remove_file(&path);
     data
 }
@@ -97,7 +108,11 @@ pub enum SlashCommand {
 pub fn parse_slash(text: &str) -> Option<SlashCommand> {
     let t = text.trim();
     let first = t.split_whitespace().next()?;
-    let name = first.strip_prefix('/')?.split('@').next()?.to_ascii_lowercase();
+    let name = first
+        .strip_prefix('/')?
+        .split('@')
+        .next()?
+        .to_ascii_lowercase();
     Some(match name.as_str() {
         "reset" | "new" | "clear" => SlashCommand::Reset,
         "status" => SlashCommand::Status,
@@ -121,11 +136,19 @@ fn help_text() -> String {
 
 impl GatewayRunner {
     pub fn from_config(config: GatewayConfig) -> anyhow::Result<Self> {
-        Self::from_config_with(config, shared_store(), Arc::new(PairingStore::open_default()))
+        Self::from_config_with(
+            config,
+            shared_store(),
+            Arc::new(PairingStore::open_default()),
+        )
     }
 
     /// Dependency-injected constructor (tests point stores at temp dirs).
-    pub fn from_config_with(config: GatewayConfig, store: Arc<FileGatewayStore>, pairing: Arc<PairingStore>) -> anyhow::Result<Self> {
+    pub fn from_config_with(
+        config: GatewayConfig,
+        store: Arc<FileGatewayStore>,
+        pairing: Arc<PairingStore>,
+    ) -> anyhow::Result<Self> {
         let mut adapters: HashMap<Platform, Adapter> = HashMap::new();
         for (plat, cfg) in &config.platforms {
             if !cfg.enabled {
@@ -140,7 +163,8 @@ impl GatewayRunner {
         }
         let authz = Authorizer::new(config.clone(), Arc::clone(&pairing));
         let dead = Arc::new(DeadTargets::in_memory());
-        let router = DeliveryRouter::new(config.clone(), adapters.clone()).with_dead_targets(Arc::clone(&dead));
+        let router = DeliveryRouter::new(config.clone(), adapters.clone())
+            .with_dead_targets(Arc::clone(&dead));
         Ok(Self {
             config,
             adapters,
@@ -158,7 +182,8 @@ impl GatewayRunner {
     /// Rebuild the router after adapters were mutated (event channel wiring happens
     /// through `Arc::get_mut`, which needs unique ownership — so wire first, then call this).
     pub fn rebuild_router(&mut self) {
-        self.router = DeliveryRouter::new(self.config.clone(), self.adapters.clone()).with_dead_targets(Arc::clone(&self.dead));
+        self.router = DeliveryRouter::new(self.config.clone(), self.adapters.clone())
+            .with_dead_targets(Arc::clone(&self.dead));
     }
 
     /// Replay crash-recovered obligations (call on boot and after reconnects).
@@ -167,7 +192,10 @@ impl GatewayRunner {
     }
 
     fn reply_opts(ev: &MessageEvent) -> SendOptions {
-        SendOptions { reply_to: ev.message_id.clone(), thread_id: ev.source.thread_id.clone() }
+        SendOptions {
+            reply_to: ev.message_id.clone(),
+            thread_id: ev.source.thread_id.clone(),
+        }
     }
 
     async fn reply(&self, ev: &MessageEvent, text: &str) -> SendResult {
@@ -177,7 +205,10 @@ impl GatewayRunner {
             thread_id: ev.source.thread_id.clone(),
             is_origin: true,
         };
-        let res = self.router.deliver(&target, text, ev.message_id.as_deref()).await;
+        let res = self
+            .router
+            .deliver(&target, text, ev.message_id.as_deref())
+            .await;
         if !res.success {
             log::warn!("gateway send failed: {:?}", res.error);
         }
@@ -199,14 +230,19 @@ impl GatewayRunner {
             Decision::Deny => {
                 log::warn!(
                     "gateway denied {platform} user={:?} chat={chat_id} type={}",
-                    ev.source.user_id, ev.source.chat_type
+                    ev.source.user_id,
+                    ev.source.chat_type
                 );
                 return Ok(SendResult::fail("unauthorized", false));
             }
             Decision::OfferPairing => {
                 let uid = ev.source.user_id.clone().unwrap_or_default();
                 log::warn!("gateway unknown DM sender {platform} user={uid} — offering pairing");
-                let offer = self.pairing.request_code(platform, &uid, ev.user_name.as_deref().unwrap_or(""));
+                let offer = self.pairing.request_code(
+                    platform,
+                    &uid,
+                    ev.user_name.as_deref().unwrap_or(""),
+                );
                 return Ok(match offer {
                     PairingOffer::Code(code) => self.reply(&ev, &pairing_prompt(platform, &code)).await,
                     PairingOffer::RateLimited => SendResult::fail("pairing rate-limited", false),
@@ -217,11 +253,22 @@ impl GatewayRunner {
             }
         }
 
-        let key = build_session_key(&ev.source, self.config.group_per_user, self.config.thread_per_user);
-        log::info!("gateway inbound {platform} chat={chat_id} key={key} text={:?}", preview_80(&ev.text));
+        let key = build_session_key(
+            &ev.source,
+            self.config.group_per_user,
+            self.config.thread_per_user,
+        );
+        log::info!(
+            "gateway inbound {platform} chat={chat_id} key={key} text={:?}",
+            preview_80(&ev.text)
+        );
 
         // Session reset policy: expired sessions restart fresh via reset().
-        if self.store.reset_if_due(&key, &self.config.reset_policy).is_some() {
+        if self
+            .store
+            .reset_if_due(&key, &self.config.reset_policy)
+            .is_some()
+        {
             log::info!("gateway session {key} expired by reset policy; started fresh");
         }
 
@@ -238,14 +285,24 @@ impl GatewayRunner {
                     let running = self.cancel_tokens.lock().unwrap().contains_key(&key);
                     format!(
                         "session {sid}\nkey {key}\nmodel {}\nrunning {running}\nstreaming {}\ngroup_per_user={} thread_per_user={}",
-                        self.resolve_model().unwrap_or_else(|| "unconfigured".into()),
-                        self.config.streaming && self.adapters.get(&platform).map(|a| a.supports_edit()).unwrap_or(false),
+                        self.resolve_model()
+                            .unwrap_or_else(|| "unconfigured".into()),
+                        self.config.streaming
+                            && self
+                                .adapters
+                                .get(&platform)
+                                .map(|a| a.supports_edit())
+                                .unwrap_or(false),
                         self.config.group_per_user,
                         self.config.thread_per_user
                     )
                 }
                 SlashCommand::Stop => {
-                    if self.cancel_key(&key) { "Stop requested.".into() } else { "Nothing running.".into() }
+                    if self.cancel_key(&key) {
+                        "Stop requested.".into()
+                    } else {
+                        "Nothing running.".into()
+                    }
                 }
                 SlashCommand::Restart => {
                     // Remember the requester, reply, then exit;
@@ -263,7 +320,11 @@ impl GatewayRunner {
                     "platform {platform}\nuser_id {}\nchat_id {chat_id}\nchat_type {}{}\n\nAdd the user_id to platforms.{platform}.allowed_users in gateway.yaml to skip pairing.",
                     ev.source.user_id.as_deref().unwrap_or("?"),
                     ev.source.chat_type,
-                    ev.source.thread_id.as_ref().map(|t| format!("\nthread_id {t}")).unwrap_or_default()
+                    ev.source
+                        .thread_id
+                        .as_ref()
+                        .map(|t| format!("\nthread_id {t}"))
+                        .unwrap_or_default()
                 ),
                 SlashCommand::Help => help_text(),
             };
@@ -294,9 +355,12 @@ impl GatewayRunner {
         });
 
         let progress = match &adapter {
-            Some(a) if self.config.streaming && a.supports_edit() => {
-                Some(ProgressBubble::spawn(Arc::clone(a), chat_id.clone(), Self::reply_opts(&ev), platform.max_message_len()))
-            }
+            Some(a) if self.config.streaming && a.supports_edit() => Some(ProgressBubble::spawn(
+                Arc::clone(a),
+                chat_id.clone(),
+                Self::reply_opts(&ev),
+                platform.max_message_len(),
+            )),
             _ => None,
         };
         let sink = progress.as_ref().map(|p| p.tx.clone());
@@ -329,7 +393,12 @@ impl GatewayRunner {
 
     /// Cancel the run registered under `key`. Returns whether one existed.
     fn cancel_key(&self, key: &str) -> bool {
-        self.cancel_tokens.lock().unwrap().get(key).map(|t| t.cancel()).is_some()
+        self.cancel_tokens
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|t| t.cancel())
+            .is_some()
     }
 
     async fn wait_idle(&self, key: &str, max: Duration) {
@@ -344,18 +413,29 @@ impl GatewayRunner {
         m
     }
 
-    pub(crate) fn resolve_provider_config(&self) -> (Option<String>, Option<String>, Option<String>) {
+    pub(crate) fn resolve_provider_config(
+        &self,
+    ) -> (Option<String>, Option<String>, Option<String>) {
         let saved = load_saved_config();
-        let base_url = std::env::var("GRAY_BASE_URL").ok().or(saved.as_ref().and_then(|s| s.base_url.clone()));
-        let api_key = std::env::var("GRAY_API_KEY").ok().or_else(|| std::env::var("OPENAI_API_KEY").ok()).or(saved.as_ref().and_then(|s| s.api_key.clone()));
-        let model = std::env::var("GRAY_MODEL").ok().or(saved.as_ref().and_then(|s| s.model.clone()));
+        let base_url = std::env::var("GRAY_BASE_URL")
+            .ok()
+            .or(saved.as_ref().and_then(|s| s.base_url.clone()));
+        let api_key = std::env::var("GRAY_API_KEY")
+            .ok()
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+            .or(saved.as_ref().and_then(|s| s.api_key.clone()));
+        let model = std::env::var("GRAY_MODEL")
+            .ok()
+            .or(saved.as_ref().and_then(|s| s.model.clone()));
         (base_url, api_key, model)
     }
 }
 
 fn load_saved_config() -> Option<SavedConfig> {
     let path = crate::config::gray_home_dir().ok()?.join("config.json");
-    std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok())
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
 }
 
 #[derive(serde::Deserialize)]
@@ -368,9 +448,9 @@ struct SavedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{GatewayConfig, Platform, PlatformConfig};
     use crate::daemon_stream::ProgressMsg;
     use crate::session::SessionSource;
-    use crate::config::{GatewayConfig, Platform, PlatformConfig};
     use std::collections::HashMap;
 
     fn runner_with(pc: PlatformConfig, plat: Platform) -> (tempfile::TempDir, GatewayRunner) {
@@ -379,7 +459,10 @@ mod tests {
         let pairing = Arc::new(PairingStore::new(dir.path().join("pairing")));
         let mut platforms = HashMap::new();
         platforms.insert(plat, pc);
-        let cfg = GatewayConfig { platforms, ..Default::default() };
+        let cfg = GatewayConfig {
+            platforms,
+            ..Default::default()
+        };
         let r = GatewayRunner::from_config_with(cfg, store, pairing).unwrap();
         (dir, r)
     }
@@ -388,7 +471,9 @@ mod tests {
         // Unique ids per call so distinct test messages don't trip the
         // inbound dedup guard (which keys on platform/chat/msg_id).
         static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed).to_string();
+        let id = NEXT_ID
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .to_string();
         MessageEvent {
             text: text.into(),
             message_id: Some(id.clone()),
@@ -418,26 +503,56 @@ mod tests {
 
     #[test]
     fn from_config_with_dummy_token() {
-        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
+        let (_d, runner) = runner_with(
+            PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"),
+            Platform::Telegram,
+        );
         assert!(runner.adapters.contains_key(&Platform::Telegram));
     }
 
     #[test]
     fn from_config_builds_every_platform() {
         let mut platforms = HashMap::new();
-        platforms.insert(Platform::Telegram, PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"));
-        platforms.insert(Platform::Discord, PlatformConfig::with_token(&"d".repeat(40)));
-        platforms.insert(Platform::Slack, PlatformConfig { app_token: Some("xapp-1-A-1-x".into()), ..PlatformConfig::with_token("xoxb-1234567890-x") });
+        platforms.insert(
+            Platform::Telegram,
+            PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"),
+        );
+        platforms.insert(
+            Platform::Discord,
+            PlatformConfig::with_token(&"d".repeat(40)),
+        );
+        platforms.insert(
+            Platform::Slack,
+            PlatformConfig {
+                app_token: Some("xapp-1-A-1-x".into()),
+                ..PlatformConfig::with_token("xoxb-1234567890-x")
+            },
+        );
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FileGatewayStore::new(dir.path().join("s.json")));
         let pairing = Arc::new(PairingStore::new(dir.path().join("p")));
-        let runner = GatewayRunner::from_config_with(GatewayConfig { platforms, ..Default::default() }, store, pairing).unwrap();
+        let runner = GatewayRunner::from_config_with(
+            GatewayConfig {
+                platforms,
+                ..Default::default()
+            },
+            store,
+            pairing,
+        )
+        .unwrap();
         assert_eq!(runner.adapters.len(), 3);
     }
 
     #[test]
     fn from_config_skips_disabled() {
-        let (_d, runner) = runner_with(PlatformConfig { enabled: false, token: Some("x".into()), ..Default::default() }, Platform::Telegram);
+        let (_d, runner) = runner_with(
+            PlatformConfig {
+                enabled: false,
+                token: Some("x".into()),
+                ..Default::default()
+            },
+            Platform::Telegram,
+        );
         assert!(runner.adapters.is_empty());
     }
 
@@ -457,21 +572,39 @@ mod tests {
     #[tokio::test]
     async fn unknown_dm_gets_pairing_code_and_nothing_else() {
         // GRAY_HOME unset in tests → env allowlist absent; config has none → pairing.
-        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
-        let r = runner.handle_inbound(tg_event("42", "hello", "dm")).await.unwrap();
+        let (_d, runner) = runner_with(
+            PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"),
+            Platform::Telegram,
+        );
+        let r = runner
+            .handle_inbound(tg_event("42", "hello", "dm"))
+            .await
+            .unwrap();
         assert!(delivered(&r), "pairing prompt reached the adapter: {r:?}");
         assert!(runner.pairing.has_pending(Platform::Telegram, "42"));
-        assert!(runner.store.get("gray:main:telegram:dm:100").is_none(), "no session created for unpaired user");
+        assert!(
+            runner.store.get("gray:main:telegram:dm:100").is_none(),
+            "no session created for unpaired user"
+        );
         // Second message within the rate window: silent.
-        let r = runner.handle_inbound(tg_event("42", "hello again", "dm")).await.unwrap();
+        let r = runner
+            .handle_inbound(tg_event("42", "hello again", "dm"))
+            .await
+            .unwrap();
         assert!(!r.success);
         assert_eq!(r.error.as_deref(), Some("pairing rate-limited"));
     }
 
     #[tokio::test]
     async fn unknown_group_sender_is_dropped() {
-        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
-        let r = runner.handle_inbound(tg_event("42", "/status", "group")).await.unwrap();
+        let (_d, runner) = runner_with(
+            PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"),
+            Platform::Telegram,
+        );
+        let r = runner
+            .handle_inbound(tg_event("42", "/status", "group"))
+            .await
+            .unwrap();
         assert!(!r.success);
         assert_eq!(r.error.as_deref(), Some("unauthorized"));
         assert!(!runner.pairing.has_pending(Platform::Telegram, "42"));
@@ -479,28 +612,62 @@ mod tests {
 
     #[tokio::test]
     async fn allowed_user_slash_commands_route_by_session_key() {
-        let pc = PlatformConfig { allowed_users: vec!["42".into()], ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890") };
+        let pc = PlatformConfig {
+            allowed_users: vec!["42".into()],
+            ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")
+        };
         let (_d, runner) = runner_with(pc, Platform::Telegram);
-        assert!(delivered(&runner.handle_inbound(tg_event("42", "/whoami", "dm")).await.unwrap()));
-        assert!(delivered(&runner.handle_inbound(tg_event("42", "/status", "dm")).await.unwrap()));
-        assert!(delivered(&runner.handle_inbound(tg_event("42", "/stop", "dm")).await.unwrap()));
-        assert!(delivered(&runner.handle_inbound(tg_event("42", "/reset", "dm")).await.unwrap()));
+        assert!(delivered(
+            &runner
+                .handle_inbound(tg_event("42", "/whoami", "dm"))
+                .await
+                .unwrap()
+        ));
+        assert!(delivered(
+            &runner
+                .handle_inbound(tg_event("42", "/status", "dm"))
+                .await
+                .unwrap()
+        ));
+        assert!(delivered(
+            &runner
+                .handle_inbound(tg_event("42", "/stop", "dm"))
+                .await
+                .unwrap()
+        ));
+        assert!(delivered(
+            &runner
+                .handle_inbound(tg_event("42", "/reset", "dm"))
+                .await
+                .unwrap()
+        ));
         assert!(runner.store.get("gray:main:telegram:dm:100").is_some());
         // Paired user gets the same treatment.
         runner.pairing.approve_user(Platform::Telegram, "7", "");
-        assert!(delivered(&runner.handle_inbound(tg_event("7", "/help", "dm")).await.unwrap()));
+        assert!(delivered(
+            &runner
+                .handle_inbound(tg_event("7", "/help", "dm"))
+                .await
+                .unwrap()
+        ));
     }
 
     #[tokio::test]
     async fn agent_path_without_model_reports_error_not_panic() {
-        let pc = PlatformConfig { allowed_users: vec!["42".into()], ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890") };
+        let pc = PlatformConfig {
+            allowed_users: vec!["42".into()],
+            ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")
+        };
         let (d, runner) = runner_with(pc, Platform::Telegram);
         // Point config lookups at an empty home so no real model/API key leaks in.
         // SAFETY: tests in this crate that touch GRAY_HOME are serialized by cargo's
         // per-test-binary process; other tests do not depend on this variable.
         unsafe { std::env::set_var("GRAY_HOME", d.path()) };
         unsafe { std::env::remove_var("GRAY_MODEL") };
-        let r = runner.handle_inbound(tg_event("42", "hi there", "dm")).await.unwrap();
+        let r = runner
+            .handle_inbound(tg_event("42", "hi there", "dm"))
+            .await
+            .unwrap();
         unsafe { std::env::remove_var("GRAY_HOME") };
         // The error text reached delivery (no panic, no hang).
         assert!(delivered(&r), "{r:?}");
@@ -539,10 +706,21 @@ mod tests {
         );
         // End-to-end through the bubble task on the stub adapter (no network):
         // tool events → bubble sends → Done deletes → final text returned.
-        let a: Adapter = Arc::new(TelegramAdapter::new(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")).unwrap());
+        let a: Adapter = Arc::new(
+            TelegramAdapter::new(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"))
+                .unwrap(),
+        );
         let b = ProgressBubble::spawn(a, "100".into(), SendOptions::default(), 4096);
-        b.tx.send(ProgressMsg::ToolStart { id: "1".into(), name: "terminal".into() }).unwrap();
-        b.tx.send(ProgressMsg::ToolEnd { id: "1".into(), args: serde_json::json!({"command": "ls"}) }).unwrap();
+        b.tx.send(ProgressMsg::ToolStart {
+            id: "1".into(),
+            name: "terminal".into(),
+        })
+        .unwrap();
+        b.tx.send(ProgressMsg::ToolEnd {
+            id: "1".into(),
+            args: serde_json::json!({"command": "ls"}),
+        })
+        .unwrap();
         let out = b.finish("done".into()).await;
         assert_eq!(out, "done");
     }
@@ -554,17 +732,34 @@ mod tests {
         struct Inner;
         #[async_trait::async_trait]
         impl ToolExecutor for Inner {
-            fn execute(&self, _ctx: &ToolContext, _name: &str, _args: serde_json::Value) -> futures::future::BoxFuture<'static, ToolOutput> {
+            fn execute(
+                &self,
+                _ctx: &ToolContext,
+                _name: &str,
+                _args: serde_json::Value,
+            ) -> futures::future::BoxFuture<'static, ToolOutput> {
                 Box::pin(async { ToolOutput::ok("must not reach inner") })
             }
         }
         let ex = GatedExecutor::new(Box::new(Inner), vec!["write".to_string()]);
-        let ctx = ToolContext { cwd: std::path::PathBuf::from("."), cancel: tokio_util::sync::CancellationToken::new(), questions: None, session_id: None };
+        let ctx = ToolContext {
+            cwd: std::path::PathBuf::from("."),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            questions: None,
+            session_id: None,
+            permission: gray_core::agent::PermissionMode::Ask,
+        };
         let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
         assert!(out.is_error);
-        assert!(out.content.contains("disabled in gateway mode"), "got: {}", out.content);
+        assert!(
+            out.content.contains("disabled in gateway mode"),
+            "got: {}",
+            out.content
+        );
         // Non-denied tools still delegate.
-        let out = ex.execute(&ctx, "read", serde_json::json!({"path": "x"})).await;
+        let out = ex
+            .execute(&ctx, "read", serde_json::json!({"path": "x"}))
+            .await;
         assert!(!out.is_error);
     }
 
@@ -587,15 +782,27 @@ mod tests {
             "bad token: unauthorized",
             "forbidden: bot was kicked",
         ] {
-            assert!(matches!(classify_connect_error(msg), Fatal::Terminal(_)), "must be terminal: {msg}");
+            assert!(
+                matches!(classify_connect_error(msg), Fatal::Terminal(_)),
+                "must be terminal: {msg}"
+            );
         }
     }
 
     #[test]
     fn retryable_failure_retries() {
-        assert!(matches!(classify_connect_error("connection reset by peer"), Fatal::Retryable(_)));
-        assert!(matches!(classify_connect_error("connect timeout 45s"), Fatal::Retryable(_)));
-        assert!(matches!(classify_connect_error("shard ended"), Fatal::Retryable(_)));
+        assert!(matches!(
+            classify_connect_error("connection reset by peer"),
+            Fatal::Retryable(_)
+        ));
+        assert!(matches!(
+            classify_connect_error("connect timeout 45s"),
+            Fatal::Retryable(_)
+        ));
+        assert!(matches!(
+            classify_connect_error("shard ended"),
+            Fatal::Retryable(_)
+        ));
     }
 
     #[test]
@@ -623,7 +830,10 @@ mod tests {
     fn discord_shard_end_reconnects_through_ladder() {
         // Shard death is retryable so the production ladder reconnects.
         assert!(matches!(classify_shard_end(), Fatal::Retryable(_)));
-        assert!(matches!(classify_connect_error("shard ended"), Fatal::Retryable(_)));
+        assert!(matches!(
+            classify_connect_error("shard ended"),
+            Fatal::Retryable(_)
+        ));
     }
 
     #[test]
@@ -634,7 +844,10 @@ mod tests {
             "privileged intents required (enable MESSAGE_CONTENT)",
             "close 4014: disallowed privileged intents",
         ] {
-            assert!(matches!(classify_connect_error(msg), Fatal::Retryable(_)), "must be retryable: {msg}");
+            assert!(
+                matches!(classify_connect_error(msg), Fatal::Retryable(_)),
+                "must be retryable: {msg}"
+            );
         }
     }
 
@@ -646,7 +859,10 @@ mod tests {
             "socket mode failed: token_revoked",
             "not_authed",
         ] {
-            assert!(matches!(classify_connect_error(msg), Fatal::Terminal(_)), "must be terminal: {msg}");
+            assert!(
+                matches!(classify_connect_error(msg), Fatal::Terminal(_)),
+                "must be terminal: {msg}"
+            );
         }
     }
 
@@ -666,7 +882,10 @@ mod tests {
 
     #[tokio::test]
     async fn dedup_guard_runs_before_authz() {
-        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
+        let (_d, runner) = runner_with(
+            PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"),
+            Platform::Telegram,
+        );
         let ev = tg_event("42", "hello", "dm");
         let r1 = runner.handle_inbound(ev.clone()).await.unwrap();
         assert!(delivered(&r1), "first pairing prompt must deliver: {r1:?}");
@@ -678,14 +897,24 @@ mod tests {
     #[tokio::test]
     async fn sweep_replays_pending_ledger() {
         use crate::delivery::{DeliveryTarget, ObligationStatus};
-        let (_d, runner) = runner_with(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"), Platform::Telegram);
+        let (_d, runner) = runner_with(
+            PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890"),
+            Platform::Telegram,
+        );
         let target = DeliveryTarget::parse("telegram:100", None).unwrap();
         let id = runner.ledger.record("sess", "m1", &target, "hi", None);
         assert_eq!(runner.ledger.sweep().len(), 1);
         let done = runner.router.sweep_ledger(&runner.ledger).await;
         assert_eq!(done.len(), 1);
         assert_eq!(done[0].0, id);
-        assert!(delivered(&done[0].1) || done[0].1.success, "sweep must deliver: {:?}", done[0].1);
-        assert_eq!(runner.ledger.get(&id).unwrap().status, ObligationStatus::Delivered);
+        assert!(
+            delivered(&done[0].1) || done[0].1.success,
+            "sweep must deliver: {:?}",
+            done[0].1
+        );
+        assert_eq!(
+            runner.ledger.get(&id).unwrap().status,
+            ObligationStatus::Delivered
+        );
     }
 }

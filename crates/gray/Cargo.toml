@@ -18,7 +18,6 @@ gray-core = { workspace = true }
 gray-plugin = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
-gray-cron = { workspace = true }
 gray-session = { workspace = true }
 gray-markdown = { workspace = true }
 anyhow = { workspace = true }
@@ -35,19 +34,30 @@ reqwest = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
-arboard = { workspace = true }
-image = { workspace = true }
+arboard = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 tempfile = { workspace = true }
-axum = { workspace = true }
-tower-http = { workspace = true }
-tower = { workspace = true }
 async-trait = { workspace = true }
-gray-gateway = { workspace = true, features = ["discord"] }
-sha2 = { workspace = true }
-base64 = { workspace = true }
-percent-encoding = { workspace = true }
+# Phase 1 scope cut: platform adapters are opt-in (default build is the
+# harness core with gateway config/status only, no twilight/teloxide/slack).
+# The workspace edge disables gateway default features, keeping gray-cron
+# (and its `cron` package) out of the default tree; opt back in below.
+gray-gateway = { workspace = true }
 unicode-width = { workspace = true }
 ignore = { workspace = true }
+
+[features]
+default = []
+# Clipboard/image attachments (arboard + image). Off by default to keep the
+# default tree and binary lean; build with --features clipboard for paste.
+clipboard = ["dep:arboard", "dep:image"]
+# Platform passthroughs (opt-in; default build carries no platform deps).
+telegram = ["gray-gateway/telegram"]
+discord = ["gray-gateway/discord"]
+slack = ["gray-gateway/slack"]
+all-platforms = ["gray-gateway/all-platforms"]
+# Gateway cron delivery (opt-in; needs the `cron` package).
+cron = ["gray-gateway/cron"]
 
 [dev-dependencies]
 async-trait = { workspace = true }
