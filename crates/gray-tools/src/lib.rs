@@ -94,6 +94,13 @@ impl Registry {
         &self.file_ledger
     }
 
+    /// T3.4 adoption: point the registry at the ledger the session tools
+    /// share (`from_plugins` rebuilds tools-basic read/write/edit on it).
+    /// `builtin()` already shares; this is for plugin-assembled registries.
+    pub fn set_file_ledger(&mut self, ledger: Arc<FileLedger>) {
+        self.file_ledger = ledger;
+    }
+
     /// Tool definitions in registration order (for the chat request).
     pub fn defs(&self) -> Vec<ToolDef> {
         self.tools.iter().map(|t| t.def()).collect()
@@ -542,5 +549,13 @@ mod tests {
             .await;
             assert!(!out.is_error, "{out:?}");
         }
+    }
+
+    #[test]
+    fn set_file_ledger_swaps_shared_state() {
+        let mut reg = Registry::builtin();
+        let ledger = Arc::new(FileLedger::new());
+        reg.set_file_ledger(ledger.clone());
+        assert!(Arc::ptr_eq(reg.file_ledger(), &ledger));
     }
 }
