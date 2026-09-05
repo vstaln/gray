@@ -49,7 +49,7 @@ pub fn check(
     // A bare `read <path>` (offset 0/1/absent) claims the whole file: only
     // stub it when the previous read really covered lines 1..=T. Explicit
     // windows (offset>1, tails) name their lines in the stub, so they may hit.
-    if offset >= 0 && offset <= 1 && !entry.full_view {
+    if (0..=1).contains(&offset) && !entry.full_view {
         return None;
     }
     // Empty-file records (last < first) carry no lines to name; re-show them.
