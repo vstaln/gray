@@ -277,6 +277,20 @@ pub(crate) fn dispatch_agent_event(
                     .entry(id.clone())
                     .and_modify(|e| e.1 = Some(args.clone()))
                     .or_insert((String::new(), Some(args.clone())));
+                // Brief 3B: `sleep` shows its countdown until its result lands.
+                if pending_tools
+                    .get(id)
+                    .is_some_and(|(n, _)| n == "sleep")
+                {
+                    let secs = args.get("seconds").and_then(|s| s.as_u64()).unwrap_or(0);
+                    let reason = args
+                        .get("reason")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("");
+                    if secs > 0 {
+                        t.begin_sleep(secs, reason);
+                    }
+                }
             }
             AgentEvent::ToolResult {
                 id,
@@ -291,6 +305,10 @@ pub(crate) fn dispatch_agent_event(
                     .remove(id)
                     .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
                     .unwrap_or_else(|| ("tool".to_string(), None));
+                if name == "sleep" {
+                    t.clear_sleep();
+                    t.set_status(Some("Working"));
+                }
                 if name != "request_user_input" {
                     let lines = crate::tool_fmt::format_tool_result_lines_with_context(
                         &name,

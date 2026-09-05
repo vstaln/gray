@@ -153,6 +153,29 @@ async fn run_plugin_command(
     owner.run_command(name, argv).await
 }
 
+/// 2E exit sweep: stop the session's background shell tasks (3 s deadline).
+/// Covers the registry key in use plus `"nosession"` (pre-session turns).
+async fn shutdown_shell_tasks(session_state: &Option<SessionState>, tui: &TuiOpt) {
+    let mut keys = vec!["nosession".to_string()];
+    if let Some(s) = session_state {
+        keys.push(s.session_id.as_str().to_string());
+    }
+    keys.dedup();
+    let mut stopped = 0;
+    for k in &keys {
+        stopped += crate::shell_drain::shutdown_shell_session(k).await;
+    }
+    if stopped > 0 {
+        say(
+            tui.as_ref().map(|(s, _)| s),
+            &format!(
+                "stopped {stopped} background task{}",
+                if stopped == 1 { "" } else { "s" }
+            ),
+        );
+    }
+}
+
 /// Graceful sidecar teardown (`plugin/shutdown`); best-effort, never fails.
 async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
     let hooks: Vec<Arc<dyn PluginHooks>> = agent.map(|a| a.hooks().to_vec()).unwrap_or_default();
@@ -250,6 +273,10 @@ pub async fn run_repl_mode(
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
+    // Shell drain (briefs 3A/2E): one process wake subscription for the
+    // session filter below, plus the 7-day log sweep.
+    crate::shell_drain::sweep_old_shell_logs();
+    let _shell_drain = crate::shell_drain::spawn_shell_drain();
 
     let mut unconfigured = config.model.is_none();
     if unconfigured {
@@ -484,7 +511,14 @@ pub async fn run_repl_mode(
         for line in crate::host::take_host_say() {
             say(tui.as_ref().map(|(s, _)| s), &line);
         }
-        let cmd = if let Some(c) = pending_command.take() {
+        // Shell wake drain (brief 3A): point the background subscription at
+        // this session, then route queued exit/pattern notes.
+        crate::shell_drain::set_drain_session(
+            &crate::shell_drain::shell_session_key(
+                session_state.as_ref().map(|s| s.session_id.as_str()),
+            ),
+        );
+        let mut cmd = if let Some(c) = pending_command.take() {
             c
         } else {
             let (line_text, images) = if interactive {
@@ -498,6 +532,7 @@ pub async fn run_repl_mode(
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
                             shutdown_hooks(agent.as_ref()).await;
+                            shutdown_shell_tasks(&session_state, &tui).await;
                             print_exit_hint(&session_state);
                             break;
                         }
@@ -518,6 +553,7 @@ pub async fn run_repl_mode(
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     shutdown_hooks(agent.as_ref()).await;
+                    shutdown_shell_tasks(&session_state, &tui).await;
                     break;
                 }
                 (buf.trim().to_string(), Vec::new())
@@ -533,6 +569,48 @@ pub async fn run_repl_mode(
         // Clear pending images for non-prompt commands (keep for Prompt/Empty+images)
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
             pending_images.clear();
+        }
+        // Route queued shell wakes: a turn about to run absorbs them via
+        // steer (newest tool result at the next request); idle at the prompt
+        // starts a synthetic follow-up turn as a system notice when
+        // shell.wake_on_exit, else steers for the next turn.
+        let wakes = crate::shell_drain::take_shell_wake();
+        if !wakes.is_empty() {
+            let joined = wakes.join("\n");
+            match &cmd {
+                ReplCommand::Prompt(_) => {
+                    if let Some(a) = agent.as_mut() {
+                        for w in wakes {
+                            a.steer(w);
+                        }
+                    } else {
+                        crate::shell_drain::queue_shell_wake(joined);
+                    }
+                }
+                ReplCommand::Empty if pending_images.is_empty() => {
+                    if crate::shell_drain::wake_on_exit() {
+                        say(tui.as_ref().map(|(s, _)| s), &joined);
+                        cmd = ReplCommand::Prompt(joined);
+                    } else if let Some(a) = agent.as_mut() {
+                        for w in wakes {
+                            a.steer(w);
+                        }
+                        say(tui.as_ref().map(|(s, _)| s), &joined);
+                    } else {
+                        say(tui.as_ref().map(|(s, _)| s), &joined);
+                        crate::shell_drain::queue_shell_wake(joined);
+                    }
+                }
+                _ => {
+                    if let Some(a) = agent.as_mut() {
+                        for w in wakes {
+                            a.steer(w);
+                        }
+                    } else {
+                        crate::shell_drain::queue_shell_wake(joined);
+                    }
+                }
+            }
         }
 
         match cmd {
@@ -587,6 +665,7 @@ pub async fn run_repl_mode(
                 .await?
                     == dispatch::Flow::Break
                 {
+                    shutdown_shell_tasks(&session_state, &tui).await;
                     break;
                 }
             }
