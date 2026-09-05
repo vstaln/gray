@@ -139,11 +139,11 @@ pub struct GatewayConfig {
     #[serde(default)] pub reset_policy: ResetPolicy,
 }
 fn default_group_per_user() -> bool { true }
-fn default_autostart() -> bool { true }
+fn default_autostart() -> bool { false }
 fn default_true() -> bool { true }
 impl Default for GatewayConfig {
     fn default() -> Self {
-        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: true, denied_tools: Vec::new(), streaming: true, cron_delivery: true, reset_policy: ResetPolicy::default() }
+        Self { platforms: HashMap::new(), group_per_user: true, thread_per_user: false, autostart: false, denied_tools: Vec::new(), streaming: true, cron_delivery: true, reset_policy: ResetPolicy::default() }
     }
 }
 pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
@@ -155,7 +155,14 @@ pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
 }
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else { return GatewayConfig::default(); };
-    std::fs::read_to_string(&path).ok().and_then(|s| serde_yaml_ng::from_str(&s).ok()).unwrap_or_default()
+    let Ok(text) = std::fs::read_to_string(&path) else { return GatewayConfig::default(); };
+    match serde_yaml_ng::from_str(&text) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("warning: ignoring {}: failed to parse gateway config: {e}", path.display());
+            GatewayConfig::default()
+        }
+    }
 }
 pub fn save_gateway_config(cfg: &GatewayConfig) -> anyhow::Result<()> {
     let path = gray_gateway_path()?;
@@ -205,6 +212,14 @@ mod tests {
         let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
         let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.reset_policy.mode, ResetMode::None);
+    }
+
+    #[test]
+    fn autostart_defaults_off_and_parse_errors_are_loud() {
+        assert!(!GatewayConfig::default().autostart);
+        let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!cfg.autostart);
     }
 
     #[test]

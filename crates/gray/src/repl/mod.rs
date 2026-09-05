@@ -2288,7 +2288,8 @@ pub async fn run_repl_mode(
             }
         }
     }
-    // Gateway autostart (default on): boot the in-process daemon when any
+    // Gateway autostart (default off; /gateway autostart on to enable): boot the
+    // in-process daemon when any
     // platform is enabled. Silent when nothing is configured. Shows a LIVE
     // boot panel above the input (per-platform connecting → connected as …
     // plus a shimmer-bar line); when every platform resolves, the final
@@ -3421,8 +3422,8 @@ mod tests {
         assert!(matches!(super::parse_gateway_args("/gateway autostart OFF"), G::Autostart(false)));
         assert!(matches!(super::parse_gateway_args("/gateway autostart"), G::Help));
         assert!(matches!(super::parse_gateway_args("/gateway autostart maybe"), G::Help));
-        // default-on: fresh config autostarts
-        assert!(gray_gateway::config::GatewayConfig::default().autostart);
+        // default-off: fresh config does not autostart (S2)
+        assert!(!gray_gateway::config::GatewayConfig::default().autostart);
     }
 
     #[test]
