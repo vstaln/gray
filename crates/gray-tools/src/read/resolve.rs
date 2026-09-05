@@ -314,7 +314,13 @@ mod tests {
             std::fs::create_dir_all(&sub).unwrap();
             std::fs::write(sub.join(actual), "x").unwrap();
             let got = resolve_existing(&sub.join(given));
-            assert_eq!(got, Some(sub.join(actual)), "row {dir}: {given:?}");
+            // macOS APFS stores café.txt NFD on disk: compare NFD→NFC folded.
+            let got = got.unwrap_or_else(|| panic!("row {dir}: {given:?} did not resolve"));
+            assert_eq!(
+                to_nfc(&got.display().to_string()),
+                to_nfc(&sub.join(actual).display().to_string()),
+                "row {dir}: {given:?}"
+            );
         }
     }
 
