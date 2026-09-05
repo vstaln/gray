@@ -1,15 +1,14 @@
 //! shell/guard.rs — destructive-command guard, MOVED from `bash.rs` unchanged.
 //!
-//! Phase 0 (brief 0): byte-identical logic copy; `bash.rs` is intentionally
-//! left untouched (worktree rule), so the guard temporarily lives in both
-//! places. Brief 1D shrinks `bash.rs` to re-export + `use guard` and widens
-//! visibility to `pub(crate)` as needed. Until then everything here stays
-//! private, exactly as it was.
+//! Phase 0 (brief 0): byte-identical logic copy of the `bash.rs` guard.
+//! 1D shrank `bash.rs` to a re-export, so this is now the single home of
+//! the guard; visibility widened to `pub(crate)` for `shell::tools::bash`
+//! (logic itself untouched).
 
 use gray_core::agent::ToolContext;
 
 /// Guard verdict as data: Allow / Prompt / Forbidden.
-enum Decision {
+pub(crate) enum Decision {
     Allow,
     /// Ask the user (first 2 occurrences per process, then auto-deny).
     Prompt {
@@ -25,7 +24,7 @@ enum Decision {
 static PROMPT_SEEN: std::sync::Mutex<Vec<(&'static str, usize)>> =
     std::sync::Mutex::new(Vec::new());
 
-fn prompt_allowance(rule: &'static str) -> bool {
+pub(crate) fn prompt_allowance(rule: &'static str) -> bool {
     let mut seen = PROMPT_SEEN.lock().unwrap_or_else(|e| e.into_inner());
     let n = seen.iter_mut().find(|(r, _)| *r == rule).map(|(_, n)| n);
     let count = match n {
@@ -46,7 +45,7 @@ fn prompt_allowance(rule: &'static str) -> bool {
 /// Bypass: `GRAY_GUARD_BYPASS=1` (dcg `DCG_BYPASS=1` parity, for CI/piped mode).
 /// Token/substring matching, no regex/AST; heredoc/`python -c`
 /// payloads are unscanned — upgrade when a real incident hits.
-fn classify(command: &str) -> Decision {
+pub(crate) fn classify(command: &str) -> Decision {
     if std::env::var("GRAY_GUARD_BYPASS").as_deref() == Ok("1") {
         return Decision::Allow;
     }
@@ -240,7 +239,7 @@ fn classify_normalized(cmd: &str) -> Decision {
 /// Asks the connected user whether a Prompt-verdict command may run once.
 /// Fail-closed: no bridge, cancel, error, or anything but an explicit
 /// "Run once" denies (codex: Esc always cancels).
-async fn ask_allow_once(
+pub(crate) async fn ask_allow_once(
     ctx: &ToolContext,
     command: &str,
     rule: &str,
