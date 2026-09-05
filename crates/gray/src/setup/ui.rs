@@ -47,7 +47,11 @@ impl BackgroundSnapshot {
                     lines.extend(crate::composer::transcript::format_user_prompt_lines(text, attached, w));
                 }
                 crate::composer::TranscriptEntry::ToolBox { header, body } => {
-                    lines.extend(crate::composer::transcript::format_tool_box_lines(header.clone(), body, w));
+                    if crate::composer::transcript::is_gateway_boot_header(header) {
+                        lines.extend(crate::composer::transcript::format_gateway_boot_card(header.clone(), body, w));
+                    } else {
+                        lines.extend(crate::composer::transcript::format_tool_box_lines(header.clone(), body, w));
+                    }
                 }
                 crate::composer::TranscriptEntry::StyledLines { lines: styled, hyperlinks: _ } => {
                     lines.extend(styled.clone());

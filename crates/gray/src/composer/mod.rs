@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 use ratatui::Terminal;
@@ -279,7 +279,11 @@ impl Tui {
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::ToolBox { header, body } => {
-                    let lines = crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
+                    let lines = if crate::composer::transcript::is_gateway_boot_header(header) {
+                        crate::composer::transcript::format_gateway_boot_card(header.clone(), body, w)
+                    } else {
+                        crate::composer::transcript::format_tool_box_lines(header.clone(), body, w)
+                    };
                     let th = lines.len() as u16;
                     let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
                     let _ = self.terminal.insert_before(th, |buf| {
@@ -452,19 +456,14 @@ impl Tui {
     }
 
     /// Viewport rows for the live gateway boot panel (empty when no boot is
-    /// active). Bare text like the queued-input preview: bold-white header +
-    /// dim per-platform rows, sharing the exact strings the final card commits.
-    pub(crate) fn gateway_panel_lines(&self) -> Vec<Line<'static>> {
+    /// active). Byte-for-byte the committed tight boot card (gray overlay +
+    /// top/bottom margins, no middle blank), so `starting` and `autostarted`
+    /// never look different.
+    pub(crate) fn gateway_panel_lines(&self, w: usize) -> Vec<Line<'static>> {
         let Some(panel) = &self.gateway_boot else { return Vec::new(); };
-        let mut out = vec![Line::from(vec![Span::styled(
-            format!("  {}", panel.header),
-            Style::default().fg(Color::Rgb(225, 225, 225)).add_modifier(Modifier::BOLD),
-        )])];
-        let dim = Style::default().fg(Color::Rgb(140, 140, 140));
-        for row in &panel.rows {
-            out.push(Line::from(vec![Span::styled(row.clone(), dim)]));
-        }
-        out
+        let (header, body) =
+            crate::composer::transcript::gateway_boot_card_parts(&panel.header, &panel.rows);
+        crate::composer::transcript::format_gateway_boot_card(header, &body, w)
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
