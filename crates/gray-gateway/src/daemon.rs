@@ -7,7 +7,7 @@
 //! 3. **interrupt** — a new message for a session with a running agent cancels
 //!    that run first (level 2); `/stop` cancels without replacing (level 1);
 //! 4. **run** — agent with the [`crate::authz::GatedExecutor`] (dangerous
-//!    tools auto-denied), streaming edit-in-place where the platform allows;
+//!    tools auto-denied), Hermes-style progress bubbles where the platform allows;
 //! 5. **deliver** — reply to the originating chat/thread, chunked to the
 //!    platform limit. Cron output goes to each platform's `home_channel`.
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ use crate::authz::{Authorizer, Decision, GatedExecutor};
 use crate::config::{GatewayConfig, Platform, load_gateway_config};
 use crate::delivery::{DeadTargets, DeliveryLedger, DeliveryRouter, DeliveryTarget};
 use crate::pairing::{PairingOffer, PairingStore};
-use crate::platform::{BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80, split_message_smart, utf16_len};
+use crate::platform::{BasePlatformAdapter, InboundDedup, MessageEvent, SendOptions, SendResult, preview_80};
 use crate::status::GatewayStatusBoard;
 use crate::session::{build_session_key, shared_store, FileGatewayStore, SessionSource};
 
@@ -28,12 +28,10 @@ use crate::telegram::TelegramAdapter;
 
 type Adapter = Arc<dyn BasePlatformAdapter>;
 
-/// Minimum interval between edit-in-place updates while streaming
-/// (Telegram/Discord edit rate limits sit around 1/s per chat).
-const STREAM_EDIT_INTERVAL: Duration = Duration::from_millis(1500);
-/// Don't create the placeholder message until this much text exists.
-const STREAM_MIN_CHARS: usize = 24;
-const STREAM_CURSOR: &str = " ▍";
+/// Minimum interval between progress-bubble EDITS while working
+/// (Discord/Telegram edit rate limits sit around 1/s per chat).
+/// The first send is always immediate; only edits are throttled.
+const PUMP_MIN_INTERVAL: Duration = Duration::from_millis(1500);
 
 // ---------------------------------------------------------------------------
 // Supervised reconnect ladder
@@ -418,13 +416,13 @@ impl GatewayRunner {
             })
         });
 
-        let streamer = match &adapter {
+        let progress = match &adapter {
             Some(a) if self.config.streaming && a.supports_edit() => {
-                Some(Streamer::spawn(Arc::clone(a), chat_id.clone(), Self::reply_opts(&ev), platform.max_message_len()))
+                Some(ProgressBubble::spawn(Arc::clone(a), chat_id.clone(), Self::reply_opts(&ev), platform.max_message_len()))
             }
             _ => None,
         };
-        let sink = streamer.as_ref().map(|s| s.tx.clone());
+        let sink = progress.as_ref().map(|p| p.tx.clone());
 
         let result = self.run_agent(&sid, &key, &ev.text, sink).await;
         done.notify_one();
@@ -440,9 +438,13 @@ impl GatewayRunner {
             }
         };
 
-        // 5. Deliver — streaming finalizes in place, otherwise chunked send.
-        let res = match streamer {
-            Some(s) => s.finish(reply_text).await,
+        // 5. Deliver — progress bubbles are deleted, then the final answer
+        // goes out as fresh message(s) on the normal chunked path.
+        let res = match progress {
+            Some(p) => {
+                let final_text = p.finish(reply_text).await;
+                self.reply(&ev, &final_text).await
+            }
             None => self.reply(&ev, &reply_text).await,
         };
         Ok(res)
@@ -483,9 +485,10 @@ impl GatewayRunner {
             .with_messages(prior))
     }
 
-    /// Run one agent turn in session `sid`, streaming text deltas to `sink`.
-    /// Returns the final assistant text. Persists the full turn (tool calls included).
-    async fn run_agent(&self, sid_str: &str, key: &str, text: &str, sink: Option<tokio::sync::mpsc::UnboundedSender<StreamMsg>>) -> anyhow::Result<String> {
+    /// Run one agent turn in session `sid`, forwarding tool events to `sink`
+    /// for the progress bubble. The final answer is returned, never streamed.
+    /// Persists the full turn (tool calls included).
+    async fn run_agent(&self, sid_str: &str, key: &str, text: &str, sink: Option<tokio::sync::mpsc::UnboundedSender<ProgressMsg>>) -> anyhow::Result<String> {
         use gray_core::Message;
         use gray_core::agent::ToolContext;
         use gray_core::event::AgentEvent;
@@ -519,12 +522,11 @@ impl GatewayRunner {
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {
                 match e {
-                    AgentEvent::TextDelta { delta } => {
-                        let _ = tx.send(StreamMsg::Delta(delta.clone()));
+                    AgentEvent::ToolCallStart { id, name } => {
+                        let _ = tx.send(ProgressMsg::ToolStart { id: id.clone(), name: name.clone() });
                     }
-                    // Text before a tool call is narration; the reply is what comes after.
-                    AgentEvent::ToolResult { .. } => {
-                        let _ = tx.send(StreamMsg::Reset);
+                    AgentEvent::ToolCallEnd { id, args, .. } => {
+                        let _ = tx.send(ProgressMsg::ToolEnd { id: id.clone(), args: args.clone() });
                     }
                     _ => {}
                 }
@@ -649,103 +651,138 @@ fn save_cron_output(job_id: &str, name: &str, output: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Streaming (edit-in-place) reply
+// Progress bubbles (Hermes `turn.rs` drain pump, adapted to a live task)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-pub enum StreamMsg {
-    Delta(String),
-    /// A tool ran; whatever was streamed so far was narration, start over.
-    Reset,
-    Done(String),
+pub enum ProgressMsg {
+    ToolStart { id: String, name: String },
+    ToolEnd { id: String, args: serde_json::Value },
+    Done,
 }
 
-struct Streamer {
-    tx: tokio::sync::mpsc::UnboundedSender<StreamMsg>,
-    task: tokio::task::JoinHandle<SendResult>,
+struct ProgressBubble {
+    tx: tokio::sync::mpsc::UnboundedSender<ProgressMsg>,
+    task: tokio::task::JoinHandle<()>,
 }
 
-impl Streamer {
+impl ProgressBubble {
     fn spawn(adapter: Adapter, chat: String, opts: SendOptions, max: usize) -> Self {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<StreamMsg>();
+        use crate::progress::ProgressLines;
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ProgressMsg>();
         let task = tokio::spawn(async move {
-            let mut buf = String::new();
-            let mut msg_id: Option<String> = None;
-            let mut last_edit = Instant::now() - STREAM_EDIT_INTERVAL;
-            let mut final_text: Option<String> = None;
+            let mut lines = ProgressLines::new();
+            // ToolCallEnd carries no name — track start id → name here.
+            let mut names: HashMap<String, String> = HashMap::new();
+            let mut bubble_ids: Vec<String> = Vec::new();
+            let mut last_pump = Instant::now() - PUMP_MIN_INTERVAL;
             while let Some(m) = rx.recv().await {
                 match m {
-                    StreamMsg::Delta(d) => buf.push_str(&d),
-                    StreamMsg::Reset => buf.clear(),
-                    StreamMsg::Done(t) => {
-                        final_text = Some(t);
-                        break;
+                    ProgressMsg::ToolStart { id, name } => {
+                        names.insert(id, name.clone());
+                        lines.push_start(&name);
                     }
-                }
-                let preview = format!("{}{STREAM_CURSOR}", buf.trim_end());
-                // Stop live-updating once the reply outgrows one message; the final
-                // chunked send handles it.
-                if buf.trim().chars().count() < STREAM_MIN_CHARS || utf16_len(&preview) > max {
-                    continue;
-                }
-                if last_edit.elapsed() < STREAM_EDIT_INTERVAL {
-                    continue;
-                }
-                match &msg_id {
-                    None => {
-                        let r = adapter.send_ext(&chat, &preview, &opts).await;
-                        if r.success {
-                            msg_id = r.message_id;
-                        }
+                    ProgressMsg::ToolEnd { id, args } => {
+                        // Start always precedes end for an id; fall back to
+                        // the id itself so an unpaired end never drops silently.
+                        let name = names.remove(&id).unwrap_or_else(|| id.clone());
+                        lines.push_end(&name, &args);
                     }
-                    Some(id) => {
-                        let _ = adapter.edit_message(&chat, id, &preview).await;
-                    }
+                    ProgressMsg::Done => break,
                 }
-                last_edit = Instant::now();
+                Self::pump(&adapter, &chat, &opts, max, &lines, &mut bubble_ids, &mut last_pump).await;
             }
-            let text = final_text.unwrap_or_else(|| if buf.is_empty() { "(no reply)".into() } else { buf.clone() });
-            finalize_stream(adapter.as_ref(), &chat, &opts, msg_id.as_deref(), &text, max).await
+            // Hermes cleanup_msg_ids: progress bubbles are ephemeral — the
+            // chat ends with just the final answer.
+            for id in &bubble_ids {
+                let r = adapter.delete_message(&chat, id).await;
+                if !r.success {
+                    log::warn!("progress bubble delete failed: {:?}", r.error);
+                }
+            }
         });
         Self { tx, task }
     }
 
-    async fn finish(self, text: String) -> SendResult {
-        let _ = self.tx.send(StreamMsg::Done(text));
-        drop(self.tx);
-        match self.task.await {
-            Ok(r) => r,
-            Err(e) => SendResult::fail(format!("stream task failed: {e}"), true),
+    /// Send the first bubble immediately; edit it (throttled) afterwards.
+    /// Overflow rolls into extra bubbles; every sent id is tracked so the
+    /// finish path can delete them all.
+    async fn pump(
+        adapter: &Adapter,
+        chat: &str,
+        opts: &SendOptions,
+        max: usize,
+        lines: &crate::progress::ProgressLines,
+        bubble_ids: &mut Vec<String>,
+        last_pump: &mut Instant,
+    ) {
+        if lines.is_empty() {
+            return;
+        }
+        let groups = lines.split_groups(max);
+        let Some(first) = groups.first() else { return };
+        match bubble_ids.last().cloned() {
+            None => {
+                let r = adapter.send_ext(chat, first, opts).await;
+                if r.success {
+                    if let Some(id) = r.message_id {
+                        bubble_ids.push(id);
+                    }
+                    *last_pump = Instant::now();
+                } else {
+                    log::warn!("progress bubble send failed: {:?}", r.error);
+                }
+            }
+            Some(id) => {
+                if last_pump.elapsed() < PUMP_MIN_INTERVAL {
+                    return;
+                }
+                let r = adapter.edit_message(chat, &id, first).await;
+                if r.success {
+                    *last_pump = Instant::now();
+                } else if r.retryable {
+                    // Transient (flood control) — skip this tick, retry next.
+                } else {
+                    log::warn!("progress bubble edit failed permanently, sending fresh: {:?}", r.error);
+                    Self::send_fresh(adapter, chat, opts, first, bubble_ids).await;
+                    *last_pump = Instant::now();
+                }
+            }
+        }
+        // Overflow groups always send as new bubbles (Hermes first-edits-rest-sends).
+        for extra in groups.iter().skip(1) {
+            Self::send_fresh(adapter, chat, opts, extra, bubble_ids).await;
         }
     }
-}
 
-/// Final delivery for a streamed reply: overwrite the placeholder with the first
-/// chunk, then send any remaining chunks as normal messages. Falls back to a
-/// plain send if the edit fails (e.g. placeholder deleted).
-async fn finalize_stream(adapter: &dyn BasePlatformAdapter, chat: &str, opts: &SendOptions, msg_id: Option<&str>, text: &str, max: usize) -> SendResult {
-    let chunks = split_message_smart(text, max);
-    let Some(first) = chunks.first() else {
-        return SendResult::ok(msg_id.map(str::to_string));
-    };
-    let mut rest_start = 0;
-    let mut last = SendResult::ok(msg_id.map(str::to_string));
-    if let Some(id) = msg_id {
-        let r = adapter.edit_message(chat, id, first).await;
+    async fn send_fresh(
+        adapter: &Adapter,
+        chat: &str,
+        opts: &SendOptions,
+        text: &str,
+        bubble_ids: &mut Vec<String>,
+    ) {
+        let r = adapter.send_ext(chat, text, opts).await;
         if r.success {
-            rest_start = 1;
-            last = r;
+            if let Some(id) = r.message_id {
+                bubble_ids.push(id);
+            }
+        } else {
+            log::warn!("progress bubble send failed: {:?}", r.error);
         }
     }
-    for (i, chunk) in chunks.iter().enumerate().skip(rest_start) {
-        // Only the very first message replies to the origin.
-        let o = if i == 0 { opts.clone() } else { SendOptions { reply_to: None, thread_id: opts.thread_id.clone() } };
-        last = adapter.send_ext(chat, chunk, &o).await;
-        if !last.success {
-            return last;
+
+    /// Delete bubbles, then hand the final text back so the caller delivers
+    /// it as fresh message(s) via the normal chunked path. Never fails —
+    /// on task panic the text is still returned for delivery.
+    async fn finish(self, text: String) -> String {
+        let _ = self.tx.send(ProgressMsg::Done);
+        drop(self.tx);
+        if let Err(e) = self.task.await {
+            log::warn!("progress bubble task failed: {e}");
         }
+        text
     }
-    last
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,18 +1134,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finalize_stream_chunks_after_edit() {
+    async fn progress_bubble_tracks_tool_lines_and_finishes() {
+        use crate::progress::{tool_end_line, tool_start_line};
+        // Pure composition sanity inside the IO test's world.
+        assert_eq!(tool_start_line("terminal"), "⏳ terminal…");
+        assert_eq!(
+            tool_end_line("terminal", &serde_json::json!({"command": "ls"})),
+            "🔧 terminal: \"{\"command\":\"ls\"}\""
+        );
+        // End-to-end through the bubble task on the stub adapter (no network):
+        // tool events → bubble sends → Done deletes → final text returned.
         let a: Adapter = Arc::new(TelegramAdapter::new(PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")).unwrap());
-        let long = "x".repeat(5000);
-        // Stub edit succeeds → first chunk edited, second sent.
-        let r = finalize_stream(a.as_ref(), "100", &SendOptions::default(), Some("9"), &long, 4096).await;
-        #[cfg(not(feature = "telegram"))]
-        assert!(r.success);
-        #[cfg(feature = "telegram")]
-        assert!(!r.success); // not connected
-        // Empty text with a placeholder is a no-op success.
-        let r = finalize_stream(a.as_ref(), "100", &SendOptions::default(), Some("9"), "", 4096).await;
-        assert!(r.success);
+        let b = ProgressBubble::spawn(a, "100".into(), SendOptions::default(), 4096);
+        b.tx.send(ProgressMsg::ToolStart { id: "1".into(), name: "terminal".into() }).unwrap();
+        b.tx.send(ProgressMsg::ToolEnd { id: "1".into(), args: serde_json::json!({"command": "ls"}) }).unwrap();
+        let out = b.finish("done".into()).await;
+        assert_eq!(out, "done");
     }
 
     #[tokio::test]
