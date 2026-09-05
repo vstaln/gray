@@ -80,6 +80,13 @@ pub trait BasePlatformAdapter: Send + Sync {
     async fn edit_message(&self, _chat: &str, _message_id: &str, _text: &str) -> SendResult {
         SendResult::fail(format!("{} does not support message edits", self.platform()), false)
     }
+
+    /// Delete a previously sent message (progress-bubble cleanup). Default
+    /// fails non-retryable; platforms with a delete API override it.
+    /// Best-effort at call sites — a failed delete never fails the turn.
+    async fn delete_message(&self, _chat: &str, _message_id: &str) -> SendResult {
+        SendResult::fail(format!("{} does not support message deletion", self.platform()), false)
+    }
 }
 
 /// Exponential reconnect backoff: 1s, 2s, 4s … capped at 60s.
