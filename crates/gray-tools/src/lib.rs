@@ -14,6 +14,7 @@ pub mod ledger;
 pub mod ls;
 pub mod read;
 pub mod request_user_input;
+pub mod shell;
 pub mod stats;
 pub mod truncate;
 pub mod write;
@@ -26,7 +27,7 @@ pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
 pub(crate) use gray_core::tool_out::{
-    MAX_BYTES, MAX_LINES, fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path,
+    MAX_BYTES, fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path,
 };
 use serde_json::Value;
 
@@ -166,6 +167,22 @@ static ALIASES: &[(&str, &str)] = &[
     ("data", "content"),
     ("old_text", "oldText"),
     ("new_text", "newText"),
+    ("cmd", "command"),
+    ("script", "command"),
+    ("shell_command", "command"),
+    ("command_line", "command"),
+    ("run_in_background", "background"),
+    ("is_background", "background"),
+    ("detach", "background"),
+    ("bg", "background"),
+    ("timeout_secs", "timeout"),
+    ("timeout_seconds", "timeout"),
+    ("timeoutSec", "timeout"),
+    ("task", "task_id"),
+    ("taskId", "task_id"),
+    ("shell_id", "task_id"),
+    ("duration", "seconds"),
+    ("secs", "seconds"),
 ];
 
 /// Strips trivial framing: markdown fences, then outer prose around `{…}`.

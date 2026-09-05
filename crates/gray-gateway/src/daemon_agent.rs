@@ -60,7 +60,10 @@ impl GatewayRunner {
         for w in gray_plugin::builder::take_builder_warnings() {
             log::warn!(target: "gray_gateway", "{w}");
         }
-        Ok(agent.with_messages(prior))
+        // Bash + sleep self-bound at 600 s; keep the agent timeout above them.
+        Ok(agent
+            .with_tool_timeout(std::time::Duration::from_secs(610))
+            .with_messages(prior))
     }
 
     /// Run one agent turn in session `sid`, forwarding tool events to `sink`

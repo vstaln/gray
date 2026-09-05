@@ -264,12 +264,21 @@ impl GatewayRunner {
         );
 
         // Session reset policy: expired sessions restart fresh via reset().
+        // The abandoned shell session's background tasks die with it.
+        let expired_old = self.store.get(&key);
         if self
             .store
             .reset_if_due(&key, &self.config.reset_policy)
             .is_some()
         {
             log::info!("gateway session {key} expired by reset policy; started fresh");
+            if let Some(old_sid) = expired_old {
+                tokio::spawn(async move {
+                    gray_tools::shell::registry::registry()
+                        .shutdown_session(&old_sid)
+                        .await;
+                });
+            }
         }
 
         // 2. Slash dispatch.
@@ -277,7 +286,15 @@ impl GatewayRunner {
             let text = match cmd {
                 SlashCommand::Reset => {
                     self.cancel_key(&key);
+                    let old_sid = self.store.get(&key);
                     let sid = self.store.reset(&key);
+                    if let Some(old) = old_sid {
+                        tokio::spawn(async move {
+                            gray_tools::shell::registry::registry()
+                                .shutdown_session(&old)
+                                .await;
+                        });
+                    }
                     format!("Session reset ({}).", &sid[..sid.len().min(8)])
                 }
                 SlashCommand::Status => {
