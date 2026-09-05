@@ -355,6 +355,33 @@ impl BasePlatformAdapter for SlackAdapter {
         }
     }
 
+    async fn delete_message(&self, chat: &str, message_id: &str) -> SendResult {
+        #[cfg(feature = "slack")]
+        {
+            use slack_morphism::prelude::*;
+            let Some(client) = self.client.lock().unwrap().clone() else {
+                return SendResult::fail("slack not connected", false);
+            };
+            let Ok((channel, _)) = parse_chat_target(chat) else {
+                return SendResult::fail(format!("invalid slack channel {chat:?}"), false);
+            };
+            let token = SlackApiToken::new(self.bot_token.clone().into());
+            let req = SlackApiChatDeleteRequest::new(
+                SlackChannelId(channel),
+                SlackTs(message_id.to_string()),
+            );
+            return match client.open_session(&token).chat_delete(&req).await {
+                Ok(_) => SendResult::ok(Some(message_id.to_string())),
+                Err(e) => SendResult::fail(format!("slack delete: {e}"), true),
+            };
+        }
+        #[cfg(not(feature = "slack"))]
+        {
+            log::info!("[slack] delete {chat}/{message_id}");
+            SendResult::ok(Some(message_id.to_string()))
+        }
+    }
+
     async fn send(&self, chat: &str, text: &str) -> SendResult {
         self.send_ext(chat, text, &SendOptions::default()).await
     }
