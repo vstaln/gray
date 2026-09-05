@@ -228,3 +228,56 @@ via `ToolContext::default()` (10s `timeout` arg for slow fixtures) and
 writes `ToolOutput` content + `is_error` to
 `tests/snapshots/before/<name>.txt`. Tests record behaviour only — no
 assertions beyond "did not panic". Total runtime < 3 minutes.
+
+## 10. V2 Phase 0 — contract freeze (7 interface decisions, §§1–9 unchanged)
+
+WP0 (§§1–9) is reused as-is; where this section disagrees with §3/§4/§7/§8,
+this section wins for V2. Source:
+`/tmp/opencode/read-eff/src/data/{briefs,contract,audit}.ts`
+(brief 0 = contract freeze; `contract.rs` mirrors brief 0 verbatim).
+Later phases implement this section; the V1 text above stays as the
+before/after baseline.
+
+1. **Fence tag** — V2: `<untrusted-output task="t4">\n…\n</untrusted-output>`
+   (`contract.ts` outputExamples; brief 1B `fence()`). `</untrusted-output`
+   inside the body → `<\/untrusted-output`. Empty body → header alone, no
+   fence. (V1 §7 used `<untrusted_output source="shell">`.)
+2. **Middle-out split** — one `middle_out()` pass, budget 50 KiB / 2,000
+   lines, head 25% + tail 75% (`VIEW_HEAD_FRACTION = 0.25`, brief 0). Cuts
+   fall back to line boundaries; never split a UTF-8 codepoint; control
+   chars 0x00–0x1f except `\t\n\r` dropped; CRLF → LF. (V1 §7: 40% head.)
+3. **Tool surface / names** — four tools, lean scalar schemas
+   (`contract.ts` toolSchemas; "Fewest tools" principle): `bash`
+   (`command`, `timeout` promotion threshold default 30 max 600,
+   `background`, `notify_on` regex string from 3C), `shell_output`
+   (`task_id?` — omitted means **list**, `from_offset=0`,
+   `wait="none"|"output"|"exit"`, `timeout=30`, `max_bytes=16384≤51200`),
+   `shell_kill` (exactly one of `task_id|pid|port`), `sleep`
+   (`seconds` 1–600, `reason?`). No separate `list_tasks`; no union types.
+   (V1 §3: `run_in_background`/`cwd`/`notify_on` object, `kill_shell` +
+   `signal`, separate `list_tasks`, `wait="now"`.)
+4. **gray-core principle** — no gray-core changes required (`contract.ts`
+   designPrinciples): the registry is a process-wide, session-scoped static
+   in gray-tools; the REPL subscribes to the wake broadcast directly. If a
+   later refactor puts it on `ToolContext`, only the accessor changes.
+5. **Kill policy** — never signal what we didn't create: only `-pgid` where
+   pgid == our setsid child pid, after a `/proc` start-time check against
+   pid reuse (`still_same_process`; macOS best-effort). Escalation
+   `term_then_kill`: SIGTERM → poll 100 ms up to 2 s grace → SIGKILL.
+   Foreign pid/port → `ask_allow_once` prompt, fail-closed. Timeout
+   **promotes** to background (never kills); only `ctx.cancel` (user Ctrl-C)
+   may kill a foreground command.
+6. **`is_error` scope** — facts are data, not errors: `is_error=true` ONLY
+   for harness failures (spawn error, guard deny, bad args, unknown task).
+   Any exit status, signal death, timeout promotion, or benign exit
+   (`grep` 1, `diff` 1, masked `cmd | tail` pipefail note) returns
+   `ToolOutput::ok` with the verdict in the header. (V1 §4 errored on
+   non-benign non-zero, signal, and foreground timeout.)
+7. **Log path** — always on, from the first chunk:
+   `~/.gray/shell/<session_id or "nosession">/t{n}.log` (brief 1D; every
+   spawn registers a task, foreground included). Truncation is a view; the
+   model greps the log instead of re-running. GC: exited tasks kept 30 min
+   or 20 per session (`EXITED_TASK_TTL`/`EXITED_TASK_KEEP`); logs never
+   deleted by GC — a startup sweep deletes logs older than 7 days (briefs
+   2A/2E). (V1 §8: `$GRAY_HOME/logs/shell/…`, written only when > 4 KiB /
+   truncated / failed, 200-file / 500 MB sweep.)
