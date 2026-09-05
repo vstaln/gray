@@ -3,6 +3,7 @@
 pub mod args;
 pub mod hygiene;
 pub mod image;
+pub mod notebook;
 pub mod notices;
 pub mod stream;
 pub mod window;
