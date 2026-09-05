@@ -225,7 +225,7 @@ async fn zoo_golden_agents_md_round_trips_exact() {
     let zoo = Zoo::build().unwrap();
     let out = zoo.read("AGENTS.md", None, None).await;
     assert!(!out.is_error);
-    assert_golden(&out.content, "# Agents\n\nRead this first");
+    assert_golden(&out.content, "     1\t# Agents\n     2\t\n     3\tRead this first");
 }
 
 #[tokio::test]
@@ -233,7 +233,8 @@ async fn zoo_golden_long_txt_line_cut_exact() {
     let zoo = Zoo::build().unwrap();
     let out = zoo.read("long.txt", None, None).await;
     assert!(!out.is_error);
-    let shown: Vec<String> = (1..=2000).map(|i| format!("line {i:04}")).collect();
+    // T1.2: every shown line carries its absolute cat -n prefix.
+    let shown: Vec<String> = (1..=2000).map(|i| format!("{:>6}\tline {i:04}", i)).collect();
     let expected = format!(
         "{}\n\n[Showing lines 1-2000 of 3000. Use offset=2001 to continue.]",
         shown.join("\n")
