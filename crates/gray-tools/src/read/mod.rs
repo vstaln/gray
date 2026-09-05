@@ -109,6 +109,11 @@ impl Tool for ReadTool {
             Ok(d) => d,
             Err(e) => return fail(format!("read failed for {}: {e}", full.display())),
         };
+        // T1.3: empty files name the fact + recovery (is_error=false);
+        // never return ok("").
+        if data.is_empty() {
+            return ToolOutput::ok(notices::empty(&display));
+        }
         // T1.4 hygiene: BOM strip → magic-byte/NUL sniff → lossy decode →
         // CRLF normalize, before any line counting. Binary notes are facts
         // (is_error=false), not failures.
@@ -118,26 +123,39 @@ impl Tool for ReadTool {
         };
 
         let total_lines = text.lines().count();
+        // T1.5: negative offset requests the tail of |offset| lines.
+        let tail_n = offset.filter(|o| *o < 0).map(|o| o.unsigned_abs());
         let start = offset.unwrap_or(1).max(1).saturating_sub(1) as usize;
-        if start > 0 && start >= total_lines {
-            return fail(format!(
-                "offset {start} is past the end of {} ({} lines)",
-                full.display(),
-                total_lines
+        if tail_n.is_none() && start > 0 && start >= total_lines {
+            // T1.3: past-EOF is a fact (is_error=false) with a tail retry;
+            // `start + 1` recovers the requested 1-indexed offset.
+            return ToolOutput::ok(notices::offset_past_eof(
+                &display,
+                start as u64 + 1,
+                total_lines,
             ));
         }
 
         // Apply offset/limit windowing first (pi: user limit honored before truncation).
         let limit_opt = limit.map(|v| v as usize);
-        let selected: Vec<&str> = match limit_opt {
-            Some(lim) => text.lines().skip(start).take(lim).collect(),
-            None => text.lines().skip(start).collect(),
+        let selected: Vec<&str> = match tail_n {
+            // T1.5: bounded ring buffer — never holds more than |offset| lines.
+            Some(n) => tail::last_n(text.lines(), n).into_iter().collect(),
+            None => match limit_opt {
+                Some(lim) => text.lines().skip(start).take(lim).collect(),
+                None => text.lines().skip(start).collect(),
+            },
+        };
+        // T1.5: tail counts back from the total so prefixes stay absolute.
+        let first_shown = match tail_n {
+            Some(_) => total_lines.saturating_sub(selected.len()) + 1,
+            None => start + 1,
         };
         // T1.2: cat -n prefixes with absolute numbers, before the caps so
         // truncation math (output_lines, next_offset) is unchanged.
-        let selected_content = window::prefix_lines(start + 1, &selected).join("\n");
+        let selected_content = window::prefix_lines(first_shown, &selected).join("\n");
         let truncation = truncate_head(&selected_content);
-        let start_display = start + 1; // 1-indexed for messages
+        let start_display = first_shown; // 1-indexed for messages
 
         let output = if truncation.first_line_exceeds_limit {
             let first_line = selected.first().copied().unwrap_or("");
@@ -155,26 +173,22 @@ impl Tool for ReadTool {
             let end_display = start_display + truncation.output_lines.saturating_sub(1);
             let next_offset = end_display + 1;
             let hint = if truncation.truncated_by == Some(crate::truncate::TruncatedBy::Lines) {
-                format!(
-                    "[Showing lines {}-{} of {}. Use offset={} to continue.]",
-                    start_display, end_display, total_lines, next_offset
-                )
+                // T1.3: contract wording, identical numbers (next = last + 1).
+                notices::line_cap(start_display, end_display, total_lines)
             } else {
-                format!(
-                    "[Showing lines {}-{} of {} ({} limit). Use offset={} to continue.]",
-                    start_display,
-                    end_display,
-                    total_lines,
-                    format_size(DEFAULT_MAX_BYTES),
-                    next_offset
-                )
+                // T1.3: contract wording. `next_offset` is the first unshown
+                // line (truncate_head never splits a line), matching byte_cap's
+                // "that line was not shown" contract.
+                notices::byte_cap(start_display, end_display, next_offset)
             };
             if truncation.content.is_empty() {
                 hint
             } else {
                 format!("{}\n\n{}", truncation.content, hint)
             }
-        } else if let Some(lim) = limit_opt {
+        // T1.5: in tail mode `limit` is ignored (noted below), so the
+        // head-window "more lines" hint must not fire here.
+        } else if tail_n.is_none() && let Some(lim) = limit_opt {
             if start + lim < total_lines {
                 let remaining = total_lines - (start + lim);
                 let next_offset = start + lim + 1;
@@ -194,6 +208,21 @@ impl Tool for ReadTool {
             }
         } else {
             truncation.content
+        };
+        // T1.5 tail notes (skipped for empty files — T1.3 owns that note).
+        let output = if tail_n.is_some() && total_lines > 0 {
+            let mut notes = vec![tail::tail_note(selected.len() as u64, total_lines)];
+            if let Some(lim) = limit {
+                notes.push(tail::limit_ignored_note(lim));
+            }
+            let notes = notes.join("\n");
+            if output.is_empty() {
+                notes
+            } else {
+                format!("{output}\n\n{notes}")
+            }
+        } else {
+            output
         };
 
         // T0.2 meter: no-op unless GRAY_TOOL_STATS=1, so zero behavior change.

@@ -210,14 +210,19 @@ async fn zoo_golden_harness_fails_loudly_on_drift() {
     assert_golden("a\nb\n", "a\nc\n");
 }
 
-// Current behavior pins (T1.1/T1.3 update these deliberately with a reason each):
-// empty.txt returns silence today; T1.3 turns it into an is_error=false note.
+// INT-C wires T1.3: empty.txt returns the is_error=false empty note (absolute
+// path, so assert shape not bytes).
 #[tokio::test]
 async fn zoo_golden_empty_file_matches_current_output() {
     let zoo = Zoo::build().unwrap();
     let out = zoo.read("empty.txt", None, None).await;
     assert!(!out.is_error);
-    assert_golden(&out.content, "");
+    assert!(out.content.starts_with("[read: "), "{}", out.content);
+    assert!(
+        out.content.ends_with("empty.txt is empty (0 bytes)]"),
+        "{}",
+        out.content
+    );
 }
 
 #[tokio::test]
@@ -234,9 +239,10 @@ async fn zoo_golden_long_txt_line_cut_exact() {
     let out = zoo.read("long.txt", None, None).await;
     assert!(!out.is_error);
     // T1.2: every shown line carries its absolute cat -n prefix.
+    // INT-C wires T1.3: line-cap hint uses the notices::line_cap contract wording.
     let shown: Vec<String> = (1..=2000).map(|i| format!("{:>6}\tline {i:04}", i)).collect();
     let expected = format!(
-        "{}\n\n[Showing lines 1-2000 of 3000. Use offset=2001 to continue.]",
+        "{}\n\n[read: showing lines 1-2000 of 3000. Continue with offset=2001.]",
         shown.join("\n")
     );
     assert_golden(&out.content, &expected);
@@ -245,7 +251,7 @@ async fn zoo_golden_long_txt_line_cut_exact() {
 #[tokio::test]
 async fn zoo_smoke_every_small_fixture_reads() {
     let zoo = Zoo::build().unwrap();
-    // real.png is invalid UTF-8 today so read fails; T1.4/T5.1 turns this into an ok-note.
+    // INT-C wires T1.4: real.png returns an is_error=false mime note, not a failure.
     for name in [
         "long.txt",
         "lockfile.txt",
@@ -264,5 +270,6 @@ async fn zoo_smoke_every_small_fixture_reads() {
         assert!(!out.content.is_empty() || name == "empty.txt");
     }
     let miss = zoo.read("real.png", None, None).await;
-    assert!(miss.is_error, "real.png fails as non-UTF8 until T1.4");
+    assert!(!miss.is_error, "real.png returns a note today: {}", miss.content);
+    assert!(miss.content.contains("is image/png"), "{}", miss.content);
 }

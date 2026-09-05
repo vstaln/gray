@@ -98,6 +98,7 @@ pub fn check_name(literal: &Path, canonical: Option<&Path>, display: &str) -> Re
 
 /// Outcome of [`check_metadata`] for a path that passed [`check_name`].
 /// `Directory` is NOT an error here — the caller renders the T1.3 note.
+#[derive(Debug)]
 pub enum MetadataDecision {
     RegularFile,
     Directory,

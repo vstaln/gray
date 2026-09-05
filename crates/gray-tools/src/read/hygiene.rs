@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn boundaries_never_split_a_codepoint() {
-        let s = "a\xF0\x9F\x98\x80b"; // a + 😀 (4 bytes) + b
+        let s = "a\u{1F600}b"; // a + 😀 (4 bytes) + b
         for i in 0..=s.len() {
             let f = floor_char_boundary(s, i);
             let c = ceil_char_boundary(s, i);
