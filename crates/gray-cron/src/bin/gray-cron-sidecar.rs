@@ -41,7 +41,7 @@ fn manifest() -> Value {
         "tools": [
             {"name": "cron.add", "description": "Schedule a prompt to re-fire: 'in 10m', 'every 30m', cron '0 9 * * *', or '2026-02-03T14:00'", "parameters": {"type": "object", "properties": {"schedule": {"type": "string"}, "prompt": {"type": "string"}, "name": {"type": "string"}}, "required": ["schedule", "prompt"]}, "snippet": "cron.add <schedule> <prompt>"},
             {"name": "cron.list", "description": "List scheduled jobs", "parameters": {"type": "object"}, "snippet": "cron.list"},
-            {"name": "cron.remove", "description": "Remove a job by id or name", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}}, "required": ["id"]}, "snippet": "cron.remove <id>"}
+            {"name": "cron.remove", "description": "Remove a job by id or name", "parameters": {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}, "snippet": "cron.remove <id>"}
         ],
         "commands": [],
         "hooks": []
@@ -95,14 +95,9 @@ fn tool_call(name: &str, args: &Value) -> (String, bool) {
                 .and_then(|n| n.as_str())
                 .filter(|n| !n.trim().is_empty())
                 .map(|n| n.to_string())
-                .unwrap_or_else(|| {
-                    format!("job-{}", prompt.chars().take(12).collect::<String>())
-                });
-            match gray_cron::create_job(
-                job_name.clone(),
-                schedule.to_string(),
-                prompt.to_string(),
-            ) {
+                .unwrap_or_else(|| format!("job-{}", prompt.chars().take(12).collect::<String>()));
+            match gray_cron::create_job(job_name.clone(), schedule.to_string(), prompt.to_string())
+            {
                 Ok(job) => {
                     let next = job
                         .next_run
@@ -228,14 +223,13 @@ async fn tick(stdout: SharedStdout, pending: Pending, cwd: String) {
     }
 }
 
-async fn fire_one(
-    stdout: &SharedStdout,
-    pending: &Pending,
-    cwd: &str,
-    job: gray_cron::CronJob,
-) {
+async fn fire_one(stdout: &SharedStdout, pending: &Pending, cwd: &str, job: gray_cron::CronJob) {
     eprintln!("cron sidecar firing '{}' ({})", job.name, job.id);
-    let id = format!("cron-run-{}-{}", job.id, chrono::Utc::now().timestamp_millis());
+    let id = format!(
+        "cron-run-{}-{}",
+        job.id,
+        chrono::Utc::now().timestamp_millis()
+    );
     let (tx, rx) = oneshot::channel();
     pending.lock().unwrap().insert(id.clone(), tx);
     write_line(
@@ -261,7 +255,11 @@ async fn fire_one(
             format!("cron '{}' failed: {}", job.name, detail)
         }
     };
-    let say_id = format!("cron-say-{}-{}", job.id, chrono::Utc::now().timestamp_millis());
+    let say_id = format!(
+        "cron-say-{}-{}",
+        job.id,
+        chrono::Utc::now().timestamp_millis()
+    );
     write_line(
         stdout,
         &json!({"id": say_id, "method": "host/say", "params": {"text": format!("⏰ {} ({})\n\n{text}", job.name, job.id)}}),
@@ -315,10 +313,7 @@ async fn main() {
                     continue;
                 };
                 let params = v.get("params").cloned().unwrap_or(Value::Null);
-                let name = params
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or("");
+                let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                 let args = params.get("args").cloned().unwrap_or(Value::Null);
                 let (content, is_error) = tool_call(name, &args);
                 let mut result = json!({"content": content});
@@ -341,8 +336,11 @@ async fn main() {
                             .collect()
                     })
                     .unwrap_or_default();
-                write_line(&stdout, &json!({"id": n, "result": {"text": command_run(&argv)}}))
-                    .await;
+                write_line(
+                    &stdout,
+                    &json!({"id": n, "result": {"text": command_run(&argv)}}),
+                )
+                .await;
             }
             _ => {} // event/notify + unknowns: no id, no reply
         }
