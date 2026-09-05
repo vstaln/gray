@@ -13,7 +13,10 @@ while IFS= read -r line; do
       ;;
     *tool/before*)
       id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')
-      printf '{"id":%s,"result":{"decision":"allow"}}\n' "$id"
+      case "$line" in
+        *blocked*) printf '{"id":%s,"result":{"decision":"deny","reason":"BLOCKED-BY-E2E"}}\n' "$id" ;;
+        *) printf '{"id":%s,"result":{"decision":"allow"}}\n' "$id" ;;
+      esac
       ;;
     *command/run*)
       id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')

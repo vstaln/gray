@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use gray_core::agent::ToolOutput;
+use gray_core::agent::{PluginCommand, PluginHooks};
 use gray_core::event::Usage;
 use gray_core::message::{Message, ToolDef};
 
@@ -95,35 +96,10 @@ impl Manifest {
     }
 }
 
-/// Verdict of a `tool/before` hook: allow the call, deny it with a reason
-/// (surfaced as an `is_error` tool result), or rewrite its args.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ToolBefore {
-    Allow,
-    Deny { reason: String },
-    Modify { args: Value },
-}
-
-impl ToolBefore {
-    /// Parse a `tool/before` result. Lenient: unknown shapes fail open
-    /// (pre-v1 behavior) so a confused plugin can't wedge the agent loop.
-    pub fn from_result(v: &Value, args: &Value) -> Self {
-        match v.get("decision").and_then(|d| d.as_str()) {
-            Some("deny") => Self::Deny {
-                reason: v
-                    .get("reason")
-                    .and_then(|r| r.as_str())
-                    .filter(|r| !r.is_empty())
-                    .unwrap_or("denied by plugin")
-                    .to_string(),
-            },
-            Some("modify") => Self::Modify {
-                args: v.get("args").cloned().unwrap_or_else(|| args.clone()),
-            },
-            _ => Self::Allow,
-        }
-    }
-}
+/// Canonical `tool/before` verdict: single source of truth lives in
+/// [`gray_core::agent`] (core owns it so the agent loop never depends on
+/// this crate); re-exported here so sidecar call sites keep one import.
+pub use gray_core::agent::ToolBefore;
 
 #[async_trait]
 pub trait Plugin: Send + Sync {
@@ -163,4 +139,48 @@ pub fn merge_manifests(manifests: Vec<Manifest>) -> HashMap<String, String> {
         }
     }
     owner
+}
+
+/// Thin bridge from any [`Plugin`] (notably the sidecar transport) to the
+/// host-side [`PluginHooks`] view the agent loop and REPL consume.
+/// Exists because the two signatures differ: `Plugin::prompt_context`
+/// takes the cwd per call while `PluginHooks::prompt_context` takes none,
+/// so the adapter pins the boot cwd once. `tool_before` needs no mapping
+/// (one canonical [`ToolBefore`]); `commands` projects the manifest's
+/// names (the wire carries no per-command descriptions).
+pub struct PluginHookAdapter {
+    plugin: Arc<dyn Plugin>,
+    cwd: String,
+}
+
+impl PluginHookAdapter {
+    pub fn new(plugin: Arc<dyn Plugin>, cwd: impl Into<String>) -> Self {
+        Self { plugin, cwd: cwd.into() }
+    }
+
+    /// One adapter per plugin, in boot order (hook order = plugin order).
+    pub fn for_plugins(plugins: &[Arc<dyn Plugin>], cwd: &str) -> Vec<Arc<dyn PluginHooks>> {
+        plugins.iter().map(|p| Arc::new(Self::new(p.clone(), cwd)) as Arc<dyn PluginHooks>).collect()
+    }
+}
+
+#[async_trait]
+impl PluginHooks for PluginHookAdapter {
+    async fn prompt_context(&self) -> Option<String> {
+        self.plugin.prompt_context(&self.cwd).await
+    }
+    async fn tool_before(&self, name: &str, args: &Value) -> ToolBefore {
+        self.plugin.tool_before(name, args).await
+    }
+    fn commands(&self) -> Vec<PluginCommand> {
+        self.plugin
+            .manifest()
+            .commands
+            .into_iter()
+            .map(|name| PluginCommand { name, description: String::new() })
+            .collect()
+    }
+    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
+        self.plugin.run_command(name, argv).await.filter(|t| !t.is_empty())
+    }
 }
