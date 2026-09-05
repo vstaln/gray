@@ -1524,6 +1524,7 @@ dependencies = [
  "crossterm",
  "fs2",
  "futures",
+ "gray-acp",
  "gray-core",
  "gray-gateway",
  "gray-markdown",
