@@ -60,7 +60,7 @@ pub(crate) struct FrozenState {
 ///
 /// Examples:
 /// - "" → 0
-
+///
 /// Incremental markdown renderer that efficiently handles streaming input.
 ///
 /// Maintains frozen (stable) content and only re-renders the unfrozen tail,
@@ -574,7 +574,10 @@ mod streaming_torn_tests {
         // latex passthrough: `\alpha + \beta` -> `α + β`, delimiters hidden
         let joined = lines_text(view.lines).join("\n");
         assert!(joined.contains("α + β"), "got: {joined:?}");
-        assert!(!joined.contains("\\("), "delimiters must be hidden: {joined:?}");
+        assert!(
+            !joined.contains("\\("),
+            "delimiters must be hidden: {joined:?}"
+        );
     }
 
     #[test]
@@ -596,16 +599,25 @@ mod streaming_torn_tests {
         assert_eq!(lines_text(view.lines), lines_text(&expected.lines));
 
         // Parser-produced link-text hyperlink must cover exactly "click" (4 cells)
-        let line0: String = view.lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        let line0: String = view.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
         let hit = view
             .hyperlinks
             .iter()
-            .find(|h| h.url == "https://example.com" && {
-                let slice: String = line0.chars().skip(h.column_range.start).take(h.column_range.len()).collect();
-                slice == "click"
+            .find(|h| {
+                h.url == "https://example.com" && {
+                    let slice: String = line0
+                        .chars()
+                        .skip(h.column_range.start)
+                        .take(h.column_range.len())
+                        .collect();
+                    slice == "click"
+                }
             })
             .expect("hyperlink over link text should survive torn chunk");
         assert_eq!(hit.column_range.len(), 5);
     }
 }
-

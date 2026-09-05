@@ -4,6 +4,7 @@
 //! stills for video. Audio has no model-agnostic wire path on our
 //! OpenAI-compatible providers — reported loudly, never silently dropped.
 
+#[cfg(feature = "clipboard")]
 use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
@@ -33,8 +34,12 @@ pub fn attachment_kind(path: &Path) -> AttachmentKind {
         Some("png") | Some("jpg") | Some("jpeg") | Some("webp") | Some("gif") | Some("bmp")
         | Some("heic") | Some("heif") => AttachmentKind::Image,
         Some("pdf") => AttachmentKind::Pdf,
-        Some("mp4") | Some("mov") | Some("mkv") | Some("webm") | Some("m4v") => AttachmentKind::Video,
-        Some("mp3") | Some("wav") | Some("m4a") | Some("ogg") | Some("flac") => AttachmentKind::Audio,
+        Some("mp4") | Some("mov") | Some("mkv") | Some("webm") | Some("m4v") => {
+            AttachmentKind::Video
+        }
+        Some("mp3") | Some("wav") | Some("m4a") | Some("ogg") | Some("flac") => {
+            AttachmentKind::Audio
+        }
         _ => AttachmentKind::Unsupported,
     }
 }
@@ -62,6 +67,10 @@ impl std::fmt::Display for MediaError {
 /// at 2000px, JPEG stays JPEG, everything else becomes PNG, base64 under
 /// 5MB (halve and retry up to 3 times, then fail loudly like SizeError).
 /// Returns `(media_type, bytes)`.
+///
+/// Only compiled with the `clipboard` feature (needs the `image` crate);
+/// without it image attachments degrade to a loud skip at the call site.
+#[cfg(feature = "clipboard")]
 pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaError> {
     use image::ImageFormat;
     let format = image::guess_format(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
@@ -69,10 +78,13 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
         ImageFormat::Jpeg => ImageFormat::Jpeg,
         ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP => ImageFormat::Png,
         // bmp/heic/etc: not in our decoder set — loud, like opencode DecodeError.
-        other => return Err(MediaError::Decode(format!("{other:?} decoding not enabled"))),
+        other => {
+            return Err(MediaError::Decode(format!(
+                "{other:?} decoding not enabled"
+            )));
+        }
     };
-    let mut img =
-        image::load_from_memory(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
+    let mut img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
     for _ in 0..4 {
         if img.width().max(img.height()) > MAX_IMAGE_SIDE {
             img = img.resize(
@@ -98,12 +110,20 @@ pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaErr
     }
     Err(MediaError::TooBig(format!(
         "{} bytes",
-        base64_len(
-            &img.to_rgba8().into_raw()
-        )
+        base64_len(&img.to_rgba8().into_raw())
     )))
 }
 
+/// Without the `clipboard` feature there is no image decoder: callers
+/// report this loudly (never silently dropped).
+#[cfg(not(feature = "clipboard"))]
+pub fn normalize_image_bytes(_bytes: &[u8]) -> Result<(String, Vec<u8>), MediaError> {
+    Err(MediaError::Unsupported(
+        "image attachments need gray built with --features clipboard".to_string(),
+    ))
+}
+
+#[cfg(feature = "clipboard")]
 fn base64_len(raw: &[u8]) -> usize {
     raw.len().div_ceil(3) * 4
 }
@@ -187,10 +207,14 @@ mod tests {
             attachment_kind(Path::new("a.zip")),
             AttachmentKind::Unsupported
         );
-        assert_eq!(attachment_kind(Path::new("noext")), AttachmentKind::Unsupported);
+        assert_eq!(
+            attachment_kind(Path::new("noext")),
+            AttachmentKind::Unsupported
+        );
     }
 
     #[test]
+    #[cfg(feature = "clipboard")]
     fn normalize_caps_long_side() {
         let img = image::RgbaImage::from_pixel(3000, 100, image::Rgba([9, 9, 9, 255]));
         let mut buf = Vec::new();
@@ -204,10 +228,20 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "clipboard")]
     fn normalize_rejects_garbage_loudly() {
         assert!(matches!(
             normalize_image_bytes(b"not an image"),
             Err(MediaError::Decode(_))
+        ));
+    }
+
+    #[test]
+    #[cfg(not(feature = "clipboard"))]
+    fn normalize_without_feature_is_loud_unsupported() {
+        assert!(matches!(
+            normalize_image_bytes(b"not an image"),
+            Err(MediaError::Unsupported(_))
         ));
     }
 
@@ -218,5 +252,4 @@ mod tests {
             Err(MediaError::Extract(_))
         ));
     }
-
 }

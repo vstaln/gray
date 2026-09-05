@@ -11,27 +11,30 @@ use gray_plugin::{Plugin, PluginHookAdapter, ToolBefore};
 
 #[tokio::test]
 async fn sidecar_manifest_and_tool_call() {
-    let p = SidecarPlugin::spawn(vec!["testdata/echo_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/echo_plugin.sh".into()])
+        .await
+        .unwrap();
     assert_eq!(p.manifest().name, "echo");
-    let out = p.tools()[0].execute(&ToolContext::default(), serde_json::json!({})).await;
+    let out = p.tools()[0]
+        .execute(&ToolContext::default(), serde_json::json!({}))
+        .await;
     assert_eq!(out.content, "hi");
     assert!(!out.is_error);
 }
 
 #[tokio::test]
 async fn concurrent_tool_calls_resolve_by_id_not_order() {
-    let p = SidecarPlugin::spawn(vec!["testdata/reorder_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/reorder_plugin.sh".into()])
+        .await
+        .unwrap();
     let tool = p.tools()[0].clone();
     let ctx = ToolContext::default();
-    let (a, b) = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        async {
-            tokio::join!(
-                tool.execute(&ctx, serde_json::json!({"n": "1"})),
-                tool.execute(&ctx, serde_json::json!({"n": "2"})),
-            )
-        },
-    )
+    let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        tokio::join!(
+            tool.execute(&ctx, serde_json::json!({"n": "1"})),
+            tool.execute(&ctx, serde_json::json!({"n": "2"})),
+        )
+    })
     .await
     .expect("concurrent tool/calls hung — reader task must route replies by id");
     assert!(!a.is_error && !b.is_error, "a={a:?} b={b:?}");
@@ -41,16 +44,24 @@ async fn concurrent_tool_calls_resolve_by_id_not_order() {
 
 #[tokio::test]
 async fn prompt_context_returns_claimed_text() {
-    let p = SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()])
+        .await
+        .unwrap();
     assert_eq!(p.prompt_context("/tmp").await.as_deref(), Some("CTX"));
 }
 
 #[tokio::test]
 async fn tool_before_allow_and_command_joins_argv() {
-    let p = SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()]).await.unwrap();
-    assert_eq!(p.tool_before("shout", &serde_json::json!({})).await, ToolBefore::Allow);
+    let p = SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()])
+        .await
+        .unwrap();
     assert_eq!(
-        p.run_command("/echo", vec!["hi".into(), "there".into()]).await,
+        p.tool_before("shout", &serde_json::json!({})).await,
+        ToolBefore::Allow
+    );
+    assert_eq!(
+        p.run_command("/echo", vec!["hi".into(), "there".into()])
+            .await,
         Some(CommandOutcome::Say("hi there".into()))
     );
     // Unclaimed command on a claiming plugin: no RPC, None.
@@ -61,10 +72,15 @@ async fn tool_before_allow_and_command_joins_argv() {
 async fn unclaimed_hooks_fail_open_without_rpc() {
     // hang fixture never replies: any request would hit the 30s timeout, so
     // fast defaults prove the hooks/commands gate sends nothing.
-    let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/hang_plugin.sh".into()])
+        .await
+        .unwrap();
     let t = std::time::Instant::now();
     assert_eq!(p.prompt_context("/tmp").await, None);
-    assert_eq!(p.tool_before("x", &serde_json::json!({})).await, ToolBefore::Allow);
+    assert_eq!(
+        p.tool_before("x", &serde_json::json!({})).await,
+        ToolBefore::Allow
+    );
     assert_eq!(p.run_command("/echo", vec!["hi".into()]).await, None);
     assert!(t.elapsed() < std::time::Duration::from_secs(5));
 }
@@ -73,7 +89,10 @@ async fn unclaimed_hooks_fail_open_without_rpc() {
 fn tool_before_parses_deny_modify_and_unknown() {
     let args = serde_json::json!({"path": "/x"});
     assert_eq!(
-        ToolBefore::from_result(&serde_json::json!({"decision": "deny", "reason": "no"}), &args),
+        ToolBefore::from_result(
+            &serde_json::json!({"decision": "deny", "reason": "no"}),
+            &args
+        ),
         ToolBefore::Deny("no".into())
     );
     assert_eq!(
@@ -84,7 +103,10 @@ fn tool_before_parses_deny_modify_and_unknown() {
         ToolBefore::Modify(serde_json::json!({"path": "/y"}))
     );
     // Unknown shapes fail open (pre-v1 behavior).
-    assert_eq!(ToolBefore::from_result(&serde_json::json!({}), &args), ToolBefore::Allow);
+    assert_eq!(
+        ToolBefore::from_result(&serde_json::json!({}), &args),
+        ToolBefore::Allow
+    );
     assert_eq!(
         ToolBefore::from_result(&serde_json::json!({"decision": "bogus"}), &args),
         ToolBefore::Allow
@@ -94,18 +116,27 @@ fn tool_before_parses_deny_modify_and_unknown() {
 #[tokio::test]
 async fn echo_reference_plugin_manifest_and_command_round_trip() {
     // Reference plugin ships with the repo; boot the real script, not a fixture.
-    let p = SidecarPlugin::spawn(vec!["../../plugins/echo/echo.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["../../plugins/echo/echo.sh".into()])
+        .await
+        .unwrap();
     let m = p.manifest();
     assert_eq!(m.name, "echo");
     assert_eq!(m.commands, vec!["/echo".to_string()]);
     assert_eq!(m.tools.len(), 1);
     assert_eq!(m.tools[0].name, "echo");
-    assert!(m.tools[0].parameters.get("properties").is_some(), "{:?}", m.tools[0]);
-    let out = p.tools()[0].execute(&ToolContext::default(), serde_json::json!({"text": "hi"})).await;
+    assert!(
+        m.tools[0].parameters.get("properties").is_some(),
+        "{:?}",
+        m.tools[0]
+    );
+    let out = p.tools()[0]
+        .execute(&ToolContext::default(), serde_json::json!({"text": "hi"}))
+        .await;
     assert!(!out.is_error, "{out:?}");
     assert_eq!(out.content, "hi", "{out:?}");
     assert_eq!(
-        p.run_command("/echo", vec!["hello".into(), "world".into()]).await,
+        p.run_command("/echo", vec!["hello".into(), "world".into()])
+            .await,
         Some(CommandOutcome::Say("hello world".into()))
     );
 }
@@ -129,8 +160,16 @@ impl ScriptedProvider {
 #[async_trait::async_trait]
 impl Provider for ScriptedProvider {
     fn stream(&self, req: ChatRequest) -> ProviderStream {
-        self.seen_systems.lock().expect("seen lock").push(req.system.clone());
-        let script = self.scripted.lock().expect("script lock").pop_front().unwrap_or_default();
+        self.seen_systems
+            .lock()
+            .expect("seen lock")
+            .push(req.system.clone());
+        let script = self
+            .scripted
+            .lock()
+            .expect("script lock")
+            .pop_front()
+            .unwrap_or_default();
         Box::pin(futures::stream::iter(script.into_iter().map(Ok)))
     }
 }
@@ -149,15 +188,21 @@ impl ToolExecutor for RecordingExecutor {
         name: &str,
         _args: serde_json::Value,
     ) -> futures::future::BoxFuture<'static, ToolOutput> {
-        self.calls.lock().expect("calls lock").push(name.to_string());
+        self.calls
+            .lock()
+            .expect("calls lock")
+            .push(name.to_string());
         let out = self.output.clone();
         Box::pin(async move { out })
     }
 }
 
 async fn e2e_hooks(cwd: &str) -> Vec<Arc<dyn PluginHooks>> {
-    let p: Arc<dyn Plugin> =
-        Arc::new(SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()]).await.unwrap());
+    let p: Arc<dyn Plugin> = Arc::new(
+        SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()])
+            .await
+            .unwrap(),
+    );
     PluginHookAdapter::for_plugins(std::slice::from_ref(&p), cwd)
 }
 
@@ -182,12 +227,21 @@ async fn e2e_sidecar_prompt_context_lands_in_system() {
     )
     .with_system("BASE-SYSTEM")
     .with_hooks(hooks);
-    agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
     let seen = seen.lock().expect("seen lock");
     assert_eq!(seen.len(), 1, "one turn → one request, got {seen:?}");
     let system = seen[0].as_deref().unwrap_or("");
-    assert!(system.contains("BASE-SYSTEM"), "base prompt preserved, got: {system}");
-    assert!(system.contains("CTX"), "sidecar prompt/context text present, got: {system}");
+    assert!(
+        system.contains("BASE-SYSTEM"),
+        "base prompt preserved, got: {system}"
+    );
+    assert!(
+        system.contains("CTX"),
+        "sidecar prompt/context text present, got: {system}"
+    );
 }
 
 #[tokio::test]
@@ -208,26 +262,51 @@ async fn e2e_sidecar_tool_before_deny_blocks_executor() {
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut agent = Agent::new(
         Box::new(provider),
-        Box::new(RecordingExecutor { calls: calls.clone(), output: ToolOutput::ok("must-not-run") }),
+        Box::new(RecordingExecutor {
+            calls: calls.clone(),
+            output: ToolOutput::ok("must-not-run"),
+        }),
     )
-    .with_tools(vec![ToolDef::new("blocked", "deny me", serde_json::json!({}))])
+    .with_tools(vec![ToolDef::new(
+        "blocked",
+        "deny me",
+        serde_json::json!({}),
+    )])
     .with_hooks(hooks);
-    agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
-    assert!(calls.lock().expect("calls lock").is_empty(), "denied tool must never execute");
+    agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .unwrap();
+    assert!(
+        calls.lock().expect("calls lock").is_empty(),
+        "denied tool must never execute"
+    );
     let denied = agent.messages().iter().flat_map(|m| m.content.iter()).any(|b| {
         matches!(b, ContentBlock::ToolResult { content, is_error: true, .. } if content.contains("BLOCKED-BY-E2E"))
     });
-    assert!(denied, "deny reason must surface as an is_error tool result");
+    assert!(
+        denied,
+        "deny reason must surface as an is_error tool result"
+    );
 }
 
 #[tokio::test]
 async fn e2e_sidecar_command_run_routes_echo() {
     let hooks = e2e_hooks("/tmp").await;
     // Same source the REPL reads via `agent.hooks()` for `/help` + routing.
-    let names: Vec<String> = hooks.iter().flat_map(|h| h.commands()).map(|c| c.name).collect();
-    assert!(names.contains(&"/echo".to_string()), "sidecar claims /echo, got {names:?}");
+    let names: Vec<String> = hooks
+        .iter()
+        .flat_map(|h| h.commands())
+        .map(|c| c.name)
+        .collect();
+    assert!(
+        names.contains(&"/echo".to_string()),
+        "sidecar claims /echo, got {names:?}"
+    );
     assert_eq!(
-        hooks[0].run_command("/echo", vec!["hello".into(), "world".into()]).await,
+        hooks[0]
+            .run_command("/echo", vec!["hello".into(), "world".into()])
+            .await,
         Some(CommandOutcome::Say("hello world".into()))
     );
     // Empty-text replies filter to None so the REPL never prints a blank line.
@@ -236,7 +315,9 @@ async fn e2e_sidecar_command_run_routes_echo() {
 
 #[tokio::test]
 async fn command_run_prompt_variant() {
-    let p = SidecarPlugin::spawn(vec!["testdata/prompt_command_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/prompt_command_plugin.sh".into()])
+        .await
+        .unwrap();
     assert_eq!(
         p.run_command("/ask", vec![]).await,
         Some(CommandOutcome::Prompt("hello from plugin".into()))
@@ -250,11 +331,7 @@ async fn session_param_present_when_claimed() {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "gray-session-{}-{}",
-        std::process::id(),
-        n
-    ));
+    let dir = std::env::temp_dir().join(format!("gray-session-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let log = dir.join("session.log");
     let script = dir.join("logger.sh");
@@ -294,12 +371,17 @@ done
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()])
+        .await
+        .unwrap();
 
     // Drive all 4 requests + one notify with distinctive cwd/session.
     let prompt_cwd = "/tmp/session-prompt-cwd";
     assert_eq!(p.prompt_context(prompt_cwd).await.as_deref(), Some("CTX"));
-    assert_eq!(p.tool_before("sess", &serde_json::json!({})).await, ToolBefore::Allow);
+    assert_eq!(
+        p.tool_before("sess", &serde_json::json!({})).await,
+        ToolBefore::Allow
+    );
     assert_eq!(
         p.run_command("/sess", vec![]).await,
         Some(CommandOutcome::Say("ok".into()))
@@ -309,9 +391,12 @@ done
     ctx.session_id = Some("sess-123".into());
     let out = p.tools()[0].execute(&ctx, serde_json::json!({})).await;
     assert!(!out.is_error, "{out:?}");
-    use gray_plugin::CoreEvent;
     use gray_core::event::Usage;
-    p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await;
+    use gray_plugin::CoreEvent;
+    p.on_event(CoreEvent::TurnEnd {
+        usage: Usage::default(),
+    })
+    .await;
     // Notify is fire-and-forget: poll for the log line.
     let t = std::time::Instant::now();
     while t.elapsed() < std::time::Duration::from_secs(2) {
@@ -333,13 +418,27 @@ done
         assert!(l.contains("\"cwd\""), "cwd present: {l}");
     }
     // tool/call carries ctx session_id + cwd.
-    let tool_line = lines.iter().find(|l| l.contains("tool/call")).expect("tool/call logged");
-    assert!(tool_line.contains("sess-123"), "ctx session_id: {tool_line}");
-    assert!(tool_line.contains("/tmp/session-tool-cwd"), "ctx cwd: {tool_line}");
+    let tool_line = lines
+        .iter()
+        .find(|l| l.contains("tool/call"))
+        .expect("tool/call logged");
+    assert!(
+        tool_line.contains("sess-123"),
+        "ctx session_id: {tool_line}"
+    );
+    assert!(
+        tool_line.contains("/tmp/session-tool-cwd"),
+        "ctx cwd: {tool_line}"
+    );
     // prompt/context carries its cwd arg.
-    let prompt_line =
-        lines.iter().find(|l| l.contains("prompt/context")).expect("prompt/context logged");
-    assert!(prompt_line.contains(prompt_cwd), "prompt cwd: {prompt_line}");
+    let prompt_line = lines
+        .iter()
+        .find(|l| l.contains("prompt/context"))
+        .expect("prompt/context logged");
+    assert!(
+        prompt_line.contains(prompt_cwd),
+        "prompt cwd: {prompt_line}"
+    );
     p.shutdown(std::time::Duration::from_secs(2)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -363,14 +462,106 @@ async fn pre_v1_sidecar_never_receives_shutdown_line() {
     assert!(p.manifest().protocol.is_none(), "pre-v1 has no protocol");
     let t = std::time::Instant::now();
     p.shutdown(std::time::Duration::from_secs(1)).await;
-    assert!(t.elapsed() < std::time::Duration::from_secs(6), "no hang on pre-v1 shutdown");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(6),
+        "no hang on pre-v1 shutdown"
+    );
     // Give tee a moment to flush, then prove the shutdown line never arrived.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let logged = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(logged.contains("plugin/manifest"), "tee saw traffic, got: {logged}");
+    assert!(
+        logged.contains("plugin/manifest"),
+        "tee saw traffic, got: {logged}"
+    );
     assert!(
         !logged.contains("plugin/shutdown"),
         "pre-v1 must never receive shutdown line, got: {logged}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn host_requests_round_trip_with_string_ids() {
+    use gray_plugin::HostHandler;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static H: AtomicU64 = AtomicU64::new(0);
+    let n = H.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!("gray-host-{}-{}", std::process::id(), n));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("host.log");
+    let script = dir.join("caller.sh");
+    // Caller sidecar: answers manifest, then issues host/say + host/run
+    // with STRING ids and logs the replies it gets back.
+    let body = format!(
+        r#"#!/bin/sh
+LOG="{}"
+while IFS= read -r line; do
+  case "$line" in
+    *plugin/manifest*)
+      id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
+      printf '{{"id":%s,"result":{{"name":"caller","version":"0.1.0","protocol":"1.1","tools":[]}}}}\n' "$id"
+      sleep 0.2
+      printf '{{"id":"s1","method":"host/say","params":{{"text":"hello host"}}}}\n'
+      printf '{{"id":"s2","method":"host/run","params":{{"session":{{"id":"","cwd":"/tmp"}},"prompt":"do x"}}}}\n'
+      ;;
+    *'"result"'*)
+      printf '%s\n' "$line" >> "$LOG"
+      ;;
+  esac
+done
+"#,
+        log.display()
+    );
+    std::fs::write(&script, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()])
+        .await
+        .unwrap();
+    let seen: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let handler: HostHandler = Arc::new(move |method: String, params: serde_json::Value| {
+        let seen2 = seen2.clone();
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
+            Box::pin(async move {
+                seen2
+                    .lock()
+                    .expect("seen lock")
+                    .push((method.clone(), params));
+                match method.as_str() {
+                    "host/say" => serde_json::json!({"ok": true}),
+                    _ => serde_json::json!({"text": "ran it"}),
+                }
+            });
+        fut
+    });
+    p.set_host_handler(handler).await;
+    // Poll for both replies (string ids echoed back, separate namespace).
+    let t = std::time::Instant::now();
+    while t.elapsed() < std::time::Duration::from_secs(5) {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.lines().count() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let seen = seen.lock().expect("seen lock").clone();
+    assert_eq!(seen.len(), 2, "host saw say + run, got {seen:?}");
+    assert_eq!(seen[0].0, "host/say");
+    assert_eq!(seen[1].0, "host/run");
+    let text = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        text.contains("\"s1\"") && text.contains("\"ok\""),
+        "say reply: {text}"
+    );
+    assert!(
+        text.contains("\"s2\"") && text.contains("ran it"),
+        "run reply: {text}"
+    );
+    p.shutdown(std::time::Duration::from_secs(2)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }

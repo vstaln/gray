@@ -7,11 +7,11 @@ use std::process::Stdio;
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
 
-use crate::{fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path, Tool, MAX_BYTES};
+use crate::{MAX_BYTES, Tool, fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path};
 
 const DEFAULT_LIMIT: usize = 100;
 const GREP_MAX_LINE_LENGTH: usize = 500;
@@ -34,14 +34,15 @@ use crate::truncate::truncate_head;
 
 fn relativize(search_path: &Path, file_path: &str, is_dir: bool) -> String {
     let fp = Path::new(file_path);
-    if is_dir {
-        if let Ok(rel) = fp.strip_prefix(search_path) {
-            let s = rel.to_string_lossy().replace('\\', "/");
-            if s.is_empty() {
-                return fp.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| file_path.to_string());
-            }
-            return s;
+    if is_dir && let Ok(rel) = fp.strip_prefix(search_path) {
+        let s = rel.to_string_lossy().replace('\\', "/");
+        if s.is_empty() {
+            return fp
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| file_path.to_string());
         }
+        return s;
     }
     fp.file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -144,7 +145,9 @@ impl Tool for GrepTool {
             Ok(c) => c,
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    return fail("ripgrep (rg) is not available and could not be found on PATH".to_string());
+                    return fail(
+                        "ripgrep (rg) is not available and could not be found on PATH".to_string(),
+                    );
                 }
                 return fail(format!("Failed to run ripgrep: {e}"));
             }
@@ -331,7 +334,10 @@ impl Tool for GrepTool {
             ));
         }
         if trunc.truncated {
-            notices.push(format!("{} limit reached", crate::truncate::format_size(MAX_BYTES)));
+            notices.push(format!(
+                "{} limit reached",
+                crate::truncate::format_size(MAX_BYTES)
+            ));
         }
         if lines_truncated {
             notices.push(format!(

@@ -38,7 +38,11 @@ struct ColumnMetrics {
 
 /// Per-column classification, port of codex `collect_table_column_metrics`
 /// trimmed to the fields the decision heuristics actually read.
-fn collect_metrics(header: &[StyledCell], rows: &[Vec<StyledCell>], num_cols: usize) -> Vec<ColumnMetrics> {
+fn collect_metrics(
+    header: &[StyledCell],
+    rows: &[Vec<StyledCell>],
+    num_cols: usize,
+) -> Vec<ColumnMetrics> {
     (0..num_cols)
         .map(|col| {
             let header_plain = header.get(col).map(|c| c.plain_text()).unwrap_or_default();
@@ -106,8 +110,12 @@ pub(crate) fn should_render_records(
         .iter()
         .filter(|row| {
             let contains_fragmented_value = row.iter().enumerate().any(|(col, cell)| {
-                let Some(width) = column_widths.get(col) else { return false };
-                let Some(m) = metrics.get(col) else { return false };
+                let Some(width) = column_widths.get(col) else {
+                    return false;
+                };
+                let Some(m) = metrics.get(col) else {
+                    return false;
+                };
                 let has_fragmented_token = cell
                     .plain_text()
                     .split_whitespace()
@@ -139,7 +147,11 @@ fn expansive_cells_are_starved(
     let expansive_cells: Vec<(ColumnKind, usize, usize)> = row
         .iter()
         .enumerate()
-        .filter(|(col, _)| metrics.get(*col).is_some_and(|m| m.kind != ColumnKind::Compact))
+        .filter(|(col, _)| {
+            metrics
+                .get(*col)
+                .is_some_and(|m| m.kind != ColumnKind::Compact)
+        })
         .filter_map(|(col, cell)| {
             Some((
                 metrics.get(col)?.kind,
@@ -194,10 +206,7 @@ pub(crate) fn render_records(
         .map(|h| unicode_display_width(&h.plain_text()))
         .max()
         .unwrap_or(0);
-    let minimum_value_width = if metrics
-        .iter()
-        .any(|m| m.kind != ColumnKind::Compact)
-    {
+    let minimum_value_width = if metrics.iter().any(|m| m.kind != ColumnKind::Compact) {
         MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH
     } else {
         MIN_ALIGNED_COMPACT_VALUE_WIDTH
@@ -230,8 +239,9 @@ pub(crate) fn render_records(
                             .unwrap_or(0)
                             .max(MIN_VALUE_WIDTH)
                     });
-                for (line_index, value_line) in
-                    wrap_cell_text(&value.plain_text(), value_width).into_iter().enumerate()
+                for (line_index, value_line) in wrap_cell_text(&value.plain_text(), value_width)
+                    .into_iter()
+                    .enumerate()
                 {
                     let mut spans = Vec::new();
                     if line_index == 0 {
@@ -244,7 +254,11 @@ pub(crate) fn render_records(
                         spans.push(Span::raw(" ".repeat(value_indent)));
                     }
                     spans.push(Span::raw(value_line));
-                    push_line(&mut out, spans, if line_index == 0 { 0 } else { row_offset });
+                    push_line(
+                        &mut out,
+                        spans,
+                        if line_index == 0 { 0 } else { row_offset },
+                    );
                 }
             } else {
                 let label_width_avail = available_width
@@ -326,7 +340,13 @@ mod tests {
     fn records_render_label_value_pairs() {
         let header = vec![cell("Field"), cell("Value")];
         let rows = vec![vec![cell("a"), cell("b")]];
-        let out = render_records(&header, &rows, Some(40), Style::new().bold(), Style::new().dim());
+        let out = render_records(
+            &header,
+            &rows,
+            Some(40),
+            Style::new().bold(),
+            Style::new().dim(),
+        );
         assert_eq!(out.lines[0], " Field  a");
         assert_eq!(out.lines[1], " Value  b");
         assert_eq!(out.line_source_offsets[0], 0);

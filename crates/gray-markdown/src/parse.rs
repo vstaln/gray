@@ -19,12 +19,11 @@ use crate::buffers::{
     TableReplace, TableState, Transform, floor_char_boundary, unicode_display_width,
 };
 use crate::checkpoint::CheckpointKind;
+use crate::colors::StyleInto;
 use crate::latex;
 use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::style::{MarkdownStyle, TableBorders};
-use crate::colors::StyleInto;
 use crate::syntax::{Syntect, syntax_highlight_raw};
-
 
 /// Find a substring within a haystack, optionally searching outside or using rfind.
 fn find_substring(
@@ -1591,7 +1590,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                                 .unwrap_or(0)
                                 .saturating_sub(new_widths.get(i).copied().unwrap_or(0))
                         };
-                        indices.sort_by(|&a, &b| unmet(b).cmp(&unmet(a)));
+                        indices.sort_by_key(|&b| std::cmp::Reverse(unmet(b)));
                         for &idx in &indices {
                             if remaining == 0 {
                                 break;

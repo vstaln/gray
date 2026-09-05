@@ -1,6 +1,6 @@
 //! Test utilities and SSE fixture builders.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Returns the standard OpenAI stream termination chunk (`data: [DONE]\n\n`).
 pub fn sse_done() -> String {
@@ -9,7 +9,10 @@ pub fn sse_done() -> String {
 
 /// Formats a JSON value into an SSE data frame.
 pub fn sse_json(val: &Value) -> String {
-    format!("data: {}\n\n", serde_json::to_string(val).expect("serialize json"))
+    format!(
+        "data: {}\n\n",
+        serde_json::to_string(val).expect("serialize json")
+    )
 }
 
 /// Helper to construct a text delta chunk JSON.
@@ -79,7 +82,13 @@ mod tests {
     }
     #[test]
     fn tool_call_chunk_builds_valid_json() {
-        let v = tool_call_chunk(0, Some("call_1"), Some("lookup"), Some(r#"{"q":"x"}"#), None);
+        let v = tool_call_chunk(
+            0,
+            Some("call_1"),
+            Some("lookup"),
+            Some(r#"{"q":"x"}"#),
+            None,
+        );
         assert_eq!(v["choices"][0]["delta"]["tool_calls"][0]["id"], "call_1");
     }
 }

@@ -7,7 +7,9 @@
 
 use futures::StreamExt as _;
 
-use crate::agent::{Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block};
+use crate::agent::{
+    Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
+};
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
@@ -40,7 +42,11 @@ impl Agent {
     /// (read/ls/find/grep) rounds with no file changes — nudged at 12.
     /// Tool failures are *not* errors: they become `is_error` tool results
     /// so the model can recover.
-    pub async fn run(&mut self, input: Message, ctx: ToolContext) -> Result<Vec<AgentEvent>, CoreError> {
+    pub async fn run(
+        &mut self,
+        input: Message,
+        ctx: ToolContext,
+    ) -> Result<Vec<AgentEvent>, CoreError> {
         self.run_inner(input, ctx, None).await
     }
 
@@ -98,11 +104,13 @@ impl Agent {
                 self.emit_turn_end(&total_usage).await;
                 return Err(CoreError::Cancelled);
             }
-            if let Some(m) = self.max_rounds {
-                if round >= m {
-                    self.emit_turn_end(&total_usage).await;
-                    return Err(CoreError::LoopDetected(format!("max rounds ({m}) exceeded")));
-                }
+            if let Some(m) = self.max_rounds
+                && round >= m
+            {
+                self.emit_turn_end(&total_usage).await;
+                return Err(CoreError::LoopDetected(format!(
+                    "max rounds ({m}) exceeded"
+                )));
             }
             round += 1;
             self.drain_steer(round == 1);
@@ -167,18 +175,26 @@ impl Agent {
                             emit!(AgentEvent::thinking_delta(delta.clone()));
                             thinking_parts.push(delta);
                         }
-                        Some(Ok(StreamEvent::ReasoningItem { item_id, encrypted_content })) => {
+                        Some(Ok(StreamEvent::ReasoningItem {
+                            item_id,
+                            encrypted_content,
+                        })) => {
                             pending_reasoning = Some((item_id, encrypted_content));
                         }
-                        Some(Ok(StreamEvent::ToolCallDelta { index, id, name, arguments_delta })) => {
+                        Some(Ok(StreamEvent::ToolCallDelta {
+                            index,
+                            id,
+                            name,
+                            arguments_delta,
+                        })) => {
                             // cap wire-controlled indices — a hostile/broken server
                             // sending index = 2^40 would otherwise allocate gigabytes here.
                             const MAX_TOOL_CALL_INDEX: usize = 4096;
                             if index > MAX_TOOL_CALL_INDEX {
                                 self.emit_turn_end(&total_usage).await;
-                                return Err(CoreError::Provider(
-                                    format!("tool-call index {index} exceeds limit ({MAX_TOOL_CALL_INDEX})"),
-                                ));
+                                return Err(CoreError::Provider(format!(
+                                    "tool-call index {index} exceeds limit ({MAX_TOOL_CALL_INDEX})"
+                                )));
                             }
                             while pending.len() <= index {
                                 pending.push(PendingToolCall::default());
@@ -196,14 +212,18 @@ impl Agent {
                             // Live emit: as soon as we know the tool name, tell the UI
                             // so it can show "Preparing tool: bash…" instead of "Thinking... 53s".
                             if was_unnamed && slot.name.is_some() && !pending_emitted_start[index] {
-                                let live_id = slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
+                                let live_id =
+                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
                                 let live_name = slot.name.clone().unwrap_or_default();
                                 emit!(AgentEvent::tool_call_start(live_id, live_name));
                                 pending_emitted_start[index] = true;
                             }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
-                            break (stop_reason.unwrap_or(StopReason::EndTurn), usage.unwrap_or_default());
+                            break (
+                                stop_reason.unwrap_or(StopReason::EndTurn),
+                                usage.unwrap_or_default(),
+                            );
                         }
                         // Codex steal: retry notices ride as Ok so the turn
                         // keeps going; forward live so UI shows Reconnecting.
@@ -248,7 +268,13 @@ impl Agent {
                     }
                 }
             };
-            if usage.input_tokens != 0 || usage.cached_tokens != 0 || usage.non_cached_input_tokens != 0 || usage.cache_read_input_tokens != 0 || usage.cache_write_input_tokens != 0 || usage.total_tokens != 0 {
+            if usage.input_tokens != 0
+                || usage.cached_tokens != 0
+                || usage.non_cached_input_tokens != 0
+                || usage.cache_read_input_tokens != 0
+                || usage.cache_write_input_tokens != 0
+                || usage.total_tokens != 0
+            {
                 total_usage.input_tokens = usage.input_tokens;
                 total_usage.cached_tokens = usage.cached_tokens;
                 total_usage.non_cached_input_tokens = usage.non_cached_input_tokens;
@@ -267,7 +293,11 @@ impl Agent {
             let mut content: Vec<ContentBlock> = Vec::new();
             let thinking = thinking_parts.concat();
             if !thinking.is_empty() {
-                content.push(thinking_block(thinking, &pending_reasoning, self.provider.model_id()));
+                content.push(thinking_block(
+                    thinking,
+                    &pending_reasoning,
+                    self.provider.model_id(),
+                ));
             }
             let text = text_parts.concat();
             let text_is_empty = text.is_empty();
@@ -286,7 +316,10 @@ impl Agent {
                     args: call.parsed_args(),
                 });
             }
-            let assistant = Message { role: Role::Assistant, content };
+            let assistant = Message {
+                role: Role::Assistant,
+                content,
+            };
             self.messages.push(assistant.clone());
 
             let tool_uses: Vec<(String, String, serde_json::Value)> = assistant
@@ -302,14 +335,16 @@ impl Agent {
 
             // Truncated turn with a usable fragment: ask to continue where it
             // left off (capped); past the cap the stitched partial stands.
-            if stop_reason == StopReason::MaxTokens && !text_is_empty && tool_uses.is_empty() {
-                if continuations < MAX_CONTINUATIONS {
-                    continuations += 1;
-                    self.messages.push(Message::user(
-                        "previous response truncated — continue exactly where you left off",
-                    ));
-                    continue 'turn;
-                }
+            if stop_reason == StopReason::MaxTokens
+                && !text_is_empty
+                && tool_uses.is_empty()
+                && continuations < MAX_CONTINUATIONS
+            {
+                continuations += 1;
+                self.messages.push(Message::user(
+                    "previous response truncated — continue exactly where you left off",
+                ));
+                continue 'turn;
             }
 
             // Empty turn (no text, no tool calls): retry the provider call,
@@ -321,7 +356,9 @@ impl Agent {
                     continue 'turn;
                 }
                 let tail_had_results = self.messages.last().is_some_and(|m| {
-                    m.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                    m.content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
                 });
                 if tail_had_results && !empty_nudge_sent {
                     empty_nudge_sent = true;
@@ -376,7 +413,10 @@ impl Agent {
             const STALL_NUDGE_ROUNDS: usize = 12;
             const STALL_ABORT_ROUNDS: usize = 20;
             const EXPLORATION_TOOLS: [&str; 4] = ["read", "ls", "find", "grep"];
-            if tool_uses.iter().all(|(_, n, _)| EXPLORATION_TOOLS.contains(&n.as_str())) {
+            if tool_uses
+                .iter()
+                .all(|(_, n, _)| EXPLORATION_TOOLS.contains(&n.as_str()))
+            {
                 stall_rounds += 1;
             } else {
                 stall_rounds = 0;
@@ -405,12 +445,26 @@ impl Agent {
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
                 if !self.tools.iter().any(|t| t.name == *name) {
-                    let list = if available.is_empty() { "(none)".to_string() } else { available.join(", ") };
-                    let err = ToolOutput::error(format!("Tool '{name}' does not exist. Available: {list}"));
-                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    let list = if available.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        available.join(", ")
+                    };
+                    let err = ToolOutput::error(format!(
+                        "Tool '{name}' does not exist. Available: {list}"
+                    ));
+                    emit!(AgentEvent::tool_result(
+                        id.clone(),
+                        err.content.clone(),
+                        true
+                    ));
                     self.messages.push(Message {
                         role: Role::User,
-                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                        content: vec![ContentBlock::ToolResult {
+                            id: id.clone(),
+                            content: err.content,
+                            is_error: true,
+                        }],
                     });
                     continue;
                 }
@@ -418,10 +472,18 @@ impl Agent {
                     let err = ToolOutput::error(format!(
                         "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
                     ));
-                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    emit!(AgentEvent::tool_result(
+                        id.clone(),
+                        err.content.clone(),
+                        true
+                    ));
                     self.messages.push(Message {
                         role: Role::User,
-                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                        content: vec![ContentBlock::ToolResult {
+                            id: id.clone(),
+                            content: err.content,
+                            is_error: true,
+                        }],
                     });
                     continue;
                 }
@@ -443,10 +505,18 @@ impl Agent {
                 }
                 if let Some(reason) = denial {
                     let err = ToolOutput::error(reason);
-                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    emit!(AgentEvent::tool_result(
+                        id.clone(),
+                        err.content.clone(),
+                        true
+                    ));
                     self.messages.push(Message {
                         role: Role::User,
-                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                        content: vec![ContentBlock::ToolResult {
+                            id: id.clone(),
+                            content: err.content,
+                            is_error: true,
+                        }],
                     });
                     continue;
                 }

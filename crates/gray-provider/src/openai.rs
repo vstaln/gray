@@ -118,9 +118,7 @@ impl OpenAiProviderBuilder {
             api_key: self.api_key,
             model: self.model,
             http,
-            initial_backoff: self
-                .initial_backoff
-                .unwrap_or(Duration::from_millis(50)),
+            initial_backoff: self.initial_backoff.unwrap_or(Duration::from_millis(50)),
             reasoning_effort: self.reasoning_effort,
             session_id: self.session_id,
         })
@@ -288,16 +286,28 @@ struct OpenAiUsageChunk {
     #[serde(default, alias = "input_tokens_details")]
     prompt_tokens_details: Option<OpenAiPromptDetails>,
     /// DeepSeek / OpenRouter / Kimi top-level fields
-    #[serde(default, alias = "prompt_cache_hit_tokens", alias = "promptCacheHitTokens")]
+    #[serde(
+        default,
+        alias = "prompt_cache_hit_tokens",
+        alias = "promptCacheHitTokens"
+    )]
     cached_tokens: usize,
     /// DeepSeek explicit miss count — preferred over prompt-minus-cached
     #[serde(default, alias = "promptCacheMissTokens")]
     prompt_cache_miss_tokens: usize,
 
     /// Anthropic native breakdown (when not via OpenAI compat)
-    #[serde(default, alias = "cache_creation_input_tokens", alias = "cacheCreationInputTokens")]
+    #[serde(
+        default,
+        alias = "cache_creation_input_tokens",
+        alias = "cacheCreationInputTokens"
+    )]
     cache_creation_input_tokens: usize,
-    #[serde(default, alias = "cache_read_input_tokens", alias = "cacheReadInputTokens")]
+    #[serde(
+        default,
+        alias = "cache_read_input_tokens",
+        alias = "cacheReadInputTokens"
+    )]
     cache_read_input_tokens: usize,
     /// Provider total if supplied (OpenAI `total_tokens`, Anthropic not)
     #[serde(default, alias = "total_tokens", alias = "totalTokens")]
@@ -314,7 +324,11 @@ struct OpenAiCompletionDetails {
 struct OpenAiPromptDetails {
     #[serde(default)]
     cached_tokens: usize,
-    #[serde(default, alias = "cache_creation_tokens", alias = "cacheCreationTokens")]
+    #[serde(
+        default,
+        alias = "cache_creation_tokens",
+        alias = "cacheCreationTokens"
+    )]
     cache_creation_tokens: usize,
     #[serde(default, alias = "cache_read_tokens", alias = "cacheReadTokens")]
     cache_read_tokens: usize,
@@ -368,22 +382,33 @@ fn image_data_url(media_type: &str, data: &str) -> String {
 }
 
 fn filter_valid_tools(tools: Vec<gray_core::message::ToolDef>) -> Vec<gray_core::message::ToolDef> {
-    tools.into_iter().filter(|t| {
-        if t.name.trim().is_empty() {
-            log::warn!(target: "gray_provider", "dropping tool def with empty name");
-            false
-        } else { true }
-    }).collect()
+    tools
+        .into_iter()
+        .filter(|t| {
+            if t.name.trim().is_empty() {
+                log::warn!(target: "gray_provider", "dropping tool def with empty name");
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
 }
 
 fn is_valid_tool_name(name: &str, id: &str) -> bool {
     if name.trim().is_empty() {
         log::warn!(target: "gray_provider", "dropping assistant tool call {id} with empty name");
         false
-    } else { true }
+    } else {
+        true
+    }
 }
 
-fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str>) -> OpenAiChatRequest {
+fn map_chat_request(
+    req: ChatRequest,
+    model: &str,
+    reasoning_effort: Option<&str>,
+) -> OpenAiChatRequest {
     let mut messages = Vec::new();
 
     // 1. Map system prompt
@@ -433,7 +458,11 @@ fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str
                                 },
                             });
                         }
-                        ContentBlock::ToolResult { id, content, is_error: _ } => {
+                        ContentBlock::ToolResult {
+                            id,
+                            content,
+                            is_error: _,
+                        } => {
                             tool_results.push((id, content));
                         }
                     }
@@ -502,7 +531,11 @@ fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str
                         ContentBlock::Image { media_type, data } => {
                             image_parts.push((media_type, data));
                         }
-                        ContentBlock::ToolResult { id, content, is_error: _ } => {
+                        ContentBlock::ToolResult {
+                            id,
+                            content,
+                            is_error: _,
+                        } => {
                             tool_results.push((id, content));
                         }
                         ContentBlock::ToolUse { id, name, args } => {
@@ -535,7 +568,9 @@ fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str
                         }
                         for (media_type, data) in &image_parts {
                             let url = image_data_url(media_type, data);
-                            arr.push(serde_json::json!({"type":"image_url","image_url":{"url": url}}));
+                            arr.push(
+                                serde_json::json!({"type":"image_url","image_url":{"url": url}}),
+                            );
                         }
                         Some(Value::Array(arr))
                     } else {
@@ -643,7 +678,9 @@ fn map_chat_request(req: ChatRequest, model: &str, reasoning_effort: Option<&str
     OpenAiChatRequest {
         model: model.to_string(),
         stream: true,
-        stream_options: Some(OpenAiStreamOptions { include_usage: true }),
+        stream_options: Some(OpenAiStreamOptions {
+            include_usage: true,
+        }),
         reasoning_effort: reasoning_effort_val,
         reasoning: reasoning_val,
         thinking: thinking_val,
@@ -809,7 +846,11 @@ fn map_chat_to_responses(
                             }
                             input.push(serde_json::json!({"role": "user", "content": [{"type":"input_image","image_url": url}]}));
                         }
-                        ContentBlock::ToolResult { id, content, is_error: _ } => {
+                        ContentBlock::ToolResult {
+                            id,
+                            content,
+                            is_error: _,
+                        } => {
                             if !text_parts.is_empty() {
                                 input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
                                 text_parts.clear();
@@ -830,7 +871,9 @@ fn map_chat_to_responses(
                     }
                 }
                 if !text_parts.is_empty() {
-                    input.push(serde_json::json!({"role": role_str, "content": text_parts.join("\n")}));
+                    input.push(
+                        serde_json::json!({"role": role_str, "content": text_parts.join("\n")}),
+                    );
                 }
             }
             Role::Assistant => {
@@ -846,7 +889,12 @@ fn map_chat_to_responses(
                             }
                         }
                         ContentBlock::Image { .. } => {}
-                        ContentBlock::Thinking { encrypted_content: Some(ec), item_id: Some(id), model: Some(m), .. } if m == model => {
+                        ContentBlock::Thinking {
+                            encrypted_content: Some(ec),
+                            item_id: Some(id),
+                            model: Some(m),
+                            ..
+                        } if m == model => {
                             // Replay the raw reasoning item verbatim so the
                             // server keeps its cache shard warm (pi_agent_rust
                             // parity). Same-model only: a foreign model cannot
@@ -854,15 +902,23 @@ fn map_chat_to_responses(
                             reasoning_items.push(serde_json::json!({"type": "reasoning", "id": id, "summary": [], "encrypted_content": ec}));
                         }
                         ContentBlock::Thinking { .. } => {}
-                        ContentBlock::ToolUse { id, name, args } => tool_uses.push((id, name, args)),
-                        ContentBlock::ToolResult { id, content, is_error: _ } => tool_results.push((id, content)),
+                        ContentBlock::ToolUse { id, name, args } => {
+                            tool_uses.push((id, name, args))
+                        }
+                        ContentBlock::ToolResult {
+                            id,
+                            content,
+                            is_error: _,
+                        } => tool_results.push((id, content)),
                     }
                 }
                 for item in reasoning_items {
                     input.push(item);
                 }
                 if !text_parts.is_empty() {
-                    input.push(serde_json::json!({"role":"assistant","content": text_parts.join("\n")}));
+                    input.push(
+                        serde_json::json!({"role":"assistant","content": text_parts.join("\n")}),
+                    );
                 }
                 for (id, name, args) in tool_uses {
                     if !is_valid_tool_name(&name, &id) {
@@ -965,8 +1021,12 @@ pub(crate) fn classify_http_error(
     // blindly); content filters are terminal bad requests. Narrowed to avoid
     // false positives: `max_tokens` needs a context qualifier, bare
     // violates/flagged/safety are not filters.
-    const CONTEXT_OVERFLOW_HINTS: [&str; 4] =
-        ["context length", "context window", "too many tokens", "prompt is too long"];
+    const CONTEXT_OVERFLOW_HINTS: [&str; 4] = [
+        "context length",
+        "context window",
+        "too many tokens",
+        "prompt is too long",
+    ];
     let max_tokens_qualified = lower.contains("max_tokens")
         && (lower.contains("context") || lower.contains("too long") || lower.contains("exceeded"));
     if CONTEXT_OVERFLOW_HINTS.iter().any(|h| lower.contains(h)) || max_tokens_qualified {
@@ -1101,10 +1161,7 @@ async fn send_json_once(
 
 type BoxedEventStream = BoxStream<
     'static,
-    Result<
-        eventsource_stream::Event,
-        eventsource_stream::EventStreamError<reqwest::Error>,
-    >,
+    Result<eventsource_stream::Event, eventsource_stream::EventStreamError<reqwest::Error>>,
 >;
 
 enum StreamState {
@@ -1190,10 +1247,7 @@ fn emit_tool_calls_and_completion(
         });
     }
 
-    pending_events.push_back(StreamEvent::MessageComplete {
-        stop_reason,
-        usage,
-    });
+    pending_events.push_back(StreamEvent::MessageComplete { stop_reason, usage });
     Ok(())
 }
 
@@ -1213,12 +1267,19 @@ fn emit_responses_tool_calls_and_completion(
         let args_fixed = normalize_tool_args(&args, idx)?;
         pending_events.push_back(StreamEvent::ToolCallDelta {
             index: idx,
-            id: if call_id.is_empty() { None } else { Some(call_id) },
+            id: if call_id.is_empty() {
+                None
+            } else {
+                Some(call_id)
+            },
             name: if name.is_empty() { None } else { Some(name) },
             arguments_delta: args_fixed,
         });
     }
-    let stop_reason = if pending_events.iter().any(|e| matches!(e, StreamEvent::ToolCallDelta { .. })) {
+    let stop_reason = if pending_events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::ToolCallDelta { .. }))
+    {
         Some(StopReason::ToolUse)
     } else {
         Some(StopReason::EndTurn)
@@ -1229,10 +1290,8 @@ fn emit_responses_tool_calls_and_completion(
 
 fn stream_unfold_step(
     mut state: StreamState,
-) -> futures::future::BoxFuture<
-    'static,
-    Option<(Result<StreamEvent, ProviderError>, StreamState)>,
-> {
+) -> futures::future::BoxFuture<'static, Option<(Result<StreamEvent, ProviderError>, StreamState)>>
+{
     Box::pin(async move {
         loop {
             match state {
@@ -1249,13 +1308,19 @@ fn stream_unfold_step(
                     // `Reconnecting...` notice is already on screen (Codex:
                     // notify then sleep, not sleep then notify).
                     if attempt > 1 {
-                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1, retry_after)).await;
+                        tokio::time::sleep(backoff_delay(
+                            initial_backoff,
+                            attempt - 1,
+                            retry_after,
+                        ))
+                        .await;
                     }
                     let body_value =
                         serde_json::to_value(&body).expect("OpenAiChatRequest serialization");
                     match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
                         Ok(response) => {
-                            let event_stream: BoxedEventStream = response.bytes_stream().eventsource().boxed();
+                            let event_stream: BoxedEventStream =
+                                response.bytes_stream().eventsource().boxed();
                             state = StreamState::Streaming {
                                 event_stream,
                                 accumulated_tools: BTreeMap::new(),
@@ -1292,16 +1357,37 @@ fn stream_unfold_step(
                         }
                     }
                 }
-                StreamState::ResponsesInit { client, url, api_key, body, initial_backoff, attempt, retry_after } => {
+                StreamState::ResponsesInit {
+                    client,
+                    url,
+                    api_key,
+                    body,
+                    initial_backoff,
+                    attempt,
+                    retry_after,
+                } => {
                     if attempt > 1 {
-                        tokio::time::sleep(backoff_delay(initial_backoff, attempt - 1, retry_after)).await;
+                        tokio::time::sleep(backoff_delay(
+                            initial_backoff,
+                            attempt - 1,
+                            retry_after,
+                        ))
+                        .await;
                     }
                     let body_value =
                         serde_json::to_value(&body).expect("ResponsesRequest serialization");
                     match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
                         Ok(response) => {
-                            let event_stream: BoxedEventStream = response.bytes_stream().eventsource().boxed();
-                            state = StreamState::ResponsesStreaming { event_stream, tools_by_call_id: BTreeMap::new(), index_to_call_id: BTreeMap::new(), last_usage: None, pending_events: VecDeque::new(), completed: false };
+                            let event_stream: BoxedEventStream =
+                                response.bytes_stream().eventsource().boxed();
+                            state = StreamState::ResponsesStreaming {
+                                event_stream,
+                                tools_by_call_id: BTreeMap::new(),
+                                index_to_call_id: BTreeMap::new(),
+                                last_usage: None,
+                                pending_events: VecDeque::new(),
+                                completed: false,
+                            };
                         }
                         Err((err, floor)) => {
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
@@ -1380,9 +1466,7 @@ fn stream_unfold_step(
 
                                         for choice in chunk.choices {
                                             match choice.delta.content {
-                                                Some(delta_text)
-                                                    if !delta_text.is_empty() =>
-                                                {
+                                                Some(delta_text) if !delta_text.is_empty() => {
                                                     pending_events.push_back(
                                                         StreamEvent::TextDelta {
                                                             delta: delta_text,
@@ -1398,14 +1482,12 @@ fn stream_unfold_step(
                                                 .or(choice.delta.reasoning)
                                                 .or(choice.delta.thought)
                                                 .or(choice.delta.thoughts);
-                                            if let Some(reasoning) = reasoning {
-                                                if !reasoning.is_empty() {
-                                                    pending_events.push_back(
-                                                        StreamEvent::ThinkingDelta {
-                                                            delta: reasoning,
-                                                        },
-                                                    );
-                                                }
+                                            if let Some(reasoning) = reasoning
+                                                && !reasoning.is_empty()
+                                            {
+                                                pending_events.push_back(
+                                                    StreamEvent::ThinkingDelta { delta: reasoning },
+                                                );
                                             }
 
                                             if let Some(tool_calls) = choice.delta.tool_calls {
@@ -1419,7 +1501,11 @@ fn stream_unfold_step(
                                                     let entry = accumulated_tools
                                                         .entry(tc.index)
                                                         .or_insert_with(|| {
-                                                            (String::new(), String::new(), String::new())
+                                                            (
+                                                                String::new(),
+                                                                String::new(),
+                                                                String::new(),
+                                                            )
                                                         });
                                                     if let Some(id) = tc.id {
                                                         entry.0.push_str(&id);
@@ -1538,7 +1624,9 @@ fn stream_unfold_step(
                                 Ok(v) => v,
                                 Err(e) => {
                                     return Some((
-                                        Err(ProviderError::Stream(format!("failed to parse Responses SSE chunk: {e}: {data}"))),
+                                        Err(ProviderError::Stream(format!(
+                                            "failed to parse Responses SSE chunk: {e}: {data}"
+                                        ))),
                                         StreamState::Done,
                                     ));
                                 }
@@ -1546,99 +1634,193 @@ fn stream_unfold_step(
                             let typ = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
                             match typ {
                                 "response.output_text.delta" => {
-                                    if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
-                                        if !delta.is_empty() {
-                                            pending_events.push_back(StreamEvent::TextDelta { delta: delta.to_string() });
-                                        }
+                                    if let Some(delta) = value.get("delta").and_then(|v| v.as_str())
+                                        && !delta.is_empty()
+                                    {
+                                        pending_events.push_back(StreamEvent::TextDelta {
+                                            delta: delta.to_string(),
+                                        });
                                     }
                                 }
                                 "response.reasoning_text.delta"
                                 | "response.reasoning_summary_text.delta" => {
-                                    if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
-                                        if !delta.is_empty() {
-                                            pending_events.push_back(StreamEvent::ThinkingDelta { delta: delta.to_string() });
-                                        }
+                                    if let Some(delta) = value.get("delta").and_then(|v| v.as_str())
+                                        && !delta.is_empty()
+                                    {
+                                        pending_events.push_back(StreamEvent::ThinkingDelta {
+                                            delta: delta.to_string(),
+                                        });
                                     }
                                 }
                                 "response.output_item.added" => {
                                     if let Some(item) = value.get("item") {
-                                        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                        let item_type =
+                                            item.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                         if item_type == "function_call" {
-                                            let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            let item_id = item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| call_id.clone());
-                                            let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            if !call_id.is_empty() && !tools_by_call_id.contains_key(&call_id) {
+                                            let call_id = item
+                                                .get("call_id")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            let item_id = item
+                                                .get("id")
+                                                .and_then(|v| v.as_str())
+                                                .map(|s| s.to_string())
+                                                .unwrap_or_else(|| call_id.clone());
+                                            let name = item
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("")
+                                                .to_string();
+                                            if !call_id.is_empty()
+                                                && !tools_by_call_id.contains_key(&call_id)
+                                            {
                                                 let idx = tools_by_call_id.len();
-                                                tools_by_call_id.insert(call_id.clone(), (idx, name.clone(), String::new()));
+                                                tools_by_call_id.insert(
+                                                    call_id.clone(),
+                                                    (idx, name.clone(), String::new()),
+                                                );
                                                 index_to_call_id.insert(idx, call_id.clone());
                                                 if item_id != call_id && !item_id.is_empty() {
-                                                    tools_by_call_id.insert(item_id.clone(), (idx, name, String::new()));
+                                                    tools_by_call_id.insert(
+                                                        item_id.clone(),
+                                                        (idx, name, String::new()),
+                                                    );
                                                 }
                                             }
                                         }
                                     }
                                 }
                                 "response.function_call_arguments.delta" => {
-                                    let item_id = value.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-                                    let delta = value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
+                                    let item_id =
+                                        value.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+                                    let delta =
+                                        value.get("delta").and_then(|v| v.as_str()).unwrap_or("");
                                     if !delta.is_empty() && !item_id.is_empty() {
                                         if let Some(entry) = tools_by_call_id.get_mut(item_id) {
                                             entry.2.push_str(delta);
                                         } else {
                                             let idx = tools_by_call_id.len();
-                                            tools_by_call_id.insert(item_id.to_string(), (idx, String::new(), delta.to_string()));
+                                            tools_by_call_id.insert(
+                                                item_id.to_string(),
+                                                (idx, String::new(), delta.to_string()),
+                                            );
                                             index_to_call_id.insert(idx, item_id.to_string());
                                         }
                                     }
                                 }
                                 "response.function_call_arguments.done" => {
-                                    if let Some(args) = value.get("arguments").and_then(|v| v.as_str()) {
-                                        let item_id = value.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
-                                        if !item_id.is_empty() {
-                                            if let Some(entry) = tools_by_call_id.get_mut(item_id) {
-                                                if entry.2.is_empty() { entry.2 = args.to_string(); }
-                                            }
+                                    if let Some(args) =
+                                        value.get("arguments").and_then(|v| v.as_str())
+                                    {
+                                        let item_id = value
+                                            .get("item_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        if !item_id.is_empty()
+                                            && let Some(entry) = tools_by_call_id.get_mut(item_id)
+                                            && entry.2.is_empty()
+                                        {
+                                            entry.2 = args.to_string();
                                         }
-                                        if let Some(name) = value.get("name").and_then(|v| v.as_str()) {
-                                            if let Some(entry) = tools_by_call_id.get_mut(item_id) {
-                                                if entry.1.is_empty() { entry.1 = name.to_string(); }
-                                            }
+                                        if let Some(name) =
+                                            value.get("name").and_then(|v| v.as_str())
+                                            && let Some(entry) = tools_by_call_id.get_mut(item_id)
+                                            && entry.1.is_empty()
+                                        {
+                                            entry.1 = name.to_string();
                                         }
                                     }
                                 }
                                 "response.completed" => {
                                     if !completed {
                                         completed = true;
-                                        let usage_val = value.get("response").and_then(|r| r.get("usage")).or_else(|| value.get("usage"));
+                                        let usage_val = value
+                                            .get("response")
+                                            .and_then(|r| r.get("usage"))
+                                            .or_else(|| value.get("usage"));
                                         if let Some(uval) = usage_val {
-                                            if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(uval.clone()) {
+                                            if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(
+                                                uval.clone(),
+                                            ) {
                                                 last_usage = Some(map_usage(&u));
                                             } else {
-                                                let input = uval.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                                                let output = uval.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                                                let cached = uval.get("input_tokens_details").and_then(|d| d.get("cached_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                                                let reasoning = uval.get("output_tokens_details").and_then(|d| d.get("reasoning_tokens")).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                                                let total = uval.get("total_tokens").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(input + output);
-                                                let mut usage = Usage { input_tokens: input, output_tokens: output, reasoning_tokens: reasoning, cached_tokens: cached, non_cached_input_tokens: input.saturating_sub(cached), cache_read_input_tokens: cached, cache_write_input_tokens: 0, total_tokens: total };
+                                                let input = uval
+                                                    .get("input_tokens")
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0)
+                                                    as usize;
+                                                let output = uval
+                                                    .get("output_tokens")
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0)
+                                                    as usize;
+                                                let cached = uval
+                                                    .get("input_tokens_details")
+                                                    .and_then(|d| d.get("cached_tokens"))
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0)
+                                                    as usize;
+                                                let reasoning = uval
+                                                    .get("output_tokens_details")
+                                                    .and_then(|d| d.get("reasoning_tokens"))
+                                                    .and_then(|v| v.as_u64())
+                                                    .unwrap_or(0)
+                                                    as usize;
+                                                let total = uval
+                                                    .get("total_tokens")
+                                                    .and_then(|v| v.as_u64())
+                                                    .map(|v| v as usize)
+                                                    .unwrap_or(input + output);
+                                                let mut usage = Usage {
+                                                    input_tokens: input,
+                                                    output_tokens: output,
+                                                    reasoning_tokens: reasoning,
+                                                    cached_tokens: cached,
+                                                    non_cached_input_tokens: input
+                                                        .saturating_sub(cached),
+                                                    cache_read_input_tokens: cached,
+                                                    cache_write_input_tokens: 0,
+                                                    total_tokens: total,
+                                                };
                                                 usage.normalize();
                                                 last_usage = Some(usage);
                                             }
                                         }
-                                        let mut dedup: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
-                                        for (k, (idx, name, args)) in std::mem::take(&mut tools_by_call_id) {
-                                            let entry = dedup.entry(idx).or_insert((k.clone(), String::new(), String::new()));
-                                            if !name.is_empty() { entry.1 = name; }
-                                            if !args.is_empty() { entry.2 = args.clone(); }
-                                            if entry.0.is_empty() || k.starts_with("call_") { entry.0 = k; }
+                                        let mut dedup: BTreeMap<usize, (String, String, String)> =
+                                            BTreeMap::new();
+                                        for (k, (idx, name, args)) in
+                                            std::mem::take(&mut tools_by_call_id)
+                                        {
+                                            let entry = dedup.entry(idx).or_insert((
+                                                k.clone(),
+                                                String::new(),
+                                                String::new(),
+                                            ));
+                                            if !name.is_empty() {
+                                                entry.1 = name;
+                                            }
+                                            if !args.is_empty() {
+                                                entry.2 = args.clone();
+                                            }
+                                            if entry.0.is_empty() || k.starts_with("call_") {
+                                                entry.0 = k;
+                                            }
                                         }
                                         for (idx, (call_id, name, args)) in dedup {
-                                            tools_by_call_id.insert(call_id.clone(), (idx, name, args));
+                                            tools_by_call_id
+                                                .insert(call_id.clone(), (idx, name, args));
                                         }
                                         index_to_call_id.clear();
                                         for (call_id, (idx, _, _)) in &tools_by_call_id {
                                             index_to_call_id.insert(*idx, call_id.clone());
                                         }
-                                        if let Err(err) = emit_responses_tool_calls_and_completion(&mut tools_by_call_id, &mut index_to_call_id, last_usage.clone(), &mut pending_events) {
+                                        if let Err(err) = emit_responses_tool_calls_and_completion(
+                                            &mut tools_by_call_id,
+                                            &mut index_to_call_id,
+                                            last_usage,
+                                            &mut pending_events,
+                                        ) {
                                             return Some((Err(err), StreamState::Done));
                                         }
                                     }
@@ -1647,21 +1829,43 @@ fn stream_unfold_step(
                                     // Capture completed reasoning items (id +
                                     // encrypted blob) for verbatim replay next
                                     // turn. Other item types need no action.
-                                    if value.get("item").and_then(|i| i.get("type")).and_then(|t| t.as_str()) == Some("reasoning") {
+                                    if value
+                                        .get("item")
+                                        .and_then(|i| i.get("type"))
+                                        .and_then(|t| t.as_str())
+                                        == Some("reasoning")
+                                    {
                                         let item = &value["item"];
-                                        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                                        let ec = item.get("encrypted_content").and_then(|v| v.as_str()).unwrap_or_default();
+                                        let id = item
+                                            .get("id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default();
+                                        let ec = item
+                                            .get("encrypted_content")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default();
                                         if !id.is_empty() && !ec.is_empty() {
-                                            pending_events.push_back(StreamEvent::reasoning_item(id, ec));
+                                            pending_events
+                                                .push_back(StreamEvent::reasoning_item(id, ec));
                                         }
                                     }
                                 }
-                                "ping" | "response.created" | "response.in_progress" | "response.content_part.added" | "response.content_part.done" | "response.output_text.done" | "response.reasoning_text.done" => {}
+                                "ping"
+                                | "response.created"
+                                | "response.in_progress"
+                                | "response.content_part.added"
+                                | "response.content_part.done"
+                                | "response.output_text.done"
+                                | "response.reasoning_text.done" => {}
                                 _ => {
-                                    if let Some(uval) = value.get("response").and_then(|r| r.get("usage")).or_else(|| value.get("usage")) {
-                                        if let Ok(u) = serde_json::from_value::<OpenAiUsageChunk>(uval.clone()) {
-                                            last_usage = Some(map_usage(&u));
-                                        }
+                                    if let Some(uval) = value
+                                        .get("response")
+                                        .and_then(|r| r.get("usage"))
+                                        .or_else(|| value.get("usage"))
+                                        && let Ok(u) =
+                                            serde_json::from_value::<OpenAiUsageChunk>(uval.clone())
+                                    {
+                                        last_usage = Some(map_usage(&u));
                                     }
                                 }
                             }
@@ -1676,19 +1880,33 @@ fn stream_unfold_step(
                         }
                         Some(Err(err)) => {
                             log::error!(target: "gray_provider", "responses stream error: {err}");
-                            return Some((Err(ProviderError::Stream(err.to_string())), StreamState::Done));
+                            return Some((
+                                Err(ProviderError::Stream(err.to_string())),
+                                StreamState::Done,
+                            ));
                         }
                         None => {
                             if !completed {
                                 completed = true;
-                                let mut dedup: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
-                                for (k, (idx, name, args)) in std::mem::take(&mut tools_by_call_id) {
-                                    if !dedup.contains_key(&idx) { dedup.insert(idx, (k, name, args)); }
+                                let mut dedup: BTreeMap<usize, (String, String, String)> =
+                                    BTreeMap::new();
+                                for (k, (idx, name, args)) in std::mem::take(&mut tools_by_call_id)
+                                {
+                                    dedup.entry(idx).or_insert((k, name, args));
                                 }
-                                for (idx, (call_id, name, args)) in dedup { tools_by_call_id.insert(call_id.clone(), (idx, name, args)); }
+                                for (idx, (call_id, name, args)) in dedup {
+                                    tools_by_call_id.insert(call_id.clone(), (idx, name, args));
+                                }
                                 index_to_call_id.clear();
-                                for (call_id, (idx, _, _)) in &tools_by_call_id { index_to_call_id.insert(*idx, call_id.clone()); }
-                                if let Err(err) = emit_responses_tool_calls_and_completion(&mut tools_by_call_id, &mut index_to_call_id, last_usage.clone(), &mut pending_events) {
+                                for (call_id, (idx, _, _)) in &tools_by_call_id {
+                                    index_to_call_id.insert(*idx, call_id.clone());
+                                }
+                                if let Err(err) = emit_responses_tool_calls_and_completion(
+                                    &mut tools_by_call_id,
+                                    &mut index_to_call_id,
+                                    last_usage,
+                                    &mut pending_events,
+                                ) {
                                     return Some((Err(err), StreamState::Done));
                                 }
                                 state = StreamState::ResponsesStreaming {
@@ -1719,16 +1937,18 @@ impl Provider for OpenAiProvider {
         &self.model
     }
 
-    fn stream(
-        &self,
-        req: ChatRequest,
-    ) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
+    fn stream(&self, req: ChatRequest) -> BoxStream<'static, Result<StreamEvent, ProviderError>> {
         if is_muse_model(&self.model) && self.base_url.as_str().contains("opencode.ai/zen") {
             let url = match responses_url(&self.base_url) {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
             };
-            let body = map_chat_to_responses(req, &self.model, self.session_id.as_deref(), self.reasoning_effort.as_deref());
+            let body = map_chat_to_responses(
+                req,
+                &self.model,
+                self.session_id.as_deref(),
+                self.reasoning_effort.as_deref(),
+            );
             log::debug!(target: "gray_provider", "using Responses API for model {}", self.model);
             let init_state = StreamState::ResponsesInit {
                 client: self.http.clone(),
@@ -1782,7 +2002,12 @@ mod tests {
 
     #[test]
     fn rate_limited_429_is_retryable() {
-        let err = classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "rate limit", None, None);
+        let err = classify_http_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "rate limit",
+            None,
+            None,
+        );
         assert!(matches!(err, ProviderError::RateLimited(_)));
         assert!(is_retryable_error(&err));
     }
@@ -1801,7 +2026,12 @@ mod tests {
 
     #[test]
     fn plain_500_without_model_hint_is_server_error_retryable() {
-        let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, "internal error", None, None);
+        let err = classify_http_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "internal error",
+            None,
+            None,
+        );
         assert!(matches!(err, ProviderError::ServerError(_)));
         assert!(is_retryable_error(&err));
     }
@@ -1837,14 +2067,21 @@ mod tests {
             .initial_backoff(Duration::from_millis(1))
             .build()
             .expect("provider builds");
-        let req = ChatRequest { system: None, messages: Vec::new(), tools: Vec::new() };
+        let req = ChatRequest {
+            system: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
         let events: Vec<_> = provider.stream(req).collect().await;
         let notices = events
             .iter()
             .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
             .count();
         assert_eq!(notices, 1, "one reconnect notice per burst: {events:?}");
-        assert!(matches!(events.last(), Some(Err(_))), "burst ends with terminal error: {events:?}");
+        assert!(
+            matches!(events.last(), Some(Err(_))),
+            "burst ends with terminal error: {events:?}"
+        );
     }
 
     fn responses_req_with_thinking(model: &str) -> ChatRequest {
@@ -1869,32 +2106,73 @@ mod tests {
 
     #[test]
     fn responses_include_and_replay_round_trip() {
-        let body = map_chat_to_responses(responses_req_with_thinking("m1"), "m1", Some("sess"), Some("high"));
+        let body = map_chat_to_responses(
+            responses_req_with_thinking("m1"),
+            "m1",
+            Some("sess"),
+            Some("high"),
+        );
         let v = serde_json::to_value(&body).expect("serializes");
         // encrypted-content include rides with reasoning
-        let include = v.get("include").and_then(|i| i.as_array()).expect("include");
-        assert!(include.iter().any(|s| s.as_str() == Some("reasoning.encrypted_content")));
-        assert!(v.get("reasoning").and_then(|r| r.get("summary")).and_then(|s| s.as_str()) == Some("auto"));
+        let include = v
+            .get("include")
+            .and_then(|i| i.as_array())
+            .expect("include");
+        assert!(
+            include
+                .iter()
+                .any(|s| s.as_str() == Some("reasoning.encrypted_content"))
+        );
+        assert!(
+            v.get("reasoning")
+                .and_then(|r| r.get("summary"))
+                .and_then(|s| s.as_str())
+                == Some("auto")
+        );
         // same-model reasoning item replayed verbatim ahead of text
         let input = v.get("input").and_then(|i| i.as_array()).expect("input");
-        let reason = input.iter().find(|i| i.get("type").and_then(|t| t.as_str()) == Some("reasoning")).expect("reasoning item");
+        let reason = input
+            .iter()
+            .find(|i| i.get("type").and_then(|t| t.as_str()) == Some("reasoning"))
+            .expect("reasoning item");
         assert_eq!(reason.get("id").and_then(|v| v.as_str()), Some("rs_1"));
-        assert_eq!(reason.get("encrypted_content").and_then(|v| v.as_str()), Some("blob"));
+        assert_eq!(
+            reason.get("encrypted_content").and_then(|v| v.as_str()),
+            Some("blob")
+        );
     }
 
     #[test]
     fn responses_replay_drops_foreign_model_thinking() {
-        let body = map_chat_to_responses(responses_req_with_thinking("m1"), "m2", Some("sess"), Some("high"));
+        let body = map_chat_to_responses(
+            responses_req_with_thinking("m1"),
+            "m2",
+            Some("sess"),
+            Some("high"),
+        );
         let v = serde_json::to_value(&body).expect("serializes");
         let input = v.get("input").and_then(|i| i.as_array()).expect("input");
-        assert!(input.iter().all(|i| i.get("type").and_then(|t| t.as_str()) != Some("reasoning")));
+        assert!(
+            input
+                .iter()
+                .all(|i| i.get("type").and_then(|t| t.as_str()) != Some("reasoning"))
+        );
         // prose still sent
-        assert!(input.iter().any(|i| i.get("role").and_then(|r| r.as_str()) == Some("assistant")));
+        assert!(
+            input
+                .iter()
+                .any(|i| i.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+        );
     }
 
     #[test]
     fn responses_include_omitted_when_reasoning_off() {
-        let body = map_chat_to_responses(responses_req_with_thinking("m1"), "m1", Some("sess"), Some("off"));
+        let body = map_chat_to_responses(
+            responses_req_with_thinking("m1"),
+            "m1",
+            Some("sess"),
+            Some("off"),
+        );
         let v = serde_json::to_value(&body).expect("serializes");
         assert!(v.get("include").is_none());
         assert!(v.get("reasoning").is_none());
@@ -1929,7 +2207,10 @@ mod tests {
         });
         let u: OpenAiUsageChunk = serde_json::from_value(v).expect("parses");
         let usage = map_usage(&u);
-        assert_eq!(usage.non_cached_input_tokens, 150, "miss preferred: {usage:?}");
+        assert_eq!(
+            usage.non_cached_input_tokens, 150,
+            "miss preferred: {usage:?}"
+        );
         assert_eq!(usage.cache_read_input_tokens, 800, "read kept: {usage:?}");
     }
 
@@ -1943,10 +2224,16 @@ mod tests {
             "max_tokens exceeded: reduce input size",
         ] {
             let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, body, None, None);
-            assert!(matches!(err, ProviderError::ContextOverflow(_)), "body: {body}");
+            assert!(
+                matches!(err, ProviderError::ContextOverflow(_)),
+                "body: {body}"
+            );
             assert!(!is_retryable_error(&err), "must not retry: {body}");
             assert!(err.should_compress(), "must flag compression: {body}");
-            assert!(err.to_string().contains("context exhausted"), "actionable: {err}");
+            assert!(
+                err.to_string().contains("context exhausted"),
+                "actionable: {err}"
+            );
         }
     }
 
@@ -1963,24 +2250,50 @@ mod tests {
         }
         // Narrowed: hyphen form still counts (500 proves filter path, not generic 400).
         for body in ["content-filter triggered", "content_filter triggered"] {
-            let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body, None, None);
-            assert!(matches!(err, ProviderError::BadRequest(_)), "filter must win over 500: {body} -> {err}");
+            let err =
+                classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body, None, None);
+            assert!(
+                matches!(err, ProviderError::BadRequest(_)),
+                "filter must win over 500: {body} -> {err}"
+            );
         }
         // Bare violates/flagged/safety without a filter qualifier are NOT filters:
         // 500 must stay retryable ServerError, not BadRequest.
-        for body in ["request violates policy", "response was flagged", "safety check failed"] {
-            let err = classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body, None, None);
-            assert!(matches!(err, ProviderError::ServerError(_)), "bare hint must not filter: {body} -> {err}");
+        for body in [
+            "request violates policy",
+            "response was flagged",
+            "safety check failed",
+        ] {
+            let err =
+                classify_http_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body, None, None);
+            assert!(
+                matches!(err, ProviderError::ServerError(_)),
+                "bare hint must not filter: {body} -> {err}"
+            );
         }
         // Bare max_tokens without a context qualifier is NOT overflow.
         {
-            let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, "max_tokens must be positive", None, None);
-            assert!(!matches!(err, ProviderError::ContextOverflow(_)), "bare max_tokens: {err}");
+            let err = classify_http_error(
+                reqwest::StatusCode::BAD_REQUEST,
+                "max_tokens must be positive",
+                None,
+                None,
+            );
+            assert!(
+                !matches!(err, ProviderError::ContextOverflow(_)),
+                "bare max_tokens: {err}"
+            );
         }
         // max_tokens needs a context qualifier to count as overflow.
-        for body in ["max_tokens exceeded: context too long", "max_tokens context exceeded"] {
+        for body in [
+            "max_tokens exceeded: context too long",
+            "max_tokens context exceeded",
+        ] {
             let err = classify_http_error(reqwest::StatusCode::BAD_REQUEST, body, None, None);
-            assert!(matches!(err, ProviderError::ContextOverflow(_)), "body: {body}");
+            assert!(
+                matches!(err, ProviderError::ContextOverflow(_)),
+                "body: {body}"
+            );
         }
     }
 
@@ -1995,9 +2308,11 @@ mod tests {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, "3".parse().unwrap());
         assert_eq!(parse_retry_after(&headers), Some(Duration::from_secs(3)));
-        headers.insert(reqwest::header::RETRY_AFTER, "not-a-number".parse().unwrap());
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            "not-a-number".parse().unwrap(),
+        );
         assert_eq!(parse_retry_after(&headers), None);
         assert_eq!(parse_retry_after(&reqwest::header::HeaderMap::new()), None);
     }
 }
-

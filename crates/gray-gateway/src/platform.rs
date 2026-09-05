@@ -1,7 +1,7 @@
 //! BasePlatformAdapter + utf16 helpers + truncation/splitting
 
-use async_trait::async_trait;
 use crate::config::Platform;
+use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct MessageEvent {
@@ -23,10 +23,20 @@ pub struct SendResult {
 
 impl SendResult {
     pub fn ok(message_id: Option<String>) -> Self {
-        Self { success: true, message_id, error: None, retryable: false }
+        Self {
+            success: true,
+            message_id,
+            error: None,
+            retryable: false,
+        }
     }
     pub fn fail(error: impl Into<String>, retryable: bool) -> Self {
-        Self { success: false, message_id: None, error: Some(error.into()), retryable }
+        Self {
+            success: false,
+            message_id: None,
+            error: Some(error.into()),
+            retryable,
+        }
     }
 }
 
@@ -78,14 +88,20 @@ pub trait BasePlatformAdapter: Send + Sync {
 
     /// Replace the text of a previously sent message (must fit in one chunk).
     async fn edit_message(&self, _chat: &str, _message_id: &str, _text: &str) -> SendResult {
-        SendResult::fail(format!("{} does not support message edits", self.platform()), false)
+        SendResult::fail(
+            format!("{} does not support message edits", self.platform()),
+            false,
+        )
     }
 
     /// Delete a previously sent message (progress-bubble cleanup). Default
     /// fails non-retryable; platforms with a delete API override it.
     /// Best-effort at call sites — a failed delete never fails the turn.
     async fn delete_message(&self, _chat: &str, _message_id: &str) -> SendResult {
-        SendResult::fail(format!("{} does not support message deletion", self.platform()), false)
+        SendResult::fail(
+            format!("{} does not support message deletion", self.platform()),
+            false,
+        )
     }
 }
 
@@ -125,7 +141,11 @@ impl InboundDedup {
     }
 
     pub fn with_limits(ttl: std::time::Duration, cap: usize) -> Self {
-        Self { ttl, cap: std::cmp::max(cap, 1), seen: std::sync::Mutex::new(std::collections::HashMap::new()) }
+        Self {
+            ttl,
+            cap: std::cmp::max(cap, 1),
+            seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
     }
 
     /// True when `(platform, chat, msg_id)` arrived within the TTL → drop it.
@@ -133,10 +153,10 @@ impl InboundDedup {
     pub fn is_duplicate(&self, platform: &str, chat: &str, msg_id: &str) -> bool {
         let key = (platform.to_string(), chat.to_string(), msg_id.to_string());
         let mut seen = self.seen.lock().unwrap();
-        if let Some(t) = seen.get(&key) {
-            if t.elapsed() < self.ttl {
-                return true;
-            }
+        if let Some(t) = seen.get(&key)
+            && t.elapsed() < self.ttl
+        {
+            return true;
         }
         seen.insert(key, std::time::Instant::now());
         if seen.len() > self.cap {
@@ -382,7 +402,9 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0], format!("{}\n", "a".repeat(60)));
         assert_eq!(chunks.concat(), s);
-        for c in &chunks { assert!(utf16_len(c) <= 100); }
+        for c in &chunks {
+            assert!(utf16_len(c) <= 100);
+        }
     }
 
     #[test]
@@ -390,7 +412,9 @@ mod tests {
         let s = "😀".repeat(10);
         let chunks = split_message_smart(&s, 5);
         assert_eq!(chunks.concat(), s);
-        for c in &chunks { assert!(utf16_len(c) <= 5); }
+        for c in &chunks {
+            assert!(utf16_len(c) <= 5);
+        }
         let s = "x".repeat(250);
         assert_eq!(split_message_smart(&s, 100).len(), 3);
     }
