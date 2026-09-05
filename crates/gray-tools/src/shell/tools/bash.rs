@@ -7,8 +7,7 @@
 //!
 //! Every spawn registers a registry task (foreground included). A foreground
 //! command that outlives its timeout is promoted to background — never
-//! killed. Cancel (Ctrl-C) still kills via the 2D-owned `term_then_kill`
-//! stand-in below.
+//! killed. Cancel (Ctrl-C) still kills via `kill::term_then_kill`.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -27,6 +26,7 @@ use crate::shell::contract::{
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
 use crate::shell::guard;
+use crate::shell::kill::term_then_kill;
 use crate::shell::pump::Pump;
 use crate::shell::registry::registry;
 use crate::shell::spawn::spawn;
@@ -198,7 +198,10 @@ impl Tool for BashTool {
                 ToolOutput::ok(promotion_string(id, spawned.pid, &log_path, secs))
             }
             Cause::Cancel => {
-                term_then_kill_throwaway(&mut child, spawned.pgid).await;
+                // User pressed Ctrl-C: escalate SIGTERM → SIGKILL on our
+                // group, then reap. Refusal (degenerate pgid) still falls
+                // through to wait — the child is ours, wait reaps it.
+                let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
                 let status = match child.wait().await {
                     Ok(st) => st,
                     Err(e) => return fail(format!("failed to wait for command: {e}")),
@@ -375,32 +378,4 @@ fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
         view.body = view.body.replace("{{MARKER}}", &hint);
     }
     view
-}
-
-// Cancel arm only (2B removed the timeout use — promotion never signals).
-// 2D replaces this with kill::term_then_kill. Kept minimal on purpose.
-async fn term_then_kill_throwaway(child: &mut tokio::process::Child, pgid: i32) {
-    if pgid <= 1 || pgid == std::process::id() as i32 {
-        return; // never broadcast: refuse degenerate or own groups
-    }
-    unsafe {
-        libc::kill(-pgid, libc::SIGTERM);
-    }
-    let grace = Duration::from_secs(2);
-    let t0 = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) | Err(_) => return,
-            Ok(None) => {}
-        }
-        if t0.elapsed() >= grace {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    if matches!(child.try_wait(), Ok(None)) {
-        unsafe {
-            libc::kill(-pgid, libc::SIGKILL);
-        }
-    }
 }
