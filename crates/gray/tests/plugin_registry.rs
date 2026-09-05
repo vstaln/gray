@@ -4,8 +4,10 @@ use gray::profile::{ToolsBasicPlugin, ToolsSearchPlugin, from_plugins};
 
 #[test]
 fn registry_from_plugins_collects_in_order() {
-    let plugins: Vec<Arc<dyn gray_plugin::Plugin>> =
-        vec![Arc::new(ToolsBasicPlugin), Arc::new(ToolsSearchPlugin)];
+    let plugins: Vec<Arc<dyn gray_plugin::Plugin>> = vec![
+        Arc::new(ToolsBasicPlugin::default()),
+        Arc::new(ToolsSearchPlugin),
+    ];
     let (reg, manifests) = from_plugins(&plugins);
     assert!(reg.get("read").is_some());
     assert!(reg.get("grep").is_some());
