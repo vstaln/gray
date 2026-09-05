@@ -12,6 +12,7 @@ mod resolve;
 pub mod stream;
 mod tail;
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) mod testkit;
 pub mod window;
 

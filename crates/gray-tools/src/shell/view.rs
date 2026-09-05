@@ -235,9 +235,9 @@ pub fn header(
     view: Option<&View>,
     elapsed: Duration,
 ) -> String {
-    let label = report.map(|r| r.label.clone()).unwrap_or_else(|| {
-        format!("task {} running · pid {}", task.id, task.pid)
-    });
+    let label = report
+        .map(|r| r.label.clone())
+        .unwrap_or_else(|| format!("task {} running · pid {}", task.id, task.pid));
     let note = report
         .and_then(|r| r.note.as_ref())
         .map(|n| format!(" ({n})"))
@@ -327,11 +327,17 @@ mod tests {
         assert!(head_tail_bytes <= 50 * 1024, "{head_tail_bytes}");
         assert!(v.body.starts_with("line 00001 "));
         assert!(v.body.ends_with("0000003000"));
-        assert_eq!(v.shown_lines.0 + v.shown_lines.1 + v.omitted_lines, v.total_lines);
+        assert_eq!(
+            v.shown_lines.0 + v.shown_lines.1 + v.omitted_lines,
+            v.total_lines
+        );
         assert_eq!(v.total_lines, 3000);
         let (a, b) = v.omitted_range.unwrap();
         assert!(a < b);
-        assert_eq!(v.omitted_bytes, log.len() - (v.body.len() - "{{MARKER}}".len() - 2));
+        assert_eq!(
+            v.omitted_bytes,
+            log.len() - (v.body.len() - "{{MARKER}}".len() - 2)
+        );
     }
 
     #[test]
@@ -343,7 +349,13 @@ mod tests {
         // Both halves must still be valid UTF-8 (no torn codepoint).
         assert!(std::str::from_utf8(v.body.as_bytes()).is_ok());
         let (a, b) = v.omitted_range.unwrap();
-        let head_len = v.body.split("{{MARKER}}").next().unwrap().trim_end_matches('\n').len();
+        let head_len = v
+            .body
+            .split("{{MARKER}}")
+            .next()
+            .unwrap()
+            .trim_end_matches('\n')
+            .len();
         assert_eq!(a, 100 + head_len as u64);
         assert!(b > a);
     }
@@ -387,7 +399,10 @@ mod tests {
         assert!(m.contains("shell_output(task_id=\"t4\""), "{m}");
         assert!(m.contains(&format!("from_offset={a}")), "{m}");
         assert!(m.contains("lines / "), "{m}");
-        assert_eq!(resume_hint(TaskId(4), &middle_out(b"hi\n", 50 * 1024, 2000, 0)), "");
+        assert_eq!(
+            resume_hint(TaskId(4), &middle_out(b"hi\n", 50 * 1024, 2000, 0)),
+            ""
+        );
     }
 
     #[test]
@@ -405,7 +420,10 @@ mod tests {
         assert!(h2.contains("showing first"), "{h2}");
         assert!(h2.contains("omitted"), "{h2}");
 
-        let kill = report("exit 137 (SIGKILL)", Some("likely OOM-killed; check `dmesg | tail`"));
+        let kill = report(
+            "exit 137 (SIGKILL)",
+            Some("likely OOM-killed; check `dmesg | tail`"),
+        );
         let h3 = header(&t, Some(&kill), Some(&v), Duration::from_secs(2));
         assert!(h3.contains("exit 137 (SIGKILL) (likely OOM-killed"), "{h3}");
 

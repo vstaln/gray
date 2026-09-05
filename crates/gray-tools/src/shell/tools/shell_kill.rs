@@ -63,10 +63,7 @@ impl Tool for ShellKillTool {
                 _ => return fail("port must be 1..=65535".to_string()),
             }
         };
-        let session = ctx
-            .session_id
-            .clone()
-            .unwrap_or_else(|| "nosession".into());
+        let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
         match super::super::kill::kill(target, &session, ctx).await {
             Ok(rep) => ToolOutput::ok(rep.describe),
             Err(e) => fail(e),
@@ -80,7 +77,10 @@ fn parse_task_id(v: Option<&Value>) -> Option<TaskId> {
         Some(Value::Number(n)) => n.to_string(),
         _ => return None,
     };
-    let s = s.strip_prefix('t').or_else(|| s.strip_prefix('T')).unwrap_or(&s);
+    let s = s
+        .strip_prefix('t')
+        .or_else(|| s.strip_prefix('T'))
+        .unwrap_or(&s);
     s.parse::<u32>().ok().map(TaskId)
 }
 
@@ -112,8 +112,18 @@ mod tests {
                 .await
                 .is_error
         );
-        assert!(ShellKillTool.execute(&ctx, json!({"pid": 0})).await.is_error);
-        assert!(ShellKillTool.execute(&ctx, json!({"port": 99999})).await.is_error);
+        assert!(
+            ShellKillTool
+                .execute(&ctx, json!({"pid": 0}))
+                .await
+                .is_error
+        );
+        assert!(
+            ShellKillTool
+                .execute(&ctx, json!({"port": 99999}))
+                .await
+                .is_error
+        );
     }
 
     #[tokio::test]
@@ -122,7 +132,9 @@ mod tests {
             session_id: Some(format!("killtool-{}-unknown", std::process::id())),
             ..ToolContext::default()
         };
-        let out = ShellKillTool.execute(&ctx, json!({"task_id": "t999"})).await;
+        let out = ShellKillTool
+            .execute(&ctx, json!({"task_id": "t999"}))
+            .await;
         assert!(out.is_error, "{}", out.content);
         assert!(out.content.contains("unknown task"), "{}", out.content);
     }
