@@ -5,6 +5,7 @@ pub mod hygiene;
 pub mod notices;
 pub mod stream;
 pub mod window;
+mod bulk;
 mod dedup;
 mod guard;
 mod tail;
@@ -57,13 +58,25 @@ impl Tool for ReadTool {
             "read",
             "Read a UTF-8 text file. Returns file contents, capped at \
              2000 lines / 50 KiB. Lines are prefixed with `<n>\\t` like \
-             cat -n; do not include the prefix when quoting text for edit.",
+             cat -n; do not include the prefix when quoting text for edit. \
+             Pass `paths` (files/globs) to read several files at once \
+             (limit applies per file).",
             json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "File path (absolute or relative to cwd)"
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Files and/or globs to read in one call (sorted, max 200)"
+                    },
+                    "exclude": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Glob patterns to exclude from paths expansion"
                     },
                     "offset": {
                         "type": "integer",
@@ -74,7 +87,7 @@ impl Tool for ReadTool {
                         "description": "Maximum number of lines to return (default 2000)"
                     }
                 },
-                "required": ["path"]
+                "required": []
             }),
         )
     }
@@ -89,6 +102,11 @@ impl Tool for ReadTool {
 
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
+        // T6.1 bulk: `paths[]`/`exclude[]` short-circuit here. Single-`path`
+        // behavior below is untouched (sibling regions own it).
+        if let Some(out) = self.execute_bulk(ctx, &args).await {
+            return out;
+        }
         // Legacy names (file_path/filePath/…) are renamed by the ALIASES table in
         // `crate` (coerce_args) before lookup — no per-tool chain here (T4.3).
         let path = match get_str(&args, "path") {
@@ -328,5 +346,136 @@ impl Tool for ReadTool {
         // Already truncated via truncate_head with actionable hint; bypass the
         // generic head+tail truncation that would hide it.
         ToolOutput::ok(output)
+    }
+}
+
+// ── T6.1 bulk region (owner: this task; sibling regions above untouched) ──
+
+/// Lenient string-list read for `paths`/`exclude`: absent/null → empty;
+/// array → its string items; a bare string → one item (coerce_args already
+/// wraps scalars for array-typed props — this is just belt-and-braces).
+fn get_str_list(args: &Value, key: &str) -> Vec<String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(_) => Vec::new(),
+    }
+}
+
+impl ReadTool {
+    /// Bulk `paths[]` mode. `None` = not a bulk call (no `paths`), so
+    /// `execute` falls through to the single-`path` code untouched. Neither
+    /// `path` nor `paths` → the spec-fixed missing-input message.
+    async fn execute_bulk(&self, ctx: &ToolContext, args: &Value) -> Option<ToolOutput> {
+        let paths = get_str_list(args, "paths");
+        if paths.is_empty() {
+            if args.get("path").is_none() || args.get("path").is_some_and(Value::is_null) {
+                return Some(fail(bulk::MISSING_INPUT_MESSAGE.to_string()));
+            }
+            return None;
+        }
+        let excludes = get_str_list(args, "exclude");
+        let rels = bulk::expand(&ctx.cwd, &paths, &excludes);
+        if rels.is_empty() {
+            // ponytail: wording staged here; notices.rs owner may adopt it.
+            let mut shown = paths.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+            if paths.len() > 3 {
+                shown.push_str(", …");
+            }
+            return Some(fail(format!(
+                "read failed: no files matched {} pattern(s): {shown}. \
+                 Check the globs and exclude[].",
+                paths.len()
+            )));
+        }
+        // Per-file render reuses the single-path path above (one recursive
+        // call per file, offset/limit forwarded raw): guards, hygiene,
+        // windowing, and per-file ledger/dedup (T3.2/T3.3) apply unchanged.
+        let mut rendered: Vec<(String, String)> = Vec::with_capacity(rels.len());
+        for (i, rel) in rels.iter().enumerate() {
+            let mut obj = serde_json::Map::with_capacity(3);
+            obj.insert("path".to_string(), Value::String(rel.clone()));
+            if let Some(o) = args.get("offset") {
+                obj.insert("offset".to_string(), o.clone());
+            }
+            if let Some(l) = args.get("limit") {
+                obj.insert("limit".to_string(), l.clone());
+            }
+            let single = Value::Object(obj);
+            let mut out = self.execute(ctx, single.clone()).await;
+            // Spec: bulk never stubs the first file. A stub consumes the T3.3
+            // arm, so one retry returns it in full (no dedup code touched).
+            if i == 0
+                && !out.is_error
+                && out.content.contains("unchanged since your previous read")
+            {
+                out = self.execute(ctx, single).await;
+            }
+            rendered.push((rel.clone(), out.content));
+        }
+        let sizes: Vec<(String, u64)> = rendered
+            .iter()
+            .map(|(n, c)| (n.clone(), c.len() as u64))
+            .collect();
+        let (shown, skipped) = bulk::fit_within_cap(&sizes);
+        let mut blocks = Vec::with_capacity(shown.len());
+        for name in &shown {
+            let body = rendered
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, c)| c.as_str())
+                .unwrap_or("");
+            blocks.push(format!("{}\n{body}", bulk::header(name)));
+        }
+        let mut out = blocks.join("\n\n");
+        if !skipped.is_empty() {
+            let note = bulk::aggregate_note(shown.len(), rendered.len(), &skipped);
+            out = if out.is_empty() {
+                note
+            } else {
+                format!("{out}\n\n{note}")
+            };
+        }
+        Some(ToolOutput::ok(out))
+    }
+}
+
+#[cfg(test)]
+mod bulk_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn schema_has_single_scalar_types_paths_exclude_and_empty_required() {
+        let def = ReadTool::default().def();
+        let props = def
+            .parameters
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("properties");
+        for key in ["path", "paths", "exclude", "offset", "limit"] {
+            assert!(props.contains_key(key), "schema missing {key}");
+        }
+        for (name, schema) in props {
+            let t = schema
+                .get("type")
+                .unwrap_or_else(|| panic!("property {name} missing scalar type"));
+            assert!(
+                t.is_string(),
+                "property {name} must have exactly one scalar type (no unions), got {t}"
+            );
+        }
+        let req = def
+            .parameters
+            .get("required")
+            .and_then(|r| r.as_array())
+            .expect("required");
+        assert!(
+            req.is_empty(),
+            "required must be [] (path-or-paths enforced at runtime)"
+        );
     }
 }
