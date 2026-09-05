@@ -312,7 +312,11 @@ impl Agent {
         let transcript = self
             .messages
             .iter()
-            .map(|m| format!("{}: {}", m.role, m.text_content()))
+            // Overflow recovery previously summarized `text_content`, which
+            // omits every tool result — the summary lost exactly the file
+            // bodies and command output the run depended on, forcing the
+            // model to re-read them after compaction.
+            .map(|m| format!("{}: {}", m.role, m.context_text()))
             .collect::<Vec<_>>()
             .join("\n");
         if transcript.trim().is_empty() {
