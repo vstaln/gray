@@ -100,3 +100,68 @@ still kills the foreground command; background tasks die on session shutdown
 - Until 2E merges, REPL exit orphans running tasks (`shutdown_session`
   sweeps them once wired). In `-p` print mode there is no later turn, so
   `background=true` / promoted tasks would be orphaned — decision pending.
+
+## shell_output — cursor reads, wait modes, list (2C)
+
+Args: `task_id?` (e.g. `"t2"`), `from_offset=0`, `wait="none"|"output"|"exit"`,
+`timeout=30` (1..=600), `max_bytes=16384` (≤51200).
+
+No `task_id` → list, one line per task (id-sorted) plus a summary line:
+
+```text
+t1 · exit 0 · ran 2.1s · finished 5s ago · log ~/.gray/shell/nosession/t1.log
+t2 · running · pid 4250 · 12s · log ~/.gray/shell/nosession/t2.log
+2 tasks this session. shell_output(task_id="t2") to read output.
+```
+
+Empty registry: `no tasks this session. bash(background=true) starts one.`
+
+Read (running):
+
+```text
+t2 · running · pid 4250 · 12s · bytes 0–128 of 128 · next_offset=128
+<untrusted-output task="t2">
+line 1
+line 2
+</untrusted-output>
+```
+
+Read (exited — same shape, verdict first):
+
+```text
+t1 · exit 0 · ran 2.1s · finished 5s ago · bytes 0–46 of 46 · next_offset=46
+<untrusted-output task="t1">
+bg-hi
+</untrusted-output>
+```
+
+`wait="output"` blocks until the log grows past `from_offset`;
+`wait="exit"` blocks until the task exits (both park on watch channels,
+never poll). `wait="exit"` past `timeout` returns what is new plus:
+
+```text
+still running after 1s; call again with wait=exit
+```
+
+Nothing new with `wait="none"` (the anti-polling string — never silence):
+
+```text
+no new output for t2 (log is 128 bytes, next_offset=128). Do not poll: call again with wait="output" to block until the next write, wait="exit" to block until exit, or sleep(seconds) and continue working.
+```
+
+Offset past the end is a note, not an error (`is_error == false`):
+
+```text
+offset 999 is past the end (log is 128 bytes). Retry with from_offset=128 or 0.
+```
+
+Unknown id is an error that lists what exists (`is_error == true`):
+
+```text
+unknown task "t9" this session. Known tasks: t1, t2.
+```
+
+Windows over 50 KiB go through `middle_out` with the window's start as base
+offset, so the marker's `from_offset` stays absolute and pages chain via
+`next_offset`. A window that ends mid-line on a running task keeps the bytes
+and adds `(last line incomplete — the task is still writing it)`.
