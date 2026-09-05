@@ -1,10 +1,8 @@
 //! T4.1 — Unicode filename retry (7 spellings) before failing.
 //!
 //! Pure functions + `std::fs` existence checks only (std only, no new deps).
-//! UNWIRED: `read/mod.rs` has no `mod resolve;` yet (Wave-D sibling owns the
-//! `mod.rs` region — same pattern as `tail.rs`/`args.rs` staging). Intended
-//! caller flow in `ReadTool::execute`, right after `resolve_path` and before
-//! the T2.3 guard:
+//! WIRED (wave gate): `read/mod.rs` has `mod resolve;` — `ReadTool::execute`
+//! resolves the retry right after `resolve_path` and before the T2.3 guard:
 //!
 //! ```ignore
 //! mod resolve;
@@ -20,13 +18,12 @@
 //! Only the final path component is ever mutated — a repair never changes
 //! directories ([`same_parent`] enforces it).
 //!
-//! Contract string lives HERE until T1.3's `notices.rs` integrator moves it
-//! verbatim (same staging as `tail.rs`/`hygiene.rs` — one owner per string,
-//! no duplicate in `notices.rs` first).
+//! Contract string lives in `notices.rs` (moved verbatim at the wave gate);
+//! [`repaired_note`] below delegates there (one owner per string).
 //!
 //! FOLLOW-UPS (not done here — files outside T4.1 ownership):
-//! 1. `read/mod.rs`: add `mod resolve;` + the wiring above (Wave-D owner).
-//! 2. `notices.rs` (T1.3 owner): move [`repaired_note`] there verbatim.
+//! 1. Done (wave gate): `read/mod.rs` wiring above.
+//! 2. Done (wave gate): `notices.rs` owns [`repaired_note`] verbatim.
 //! 3. `write.rs`/`edit.rs`: call the same helper (spec's follow-up).
 //! 4. `Cargo.toml`: plan suggests `unicode-normalization`; deliberately NOT
 //!    added here (outside ownership). See the `ponytail:` note on [`to_nfc`].
@@ -37,10 +34,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// `[read: opened <actual> (path repaired from <given>)]` — prepended to the
-/// output when a repair hits, so the model learns the real spelling for edit.
+/// `[read: opened <actual> (path repaired from <given>)]` — delegates to
+/// `notices.rs` (prepended to the output when a repair hits).
 pub fn repaired_note(actual: &str, given: &str) -> String {
-    format!("[read: opened {actual} (path repaired from {given})]")
+    super::notices::repaired_note(actual, given)
 }
 
 /// (precomposed, base, combining) for the Latin scripts the retry covers.
@@ -162,7 +159,7 @@ fn space_to_nbsp_variants(name: &str) -> Vec<String> {
     let idx: Vec<usize> = chars
         .iter()
         .enumerate()
-        .filter(|(_, &c)| c == ' ')
+        .filter(|&(_, &c)| c == ' ')
         .map(|(i, _)| i)
         .collect();
     (1..(1u32 << n))
@@ -287,7 +284,10 @@ mod tests {
         assert!(c.contains(&"cafe\u{301} it's.txt".to_string())); // (3) NFD
         assert!(c.contains(&"caf\u{E9} it\u{2019}s.txt".to_string())); // (6) curly
         assert!(c.contains(&"cafe\u{301} it\u{2019}s.txt".to_string())); // (7) NFD+curly
-        assert_eq!(c.len(), c.iter().collect::<std::collections::HashSet<_>>().len());
+        assert_eq!(
+            c.len(),
+            c.iter().collect::<std::collections::HashSet<_>>().len()
+        );
     }
 
     /// All 7 spellings, one row each (6 has both quote directions).
@@ -295,13 +295,17 @@ mod tests {
     #[test]
     fn table_all_seven_spellings_resolve() {
         let rows: &[(&str, &str, &str)] = &[
-            ("s1", "hello.txt", "hello.txt"), // (1) as given
-            ("s2", "cafe\u{301}.txt", "caf\u{E9}.txt"), // (2) NFC
-            ("s3", "caf\u{E9}.txt", "cafe\u{301}.txt"), // (3) NFD
+            ("s1", "hello.txt", "hello.txt"),                  // (1) as given
+            ("s2", "cafe\u{301}.txt", "caf\u{E9}.txt"),        // (2) NFC
+            ("s3", "caf\u{E9}.txt", "cafe\u{301}.txt"),        // (3) NFD
             ("s4", "with\u{202F}space.txt", "with space.txt"), // (4) NBSP→space
-            ("s5", "Screenshot 3.04 PM.png", "Screenshot 3.04\u{202F}PM.png"), // (5) space→U+202F
-            ("s6", "it's.md", "it\u{2019}s.md"), // (6a) ascii→curly
-            ("s6r", "it\u{2019}s-rev.md", "it's-rev.md"), // (6b) curly→ascii
+            (
+                "s5",
+                "Screenshot 3.04 PM.png",
+                "Screenshot 3.04\u{202F}PM.png",
+            ), // (5) space→U+202F
+            ("s6", "it's.md", "it\u{2019}s.md"),               // (6a) ascii→curly
+            ("s6r", "it\u{2019}s-rev.md", "it's-rev.md"),      // (6b) curly→ascii
             ("s7", "caf\u{E9}'s.md", "cafe\u{301}\u{2019}s.md"), // (7) NFD+curly
         ];
         let outer = tempfile::tempdir().unwrap();

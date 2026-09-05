@@ -12,10 +12,8 @@
 //! };
 //! ```
 //!
-//! Contract strings live here until T1.1's `notices.rs` lands; the integrator
-//! moves them there verbatim (wording review then diffs one file).
-
-use crate::truncate::format_size;
+//! Contract strings live in `notices.rs` (moved verbatim at the wave gate);
+//! [`mime_note`]/[`nul_note`] below delegate there (one owner per string).
 
 /// Bytes sniffed for a magic number before any decoding.
 pub const SNIFF_SAMPLE_BYTES: usize = 8 * 1024;
@@ -39,14 +37,11 @@ pub fn normalize_newlines(text: &str) -> String {
 }
 
 fn mime_note(display: &str, mime: &str, size: usize) -> String {
-    format!(
-        "[read: {display} is {mime} ({}), not shown]",
-        format_size(size)
-    )
+    super::notices::mime_note(display, mime, size)
 }
 
 fn nul_note(display: &str) -> String {
-    format!("[read: {display} looks binary (NUL bytes), not shown]")
+    super::notices::nul_note(display)
 }
 
 /// Magic-byte sniff over the first 8 KiB. `Ok(())` = text, proceed;
@@ -102,6 +97,7 @@ pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::truncate::format_size;
 
     #[test]
     fn bom_stripped_once_at_start_only() {
@@ -159,13 +155,7 @@ mod tests {
     #[test]
     fn nul_bytes_return_nul_note() {
         let nul: Vec<u8> = (0..4096)
-            .map(|i| {
-                if i % 8 == 7 {
-                    0
-                } else {
-                    b'A' + (i % 26) as u8
-                }
-            })
+            .map(|i| if i % 8 == 7 { 0 } else { b'A' + (i % 26) as u8 })
             .collect();
         assert_eq!(
             prepare(&nul, "nul.bin").unwrap_err(),

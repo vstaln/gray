@@ -73,7 +73,10 @@ fn write_fixtures(root: &Path, big: bool) -> std::io::Result<()> {
 
     std::fs::write(root.join("empty.txt"), b"")?;
     std::fs::write(root.join("crlf.txt"), b"alpha\r\nbeta\r\ngamma\r\n")?;
-    std::fs::write(root.join("bom.txt"), "\u{FEFF}fn main() {}\nprintln!(\"hi\");\n")?;
+    std::fs::write(
+        root.join("bom.txt"),
+        "\u{FEFF}fn main() {}\nprintln!(\"hi\");\n",
+    )?;
 
     let emoji: Vec<String> = (1..=200).map(|_| "\u{1F600}".repeat(100)).collect();
     std::fs::write(root.join("emoji.txt"), emoji.join("\n") + "\n")?;
@@ -88,13 +91,7 @@ fn write_fixtures(root: &Path, big: bool) -> std::io::Result<()> {
     std::fs::write(root.join("real.png"), real)?;
 
     let nul: Vec<u8> = (0..4096)
-        .map(|i| {
-            if i % 8 == 7 {
-                0
-            } else {
-                b'A' + (i % 26) as u8
-            }
-        })
+        .map(|i| if i % 8 == 7 { 0 } else { b'A' + (i % 26) as u8 })
         .collect();
     std::fs::write(root.join("nul.bin"), nul)?;
 
@@ -165,9 +162,17 @@ async fn zoo_builds_every_fixture_with_expected_shape() {
     assert!(wide.lines().all(|l| l.len() == 300));
 
     assert_eq!(read_file(&root, "empty.txt").len(), 0);
-    assert!(read_file(&root, "crlf.txt").windows(2).any(|w| w == b"\r\n"));
+    assert!(
+        read_file(&root, "crlf.txt")
+            .windows(2)
+            .any(|w| w == b"\r\n")
+    );
     assert!(read_file(&root, "bom.txt").starts_with(&[0xEF, 0xBB, 0xBF]));
-    assert!(String::from_utf8(read_file(&root, "emoji.txt")).unwrap().contains('😀'));
+    assert!(
+        String::from_utf8(read_file(&root, "emoji.txt"))
+            .unwrap()
+            .contains('😀')
+    );
 
     let fake = String::from_utf8(read_file(&root, "fake.png")).expect("fake.png is text");
     assert_eq!(fake.lines().count(), 2);
@@ -191,7 +196,10 @@ async fn zoo_builds_every_fixture_with_expected_shape() {
             SPARSE_BYTES
         );
     } else {
-        assert!(!root.join("sparse.txt").exists(), "sparse.txt needs GRAY_ZOO_BIG=1");
+        assert!(
+            !root.join("sparse.txt").exists(),
+            "sparse.txt needs GRAY_ZOO_BIG=1"
+        );
     }
 }
 
@@ -230,7 +238,10 @@ async fn zoo_golden_agents_md_round_trips_exact() {
     let zoo = Zoo::build().unwrap();
     let out = zoo.read("AGENTS.md", None, None).await;
     assert!(!out.is_error);
-    assert_golden(&out.content, "     1\t# Agents\n     2\t\n     3\tRead this first");
+    assert_golden(
+        &out.content,
+        "     1\t# Agents\n     2\t\n     3\tRead this first.",
+    );
 }
 
 #[tokio::test]
@@ -240,7 +251,9 @@ async fn zoo_golden_long_txt_line_cut_exact() {
     assert!(!out.is_error);
     // T1.2: every shown line carries its absolute cat -n prefix.
     // INT-C wires T1.3: line-cap hint uses the notices::line_cap contract wording.
-    let shown: Vec<String> = (1..=2000).map(|i| format!("{:>6}\tline {i:04}", i)).collect();
+    let shown: Vec<String> = (1..=2000)
+        .map(|i| format!("{:>6}\tline {i:04}", i))
+        .collect();
     let expected = format!(
         "{}\n\n[read: showing lines 1-2000 of 3000. Continue with offset=2001.]",
         shown.join("\n")
@@ -270,6 +283,10 @@ async fn zoo_smoke_every_small_fixture_reads() {
         assert!(!out.content.is_empty() || name == "empty.txt");
     }
     let miss = zoo.read("real.png", None, None).await;
-    assert!(!miss.is_error, "real.png returns a note today: {}", miss.content);
+    assert!(
+        !miss.is_error,
+        "real.png returns a note today: {}",
+        miss.content
+    );
     assert!(miss.content.contains("is image/png"), "{}", miss.content);
 }
