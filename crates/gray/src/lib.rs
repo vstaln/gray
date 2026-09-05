@@ -114,6 +114,17 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_
     }
 }
 
+/// Ordered active plugins: the `gray.yml` profile order, or builtins when
+/// the profile is missing/unparseable/empty. Single spawn site shared by
+/// [`build_registry`] and [`build_agent`] so sidecar children spawn once
+/// per build. Returns `(plugins, used_fallback)`.
+async fn active_plugins() -> anyhow::Result<(Vec<std::sync::Arc<dyn gray_plugin::Plugin>>, bool)> {
+    match profile_plugins().await? {
+        Some(plugins) if !plugins.is_empty() => Ok((plugins, false)),
+        _ => Ok((default_plugins(), true)),
+    }
+}
+
 /// Builds the tool registry from the `gray.yml` profile plugin order,
 /// falling back to [`Registry::builtin`] when no profile file is present.
 /// Returns `(registry, used_fallback)` — the flag feeds `--dump-manifest`'s note.
@@ -121,10 +132,8 @@ async fn profile_plugins() -> anyhow::Result<Option<Vec<std::sync::Arc<dyn gray_
 /// (ponytail-audit #13: `default_manifests`/`effective_manifests` deleted;
 /// manifests travel on the registry via [`Registry::manifests`].)
 pub async fn build_registry() -> anyhow::Result<(Registry, bool)> {
-    match profile_plugins().await? {
-        Some(plugins) if !plugins.is_empty() => Ok((Registry::from_plugins(&plugins), false)),
-        _ => Ok((Registry::builtin(), true)),
-    }
+    let (plugins, fallback) = active_plugins().await?;
+    Ok((Registry::from_plugins(&plugins), fallback))
 }
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
@@ -269,7 +278,11 @@ pub async fn build_agent(
     let context_files = system_prompt::discover_context_files(cwd);
 
     // Tools only appear in the prompt when they have a snippet.
-    let (registry, _) = build_registry().await?;
+    // Same plugins feed the registry and the agent hooks (protocol v1:
+    // prompt/context, tool/before, command/run reach the loop + REPL).
+    let (plugins, _) = active_plugins().await?;
+    let registry = Registry::from_plugins(&plugins);
+    let hooks = gray_plugin::PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
     let tool_snippets = registry.prompt_snippets();
     let selected_tools = registry.tool_names();
     let prompt_guidelines = {
@@ -299,7 +312,8 @@ pub async fn build_agent(
 
     let agent = Agent::new(Box::new(provider), Box::new(registry))
         .with_system(system_prompt)
-        .with_tools(tool_defs);
+        .with_tools(tool_defs)
+        .with_hooks(hooks);
 
     Ok(agent)
 }
