@@ -1,8 +1,8 @@
 //! T4.3 input-repair unit for the `read` tool: arg aliases + strict integers.
 //!
 //! Pure functions only (`serde_json` is already a gray-tools dep — no new deps).
-//! Intended home is `read::args` once T1.1 splits `read.rs` into `read/`; until
-//! then this file is unwired on purpose (see FOLLOW-UPS below).
+//! Wired by T1.1 as `read::args` (`pub mod args;` in `read/mod.rs`); the
+//! lib.rs ALIASES/coerce_args half stays a follow-up (T4.3 items 1–2).
 //!
 //! Spec: plan.ts T4.3 ("Input repair: 10 path aliases, offset/limit aliases,
 //! never floor"). Exact contract strings live here so the reviewer diffs one file.
@@ -11,9 +11,9 @@
 //! 1. `gray-tools/src/lib.rs`: append [`READ_ARG_ALIASES`] rows to `ALIASES`.
 //! 2. `gray-tools/src/lib.rs` `coerce_args`: delete the `f64 -> i64` fallback;
 //!    route `("integer", String|Number)` through [`coerce_integer`].
-//! 3. `read.rs` (T1.1 owns the split): add `pub mod args;`, delete the inline
-//!    `.or_else(get_str("file_path"))` chain (the table runs first), surface
-//!    [`LIMIT_ZERO_NOTE`] when `limit == 0`, and surface [`coerce_integer`]
+//! 3. `read/mod.rs` (T1.1 did: `pub mod args;`, inline `file_path` chain
+//!    deleted): still open — surface [`LIMIT_ZERO_NOTE`] when `limit == 0`
+//!    and [`coerce_integer`]
 //!    errors (message upgrade may touch gray-core's `get_opt_u64` — separate
 //!    crate, needs its own owner).
 

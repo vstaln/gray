@@ -1,7 +1,6 @@
 //! T0.1 scaffold — hostile-file fixture zoo + golden-output harness.
 //!
-//! Planned wiring (T1.1, which splits `read.rs` into `read/mod.rs`):
-//! add `#[cfg(test)] pub(crate) mod testkit;` to `read/mod.rs`.
+//! Wired by T1.1 as `#[cfg(test)] pub(crate) mod testkit` in `read/mod.rs`.
 //!
 //! Fixtures are generated at test time into a `TempDir` and never committed.
 //! `crates/gray-tools/tests/read_zoo.rs` carries a self-contained copy of the
