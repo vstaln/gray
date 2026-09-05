@@ -278,15 +278,9 @@ pub(crate) fn dispatch_agent_event(
                     .and_modify(|e| e.1 = Some(args.clone()))
                     .or_insert((String::new(), Some(args.clone())));
                 // Brief 3B: `sleep` shows its countdown until its result lands.
-                if pending_tools
-                    .get(id)
-                    .is_some_and(|(n, _)| n == "sleep")
-                {
+                if pending_tools.get(id).is_some_and(|(n, _)| n == "sleep") {
                     let secs = args.get("seconds").and_then(|s| s.as_u64()).unwrap_or(0);
-                    let reason = args
-                        .get("reason")
-                        .and_then(|r| r.as_str())
-                        .unwrap_or("");
+                    let reason = args.get("reason").and_then(|r| r.as_str()).unwrap_or("");
                     if secs > 0 {
                         t.begin_sleep(secs, reason);
                     }

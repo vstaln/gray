@@ -18,8 +18,7 @@ const GRACE: Duration = Duration::from_secs(2);
 const EXIT_WAIT: Duration = Duration::from_secs(3);
 
 #[cfg(test)]
-pub(crate) static SIGNAL_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub(crate) static SIGNAL_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Serializes every test that signals or counts signals (this file plus the
 /// registry shutdown test, which now routes through `term_then_kill`): the
@@ -85,7 +84,9 @@ async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<KillMe
 /// (never broadcast). Returns `Err`, never a method, on refusal.
 pub async fn term_then_kill(pgid: i32, grace: Duration) -> Result<KillMethod, String> {
     if pgid <= 1 {
-        return Err(format!("refusing to signal process group {pgid}: never broadcast"));
+        return Err(format!(
+            "refusing to signal process group {pgid}: never broadcast"
+        ));
     }
     let me = std::process::id() as i32;
     if pgid == me {
@@ -281,7 +282,11 @@ async fn kill_task(id: TaskId, session: &str) -> Result<KillReport, String> {
     let report = wait_exit(session, id).await;
     let describe = match &method {
         KillMethod::TermAnswered(d) => {
-            format!("{id} (pid {}) terminated after {:.1}s", info.pid, d.as_secs_f32())
+            format!(
+                "{id} (pid {}) terminated after {:.1}s",
+                info.pid,
+                d.as_secs_f32()
+            )
         }
         KillMethod::TermIgnoredThenKill(g) => format!(
             "{id} (pid {}) ignored SIGTERM; SIGKILL sent after {:.0}s",
@@ -311,7 +316,9 @@ async fn kill_pid(pid: u32, session: &str, ctx: &ToolContext) -> Result<KillRepo
         ctx,
         &format!("kill pid {pid} ({comm})"),
         "foreign-kill",
-        &format!("pid {pid} ({comm}) is not a gray task; it may belong to something you didn't start"),
+        &format!(
+            "pid {pid} ({comm}) is not a gray task; it may belong to something you didn't start"
+        ),
         "shell_kill(task_id=...) for gray tasks",
     )
     .await
@@ -327,7 +334,10 @@ async fn kill_pid(pid: u32, session: &str, ctx: &ToolContext) -> Result<KillRepo
     let method = escalate(pid as i32, &format!("pid {pid}"), GRACE).await?;
     let describe = match &method {
         KillMethod::TermAnswered(d) => {
-            format!("foreign pid {pid} ({comm}) terminated after {:.1}s", d.as_secs_f32())
+            format!(
+                "foreign pid {pid} ({comm}) terminated after {:.1}s",
+                d.as_secs_f32()
+            )
         }
         KillMethod::TermIgnoredThenKill(g) => format!(
             "foreign pid {pid} ({comm}) ignored SIGTERM; SIGKILL sent after {:.0}s",
@@ -411,14 +421,15 @@ mod tests {
     }
 
     /// Spawn via the shell path and register; caller owns the child.
-    fn spawn_reg(
-        sess: &str,
-        cmd: &str,
-        task_n: u32,
-    ) -> (TaskId, u32, i32, tokio::process::Child) {
+    fn spawn_reg(sess: &str, cmd: &str, task_n: u32) -> (TaskId, u32, i32, tokio::process::Child) {
         let spawned = spawn(cmd, &std::env::temp_dir(), TaskId(task_n)).expect("spawn");
         let (pid, pgid, child) = (spawned.pid, spawned.pgid, spawned.child);
-        let id = registry().register(sess, &child, cmd, std::env::temp_dir().join(format!("killtest-{task_n}.log")));
+        let id = registry().register(
+            sess,
+            &child,
+            cmd,
+            std::env::temp_dir().join(format!("killtest-{task_n}.log")),
+        );
         (id, pid, pgid, child)
     }
 
@@ -461,12 +472,18 @@ mod tests {
         let before = sig_calls();
         for pgid in [0, 1, -1, i32::MIN] {
             assert!(
-                term_then_kill(pgid, Duration::from_millis(100)).await.is_err(),
+                term_then_kill(pgid, Duration::from_millis(100))
+                    .await
+                    .is_err(),
                 "pgid {pgid}"
             );
         }
         let me = std::process::id() as i32;
-        assert!(term_then_kill(me, Duration::from_millis(100)).await.is_err());
+        assert!(
+            term_then_kill(me, Duration::from_millis(100))
+                .await
+                .is_err()
+        );
         assert!(
             term_then_kill(unsafe { libc::getpgrp() }, Duration::from_millis(100))
                 .await
@@ -504,8 +521,15 @@ mod tests {
         .await
         .expect("kill returns")
         .expect("kill ok");
-        assert!(matches!(rep.method, KillMethod::TermAnswered(_)), "{}", rep.describe);
-        assert!(group_gone(pgid).await, "whole group (sh+sleep) must be gone");
+        assert!(
+            matches!(rep.method, KillMethod::TermAnswered(_)),
+            "{}",
+            rep.describe
+        );
+        assert!(
+            group_gone(pgid).await,
+            "whole group (sh+sleep) must be gone"
+        );
         let body = rep.report.expect("waiter filled the exit report");
         assert_eq!(body.effective, 143, "{:?}", body.label);
         assert!(rep.describe.contains(&pid.to_string()), "{}", rep.describe);
@@ -537,7 +561,10 @@ mod tests {
         let m = term_then_kill(pgid, Duration::from_millis(300))
             .await
             .expect("escalates");
-        assert!(matches!(m, KillMethod::TermIgnoredThenKill(_)), "expected escalation");
+        assert!(
+            matches!(m, KillMethod::TermIgnoredThenKill(_)),
+            "expected escalation"
+        );
         let st = tokio::time::timeout(Duration::from_secs(3), reaper)
             .await
             .expect("reaped")
@@ -556,14 +583,23 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .expect("spawn true");
-        let id = registry().register(&s, &child, "true", PathBuf::from("/tmp/killtest-exited.log"));
+        let id = registry().register(
+            &s,
+            &child,
+            "true",
+            PathBuf::from("/tmp/killtest-exited.log"),
+        );
         let st = child.wait().await.expect("wait true");
         registry().mark_exited(&s, id, exit_report(st, "true"));
         SIGNAL_CALLS.store(0, Ordering::Relaxed);
         let rep = kill(KillTarget::Task(id), &s, &ToolContext::default())
             .await
             .expect("already-exited is ok");
-        assert!(matches!(rep.method, KillMethod::AlreadyExited), "{}", rep.describe);
+        assert!(
+            matches!(rep.method, KillMethod::AlreadyExited),
+            "{}",
+            rep.describe
+        );
         assert_eq!(sig_calls(), 0, "no signal for an exited task");
     }
 
@@ -576,7 +612,8 @@ mod tests {
         let before = sig_calls();
         let err = kill(KillTarget::Task(id), &s, &ToolContext::default())
             .await
-            .err().expect("must refuse a reused pid");
+            .err()
+            .expect("must refuse a reused pid");
         assert!(err.contains("gone or was reused"), "{err}");
         assert_eq!(sig_calls(), before, "refusal sends nothing");
         // Cleanup: restore ticks, reap via the waiter path, kill for real.
@@ -585,14 +622,20 @@ mod tests {
         let rep = kill(KillTarget::Task(id), &s, &ToolContext::default())
             .await
             .expect("cleanup kill");
-        assert!(matches!(rep.method, KillMethod::TermAnswered(_)), "{}", rep.describe);
+        assert!(
+            matches!(rep.method, KillMethod::TermAnswered(_)),
+            "{}",
+            rep.describe
+        );
     }
 
     #[tokio::test]
     async fn port_linux_resolves_listener() {
         let _serial = serial();
         let (listener, port) = hold_port().await;
-        let found = pid_for_port(port).expect("lookup runs").expect("listener resolves");
+        let found = pid_for_port(port)
+            .expect("lookup runs")
+            .expect("listener resolves");
         assert_eq!(found.0, std::process::id(), "our own listener");
         assert!(!found.1.is_empty());
         drop(listener);
@@ -606,8 +649,12 @@ mod tests {
         drop(held); // released: free barring an outside race
         let err = kill(KillTarget::Port(port), &s, &ToolContext::default())
             .await
-            .err().expect("nothing listening");
-        assert!(err.contains(&format!("nothing is listening on port {port}")), "{err}");
+            .err()
+            .expect("nothing listening");
+        assert!(
+            err.contains(&format!("nothing is listening on port {port}")),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -618,7 +665,8 @@ mod tests {
         let before = sig_calls();
         let err = kill(KillTarget::Port(port), &s, &ToolContext::default())
             .await
-            .err().expect("fail closed");
+            .err()
+            .expect("fail closed");
         assert!(err.contains("approval"), "{err}");
         assert_eq!(sig_calls(), before, "denied prompt signals nothing");
         assert!(
@@ -637,10 +685,15 @@ mod tests {
         let before = sig_calls();
         let err = kill(KillTarget::Pid(pid), &s, &ToolContext::default())
             .await
-            .err().expect("fail closed");
+            .err()
+            .expect("fail closed");
         assert!(err.contains("approval"), "{err}");
         assert_eq!(sig_calls(), before, "denied prompt signals nothing");
-        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, 0, "foreign process untouched");
+        assert_eq!(
+            unsafe { libc::kill(pid as i32, 0) },
+            0,
+            "foreign process untouched"
+        );
         child.kill().await.ok();
         let _ = child.wait().await;
     }
@@ -675,15 +728,24 @@ mod tests {
         let s = sess("foreign-yes");
         let ctx = ToolContext {
             cwd: std::env::temp_dir(),
-            questions: Some(gray_core::questions::QuestionBridge(std::sync::Arc::new(YesAsker))),
+            questions: Some(gray_core::questions::QuestionBridge(std::sync::Arc::new(
+                YesAsker,
+            ))),
             session_id: Some(s.clone()),
             ..ToolContext::default()
         };
-        let rep = tokio::time::timeout(Duration::from_secs(10), kill(KillTarget::Pid(pid), &s, &ctx))
-            .await
-            .expect("kill returns")
-            .expect("approved kill ok");
-        assert!(matches!(rep.method, KillMethod::TermAnswered(_)), "{}", rep.describe);
+        let rep = tokio::time::timeout(
+            Duration::from_secs(10),
+            kill(KillTarget::Pid(pid), &s, &ctx),
+        )
+        .await
+        .expect("kill returns")
+        .expect("approved kill ok");
+        assert!(
+            matches!(rep.method, KillMethod::TermAnswered(_)),
+            "{}",
+            rep.describe
+        );
         assert!(rep.describe.contains("foreign pid"), "{}", rep.describe);
         assert!(rep.describe.contains(&pid.to_string()), "{}", rep.describe);
         let st = tokio::time::timeout(Duration::from_secs(3), reaper)
