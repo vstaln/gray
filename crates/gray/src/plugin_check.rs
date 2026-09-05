@@ -10,7 +10,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use gray_core::agent::ToolContext;
-use gray_core::agent::Tool as _;
 use gray_core::event::Usage;
 use gray_plugin::sidecar::SidecarPlugin;
 use gray_plugin::{CoreEvent, Plugin};
@@ -70,18 +69,18 @@ fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
 /// Run every check; `Err` (with per-check lines already printed) when any fail.
 pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
     let argv = resolve_argv(Path::new(dir))?;
-    let plugin = match tokio::time::timeout(Duration::from_secs(35), SidecarPlugin::spawn(argv)).await
-    {
-        Ok(Ok(p)) => p,
-        Ok(Err(e)) => {
-            println!("FAIL spawn — {e:#}");
-            anyhow::bail!("spawn failed");
-        }
-        Err(_) => {
-            println!("FAIL spawn — manifest handshake timed out (30s+)");
-            anyhow::bail!("spawn timed out");
-        }
-    };
+    let plugin =
+        match tokio::time::timeout(Duration::from_secs(35), SidecarPlugin::spawn(argv)).await {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => {
+                println!("FAIL spawn — {e:#}");
+                anyhow::bail!("spawn failed");
+            }
+            Err(_) => {
+                println!("FAIL spawn — manifest handshake timed out (30s+)");
+                anyhow::bail!("spawn timed out");
+            }
+        };
     let m = plugin.manifest();
     let mut reports = vec![
         Report {
@@ -115,7 +114,11 @@ pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
             Ok(o) => Report {
                 name: "tool/call",
                 pass: true,
-                detail: format!("{name} → {} bytes, is_error={}", o.content.len(), o.is_error),
+                detail: format!(
+                    "{name} → {} bytes, is_error={}",
+                    o.content.len(),
+                    o.is_error
+                ),
             },
             Err(_) => Report {
                 name: "tool/call",
@@ -126,10 +129,12 @@ pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
         // Concurrent calls must both resolve (reorder-fixture behavior).
         let t2 = plugin.tools()[0].clone();
         let ctx = ToolContext::default();
-        let both = tokio::time::timeout(
-            Duration::from_secs(15),
-            async { tokio::join!(tool.execute(&ctx, serde_json::json!({})), t2.execute(&ctx, serde_json::json!({}))) },
-        )
+        let both = tokio::time::timeout(Duration::from_secs(15), async {
+            tokio::join!(
+                tool.execute(&ctx, serde_json::json!({})),
+                t2.execute(&ctx, serde_json::json!({}))
+            )
+        })
         .await;
         reports.push(Report {
             name: "concurrency",
