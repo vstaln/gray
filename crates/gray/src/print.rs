@@ -162,6 +162,10 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         println!("{line}");
     }
 
+    // Print mode has no later turn: background tasks would orphan, so stop
+    // the one-shot session unconditionally (exit code unaffected).
+    let _ = crate::shell_drain::shutdown_shell_session("nosession").await;
+
     Ok(())
 }
 
