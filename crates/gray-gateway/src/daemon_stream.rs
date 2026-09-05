@@ -74,8 +74,22 @@ impl Streamer {
                 }
                 last_edit = Instant::now();
             }
-            let text = final_text.unwrap_or_else(|| if buf.is_empty() { "(no reply)".into() } else { buf.clone() });
-            finalize_stream(adapter.as_ref(), &chat, &opts, msg_id.as_deref(), &text, max).await
+            let text = final_text.unwrap_or_else(|| {
+                if buf.is_empty() {
+                    "(no reply)".into()
+                } else {
+                    buf.clone()
+                }
+            });
+            finalize_stream(
+                adapter.as_ref(),
+                &chat,
+                &opts,
+                msg_id.as_deref(),
+                &text,
+                max,
+            )
+            .await
         });
         Self { tx, task }
     }
@@ -93,7 +107,14 @@ impl Streamer {
 /// Final delivery for a streamed reply: overwrite the placeholder with the first
 /// chunk, then send any remaining chunks as normal messages. Falls back to a
 /// plain send if the edit fails (e.g. placeholder deleted).
-pub(crate) async fn finalize_stream(adapter: &dyn BasePlatformAdapter, chat: &str, opts: &SendOptions, msg_id: Option<&str>, text: &str, max: usize) -> SendResult {
+pub(crate) async fn finalize_stream(
+    adapter: &dyn BasePlatformAdapter,
+    chat: &str,
+    opts: &SendOptions,
+    msg_id: Option<&str>,
+    text: &str,
+    max: usize,
+) -> SendResult {
     let chunks = split_message_smart(text, max);
     let Some(first) = chunks.first() else {
         return SendResult::ok(msg_id.map(str::to_string));
@@ -109,7 +130,14 @@ pub(crate) async fn finalize_stream(adapter: &dyn BasePlatformAdapter, chat: &st
     }
     for (i, chunk) in chunks.iter().enumerate().skip(rest_start) {
         // Only the very first message replies to the origin.
-        let o = if i == 0 { opts.clone() } else { SendOptions { reply_to: None, thread_id: opts.thread_id.clone() } };
+        let o = if i == 0 {
+            opts.clone()
+        } else {
+            SendOptions {
+                reply_to: None,
+                thread_id: opts.thread_id.clone(),
+            }
+        };
         last = adapter.send_ext(chat, chunk, &o).await;
         if !last.success {
             return last;

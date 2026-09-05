@@ -8,8 +8,8 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use gray_markdown::HyperlinkTarget;
 
-use super::Tui;
 use super::GatewayBootPanel;
+use super::Tui;
 
 fn thinking_style() -> Style {
     Style::default()
@@ -37,7 +37,9 @@ fn str_display_width(s: &str) -> usize {
 pub fn redact_command_echo(text: &str) -> String {
     let mut it = text.split_whitespace();
     match (it.next(), it.next(), it.next(), it.next(), it.next()) {
-        (Some("/gateway"), Some("connect"), Some(plat), Some(_), _) => format!("/gateway connect {plat} ••••"),
+        (Some("/gateway"), Some("connect"), Some(plat), Some(_), _) => {
+            format!("/gateway connect {plat} ••••")
+        }
         (Some("/gateway"), Some("pairing"), Some("approve"), Some(plat), Some(_)) => {
             format!("/gateway pairing approve {plat} ••••")
         }
@@ -56,8 +58,12 @@ fn slice_line_spans<'a>(
     for (i, (r, style)) in span_bounds.iter().enumerate() {
         let s = r.start;
         let e = r.end;
-        if e <= start_byte { continue; }
-        if s >= end_byte { break; }
+        if e <= start_byte {
+            continue;
+        }
+        if s >= end_byte {
+            break;
+        }
         let seg_start = start_byte.max(s);
         let seg_end = end_byte.min(e);
         if seg_end > seg_start {
@@ -66,23 +72,38 @@ fn slice_line_spans<'a>(
             let content = original.spans[i].content.as_ref();
             // ensure boundaries are char boundaries (they should be since we only cut at word boundaries which are char boundaries)
             let slice = &content[local_start..local_end];
-            acc.push(Span { style: *style, content: std::borrow::Cow::Borrowed(slice) });
+            acc.push(Span {
+                style: *style,
+                content: std::borrow::Cow::Borrowed(slice),
+            });
         }
-        if e >= end_byte { break; }
+        if e >= end_byte {
+            break;
+        }
     }
-    Line { style: original.style, alignment: original.alignment, spans: acc }
+    Line {
+        style: original.style,
+        alignment: original.alignment,
+        spans: acc,
+    }
 }
 
 /// Word-aware wrapping: preserves styles, respects hyperlink guards,
 /// splits at word boundaries (space) and falls back to char chunk for long words.
 pub(crate) fn wrap_styled_line(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
-    wrap_styled_line_with_ranges(line, max_w).into_iter().map(|(l, _)| l).collect()
+    wrap_styled_line_with_ranges(line, max_w)
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect()
 }
 
 /// Same as [`wrap_styled_line`] but also returns each output row's source
 /// byte range on the original (unwrapped) flat line, so callers can map
 /// absolute columns (hyperlinks) onto wrapped rows.
-pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) -> Vec<(Line<'static>, Range<usize>)> {
+pub(crate) fn wrap_styled_line_with_ranges(
+    line: Line<'static>,
+    max_w: usize,
+) -> Vec<(Line<'static>, Range<usize>)> {
     // Don't wrap lines with OSC 8 hyperlinks
     if line.spans.iter().any(|s| s.content.contains("\x1b]8;;")) {
         return vec![(line, 0..usize::MAX)];
@@ -107,7 +128,11 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
 
     // Detect if this line has a gutter prefix (e.g. " 12 | " or "    | ")
     let gutter_info = if let Some(bar_idx) = flat.find(" | ") {
-        if bar_idx <= 14 && flat[..bar_idx].chars().all(|c| c.is_ascii_digit() || c == ' ') {
+        if bar_idx <= 14
+            && flat[..bar_idx]
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ' ')
+        {
             let gutter_end = bar_idx + 3;
             let gutter_style = span_bounds
                 .iter()
@@ -123,13 +148,14 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
         None
     };
 
-    let (content_start, cont_gutter_str, gutter_style, eff_max_w) = if let Some((g_end, ref c_str, g_style)) = gutter_info {
-        let g_width = str_display_width(&flat[..g_end]);
-        let avail = max_w.saturating_sub(g_width).max(10);
-        (g_end, Some(c_str.clone()), Some(g_style), avail)
-    } else {
-        (0, None, None, max_w)
-    };
+    let (content_start, cont_gutter_str, gutter_style, eff_max_w) =
+        if let Some((g_end, ref c_str, g_style)) = gutter_info {
+            let g_width = str_display_width(&flat[..g_end]);
+            let avail = max_w.saturating_sub(g_width).max(10);
+            (g_end, Some(c_str.clone()), Some(g_style), avail)
+        } else {
+            (0, None, None, max_w)
+        };
 
     // Tokenize content into words (non-space runs) with byte ranges
     let mut words: Vec<Range<usize>> = Vec::new();
@@ -139,18 +165,25 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
             let ch = flat[i..].chars().next().unwrap();
             i += ch.len_utf8();
         }
-        if i >= flat.len() { break; }
+        if i >= flat.len() {
+            break;
+        }
         let start = i;
         while i < flat.len() {
             let ch = flat[i..].chars().next().unwrap();
-            if ch == ' ' { break; }
+            if ch == ' ' {
+                break;
+            }
             i += ch.len_utf8();
         }
         words.push(start..i);
     }
     if words.is_empty() {
         // column mapping is approximate here; word-split lines are the norm.
-        return char_chunk_fallback(line, max_w, flat).into_iter().map(|l| (l, 0..usize::MAX)).collect();
+        return char_chunk_fallback(line, max_w, flat)
+            .into_iter()
+            .map(|l| (l, 0..usize::MAX))
+            .collect();
     }
 
     // Build wrapped ranges word-aware
@@ -171,10 +204,10 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
             let mut idx = 0;
             while idx < chars.len() {
                 let take = eff_max_w.min(chars.len() - idx);
-                let chunk_chars = &chars[idx..idx+take];
+                let chunk_chars = &chars[idx..idx + take];
                 let chunk_str: String = chunk_chars.iter().collect();
                 let byte_len = chunk_str.len();
-                out_ranges.push(byte_offset..byte_offset+byte_len);
+                out_ranges.push(byte_offset..byte_offset + byte_len);
                 byte_offset += byte_len;
                 idx += take;
             }
@@ -212,7 +245,10 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
             if row_idx == 0 {
                 let g_sliced = slice_line_spans(&line, &span_bounds, &(0..content_start));
                 for s in g_sliced.spans {
-                    spans.push(Span::styled(s.content.into_owned(), s.style.patch(line.style)));
+                    spans.push(Span::styled(
+                        s.content.into_owned(),
+                        s.style.patch(line.style),
+                    ));
                 }
             } else {
                 spans.push(Span::styled(c_str.clone(), g_style.patch(line.style)));
@@ -220,7 +256,10 @@ pub(crate) fn wrap_styled_line_with_ranges(line: Line<'static>, max_w: usize) ->
         }
         let sliced = slice_line_spans(&line, &span_bounds, &r);
         for s in sliced.spans {
-            spans.push(Span::styled(s.content.into_owned(), s.style.patch(line.style)));
+            spans.push(Span::styled(
+                s.content.into_owned(),
+                s.style.patch(line.style),
+            ));
         }
         let mut new_line = Line::from(spans).style(line.style);
         new_line.alignment = line.alignment;
@@ -250,7 +289,8 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<
                 let avail = max_w.saturating_sub(current_w);
                 if avail == 0 {
                     if !current_spans.is_empty() {
-                        result.push(Line::from(std::mem::take(&mut current_spans)).style(line_style));
+                        result
+                            .push(Line::from(std::mem::take(&mut current_spans)).style(line_style));
                     }
                     current_w = 0;
                     continue;
@@ -291,7 +331,11 @@ fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
     end
 }
 
-pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBuf], width: usize) -> Vec<Line<'static>> {
+pub(crate) fn format_user_prompt_lines(
+    text: &str,
+    attached: &[std::path::PathBuf],
+    width: usize,
+) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
     let prompt_color = Color::Rgb(180, 180, 180);
     let text_primary = Color::Rgb(225, 225, 225);
@@ -299,11 +343,20 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
     let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines = Vec::new();
     lines.push(Line::from("").style(bg_style));
-    let arrow_span = Span::styled(" ❯ ", Style::default().fg(prompt_color).add_modifier(Modifier::BOLD));
+    let arrow_span = Span::styled(
+        " ❯ ",
+        Style::default()
+            .fg(prompt_color)
+            .add_modifier(Modifier::BOLD),
+    );
     let max_w = width.saturating_sub(4).max(1);
     let lines_raw: Vec<&str> = sanitized.split('\n').collect();
     for (i, raw_line) in lines_raw.iter().enumerate() {
-        let prefix = if i == 0 { arrow_span.clone() } else { Span::raw("   ") };
+        let prefix = if i == 0 {
+            arrow_span.clone()
+        } else {
+            Span::raw("   ")
+        };
         if raw_line.is_empty() {
             lines.push(Line::from(vec![prefix]).style(bg_style));
         } else {
@@ -320,22 +373,42 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
                 {
                     end = start + sp + 1;
                 }
-                let row_prefix = if first_row { prefix.clone() } else { Span::raw("   ") };
+                let row_prefix = if first_row {
+                    prefix.clone()
+                } else {
+                    Span::raw("   ")
+                };
                 first_row = false;
-                lines.push(Line::from(vec![
-                    row_prefix,
-                    Span::styled(chars[start..end].iter().collect::<String>(), Style::default().fg(text_primary)),
-                ]).style(bg_style));
+                lines.push(
+                    Line::from(vec![
+                        row_prefix,
+                        Span::styled(
+                            chars[start..end].iter().collect::<String>(),
+                            Style::default().fg(text_primary),
+                        ),
+                    ])
+                    .style(bg_style),
+                );
                 start = end;
             }
         }
     }
     if !attached.is_empty() {
-        let names = attached.iter().filter_map(|p| p.file_name().and_then(|n| n.to_str())).collect::<Vec<_>>().join(", ");
-        lines.push(Line::from(vec![
-            Span::raw("   "),
-            Span::styled(format!("↳ attached: {names}"), Style::default().fg(dim_color)),
-        ]).style(bg_style));
+        let names = attached
+            .iter()
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    format!("↳ attached: {names}"),
+                    Style::default().fg(dim_color),
+                ),
+            ])
+            .style(bg_style),
+        );
     }
     lines.push(Line::from("").style(bg_style));
     lines
@@ -346,11 +419,21 @@ pub(crate) fn format_user_prompt_lines(text: &str, attached: &[std::path::PathBu
 // ---------------------------------------------------------------------------
 impl Tui {
     pub(crate) fn ensure_gap(&mut self, n: usize) {
-        let trailing = self.transcript.iter().rev().take_while(|l| {
-            l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
-        }).count();
+        let trailing = self
+            .transcript
+            .iter()
+            .rev()
+            .take_while(|l| {
+                l.style.bg.is_none()
+                    && l.spans
+                        .iter()
+                        .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+            })
+            .count();
         let need = n.saturating_sub(trailing);
-        if need == 0 { return; }
+        if need == 0 {
+            return;
+        }
         let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
         let h = need as u16;
         let _ = self.terminal.insert_before(h, |buf| {
@@ -361,16 +444,25 @@ impl Tui {
     }
 
     pub fn stream(&mut self, chunk: &str) {
-        let toks = (chunk.chars().count() + 3) / 4;
+        let toks = chunk.chars().count().div_ceil(4);
         self.live_streamed_tokens += toks.max(1);
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            if trimmed.is_empty() && self.transcript.last().is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty())) {
+            if trimmed.is_empty()
+                && self
+                    .transcript
+                    .last()
+                    .is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+            {
                 continue;
             }
-            let style = if self.thinking { thinking_style() } else { Style::default() };
+            let style = if self.thinking {
+                thinking_style()
+            } else {
+                Style::default()
+            };
             self.push_line_styled(trimmed.to_string(), style);
         }
         let _ = self.draw();
@@ -378,7 +470,7 @@ impl Tui {
 
     pub fn stream_thinking(&mut self, chunk: &str) {
         self.turn_had_thinking = true;
-        let toks = (chunk.chars().count() + 3) / 4;
+        let toks = chunk.chars().count().div_ceil(4);
         self.live_streamed_tokens += toks.max(1);
         if self.hide_thinking {
             let _ = self.draw();
@@ -409,10 +501,12 @@ impl Tui {
         let _ = self.draw();
     }
 
-    pub fn set_hide_thinking(&mut self, hide: bool) { self.hide_thinking = hide; }
+    pub fn set_hide_thinking(&mut self, hide: bool) {
+        self.hide_thinking = hide;
+    }
 
     pub fn stream_text(&mut self, chunk: &str) {
-        let toks = (chunk.chars().count() + 3) / 4;
+        let toks = chunk.chars().count().div_ceil(4);
         self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
@@ -424,14 +518,16 @@ impl Tui {
         // No-op when unchanged; resize mid-table only affects new tables.
         let tw = self.width().max(10).saturating_sub(2);
         self.markdown_renderer.set_max_table_width(Some(tw));
-        self.markdown_renderer.push_and_render(&clean, Some(gray_markdown::get_syntect()));
+        self.markdown_renderer
+            .push_and_render(&clean, Some(gray_markdown::get_syntect()));
         let frozen_len = self.markdown_renderer.frozen_lines_len();
         if frozen_len > self.committed_markdown_lines {
             if self.committed_markdown_lines == 0 {
                 self.ensure_gap(1);
             }
             let view = self.markdown_renderer.view();
-            let new_lines: Vec<Line<'static>> = view.lines[self.committed_markdown_lines..frozen_len].to_vec();
+            let new_lines: Vec<Line<'static>> =
+                view.lines[self.committed_markdown_lines..frozen_len].to_vec();
             let hyperlinks = view.hyperlinks.to_vec();
             let offset = self.committed_markdown_lines;
             self.committed_markdown_lines = frozen_len;
@@ -446,7 +542,9 @@ impl Tui {
     }
 
     pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking && self.pending.is_empty() { return; }
+        if !self.thinking && self.pending.is_empty() {
+            return;
+        }
         self.thinking = false;
         if !self.hide_thinking {
             if !self.pending.is_empty() {
@@ -465,15 +563,27 @@ impl Tui {
     /// below the card for the breathing room before the next prompt; slash
     /// commands pass false so their `say()` feedback hugs the card instead
     /// (dismissed-modal breathing room is restored by `restore_viewport`).
-    pub fn push_user_prompt(&mut self, text: &str, attached: &[std::path::PathBuf], trailing_gap: bool) {
+    pub fn push_user_prompt(
+        &mut self,
+        text: &str,
+        attached: &[std::path::PathBuf],
+        trailing_gap: bool,
+    ) {
         self.ensure_gap(1);
         let lines = format_user_prompt_lines(text, attached, self.width().max(10));
         let height = lines.len() as u16;
-        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block =
+            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {
-            Paragraph::new(lines.clone()).block(block).render(buf.area, buf);
+            Paragraph::new(lines.clone())
+                .block(block)
+                .render(buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::UserPrompt(text.to_string(), attached.to_vec()));
+        self.history_entries
+            .push(super::TranscriptEntry::UserPrompt(
+                text.to_string(),
+                attached.to_vec(),
+            ));
         self.transcript.extend(lines);
         // Trailing gap after every chat card — command and prompt alike.
         // Handlers that print feedback (say()) treat the gap as idempotent;
@@ -484,7 +594,9 @@ impl Tui {
         if trailing_gap {
             self.ensure_gap(1);
         }
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
     }
 }
@@ -497,13 +609,21 @@ pub(crate) fn gateway_boot_dim() -> Style {
     Style::default().fg(Color::Rgb(140, 140, 140))
 }
 
-pub(crate) fn gateway_boot_card_parts(header: &str, rows: &[String]) -> (Line<'static>, Vec<Line<'static>>) {
+pub(crate) fn gateway_boot_card_parts(
+    header: &str,
+    rows: &[String],
+) -> (Line<'static>, Vec<Line<'static>>) {
     let header = Line::from(Span::styled(
         header.to_string(),
-        Style::default().fg(Color::Rgb(225, 225, 225)).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Rgb(225, 225, 225))
+            .add_modifier(Modifier::BOLD),
     ));
     let dim = gateway_boot_dim();
-    let body = rows.iter().map(|r| Line::from(Span::styled(r.clone(), dim))).collect();
+    let body = rows
+        .iter()
+        .map(|r| Line::from(Span::styled(r.clone(), dim)))
+        .collect();
     (header, body)
 }
 
@@ -527,7 +647,8 @@ pub(crate) fn pad_card_row(mut line: Line<'static>, width: usize) -> Line<'stati
     }
     let used: usize = line.spans.iter().map(|s| s.width()).sum();
     if used < width {
-        line.spans.push(Span::styled(" ".repeat(width - used), bg_style));
+        line.spans
+            .push(Span::styled(" ".repeat(width - used), bg_style));
     }
     line
 }
@@ -642,7 +763,10 @@ pub(crate) fn format_tool_box_lines(
                 // right). Same unstyled-cells cause as the footer band.
                 let current_w: usize = l.spans.iter().map(|s| s.width()).sum();
                 if current_w < width {
-                    l.spans.push(Span::styled(" ".repeat(width - current_w), Style::default().bg(line_bg)));
+                    l.spans.push(Span::styled(
+                        " ".repeat(width - current_w),
+                        Style::default().bg(line_bg),
+                    ));
                 }
             }
             box_lines.push(l);
@@ -656,7 +780,9 @@ impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.insert_tool_box(header, body);
         self.ensure_gap(1);
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
     }
 
@@ -664,7 +790,9 @@ impl Tui {
     /// the gateway boot card (its final state is committed once, in one message).
     pub fn push_tool_box_no_gap(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.insert_tool_box(header, body);
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
     }
 
@@ -673,14 +801,15 @@ impl Tui {
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
         let height = box_lines.len() as u16;
-        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block =
+            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {
-            Paragraph::new(box_lines.clone()).block(block).render(buf.area, buf);
+            Paragraph::new(box_lines.clone())
+                .block(block)
+                .render(buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::ToolBox {
-            header,
-            body,
-        });
+        self.history_entries
+            .push(super::TranscriptEntry::ToolBox { header, body });
         self.transcript.extend(box_lines);
     }
 
@@ -688,7 +817,11 @@ impl Tui {
     /// while platforms connect, then committed as ONE static card.
     /// `header` is e.g. "Gateway autostarted"; rows come from
     /// [`crate::repl::gateway_boot_rows`] (`  └─ Discord — connecting…`).
-    pub fn begin_gateway_boot(&mut self, header: &str, board: &gray_gateway::status::GatewayStatusBoard) {
+    pub fn begin_gateway_boot(
+        &mut self,
+        header: &str,
+        board: &gray_gateway::status::GatewayStatusBoard,
+    ) {
         self.gateway_boot = Some(GatewayBootPanel {
             header: header.to_string(),
             rows: crate::repl::gateway_boot_rows(board),
@@ -709,7 +842,9 @@ impl Tui {
     /// input band. Same formatter + same painter as the live panel, so the
     /// commit is a no-op visually: nothing shifts, nothing restyles.
     pub fn finish_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
-        let Some(panel) = self.gateway_boot.take() else { return; };
+        let Some(panel) = self.gateway_boot.take() else {
+            return;
+        };
         if self.status_is_gateway_or_empty() {
             self.status = None;
         }
@@ -722,7 +857,8 @@ impl Tui {
         let _ = self.terminal.insert_before(height, |buf| {
             paint_card(&box_lines, buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::ToolBox { header, body });
+        self.history_entries
+            .push(super::TranscriptEntry::ToolBox { header, body });
         self.transcript.extend(box_lines);
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
@@ -735,10 +871,15 @@ impl Tui {
     }
 
     fn status_is_gateway_or_empty(&self) -> bool {
-        self.status.as_ref().map(|(_, l)| l.starts_with("Gateway")).unwrap_or(true)
+        self.status
+            .as_ref()
+            .map(|(_, l)| l.starts_with("Gateway"))
+            .unwrap_or(true)
     }
 
-    pub fn push_line(&mut self, line: String) { self.push_line_styled(line, Style::default()); }
+    pub fn push_line(&mut self, line: String) {
+        self.push_line_styled(line, Style::default());
+    }
 
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
         let l = Line::from(vec![Span::styled(line, style)]);
@@ -759,7 +900,9 @@ impl Tui {
         hyperlinks: &[HyperlinkTarget],
         width: usize,
     ) -> Vec<Line<'static>> {
-        if lines.is_empty() { return Vec::new(); }
+        if lines.is_empty() {
+            return Vec::new();
+        }
         let max_w = width.saturating_sub(2).max(1);
         let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
         for h in hyperlinks {
@@ -774,14 +917,19 @@ impl Tui {
                 } else {
                     // Translate each hyperlink's absolute columns into this
                     // row's coordinates; drop parts landing on other rows.
-                    line_hyperlinks.iter().filter_map(|h| {
-                        let s = h.column_range.start.max(src_range.start);
-                        let e = h.column_range.end.min(src_range.end);
-                        if s >= e { return None; }
-                        let mut hc = (*h).clone();
-                        hc.column_range = (s - src_range.start)..(e - src_range.start);
-                        Some(hc)
-                    }).collect()
+                    line_hyperlinks
+                        .iter()
+                        .filter_map(|h| {
+                            let s = h.column_range.start.max(src_range.start);
+                            let e = h.column_range.end.min(src_range.end);
+                            if s >= e {
+                                return None;
+                            }
+                            let mut hc = (*h).clone();
+                            hc.column_range = (s - src_range.start)..(e - src_range.start);
+                            Some(hc)
+                        })
+                        .collect()
                 };
                 if !l.spans.is_empty() {
                     l.spans.insert(0, left_pad());
@@ -790,22 +938,33 @@ impl Tui {
             }
         }
         let total_h = all_wrapped.len() as u16;
-        let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l,_)| l.clone()).collect();
+        let lines_only: Vec<Line<'static>> = all_wrapped.iter().map(|(l, _)| l.clone()).collect();
         let _ = self.terminal.insert_before(total_h, |buf| {
             let area = buf.area;
             for (i, (line, hls)) in all_wrapped.iter().enumerate() {
-                let row_area = ratatui::layout::Rect { x: area.x, y: area.y + i as u16, width: area.width, height: 1 };
+                let row_area = ratatui::layout::Rect {
+                    x: area.x,
+                    y: area.y + i as u16,
+                    width: area.width,
+                    height: 1,
+                };
                 Paragraph::new(line.clone()).render(row_area, buf);
                 for h in hls {
                     let pad = crate::tui::padding_x(1);
                     for col in h.column_range.clone() {
                         let padded_col = col + pad;
-                        if padded_col >= area.width as usize { continue; }
+                        if padded_col >= area.width as usize {
+                            continue;
+                        }
                         let x = area.x + padded_col as u16;
                         let y = area.y + i as u16;
-                        if x >= area.x + area.width || y >= area.y + area.height { continue; }
+                        if x >= area.x + area.width || y >= area.y + area.height {
+                            continue;
+                        }
                         let cell = &mut buf[(x, y)];
-                        if cell.symbol().trim().is_empty() { continue; }
+                        if cell.symbol().trim().is_empty() {
+                            continue;
+                        }
                         let sym = cell.symbol().to_string();
                         let new_sym = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", h.url, sym);
                         cell.set_symbol(&new_sym);
@@ -822,33 +981,52 @@ impl Tui {
         hyperlinks: &[HyperlinkTarget],
         _line_offset: usize,
     ) {
-        if lines.is_empty() { return; }
+        if lines.is_empty() {
+            return;
+        }
         let w = self.width().max(10);
         let lines_only = self.render_and_insert_styled_lines(&lines, hyperlinks, w);
-        self.history_entries.push(super::TranscriptEntry::StyledLines {
-            lines,
-            hyperlinks: hyperlinks.to_vec(),
-        });
+        self.history_entries
+            .push(super::TranscriptEntry::StyledLines {
+                lines,
+                hyperlinks: hyperlinks.to_vec(),
+            });
         self.transcript.extend(lines_only);
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
     }
 
     pub fn push_dim(&mut self, line: String) {
-        let styled = Line::from(vec![
-            Span::styled(line, Style::new().add_modifier(Modifier::DIM)),
-        ]);
+        let styled = Line::from(vec![Span::styled(
+            line,
+            Style::new().add_modifier(Modifier::DIM),
+        )]);
         self.push_styled_lines_with_hyperlinks(vec![styled], &[], 0);
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
         let mut spans = vec![
-            Span::styled("✓ ", Style::default().fg(Color::Rgb(74, 222, 128)).add_modifier(Modifier::BOLD)),
-            Span::styled(text.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "✓ ",
+                Style::default()
+                    .fg(Color::Rgb(74, 222, 128))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                text.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ];
         if let Some(d) = detail {
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(d.to_string(), Style::default().fg(Color::Rgb(140, 140, 140))));
+            spans.push(Span::styled(
+                d.to_string(),
+                Style::default().fg(Color::Rgb(140, 140, 140)),
+            ));
         }
         let line = Line::from(spans);
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
@@ -863,29 +1041,35 @@ impl Tui {
             .cloned()
             .unwrap_or_default();
         // ToolResult content is `{"answers":{id:{"answers":[...]}}}`.
-        let answer_map: HashMap<String, Vec<String>> = serde_json::from_str::<serde_json::Value>(content)
-            .ok()
-            .and_then(|v| v.get("answers").cloned())
-            .and_then(|v| v.as_object().cloned())
-            .map(|obj| {
-                obj.into_iter()
-                    .map(|(k, v)| {
-                        let list = v
-                            .get("answers")
-                            .and_then(|a| a.as_array())
-                            .map(|arr| {
-                                arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
-                            })
-                            .unwrap_or_default();
-                        (k, list)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let answer_map: HashMap<String, Vec<String>> =
+            serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|v| v.get("answers").cloned())
+                .and_then(|v| v.as_object().cloned())
+                .map(|obj| {
+                    obj.into_iter()
+                        .map(|(k, v)| {
+                            let list = v
+                                .get("answers")
+                                .and_then(|a| a.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            (k, list)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
         let mut lines = Vec::new();
         for q in &questions {
             let id = q.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let text = q.get("question").and_then(|v| v.as_str()).unwrap_or("question");
+            let text = q
+                .get("question")
+                .and_then(|v| v.as_str())
+                .unwrap_or("question");
             match answer_map.get(id) {
                 Some(list) if !list.is_empty() => {
                     lines.push(format!("• {text}"));
@@ -904,7 +1088,11 @@ impl Tui {
     }
 
     /// Replays a previous session's message history into the TUI scrollback.
-    pub fn replay_session_history(&mut self, entries: &[gray_session::SessionEntry], cwd: &std::path::Path) {
+    pub fn replay_session_history(
+        &mut self,
+        entries: &[gray_session::SessionEntry],
+        cwd: &std::path::Path,
+    ) {
         let mut tool_calls: HashMap<String, (String, serde_json::Value)> = HashMap::new();
         for entry in entries {
             match entry.message.role {
@@ -913,16 +1101,41 @@ impl Tui {
                     for block in &entry.message.content {
                         match block {
                             gray_core::ContentBlock::Text { text } => {
-                                if !user_text.is_empty() { user_text.push('\n'); }
+                                if !user_text.is_empty() {
+                                    user_text.push('\n');
+                                }
                                 user_text.push_str(text);
                             }
-                            gray_core::ContentBlock::ToolResult { id, content, is_error } => {
-                                let (name, args) = tool_calls.remove(id).map(|(n, a)| (n, Some(a))).unwrap_or_else(|| ("tool".to_string(), None));
+                            gray_core::ContentBlock::ToolResult {
+                                id,
+                                content,
+                                is_error,
+                            } => {
+                                let (name, args) = tool_calls
+                                    .remove(id)
+                                    .map(|(n, a)| (n, Some(a)))
+                                    .unwrap_or_else(|| ("tool".to_string(), None));
                                 if name == "request_user_input" {
                                     self.push_question_replay(args.as_ref(), content);
                                 } else {
-                                    let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                    let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
+                                    let header = args
+                                        .as_ref()
+                                        .map(|a| {
+                                            crate::tool_fmt::format_tool_call_header(
+                                                &name,
+                                                a,
+                                                Some(cwd),
+                                            )
+                                        })
+                                        .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                    let lines =
+                                        crate::tool_fmt::format_tool_result_lines_with_context(
+                                            &name,
+                                            args.as_ref(),
+                                            content,
+                                            *is_error,
+                                            Some(cwd),
+                                        );
                                     self.push_tool_box(header, lines);
                                 }
                             }
@@ -934,7 +1147,9 @@ impl Tui {
                         // Feed composer input history so Up/Down recall works
                         // for prompts from the resumed session.
                         self.history.push(user_text.clone());
-                        if self.history.len() > 100 { self.history.remove(0); }
+                        if self.history.len() > 100 {
+                            self.history.remove(0);
+                        }
                         self.history_idx = None;
                     }
                 }
@@ -950,8 +1165,20 @@ impl Tui {
                                     // tables fit by construction instead of shredding.
                                     let tw = self.width().max(10).saturating_sub(2);
                                     let mut buffers = gray_markdown::MarkdownBuffers::new();
-                                    let (output, _) = gray_markdown::render_markdown_ratatui_with_buffers_width(&clean, gray_markdown::gray_markdown_style(), true, &mut buffers, Some(gray_markdown::get_syntect()), Some(tw));
-                                    self.push_styled_lines_with_hyperlinks(output.lines, &output.hyperlinks, 0);
+                                    let (output, _) =
+                                        gray_markdown::render_markdown_ratatui_with_buffers_width(
+                                            &clean,
+                                            gray_markdown::gray_markdown_style(),
+                                            true,
+                                            &mut buffers,
+                                            Some(gray_markdown::get_syntect()),
+                                            Some(tw),
+                                        );
+                                    self.push_styled_lines_with_hyperlinks(
+                                        output.lines,
+                                        &output.hyperlinks,
+                                        0,
+                                    );
                                 }
                             }
                             gray_core::ContentBlock::ToolUse { id, name, args } => {
@@ -963,13 +1190,36 @@ impl Tui {
                 }
                 gray_core::Role::System => {
                     for block in &entry.message.content {
-                        if let gray_core::ContentBlock::ToolResult { id, content, is_error } = block {
-                            let (name, args) = tool_calls.remove(id).map(|(n, a)| (n, Some(a))).unwrap_or_else(|| ("tool".to_string(), None));
+                        if let gray_core::ContentBlock::ToolResult {
+                            id,
+                            content,
+                            is_error,
+                        } = block
+                        {
+                            let (name, args) = tool_calls
+                                .remove(id)
+                                .map(|(n, a)| (n, Some(a)))
+                                .unwrap_or_else(|| ("tool".to_string(), None));
                             if name == "request_user_input" {
                                 self.push_question_replay(args.as_ref(), content);
                             } else {
-                                let header = args.as_ref().map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd))).unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(&name, args.as_ref(), content, *is_error, Some(cwd));
+                                let header = args
+                                    .as_ref()
+                                    .map(|a| {
+                                        crate::tool_fmt::format_tool_call_header(
+                                            &name,
+                                            a,
+                                            Some(cwd),
+                                        )
+                                    })
+                                    .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+                                    &name,
+                                    args.as_ref(),
+                                    content,
+                                    *is_error,
+                                    Some(cwd),
+                                );
                                 self.push_tool_box(header, lines);
                             }
                         }
@@ -1040,7 +1290,10 @@ mod tests {
             "/gateway connect discord ••••"
         );
         // No token yet: untouched.
-        assert_eq!(redact_command_echo("/gateway connect discord"), "/gateway connect discord");
+        assert_eq!(
+            redact_command_echo("/gateway connect discord"),
+            "/gateway connect discord"
+        );
         assert_eq!(
             redact_command_echo("/gateway pairing approve discord ABC123"),
             "/gateway pairing approve discord ••••"
@@ -1077,13 +1330,20 @@ mod tests {
         let text = "write a very long poem about the restless sea";
         let lines = format_user_prompt_lines(text, &[], 24);
         // content rows (skip blank margins) preserve the text exactly
-        let bodies: Vec<String> = lines.iter().filter_map(|l| l.spans.get(1)).map(|s| s.content.to_string()).collect();
+        let bodies: Vec<String> = lines
+            .iter()
+            .filter_map(|l| l.spans.get(1))
+            .map(|s| s.content.to_string())
+            .collect();
         assert!(bodies.len() > 1);
         assert_eq!(bodies.concat(), text);
         // every row except the last ends at a space or is a full hard cut
         let max_w = 24usize - 4;
         for b in &bodies[..bodies.len() - 1] {
-            assert!(b.ends_with(' ') || b.chars().count() == max_w, "mid-word break: {b:?}");
+            assert!(
+                b.ends_with(' ') || b.chars().count() == max_w,
+                "mid-word break: {b:?}"
+            );
         }
     }
 
@@ -1092,13 +1352,15 @@ mod tests {
         use crate::tool_fmt::{DIFF_DELETE_BG, DIFF_INSERT_BG};
         let header = Line::from("Ran edit");
         let body = vec![
-            Line::from(vec![
-                Span::styled("  1 | - old", Style::default().bg(DIFF_DELETE_BG)),
-            ])
+            Line::from(vec![Span::styled(
+                "  1 | - old",
+                Style::default().bg(DIFF_DELETE_BG),
+            )])
             .style(Style::default().bg(DIFF_DELETE_BG)),
-            Line::from(vec![
-                Span::styled("  1 | + new", Style::default().bg(DIFF_INSERT_BG)),
-            ])
+            Line::from(vec![Span::styled(
+                "  1 | + new",
+                Style::default().bg(DIFF_INSERT_BG),
+            )])
             .style(Style::default().bg(DIFF_INSERT_BG)),
             Line::from(vec![Span::raw("  2 |   same")]),
         ];
@@ -1122,7 +1384,8 @@ mod tests {
         assert_eq!(out[0].1.end, usize::MAX);
 
         // long line: rows fit max_w and each row's text equals the source slice
-        let text = "the quick brown fox jumps over the lazy dog again and again until it wraps somewhere";
+        let text =
+            "the quick brown fox jumps over the lazy dog again and again until it wraps somewhere";
         let long = Line::from(vec![Span::raw(text.to_string())]);
         let max_w = 24;
         let out = wrap_styled_line_with_ranges(long, max_w);
@@ -1130,10 +1393,13 @@ mod tests {
         let mut prev_end = 0usize;
         for (l, r) in &out {
             let row_text: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
-            assert_eq!(row_text, &text[r.clone()], "row text must equal its source slice");
+            assert_eq!(
+                row_text,
+                &text[r.clone()],
+                "row text must equal its source slice"
+            );
             assert!(r.start >= prev_end, "ranges ascend without overlap");
             prev_end = r.end;
         }
     }
 }
-

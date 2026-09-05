@@ -78,7 +78,8 @@ fn ensure_dirs(store: &CronStorePaths) {
     {
         use std::os::unix::fs::PermissionsExt;
         if store.cron_dir.exists() {
-            let _ = std::fs::set_permissions(&store.cron_dir, std::fs::Permissions::from_mode(0o700));
+            let _ =
+                std::fs::set_permissions(&store.cron_dir, std::fs::Permissions::from_mode(0o700));
         }
     }
 }
@@ -168,10 +169,10 @@ pub fn with_jobs_lock<T>(store: &CronStorePaths, f: impl FnOnce() -> T) -> T {
     JOBS_LOCK_DEPTH.with(|d| d.set(1));
     let _depth = DepthGuard;
     let out = f();
-    if let Some(f) = file.as_ref() {
-        if locked {
-            let _ = f.unlock();
-        }
+    if let Some(f) = file.as_ref()
+        && locked
+    {
+        let _ = f.unlock();
     }
     out
 }
@@ -209,15 +210,21 @@ fn peek_jobs_unlocked(store: &CronStorePaths) -> Option<Vec<CronJob>> {
 
 fn heal_job_value(v: serde_json::Value) -> Option<CronJob> {
     let mut rec = v.as_object()?.clone();
-    if rec.get("id").and_then(|x| x.as_str()).filter(|s| !s.is_empty()).is_none() {
+    if rec
+        .get("id")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
         let fresh = uuid::Uuid::new_v4().to_string()[..8].to_string();
         rec.insert("id".into(), serde_json::Value::String(fresh));
     }
     for f in ["next_run", "last_run"] {
-        if let Some(val) = rec.get(f) {
-            if !val.is_null() && serde_json::from_value::<Option<DateTime<Utc>>>(val.clone()).is_err() {
-                rec.insert(f.into(), serde_json::Value::Null);
-            }
+        if let Some(val) = rec.get(f)
+            && !val.is_null()
+            && serde_json::from_value::<Option<DateTime<Utc>>>(val.clone()).is_err()
+        {
+            rec.insert(f.into(), serde_json::Value::Null);
         }
     }
     serde_json::from_value::<CronJob>(serde_json::Value::Object(rec)).ok()
@@ -257,10 +264,8 @@ pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
                 if let Some(jobs_val) = obj.remove("jobs") {
                     match jobs_val {
                         serde_json::Value::Array(items) => {
-                            let mut jobs: Vec<CronJob> = items
-                                .into_iter()
-                                .filter_map(heal_job_value)
-                                .collect();
+                            let mut jobs: Vec<CronJob> =
+                                items.into_iter().filter_map(heal_job_value).collect();
                             jobs.retain(|j| !is_expired_oneshot(j));
                             // Auto-repair: if jobs were stored as envelope, keep it (no write here)
                             return jobs;
@@ -272,7 +277,10 @@ pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
                                 .filter_map(|(k, v)| {
                                     let mut rec = v.as_object()?.clone();
                                     if rec.get("id").and_then(|x| x.as_str()).is_none() {
-                                        rec.insert("id".into(), serde_json::Value::String(k.clone()));
+                                        rec.insert(
+                                            "id".into(),
+                                            serde_json::Value::String(k.clone()),
+                                        );
                                     }
                                     heal_job_value(serde_json::Value::Object(rec))
                                 })
@@ -297,7 +305,9 @@ pub(crate) fn load_jobs_inner(store: &CronStorePaths) -> Vec<CronJob> {
 }
 
 pub fn load_jobs() -> Vec<CronJob> {
-    with_jobs_lock(&CronStorePaths::active(), || load_jobs_inner(&CronStorePaths::active()))
+    with_jobs_lock(&CronStorePaths::active(), || {
+        load_jobs_inner(&CronStorePaths::active())
+    })
 }
 
 fn merge_unexpected_disk_jobs(
@@ -325,7 +335,9 @@ fn merge_unexpected_disk_jobs(
 
 pub fn save_jobs(jobs: &[CronJob]) -> anyhow::Result<()> {
     let store = CronStorePaths::active();
-    with_jobs_lock(&store, || save_jobs_inner(&store, jobs.to_vec(), &[], false))
+    with_jobs_lock(&store, || {
+        save_jobs_inner(&store, jobs.to_vec(), &[], false)
+    })
 }
 
 pub(crate) fn save_jobs_inner(
@@ -336,10 +348,8 @@ pub(crate) fn save_jobs_inner(
 ) -> anyhow::Result<()> {
     ensure_dirs(store);
     // Merge concurrent writers unless replace
-    if !replace {
-        if let Some(disk) = peek_jobs_unlocked(store) {
-            jobs = merge_unexpected_disk_jobs(&disk, &jobs, removed_ids);
-        }
+    if !replace && let Some(disk) = peek_jobs_unlocked(store) {
+        jobs = merge_unexpected_disk_jobs(&disk, &jobs, removed_ids);
     }
     jobs.retain(|j| !is_expired_oneshot(j));
     // Try 5 times with re-peek to avoid stomping
@@ -376,7 +386,10 @@ pub(crate) fn save_jobs_inner(
         {
             use std::os::unix::fs::PermissionsExt;
             if store.jobs_file.exists() {
-                let _ = std::fs::set_permissions(&store.jobs_file, std::fs::Permissions::from_mode(0o600));
+                let _ = std::fs::set_permissions(
+                    &store.jobs_file,
+                    std::fs::Permissions::from_mode(0o600),
+                );
             }
         }
         return Ok(());
@@ -401,7 +414,9 @@ pub fn create_job(name: String, schedule: String, prompt: String) -> anyhow::Res
     let schedule = normalize_daily_cron_to_utc(&schedule);
     let sched = crate::schedule::parse_schedule(&schedule)?;
     if sched.is_once() && sched.next_after(Utc::now()).is_none() {
-        anyhow::bail!("one-shot time is in the past (beyond 2m grace) — use a future time like 'in 10m' or '2026-09-01T14:00'");
+        anyhow::bail!(
+            "one-shot time is in the past (beyond 2m grace) — use a future time like 'in 10m' or '2026-09-01T14:00'"
+        );
     }
     let store = CronStorePaths::active();
     with_jobs_lock(&store, || {
@@ -459,7 +474,9 @@ fn maybe_migrate_legacy_crons(store: &CronStorePaths) -> anyhow::Result<()> {
         Err(_) => {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
                 if let Some(arr) = v.get("jobs").and_then(|j| j.as_array()) {
-                    arr.iter().filter_map(|x| serde_json::from_value(x.clone()).ok()).collect()
+                    arr.iter()
+                        .filter_map(|x| serde_json::from_value(x.clone()).ok())
+                        .collect()
                 } else {
                     let _ = std::fs::write(&sentinel, "1");
                     return Ok(());
@@ -481,7 +498,12 @@ fn maybe_migrate_legacy_crons(store: &CronStorePaths) -> anyhow::Result<()> {
         }
         let migrated = normalize_daily_cron_to_utc(&job.schedule);
         if migrated != job.schedule {
-            log::info!("migrating cron '{}' {} -> {}", job.name, job.schedule, migrated);
+            log::info!(
+                "migrating cron '{}' {} -> {}",
+                job.name,
+                job.schedule,
+                migrated
+            );
             job.schedule = migrated;
             job.next_run = crate::schedule::compute_next_run(&job.schedule, Utc::now());
             changed = true;
@@ -489,7 +511,10 @@ fn maybe_migrate_legacy_crons(store: &CronStorePaths) -> anyhow::Result<()> {
     }
     if changed {
         let body = serde_json::to_string_pretty(&jobs)?;
-        let tmp = tempfile::Builder::new().prefix(".jobs_").suffix(".tmp").tempfile_in(&store.cron_dir)?;
+        let tmp = tempfile::Builder::new()
+            .prefix(".jobs_")
+            .suffix(".tmp")
+            .tempfile_in(&store.cron_dir)?;
         {
             use std::io::Write;
             let mut f = tmp.as_file();
@@ -613,7 +638,10 @@ mod tests {
         );
         let jobs = load_jobs_inner(&store);
         let ids: Vec<_> = jobs.iter().map(|j| j.id.as_str()).collect();
-        assert!(!ids.contains(&"old1"), "old one-shot should be pruned: {ids:?}");
+        assert!(
+            !ids.contains(&"old1"),
+            "old one-shot should be pruned: {ids:?}"
+        );
         assert!(ids.contains(&"new1"));
         assert!(ids.contains(&"rec1"));
     }
@@ -664,7 +692,10 @@ mod tests {
         save_jobs_inner(&store, jobs, &[], true).unwrap();
         let reloaded = load_jobs_inner(&store);
         let ids: Vec<_> = reloaded.iter().map(|j| j.id.as_str()).collect();
-        assert!(!ids.contains(&"old1"), "save should prune old one-shot: {ids:?}");
+        assert!(
+            !ids.contains(&"old1"),
+            "save should prune old one-shot: {ids:?}"
+        );
         assert!(ids.contains(&"rec1"));
     }
 }

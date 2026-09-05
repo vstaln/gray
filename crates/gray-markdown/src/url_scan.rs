@@ -137,15 +137,27 @@ pub(crate) fn detect_file_paths_with_offset(
             while b < bytes.len() {
                 // Check for '/' at word boundary or '~/' at word boundary
                 let is_slash = bytes[b] == b'/';
-                let is_tilde_slash = b + 1 < bytes.len() && bytes[b] == b'~' && bytes[b + 1] == b'/';
-                let start_b = if is_tilde_slash { b } else if is_slash { b } else {
+                let is_tilde_slash =
+                    b + 1 < bytes.len() && bytes[b] == b'~' && bytes[b + 1] == b'/';
+                let start_b = if is_tilde_slash || is_slash {
+                    b
+                } else {
                     b += 1;
                     continue;
                 };
                 // Word boundary check: previous char is whitespace or start or punctuation that allows path start
                 if start_b > 0 {
                     let prev = bytes[start_b - 1];
-                    if !(prev == b' ' || prev == b'\t' || prev == b'\n' || prev == b'(' || prev == b'[' || prev == b'"' || prev == b'\'' || prev == b'`' || prev == b'<' ) {
+                    if !(prev == b' '
+                        || prev == b'\t'
+                        || prev == b'\n'
+                        || prev == b'('
+                        || prev == b'['
+                        || prev == b'"'
+                        || prev == b'\''
+                        || prev == b'`'
+                        || prev == b'<')
+                    {
                         b = start_b + 1;
                         continue;
                     }
@@ -159,7 +171,7 @@ pub(crate) fn detect_file_paths_with_offset(
                 }
                 while end_b < bytes.len() {
                     let c = bytes[end_b] as char;
-                    if c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '~' ) {
+                    if c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | '~') {
                         end_b += c.len_utf8();
                     } else {
                         break;
@@ -174,8 +186,11 @@ pub(crate) fn detect_file_paths_with_offset(
                 }
                 // Trim trailing punctuation . , ; : ! ? ) ] } ` ' " that is not part of path
                 while end_b > start_b {
-                    let last_char = span_text[end_b-1..].chars().next_back().unwrap();
-                    if matches!(last_char, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '`' ) {
+                    let last_char = span_text[end_b - 1..].chars().next_back().unwrap();
+                    if matches!(
+                        last_char,
+                        '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '`'
+                    ) {
                         end_b -= last_char.len_utf8();
                     } else {
                         break;
@@ -205,9 +220,9 @@ pub(crate) fn detect_file_paths_with_offset(
                     continue;
                 }
                 // Build file:// URL
-                let path = if matched.starts_with("~/") {
+                let path = if let Some(stripped) = matched.strip_prefix("~/") {
                     if let Ok(home) = std::env::var("HOME") {
-                        format!("{}/{}", home.trim_end_matches('/'), &matched[2..])
+                        format!("{}/{}", home.trim_end_matches('/'), stripped)
                     } else {
                         matched.to_string()
                     }
@@ -299,4 +314,3 @@ pub(crate) fn patch_lines_with_link_style(
 pub(crate) fn apply_link_styling(lines: &mut [Line<'_>], hyperlinks: &[HyperlinkTarget]) {
     patch_lines_with_link_style(lines, hyperlinks, link_style());
 }
-

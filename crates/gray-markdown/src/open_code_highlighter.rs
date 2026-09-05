@@ -287,4 +287,3 @@ impl OpenCodeHighlighter {
         pos == self.committed_len
     }
 }
-

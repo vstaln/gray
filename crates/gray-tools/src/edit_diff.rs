@@ -258,12 +258,12 @@ fn apply_replacements_preserving_unchanged_lines(
     let mut groups: Vec<(Range<usize>, Vec<TextReplacement>)> = Vec::new();
     for r in sorted {
         let range = get_replacement_line_range(&base_spans, &r)?;
-        if let Some((last_range, last_repls)) = groups.last_mut() {
-            if range.start < last_range.end {
-                last_range.end = last_range.end.max(range.end);
-                last_repls.push(r);
-                continue;
-            }
+        if let Some((last_range, last_repls)) = groups.last_mut()
+            && range.start < last_range.end
+        {
+            last_range.end = last_range.end.max(range.end);
+            last_repls.push(r);
+            continue;
         }
         groups.push((range, vec![r]));
     }
@@ -454,7 +454,9 @@ pub fn apply_edits_to_normalized_content(
                 "No changes made to {path}. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."
             ));
         } else {
-            return Err(format!("No changes made to {path}. The replacements produced identical content."));
+            return Err(format!(
+                "No changes made to {path}. The replacements produced identical content."
+            ));
         }
     }
 
@@ -583,12 +585,12 @@ pub fn generate_unified_patch(
                         if equal_run.len() > context_lines {
                             equal_run.drain(..equal_run.len() - context_lines);
                         }
-                        cur.extend(equal_run.drain(..));
+                        cur.append(&mut equal_run);
                     }
                 }
             }
             _ => {
-                cur.extend(equal_run.drain(..));
+                cur.append(&mut equal_run);
                 cur.push(op.clone());
             }
         }
@@ -698,4 +700,3 @@ pub fn generate_unified_patch(
 pub fn generate_unified_patch_default(path: &str, old_content: &str, new_content: &str) -> String {
     generate_unified_patch(path, old_content, new_content, 3)
 }
-

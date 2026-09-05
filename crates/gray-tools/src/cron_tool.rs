@@ -3,9 +3,9 @@
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{fail, get_str, Tool};
+use crate::{Tool, fail, get_str};
 
 pub const CRON_SNIPPET: &str = "Schedule a timed action: `schedule_task(schedule, prompt)`";
 pub const CRON_GUIDELINES: &[&str] = &[
@@ -63,7 +63,7 @@ impl Tool for CronTool {
             .get("name")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("job-{}", &prompt.chars().take(12).collect::<String>()));
+            .unwrap_or_else(|| format!("job-{}", prompt.chars().take(12).collect::<String>()));
 
         // Validate via gray-cron parser
         if let Err(e) = gray_cron::parse_schedule(&schedule) {
@@ -72,7 +72,10 @@ impl Tool for CronTool {
 
         match gray_cron::create_job(name.clone(), schedule.clone(), prompt.clone()) {
             Ok(job) => {
-                let next = job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string());
+                let next = job
+                    .next_run
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "-".to_string());
                 let display = gray_cron::parse_schedule(&schedule)
                     .map(|s| s.display())
                     .unwrap_or(schedule.clone());
@@ -85,4 +88,3 @@ impl Tool for CronTool {
         }
     }
 }
-

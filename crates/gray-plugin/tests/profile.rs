@@ -1,4 +1,4 @@
-use gray_plugin::profile::{load_entries, PluginEntry};
+use gray_plugin::profile::{PluginEntry, load_entries};
 
 #[test]
 fn load_profile_with_sidecar() {

@@ -816,4 +816,3 @@ fn match_env(buf: &str, i: usize, final_flush: bool) -> EnvScan {
     }
     EnvScan::No
 }
-

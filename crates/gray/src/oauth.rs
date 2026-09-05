@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -63,7 +63,9 @@ fn b64url_decode(s: &str) -> anyhow::Result<Vec<u8>> {
 
 fn random_bytes(n: usize) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(n);
-    while bytes.len() < n { bytes.extend_from_slice(Uuid::new_v4().as_bytes()); }
+    while bytes.len() < n {
+        bytes.extend_from_slice(Uuid::new_v4().as_bytes());
+    }
     bytes.truncate(n);
     bytes
 }
@@ -156,7 +158,11 @@ pub fn decode_id_token_email(id_token: &str) -> Option<String> {
     let payload_json: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
 
     for key in ["email", "preferred_username", "sub"] {
-        if let Some(val) = payload_json.get(key).and_then(|v| v.as_str()).filter(|v| !v.is_empty()) {
+        if let Some(val) = payload_json
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+        {
             return Some(val.to_string());
         }
     }
@@ -289,7 +295,10 @@ pub(crate) fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
     serde_json::from_str::<BTreeMap<String, AuthEntry>>(&body).unwrap_or_default()
 }
 
-pub(crate) fn save_mixed_store(path: &Path, store: &BTreeMap<String, AuthEntry>) -> anyhow::Result<()> {
+pub(crate) fn save_mixed_store(
+    path: &Path,
+    store: &BTreeMap<String, AuthEntry>,
+) -> anyhow::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -532,7 +541,7 @@ async fn await_callback_head(port: u16, callback_path: &str) -> anyhow::Result<S
             Err(e) => return Err(e.into()),
         };
         stream.set_nonblocking(false)?;
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
 
         let mut buf = [0u8; 1024];
         let mut raw = Vec::new();
@@ -571,7 +580,9 @@ async fn await_callback_head(port: u16, callback_path: &str) -> anyhow::Result<S
             let _ = stream.flush();
             return Ok(head);
         }
-        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot found");
+        let _ = stream.write_all(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\nConnection: close\r\n\r\nNot found",
+        );
         let _ = stream.flush();
         if start.elapsed() >= AUTH_TIMEOUT {
             anyhow::bail!("Authentication timeout (5 minutes)");
@@ -763,10 +774,19 @@ mod tests {
     fn mixed_store_keeps_key_strings_and_oauth_objects() {
         let dir = tempfile::tempdir().expect("tmp");
         let path = dir.path().join("auth.json");
-        write(&path, r#"{"openrouter": "sk-or-123", "xai": {"provider": "xai", "access_token": "tok123", "refresh_token": "ref123", "expires_at": 9999999999}}"#);
+        write(
+            &path,
+            r#"{"openrouter": "sk-or-123", "xai": {"provider": "xai", "access_token": "tok123", "refresh_token": "ref123", "expires_at": 9999999999}}"#,
+        );
         let store = load_mixed_store(&path);
-        assert!(matches!(store.get("openrouter"), Some(AuthEntry::Key(k)) if k == "sk-or-123"), "{store:?}");
-        assert!(matches!(store.get("xai"), Some(AuthEntry::OAuth(a)) if a.access_token == "tok123"), "{store:?}");
+        assert!(
+            matches!(store.get("openrouter"), Some(AuthEntry::Key(k)) if k == "sk-or-123"),
+            "{store:?}"
+        );
+        assert!(
+            matches!(store.get("xai"), Some(AuthEntry::OAuth(a)) if a.access_token == "tok123"),
+            "{store:?}"
+        );
     }
 
     #[test]
@@ -777,8 +797,14 @@ mod tests {
         write(&path, r#"{"openrouter": "sk-or-123"}"#);
         save_auth_at(&path, &stored_xai()).expect("save");
         let store = load_mixed_store(&path);
-        assert!(matches!(store.get("openrouter"), Some(AuthEntry::Key(_))), "key survived: {store:?}");
-        assert!(matches!(store.get("xai"), Some(AuthEntry::OAuth(_))), "oauth saved: {store:?}");
+        assert!(
+            matches!(store.get("openrouter"), Some(AuthEntry::Key(_))),
+            "key survived: {store:?}"
+        );
+        assert!(
+            matches!(store.get("xai"), Some(AuthEntry::OAuth(_))),
+            "oauth saved: {store:?}"
+        );
     }
 
     #[test]
@@ -794,9 +820,14 @@ mod tests {
     fn legacy_single_object_still_loads() {
         let dir = tempfile::tempdir().expect("tmp");
         let path = dir.path().join("auth.json");
-        write(&path, r#"{"provider": "codex", "access_token": "tok", "expires_at": 9999999999}"#);
+        write(
+            &path,
+            r#"{"provider": "codex", "access_token": "tok", "expires_at": 9999999999}"#,
+        );
         let store = load_mixed_store(&path);
-        assert!(matches!(store.get("codex"), Some(AuthEntry::OAuth(_))), "{store:?}");
+        assert!(
+            matches!(store.get("codex"), Some(AuthEntry::OAuth(_))),
+            "{store:?}"
+        );
     }
 }
-

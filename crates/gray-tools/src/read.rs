@@ -3,11 +3,11 @@
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use serde_json::json;
 use serde_json::Value;
+use serde_json::json;
 
-use crate::truncate::{format_size, truncate_head, DEFAULT_MAX_BYTES};
-use crate::{fail, get_opt_u64, get_str, resolve_path, Tool};
+use crate::truncate::{DEFAULT_MAX_BYTES, format_size, truncate_head};
+use crate::{Tool, fail, get_opt_u64, get_str, resolve_path};
 
 pub const READ_SNIPPET: &str = "Read file contents";
 pub const READ_GUIDELINES: &[&str] = &["Use read to examine files instead of cat or sed."];
@@ -76,7 +76,12 @@ impl Tool for ReadTool {
         };
         let text = match String::from_utf8(data) {
             Ok(t) => t,
-            Err(_) => return fail(format!("{}: not valid UTF-8 (binary file?)", full.display())),
+            Err(_) => {
+                return fail(format!(
+                    "{}: not valid UTF-8 (binary file?)",
+                    full.display()
+                ));
+            }
         };
 
         let total_lines = text.lines().count();
@@ -101,7 +106,7 @@ impl Tool for ReadTool {
 
         let output = if truncation.first_line_exceeds_limit {
             let first_line = selected.first().copied().unwrap_or("");
-            let first_size = format_size(first_line.as_bytes().len());
+            let first_size = format_size(first_line.len());
             format!(
                 "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
                 start_display,
@@ -134,13 +139,15 @@ impl Tool for ReadTool {
             } else {
                 format!("{}\n\n{}", truncation.content, hint)
             }
-        } else if limit_opt.is_some() {
-            let lim = limit_opt.unwrap();
+        } else if let Some(lim) = limit_opt {
             if start + lim < total_lines {
                 let remaining = total_lines - (start + lim);
                 let next_offset = start + lim + 1;
                 if truncation.content.is_empty() {
-                    format!("[{} more lines in file. Use offset={} to continue.]", remaining, next_offset)
+                    format!(
+                        "[{} more lines in file. Use offset={} to continue.]",
+                        remaining, next_offset
+                    )
                 } else {
                     format!(
                         "{}\n\n[{} more lines in file. Use offset={} to continue.]",
@@ -159,4 +166,3 @@ impl Tool for ReadTool {
         ToolOutput::ok(output)
     }
 }
-

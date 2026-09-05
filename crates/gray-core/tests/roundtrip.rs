@@ -54,21 +54,9 @@ fn test_full_chat_request_with_all_content_blocks_and_tools_roundtrip() {
                 "read",
                 json!({ "path": "src/lib.rs", "limit": 20 }),
             ),
-            ContentBlock::tool_result(
-                "tool_use_1",
-                "pub mod message;\npub mod event;",
-                false,
-            ),
-            ContentBlock::tool_use(
-                "tool_use_2",
-                "bash",
-                json!({ "command": "cargo check" }),
-            ),
-            ContentBlock::tool_result(
-                "tool_use_2",
-                "error: failed to compile",
-                true,
-            ),
+            ContentBlock::tool_result("tool_use_1", "pub mod message;\npub mod event;", false),
+            ContentBlock::tool_use("tool_use_2", "bash", json!({ "command": "cargo check" })),
+            ContentBlock::tool_result("tool_use_2", "error: failed to compile", true),
             ContentBlock::text("Encountered an error, fixing now."),
         ],
     );
@@ -96,8 +84,8 @@ fn test_full_chat_request_with_all_content_blocks_and_tools_roundtrip() {
     assert_eq!(request, roundtripped);
 
     // Validate structural fields in JSON
-    let parsed_json: serde_json::Value = serde_json::from_str(&json_output)
-        .expect("Must parse into serde_json::Value");
+    let parsed_json: serde_json::Value =
+        serde_json::from_str(&json_output).expect("Must parse into serde_json::Value");
 
     assert_eq!(
         parsed_json["system"],
@@ -109,7 +97,10 @@ fn test_full_chat_request_with_all_content_blocks_and_tools_roundtrip() {
     // Validate ContentBlock tagging in serialized JSON
     let blocks = &parsed_json["messages"][2]["content"];
     assert_eq!(blocks[0]["type"], "text");
-    assert_eq!(blocks[0]["text"], "Let me inspect the file and run a command.");
+    assert_eq!(
+        blocks[0]["text"],
+        "Let me inspect the file and run a command."
+    );
 
     assert_eq!(blocks[1]["type"], "tool_use");
     assert_eq!(blocks[1]["id"], "tool_use_1");
@@ -172,10 +163,7 @@ fn test_stream_events_roundtrip_integration() {
             "{\"path\":",
         ),
         StreamEvent::tool_call_delta(0, None, None, "\"Cargo.toml\"}"),
-        StreamEvent::message_complete(
-            Some(StopReason::ToolUse),
-            Some(Usage::new(400, 50)),
-        ),
+        StreamEvent::message_complete(Some(StopReason::ToolUse), Some(Usage::new(400, 50))),
     ];
 
     let json_lines: Vec<String> = events
@@ -193,7 +181,18 @@ fn test_stream_events_roundtrip_integration() {
 
 #[test]
 fn test_thinking_block_roundtrips_losslessly() {
-    let msg = Message::new(Role::Assistant, vec![ContentBlock::Thinking { text: "private".into(), encrypted_content: None, item_id: None, model: None }, ContentBlock::text("visible")]);
+    let msg = Message::new(
+        Role::Assistant,
+        vec![
+            ContentBlock::Thinking {
+                text: "private".into(),
+                encrypted_content: None,
+                item_id: None,
+                model: None,
+            },
+            ContentBlock::text("visible"),
+        ],
+    );
     let req = ChatRequest::new(vec![msg.clone()]);
     let json = serde_json::to_string(&req).unwrap();
     let back: ChatRequest = serde_json::from_str(&json).unwrap();
@@ -206,17 +205,28 @@ fn test_legacy_thinking_without_replay_fields_still_parses() {
     let legacy = r#"{"role":"assistant","content":[{"type":"thinking","text":"private"},{"type":"text","text":"visible"}]}"#;
     let msg: Message = serde_json::from_str(legacy).unwrap();
     assert_eq!(msg.content.len(), 2);
-    assert!(matches!(msg.content[0], ContentBlock::Thinking { encrypted_content: None, item_id: None, model: None, .. }));
+    assert!(matches!(
+        msg.content[0],
+        ContentBlock::Thinking {
+            encrypted_content: None,
+            item_id: None,
+            model: None,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn test_thinking_with_replay_data_roundtrips() {
-    let msg = Message::new(Role::Assistant, vec![ContentBlock::Thinking {
-        text: "hmm".into(),
-        encrypted_content: Some("blob".into()),
-        item_id: Some("rs_1".into()),
-        model: Some("m1".into()),
-    }]);
+    let msg = Message::new(
+        Role::Assistant,
+        vec![ContentBlock::Thinking {
+            text: "hmm".into(),
+            encrypted_content: Some("blob".into()),
+            item_id: Some("rs_1".into()),
+            model: Some("m1".into()),
+        }],
+    );
     let json = serde_json::to_string(&msg).unwrap();
     let back: Message = serde_json::from_str(&json).unwrap();
     assert_eq!(back, msg);

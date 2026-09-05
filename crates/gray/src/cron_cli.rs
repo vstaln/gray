@@ -12,15 +12,19 @@ pub enum CronCmd {
     List,
     /// Create a cron job: gray cron create --schedule "every 30m" --prompt "check inbox"
     Create {
-        #[arg(long)] schedule: String,
-        #[arg(long)] prompt: String,
-        #[arg(long)] name: Option<String>,
+        #[arg(long)]
+        schedule: String,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Shorthand: gray cron add "check inbox every 30m" / "remind me in 10m"
     Add {
         /// Human input like "check inbox every 30m" — schedule auto-extracted
         input: String,
-        #[arg(long)] name: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
     },
     /// Remove a job by id or name
     Remove { id: String },
@@ -36,10 +40,12 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
         CronCmd::List => {
             let jobs = gray_cron::list_jobs();
             if jobs.is_empty() {
-                println!("no cron jobs — create one with: gray cron create --schedule \"every 30m\" --prompt \"...\"");
+                println!(
+                    "no cron jobs — create one with: gray cron create --schedule \"every 30m\" --prompt \"...\""
+                );
                 return Ok(());
             }
-            println!("{:<10} {:<20} {:<16} {}", "ID", "NAME", "SCHEDULE", "NEXT RUN");
+            println!("{:<10} {:<20} {:<16} NEXT RUN", "ID", "NAME", "SCHEDULE");
             println!("{}", "-".repeat(70));
             for j in jobs {
                 let next = j
@@ -53,26 +59,41 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
                 );
             }
         }
-        CronCmd::Create { schedule, prompt, name } => {
-            let n = name.unwrap_or_else(|| format!("job-{}", &prompt.chars().take(12).collect::<String>()));
+        CronCmd::Create {
+            schedule,
+            prompt,
+            name,
+        } => {
+            let n = name
+                .unwrap_or_else(|| format!("job-{}", prompt.chars().take(12).collect::<String>()));
             // Validate
             gray_cron::parse_schedule(&schedule)?;
             let job = gray_cron::create_job(n.clone(), schedule.clone(), prompt.clone())?;
-            println!("created cron job {} (\"{}\") — schedule: {} — next: {}",
+            println!(
+                "created cron job {} (\"{}\") — schedule: {} — next: {}",
                 job.id,
                 job.name,
                 job.schedule,
-                job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string())
+                job.next_run
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "-".to_string())
             );
         }
         CronCmd::Add { input, name } => {
             let (schedule, prompt) = gray_cron::schedule::split_human_input(&input)
                 .ok_or_else(|| anyhow::anyhow!("could not parse schedule from '{input}' — try 'check inbox every 30m' or 'remind me in 10m' or cron '0 9 * * *'"))?;
-            let n = name.clone().unwrap_or_else(|| format!("job-{}", &prompt.chars().take(12).collect::<String>()));
+            let n = name
+                .clone()
+                .unwrap_or_else(|| format!("job-{}", prompt.chars().take(12).collect::<String>()));
             let job = gray_cron::create_job(n.clone(), schedule.clone(), prompt.clone())?;
-            println!("created cron job {} (\"{}\") — schedule: {} — next: {}",
-                job.id, job.name, job.schedule,
-                job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string())
+            println!(
+                "created cron job {} (\"{}\") — schedule: {} — next: {}",
+                job.id,
+                job.name,
+                job.schedule,
+                job.next_run
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| "-".to_string())
             );
         }
         CronCmd::Remove { id } => {
@@ -97,7 +118,10 @@ pub fn run_cron(args: CronArgs) -> anyhow::Result<()> {
                 match scheduler.scan_due_jobs() {
                     Ok(due) => {
                         for job in due {
-                            println!("→ running cron job {} (\"{}\"): {}", job.id, job.name, job.prompt);
+                            println!(
+                                "→ running cron job {} (\"{}\"): {}",
+                                job.id, job.name, job.prompt
+                            );
                             let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
                             // Daemon headless: for now log + update; REPL background will run Agent.
                             // One-shot jobs: next_run=None after update, so they won't refire.

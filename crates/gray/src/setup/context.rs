@@ -5,7 +5,7 @@ pub fn friendly_model_name(model_id: &str) -> String {
     if model_id.is_empty() {
         return String::new();
     }
-    let name = model_id.split('/').last().unwrap_or(model_id);
+    let name = model_id.split('/').next_back().unwrap_or(model_id);
     let words: Vec<String> = name
         .split(['-', '_', ':'])
         .filter(|w| !w.is_empty())
@@ -13,7 +13,10 @@ pub fn friendly_model_name(model_id: &str) -> String {
             let lower = w.to_lowercase();
             if lower == "gpt" || lower == "glm" || lower == "ai" || lower == "api" {
                 w.to_uppercase()
-            } else if lower.starts_with('v') && lower.len() > 1 && lower[1..].chars().all(|c| c.is_ascii_digit() || c == '.') {
+            } else if lower.starts_with('v')
+                && lower.len() > 1
+                && lower[1..].chars().all(|c| c.is_ascii_digit() || c == '.')
+            {
                 format!("v{}", &lower[1..])
             } else {
                 let mut c = w.chars();
@@ -68,61 +71,62 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
 
                     for url in endpoints {
                         let mut req = client.get(&url);
-                        if let Some(k) = &key {
-                            if !k.is_empty() {
-                                req = req.header("Authorization", format!("Bearer {k}"));
-                            }
+                        if let Some(k) = &key
+                            && !k.is_empty()
+                        {
+                            req = req.header("Authorization", format!("Bearer {k}"));
                         }
                         if url.contains("openrouter") {
                             req = req.header("HTTP-Referer", "https://github.com/vstaln/gray");
                             req = req.header("X-Title", "Gray");
                         }
 
-                        if let Ok(resp) = req.send().await {
-                            if resp.status().is_success() {
-                                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                                    let mut models = Vec::new();
-                                    let items_opt = if let Some(arr) = json.as_array() {
-                                        Some(arr)
-                                    } else if let Some(arr) = json.get("data").and_then(|d| d.as_array()) {
-                                        Some(arr)
-                                    } else if let Some(arr) = json.get("models").and_then(|m| m.as_array()) {
-                                        Some(arr)
-                                    } else {
-                                        None
-                                    };
+                        if let Ok(resp) = req.send().await
+                            && resp.status().is_success()
+                            && let Ok(json) = resp.json::<serde_json::Value>().await
+                        {
+                            let mut models = Vec::new();
+                            let items_opt = if let Some(arr) = json.as_array() {
+                                Some(arr)
+                            } else if let Some(arr) = json.get("data").and_then(|d| d.as_array()) {
+                                Some(arr)
+                            } else {
+                                json.get("models").and_then(|m| m.as_array())
+                            };
 
-                                    if let Some(items) = items_opt {
-                                        for item in items {
-                                            let id = item.get("id")
-                                                .or_else(|| item.get("name"))
-                                                .or_else(|| item.get("model"))
-                                                .and_then(|v| v.as_str());
-                                            if let Some(id_str) = id {
-                                                let name = item.get("name")
-                                                    .or_else(|| item.get("display_name"))
-                                                    .and_then(|n| n.as_str())
-                                                    .map(|s| s.to_string())
-                                                    .unwrap_or_else(|| friendly_model_name(id_str));
-                                                if let Some(len) = extract_context_length_from_json(item) {
-                                                    cache_model_context(id_str, len);
-                                                }
-                                                models.push((id_str.to_string(), name));
-                                            }
+                            if let Some(items) = items_opt {
+                                for item in items {
+                                    let id = item
+                                        .get("id")
+                                        .or_else(|| item.get("name"))
+                                        .or_else(|| item.get("model"))
+                                        .and_then(|v| v.as_str());
+                                    if let Some(id_str) = id {
+                                        let name = item
+                                            .get("name")
+                                            .or_else(|| item.get("display_name"))
+                                            .and_then(|n| n.as_str())
+                                            .map(|s| s.to_string())
+                                            .unwrap_or_else(|| friendly_model_name(id_str));
+                                        if let Some(len) = extract_context_length_from_json(item) {
+                                            cache_model_context(id_str, len);
                                         }
-                                    }
-                                    if !models.is_empty() {
-                                        save_models_cache_to_disk();
-                                        return models;
+                                        models.push((id_str.to_string(), name));
                                     }
                                 }
+                            }
+                            if !models.is_empty() {
+                                save_models_cache_to_disk();
+                                return models;
                             }
                         }
                     }
 
                     Vec::new()
                 })
-            }).join().unwrap_or_default()
+            })
+            .join()
+            .unwrap_or_default()
         })
     } else {
         Vec::new()
@@ -139,7 +143,9 @@ pub fn get_provider_models_with_live(
     fetch_live_provider_models(base_url, api_key)
 }
 
-static MODEL_CONTEXT_CACHE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, usize>>> = std::sync::OnceLock::new();
+static MODEL_CONTEXT_CACHE: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, usize>>,
+> = std::sync::OnceLock::new();
 
 fn model_context_cache() -> &'static std::sync::RwLock<std::collections::HashMap<String, usize>> {
     MODEL_CONTEXT_CACHE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
@@ -174,30 +180,37 @@ pub fn cache_models_dev_if_absent(model_id: &str, length: usize) {
 }
 
 /// Shared insert behind the cache fns above; also fans out the source tag.
-fn cache_model_context_with_source(model_id: &str, length: usize, src: &'static str, overwrite: bool) {
+fn cache_model_context_with_source(
+    model_id: &str,
+    length: usize,
+    src: &'static str,
+    overwrite: bool,
+) {
     if length == 0 {
         return;
     }
-    if let Ok(mut g) = model_context_cache().write() {
-        if overwrite || !g.contains_key(model_id) {
-            g.insert(model_id.to_string(), length);
-            let lower = model_id.to_lowercase();
-            if lower != model_id {
-                if overwrite {
-                    g.insert(lower, length);
-                } else {
-                    g.entry(lower).or_insert(length);
-                }
+    if let Ok(mut g) = model_context_cache().write()
+        && (overwrite || !g.contains_key(model_id))
+    {
+        g.insert(model_id.to_string(), length);
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            if overwrite {
+                g.insert(lower, length);
+            } else {
+                g.entry(lower).or_insert(length);
             }
         }
     }
     record_context_source(model_id, src, overwrite);
 }
 
-static MODEL_CONTEXT_SOURCE: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, &'static str>>> =
-    std::sync::OnceLock::new();
+static MODEL_CONTEXT_SOURCE: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, &'static str>>,
+> = std::sync::OnceLock::new();
 
-fn model_context_source_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, &'static str>> {
+fn model_context_source_cell()
+-> &'static std::sync::RwLock<std::collections::HashMap<String, &'static str>> {
     MODEL_CONTEXT_SOURCE.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
@@ -266,8 +279,9 @@ pub struct ModelRate {
     pub has_cache_prices: bool,
 }
 
-static MODEL_RATES: std::sync::OnceLock<std::sync::RwLock<std::collections::HashMap<String, ModelRate>>> =
-    std::sync::OnceLock::new();
+static MODEL_RATES: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, ModelRate>>,
+> = std::sync::OnceLock::new();
 
 fn model_rates_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, ModelRate>> {
     MODEL_RATES.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
@@ -294,10 +308,10 @@ pub fn get_model_rate(model_id: &str) -> Option<ModelRate> {
         if let Some(r) = g.get(&lower).copied() {
             return Some(r);
         }
-        if let Some((_, suffix)) = model_id.rsplit_once('/') {
-            if let Some(r) = g.get(suffix).copied() {
-                return Some(r);
-            }
+        if let Some((_, suffix)) = model_id.rsplit_once('/')
+            && let Some(r) = g.get(suffix).copied()
+        {
+            return Some(r);
         }
     }
     None
@@ -338,7 +352,11 @@ pub fn format_cost(usd: f64) -> String {
         .trim_end_matches('.')
         .to_string();
     if trimmed == "0" {
-        return if usd > 0.0 { "<$0.0001".to_string() } else { "$0".to_string() };
+        return if usd > 0.0 {
+            "<$0.0001".to_string()
+        } else {
+            "$0".to_string()
+        };
     }
     format!("${trimmed}")
 }
@@ -376,12 +394,22 @@ pub fn parse_litellm_context_json(val: &serde_json::Value) -> usize {
             entry.get("input_cost_per_token").and_then(json_rate),
             entry.get("output_cost_per_token").and_then(json_rate),
         ) {
-            let (cache_read, cache_write, has_cache) =
-                match (entry.get("cache_read_input_token_cost").and_then(json_rate), entry.get("cache_creation_input_token_cost").and_then(json_rate)) {
-                    (Some(r), Some(w)) => (r, w, true),
-                    _ => (0.0, 0.0, false),
-                };
-            let rate = ModelRate { input, output, cache_read, cache_write, has_cache_prices: has_cache };
+            let (cache_read, cache_write, has_cache) = match (
+                entry.get("cache_read_input_token_cost").and_then(json_rate),
+                entry
+                    .get("cache_creation_input_token_cost")
+                    .and_then(json_rate),
+            ) {
+                (Some(r), Some(w)) => (r, w, true),
+                _ => (0.0, 0.0, false),
+            };
+            let rate = ModelRate {
+                input,
+                output,
+                cache_read,
+                cache_write,
+                has_cache_prices: has_cache,
+            };
             cache_model_rate(key, rate);
             if let Some((_, suffix)) = key.rsplit_once('/') {
                 cache_model_rate(suffix, rate);
@@ -410,10 +438,10 @@ pub async fn fetch_litellm_context_windows() {
     if !resp.status().is_success() {
         return;
     }
-    if let Ok(json) = resp.json::<serde_json::Value>().await {
-        if parse_litellm_context_json(&json) > 0 {
-            save_models_cache_to_disk();
-        }
+    if let Ok(json) = resp.json::<serde_json::Value>().await
+        && parse_litellm_context_json(&json) > 0
+    {
+        save_models_cache_to_disk();
     }
 }
 
@@ -479,10 +507,10 @@ pub async fn fetch_models_dev_context() -> usize {
 }
 
 fn cache_model_rate_if_absent(model_id: &str, rate: ModelRate) {
-    if let Ok(g) = model_rates_cell().read() {
-        if g.contains_key(model_id) {
-            return;
-        }
+    if let Ok(g) = model_rates_cell().read()
+        && g.contains_key(model_id)
+    {
+        return;
     }
     cache_model_rate(model_id, rate);
 }
@@ -517,7 +545,13 @@ pub fn parse_openrouter_models_json(val: &serde_json::Value) -> usize {
         if input == 0.0 && output == 0.0 {
             continue;
         }
-        let rate = ModelRate { input, output, cache_read: 0.0, cache_write: 0.0, has_cache_prices: false };
+        let rate = ModelRate {
+            input,
+            output,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            has_cache_prices: false,
+        };
         cache_model_rate_if_absent(id, rate);
         let lower = id.to_lowercase();
         cache_model_rate_if_absent(&lower, rate);
@@ -556,7 +590,9 @@ pub async fn fetch_openrouter_rates() -> usize {
 /// guess on cold boot, before any fetch completes.
 /// On-disk context cache (`~/.gray/models.json`, `{ "model-id": tokens }`).
 fn models_cache_path() -> Option<std::path::PathBuf> {
-    super::catalog::gray_home().ok().map(|h| h.join("models.json"))
+    super::catalog::gray_home()
+        .ok()
+        .map(|h| h.join("models.json"))
 }
 
 /// Loads the disk cache into memory (gap-fill, source "disk"). Best-effort.
@@ -599,10 +635,10 @@ pub fn save_models_cache_to_disk() {
     let Ok(s) = serde_json::to_string(&map) else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
+    if let Some(parent) = path.parent()
+        && std::fs::create_dir_all(parent).is_err()
+    {
+        return;
     }
     let _ = std::fs::write(path, s);
 }
@@ -616,7 +652,8 @@ fn ensure_disk_loaded() {
     });
 }
 
-static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> = std::sync::OnceLock::new();
+static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
+    std::sync::OnceLock::new();
 
 fn user_context_window_cell() -> &'static std::sync::RwLock<Option<usize>> {
     USER_CONTEXT_WINDOW.get_or_init(|| std::sync::RwLock::new(None))
@@ -740,10 +777,10 @@ pub fn parse_context_window(s: &str) -> Option<usize> {
         if dots == 1 && !is_grouped_thousands(num) {
             return None;
         }
-        if let Ok(n) = plain.parse::<usize>() {
-            if n > 0 {
-                return Some(n);
-            }
+        if let Ok(n) = plain.parse::<usize>()
+            && n > 0
+        {
+            return Some(n);
         }
         return None;
     }
@@ -760,7 +797,8 @@ pub fn parse_context_window(s: &str) -> Option<usize> {
 fn is_grouped_thousands(num: &str) -> bool {
     let mut parts = num.split('.');
     match parts.next() {
-        Some(first) if (1..=3).contains(&first.len()) && first.bytes().all(|b| b.is_ascii_digit()) => {}
+        Some(first)
+            if (1..=3).contains(&first.len()) && first.bytes().all(|b| b.is_ascii_digit()) => {}
         _ => return false,
     }
     let mut groups = 0;
@@ -794,12 +832,11 @@ pub fn extract_context_length_from_json(val: &serde_json::Value) -> Option<usize
                 if n > 0 {
                     return Some(n as usize);
                 }
-            } else if let Some(s) = v.as_str() {
-                if let Ok(n) = s.parse::<usize>() {
-                    if n > 0 {
-                        return Some(n);
-                    }
-                }
+            } else if let Some(s) = v.as_str()
+                && let Ok(n) = s.parse::<usize>()
+                && n > 0
+            {
+                return Some(n);
             }
         }
     }
@@ -855,25 +892,38 @@ pub fn model_max_context(model_name: &str) -> usize {
         return cached;
     }
     // `provider/model` ids vs bare cache keys (`gpt-4o`): try the tail.
-    if let Some((_, suffix)) = model_name.rsplit_once('/') {
-        if let Some(cached) = get_cached_model_context(suffix) {
-            return cached;
-        }
+    if let Some((_, suffix)) = model_name.rsplit_once('/')
+        && let Some(cached) = get_cached_model_context(suffix)
+    {
+        return cached;
     }
     fallback_context_length(&lower)
 }
 
 // Guess fallback; live/models.dev/litellm/disk cache wins when present.
 fn fallback_context_length(lower: &str) -> usize {
-    if lower.contains("gemini-1.5-pro") || lower.contains("gemini-2.0") || lower.contains("gemini-2.5") || lower.contains("gemini-1.5-flash") || lower.contains("gemini") {
+    if lower.contains("gemini-1.5-pro")
+        || lower.contains("gemini-2.0")
+        || lower.contains("gemini-2.5")
+        || lower.contains("gemini-1.5-flash")
+        || lower.contains("gemini")
+    {
         1_048_576
-    } else if lower.contains("claude-opus-4") || lower.contains("claude-sonnet-4") || lower.contains("claude-4") || lower.contains("claude-5") {
+    } else if lower.contains("claude-opus-4")
+        || lower.contains("claude-sonnet-4")
+        || lower.contains("claude-4")
+        || lower.contains("claude-5")
+    {
         1_000_000
     } else if lower.contains("claude-3") || lower.contains("claude") {
         200_000
     } else if lower.contains("gpt-5") || lower.contains("gpt-4.5") || lower.contains("gpt-4.1") {
         1_048_576
-    } else if lower.contains("gpt-4o") || lower.contains("o1") || lower.contains("o3") || lower.contains("gpt-4-turbo") {
+    } else if lower.contains("gpt-4o")
+        || lower.contains("o1")
+        || lower.contains("o3")
+        || lower.contains("gpt-4-turbo")
+    {
         128_000
     } else if lower.contains("gpt-4-32k") {
         32_768
@@ -885,7 +935,12 @@ fn fallback_context_length(lower: &str) -> usize {
         4_096
     } else if lower.contains("deepseek-v4") {
         1_000_000
-    } else if lower.contains("deepseek-chat") || lower.contains("deepseek-reasoner") || lower.contains("deepseek-v3") || lower.contains("deepseek-r1") || lower.contains("deepseek") {
+    } else if lower.contains("deepseek-chat")
+        || lower.contains("deepseek-reasoner")
+        || lower.contains("deepseek-v3")
+        || lower.contains("deepseek-r1")
+        || lower.contains("deepseek")
+    {
         131_072
     } else if lower.contains("qwen3") {
         1_000_000
@@ -893,9 +948,13 @@ fn fallback_context_length(lower: &str) -> usize {
         131_072
     } else if lower.contains("grok-4") {
         2_000_000
-    } else if lower.contains("grok-3") || lower.contains("grok-2") || lower.contains("grok") {
-        131_072
-    } else if lower.contains("llama-3.3") || lower.contains("llama-3.2") || lower.contains("llama-3.1") {
+    } else if lower.contains("grok-3")
+        || lower.contains("grok-2")
+        || lower.contains("grok")
+        || lower.contains("llama-3.3")
+        || lower.contains("llama-3.2")
+        || lower.contains("llama-3.1")
+    {
         131_072
     } else if lower.contains("llama-3") {
         8_192
@@ -915,8 +974,6 @@ fn fallback_context_length(lower: &str) -> usize {
         2_000_000
     } else if lower.contains("128k") {
         128_000
-    } else if lower.contains("256k") {
-        256_000
     } else {
         256_000
     }
@@ -1081,14 +1138,19 @@ mod tests {
             ..Default::default()
         };
         let cost = turn_cost(&u, "test-rate-full").expect("priced");
-        let want = 6_000.0 * 0.000003 + 3_000.0 * 0.0000003 + 1_000.0 * 0.00000375 + 2_000.0 * 0.000015;
+        let want =
+            6_000.0 * 0.000003 + 3_000.0 * 0.0000003 + 1_000.0 * 0.00000375 + 2_000.0 * 0.000015;
         assert!((cost - want).abs() < 1e-9, "got {cost}, want {want}");
         // no cache prices: everything at input rate
         let u2 = gray_core::event::Usage::new(10_000, 2_000);
         let cost2 = turn_cost(&u2, "test-rate-nocache").expect("priced");
         assert!((cost2 - (10_000.0 * 0.000002 + 2_000.0 * 0.000008)).abs() < 1e-9);
         // inclusive-only providers: all input priced fresh
-        let u3 = gray_core::event::Usage { input_tokens: 5_000, output_tokens: 0, ..Default::default() };
+        let u3 = gray_core::event::Usage {
+            input_tokens: 5_000,
+            output_tokens: 0,
+            ..Default::default()
+        };
         assert!(turn_cost(&u3, "test-rate-full").expect("priced") > 0.0);
         // half entry dropped, unknown model unpriced
         assert!(get_model_rate("test-rate-half").is_none());

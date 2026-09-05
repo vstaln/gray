@@ -134,15 +134,9 @@ pub enum AgentEvent {
         delta: String,
     },
     /// Notification that a tool call invocation has begun.
-    ToolCallStart {
-        id: String,
-        name: String,
-    },
+    ToolCallStart { id: String, name: String },
     /// Complete tool call argument accumulation finished.
-    ToolCallEnd {
-        id: String,
-        args: serde_json::Value,
-    },
+    ToolCallEnd { id: String, args: serde_json::Value },
     /// Result returned after executing a tool call.
     ToolResult {
         id: String,
@@ -152,9 +146,7 @@ pub enum AgentEvent {
         is_error: bool,
     },
     /// Intermediate token usage after a single step in a multi-step turn.
-    StepUsage {
-        usage: Usage,
-    },
+    StepUsage { usage: Usage },
     /// Codex steal (`StreamErrorEvent`): a retryable transport/provider hiccup
     /// the loop is handling (e.g. `Reconnecting... 1/3`). `message` is the
     /// short header, `details` the underlying error. Rendered dim, never fatal.
@@ -202,11 +194,7 @@ impl AgentEvent {
     }
 
     /// Creates a tool result event.
-    pub fn tool_result(
-        id: impl Into<String>,
-        output: impl Into<String>,
-        is_error: bool,
-    ) -> Self {
+    pub fn tool_result(id: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
         Self::ToolResult {
             id: id.into(),
             output: output.into(),
@@ -318,10 +306,7 @@ impl StreamEvent {
     }
 
     /// Creates a message complete event.
-    pub fn message_complete(
-        stop_reason: Option<StopReason>,
-        usage: Option<Usage>,
-    ) -> Self {
+    pub fn message_complete(stop_reason: Option<StopReason>, usage: Option<Usage>) -> Self {
         Self::MessageComplete { stop_reason, usage }
     }
 
@@ -333,4 +318,3 @@ impl StreamEvent {
         }
     }
 }
-

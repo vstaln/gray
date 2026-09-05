@@ -6,7 +6,12 @@ use std::sync::OnceLock;
 static NERD_FONT: OnceLock<bool> = OnceLock::new();
 
 fn env_override() -> Option<bool> {
-    match std::env::var("GRAY_NERD_FONT").unwrap_or_default().trim().to_lowercase().as_str() {
+    match std::env::var("GRAY_NERD_FONT")
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase()
+        .as_str()
+    {
         "1" | "true" | "yes" => Some(true),
         "0" | "false" | "no" => Some(false),
         _ => None,
@@ -14,17 +19,34 @@ fn env_override() -> Option<bool> {
 }
 
 fn auto_detect() -> bool {
-    let term = std::env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
-    if ["kitty", "wezterm", "alacritty", "hyper", "iterm", "ghostty"].iter().any(|t| term.contains(t)) {
+    let term = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_lowercase();
+    if ["kitty", "wezterm", "alacritty", "hyper", "iterm", "ghostty"]
+        .iter()
+        .any(|t| term.contains(t))
+    {
         return true;
     }
-    if std::env::var("TERMINAL_EMULATOR").unwrap_or_default().to_lowercase().contains("jetbrains") {
+    if std::env::var("TERMINAL_EMULATOR")
+        .unwrap_or_default()
+        .to_lowercase()
+        .contains("jetbrains")
+    {
         return true;
     }
     let home = std::env::var("HOME").unwrap_or_default();
-    [format!("{home}/.fonts"), format!("{home}/.local/share/fonts"), "/usr/share/fonts".into()]
-        .iter()
-        .any(|d| std::path::Path::new(d).join("SymbolsNerdFont-Regular.ttf").exists())
+    [
+        format!("{home}/.fonts"),
+        format!("{home}/.local/share/fonts"),
+        "/usr/share/fonts".into(),
+    ]
+    .iter()
+    .any(|d| {
+        std::path::Path::new(d)
+            .join("SymbolsNerdFont-Regular.ttf")
+            .exists()
+    })
 }
 
 /// Cached Nerd Font availability (env override wins, else auto-detect).

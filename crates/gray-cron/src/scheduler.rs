@@ -81,7 +81,11 @@ impl Scheduler {
                         continue;
                     }
                     if let Some(recovered) = crate::schedule::compute_next_run(&job.schedule, now) {
-                        log::info!("Job '{}' had no next_run; recovering to {}", job.name, recovered);
+                        log::info!(
+                            "Job '{}' had no next_run; recovering to {}",
+                            job.name,
+                            recovered
+                        );
                         job.next_run = Some(recovered);
                         changed = true;
                     } else {
@@ -101,7 +105,8 @@ impl Scheduler {
                         let grace = compute_grace_seconds(job);
                         let age = (now - next).num_seconds() as f64;
                         if age > grace
-                            && let Some(new_next) = crate::schedule::compute_next_run(&job.schedule, now)
+                            && let Some(new_next) =
+                                crate::schedule::compute_next_run(&job.schedule, now)
                         {
                             log::info!(
                                 "Job '{}' missed schedule ({} grace {}s). Fire now, next -> {}",

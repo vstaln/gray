@@ -10,13 +10,10 @@ use gray_core::agent::{Agent, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-use gray_session::{
-    default_root, JsonlSessionStore, SessionId, SessionMeta,
-};
+use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
-use std::sync::Mutex as StdMutex;
 use std::sync::Arc;
-
+use std::sync::Mutex as StdMutex;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 /// True while an agent turn is in flight: `Some(token)` cancels on first
@@ -38,23 +35,26 @@ async fn spawn_ctrl_c_policy() {
         } else {
             // Say something — a bare exit(0) mid-turn looks like a crash.
             let _ = crossterm::terminal::disable_raw_mode();
-            let _ = write!(std::io::stdout(), "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n");
+            let _ = write!(
+                std::io::stdout(),
+                "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n"
+            );
             let _ = std::io::stdout().flush();
             std::process::exit(0);
         }
     }
 }
-use crate::{build_agent, load_or_create_system_prompt_at, DEFAULT_SYS_PROMPT};
 use crate::config::Config;
+use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
 pub mod attachments;
 pub mod commands;
 pub mod format;
 
-pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use commands::{REGISTRY, completion_matches_dyn};
-pub use format::{fmt_event, fmt_usage, format_core_error, THINKING_STYLE};
+pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
+pub use format::{THINKING_STYLE, fmt_event, fmt_usage, format_core_error};
 
 pub(crate) struct SessionState {
     pub(crate) store: gray_session::JsonlSessionStore,
@@ -94,7 +94,12 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
     hooks
         .iter()
         .flat_map(|h| h.commands())
-        .map(|c| (c.name.strip_prefix('/').unwrap_or(&c.name).to_string(), c.description))
+        .map(|c| {
+            (
+                c.name.strip_prefix('/').unwrap_or(&c.name).to_string(),
+                c.description,
+            )
+        })
         .collect()
 }
 
@@ -106,7 +111,9 @@ async fn run_plugin_command(
     name: &str,
     argv: Vec<String>,
 ) -> Option<String> {
-    let owner = hooks.iter().find(|h| h.commands().iter().any(|c| c.name == name))?;
+    let owner = hooks
+        .iter()
+        .find(|h| h.commands().iter().any(|c| c.name == name))?;
     owner.run_command(name, argv).await
 }
 
@@ -122,7 +129,9 @@ fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
         // cards skip their trailing gap, so without this the next prompt
         // would jam against the card. Idempotent after output with a gap.
         t.ensure_gap(1);
-        let cols = crossterm::terminal::size().map(|(c, _)| c).unwrap_or(t.last_width);
+        let cols = crossterm::terminal::size()
+            .map(|(c, _)| c)
+            .unwrap_or(t.last_width);
         if cols == t.last_width {
             t.reanchor_viewport(cols);
         } else {
@@ -132,7 +141,10 @@ fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     }
 }
 
-async fn with_modal<T>(tui: Option<&crate::composer::SharedTui>, fut: impl std::future::Future<Output = T>) -> T {
+async fn with_modal<T>(
+    tui: Option<&crate::composer::SharedTui>,
+    fut: impl std::future::Future<Output = T>,
+) -> T {
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").modal_open = true;
     }
@@ -161,15 +173,29 @@ fn with_modal_sync<T>(tui: Option<&crate::composer::SharedTui>, f: impl FnOnce()
 /// appended). Bare `/skills` opens an interactive picker like /resume.
 /// With `local` set (Esc mid-turn), the skill is announced but never expanded
 /// into an AI prompt — the turn was cancelled, nothing talks to the model.
-fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::composer::SharedTui>, local: bool) -> ReplCommand {
+fn expand_skill_command(
+    cmd: ReplCommand,
+    cwd: &Path,
+    tui: Option<&crate::composer::SharedTui>,
+    local: bool,
+) -> ReplCommand {
     // local: turn was cancelled — run everything as a no-AI no-op
-    let to_prompt = |expanded: String| if local { ReplCommand::Empty } else { ReplCommand::Prompt(expanded) };
-    let ReplCommand::Skill(payload) = cmd else { return cmd };
+    let to_prompt = |expanded: String| {
+        if local {
+            ReplCommand::Empty
+        } else {
+            ReplCommand::Prompt(expanded)
+        }
+    };
+    let ReplCommand::Skill(payload) = cmd else {
+        return cmd;
+    };
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
         // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
         let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match with_modal_sync(tui, || crate::setup::run_skills_modal(cwd, bg.as_ref())) {
+        let picked = match with_modal_sync(tui, || crate::setup::run_skills_modal(cwd, bg.as_ref()))
+        {
             Ok(v) => v,
             Err(e) => {
                 say(tui, &format!("skills picker error: {e}"));
@@ -196,12 +222,26 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
                 out
             }
             Err(e) => {
-                say(tui, &format!("failed to read {}: {e}", skill.file_path.display()));
+                say(
+                    tui,
+                    &format!("failed to read {}: {e}", skill.file_path.display()),
+                );
                 return ReplCommand::Empty;
             }
         };
         // surface a dim line like resume does so user sees the pick
-        say(tui, &format!("→ /skills:{} {}", skill.name, if picked_args.trim().is_empty() { String::new() } else { picked_args.trim().to_string() }));
+        say(
+            tui,
+            &format!(
+                "→ /skills:{} {}",
+                skill.name,
+                if picked_args.trim().is_empty() {
+                    String::new()
+                } else {
+                    picked_args.trim().to_string()
+                }
+            ),
+        );
         return to_prompt(expanded);
     };
     let (name, args) = match rest.split_once(char::is_whitespace) {
@@ -209,8 +249,19 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
         None => (rest.as_str(), None),
     };
     let Some(skill) = discovered.skills.iter().find(|s| s.name == name) else {
-        let names = discovered.skills.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join(", ");
-        say(tui, &format!("no skill '{name}' (available: {})", if names.is_empty() { "(none)" } else { &names }));
+        let names = discovered
+            .skills
+            .iter()
+            .map(|s| s.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        say(
+            tui,
+            &format!(
+                "no skill '{name}' (available: {})",
+                if names.is_empty() { "(none)" } else { &names }
+            ),
+        );
         return ReplCommand::Empty;
     };
     let expanded = match std::fs::read_to_string(&skill.file_path) {
@@ -228,7 +279,10 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
             out
         }
         Err(e) => {
-            say(tui, &format!("failed to read {}: {e}", skill.file_path.display()));
+            say(
+                tui,
+                &format!("failed to read {}: {e}", skill.file_path.display()),
+            );
             return ReplCommand::Empty;
         }
     };
@@ -236,7 +290,13 @@ fn expand_skill_command(cmd: ReplCommand, cwd: &Path, tui: Option<&crate::compos
 }
 
 /// Handles the `/agentsmd` command family (alias `/sys`): edit, show, reset.
-async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut Option<Agent>, tui: Option<&crate::composer::SharedTui>) {
+async fn handle_sys(
+    config: &Config,
+    cwd: &Path,
+    action: SysAction,
+    agent: &mut Option<Agent>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
     let path = match crate::sys_prompt_path() {
         Ok(p) => p,
         Err(e) => {
@@ -245,20 +305,24 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
         }
     };
     match action {
-        SysAction::Show => {
-            match load_or_create_system_prompt_at(&path) {
-                Ok(body) => {
-                    say(tui, &format!("system prompt: {}\n---\n{body}\n---", path.display()));
-                }
-                Err(e) => say(tui, &format!("failed to read {}: {e}", path.display())),
+        SysAction::Show => match load_or_create_system_prompt_at(&path) {
+            Ok(body) => {
+                say(
+                    tui,
+                    &format!("system prompt: {}\n---\n{body}\n---", path.display()),
+                );
             }
-        }
+            Err(e) => say(tui, &format!("failed to read {}: {e}", path.display())),
+        },
         SysAction::Reset => {
             if let Err(e) = std::fs::write(&path, DEFAULT_SYS_PROMPT) {
                 say(tui, &format!("failed to reset {}: {e}", path.display()));
                 return;
             }
-            say(tui, &format!("✓ system prompt restored to default ({})", path.display()));
+            say(
+                tui,
+                &format!("✓ system prompt restored to default ({})", path.display()),
+            );
             reload_agent(agent, config, cwd).await;
         }
         SysAction::Edit => {
@@ -273,22 +337,25 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
             let tui_snap = tui.cloned();
             let editor_paused = if let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");
-                t.pending_resize = Some((t.last_width, std::time::Instant::now() + std::time::Duration::from_secs(3600)));
+                t.pending_resize = Some((
+                    t.last_width,
+                    std::time::Instant::now() + std::time::Duration::from_secs(3600),
+                ));
                 t.modal_open = true;
                 true
-            } else { false };
+            } else {
+                false
+            };
             let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
             let res = editor.run();
-            if editor_paused {
-                if let Some(shared) = &tui_snap {
-                    let mut t = shared.lock().expect("tui lock");
-                    t.pending_resize = None;
-                    t.modal_open = false;
-                    if let Ok((cols, _)) = crossterm::terminal::size() {
-                        t.reflow_on_resize(cols);
-                    } else {
-                        let _ = t.draw();
-                    }
+            if editor_paused && let Some(shared) = &tui_snap {
+                let mut t = shared.lock().expect("tui lock");
+                t.pending_resize = None;
+                t.modal_open = false;
+                if let Ok((cols, _)) = crossterm::terminal::size() {
+                    t.reflow_on_resize(cols);
+                } else {
+                    let _ = t.draw();
                 }
             }
             match res {
@@ -297,7 +364,10 @@ async fn handle_sys(config: &Config, cwd: &Path, action: SysAction, agent: &mut 
                         say(tui, &format!("failed to save {}: {e}", path.display()));
                         return;
                     }
-                    say(tui, "✓ system prompt saved — applies from your next message");
+                    say(
+                        tui,
+                        "✓ system prompt saved — applies from your next message",
+                    );
                     reload_agent(agent, config, cwd).await;
                 }
                 Ok(None) => {
@@ -376,16 +446,15 @@ async fn handle_model(
                 }
                 let _ = t.draw();
             }
-            if let Some(m) = config.model.clone() {
-                if crate::setup::get_user_context_window().is_none()
-                    && crate::setup::get_cached_model_context(&m).is_none()
-                {
-                    let base = config.base_url.clone();
-                    let key = config.api_key.clone();
-                    tokio::spawn(async move {
-                        crate::setup::fetch_live_provider_models(&base, key.as_deref());
-                    });
-                }
+            if let Some(m) = config.model.clone()
+                && crate::setup::get_user_context_window().is_none()
+                && crate::setup::get_cached_model_context(&m).is_none()
+            {
+                let base = config.base_url.clone();
+                let key = config.api_key.clone();
+                tokio::spawn(async move {
+                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                });
             }
             reload_agent(agent, config, cwd).await;
         }
@@ -404,7 +473,10 @@ async fn handle_model(
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("└ error: {e}"));
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ error: {e}"));
             } else {
                 println!("model error: {e}");
             }
@@ -423,7 +495,11 @@ async fn handle_thinking(
 ) {
     if let Some(eff) = direct {
         let eff_clean = eff.to_lowercase();
-        if eff_clean == "off" || crate::setup::THINKING_LEVELS.iter().any(|(l, _)| *l == eff_clean) {
+        if eff_clean == "off"
+            || crate::setup::THINKING_LEVELS
+                .iter()
+                .any(|(l, _)| *l == eff_clean)
+        {
             config.thinking_effort = Some(eff_clean.clone());
             if let Ok(path) = crate::setup::saved_config_path() {
                 let mut saved = crate::setup::load_saved_config_at(&path);
@@ -442,9 +518,14 @@ async fn handle_thinking(
             reload_agent(agent, config, cwd).await;
             return;
         }
-        let msg = format!("unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max");
+        let msg = format!(
+            "unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max"
+        );
         if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
+            shared
+                .lock()
+                .expect("tui lock")
+                .push_dim(format!("└ {msg}"));
         } else {
             println!("{msg}");
         }
@@ -479,7 +560,11 @@ async fn handle_thinking(
                     let _ = crate::setup::save_saved_config_at(&path, &saved);
                 }
                 *hide_thinking = config.reasoning_hidden();
-                let msg = if *hide_thinking { "reasoning hidden — /thinking to show" } else { "reasoning shown" };
+                let msg = if *hide_thinking {
+                    "reasoning hidden — /thinking to show"
+                } else {
+                    "reasoning shown"
+                };
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(*hide_thinking);
@@ -501,7 +586,10 @@ async fn handle_thinking(
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("└ error: {e}"));
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ error: {e}"));
             } else {
                 println!("effort error: {e}");
             }
@@ -571,17 +659,20 @@ fn turn_footer(
 
 /// Handles `/usage` / `/cost`: session totals plus the active model's rate.
 /// TUI renders like `/model` — `✓` action header + dim detail lines.
-fn handle_usage(
-    totals: &SessionTotals,
-    config: &Config,
-    tui: Option<&crate::composer::SharedTui>,
-) {
+fn handle_usage(totals: &SessionTotals, config: &Config, tui: Option<&crate::composer::SharedTui>) {
     if totals.turns == 0 {
-        say(tui, "no turns yet this session — usage appears after the first turn");
+        say(
+            tui,
+            "no turns yet this session — usage appears after the first turn",
+        );
         return;
     }
     let model = config.model.as_deref().unwrap_or("no model");
-    let header = format!("{model} · {} turn{}", totals.turns, if totals.turns == 1 { "" } else { "s" });
+    let header = format!(
+        "{model} · {} turn{}",
+        totals.turns,
+        if totals.turns == 1 { "" } else { "s" }
+    );
     let body = format!(
         "{} in · {} out · {} total",
         crate::repl::fmt_usage(totals.input),
@@ -638,7 +729,10 @@ async fn handle_context_window(
                 t.push_dim(format!("└ {msg}"));
                 let _ = t.draw();
             } else {
-                shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
             }
         } else if ok {
             println!("✓ {msg}");
@@ -697,14 +791,18 @@ async fn handle_context_window(
         let keep = crate::setup::user_keep_for(window);
         let used = parts.used();
         let free = parts.free(window, reserve);
-        let pct = |n: usize| if window > 0 { n * 100 / window } else { 0 };
+        let pct = |n: usize| {
+            n.checked_mul(100)
+                .and_then(|v| v.checked_div(window))
+                .unwrap_or(0)
+        };
         let f = crate::setup::format_context_length;
         let ic = crate::setup::icon;
         // 10x10 hexagon grid, kinds: 0-4 categories, 5 free, 6 buffer.
         let grid_cells = parts.grid_cells(window, reserve);
         let mut flat: Vec<usize> = Vec::with_capacity(100);
         for (kind, n) in grid_cells.iter().enumerate() {
-            flat.extend(std::iter::repeat(kind).take(*n));
+            flat.extend(std::iter::repeat_n(kind, *n));
         }
         while flat.len() < 100 {
             flat.push(5);
@@ -765,18 +863,30 @@ async fn handle_context_window(
                 crate::setup::run_context_modal(config, &breakdown, &model, bg.as_ref())
             });
             match res {
-                Ok(true) => emit(breakdown_text(config, &collect_parts(cwd, agent, tui)), tui, false),
+                Ok(true) => emit(
+                    breakdown_text(config, &collect_parts(cwd, agent, tui)),
+                    tui,
+                    false,
+                ),
                 Ok(false) => {}
                 Err(e) => emit(format!("context error: {e}"), tui, false),
             }
         } else {
-            emit(breakdown_text(config, &collect_parts(cwd, agent, tui)), tui, false);
+            emit(
+                breakdown_text(config, &collect_parts(cwd, agent, tui)),
+                tui,
+                false,
+            );
         }
         return;
     };
     let lower = val.trim().to_lowercase();
     if lower.is_empty() || lower == "status" || lower == "show" {
-        emit(breakdown_text(config, &collect_parts(cwd, agent, tui)), tui, false);
+        emit(
+            breakdown_text(config, &collect_parts(cwd, agent, tui)),
+            tui,
+            false,
+        );
         return;
     }
     if lower == "auto" || lower == "clear" || lower == "reset" || lower == "0" {
@@ -784,16 +894,17 @@ async fn handle_context_window(
         crate::setup::set_user_context_window(None);
         persist_window(config);
         // re-prime cache if model present
-        if let Some(m) = config.model.clone() {
-            if crate::setup::get_cached_model_context(&m).is_none() {
-                let base = config.base_url.clone();
-                let key = config.api_key.clone();
-                tokio::spawn(async move {
-                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
-                });
-            }
+        if let Some(m) = config.model.clone()
+            && crate::setup::get_cached_model_context(&m).is_none()
+        {
+            let base = config.base_url.clone();
+            let key = config.api_key.clone();
+            tokio::spawn(async move {
+                crate::setup::fetch_live_provider_models(&base, key.as_deref());
+            });
         }
-        let effective = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
+        let effective =
+            crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
         emit(
             format!(
                 "context window cleared → auto ({} / {})",
@@ -820,7 +931,11 @@ async fn handle_context_window(
                 crate::setup::user_keep_for(window)
             };
             emit(
-                format!("{head}: {} ({})", cur, crate::setup::format_context_length(cur)),
+                format!(
+                    "{head}: {} ({})",
+                    cur,
+                    crate::setup::format_context_length(cur)
+                ),
                 tui,
                 false,
             );
@@ -856,7 +971,10 @@ async fn handle_context_window(
                 }
                 persist_window(config);
                 emit(
-                    format!("{head} set to {n} tokens ({})", crate::setup::format_context_length(n)),
+                    format!(
+                        "{head} set to {n} tokens ({})",
+                        crate::setup::format_context_length(n)
+                    ),
                     tui,
                     true,
                 );
@@ -917,7 +1035,10 @@ async fn handle_compact(
     }
     let Some(ag) = agent.as_mut() else {
         if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim("└ error: agent could not be initialized".to_string());
+            shared
+                .lock()
+                .expect("tui lock")
+                .push_dim("└ error: agent could not be initialized".to_string());
         } else {
             println!("error: agent could not be initialized");
         }
@@ -927,7 +1048,10 @@ async fn handle_compact(
     let messages = ag.messages().to_vec();
     if messages.is_empty() {
         if let Some(shared) = tui {
-            shared.lock().expect("tui lock").push_dim("└ nothing to compact (conversation is empty)".to_string());
+            shared
+                .lock()
+                .expect("tui lock")
+                .push_dim("└ nothing to compact (conversation is empty)".to_string());
         } else {
             println!("nothing to compact (conversation is empty)");
         }
@@ -937,11 +1061,18 @@ async fn handle_compact(
     let msg_count = messages.len();
 
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").set_status(Some("Compacting conversation context"));
+        shared
+            .lock()
+            .expect("tui lock")
+            .set_status(Some("Compacting conversation context"));
     }
 
-    let compact_res =
-        crate::compact::compact_with_keep(ag, custom_instructions.as_deref(), crate::setup::user_keep_recent_tokens()).await;
+    let compact_res = crate::compact::compact_with_keep(
+        ag,
+        custom_instructions.as_deref(),
+        crate::setup::user_keep_recent_tokens(),
+    )
+    .await;
 
     if let Some(shared) = tui {
         shared.lock().expect("tui lock").set_status(None);
@@ -962,19 +1093,28 @@ async fn handle_compact(
                     msg_count
                 ));
             } else {
-                println!("compressed context ({} turns -> structured summary)", msg_count);
+                println!(
+                    "compressed context ({} turns -> structured summary)",
+                    msg_count
+                );
             }
         }
         Ok(false) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim("└ nothing to compact (conversation is empty)".to_string());
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim("└ nothing to compact (conversation is empty)".to_string());
             } else {
                 println!("nothing to compact (conversation is empty)");
             }
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!("└ compaction failed: {e}"));
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ compaction failed: {e}"));
             } else {
                 println!("compaction failed: {e}");
             }
@@ -998,50 +1138,111 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     if args_str.is_empty() || args_str == "list" {
         let jobs = gray_cron::list_jobs();
         let msg = if jobs.is_empty() {
-            "no cron jobs — create one with: /cron create --schedule \"every 30m\" --prompt \"...\"".to_string()
+            "no cron jobs — create one with: /cron create --schedule \"every 30m\" --prompt \"...\""
+                .to_string()
         } else {
-            let mut out = format!("{:<10} {:<20} {:<16} {}\n", "ID", "NAME", "SCHEDULE", "NEXT RUN");
+            let mut out = format!(
+                "{:<10} {:<20} {:<16} {}\n",
+                "ID", "NAME", "SCHEDULE", "NEXT RUN"
+            );
             out.push_str(&"-".repeat(70));
             out.push('\n');
             for j in jobs {
-                let next = j.next_run.map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "-".to_string());
-                out.push_str(&format!("{:<10} {:<20} {:<16} {}\n", j.id, j.name, j.schedule, next));
+                let next = j
+                    .next_run
+                    .map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string())
+                    .unwrap_or_else(|| "-".to_string());
+                out.push_str(&format!(
+                    "{:<10} {:<20} {:<16} {}\n",
+                    j.id, j.name, j.schedule, next
+                ));
             }
             out
         };
-        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(msg); } else { println!("{msg}"); }
+        if let Some(shared) = tui {
+            shared.lock().expect("tui lock").push_dim(msg);
+        } else {
+            println!("{msg}");
+        }
         return;
     }
     if args_str.starts_with("add ") {
-        let input = args_str.strip_prefix("add ").unwrap().trim().trim_matches(|c| c == '"' || c == '\'');
+        let input = args_str
+            .strip_prefix("add ")
+            .unwrap()
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'');
         if input.is_empty() {
             let msg = "usage: /cron add \"check inbox every 30m\"  — schedule auto-extracted";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
+            } else {
+                println!("{msg}");
+            }
             return;
         }
         match gray_cron::schedule::split_human_input(input) {
             Some((sched, prompt)) => {
-                let name = format!("job-{}", &prompt.chars().take(12).collect::<String>());
+                let name = format!("job-{}", prompt.chars().take(12).collect::<String>());
                 match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
                     Ok(job) => {
-                        let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
-                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                        let msg = format!(
+                            "created cron job {} (\"{}\") — schedule: {} — next: {}",
+                            job.id,
+                            job.name,
+                            job.schedule,
+                            job.next_run
+                                .map(|t| t.to_string())
+                                .unwrap_or_else(|| "-".to_string())
+                        );
+                        if let Some(shared) = tui {
+                            shared
+                                .lock()
+                                .expect("tui lock")
+                                .push_dim(format!("└ {msg}"));
+                        } else {
+                            println!("{msg}");
+                        }
                         if let Some(shared) = tui {
                             let jobs = gray_cron::list_jobs();
-                            if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
-                                if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
+                            if let Some(j) = jobs
+                                .iter()
+                                .filter(|x| x.enabled && x.next_run.is_some())
+                                .min_by_key(|x| x.next_run)
+                                && let Ok(mut t) = shared.try_lock()
+                            {
+                                t.set_next_cron(Some(j.name.clone()), j.next_run);
                             }
                         }
                     }
                     Err(e) => {
                         let msg = format!("failed: {e}");
-                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                        if let Some(shared) = tui {
+                            shared
+                                .lock()
+                                .expect("tui lock")
+                                .push_dim(format!("└ {msg}"));
+                        } else {
+                            println!("{msg}");
+                        }
                     }
                 }
             }
             None => {
-                let msg = format!("could not parse schedule from '{input}' — try 'check inbox every 30m' or 'remind me in 10m'");
-                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                let msg = format!(
+                    "could not parse schedule from '{input}' — try 'check inbox every 30m' or 'remind me in 10m'"
+                );
+                if let Some(shared) = tui {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("└ {msg}"));
+                } else {
+                    println!("{msg}");
+                }
             }
         }
         return;
@@ -1067,58 +1268,132 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
         let name = extract_flag(args_str, "--name");
         match (schedule, prompt) {
             (Some(s), Some(p)) => {
-                let n = name.unwrap_or_else(|| format!("job-{}", &p.chars().take(12).collect::<String>()));
+                let n = name
+                    .unwrap_or_else(|| format!("job-{}", p.chars().take(12).collect::<String>()));
                 match gray_cron::parse_schedule(&s) {
                     Ok(_) => match gray_cron::create_job(n.clone(), s.clone(), p.clone()) {
                         Ok(job) => {
-                            let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
-                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                            let msg = format!(
+                                "created cron job {} (\"{}\") — schedule: {} — next: {}",
+                                job.id,
+                                job.name,
+                                job.schedule,
+                                job.next_run
+                                    .map(|t| t.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
+                            );
+                            if let Some(shared) = tui {
+                                shared
+                                    .lock()
+                                    .expect("tui lock")
+                                    .push_dim(format!("└ {msg}"));
+                            } else {
+                                println!("{msg}");
+                            }
                             if let Some(shared) = tui {
                                 let jobs = gray_cron::list_jobs();
-                                if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
-                                    if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
+                                if let Some(j) = jobs
+                                    .iter()
+                                    .filter(|x| x.enabled && x.next_run.is_some())
+                                    .min_by_key(|x| x.next_run)
+                                    && let Ok(mut t) = shared.try_lock()
+                                {
+                                    t.set_next_cron(Some(j.name.clone()), j.next_run);
                                 }
                             }
                         }
                         Err(e) => {
                             let msg = format!("failed: {e}");
-                            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                            if let Some(shared) = tui {
+                                shared
+                                    .lock()
+                                    .expect("tui lock")
+                                    .push_dim(format!("└ {msg}"));
+                            } else {
+                                println!("{msg}");
+                            }
                         }
                     },
                     Err(e) => {
                         let msg = format!("invalid schedule: {e}");
-                        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                        if let Some(shared) = tui {
+                            shared
+                                .lock()
+                                .expect("tui lock")
+                                .push_dim(format!("└ {msg}"));
+                        } else {
+                            println!("{msg}");
+                        }
                     }
                 }
             }
             _ => {
                 // Try human shorthand: "/cron create check inbox every 30m"
-                let raw = args_str.strip_prefix("create").unwrap().trim().trim_matches(|c| c == '"' || c == '\'');
-                if !raw.is_empty() && !raw.starts_with("--") {
-                    if let Some((sched, prompt)) = gray_cron::schedule::split_human_input(raw) {
-                        let name = format!("job-{}", &prompt.chars().take(12).collect::<String>());
-                        match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
-                            Ok(job) => {
-                                let msg = format!("created cron job {} (\"{}\") — schedule: {} — next: {}", job.id, job.name, job.schedule, job.next_run.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string()));
-                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
-                                if let Some(shared) = tui {
-                                    let jobs = gray_cron::list_jobs();
-                                    if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
-                                        if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
-                                    }
+                let raw = args_str
+                    .strip_prefix("create")
+                    .unwrap()
+                    .trim()
+                    .trim_matches(|c| c == '"' || c == '\'');
+                if !raw.is_empty()
+                    && !raw.starts_with("--")
+                    && let Some((sched, prompt)) = gray_cron::schedule::split_human_input(raw)
+                {
+                    let name = format!("job-{}", prompt.chars().take(12).collect::<String>());
+                    match gray_cron::create_job(name.clone(), sched.clone(), prompt.clone()) {
+                        Ok(job) => {
+                            let msg = format!(
+                                "created cron job {} (\"{}\") — schedule: {} — next: {}",
+                                job.id,
+                                job.name,
+                                job.schedule,
+                                job.next_run
+                                    .map(|t| t.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
+                            );
+                            if let Some(shared) = tui {
+                                shared
+                                    .lock()
+                                    .expect("tui lock")
+                                    .push_dim(format!("└ {msg}"));
+                            } else {
+                                println!("{msg}");
+                            }
+                            if let Some(shared) = tui {
+                                let jobs = gray_cron::list_jobs();
+                                if let Some(j) = jobs
+                                    .iter()
+                                    .filter(|x| x.enabled && x.next_run.is_some())
+                                    .min_by_key(|x| x.next_run)
+                                    && let Ok(mut t) = shared.try_lock()
+                                {
+                                    t.set_next_cron(Some(j.name.clone()), j.next_run);
                                 }
-                                return;
                             }
-                            Err(e) => {
-                                let msg = format!("failed: {e}");
-                                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
-                                return;
+                            return;
+                        }
+                        Err(e) => {
+                            let msg = format!("failed: {e}");
+                            if let Some(shared) = tui {
+                                shared
+                                    .lock()
+                                    .expect("tui lock")
+                                    .push_dim(format!("└ {msg}"));
+                            } else {
+                                println!("{msg}");
                             }
+                            return;
                         }
                     }
                 }
                 let msg = "usage: /cron create --schedule \"every 30m\" --prompt \"...\" [--name myjob]  or /cron add \"check inbox every 30m\"  or /cron create \"check inbox every 30m\"";
-                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                if let Some(shared) = tui {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("└ {msg}"));
+                } else {
+                    println!("{msg}");
+                }
             }
         }
         return;
@@ -1126,26 +1401,62 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     if let Some(id) = args_str.strip_prefix("remove ").map(|s| s.trim()) {
         if id.is_empty() {
             let msg = "usage: /cron remove <id|name>";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
+            } else {
+                println!("{msg}");
+            }
         } else {
             match gray_cron::remove_job(id) {
                 Ok(true) => {
                     let msg = format!("removed {id}");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui {
+                        shared
+                            .lock()
+                            .expect("tui lock")
+                            .push_dim(format!("└ {msg}"));
+                    } else {
+                        println!("{msg}");
+                    }
                     if let Some(shared) = tui {
                         let jobs = gray_cron::list_jobs();
-                        if let Some(j) = jobs.iter().filter(|x| x.enabled && x.next_run.is_some()).min_by_key(|x| x.next_run) {
-                            if let Ok(mut t) = shared.try_lock() { t.set_next_cron(Some(j.name.clone()), j.next_run); }
-                        } else if let Ok(mut t) = shared.try_lock() { t.set_next_cron(None, None); }
+                        if let Some(j) = jobs
+                            .iter()
+                            .filter(|x| x.enabled && x.next_run.is_some())
+                            .min_by_key(|x| x.next_run)
+                        {
+                            if let Ok(mut t) = shared.try_lock() {
+                                t.set_next_cron(Some(j.name.clone()), j.next_run);
+                            }
+                        } else if let Ok(mut t) = shared.try_lock() {
+                            t.set_next_cron(None, None);
+                        }
                     }
                 }
                 Ok(false) => {
                     let msg = format!("no job found for '{id}'");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui {
+                        shared
+                            .lock()
+                            .expect("tui lock")
+                            .push_dim(format!("└ {msg}"));
+                    } else {
+                        println!("{msg}");
+                    }
                 }
                 Err(e) => {
                     let msg = format!("error: {e}");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+                    if let Some(shared) = tui {
+                        shared
+                            .lock()
+                            .expect("tui lock")
+                            .push_dim(format!("└ {msg}"));
+                    } else {
+                        println!("{msg}");
+                    }
                 }
             }
         }
@@ -1154,16 +1465,34 @@ async fn handle_cron(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     if let Some(id) = args_str.strip_prefix("show ").map(|s| s.trim()) {
         if let Some(j) = gray_cron::find_job(id) {
             let msg = serde_json::to_string_pretty(&j).unwrap_or_else(|_| format!("{j:?}"));
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(msg); } else { println!("{msg}"); }
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").push_dim(msg);
+            } else {
+                println!("{msg}");
+            }
         } else {
             let msg = format!("no job found for '{id}'");
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
+            } else {
+                println!("{msg}");
+            }
         }
         return;
     }
     // Fallback help
     let msg = "cron: /cron list | /cron add \"check inbox every 30m\" | /cron create --schedule \"every 10m\" --prompt \"...\" | /cron remove <id> | /cron show <id>  (also \"in 10m\", \"0 9 * * *\")";
-    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+    if let Some(shared) = tui {
+        shared
+            .lock()
+            .expect("tui lock")
+            .push_dim(format!("└ {msg}"));
+    } else {
+        println!("{msg}");
+    }
 }
 
 static PROXY_HANDLE: StdMutex<Option<tokio::task::JoinHandle<()>>> = StdMutex::new(None);
@@ -1231,14 +1560,20 @@ fn parse_gateway_args(raw: &str) -> GatewayAction {
         },
         Some("pairing") => match toks.next().map(|t| t.to_ascii_lowercase()).as_deref() {
             Some("approve") => match (toks.next(), toks.next()) {
-                (Some(p), Some(c)) => GatewayAction::Pairing(PairingArgs::Approve(p.to_string(), c.to_string())),
+                (Some(p), Some(c)) => {
+                    GatewayAction::Pairing(PairingArgs::Approve(p.to_string(), c.to_string()))
+                }
                 _ => GatewayAction::Help,
             },
             Some("revoke") => match (toks.next(), toks.next()) {
-                (Some(p), Some(u)) => GatewayAction::Pairing(PairingArgs::Revoke(p.to_string(), u.to_string())),
+                (Some(p), Some(u)) => {
+                    GatewayAction::Pairing(PairingArgs::Revoke(p.to_string(), u.to_string()))
+                }
                 _ => GatewayAction::Help,
             },
-            Some("list") => GatewayAction::Pairing(PairingArgs::List(toks.next().map(str::to_string))),
+            Some("list") => {
+                GatewayAction::Pairing(PairingArgs::List(toks.next().map(str::to_string)))
+            }
             None => GatewayAction::Pairing(PairingArgs::List(None)),
             _ => GatewayAction::Help,
         },
@@ -1252,25 +1587,38 @@ fn gateway_status_lines(cfg: &gray_gateway::config::GatewayConfig, running: bool
     use gray_gateway::config::Platform;
     let mut lines = vec![format!(
         "gateway {} — config: {}",
-        if running { "connected (in-process)" } else { "not running" },
-        gray_gateway::config::gray_gateway_path().map(|p| p.display().to_string()).unwrap_or_default(),
+        if running {
+            "connected (in-process)"
+        } else {
+            "not running"
+        },
+        gray_gateway::config::gray_gateway_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
     )];
     for plat in [Platform::Telegram, Platform::Discord, Platform::Slack] {
         let state = match cfg.platforms.get(&plat) {
             Some(pc) if pc.enabled => "enabled",
-            Some(pc) if pc.token.as_ref().is_some_and(|t| !t.is_empty()) => "disabled (token saved)",
+            Some(pc) if pc.token.as_ref().is_some_and(|t| !t.is_empty()) => {
+                "disabled (token saved)"
+            }
             _ => "disabled",
         };
         lines.push(format!("  {}: {state}", plat.label()));
     }
-    lines.push(format!("  autostart: {}", if cfg.autostart { "on" } else { "off" }));
+    lines.push(format!(
+        "  autostart: {}",
+        if cfg.autostart { "on" } else { "off" }
+    ));
     lines.push("usage: /gateway connect <platform> <token> | enable <platform> | disconnect <platform> | run | stop | autostart on|off | install | uninstall | pairing approve <platform> <code> | pairing list | pairing revoke <platform> <user> | status".to_string());
     lines
 }
 
 /// Starts the gateway daemon in-process (shared by /gateway run and launch
 /// autostart). Returns the live connection board, or None when already running.
-fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> Option<gray_gateway::status::GatewayStatusBoard> {
+fn start_gateway_in_background(
+    tui: Option<&crate::composer::SharedTui>,
+) -> Option<gray_gateway::status::GatewayStatusBoard> {
     let already = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
     if already {
         return None;
@@ -1290,21 +1638,23 @@ fn start_gateway_in_background(tui: Option<&crate::composer::SharedTui>) -> Opti
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let tui_arc = tui.cloned();
     let h = tokio::spawn(async move {
-        let res = gray_gateway::daemon::run_gateway_shutdown_with_board(rx, Some(board_task.clone())).await;
+        let res =
+            gray_gateway::daemon::run_gateway_shutdown_with_board(rx, Some(board_task.clone()))
+                .await;
         if let Err(e) = &res {
             log::warn!("gateway exited: {e}");
         }
         // Never leave the boot card spinning when the task exits early.
         board_task.fail_unresolved("gateway exited");
         GATEWAY_HANDLE.lock().ok().and_then(|mut g| g.take());
-        if let Some(shared) = tui_arc {
-            if let Ok(mut t) = shared.lock() {
-                match res {
-                    Ok(()) => t.push_dim("└ gateway stopped".to_string()),
-                    Err(e) => t.push_dim(format!("└ gateway exited: {e}")),
-                }
-                let _ = t.draw();
+        if let Some(shared) = tui_arc
+            && let Ok(mut t) = shared.lock()
+        {
+            match res {
+                Ok(()) => t.push_dim("└ gateway stopped".to_string()),
+                Err(e) => t.push_dim(format!("└ gateway exited: {e}")),
             }
+            let _ = t.draw();
         }
     });
     *GATEWAY_HANDLE.lock().unwrap() = Some((h, tx));
@@ -1321,7 +1671,11 @@ pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard
     snap.iter()
         .enumerate()
         .map(|(i, (plat, st))| {
-            let branch = if i + 1 == snap.len() { "└─" } else { "├─" };
+            let branch = if i + 1 == snap.len() {
+                "└─"
+            } else {
+                "├─"
+            };
             let status = match st {
                 S::Connecting { stage } => format!("{stage}…"),
                 S::Connected { identity: Some(id) } => format!("connected as {id}"),
@@ -1337,7 +1691,10 @@ pub(crate) fn gateway_boot_rows(board: &gray_gateway::status::GatewayStatusBoard
 /// Repaints on every board mutation (via [`GatewayStatusBoard::notified`])
 /// so short-lived stages still paint; the 250ms tick stays as backstop for
 /// missed signals. Capped at 6 minutes so a wedged daemon can't leak the task.
-fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gateway::status::GatewayStatusBoard) {
+fn spawn_gateway_boot_watcher(
+    tui: crate::composer::SharedTui,
+    board: gray_gateway::status::GatewayStatusBoard,
+) {
     tokio::spawn(async move {
         let fut = async move {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(360);
@@ -1359,7 +1716,12 @@ fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gatew
                     }
                     continue;
                 }
-                if done && tui.try_lock().map(|t| t.gateway_boot.is_none()).unwrap_or(false) {
+                if done
+                    && tui
+                        .try_lock()
+                        .map(|t| t.gateway_boot.is_none())
+                        .unwrap_or(false)
+                {
                     break;
                 }
                 // Wait for the next stage transition or the backstop tick.
@@ -1375,22 +1737,34 @@ fn spawn_gateway_boot_watcher(tui: crate::composer::SharedTui, board: gray_gatew
 }
 
 /// Enables `plat` in `cfg` with `token` (mutates in place; caller saves).
-fn apply_connect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform, token: &str) {
+fn apply_connect(
+    cfg: &mut gray_gateway::config::GatewayConfig,
+    plat: gray_gateway::config::Platform,
+    token: &str,
+) {
     let pc = cfg.platforms.entry(plat).or_default();
     pc.enabled = true;
     pc.token = Some(token.to_string());
 }
 
 /// Disables `plat` but keeps its token so re-enabling doesn't ask again.
-fn apply_disconnect(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform) {
+fn apply_disconnect(
+    cfg: &mut gray_gateway::config::GatewayConfig,
+    plat: gray_gateway::config::Platform,
+) {
     let pc = cfg.platforms.entry(plat).or_default();
     pc.enabled = false;
 }
 
 /// Re-enables `plat` with its saved token. Returns false when no token is
 /// stored (caller should ask for `/gateway connect <platform> <token>`).
-fn apply_enable(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gateway::config::Platform) -> bool {
-    let Some(pc) = cfg.platforms.get_mut(&plat) else { return false; };
+fn apply_enable(
+    cfg: &mut gray_gateway::config::GatewayConfig,
+    plat: gray_gateway::config::Platform,
+) -> bool {
+    let Some(pc) = cfg.platforms.get_mut(&plat) else {
+        return false;
+    };
     if pc.token.as_ref().is_some_and(|t| !t.is_empty()) {
         pc.enabled = true;
         true
@@ -1399,7 +1773,10 @@ fn apply_enable(cfg: &mut gray_gateway::config::GatewayConfig, plat: gray_gatewa
     }
 }
 
-type GatewayHandle = (tokio::task::JoinHandle<()>, tokio::sync::oneshot::Sender<()>);
+type GatewayHandle = (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::oneshot::Sender<()>,
+);
 static GATEWAY_HANDLE: StdMutex<Option<GatewayHandle>> = StdMutex::new(None);
 
 async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
@@ -1423,7 +1800,13 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             apply_connect(&mut cfg, plat, &token);
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("{} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)", plat.label())),
+                Ok(()) => say(
+                    tui,
+                    &format!(
+                        "{} connected — token saved to ~/.gray/gateway.yaml (start with /gateway run or /gateway install)",
+                        plat.label()
+                    ),
+                ),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
             }
         }
@@ -1443,7 +1826,13 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                     Err(e) => say(tui, &format!("gateway config error: {e}")),
                 }
             } else {
-                say(tui, &format!("no saved token for {} — use /gateway connect {plat} <token>", plat.label()));
+                say(
+                    tui,
+                    &format!(
+                        "no saved token for {} — use /gateway connect {plat} <token>",
+                        plat.label()
+                    ),
+                );
             }
         }
         GatewayAction::Run => {
@@ -1452,10 +1841,16 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                     if let Some(shared) = tui {
                         // Live boot panel + shimmer bar; the final state lands
                         // as ONE card, no follow-up lines.
-                        shared.lock().expect("tui lock").begin_gateway_boot("Gateway started", &board);
+                        shared
+                            .lock()
+                            .expect("tui lock")
+                            .begin_gateway_boot("Gateway started", &board);
                         spawn_gateway_boot_watcher(shared.clone(), board);
                     } else {
-                        say(tui, "gateway starting — platforms connect in background (~45s timeout each)");
+                        say(
+                            tui,
+                            "gateway starting — platforms connect in background (~45s timeout each)",
+                        );
                     }
                 }
                 None => say(tui, "gateway already running"),
@@ -1465,7 +1860,13 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
             let mut cfg = gray_gateway::config::load_gateway_config();
             cfg.autostart = on;
             match gray_gateway::config::save_gateway_config(&cfg) {
-                Ok(()) => say(tui, &format!("gateway autostart {}", if on { "on — starts with gray" } else { "off" })),
+                Ok(()) => say(
+                    tui,
+                    &format!(
+                        "gateway autostart {}",
+                        if on { "on — starts with gray" } else { "off" }
+                    ),
+                ),
                 Err(e) => say(tui, &format!("gateway config error: {e}")),
             }
         }
@@ -1476,21 +1877,20 @@ async fn handle_gateway(raw: &str, tui: Option<&crate::composer::SharedTui>) {
                 h.abort();
                 say(tui, "gateway stopped");
             } else {
-                say(tui, "gateway not running in this session (if installed as a service: /gateway uninstall)");
+                say(
+                    tui,
+                    "gateway not running in this session (if installed as a service: /gateway uninstall)",
+                );
             }
         }
-        GatewayAction::Install => {
-            match with_modal_sync(tui, gray_gateway::systemd::install) {
-                Ok(()) => say(tui, "gateway installed as systemd user service"),
-                Err(e) => say(tui, &format!("gateway install failed: {e}")),
-            }
-        }
-        GatewayAction::Uninstall => {
-            match with_modal_sync(tui, gray_gateway::systemd::uninstall) {
-                Ok(()) => say(tui, "gateway systemd service removed"),
-                Err(e) => say(tui, &format!("gateway uninstall failed: {e}")),
-            }
-        }
+        GatewayAction::Install => match with_modal_sync(tui, gray_gateway::systemd::install) {
+            Ok(()) => say(tui, "gateway installed as systemd user service"),
+            Err(e) => say(tui, &format!("gateway install failed: {e}")),
+        },
+        GatewayAction::Uninstall => match with_modal_sync(tui, gray_gateway::systemd::uninstall) {
+            Ok(()) => say(tui, "gateway systemd service removed"),
+            Err(e) => say(tui, &format!("gateway uninstall failed: {e}")),
+        },
         GatewayAction::Pairing(args) => {
             use gray_gateway::pairing::{pairing_approve, pairing_list, pairing_revoke};
             let out = match args {
@@ -1524,21 +1924,25 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
             provider = Some(tok.trim_start_matches("--provider=").to_string());
         } else if tok == "--provider" {
             // next token is provider – handled via provider variable on next iteration not needed for minimal
-        } else if matches!(tok.to_ascii_lowercase().as_str(), "xai" | "codex" | "openai" | "openrouter" | "grok") {
+        } else if matches!(
+            tok.to_ascii_lowercase().as_str(),
+            "xai" | "codex" | "openai" | "openrouter" | "grok"
+        ) {
             provider = Some(tok.to_string());
-        } else if tok.starts_with("--port=") {
-            if let Ok(p) = tok.trim_start_matches("--port=").parse::<u16>() {
-                port = p;
-            }
+        } else if tok.starts_with("--port=")
+            && let Ok(p) = tok.trim_start_matches("--port=").parse::<u16>()
+        {
+            port = p;
         }
     }
     // also support --port 8645 form
     let parts: Vec<&str> = raw.split_whitespace().collect();
     for i in 0..parts.len() {
-        if parts[i] == "--port" && i + 1 < parts.len() {
-            if let Ok(p) = parts[i + 1].parse::<u16>() {
-                port = p;
-            }
+        if parts[i] == "--port"
+            && i + 1 < parts.len()
+            && let Ok(p) = parts[i + 1].parse::<u16>()
+        {
+            port = p;
         }
         if parts[i] == "--provider" && i + 1 < parts.len() {
             provider = Some(parts[i + 1].to_string());
@@ -1550,10 +1954,24 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         if let Some(h) = g.as_mut().and_then(|g| g.take()) {
             h.abort();
             let msg = "proxy stopped";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
+            } else {
+                println!("{msg}");
+            }
         } else {
             let msg = "proxy not running";
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
+            } else {
+                println!("{msg}");
+            }
         }
         return;
     }
@@ -1565,11 +1983,19 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
     if needs_picker {
         // show picker
         let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match with_modal(tui, crate::setup::run_proxy_menu(config, bg.as_ref())).await {
+        let picked = match with_modal(tui, crate::setup::run_proxy_menu(config, bg.as_ref())).await
+        {
             Ok(p) => p,
             Err(e) => {
                 let msg = format!("proxy picker error: {e}");
-                if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { eprintln!("{msg}"); }
+                if let Some(shared) = tui {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("└ {msg}"));
+                } else {
+                    eprintln!("{msg}");
+                }
                 return;
             }
         };
@@ -1579,34 +2005,56 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         };
         provider = Some(picked_provider);
         // if already running, restart with new provider
-        if PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
-            if let Some(h) = PROXY_HANDLE.lock().ok().and_then(|mut g| g.take()) {
-                h.abort();
-            }
+        if PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false)
+            && let Some(h) = PROXY_HANDLE.lock().ok().and_then(|mut g| g.take())
+        {
+            h.abort();
         }
         // fall through to start with picked provider
     } else if is_start && PROXY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false) {
         let msg = "proxy already running";
-        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+        if let Some(shared) = tui {
+            shared
+                .lock()
+                .expect("tui lock")
+                .push_dim(format!("└ {msg}"));
+        } else {
+            println!("{msg}");
+        }
         return;
     }
 
     if is_start || needs_picker {
-        let adapter: std::sync::Arc<dyn crate::proxy::UpstreamAdapter> = if let Some(p) = provider.as_deref() {
-            match crate::proxy::get_adapter(p) {
-                Ok(a) => a,
-                Err(e) => {
-                    let msg = format!("proxy: {e}");
-                    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { eprintln!("{msg}"); }
-                    return;
+        let adapter: std::sync::Arc<dyn crate::proxy::UpstreamAdapter> =
+            if let Some(p) = provider.as_deref() {
+                match crate::proxy::get_adapter(p) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let msg = format!("proxy: {e}");
+                        if let Some(shared) = tui {
+                            shared
+                                .lock()
+                                .expect("tui lock")
+                                .push_dim(format!("└ {msg}"));
+                        } else {
+                            eprintln!("{msg}");
+                        }
+                        return;
+                    }
                 }
-            }
-        } else {
-            crate::proxy::default_adapter(config)
-        };
+            } else {
+                crate::proxy::default_adapter(config)
+            };
         if !adapter.is_authenticated() {
             let msg = format!("Not logged into {}. Run /connect first.", adapter.display());
-            if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { eprintln!("{msg}"); }
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
+            } else {
+                eprintln!("{msg}");
+            }
             return;
         }
         let host = "127.0.0.1".to_string();
@@ -1616,7 +2064,14 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
         });
         *PROXY_HANDLE.lock().unwrap() = Some(h);
         let msg = format!("proxy: http://127.0.0.1:{port}/v1 → {display} ✓");
-        if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(format!("└ {msg}")); } else { println!("{msg}"); }
+        if let Some(shared) = tui {
+            shared
+                .lock()
+                .expect("tui lock")
+                .push_dim(format!("└ {msg}"));
+        } else {
+            println!("{msg}");
+        }
         return;
     }
     // status (default) — explicit /proxy status
@@ -1636,12 +2091,22 @@ async fn handle_proxy(raw: &str, config: &Config, tui: Option<&crate::composer::
     } else {
         out.push_str("  (not running — run /proxy to start)\n");
     }
-    if let Some(shared) = tui { shared.lock().expect("tui lock").push_dim(out.trim_end().to_string()); } else { println!("{out}"); }
+    if let Some(shared) = tui {
+        shared
+            .lock()
+            .expect("tui lock")
+            .push_dim(out.trim_end().to_string());
+    } else {
+        println!("{out}");
+    }
 }
 
 fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
-        println!("\x1b[2mTo resume: gray resume {}\x1b[0m", state.session_id.as_str());
+        println!(
+            "\x1b[2mTo resume: gray resume {}\x1b[0m",
+            state.session_id.as_str()
+        );
         let _ = std::io::stdout().flush();
     }
 }
@@ -1668,7 +2133,10 @@ async fn handle_resume(
                     Err(e) => {
                         let msg = format!("no session matching '{raw}': {e}");
                         if let Some(shared) = &tui {
-                            shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
+                            shared
+                                .lock()
+                                .expect("tui lock")
+                                .push_dim(format!("└ {msg}"));
                         } else {
                             println!("{msg}");
                         }
@@ -1680,7 +2148,9 @@ async fn handle_resume(
             None
         }
     } else if args.last {
-        let Some(root) = default_root() else { return; };
+        let Some(root) = default_root() else {
+            return;
+        };
         let store = JsonlSessionStore::new(root);
         let summaries = store.list().await;
         let cwd_now = std::env::current_dir().ok();
@@ -1688,9 +2158,16 @@ async fn handle_resume(
         match crate::resume::latest_summary(&summaries, filt) {
             Some(s) => Some(s.id.clone()),
             None => {
-                let msg = if args.all { "no saved sessions" } else { "no saved sessions in this directory (try /resume --all or --all)" };
+                let msg = if args.all {
+                    "no saved sessions"
+                } else {
+                    "no saved sessions in this directory (try /resume --all or --all)"
+                };
                 if let Some(shared) = &tui {
-                    shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("└ {msg}"));
                 } else {
                     println!("{msg}");
                 }
@@ -1704,7 +2181,10 @@ async fn handle_resume(
             Ok(None) => return,
             Err(e) => {
                 if let Some(shared) = &tui {
-                    shared.lock().expect("tui lock").push_dim(format!("└ resume picker error: {e}"));
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("└ resume picker error: {e}"));
                 } else {
                     println!("resume picker error: {e}");
                 }
@@ -1713,8 +2193,12 @@ async fn handle_resume(
         }
     };
 
-    let Some(sid) = target_id else { return; };
-    let Some(root) = default_root() else { return; };
+    let Some(sid) = target_id else {
+        return;
+    };
+    let Some(root) = default_root() else {
+        return;
+    };
     let store = JsonlSessionStore::new(root);
     match store.load(&sid).await {
         Ok((meta, entries)) => {
@@ -1728,22 +2212,34 @@ async fn handle_resume(
             match build_agent(config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
-                    *session_state = Some(SessionState { session_id: sid.clone(), store });
+                    *session_state = Some(SessionState {
+                        session_id: sid.clone(),
+                        store,
+                    });
                     *totals = SessionTotals::from_entries(&entries, model);
                     if let Some(shared) = &tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.replay_session_history(&entries, cwd);
                         t.ensure_gap(1);
-                        t.push_dim(format!("\u{2b22} Resumed session {} ({n} messages)", sid.as_str()));
+                        t.push_dim(format!(
+                            "\u{2b22} Resumed session {} ({n} messages)",
+                            sid.as_str()
+                        ));
                         t.ensure_gap(1);
                     } else {
-                        println!("\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m", sid.as_str());
+                        println!(
+                            "\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m",
+                            sid.as_str()
+                        );
                     }
                 }
                 Err(e) => {
                     let msg = format!("could not resume (no provider): {e}");
                     if let Some(shared) = &tui {
-                        shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
+                        shared
+                            .lock()
+                            .expect("tui lock")
+                            .push_dim(format!("└ {msg}"));
                     } else {
                         println!("{msg}");
                     }
@@ -1753,7 +2249,10 @@ async fn handle_resume(
         Err(e) => {
             let msg = format!("could not resume session {}: {e}", sid.as_str());
             if let Some(shared) = &tui {
-                shared.lock().expect("tui lock").push_dim(format!("└ {msg}"));
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .push_dim(format!("└ {msg}"));
             } else {
                 println!("{msg}");
             }
@@ -1817,25 +2316,25 @@ async fn ensure_session_state(
     config: &Config,
     cwd: &Path,
 ) {
-    if session_state.is_none() {
-        if let Some(root) = default_root() {
-            let store = JsonlSessionStore::new(root);
-            let session_id = SessionId::generate();
-            let timestamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
-            let meta = SessionMeta::new(
-                session_id.clone(),
-                timestamp,
-                cwd.to_path_buf(),
-                config.model.clone().unwrap_or_else(|| "unset".into()),
-            );
-            if let Err(e) = store.create(meta).await {
+    if session_state.is_none()
+        && let Some(root) = default_root()
+    {
+        let store = JsonlSessionStore::new(root);
+        let session_id = SessionId::generate();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let meta = SessionMeta::new(
+            session_id.clone(),
+            timestamp,
+            cwd.to_path_buf(),
+            config.model.clone().unwrap_or_else(|| "unset".into()),
+        );
+        if let Err(e) = store.create(meta).await {
             log::warn!(target: "gray_session", "session create failed: {e}");
         }
-            *session_state = Some(SessionState { store, session_id });
-        }
+        *session_state = Some(SessionState { store, session_id });
     }
 }
 
@@ -1855,76 +2354,82 @@ fn dispatch_agent_event(
     // Single elapsed source — TurnEnd stamps duration once so footer,
     // totals, and persisted entry agree even when TUI + headless paths diverge.
     let elapsed_ms = || turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    if let Some(shared) = tui_stream {
-        if let Ok(mut t) = shared.lock() {
-            match ev {
-                AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
-                AgentEvent::TextDelta { delta } => t.stream_text(delta),
-                AgentEvent::ToolCallStart { id, name } => {
-                    t.flush_markdown();
-                    t.end_thinking();
-                    pending_tools.insert(id.clone(), (name.clone(), None));
-                }
-                AgentEvent::ToolCallEnd { id, args } => {
-                    t.end_thinking();
-                    pending_tools
-                        .entry(id.clone())
-                        .and_modify(|e| e.1 = Some(args.clone()))
-                        .or_insert((String::new(), Some(args.clone())));
-                }
-                AgentEvent::ToolResult { id, output, is_error, .. } => {
-                    // Keyed by call id so parallel/retried calls can never swap
-                    // names and args (single-slot tracking rendered `● command=…`
-                    // headers with no tool name).
-                    let (name, args) = pending_tools.remove(id).map(|(n, a)| {
-                        (if n.is_empty() { "tool".to_string() } else { n }, a)
-                    }).unwrap_or_else(|| ("tool".to_string(), None));
-                    if name != "request_user_input" {
-                        let lines = crate::tool_fmt::format_tool_result_lines_with_context(
-                            &name,
-                            args.as_ref(),
-                            output,
-                            *is_error,
-                            Some(cwd),
-                        );
-                        let header = args
-                            .as_ref()
-                            .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
-                            .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                        t.push_tool_box(header, lines);
-                    }
-                }
-                AgentEvent::StepUsage { usage } => {
-                    t.set_usage(*usage);
-                }
-                // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
-                // like Thinking/Working instead of a static cell; the cause
-                // lands as one dim detail row (single notice per burst).
-                AgentEvent::StreamError { details, .. } => {
-                    t.flush_markdown();
-                    t.end_thinking();
-                    t.set_status(Some("Reconnecting"));
-                    if !details.is_empty() {
-                        let trunc = crate::repl::format::truncate_chars(details, 200);
-                        t.push_dim(format!("└ {trunc}"));
-                    }
-                }
-                AgentEvent::TurnEnd { usage, .. } => {
-                    *turn_usage = Some(*usage);
-                    let ms = elapsed_ms();
-                    *turn_duration_ms = Some(ms);
-                    t.end_thinking();
-                    t.set_usage(*usage);
-                    if usage.total() > 0 {
-                        totals.add(usage, model, Some(ms));
-                        t.push_usage(turn_footer(usage, model, totals, Some(ms)));
-                    }
-                }
-                _ => {}
+    if let Some(shared) = tui_stream
+        && let Ok(mut t) = shared.lock()
+    {
+        match ev {
+            AgentEvent::ThinkingDelta { delta } => t.stream_thinking(delta),
+            AgentEvent::TextDelta { delta } => t.stream_text(delta),
+            AgentEvent::ToolCallStart { id, name } => {
+                t.flush_markdown();
+                t.end_thinking();
+                pending_tools.insert(id.clone(), (name.clone(), None));
             }
-            let _ = std::io::stdout().flush();
-            return;
+            AgentEvent::ToolCallEnd { id, args } => {
+                t.end_thinking();
+                pending_tools
+                    .entry(id.clone())
+                    .and_modify(|e| e.1 = Some(args.clone()))
+                    .or_insert((String::new(), Some(args.clone())));
+            }
+            AgentEvent::ToolResult {
+                id,
+                output,
+                is_error,
+                ..
+            } => {
+                // Keyed by call id so parallel/retried calls can never swap
+                // names and args (single-slot tracking rendered `● command=…`
+                // headers with no tool name).
+                let (name, args) = pending_tools
+                    .remove(id)
+                    .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
+                    .unwrap_or_else(|| ("tool".to_string(), None));
+                if name != "request_user_input" {
+                    let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+                        &name,
+                        args.as_ref(),
+                        output,
+                        *is_error,
+                        Some(cwd),
+                    );
+                    let header = args
+                        .as_ref()
+                        .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+                        .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                    t.push_tool_box(header, lines);
+                }
+            }
+            AgentEvent::StepUsage { usage } => {
+                t.set_usage(*usage);
+            }
+            // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
+            // like Thinking/Working instead of a static cell; the cause
+            // lands as one dim detail row (single notice per burst).
+            AgentEvent::StreamError { details, .. } => {
+                t.flush_markdown();
+                t.end_thinking();
+                t.set_status(Some("Reconnecting"));
+                if !details.is_empty() {
+                    let trunc = crate::repl::format::truncate_chars(details, 200);
+                    t.push_dim(format!("└ {trunc}"));
+                }
+            }
+            AgentEvent::TurnEnd { usage, .. } => {
+                *turn_usage = Some(*usage);
+                let ms = elapsed_ms();
+                *turn_duration_ms = Some(ms);
+                t.end_thinking();
+                t.set_usage(*usage);
+                if usage.total() > 0 {
+                    totals.add(usage, model, Some(ms));
+                    t.push_usage(turn_footer(usage, model, totals, Some(ms)));
+                }
+            }
+            _ => {}
         }
+        let _ = std::io::stdout().flush();
+        return;
     }
     if !interactive {
         match ev {
@@ -1934,9 +2439,15 @@ fn dispatch_agent_event(
                 pending_tools.insert(id.clone(), (name.clone(), None));
             }
             AgentEvent::ToolCallEnd { id, args } => {
-                let entry = pending_tools.entry(id.clone()).or_insert((String::new(), None));
+                let entry = pending_tools
+                    .entry(id.clone())
+                    .or_insert((String::new(), None));
                 entry.1 = Some(args.clone());
-                let name = if entry.0.is_empty() { "tool" } else { entry.0.as_str() };
+                let name = if entry.0.is_empty() {
+                    "tool"
+                } else {
+                    entry.0.as_str()
+                };
                 if name != "request_user_input" {
                     println!(
                         "\n{}",
@@ -1944,10 +2455,16 @@ fn dispatch_agent_event(
                     );
                 }
             }
-            AgentEvent::ToolResult { id, output, is_error, .. } => {
-                let (name, args) = pending_tools.remove(id).map(|(n, a)| {
-                    (if n.is_empty() { "tool".to_string() } else { n }, a)
-                }).unwrap_or_else(|| ("tool".to_string(), None));
+            AgentEvent::ToolResult {
+                id,
+                output,
+                is_error,
+                ..
+            } => {
+                let (name, args) = pending_tools
+                    .remove(id)
+                    .map(|(n, a)| (if n.is_empty() { "tool".to_string() } else { n }, a))
+                    .unwrap_or_else(|| ("tool".to_string(), None));
                 let res = crate::tool_fmt::format_tool_result_plain_with_context(
                     &name,
                     args.as_ref(),
@@ -1972,7 +2489,10 @@ fn dispatch_agent_event(
                 *turn_duration_ms = Some(ms);
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
-                    println!("\n\x1b[2m{}\x1b[0m", turn_footer(usage, model, totals, Some(ms)));
+                    println!(
+                        "\n\x1b[2m{}\x1b[0m",
+                        turn_footer(usage, model, totals, Some(ms))
+                    );
                 }
             }
             _ => {}
@@ -1997,7 +2517,11 @@ async fn maybe_threshold_compact(
     AUTO_COMPACT_ENV_ONCE.get_or_init(crate::compact::init_auto_compact_from_env);
     let window = crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
     let tokens = crate::compact::estimate_context_tokens(agent.messages(), latest);
-    if !crate::compact::should_compact(tokens, window, &crate::compact::compaction_settings_for(window)) {
+    if !crate::compact::should_compact(
+        tokens,
+        window,
+        &crate::compact::compaction_settings_for(window),
+    ) {
         return;
     }
     let notice = format!(
@@ -2016,11 +2540,12 @@ async fn maybe_threshold_compact(
             }
             *initial_count = agent.messages().len();
         }
-        Ok(false) => {},
+        Ok(false) => {}
         Err(e) => log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}"),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn maybe_overflow_compact(
     agent: &mut Agent,
     config: &Config,
@@ -2085,14 +2610,14 @@ pub async fn run_repl_mode(
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
         tokio::spawn(crate::setup::fetch_models_dev_context());
         tokio::spawn(crate::setup::fetch_openrouter_rates());
-        if let Some(m) = config.model.clone() {
-            if crate::setup::get_cached_model_context(&m).is_none() {
-                let base = config.base_url.clone();
-                let key = config.api_key.clone();
-                tokio::spawn(async move {
-                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
-                });
-            }
+        if let Some(m) = config.model.clone()
+            && crate::setup::get_cached_model_context(&m).is_none()
+        {
+            let base = config.base_url.clone();
+            let key = config.api_key.clone();
+            tokio::spawn(async move {
+                crate::setup::fetch_live_provider_models(&base, key.as_deref());
+            });
         }
     }
 
@@ -2104,7 +2629,9 @@ pub async fn run_repl_mode(
     if unconfigured {
         let ready = crate::setup::run_onboarding(config).await?;
         if !ready {
-            print!("\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n");
+            print!(
+                "\r\x1b[2mrunning without a provider — send a message to set one up (or /provider)\x1b[0m\r\n"
+            );
         }
         print!("\r\n");
         // onboarding may have set model/base_url — re-sync context window override and prime cache
@@ -2114,14 +2641,14 @@ pub async fn run_repl_mode(
         if crate::setup::get_user_context_window().is_none() {
             tokio::spawn(crate::setup::fetch_litellm_context_windows());
             tokio::spawn(crate::setup::fetch_models_dev_context());
-            if let Some(m) = config.model.clone() {
-                if crate::setup::get_cached_model_context(&m).is_none() {
-                    let base = config.base_url.clone();
-                    let key = config.api_key.clone();
-                    tokio::spawn(async move {
-                        crate::setup::fetch_live_provider_models(&base, key.as_deref());
-                    });
-                }
+            if let Some(m) = config.model.clone()
+                && crate::setup::get_cached_model_context(&m).is_none()
+            {
+                let base = config.base_url.clone();
+                let key = config.api_key.clone();
+                tokio::spawn(async move {
+                    crate::setup::fetch_live_provider_models(&base, key.as_deref());
+                });
             }
         }
     }
@@ -2154,7 +2681,8 @@ pub async fn run_repl_mode(
                     session_id: sid.clone(),
                     store,
                 });
-                session_totals = SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
+                session_totals =
+                    SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
                 resumed_session_info = Some((sid, entries));
             }
             Err(e) => {
@@ -2171,7 +2699,9 @@ pub async fn run_repl_mode(
         let store = JsonlSessionStore::new(root);
         let summaries = store.list().await;
         let cwd_now = std::env::current_dir().ok();
-        if let Some(latest) = crate::resume::latest_summary(&summaries, cwd_now.as_deref()).or_else(|| crate::resume::latest_summary(&summaries, None)) {
+        if let Some(latest) = crate::resume::latest_summary(&summaries, cwd_now.as_deref())
+            .or_else(|| crate::resume::latest_summary(&summaries, None))
+        {
             match store.load(&latest.id).await {
                 Ok((meta, entries)) => {
                     if config.model.is_none() && !meta.model.is_empty() {
@@ -2186,7 +2716,10 @@ pub async fn run_repl_mode(
                         session_id: latest.id.clone(),
                         store,
                     });
-                    session_totals = SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
+                    session_totals = SessionTotals::from_entries(
+                        &entries,
+                        config.model.as_deref().unwrap_or(""),
+                    );
                     resumed_session_info = Some((latest.id.clone(), entries));
                 }
                 Err(e) => println!("could not resume: {e}"),
@@ -2201,23 +2734,27 @@ pub async fn run_repl_mode(
     let tui = interactive.then(|| {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
         let shared = std::sync::Arc::new(std::sync::Mutex::new({
-                let mut t = crate::composer::Tui::new().expect("composer init");
-                if let Some(m) = &config.model {
-                    t.set_model(m.clone());
-                }
-                if let Some(eff) = &config.thinking_effort {
-                    t.set_thinking_effort(eff.clone());
-                }
-                t.set_hide_thinking(config.reasoning_hidden());
-                t.set_cwd(cwd.display().to_string());
-                if let Some((ref sid, ref entries)) = resumed_session_info {
-                    t.replay_session_history(entries, &cwd);
-                    t.ensure_gap(1);
-                    t.push_dim(format!("\u{2b22} Resumed session {} ({} messages)", sid.as_str(), entries.len()));
-                    t.ensure_gap(1);
-                }
-                t
-            }));
+            let mut t = crate::composer::Tui::new().expect("composer init");
+            if let Some(m) = &config.model {
+                t.set_model(m.clone());
+            }
+            if let Some(eff) = &config.thinking_effort {
+                t.set_thinking_effort(eff.clone());
+            }
+            t.set_hide_thinking(config.reasoning_hidden());
+            t.set_cwd(cwd.display().to_string());
+            if let Some((ref sid, ref entries)) = resumed_session_info {
+                t.replay_session_history(entries, &cwd);
+                t.ensure_gap(1);
+                t.push_dim(format!(
+                    "\u{2b22} Resumed session {} ({} messages)",
+                    sid.as_str(),
+                    entries.len()
+                ));
+                t.ensure_gap(1);
+            }
+            t
+        }));
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let ticker_stop = stop.clone();
         let ticker_tui = shared.clone();
@@ -2248,8 +2785,13 @@ pub async fn run_repl_mode(
     // request_user_input bridge: TUI overlay when interactive,
     // stdin prompts when piped.
     let question_bridge: gray_core::questions::QuestionBridge = if interactive {
-        let shared = tui.as_ref().map(|(s, _)| s.clone()).expect("interactive implies tui");
-        gray_core::questions::QuestionBridge(std::sync::Arc::new(crate::composer::ComposerQuestionAsker { tui: shared }))
+        let shared = tui
+            .as_ref()
+            .map(|(s, _)| s.clone())
+            .expect("interactive implies tui");
+        gray_core::questions::QuestionBridge(std::sync::Arc::new(
+            crate::composer::ComposerQuestionAsker { tui: shared },
+        ))
     } else {
         gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
     };
@@ -2263,7 +2805,10 @@ pub async fn run_repl_mode(
             use gray_cron::Scheduler;
             let scheduler = Scheduler::from_active();
             // helper to push next due to footer clock
-            let update_footer = |tui_opt: &Option<(crate::composer::SharedTui, std::sync::Arc<std::sync::atomic::AtomicBool>)>| {
+            let update_footer = |tui_opt: &Option<(
+                crate::composer::SharedTui,
+                std::sync::Arc<std::sync::atomic::AtomicBool>,
+            )>| {
                 if let Some((shared, _)) = tui_opt {
                     let jobs = gray_cron::list_jobs();
                     let next = jobs
@@ -2294,10 +2839,10 @@ pub async fn run_repl_mode(
                 };
                 for job in due {
                     let _ = gray_cron::store::update_job_run(&job.id, chrono::Utc::now());
-                    if let Some((shared, _)) = cron_tui.as_ref() {
-                        if let Ok(mut t) = shared.try_lock() {
-                            t.push_dim(format!("⏰ cron '{}' due: {}", job.name, job.prompt));
-                        }
+                    if let Some((shared, _)) = cron_tui.as_ref()
+                        && let Ok(mut t) = shared.try_lock()
+                    {
+                        t.push_dim(format!("⏰ cron '{}' due: {}", job.name, job.prompt));
                     }
                 }
                 update_footer(&cron_tui);
@@ -2330,11 +2875,15 @@ pub async fn run_repl_mode(
     // state is committed as ONE card with no trailing gap. No follow-ups.
     if let Some((shared, _)) = tui.as_ref() {
         let cfg = gray_gateway::config::load_gateway_config();
-        if cfg.autostart && cfg.platforms.values().any(|p| p.enabled) {
-            if let Some(board) = start_gateway_in_background(Some(shared)) {
-                shared.lock().expect("tui lock").begin_gateway_boot("Gateway autostarted", &board);
-                spawn_gateway_boot_watcher(shared.clone(), board);
-            }
+        if cfg.autostart
+            && cfg.platforms.values().any(|p| p.enabled)
+            && let Some(board) = start_gateway_in_background(Some(shared))
+        {
+            shared
+                .lock()
+                .expect("tui lock")
+                .begin_gateway_boot("Gateway autostarted", &board);
+            spawn_gateway_boot_watcher(shared.clone(), board);
         }
     }
     let mut pending_command: Option<ReplCommand> = None;
@@ -2386,7 +2935,12 @@ pub async fn run_repl_mode(
                 (buf.trim().to_string(), Vec::new())
             };
             pending_images = images;
-            expand_skill_command(parse_command(&line_text), cwd.as_path(), tui.as_ref().map(|(s, _)| s), false)
+            expand_skill_command(
+                parse_command(&line_text),
+                cwd.as_path(),
+                tui.as_ref().map(|(s, _)| s),
+                false,
+            )
         };
         // Clear pending images for non-prompt commands (keep for Prompt/Empty+images)
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
@@ -2403,8 +2957,14 @@ pub async fn run_repl_mode(
                     // reuse Prompt logic inline
                     if agent.is_none() {
                         if unconfigured {
-                            let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                            let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
+                            let bg = tui
+                                .as_ref()
+                                .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
+                            let result = with_modal(
+                                tui.as_ref().map(|(s, _)| s),
+                                crate::setup::run_provider_menu(config, bg.as_ref()),
+                            )
+                            .await;
                             match result {
                                 Ok(true) => {
                                     unconfigured = false;
@@ -2413,7 +2973,8 @@ pub async fn run_repl_mode(
                                         if let Some(m) = &config.model {
                                             t.set_model(m.clone());
                                         }
-                                        let model_str = config.model.as_deref().unwrap_or("default");
+                                        let model_str =
+                                            config.model.as_deref().unwrap_or("default");
                                         let prov_name = crate::setup::load_catalog()
                                             .ok()
                                             .and_then(|c| {
@@ -2447,12 +3008,16 @@ pub async fn run_repl_mode(
                                 }
                             }
                         }
-                        let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
+                        let sid = session_state
+                            .as_ref()
+                            .map(|s| s.session_id.as_str().to_string());
                         let built = build_agent(config, &cwd, sid.as_deref()).await;
                         match built {
                             Ok(built) => {
                                 if !pending_history.is_empty() {
-                                    agent = Some(built.with_messages(std::mem::take(&mut pending_history)));
+                                    agent = Some(
+                                        built.with_messages(std::mem::take(&mut pending_history)),
+                                    );
                                 } else {
                                     agent = Some(built);
                                 }
@@ -2466,7 +3031,11 @@ pub async fn run_repl_mode(
                     let agent = agent.as_mut().expect("agent built above");
                     let cancel = tokio_util::sync::CancellationToken::new();
                     *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
-                    let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()) };
+                    let ctx = ToolContext {
+                        cwd: cwd.clone(),
+                        cancel: cancel.clone(),
+                        questions: Some(question_bridge.clone()),
+                    };
                     let user_msg = build_user_message_with_attachments(&prompt_text, &images);
                     let user_msg_for_retry = user_msg.clone();
                     let mut initial_count = agent.messages().len();
@@ -2485,30 +3054,62 @@ pub async fn run_repl_mode(
                         )
                         .await;
                     }
-                    let (shared, _) = if interactive { (Some(tui.as_ref().expect("interactive implies tui")), ()) } else { (None, ()) };
+                    let (shared, _) = if interactive {
+                        (Some(tui.as_ref().expect("interactive implies tui")), ())
+                    } else {
+                        (None, ())
+                    };
                     let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
-                    if let Some(s) = &tui_stream { s.lock().expect("tui lock").begin_turn("Working"); }
+                    if let Some(s) = &tui_stream {
+                        s.lock().expect("tui lock").begin_turn("Working");
+                    }
                     let watch_cancel = cancel.clone();
                     let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     let watcher_stopped = watch_stop.clone();
                     let watcher_tui = tui_stream.clone();
                     let _key_watcher = tokio::task::spawn_blocking(move || {
-                        use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+                        use crossterm::event::{
+                            Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read,
+                        };
                         loop {
-                            if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) { return; }
-                            match poll(std::time::Duration::from_millis(50)) { Ok(true) => {} _ => continue, }
-                            let Ok(event) = read() else { continue; };
+                            if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                                return;
+                            }
+                            match poll(std::time::Duration::from_millis(50)) {
+                                Ok(true) => {}
+                                _ => continue,
+                            }
+                            let Ok(event) = read() else {
+                                continue;
+                            };
                             if let Event::Resize(cols, _) = event {
-                                if let Some(shared) = watcher_tui.as_ref() {
-                                    if let Ok(mut t) = shared.try_lock() {
-                                        t.pending_resize = Some((cols, std::time::Instant::now() + std::time::Duration::from_millis(75)));
-                                    }
+                                if let Some(shared) = watcher_tui.as_ref()
+                                    && let Ok(mut t) = shared.try_lock()
+                                {
+                                    t.pending_resize = Some((
+                                        cols,
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_millis(75),
+                                    ));
                                 }
                                 continue;
                             }
-                            if let Event::Key(KeyEvent { code, modifiers, kind, .. }) = event {
-                                if kind == KeyEventKind::Release { continue; }
-                                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) { watch_cancel.cancel(); return; }
+                            if let Event::Key(KeyEvent {
+                                code,
+                                modifiers,
+                                kind,
+                                ..
+                            }) = event
+                            {
+                                if kind == KeyEventKind::Release {
+                                    continue;
+                                }
+                                if code == KeyCode::Char('c')
+                                    && modifiers.contains(KeyModifiers::CONTROL)
+                                {
+                                    watch_cancel.cancel();
+                                    return;
+                                }
                                 // request_user_input overlay owns the keyboard while active
                                 if let Some(shared) = watcher_tui.as_ref()
                                     && let Ok(mut t) = shared.try_lock()
@@ -2517,19 +3118,35 @@ pub async fn run_repl_mode(
                                     crate::composer::handle_question_key(&mut t, code, modifiers);
                                     continue;
                                 }
-                                if code == KeyCode::Esc { watch_cancel.cancel(); return; }
+                                if code == KeyCode::Esc {
+                                    watch_cancel.cancel();
+                                    return;
+                                }
                             }
                         }
                     });
-                    let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
+                    let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> =
+                        HashMap::new();
                     let mut turn_usage: Option<gray_core::event::Usage> = None;
                     let turn_start = std::time::Instant::now();
                     let mut turn_duration_ms: Option<u64> = None;
                     let mut run_result = {
                         let mut on_event = |ev: &gray_core::event::AgentEvent| {
-                            dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
+                            dispatch_agent_event(
+                                ev,
+                                tui_stream.as_ref(),
+                                interactive,
+                                &mut pending_tools,
+                                &mut turn_usage,
+                                &cwd,
+                                config.model.as_deref().unwrap_or(""),
+                                &mut session_totals,
+                                turn_start,
+                                &mut turn_duration_ms,
+                            );
                         };
-                        let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
+                        let mut run_future =
+                            Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
                         tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
                     };
                     // overflow recovery (one retry only)
@@ -2550,31 +3167,65 @@ pub async fn run_repl_mode(
                         )
                         .await
                         {
-                                pending_tools.clear();
-                                let ctx2 = gray_core::agent::ToolContext {
-                                    cwd: cwd.clone(),
-                                    cancel: cancel.clone(),
-                                    questions: Some(question_bridge.clone()),
-                                };
-                                let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
-                                    dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
-                                };
-                                let mut run_future2 = Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
-                                let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
-                                run_result = retry_res;
+                            pending_tools.clear();
+                            let ctx2 = gray_core::agent::ToolContext {
+                                cwd: cwd.clone(),
+                                cancel: cancel.clone(),
+                                questions: Some(question_bridge.clone()),
+                            };
+                            let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
+                                dispatch_agent_event(
+                                    ev,
+                                    tui_stream.as_ref(),
+                                    interactive,
+                                    &mut pending_tools,
+                                    &mut turn_usage,
+                                    &cwd,
+                                    config.model.as_deref().unwrap_or(""),
+                                    &mut session_totals,
+                                    turn_start,
+                                    &mut turn_duration_ms,
+                                );
+                            };
+                            let mut run_future2 = Box::pin(agent.run_streaming(
+                                user_msg_for_retry.clone(),
+                                ctx2,
+                                &mut on_event2,
+                            ));
+                            let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
+                            run_result = retry_res;
                         }
                     }
                     TURN_STATE.lock().expect("turn state lock").take();
                     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     if turn_duration_ms.is_none() {
-                        turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                        turn_duration_ms =
+                            Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
                     }
                     match run_result {
                         Ok(_) => {
-                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
+                            persist_turn_messages(
+                                &mut session_state,
+                                agent,
+                                config,
+                                &cwd,
+                                initial_count,
+                                turn_usage,
+                                turn_duration_ms,
+                            )
+                            .await;
                         }
                         Err(gray_core::error::CoreError::Cancelled) => {
-                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
+                            persist_turn_messages(
+                                &mut session_state,
+                                agent,
+                                config,
+                                &cwd,
+                                initial_count,
+                                turn_usage,
+                                turn_duration_ms,
+                            )
+                            .await;
                             if interactive {
                                 if let Some((shared, _)) = &tui {
                                     let mut t = shared.lock().expect("tui lock");
@@ -2587,7 +3238,16 @@ pub async fn run_repl_mode(
                             }
                         }
                         Err(e) => {
-                            persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
+                            persist_turn_messages(
+                                &mut session_state,
+                                agent,
+                                config,
+                                &cwd,
+                                initial_count,
+                                turn_usage,
+                                turn_duration_ms,
+                            )
+                            .await;
                             let msg = format_core_error(&e, &config.base_url);
                             if interactive {
                                 if let Some((shared, _)) = &tui {
@@ -2621,11 +3281,25 @@ pub async fn run_repl_mode(
                 break;
             }
             ReplCommand::Sys(action) => {
-                handle_sys(config, &cwd, action, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
+                handle_sys(
+                    config,
+                    &cwd,
+                    action,
+                    &mut agent,
+                    tui.as_ref().map(|(s, _)| s),
+                )
+                .await;
                 continue;
             }
             ReplCommand::Model(direct) => {
-                handle_model(config, &cwd, direct, &mut agent, tui.as_ref().map(|(s, _)| s)).await;
+                handle_model(
+                    config,
+                    &cwd,
+                    direct,
+                    &mut agent,
+                    tui.as_ref().map(|(s, _)| s),
+                )
+                .await;
                 continue;
             }
             ReplCommand::Help => {
@@ -2639,7 +3313,10 @@ pub async fn run_repl_mode(
                             out.push_str(&format!("  /{n:<10} {d}\n"));
                         }
                     }
-                    shared.lock().expect("tui lock").push_dim(out.trim_end().to_string());
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(out.trim_end().to_string());
                 } else {
                     println!("{}", crate::rule("commands"));
                     for d in REGISTRY {
@@ -2654,7 +3331,16 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Resume(args) => {
-                handle_resume(config, &cwd, args, &mut agent, &mut session_state, &mut session_totals, tui.as_ref().map(|(s, _)| s)).await;
+                handle_resume(
+                    config,
+                    &cwd,
+                    args,
+                    &mut agent,
+                    &mut session_state,
+                    &mut session_totals,
+                    tui.as_ref().map(|(s, _)| s),
+                )
+                .await;
                 continue;
             }
             ReplCommand::New(initial_prompt) => {
@@ -2677,15 +3363,22 @@ pub async fn run_repl_mode(
                         config.model.clone().unwrap_or_else(|| "unset".into()),
                     );
                     if let Err(e) = store.create(meta).await {
-            log::warn!(target: "gray_session", "session create failed: {e}");
-        }
-                    short_id = session_id.as_str().split('-').next().unwrap_or("new").to_string();
+                        log::warn!(target: "gray_session", "session create failed: {e}");
+                    }
+                    short_id = session_id
+                        .as_str()
+                        .split('-')
+                        .next()
+                        .unwrap_or("new")
+                        .to_string();
                     new_sid = Some(session_id.clone());
                     session_state = Some(SessionState { store, session_id });
                 }
                 // Build with the new session id so the prompt-cache shard
                 // survives future resumes of this session.
-                agent = build_agent(config, &cwd, new_sid.as_ref().map(|s| s.as_str())).await.ok();
+                agent = build_agent(config, &cwd, new_sid.as_ref().map(|s| s.as_str()))
+                    .await
+                    .ok();
 
                 if let Some((shared, _)) = &tui {
                     let mut t = shared.lock().expect("tui lock");
@@ -2706,7 +3399,11 @@ pub async fn run_repl_mode(
 
                 if let Some(prompt_text) = initial_prompt {
                     if let Some((shared, _)) = &tui {
-                        shared.lock().expect("tui lock").push_user_prompt(&prompt_text, &[], !prompt_text.starts_with('/'));
+                        shared.lock().expect("tui lock").push_user_prompt(
+                            &prompt_text,
+                            &[],
+                            !prompt_text.starts_with('/'),
+                        );
                     } else {
                         println!("❯ {prompt_text}");
                     }
@@ -2722,15 +3419,25 @@ pub async fn run_repl_mode(
                     &mut agent,
                     &mut session_state,
                     tui.as_ref().map(|(s, _)| s),
-                ).await;
+                )
+                .await;
                 continue;
             }
             ReplCommand::Thinking(level) => {
-                handle_thinking(config, &cwd, level, &mut agent, tui.as_ref().map(|(s, _)| s), &mut hide_thinking).await;
+                handle_thinking(
+                    config,
+                    &cwd,
+                    level,
+                    &mut agent,
+                    tui.as_ref().map(|(s, _)| s),
+                    &mut hide_thinking,
+                )
+                .await;
                 continue;
             }
             ReplCommand::ContextWindow(val) => {
-                handle_context_window(config, &cwd, &agent, val, tui.as_ref().map(|(s, _)| s)).await;
+                handle_context_window(config, &cwd, &agent, val, tui.as_ref().map(|(s, _)| s))
+                    .await;
                 continue;
             }
             ReplCommand::Usage => {
@@ -2738,8 +3445,14 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Provider => {
-                let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
+                let bg = tui
+                    .as_ref()
+                    .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
+                let result = with_modal(
+                    tui.as_ref().map(|(s, _)| s),
+                    crate::setup::run_provider_menu(config, bg.as_ref()),
+                )
+                .await;
                 match result {
                     Ok(true) => {
                         unconfigured = false;
@@ -2775,7 +3488,10 @@ pub async fn run_repl_mode(
                     }
                     Err(e) => {
                         if let Some((shared, _)) = &tui {
-                            shared.lock().expect("tui lock").push_dim(format!("└ error: {e}"));
+                            shared
+                                .lock()
+                                .expect("tui lock")
+                                .push_dim(format!("└ error: {e}"));
                         } else {
                             println!("provider error: {e}");
                         }
@@ -2802,7 +3518,9 @@ pub async fn run_repl_mode(
                 let cmd = if raw.trim() == "/gateway" && t.is_some() {
                     let bg = t.map(|s| s.lock().expect("tui lock").snapshot());
                     let running = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
-                    match with_modal_sync(t, || crate::setup::run_gateway_modal(bg.as_ref(), running)) {
+                    match with_modal_sync(t, || {
+                        crate::setup::run_gateway_modal(bg.as_ref(), running)
+                    }) {
                         Ok(Some(c)) => c,
                         _ => String::new(),
                     }
@@ -2817,8 +3535,10 @@ pub async fn run_repl_mode(
             ReplCommand::Unknown(cmd) => {
                 // Protocol v1 `command/run`: a claimed `/cmd` runs on its
                 // owning plugin; anything else keeps the unknown message.
-                let hooks: Vec<Arc<dyn PluginHooks>> =
-                    agent.as_ref().map(|a| a.hooks().to_vec()).unwrap_or_default();
+                let hooks: Vec<Arc<dyn PluginHooks>> = agent
+                    .as_ref()
+                    .map(|a| a.hooks().to_vec())
+                    .unwrap_or_default();
                 let mut handled = false;
                 if let Some((name, argv)) = split_plugin_command(&cmd)
                     && let Some(text) = run_plugin_command(&hooks, &name, argv).await
@@ -2827,15 +3547,24 @@ pub async fn run_repl_mode(
                     handled = true;
                 }
                 if !handled {
-                    say(tui.as_ref().map(|(s, _)| s), &format!("unknown command '{cmd}' — type /help for available commands"));
+                    say(
+                        tui.as_ref().map(|(s, _)| s),
+                        &format!("unknown command '{cmd}' — type /help for available commands"),
+                    );
                 }
                 continue;
             }
             ReplCommand::Prompt(prompt_text) => {
                 if agent.is_none() {
                     if unconfigured {
-                        let bg = tui.as_ref().map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-                        let result = with_modal(tui.as_ref().map(|(s, _)| s), crate::setup::run_provider_menu(config, bg.as_ref())).await;
+                        let bg = tui
+                            .as_ref()
+                            .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
+                        let result = with_modal(
+                            tui.as_ref().map(|(s, _)| s),
+                            crate::setup::run_provider_menu(config, bg.as_ref()),
+                        )
+                        .await;
                         match result {
                             Ok(true) => {
                                 unconfigured = false;
@@ -2853,9 +3582,7 @@ pub async fn run_repl_mode(
                                                 .map(|p| p.name.clone())
                                         })
                                         .unwrap_or_else(|| "provider".to_string());
-                                    t.push_dim(format!(
-                                        "└ connected to {prov_name} · {model_str}"
-                                    ));
+                                    t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
                                     let _ = t.draw();
                                 }
                             }
@@ -2878,12 +3605,15 @@ pub async fn run_repl_mode(
                             }
                         }
                     }
-                    let sid = session_state.as_ref().map(|s| s.session_id.as_str().to_string());
+                    let sid = session_state
+                        .as_ref()
+                        .map(|s| s.session_id.as_str().to_string());
                     let built = build_agent(config, &cwd, sid.as_deref()).await;
                     match built {
                         Ok(built) => {
                             if !pending_history.is_empty() {
-                                agent = Some(built.with_messages(std::mem::take(&mut pending_history)));
+                                agent =
+                                    Some(built.with_messages(std::mem::take(&mut pending_history)));
                             } else {
                                 agent = Some(built);
                             }
@@ -2924,7 +3654,9 @@ pub async fn run_repl_mode(
 
                 let (shared, _) = if interactive {
                     (Some(tui.as_ref().expect("interactive implies tui")), ())
-                } else { (None, ()) };
+                } else {
+                    (None, ())
+                };
 
                 // status row on; events stream straight into the composer
                 let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
@@ -2939,8 +3671,10 @@ pub async fn run_repl_mode(
                 let watcher_stopped = watch_stop.clone();
                 let watcher_tui = tui_stream.clone();
                 let cwd_for_watcher = cwd.clone();
-                    let _key_watcher = tokio::task::spawn_blocking(move || {
-                    use crossterm::event::{poll, read, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+                let _key_watcher = tokio::task::spawn_blocking(move || {
+                    use crossterm::event::{
+                        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read,
+                    };
                     loop {
                         if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
                             return;
@@ -2949,21 +3683,34 @@ pub async fn run_repl_mode(
                             Ok(true) => {}
                             _ => continue,
                         }
-                        let Ok(event) = read() else { continue; };
+                        let Ok(event) = read() else {
+                            continue;
+                        };
                         match event {
                             Event::Resize(cols, _) => {
-                                if let Some(shared) = watcher_tui.as_ref() {
-                                    if let Ok(mut t) = shared.try_lock() {
-                                        t.pending_resize = Some((cols, std::time::Instant::now() + std::time::Duration::from_millis(75)));
-                                    }
+                                if let Some(shared) = watcher_tui.as_ref()
+                                    && let Ok(mut t) = shared.try_lock()
+                                {
+                                    t.pending_resize = Some((
+                                        cols,
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_millis(75),
+                                    ));
                                 }
                             }
-                            Event::Key(KeyEvent { code, modifiers, kind, .. }) => {
+                            Event::Key(KeyEvent {
+                                code,
+                                modifiers,
+                                kind,
+                                ..
+                            }) => {
                                 if kind == KeyEventKind::Release {
                                     continue;
                                 }
                                 // Ctrl+C always cancels turn
-                                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+                                if code == KeyCode::Char('c')
+                                    && modifiers.contains(KeyModifiers::CONTROL)
+                                {
                                     watch_cancel.cancel();
                                     return;
                                 }
@@ -2990,10 +3737,15 @@ pub async fn run_repl_mode(
                                             continue;
                                         }
                                         let mut text = t.textarea.text().to_string();
-                                        for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
+                                        for (ph, full) in &t.pending_pastes {
+                                            text = text.replace(ph, full);
+                                        }
                                         let text = text.trim().to_string();
                                         if text.starts_with('/') && !text.contains('\n') {
-                                            let echo = crate::composer::transcript::redact_command_echo(&text);
+                                            let echo =
+                                                crate::composer::transcript::redact_command_echo(
+                                                    &text,
+                                                );
                                             t.push_user_prompt(&echo, &[], false);
                                             t.local_command = Some(text);
                                             t.textarea.set_text("");
@@ -3011,25 +3763,41 @@ pub async fn run_repl_mode(
                                     return;
                                 }
                                 // When a turn is running, allow typing and queue on Enter
-                                let Some(shared) = watcher_tui.as_ref() else { continue; };
-                                let Ok(mut t) = shared.try_lock() else { continue; };
+                                let Some(shared) = watcher_tui.as_ref() else {
+                                    continue;
+                                };
+                                let Ok(mut t) = shared.try_lock() else {
+                                    continue;
+                                };
                                 if !t.is_task_running {
                                     continue;
                                 }
-                                if modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('v') | KeyCode::Char('V')) {
+                                if modifiers.contains(KeyModifiers::CONTROL)
+                                    && matches!(code, KeyCode::Char('v') | KeyCode::Char('V'))
+                                {
                                     t.try_attach_clipboard_image();
                                     // sync matches after clipboard attach may insert placeholder
                                     let cur_text = t.textarea.text().to_string();
-                                    t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
-                                    if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
+                                    t.matches = crate::repl::completion_matches_dyn(
+                                        &cur_text,
+                                        &cwd_for_watcher,
+                                    );
+                                    if t.sel >= t.matches.len() {
+                                        t.sel = t.matches.len().saturating_sub(1);
+                                    }
                                     let _ = t.draw();
                                     continue;
                                 }
                                 // Helper to sync matches after text change
                                 let sync_matches = |t: &mut crate::composer::Tui| {
                                     let cur_text = t.textarea.text().to_string();
-                                    t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
-                                    if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
+                                    t.matches = crate::repl::completion_matches_dyn(
+                                        &cur_text,
+                                        &cwd_for_watcher,
+                                    );
+                                    if t.sel >= t.matches.len() {
+                                        t.sel = t.matches.len().saturating_sub(1);
+                                    }
                                 };
                                 // Ctrl editing keys (must check before generic Char handling)
                                 if modifiers.contains(KeyModifiers::CONTROL) {
@@ -3046,15 +3814,36 @@ pub async fn run_repl_mode(
                                         }
                                         KeyCode::Char('n') => {
                                             if !t.matches.is_empty() {
-                                                t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
+                                                t.sel = (t.sel + 1)
+                                                    .min(t.matches.len().saturating_sub(1));
                                                 let _ = t.draw();
                                             }
                                             continue;
                                         }
-                                        KeyCode::Char('u') => { t.textarea.set_text(""); t.history_idx = None; sync_matches(&mut t); let _ = t.draw(); continue; }
-                                        KeyCode::Char('a') => { t.textarea.set_cursor(0); let _ = t.draw(); continue; }
-                                        KeyCode::Char('e') => { t.textarea.move_to_end(); let _ = t.draw(); continue; }
-                                        KeyCode::Char('k') => { let cur = t.textarea.cursor(); t.textarea.replace_range(cur..usize::MAX, ""); sync_matches(&mut t); let _ = t.draw(); continue; }
+                                        KeyCode::Char('u') => {
+                                            t.textarea.set_text("");
+                                            t.history_idx = None;
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Char('a') => {
+                                            t.textarea.set_cursor(0);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Char('e') => {
+                                            t.textarea.move_to_end();
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Char('k') => {
+                                            let cur = t.textarea.cursor();
+                                            t.textarea.replace_range(cur..usize::MAX, "");
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
                                         KeyCode::Char('w') | KeyCode::Backspace => {
                                             // when popup open, dismiss? mimic input.rs popup swallows word deletes
                                             if !t.matches.is_empty() {
@@ -3077,19 +3866,63 @@ pub async fn run_repl_mode(
                                             let _ = t.draw();
                                             continue;
                                         }
-                                        KeyCode::Left => { if !t.matches.is_empty() { t.sel = t.sel.saturating_sub(1); let _ = t.draw(); } else { t.textarea.move_word_left(); let _ = t.draw(); } continue; }
-                                        KeyCode::Right => { if !t.matches.is_empty() { t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1)); let _ = t.draw(); } else { t.textarea.move_word_right(); let _ = t.draw(); } continue; }
+                                        KeyCode::Left => {
+                                            if !t.matches.is_empty() {
+                                                t.sel = t.sel.saturating_sub(1);
+                                                let _ = t.draw();
+                                            } else {
+                                                t.textarea.move_word_left();
+                                                let _ = t.draw();
+                                            }
+                                            continue;
+                                        }
+                                        KeyCode::Right => {
+                                            if !t.matches.is_empty() {
+                                                t.sel = (t.sel + 1)
+                                                    .min(t.matches.len().saturating_sub(1));
+                                                let _ = t.draw();
+                                            } else {
+                                                t.textarea.move_word_right();
+                                                let _ = t.draw();
+                                            }
+                                            continue;
+                                        }
                                         _ => {}
                                     }
                                 }
                                 // Alt editing keys
                                 if modifiers.contains(KeyModifiers::ALT) {
                                     match code {
-                                        KeyCode::Backspace => { t.textarea.delete_word_backward(); t.sync_attachments(); sync_matches(&mut t); let _ = t.draw(); continue; }
-                                        KeyCode::Delete => { t.textarea.delete_word_forward(); t.sync_attachments(); sync_matches(&mut t); let _ = t.draw(); continue; }
-                                        KeyCode::Char('d') => { t.textarea.delete_word_forward(); sync_matches(&mut t); let _ = t.draw(); continue; }
-                                        KeyCode::Char('b') | KeyCode::Left => { t.textarea.move_word_left(); let _ = t.draw(); continue; }
-                                        KeyCode::Char('f') | KeyCode::Right => { t.textarea.move_word_right(); let _ = t.draw(); continue; }
+                                        KeyCode::Backspace => {
+                                            t.textarea.delete_word_backward();
+                                            t.sync_attachments();
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Delete => {
+                                            t.textarea.delete_word_forward();
+                                            t.sync_attachments();
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Char('d') => {
+                                            t.textarea.delete_word_forward();
+                                            sync_matches(&mut t);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Char('b') | KeyCode::Left => {
+                                            t.textarea.move_word_left();
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Char('f') | KeyCode::Right => {
+                                            t.textarea.move_word_right();
+                                            let _ = t.draw();
+                                            continue;
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -3097,8 +3930,17 @@ pub async fn run_repl_mode(
                                 // Up/Down free for history recall / cursor movement)
                                 if t.matches.len() > 1 {
                                     match code {
-                                        KeyCode::Up => { t.sel = t.sel.saturating_sub(1); let _ = t.draw(); continue; }
-                                        KeyCode::Down => { t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1)); let _ = t.draw(); continue; }
+                                        KeyCode::Up => {
+                                            t.sel = t.sel.saturating_sub(1);
+                                            let _ = t.draw();
+                                            continue;
+                                        }
+                                        KeyCode::Down => {
+                                            t.sel =
+                                                (t.sel + 1).min(t.matches.len().saturating_sub(1));
+                                            let _ = t.draw();
+                                            continue;
+                                        }
                                         KeyCode::Tab => {
                                             if let Some((name, _)) = t.matches.get(t.sel).cloned() {
                                                 t.textarea.set_text(&format!("/{name} "));
@@ -3110,14 +3952,15 @@ pub async fn run_repl_mode(
                                         }
                                         KeyCode::Enter => {
                                             let cur_text = t.textarea.text().to_string();
-                                            if let Some((name, _)) = t.matches.get(t.sel).cloned() {
-                                                if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
-                                                    t.textarea.set_text(&format!("/{name} "));
-                                                    t.textarea.move_to_end();
-                                                    sync_matches(&mut t);
-                                                    let _ = t.draw();
-                                                    continue;
-                                                }
+                                            if let Some((name, _)) = t.matches.get(t.sel).cloned()
+                                                && cur_text != format!("/{name}")
+                                                && cur_text != format!("/{name} ")
+                                            {
+                                                t.textarea.set_text(&format!("/{name} "));
+                                                t.textarea.move_to_end();
+                                                sync_matches(&mut t);
+                                                let _ = t.draw();
+                                                continue;
                                             }
                                             // if already completed, fall through to queue logic below
                                         }
@@ -3150,7 +3993,8 @@ pub async fn run_repl_mode(
                                     }
                                     KeyCode::Down => {
                                         if t.matches.len() > 1 {
-                                            t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
+                                            t.sel =
+                                                (t.sel + 1).min(t.matches.len().saturating_sub(1));
                                             let _ = t.draw();
                                         } else {
                                             t.textarea.move_down();
@@ -3168,7 +4012,8 @@ pub async fn run_repl_mode(
                                         }
                                     }
                                     KeyCode::Enter => {
-                                        let is_newline = modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT);
+                                        let is_newline = modifiers.contains(KeyModifiers::SHIFT)
+                                            || modifiers.contains(KeyModifiers::ALT);
                                         if is_newline {
                                             t.textarea.insert_str("\n");
                                             sync_matches(&mut t);
@@ -3176,25 +4021,33 @@ pub async fn run_repl_mode(
                                             continue;
                                         }
                                         // if popup open and selection not yet applied, complete first
-                                        if !t.matches.is_empty() {
-                                            if let Some((name, _)) = t.matches.get(t.sel).cloned() {
-                                                let cur_text = t.textarea.text().to_string();
-                                                if cur_text != format!("/{name}") && cur_text != format!("/{name} ") {
-                                                    t.textarea.set_text(&format!("/{name} "));
-                                                    t.textarea.move_to_end();
-                                                    sync_matches(&mut t);
-                                                    let _ = t.draw();
-                                                    continue;
-                                                }
+                                        if !t.matches.is_empty()
+                                            && let Some((name, _)) = t.matches.get(t.sel).cloned()
+                                        {
+                                            let cur_text = t.textarea.text().to_string();
+                                            if cur_text != format!("/{name}")
+                                                && cur_text != format!("/{name} ")
+                                            {
+                                                t.textarea.set_text(&format!("/{name} "));
+                                                t.textarea.move_to_end();
+                                                sync_matches(&mut t);
+                                                let _ = t.draw();
+                                                continue;
                                             }
                                         }
                                         let mut text = t.textarea.text().to_string();
-                                        for (ph, full) in &t.pending_pastes { text = text.replace(ph, full); }
+                                        for (ph, full) in &t.pending_pastes {
+                                            text = text.replace(ph, full);
+                                        }
                                         text = text.trim().to_string();
-                                        let attached_with_ph: Vec<(String, std::path::PathBuf)> = std::mem::take(&mut t.attachments);
-                                        let attached: Vec<std::path::PathBuf> = attached_with_ph.into_iter().map(|(_, p)| p).collect();
+                                        let attached_with_ph: Vec<(String, std::path::PathBuf)> =
+                                            std::mem::take(&mut t.attachments);
+                                        let attached: Vec<std::path::PathBuf> =
+                                            attached_with_ph.into_iter().map(|(_, p)| p).collect();
                                         // clear pending pastes already handled
-                                        if text.is_empty() && attached.is_empty() { continue; }
+                                        if text.is_empty() && attached.is_empty() {
+                                            continue;
+                                        }
                                         // queue it — fleeting, not transcript (becomes real prompt when dequeued)
                                         t.queued_inputs.push_back((text.clone(), attached.clone()));
                                         t.textarea.set_text("");
@@ -3209,7 +4062,9 @@ pub async fn run_repl_mode(
                                         let _ = t.draw();
                                     }
                                     KeyCode::Backspace => {
-                                        if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                        if modifiers.contains(KeyModifiers::ALT)
+                                            || modifiers.contains(KeyModifiers::CONTROL)
+                                        {
                                             t.textarea.delete_word_backward();
                                         } else {
                                             t.textarea.delete_backward(1);
@@ -3219,7 +4074,9 @@ pub async fn run_repl_mode(
                                         let _ = t.draw();
                                     }
                                     KeyCode::Delete => {
-                                        if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
+                                        if modifiers.contains(KeyModifiers::ALT)
+                                            || modifiers.contains(KeyModifiers::CONTROL)
+                                        {
                                             t.textarea.delete_word_forward();
                                         } else {
                                             t.textarea.delete_forward(1);
@@ -3248,13 +4105,24 @@ pub async fn run_repl_mode(
                                 }
                             }
                             Event::Paste(data) => {
-                                let Some(shared) = watcher_tui.as_ref() else { continue; };
-                                let Ok(mut t) = shared.try_lock() else { continue; };
-                                if !t.is_task_running { continue; }
+                                let Some(shared) = watcher_tui.as_ref() else {
+                                    continue;
+                                };
+                                let Ok(mut t) = shared.try_lock() else {
+                                    continue;
+                                };
+                                if !t.is_task_running {
+                                    continue;
+                                }
                                 t.handle_paste(data);
                                 let cur_text = t.textarea.text().to_string();
-                                t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);
-                                if t.sel >= t.matches.len() { t.sel = t.matches.len().saturating_sub(1); }
+                                t.matches = crate::repl::completion_matches_dyn(
+                                    &cur_text,
+                                    &cwd_for_watcher,
+                                );
+                                if t.sel >= t.matches.len() {
+                                    t.sel = t.matches.len().saturating_sub(1);
+                                }
                                 let _ = t.draw();
                             }
                             _ => {}
@@ -3262,13 +4130,25 @@ pub async fn run_repl_mode(
                     }
                 });
 
-                let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
+                let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> =
+                    HashMap::new();
                 let mut turn_usage: Option<gray_core::event::Usage> = None;
                 let turn_start = std::time::Instant::now();
                 let mut turn_duration_ms: Option<u64> = None;
                 let mut run_result = {
                     let mut on_event = |ev: &AgentEvent| {
-                        dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
+                        dispatch_agent_event(
+                            ev,
+                            tui_stream.as_ref(),
+                            interactive,
+                            &mut pending_tools,
+                            &mut turn_usage,
+                            &cwd,
+                            config.model.as_deref().unwrap_or(""),
+                            &mut session_totals,
+                            turn_start,
+                            &mut turn_duration_ms,
+                        );
                     };
                     let mut run_future =
                         Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
@@ -3295,22 +4175,36 @@ pub async fn run_repl_mode(
                     )
                     .await
                     {
-                            pending_tools.clear();
-                            let ctx2 = ToolContext {
-                                cwd: cwd.clone(),
-                                cancel: cancel.clone(),
-                                questions: Some(question_bridge.clone()),
-                            };
-                            let mut on_event2 = |ev: &AgentEvent| {
-                                dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
-                            };
-                            let mut run_future2 =
-                                Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
-                            let retry_res = tokio::select! {
-                                res = &mut run_future2 => res,
-                                _ = cancel.cancelled() => Err(CoreError::Cancelled),
-                            };
-                            run_result = retry_res;
+                        pending_tools.clear();
+                        let ctx2 = ToolContext {
+                            cwd: cwd.clone(),
+                            cancel: cancel.clone(),
+                            questions: Some(question_bridge.clone()),
+                        };
+                        let mut on_event2 = |ev: &AgentEvent| {
+                            dispatch_agent_event(
+                                ev,
+                                tui_stream.as_ref(),
+                                interactive,
+                                &mut pending_tools,
+                                &mut turn_usage,
+                                &cwd,
+                                config.model.as_deref().unwrap_or(""),
+                                &mut session_totals,
+                                turn_start,
+                                &mut turn_duration_ms,
+                            );
+                        };
+                        let mut run_future2 = Box::pin(agent.run_streaming(
+                            user_msg_for_retry.clone(),
+                            ctx2,
+                            &mut on_event2,
+                        ));
+                        let retry_res = tokio::select! {
+                            res = &mut run_future2 => res,
+                            _ = cancel.cancelled() => Err(CoreError::Cancelled),
+                        };
+                        run_result = retry_res;
                     }
                 }
                 TURN_STATE.lock().expect("turn state lock").take();
@@ -3318,15 +4212,34 @@ pub async fn run_repl_mode(
                 // (Never .await it here without the flag — deadlock.)
                 watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 if turn_duration_ms.is_none() {
-                    turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+                    turn_duration_ms =
+                        Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
                 }
 
                 match run_result {
                     Ok(_) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
+                        persist_turn_messages(
+                            &mut session_state,
+                            agent,
+                            config,
+                            &cwd,
+                            initial_count,
+                            turn_usage,
+                            turn_duration_ms,
+                        )
+                        .await;
                     }
                     Err(CoreError::Cancelled) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
+                        persist_turn_messages(
+                            &mut session_state,
+                            agent,
+                            config,
+                            &cwd,
+                            initial_count,
+                            turn_usage,
+                            turn_duration_ms,
+                        )
+                        .await;
                         if interactive {
                             if let Some((shared, _)) = &tui {
                                 let mut t = shared.lock().expect("tui lock");
@@ -3339,7 +4252,16 @@ pub async fn run_repl_mode(
                         }
                     }
                     Err(e) => {
-                        persist_turn_messages(&mut session_state, agent, config, &cwd, initial_count, turn_usage, turn_duration_ms).await;
+                        persist_turn_messages(
+                            &mut session_state,
+                            agent,
+                            config,
+                            &cwd,
+                            initial_count,
+                            turn_usage,
+                            turn_duration_ms,
+                        )
+                        .await;
                         let msg = format_core_error(&e, &config.base_url);
                         if interactive {
                             if let Some((shared, _)) = &tui {
@@ -3357,20 +4279,28 @@ pub async fn run_repl_mode(
                     s.lock().expect("tui lock").end_turn();
                 }
                 // if we queued input while working, start it immediately
-                if interactive {
-                    if let Some((shared, _)) = &tui {
-                        let mut t = shared.lock().expect("tui lock");
-                        if let Some(text) = t.local_command.take() {
-                            // Esc mid-turn: command already echoed; run locally, never to the AI
-                            drop(t);
-                            pending_command = Some(expand_skill_command(parse_command(&text), &cwd, Some(shared), true));
-                        } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
-                            let echo = crate::composer::transcript::redact_command_echo(&qtext);
-                            t.push_user_prompt(&echo, &qimages, !qtext.starts_with('/'));
-                            drop(t);
-                            pending_command = Some(expand_skill_command(parse_command(&qtext), &cwd, Some(shared), false));
-                            pending_images = qimages;
-                        }
+                if interactive && let Some((shared, _)) = &tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    if let Some(text) = t.local_command.take() {
+                        // Esc mid-turn: command already echoed; run locally, never to the AI
+                        drop(t);
+                        pending_command = Some(expand_skill_command(
+                            parse_command(&text),
+                            &cwd,
+                            Some(shared),
+                            true,
+                        ));
+                    } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
+                        let echo = crate::composer::transcript::redact_command_echo(&qtext);
+                        t.push_user_prompt(&echo, &qimages, !qtext.starts_with('/'));
+                        drop(t);
+                        pending_command = Some(expand_skill_command(
+                            parse_command(&qtext),
+                            &cwd,
+                            Some(shared),
+                            false,
+                        ));
+                        pending_images = qimages;
                     }
                 }
             }
@@ -3389,7 +4319,10 @@ mod tests {
     fn cron_prefix_strips_case_insensitively() {
         assert_eq!(cron_args("/cron list"), "list");
         assert_eq!(cron_args("/CRON list"), "list");
-        assert_eq!(cron_args("/Cron create --schedule \"every 10m\" --prompt \"hi\""), "create --schedule \"every 10m\" --prompt \"hi\"");
+        assert_eq!(
+            cron_args("/Cron create --schedule \"every 10m\" --prompt \"hi\""),
+            "create --schedule \"every 10m\" --prompt \"hi\""
+        );
         assert_eq!(cron_args("/CRON"), "");
         assert_eq!(cron_args("  /cRoN   show abc  "), "show abc");
         // Multibyte input must never panic: byte 5 splits `é` in `/aéé`.
@@ -3407,7 +4340,10 @@ mod tests {
             out.contains("Provider: https://opencode.ai/zen/go/v1 — try /model"),
             "missing provider hint, got: {out}"
         );
-        assert!(out.contains("cf-ray: abc123-sjc"), "missing cf-ray, got: {out}");
+        assert!(
+            out.contains("cf-ray: abc123-sjc"),
+            "missing cf-ray, got: {out}"
+        );
     }
 
     #[test]
@@ -3420,7 +4356,10 @@ mod tests {
             out.contains("Provider: https://opencode.ai/zen/go/v1 — try /model"),
             "missing provider hint, got: {out}"
         );
-        assert!(!out.contains("cf-ray"), "should not contain cf-ray, got: {out}");
+        assert!(
+            !out.contains("cf-ray"),
+            "should not contain cf-ray, got: {out}"
+        );
     }
 
     #[test]
@@ -3428,10 +4367,20 @@ mod tests {
         let base = "https://opencode.ai/zen/go/v1";
         let long = format!("status 429: {}", "x".repeat(2000));
         let out = format_core_error(&CoreError::Provider(long), base);
-        assert!(out.contains("(retryable)"), "rate arm must say retryable: {out}");
-        assert!(out.chars().count() < 1200, "detail must be capped, got {} chars", out.chars().count());
+        assert!(
+            out.contains("(retryable)"),
+            "rate arm must say retryable: {out}"
+        );
+        assert!(
+            out.chars().count() < 1200,
+            "detail must be capped, got {} chars",
+            out.chars().count()
+        );
         let auth = format_core_error(&CoreError::Provider("401 unauthorized nope".into()), base);
-        assert!(auth.contains("(not retryable)"), "auth arm must say not retryable: {auth}");
+        assert!(
+            auth.contains("(not retryable)"),
+            "auth arm must say not retryable: {auth}"
+        );
     }
 
     #[test]
@@ -3439,12 +4388,27 @@ mod tests {
         use super::GatewayAction as G;
         use gray_gateway::config::Platform;
         assert!(matches!(super::parse_gateway_args("/gateway"), G::Status));
-        assert!(matches!(super::parse_gateway_args("/gateway status"), G::Status));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway status"),
+            G::Status
+        ));
         assert!(matches!(super::parse_gateway_args("/gateway run"), G::Run));
-        assert!(matches!(super::parse_gateway_args("/gateway stop"), G::Stop));
-        assert!(matches!(super::parse_gateway_args("/gateway install"), G::Install));
-        assert!(matches!(super::parse_gateway_args("/gateway uninstall"), G::Uninstall));
-        assert!(matches!(super::parse_gateway_args("/gateway bogus"), G::Help));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway stop"),
+            G::Stop
+        ));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway install"),
+            G::Install
+        ));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway uninstall"),
+            G::Uninstall
+        ));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway bogus"),
+            G::Help
+        ));
         match super::parse_gateway_args("/gateway connect discord abc123") {
             G::Connect(Platform::Discord, tok) => assert_eq!(tok, "abc123"),
             other => panic!("expected connect discord, got {other:?}"),
@@ -3458,15 +4422,25 @@ mod tests {
             G::Help
         ));
         match super::parse_gateway_args("/gateway pairing approve discord ABC123") {
-            G::Pairing(super::PairingArgs::Approve(p, c)) => assert_eq!((p, c), ("discord".to_string(), "ABC123".to_string())),
+            G::Pairing(super::PairingArgs::Approve(p, c)) => {
+                assert_eq!((p, c), ("discord".to_string(), "ABC123".to_string()))
+            }
             other => panic!("expected pairing approve, got {other:?}"),
         }
-        assert!(matches!(super::parse_gateway_args("/gateway pairing list"), G::Pairing(super::PairingArgs::List(None))));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway pairing list"),
+            G::Pairing(super::PairingArgs::List(None))
+        ));
         match super::parse_gateway_args("/gateway pairing revoke discord 123") {
-            G::Pairing(super::PairingArgs::Revoke(p, u)) => assert_eq!((p, u), ("discord".to_string(), "123".to_string())),
+            G::Pairing(super::PairingArgs::Revoke(p, u)) => {
+                assert_eq!((p, u), ("discord".to_string(), "123".to_string()))
+            }
             other => panic!("expected pairing revoke, got {other:?}"),
         }
-        assert!(matches!(super::parse_gateway_args("/gateway pairing approve discord"), G::Help));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway pairing approve discord"),
+            G::Help
+        ));
         match super::parse_gateway_args("/gateway disconnect slack") {
             G::Disconnect(Platform::Slack) => {}
             other => panic!("expected disconnect slack, got {other:?}"),
@@ -3475,10 +4449,22 @@ mod tests {
             G::Enable(Platform::Telegram) => {}
             other => panic!("expected enable telegram, got {other:?}"),
         }
-        assert!(matches!(super::parse_gateway_args("/gateway autostart on"), G::Autostart(true)));
-        assert!(matches!(super::parse_gateway_args("/gateway autostart OFF"), G::Autostart(false)));
-        assert!(matches!(super::parse_gateway_args("/gateway autostart"), G::Help));
-        assert!(matches!(super::parse_gateway_args("/gateway autostart maybe"), G::Help));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway autostart on"),
+            G::Autostart(true)
+        ));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway autostart OFF"),
+            G::Autostart(false)
+        ));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway autostart"),
+            G::Help
+        ));
+        assert!(matches!(
+            super::parse_gateway_args("/gateway autostart maybe"),
+            G::Help
+        ));
         // default-off: fresh config does not autostart (S2)
         assert!(!gray_gateway::config::GatewayConfig::default().autostart);
     }
@@ -3487,26 +4473,51 @@ mod tests {
     fn gateway_connect_disconnect_roundtrip() {
         let mut cfg = gray_gateway::config::GatewayConfig::default();
         super::apply_connect(&mut cfg, gray_gateway::config::Platform::Telegram, "tok-1");
-        let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
+        let pc = cfg
+            .platforms
+            .get(&gray_gateway::config::Platform::Telegram)
+            .unwrap();
         assert!(pc.enabled && pc.token.as_deref() == Some("tok-1"));
         super::apply_disconnect(&mut cfg, gray_gateway::config::Platform::Telegram);
-        let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
+        let pc = cfg
+            .platforms
+            .get(&gray_gateway::config::Platform::Telegram)
+            .unwrap();
         assert!(!pc.enabled && pc.token.as_deref() == Some("tok-1")); // token kept
-        assert!(super::apply_enable(&mut cfg, gray_gateway::config::Platform::Telegram));
-        let pc = cfg.platforms.get(&gray_gateway::config::Platform::Telegram).unwrap();
+        assert!(super::apply_enable(
+            &mut cfg,
+            gray_gateway::config::Platform::Telegram
+        ));
+        let pc = cfg
+            .platforms
+            .get(&gray_gateway::config::Platform::Telegram)
+            .unwrap();
         assert!(pc.enabled && pc.token.as_deref() == Some("tok-1"));
-        assert!(!super::apply_enable(&mut cfg, gray_gateway::config::Platform::Slack)); // no token
+        assert!(!super::apply_enable(
+            &mut cfg,
+            gray_gateway::config::Platform::Slack
+        )); // no token
     }
 
     #[test]
     fn gateway_status_lines_hide_tokens() {
         let mut cfg = gray_gateway::config::GatewayConfig::default();
-        super::apply_connect(&mut cfg, gray_gateway::config::Platform::Discord, "secret-token");
+        super::apply_connect(
+            &mut cfg,
+            gray_gateway::config::Platform::Discord,
+            "secret-token",
+        );
         let lines = super::gateway_status_lines(&cfg, true);
         let joined = lines.join("\n");
         assert!(joined.contains("Discord"), "should list platform: {joined}");
-        assert!(joined.contains("connected"), "should show in-process running state: {joined}");
-        assert!(!joined.contains("secret-token"), "token must never render: {joined}");
+        assert!(
+            joined.contains("connected"),
+            "should show in-process running state: {joined}"
+        );
+        assert!(
+            !joined.contains("secret-token"),
+            "token must never render: {joined}"
+        );
         let lines = super::gateway_status_lines(&cfg, false);
         assert!(lines.join("\n").contains("not running"));
     }
@@ -3608,7 +4619,9 @@ mod tests {
         assert_eq!(rows[0], "  ├─ Telegram — connect failed: token rejected");
         // No identity leak: rows never contain tokens, only display names.
         assert!(!rows.join("\n").contains("secret"));
-        let _ = S::Connecting { stage: "connecting" };
+        let _ = S::Connecting {
+            stage: "connecting",
+        };
     }
 
     /// Stub plugin claiming `/echo`, like a sidecar manifest with
@@ -3637,9 +4650,15 @@ mod tests {
     fn plugin_command_split_parses_name_and_argv() {
         assert_eq!(
             super::split_plugin_command("/echo hi there"),
-            Some(("/echo".to_string(), vec!["hi".to_string(), "there".to_string()]))
+            Some((
+                "/echo".to_string(),
+                vec!["hi".to_string(), "there".to_string()]
+            ))
         );
-        assert_eq!(super::split_plugin_command("/echo"), Some(("/echo".to_string(), vec![])));
+        assert_eq!(
+            super::split_plugin_command("/echo"),
+            Some(("/echo".to_string(), vec![]))
+        );
         assert_eq!(super::split_plugin_command("hi"), None);
         assert_eq!(super::split_plugin_command("/"), None);
         assert_eq!(super::split_plugin_command(""), None);
