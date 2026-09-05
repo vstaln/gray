@@ -1863,11 +1863,13 @@ fn dispatch_agent_event(
                 AgentEvent::StepUsage { usage } => {
                     t.set_usage(*usage);
                 }
-                // Codex steal: `⚠ Reconnecting... n/m` + `└ details` dim cell.
-                AgentEvent::StreamError { message, details } => {
+                // Reconnecting rides the shimmer status dock (`⬡ Reconnecting…`)
+                // like Thinking/Working instead of a static cell; the cause
+                // lands as one dim detail row (single notice per burst).
+                AgentEvent::StreamError { details, .. } => {
                     t.flush_markdown();
                     t.end_thinking();
-                    t.push_dim(format!("⚠ {message}"));
+                    t.set_status(Some("Reconnecting"));
                     if !details.is_empty() {
                         let trunc = crate::repl::format::truncate_chars(details, 200);
                         t.push_dim(format!("└ {trunc}"));
