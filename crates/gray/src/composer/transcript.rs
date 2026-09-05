@@ -507,30 +507,64 @@ pub(crate) fn gateway_boot_card_parts(header: &str, rows: &[String]) -> (Line<'s
     (header, body)
 }
 
+/// Card surface color shared by tool boxes, prompt echoes, the input band
+/// and the gateway boot card.
+pub(crate) const CARD_BG: Color = Color::Rgb(22, 22, 22);
+
+/// Bakes the card bg into every cell of one row: patches the line style and
+/// every span that has no bg of its own, then pads to `width` with bg-filled
+/// spaces. Rows that carry their own bg (diff red/green) keep it. After this
+/// a row looks the same whether ratatui paints it through `insert_before`
+/// or through the inline viewport's frame buffer — no reliance on
+/// `Line`/`Block` style inheritance, which the inline viewport drops.
+pub(crate) fn pad_card_row(mut line: Line<'static>, width: usize) -> Line<'static> {
+    let bg_style = Style::default().bg(CARD_BG);
+    line.style = line.style.patch(bg_style);
+    for span in line.spans.iter_mut() {
+        if span.style.bg.is_none() {
+            span.style = span.style.bg(CARD_BG);
+        }
+    }
+    let used: usize = line.spans.iter().map(|s| s.width()).sum();
+    if used < width {
+        line.spans.push(Span::styled(" ".repeat(width - used), bg_style));
+    }
+    line
+}
+
+/// Paints card rows into `area`: floods the whole area with the card bg
+/// first (so clipped or short rows never leak terminal bg), then lays the
+/// rows on top. The ONE painter for both surfaces — `insert_before` for the
+/// committed card and `frame.buffer_mut()` for the live viewport panel.
+pub(crate) fn paint_card(
+    lines: &[Line<'static>],
+    area: ratatui::layout::Rect,
+    buf: &mut ratatui::buffer::Buffer,
+) {
+    let area = area.intersection(buf.area);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    buf.set_style(area, Style::default().bg(CARD_BG));
+    Paragraph::new(lines.to_vec()).render(area, buf);
+}
+
 /// Tight gateway boot card: top margin, header with ONE leading space, rows
-/// directly below (no breathing row), bottom margin. Same gray block as tool
-/// cards, but denser — the boot status reads as one unit.
+/// directly below (no breathing row), bottom margin. Every row is padded to
+/// the full `width` with the card bg baked in — see [`pad_card_row`] — so
+/// the live panel and the committed card are byte-for-byte the same block.
 pub(crate) fn format_gateway_boot_card(
     header: Line<'static>,
     body: &[Line<'static>],
     width: usize,
 ) -> Vec<Line<'static>> {
-    let bg_color = Color::Rgb(22, 22, 22);
-    let bg_style = Style::default().bg(bg_color);
     let max_w = width.saturating_sub(4).max(1);
-
-    let mut box_lines: Vec<Line<'static>> = Vec::new();
-    box_lines.push(Line::from("").style(bg_style));
-
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    rows.push(Line::from(""));
     for mut l in wrap_styled_line(header, max_w) {
-        l.style = l.style.patch(bg_style);
-        l.spans.insert(0, Span::styled(" ", bg_style));
-        for span in l.spans.iter_mut() {
-            span.style = span.style.bg(bg_color);
-        }
-        box_lines.push(l);
+        l.spans.insert(0, Span::raw(" "));
+        rows.push(l);
     }
-
     for line in body {
         let mut line = line.clone();
         for span in line.spans.iter_mut() {
@@ -539,18 +573,10 @@ pub(crate) fn format_gateway_boot_card(
                 *span = Span::styled(expanded, span.style);
             }
         }
-        for mut l in wrap_styled_line(line, max_w) {
-            l.style = l.style.bg(bg_color);
-            for span in l.spans.iter_mut() {
-                if span.style.bg.is_none() {
-                    span.style = span.style.bg(bg_color);
-                }
-            }
-            box_lines.push(l);
-        }
+        rows.extend(wrap_styled_line(line, max_w));
     }
-    box_lines.push(Line::from("").style(bg_style));
-    box_lines
+    rows.push(Line::from(""));
+    rows.into_iter().map(|l| pad_card_row(l, width)).collect()
 }
 
 /// True for the two gateway boot headers, so resize reflow can re-render
@@ -679,9 +705,9 @@ impl Tui {
     }
 
     /// Clears the live panel + status and commits the final board state as
-    /// ONE card, followed by one breathing row so the card's gray block
-    /// never fuses with the input band below it. No-op when no boot is
-    /// active (the watcher only commits once).
+    /// ONE card, followed by one bare row so the card never fuses with the
+    /// input band. Same formatter + same painter as the live panel, so the
+    /// commit is a no-op visually: nothing shifts, nothing restyles.
     pub fn finish_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
         let Some(panel) = self.gateway_boot.take() else { return; };
         if self.status_is_gateway_or_empty() {
@@ -689,24 +715,21 @@ impl Tui {
         }
         let (header, body) =
             gateway_boot_card_parts(&panel.header, &crate::repl::gateway_boot_rows(board));
-        // Tight boot card (no middle blank, one-space header) with the
-        // usual hug-the-input commit: no trailing gap here, one breathing
-        // row after so the gray block never fuses with the input band.
         self.ensure_gap(1);
         let w = self.width().max(10);
         let box_lines = format_gateway_boot_card(header.clone(), &body, w);
         let height = box_lines.len() as u16;
-        let block = ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
         let _ = self.terminal.insert_before(height, |buf| {
-            Paragraph::new(box_lines.clone()).block(block).render(buf.area, buf);
+            paint_card(&box_lines, buf.area, buf);
         });
-        self.history_entries.push(super::TranscriptEntry::ToolBox {
-            header,
-            body,
-        });
+        self.history_entries.push(super::TranscriptEntry::ToolBox { header, body });
         self.transcript.extend(box_lines);
-        if self.transcript.len() > 1000 { self.transcript.drain(0..100); }
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
         let _ = std::io::stdout().flush();
+        // Same bare row the live panel keeps between the card and the input
+        // band (draw.rs `boot_gap_h`), so committing never moves the input.
         self.ensure_gap(1);
         let _ = self.draw();
     }
@@ -975,8 +998,10 @@ mod tests {
 
     #[test]
     fn gateway_boot_card_is_tight_with_one_space_header() {
-        let (header, body) =
-            gateway_boot_card_parts("Gateway autostarted", &["  └─ Discord — connected as Gray".to_string()]);
+        let (header, body) = gateway_boot_card_parts(
+            "Gateway autostarted",
+            &["  └─ Discord — connected as Gray".to_string()],
+        );
         assert!(is_gateway_boot_header(&header));
         assert!(!is_gateway_boot_header(&Line::from("Ran foo")));
         let lines = format_gateway_boot_card(header, &body, 80);
@@ -984,12 +1009,28 @@ mod tests {
         assert_eq!(lines.len(), 4);
         let text: Vec<String> = lines
             .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
             .collect();
         assert_eq!(text[0], "");
         assert_eq!(text[1], " Gateway autostarted");
         assert_eq!(text[2], "  └─ Discord — connected as Gray");
         assert_eq!(text[3], "");
+        // Every row is a full-width block with the card bg baked into each span:
+        // the live viewport and insert_before paint the same thing.
+        for l in &lines {
+            assert_eq!(l.width(), 80, "row must span the full card width");
+            assert!(
+                l.spans.iter().all(|s| s.style.bg == Some(CARD_BG)),
+                "every span carries the card bg"
+            );
+        }
     }
 
     #[test]

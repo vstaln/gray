@@ -7,7 +7,7 @@
 
 use futures::StreamExt as _;
 
-use crate::agent::{Agent, ToolContext, ToolOutput, salvage_partial_text, thinking_block};
+use crate::agent::{Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block};
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
@@ -97,8 +97,23 @@ impl Agent {
             round += 1;
             self.drain_steer(round == 1);
 
+            // Protocol v1 `prompt/context`: every hook's reply concatenates
+            // onto this turn's system prompt, in hook order. No hooks (or no
+            // replies) leaves `self.system` untouched.
+            let mut system = self.system.clone();
+            for hook in &self.hooks {
+                if let Some(text) = hook.prompt_context().await
+                    && !text.trim().is_empty()
+                {
+                    if !system.is_empty() {
+                        system.push_str("\n\n");
+                    }
+                    system.push_str(&text);
+                }
+            }
+
             let req = ChatRequest {
-                system: (!self.system.is_empty()).then(|| self.system.clone()),
+                system: (!system.is_empty()).then_some(system),
                 messages: self.messages.clone(),
                 tools: self.tools.clone(),
             };
@@ -389,10 +404,35 @@ impl Agent {
                     continue;
                 }
 
+                // Protocol v1 `tool/before`: each hook sees the call in
+                // order; a modify rewrites args for later hooks and the
+                // executor, the first deny wins and skips the executor.
+                let mut effective_args = args.clone();
+                let mut denial: Option<String> = None;
+                for hook in &self.hooks {
+                    match hook.tool_before(name, &effective_args).await {
+                        ToolBefore::Allow => {}
+                        ToolBefore::Modify(rewritten) => effective_args = rewritten,
+                        ToolBefore::Deny(reason) => {
+                            denial = Some(reason);
+                            break;
+                        }
+                    }
+                }
+                if let Some(reason) = denial {
+                    let err = ToolOutput::error(reason);
+                    emit!(AgentEvent::tool_result(id.clone(), err.content.clone(), true));
+                    self.messages.push(Message {
+                        role: Role::User,
+                        content: vec![ContentBlock::ToolResult { id: id.clone(), content: err.content, is_error: true }],
+                    });
+                    continue;
+                }
+
                 let output = tokio::select! {
                     out = tokio::time::timeout(
                         self.tool_timeout,
-                        self.executor.execute(&ctx, &name, args.clone()),
+                        self.executor.execute(&ctx, name, effective_args),
                     ) => match out {
                         Ok(output) => output,
                         Err(_) => ToolOutput::error(format!(

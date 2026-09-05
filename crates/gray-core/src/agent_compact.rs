@@ -34,7 +34,11 @@ impl Agent {
         let transcript = self
             .messages
             .iter()
-            .map(|m| format!("{}: {}", m.role, m.text_content()))
+            // Overflow recovery must summarize `context_text`, not
+            // `text_content`: the latter omits every tool result — the
+            // summary would lose exactly the file bodies and command
+            // output the run depended on.
+            .map(|m| format!("{}: {}", m.role, m.context_text()))
             .collect::<Vec<_>>()
             .join("\n");
         if transcript.trim().is_empty() {
