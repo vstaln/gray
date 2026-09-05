@@ -8,10 +8,9 @@
 //! Spec: plan.ts T1.5 ("Negative offset reads the tail"). `limit` is ignored
 //! when a tail is requested ([`limit_ignored_note`]).
 //!
-//! Note wording lives HERE until T1.3's `notices.rs` lands — T1.3 owns that
-//! file concurrently, so moving these strings there now would collide. T1.3:
-//! please move [`tail_note`]/[`limit_ignored_note`] into `notices.rs`
-//! verbatim (contract strings, covered by the tests below).
+//! Note wording lives in `notices.rs` (moved verbatim at the wave gate);
+//! [`tail_note`]/[`limit_ignored_note`] below are thin delegates so existing
+//! callers and unit tests keep working with one owner per string.
 
 use std::collections::VecDeque;
 
@@ -68,16 +67,12 @@ pub fn last_n<'a>(lines: impl Iterator<Item = &'a str>, n: u64) -> VecDeque<&'a 
 /// 4-line file says "last 4 lines of 4"). `total` must be > 0; callers skip
 /// the note for empty files (T1.3 owns that note).
 pub fn tail_note(shown: u64, total: usize) -> String {
-    let first = total as u64 - shown + 1;
-    format!("[read: last {shown} lines of {total} (lines {first}-{total})]")
+    super::notices::tail_note(shown, total)
 }
 
 /// One-line note when `limit` accompanies a negative offset.
 pub fn limit_ignored_note(limit: u64) -> String {
-    format!(
-        "[read: limit={limit} ignored with negative offset; showing the tail instead. \
-         Omit limit when offset is negative.]"
-    )
+    super::notices::limit_ignored_note(limit)
 }
 
 #[cfg(test)]
@@ -106,7 +101,10 @@ mod tests {
     #[test]
     fn absent_or_null_offset_is_none() {
         assert_eq!(get_offset(&json!({ "path": "f" })), Ok(None));
-        assert_eq!(get_offset(&json!({ "path": "f", "offset": null })), Ok(None));
+        assert_eq!(
+            get_offset(&json!({ "path": "f", "offset": null })),
+            Ok(None)
+        );
     }
 
     #[test]

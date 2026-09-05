@@ -42,11 +42,10 @@
 //! on every backlog chunk, and inside `count_rest`. A hit marks the stream
 //! done and yields `None`; the driver renders [`cancelled_note`].
 //!
-//! Notice strings are staged HERE (not `notices.rs` — T1.3 sibling owns that
-//! file; T1.3: please move [`cancelled_note`]/[`count_skipped_total`]
-//! verbatim). `MAX_LINE_CHARS` is likewise staged here until T1.1's ceilings
-//! land in `window.rs` (then delete this copy and use that one; the value is
-//! spec-fixed at 2000 either way).
+//! Notice strings live in `notices.rs` (moved verbatim at the wave gate);
+//! [`cancelled_note`]/[`count_skipped_total`] below delegate there.
+//! `MAX_LINE_CHARS` is re-exported from `window.rs` (canonical home, same
+//! spec-fixed value 2000 — do not drift).
 //!
 //! Integrator swap recipe (`read/mod.rs`, one hunk replacing the
 //! `tokio::fs::read` → `prepare` → `text.lines()` chain):
@@ -74,9 +73,9 @@ use super::hygiene;
 /// Reader chunk size: one `fill_buf` window.
 pub const READ_CHUNK_BYTES: usize = 64 * 1024;
 
-/// Spec-fixed line ceiling in chars (staged here; canonical home is
-/// `window.rs` once T1.1's ceilings land — same value, delete this copy).
-pub const MAX_LINE_CHARS: usize = 2000;
+/// Spec-fixed line ceiling in chars (canonical home is `window.rs`;
+/// re-exported here so existing callers/tests keep working).
+pub const MAX_LINE_CHARS: usize = super::window::MAX_LINE_CHARS;
 
 /// No buffered line prefix ever exceeds this: `MAX_LINE_CHARS * 4`
 /// (worst-case UTF-8 expansion). Past it, the stream stops buffering and
@@ -87,18 +86,15 @@ pub const LINE_BYTE_CAP: usize = MAX_LINE_CHARS * 4;
 /// larger files skip the count ([`count_skipped_total`]) but keep `next_offset`.
 pub const COUNT_SKIP_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
-/// `[read: cancelled after <n> lines]` — staged here, `notices.rs` owns it on arrival.
+/// `[read: cancelled after <n> lines]` — delegates to `notices.rs`.
 pub fn cancelled_note(lines_read: usize) -> String {
-    format!("[read: cancelled after {lines_read} lines]")
+    super::notices::cancelled_note(lines_read)
 }
 
 /// `≥<min> lines (file is <size>, count skipped)` fragment for the total
-/// when the file exceeds [`COUNT_SKIP_LIMIT_BYTES`].
+/// when the file exceeds [`COUNT_SKIP_LIMIT_BYTES`] — delegates to `notices.rs`.
 pub fn count_skipped_total(min_total: usize, file_size: u64) -> String {
-    format!(
-        "≥{min_total} lines (file is {}, count skipped)",
-        crate::truncate::format_size(file_size as usize)
-    )
+    super::notices::count_skipped_total(min_total, file_size)
 }
 
 /// True when the file is small enough for an exact total count.
@@ -477,9 +473,7 @@ mod tests {
         // …and exercise the overflow path at scale with a 5 MiB text line.
         let path = dir.path().join("wide1.txt");
         std::fs::write(&path, vec![b'x'; 5 * 1024 * 1024]).unwrap();
-        let mut s = LineStream::open(&path, "wide1.txt", token())
-            .await
-            .unwrap();
+        let mut s = LineStream::open(&path, "wide1.txt", token()).await.unwrap();
         assert_eq!(s.binary_note(), None);
         let line = s.next_line().await.unwrap().unwrap();
         assert_eq!(line.line_no, 1);
@@ -510,7 +504,10 @@ mod tests {
         assert!(s.next_line().await.unwrap().is_none());
         assert!(s.cancelled());
         assert_eq!(s.line_no(), 0);
-        assert_eq!(cancelled_note(s.line_no()), "[read: cancelled after 0 lines]");
+        assert_eq!(
+            cancelled_note(s.line_no()),
+            "[read: cancelled after 0 lines]"
+        );
         // Mid-stream cancel reports lines already yielded.
         let cancel = token();
         let mut s = LineStream::open(&path, "a.txt", cancel.clone())
@@ -521,7 +518,10 @@ mod tests {
         cancel.cancel();
         assert!(s.next_line().await.unwrap().is_none());
         assert!(s.cancelled());
-        assert_eq!(cancelled_note(s.line_no()), "[read: cancelled after 2 lines]");
+        assert_eq!(
+            cancelled_note(s.line_no()),
+            "[read: cancelled after 2 lines]"
+        );
     }
 
     #[test]
