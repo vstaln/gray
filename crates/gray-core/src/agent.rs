@@ -1755,13 +1755,20 @@ mod agent_tests {
     #[async_trait]
     impl PluginHooks for LifecycleHook {
         async fn pre_tool(&self, name: &str, _args: &serde_json::Value) {
-            self.calls.lock().expect("calls lock poisoned").push(format!("pre:{name}"));
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push(format!("pre:{name}"));
         }
         async fn post_tool(&self, name: &str, _output: &ToolOutput) {
-            self.calls.lock().expect("calls lock poisoned").push(format!("post:{name}"));
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push(format!("post:{name}"));
         }
         async fn turn_end(&self, _usage: &Usage) {
-            self.turn_ends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.turn_ends
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -1774,22 +1781,46 @@ mod agent_tests {
             Box::new(FakeProvider::new(vec![end_script()])),
             Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
-        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends.clone(), calls })]);
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
-        assert_eq!(ends.load(std::sync::atomic::Ordering::SeqCst), 1, "turn_end once on success");
+        .with_hooks(vec![Arc::new(LifecycleHook {
+            turn_ends: ends.clone(),
+            calls,
+        })]);
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            ends.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "turn_end once on success"
+        );
 
         // Error path (identical-tool loop → LoopDetected): still exactly once.
         let ends_err = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let calls_err = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let mut agent = Agent::new(
-            Box::new(FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), tool_script("c3")])),
+            Box::new(FakeProvider::new(vec![
+                tool_script("c1"),
+                tool_script("c2"),
+                tool_script("c3"),
+            ])),
             Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
-        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends_err.clone(), calls: calls_err })]);
-        let err = agent.run(Message::user("loop"), ToolContext::default()).await.expect_err("loop must fail");
+        .with_hooks(vec![Arc::new(LifecycleHook {
+            turn_ends: ends_err.clone(),
+            calls: calls_err,
+        })]);
+        let err = agent
+            .run(Message::user("loop"), ToolContext::default())
+            .await
+            .expect_err("loop must fail");
         assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
-        assert_eq!(ends_err.load(std::sync::atomic::Ordering::SeqCst), 1, "turn_end once on error");
+        assert_eq!(
+            ends_err.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "turn_end once on error"
+        );
     }
 
     #[tokio::test]
@@ -1801,12 +1832,22 @@ mod agent_tests {
             Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
-        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends.clone(), calls: calls.clone() })]);
+        .with_hooks(vec![Arc::new(LifecycleHook {
+            turn_ends: ends.clone(),
+            calls: calls.clone(),
+        })]);
 
-        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
 
         let logged = calls.lock().expect("calls lock poisoned").clone();
-        assert_eq!(logged, vec![format!("pre:{TOOL_NAME}"), format!("post:{TOOL_NAME}")], "order pre→post, got {logged:?}");
+        assert_eq!(
+            logged,
+            vec![format!("pre:{TOOL_NAME}"), format!("post:{TOOL_NAME}")],
+            "order pre→post, got {logged:?}"
+        );
         // Sidecar-provided tools run through the same executor call site as
         // builtin tools, so this emission covers both by construction.
     }

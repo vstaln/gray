@@ -2,10 +2,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use gray_plugin::sidecar::SidecarPlugin;
-use gray_plugin::{CoreEvent, Plugin};
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::event::Usage;
+use gray_plugin::sidecar::SidecarPlugin;
+use gray_plugin::{CoreEvent, Plugin};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -44,12 +44,22 @@ fn bubble_argv(dir: &PathBuf) -> Vec<String> {
 fn endpoint_files(dir: &PathBuf) -> Vec<(PathBuf, String, String)> {
     // (path, child-pid from filename, endpoint text)
     let mut out = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return out;
+    };
     for e in rd.flatten() {
         let p = e.path();
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        let Some(pid) = name.strip_prefix("endpoint-") else { continue };
-        let Ok(text) = std::fs::read_to_string(&p) else { continue };
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(pid) = name.strip_prefix("endpoint-") else {
+            continue;
+        };
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
         out.push((p, pid.to_string(), text));
     }
     out
@@ -96,8 +106,16 @@ async fn shutdown_one_leaves_other_alive() {
 
     let files = endpoint_files(&dir);
     assert_eq!(files.len(), 2, "two endpoint files, got {files:?}");
-    let (path1, pid1, _) = files.iter().find(|(_, _, t)| t == &e1).expect("file for p1").clone();
-    let (path2, pid2, _) = files.iter().find(|(_, _, t)| t == &e2).expect("file for p2").clone();
+    let (path1, pid1, _) = files
+        .iter()
+        .find(|(_, _, t)| t == &e1)
+        .expect("file for p1")
+        .clone();
+    let (path2, pid2, _) = files
+        .iter()
+        .find(|(_, _, t)| t == &e2)
+        .expect("file for p2")
+        .clone();
     assert!(child_alive(&pid1), "child {pid1} alive before shutdown");
     assert!(child_alive(&pid2), "child {pid2} alive before shutdown");
 
@@ -113,7 +131,10 @@ async fn shutdown_one_leaves_other_alive() {
         "killed one's child pid {pid1} gone within 2s"
     );
     assert!(path2.exists(), "other sidecar's endpoint file remains");
-    assert!(child_alive(&pid2), "other sidecar's child {pid2} still alive");
+    assert!(
+        child_alive(&pid2),
+        "other sidecar's child {pid2} still alive"
+    );
     // Other sidecar still serves prompt/context.
     let e2b = p2.prompt_context("/tmp").await.expect("other still alive");
     assert_eq!(e2b, e2);
@@ -128,7 +149,9 @@ async fn shutdown_one_leaves_other_alive() {
 async fn pre_v1_fixture_survives_shutdown_without_hanging() {
     // hooks_plugin.sh has no `protocol` (pre-v1) and no shutdown handling:
     // shutdown() must not hang waiting for a reply — killed after grace.
-    let p = SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/hooks_plugin.sh".into()])
+        .await
+        .unwrap();
     assert!(p.manifest().protocol.is_none(), "pre-v1 has no protocol");
     let grace = Duration::from_secs(1);
     let t = std::time::Instant::now();
@@ -163,7 +186,9 @@ async fn bubble_lines_then_cleared() {
 
     assert!(
         poll_until(Duration::from_secs(2), || {
-            std::fs::read_to_string(&file).map(|t| t.lines().count() >= 2).unwrap_or(false)
+            std::fs::read_to_string(&file)
+                .map(|t| t.lines().count() >= 2)
+                .unwrap_or(false)
         })
         .await,
         "bubble.txt grows with pre/post lines"
@@ -172,10 +197,15 @@ async fn bubble_lines_then_cleared() {
     assert!(body.contains("pre_tool"), "has pre_tool, got: {body}");
     assert!(body.contains("post_tool"), "has post_tool, got: {body}");
 
-    p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await;
+    p.on_event(CoreEvent::TurnEnd {
+        usage: Usage::default(),
+    })
+    .await;
     assert!(
         poll_until(Duration::from_secs(2), || {
-            std::fs::read_to_string(&file).map(|t| t.is_empty()).unwrap_or(false)
+            std::fs::read_to_string(&file)
+                .map(|t| t.is_empty())
+                .unwrap_or(false)
         })
         .await,
         "bubble.txt empty after turn_end"

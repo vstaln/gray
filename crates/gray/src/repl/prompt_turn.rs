@@ -95,7 +95,9 @@ pub(crate) async fn run_prompt_turn(
         cwd: cwd.to_path_buf(),
         cancel: cancel.clone(),
         questions: Some(question_bridge.clone()),
-        session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
+        session_id: session_state
+            .as_ref()
+            .map(|s| s.session_id.as_str().to_string()),
         permission: PermissionMode::resolve(false),
     };
     let images = std::mem::take(&mut *pending_images);
@@ -192,7 +194,9 @@ pub(crate) async fn run_prompt_turn(
                 cwd: cwd.to_path_buf(),
                 cancel: cancel.clone(),
                 questions: Some(question_bridge.clone()),
-                session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
+                session_id: session_state
+                    .as_ref()
+                    .map(|s| s.session_id.as_str().to_string()),
                 permission: PermissionMode::resolve(false),
             };
             let mut on_event2 = |ev: &AgentEvent| {

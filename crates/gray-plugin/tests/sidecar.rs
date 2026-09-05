@@ -315,7 +315,9 @@ async fn e2e_sidecar_command_run_routes_echo() {
 
 #[tokio::test]
 async fn command_run_prompt_variant() {
-    let p = SidecarPlugin::spawn(vec!["testdata/prompt_command_plugin.sh".into()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec!["testdata/prompt_command_plugin.sh".into()])
+        .await
+        .unwrap();
     assert_eq!(
         p.run_command("/ask", vec![]).await,
         Some(CommandOutcome::Prompt("hello from plugin".into()))
@@ -329,11 +331,7 @@ async fn session_param_present_when_claimed() {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "gray-session-{}-{}",
-        std::process::id(),
-        n
-    ));
+    let dir = std::env::temp_dir().join(format!("gray-session-{}-{}", std::process::id(), n));
     std::fs::create_dir_all(&dir).unwrap();
     let log = dir.join("session.log");
     let script = dir.join("logger.sh");
@@ -373,12 +371,17 @@ done
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()])
+        .await
+        .unwrap();
 
     // Drive all 4 requests + one notify with distinctive cwd/session.
     let prompt_cwd = "/tmp/session-prompt-cwd";
     assert_eq!(p.prompt_context(prompt_cwd).await.as_deref(), Some("CTX"));
-    assert_eq!(p.tool_before("sess", &serde_json::json!({})).await, ToolBefore::Allow);
+    assert_eq!(
+        p.tool_before("sess", &serde_json::json!({})).await,
+        ToolBefore::Allow
+    );
     assert_eq!(
         p.run_command("/sess", vec![]).await,
         Some(CommandOutcome::Say("ok".into()))
@@ -388,9 +391,12 @@ done
     ctx.session_id = Some("sess-123".into());
     let out = p.tools()[0].execute(&ctx, serde_json::json!({})).await;
     assert!(!out.is_error, "{out:?}");
-    use gray_plugin::CoreEvent;
     use gray_core::event::Usage;
-    p.on_event(CoreEvent::TurnEnd { usage: Usage::default() }).await;
+    use gray_plugin::CoreEvent;
+    p.on_event(CoreEvent::TurnEnd {
+        usage: Usage::default(),
+    })
+    .await;
     // Notify is fire-and-forget: poll for the log line.
     let t = std::time::Instant::now();
     while t.elapsed() < std::time::Duration::from_secs(2) {
@@ -412,13 +418,27 @@ done
         assert!(l.contains("\"cwd\""), "cwd present: {l}");
     }
     // tool/call carries ctx session_id + cwd.
-    let tool_line = lines.iter().find(|l| l.contains("tool/call")).expect("tool/call logged");
-    assert!(tool_line.contains("sess-123"), "ctx session_id: {tool_line}");
-    assert!(tool_line.contains("/tmp/session-tool-cwd"), "ctx cwd: {tool_line}");
+    let tool_line = lines
+        .iter()
+        .find(|l| l.contains("tool/call"))
+        .expect("tool/call logged");
+    assert!(
+        tool_line.contains("sess-123"),
+        "ctx session_id: {tool_line}"
+    );
+    assert!(
+        tool_line.contains("/tmp/session-tool-cwd"),
+        "ctx cwd: {tool_line}"
+    );
     // prompt/context carries its cwd arg.
-    let prompt_line =
-        lines.iter().find(|l| l.contains("prompt/context")).expect("prompt/context logged");
-    assert!(prompt_line.contains(prompt_cwd), "prompt cwd: {prompt_line}");
+    let prompt_line = lines
+        .iter()
+        .find(|l| l.contains("prompt/context"))
+        .expect("prompt/context logged");
+    assert!(
+        prompt_line.contains(prompt_cwd),
+        "prompt cwd: {prompt_line}"
+    );
     p.shutdown(std::time::Duration::from_secs(2)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -442,11 +462,17 @@ async fn pre_v1_sidecar_never_receives_shutdown_line() {
     assert!(p.manifest().protocol.is_none(), "pre-v1 has no protocol");
     let t = std::time::Instant::now();
     p.shutdown(std::time::Duration::from_secs(1)).await;
-    assert!(t.elapsed() < std::time::Duration::from_secs(6), "no hang on pre-v1 shutdown");
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(6),
+        "no hang on pre-v1 shutdown"
+    );
     // Give tee a moment to flush, then prove the shutdown line never arrived.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let logged = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(logged.contains("plugin/manifest"), "tee saw traffic, got: {logged}");
+    assert!(
+        logged.contains("plugin/manifest"),
+        "tee saw traffic, got: {logged}"
+    );
     assert!(
         !logged.contains("plugin/shutdown"),
         "pre-v1 must never receive shutdown line, got: {logged}"
@@ -492,21 +518,25 @@ done
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()]).await.unwrap();
+    let p = SidecarPlugin::spawn(vec![script.to_string_lossy().to_string()])
+        .await
+        .unwrap();
     let seen: Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>> =
         Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen2 = seen.clone();
     let handler: HostHandler = Arc::new(move |method: String, params: serde_json::Value| {
         let seen2 = seen2.clone();
-        let fut: std::pin::Pin<
-            Box<dyn std::future::Future<Output = serde_json::Value> + Send>,
-        > = Box::pin(async move {
-            seen2.lock().expect("seen lock").push((method.clone(), params));
-            match method.as_str() {
-                "host/say" => serde_json::json!({"ok": true}),
-                _ => serde_json::json!({"text": "ran it"}),
-            }
-        });
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
+            Box::pin(async move {
+                seen2
+                    .lock()
+                    .expect("seen lock")
+                    .push((method.clone(), params));
+                match method.as_str() {
+                    "host/say" => serde_json::json!({"ok": true}),
+                    _ => serde_json::json!({"text": "ran it"}),
+                }
+            });
         fut
     });
     p.set_host_handler(handler).await;
@@ -524,8 +554,14 @@ done
     assert_eq!(seen[0].0, "host/say");
     assert_eq!(seen[1].0, "host/run");
     let text = std::fs::read_to_string(&log).unwrap_or_default();
-    assert!(text.contains("\"s1\"") && text.contains("\"ok\""), "say reply: {text}");
-    assert!(text.contains("\"s2\"") && text.contains("ran it"), "run reply: {text}");
+    assert!(
+        text.contains("\"s1\"") && text.contains("\"ok\""),
+        "say reply: {text}"
+    );
+    assert!(
+        text.contains("\"s2\"") && text.contains("ran it"),
+        "run reply: {text}"
+    );
     p.shutdown(std::time::Duration::from_secs(2)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
