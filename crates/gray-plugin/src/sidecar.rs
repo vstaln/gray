@@ -39,10 +39,17 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, timeout};
 
-use gray_core::agent::{Tool, ToolContext, ToolOutput};
+use gray_core::agent::{CommandOutcome, Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 
 use crate::{CoreEvent, Manifest, ManifestTool, Plugin, ToolBefore, manifest_tools};
+
+/// Build the v1.1 `session` object: `{"id":<session_id or "">,"cwd":<cwd>}`.
+/// `tool/call` uses `ctx` (cwd + session_id); every other wire point uses
+/// the pinned boot cwd and `""` (no `ToolContext` there to read).
+fn session_json(id: &str, cwd: &str) -> Value {
+    json!({"id": id, "cwd": cwd})
+}
 
 /// In-flight request senders, keyed by request id. `epoch` marks the child
 /// generation: a stale reader exiting late must not fail a new child's
@@ -66,6 +73,10 @@ pub struct SidecarPlugin {
     manifest: Manifest,
     tools: Vec<Arc<dyn Tool>>,
     transport: Arc<Transport>,
+    /// Pinned boot cwd (captured at spawn from the process cwd). Used for
+    /// the `session.cwd` of every wire point without a `ToolContext`
+    /// (`prompt/context` uses its `cwd` arg instead; `tool/call` uses `ctx.cwd`).
+    cwd: String,
 }
 
 fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
@@ -134,6 +145,21 @@ impl Transport {
         }
     }
 
+    /// Fire-and-forget notification: write one `{"method","params"}` line
+    /// (no `id`, no reply) with a 5s timeout. Shared by `event/notify` and
+    /// `plugin/shutdown` — pre-v1 sidecars already ignore unknown lines.
+    async fn send_notification(&self, method: &str, params: Value) -> bool {
+        let req = json!({"method": method, "params": params});
+        timeout(Duration::from_secs(5), async {
+            if !self.ensure_alive().await {
+                return false;
+            }
+            self.stdin.lock().await.write_all(format!("{req}\n").as_bytes()).await.is_ok()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     async fn request(
         &self,
         method: &str,
@@ -186,7 +212,27 @@ impl SidecarPlugin {
         for entry in manifest_tools(&result) {
             tools.push(Arc::new(SidecarTool::new(entry, transport.clone())));
         }
-        Ok(Self { manifest, tools, transport })
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| ".".to_string());
+        Ok(Self { manifest, tools, transport, cwd })
+    }
+
+    /// Graceful lifecycle teardown: send `plugin/shutdown` (`reason:
+    /// `session_end`) to v1.1 sidecars only (pre-v1 `protocol: None` never
+    /// receives the line — they ignore unknown input anyway), then wait up
+    /// to `grace` for the child to exit voluntarily and `kill()` what remains.
+    /// Never waits for a reply (notification has no `id`).
+    pub async fn shutdown(&self, grace: Duration) {
+        if self.manifest.protocol.is_some() {
+            let _ = self
+                .transport
+                .send_notification("plugin/shutdown", json!({"reason": "session_end"}))
+                .await;
+        }
+        let mut child = self.transport.child.lock().await;
+        let _ = timeout(grace, child.wait()).await;
+        let _ = child.kill().await;
     }
     /// v1 request methods are gated on the manifest's `hooks`/`commands`:
     /// pre-v1 sidecars ignore unknown lines and would never reply, so
@@ -208,9 +254,11 @@ impl Plugin for SidecarPlugin {
         if !self.claims("prompt/context") {
             return None;
         }
+        let params =
+            json!({"cwd": cwd, "session": session_json("", cwd)});
         let v = self
             .transport
-            .request("prompt/context", Some(json!({"cwd": cwd})), Duration::from_secs(30))
+            .request("prompt/context", Some(params), Duration::from_secs(30))
             .await
             .ok()?;
         v.get("text")
@@ -222,10 +270,8 @@ impl Plugin for SidecarPlugin {
         if !self.claims("tool/before") {
             return ToolBefore::Allow;
         }
-        match self
-            .transport
-            .request("tool/before", Some(json!({"name": name, "args": args})), Duration::from_secs(30))
-            .await
+        let params = json!({"name": name, "args": args, "session": session_json("", &self.cwd)});
+        match self.transport.request("tool/before", Some(params), Duration::from_secs(30)).await
         {
             Ok(v) => ToolBefore::from_result(&v, args),
             Err(e) => {
@@ -234,49 +280,50 @@ impl Plugin for SidecarPlugin {
             }
         }
     }
-    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
+    async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
         if !self.manifest.commands.iter().any(|c| c == name) {
             return None;
         }
+        let params =
+            json!({"name": name, "argv": argv, "session": session_json("", &self.cwd)});
         let v = self
             .transport
-            .request("command/run", Some(json!({"name": name, "argv": argv})), Duration::from_secs(30))
+            .request("command/run", Some(params), Duration::from_secs(30))
             .await
             .ok()?;
-        v.get("text").and_then(|t| t.as_str()).filter(|t| !t.is_empty()).map(|t| t.to_string())
+        // `{"prompt":...}` wins over `{"text":...}`; empty/missing → None.
+        if let Some(p) = v.get("prompt").and_then(|t| t.as_str()).filter(|t| !t.is_empty()) {
+            return Some(CommandOutcome::Prompt(p.to_string()));
+        }
+        v.get("text")
+            .and_then(|t| t.as_str())
+            .filter(|t| !t.is_empty())
+            .map(|t| CommandOutcome::Say(t.to_string()))
     }
     async fn on_event(&self, e: CoreEvent) -> Option<CoreEvent> {
-        // Minimal tagged JSON (see protocol v1 doc comment above).
+        // Minimal tagged JSON (see protocol v1 doc comment above) + v1.1 session.
+        let session = session_json("", &self.cwd);
         let params = match &e {
-            CoreEvent::PreStep { .. } => json!({"type": "pre_step"}),
-            CoreEvent::PreTool { name, args } => json!({"type": "pre_tool", "name": name, "args": args}),
-            CoreEvent::PostTool { name, output } => {
-                json!({"type": "post_tool", "name": name, "content": output.content, "is_error": output.is_error})
+            CoreEvent::PreStep { .. } => json!({"type": "pre_step", "session": session}),
+            CoreEvent::PreTool { name, args } => {
+                json!({"type": "pre_tool", "name": name, "args": args, "session": session})
             }
-            CoreEvent::TurnEnd { usage } => json!({"type": "turn_end", "usage": usage}),
+            CoreEvent::PostTool { name, output } => {
+                json!({"type": "post_tool", "name": name, "content": output.content, "is_error": output.is_error, "session": session})
+            }
+            CoreEvent::TurnEnd { usage } => json!({"type": "turn_end", "usage": usage, "session": session}),
         };
         let name = self.manifest.name.clone();
-        let req = json!({"method": "event/notify", "params": params});
-        // True notification: send without id, never read a reply. Unconditional
-        // (pre-v1 sidecars already ignore it) with a short writer lock only.
-        match timeout(Duration::from_secs(5), async {
-            if !self.transport.ensure_alive().await {
-                return false;
-            }
-            self.transport.stdin.lock().await.write_all(format!("{req}\n").as_bytes()).await.is_ok()
-        })
-        .await
-        {
-            Ok(true) => None, // notify never transforms the event
-            Ok(false) => {
-                log::warn!(target: "gray_plugin", "sidecar {name} hook failed, skipping");
-                None
-            }
-            Err(_) => {
-                log::warn!(target: "gray_plugin", "sidecar {name} hook timeout, skipping");
-                None
-            }
+        // True notification via shared helper: no id, never a reply.
+        if self.transport.send_notification("event/notify", params).await {
+            None // notify never transforms the event
+        } else {
+            log::warn!(target: "gray_plugin", "sidecar {name} hook failed, skipping");
+            None
         }
+    }
+    async fn shutdown(&self) {
+        self.shutdown(Duration::from_secs(2)).await;
     }
 }
 
@@ -309,16 +356,12 @@ impl Tool for SidecarTool {
     fn prompt_snippet(&self) -> Option<&'static str> {
         self.snippet
     }
-    async fn execute(&self, _ctx: &ToolContext, args: Value) -> ToolOutput {
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let name = self.def.name.clone();
-        match self
-            .transport
-            .request(
-                "tool/call",
-                Some(json!({"name": name, "args": args})),
-                Duration::from_secs(30),
-            )
-            .await
+        let cwd = ctx.cwd.to_string_lossy();
+        let sid = ctx.session_id.as_deref().unwrap_or("");
+        let params = json!({"name": name, "args": args, "session": session_json(sid, &cwd)});
+        match self.transport.request("tool/call", Some(params), Duration::from_secs(30)).await
         {
             Ok(v) => ToolOutput {
                 content: v.get("content").and_then(|c| c.as_str()).unwrap_or_default().into(),

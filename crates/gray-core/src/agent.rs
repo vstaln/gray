@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CoreError;
-use crate::event::StreamEvent;
+use crate::event::{StreamEvent, Usage};
 use crate::message::ChatRequest;
 
 /// Errors surfaced by a provider implementation.
@@ -67,11 +67,12 @@ pub struct ToolContext {
     /// Bridge for user-question tools (`request_user_input`); `None` means
     /// no interactive user is reachable.
     pub questions: Option<crate::questions::QuestionBridge>,
+    pub session_id: Option<String>,
 }
 
 impl Default for ToolContext {
     fn default() -> Self {
-        Self { cwd: PathBuf::from("."), cancel: CancellationToken::new(), questions: None }
+        Self { cwd: PathBuf::from("."), cancel: CancellationToken::new(), questions: None, session_id: None }
     }
 }
 
@@ -166,6 +167,13 @@ pub struct PluginCommand {
     pub description: String,
 }
 
+/// Outcome of a plugin `command/run`: text to say, or a prompt to run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandOutcome {
+    Say(String),
+    Prompt(String),
+}
+
 /// Host-side view of a plugin's protocol-v1 hooks (`prompt/context`,
 /// `tool/before`, `command/run`). All methods are no-ops by default, so an
 /// agent without plugins behaves exactly as before. The sidecar transport
@@ -185,9 +193,14 @@ pub trait PluginHooks: Send + Sync {
         Vec::new()
     }
     /// Runs `command/run`; `None` means "not handled".
-    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<String> {
+    async fn run_command(&self, _name: &str, _argv: Vec<String>) -> Option<CommandOutcome> {
         None
     }
+    async fn pre_tool(&self, _name: &str, _args: &serde_json::Value) {}
+    async fn post_tool(&self, _name: &str, _output: &ToolOutput) {}
+    async fn turn_end(&self, _usage: &Usage) {}
+    /// Graceful teardown (`plugin/shutdown` on sidecars). Default no-op.
+    async fn shutdown(&self) {}
 }
 
 impl From<ProviderError> for CoreError {
@@ -844,7 +857,7 @@ mod agent_tests {
             .with_tools(vec![tool_def()]);
 
         let err = agent
-            .run(Message::user("go"), ToolContext { cwd: ".".into(), cancel: cancel_token, questions: None })
+            .run(Message::user("go"), ToolContext { cwd: ".".into(), cancel: cancel_token, questions: None, session_id: None })
             .await
             .expect_err("cancelled run should surface Cancelled");
 
@@ -1468,5 +1481,71 @@ mod agent_tests {
         assert_eq!(logged.len(), 1, "executor runs once, got {logged:?}");
         assert_eq!(logged[0].0, TOOL_NAME);
         assert_eq!(logged[0].1, serde_json::json!({"q": "x"}), "got {logged:?}");
+    }
+
+    /// Counting hook for lifecycle emission: records pre/post order and
+    /// counts turn_end calls.
+    struct LifecycleHook {
+        turn_ends: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        calls: std::sync::Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl PluginHooks for LifecycleHook {
+        async fn pre_tool(&self, name: &str, _args: &serde_json::Value) {
+            self.calls.lock().expect("calls lock poisoned").push(format!("pre:{name}"));
+        }
+        async fn post_tool(&self, name: &str, _output: &ToolOutput) {
+            self.calls.lock().expect("calls lock poisoned").push(format!("post:{name}"));
+        }
+        async fn turn_end(&self, _usage: &Usage) {
+            self.turn_ends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn turn_end_hook_called_once_on_end_and_on_error() {
+        // Success path: exactly once.
+        let ends = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut agent = Agent::new(
+            Box::new(FakeProvider::new(vec![end_script()])),
+            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends.clone(), calls })]);
+        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+        assert_eq!(ends.load(std::sync::atomic::Ordering::SeqCst), 1, "turn_end once on success");
+
+        // Error path (identical-tool loop → LoopDetected): still exactly once.
+        let ends_err = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_err = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut agent = Agent::new(
+            Box::new(FakeProvider::new(vec![tool_script("c1"), tool_script("c2"), tool_script("c3")])),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()])
+        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends_err.clone(), calls: calls_err })]);
+        let err = agent.run(Message::user("loop"), ToolContext::default()).await.expect_err("loop must fail");
+        assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
+        assert_eq!(ends_err.load(std::sync::atomic::Ordering::SeqCst), 1, "turn_end once on error");
+    }
+
+    #[tokio::test]
+    async fn pre_post_hooks_emit_around_tool_execution() {
+        let ends = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut agent = Agent::new(
+            Box::new(FakeProvider::new(vec![tool_script("c1"), end_script()])),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()])
+        .with_hooks(vec![Arc::new(LifecycleHook { turn_ends: ends.clone(), calls: calls.clone() })]);
+
+        agent.run(Message::user("go"), ToolContext::default()).await.unwrap();
+
+        let logged = calls.lock().expect("calls lock poisoned").clone();
+        assert_eq!(logged, vec![format!("pre:{TOOL_NAME}"), format!("post:{TOOL_NAME}")], "order pre→post, got {logged:?}");
+        // Sidecar-provided tools run through the same executor call site as
+        // builtin tools, so this emission covers both by construction.
     }
 }

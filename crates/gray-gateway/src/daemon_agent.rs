@@ -66,6 +66,7 @@ impl GatewayRunner {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             cancel: token,
             questions: None, // no interactive user → request_user_input is denied anyway
+            session_id: Some(key.to_string()),
         };
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {
