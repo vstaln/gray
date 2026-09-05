@@ -48,16 +48,23 @@ spew line 1 payload …
 
 (counts vary; shape is contractual)
 
-## Timeout, Phase 1 (kill arm; 2B replaces with promotion)
+## Timeout → promotion (2B: the Phase-1 kill arm is gone)
+
+A foreground command that outlives `timeout` is NOT killed. It is promoted
+to background; the result carries the tail captured so far:
 
 ```text
-killed after 1s (timeout) — output preserved
-exit 143 (SIGTERM) (terminated (SIGTERM)) · 1.0s · 2 lines · log ~/.gray/shell/nosession/t6.log
+still running after 1s → promoted to background as t6 · pid 4242 · log ~/.gray/shell/nosession/t6.log
 <untrusted-output task="t6">
 tick 1
-tick 2
 </untrusted-output>
+shell_output(task_id="t6", from_offset=12) for the rest · next_offset=12
 ```
+
+(`next_offset` is the log length when the result was built; the process is
+still alive and the log keeps growing. Every spawn registers a task,
+foreground included — a foreground log path (`…/t5.log`) can be paged later
+with `shell_output(task_id="t5")`, 2C.)
 
 ## Cancel
 
@@ -73,6 +80,23 @@ exit 143 (SIGTERM) (terminated (SIGTERM)) · 0.5s · 1 lines · log ~/.gray/shel
 Blocked by destructive-command guard (rm-rf-root): rm targeting a system root is unrecoverable. Safe alternative: delete a narrower path, preview with `ls`/`find … | wc -l` first. If the user explicitly asked for this, have them run it manually.
 ```
 
-## Background flag (until 2B)
+## Background
 
-Appends `\n(background not yet available — ran in foreground)` and runs foreground.
+```text
+started t7 · pid 4250 · log ~/.gray/shell/nosession/t7.log
+shell_output(task_id="t7", from_offset=0) to read output
+```
+
+Returns as soon as the task is registered (well under a second); a waiter
+reaps the child, drains the pump, and marks the task exited. Cancel (Ctrl-C)
+still kills the foreground command; background tasks die on session shutdown
+(2E) only.
+
+## 2B decisions for the orchestrator
+
+- Foreground never blocks longer than `MAX_TIMEOUT_SECS` (600 s): the REPL
+  must set `Agent::with_tool_timeout` ≥ 610 s (2E owns; alternative: lower
+  `MAX_TIMEOUT_SECS` to 110).
+- Until 2E merges, REPL exit orphans running tasks (`shutdown_session`
+  sweeps them once wired). In `-p` print mode there is no later turn, so
+  `background=true` / promoted tasks would be orphaned — decision pending.

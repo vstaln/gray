@@ -84,15 +84,16 @@ impl ProcessRegistry {
         command: &str,
         log_path: PathBuf,
     ) -> TaskId {
-        let pid = child
-            .id()
-            .expect("registry::register: child has no pid");
-        // All our spawns use setsid, so the child is its own group leader.
-        let pgid = pid as i32;
-        let start_ticks = start_ticks_for(pid);
-        let started = Instant::now();
-        let (bytes_tx, _) = watch::channel(0u64);
-        let (exit_tx, _) = watch::channel(None);
+        let id = self.reserve(session);
+        self.bind(session, id, child, command, log_path);
+        id
+    }
+
+    /// Reserve the next id for `session` without inserting a task (brief 2B:
+    /// the id is needed *before* spawn for the log path + `GRAY_TASK_ID`
+    /// env; `bind` attaches the child right after). Gaps are fine — ids are
+    /// never reused within a session.
+    pub fn reserve(&self, session: &str) -> TaskId {
         let mut guard = self.inner.lock().expect("registry lock poisoned");
         let sess = guard.sessions.entry(session.to_string()).or_insert_with(|| {
             SessionTasks {
@@ -102,6 +103,35 @@ impl ProcessRegistry {
         });
         let id = TaskId(sess.next);
         sess.next += 1;
+        id
+    }
+
+    /// Attach a just-spawned child to a reserved id (brief 2B spawn path).
+    pub fn bind(
+        &self,
+        session: &str,
+        id: TaskId,
+        child: &Child,
+        command: &str,
+        log_path: PathBuf,
+    ) {
+        let pid = child.id().expect("registry::bind: child has no pid");
+        // All our spawns use setsid, so the child is its own group leader.
+        let pgid = pid as i32;
+        let start_ticks = start_ticks_for(pid);
+        let started = Instant::now();
+        let (bytes_tx, _) = watch::channel(0u64);
+        let (exit_tx, _) = watch::channel(None);
+        let mut guard = self.inner.lock().expect("registry lock poisoned");
+        let sess = guard.sessions.entry(session.to_string()).or_insert_with(|| {
+            SessionTasks {
+                next: id.0.saturating_add(1),
+                tasks: BTreeMap::new(),
+            }
+        });
+        // A failed spawn between reserve and bind leaves a gap; keep `next`
+        // ahead of every id ever handed out.
+        sess.next = sess.next.max(id.0.saturating_add(1));
         sess.tasks.insert(
             id.0,
             Task {
@@ -121,7 +151,6 @@ impl ProcessRegistry {
                 pattern_strikes: 0,
             },
         );
-        id
     }
 
     pub fn get(&self, session: &str, id: TaskId) -> Option<TaskInfo> {
@@ -173,6 +202,18 @@ impl ProcessRegistry {
             .tasks
             .get(&id.0)
             .map(|t| t.bytes.subscribe())
+    }
+
+    /// Sender the pump writes byte counts through (brief 2B wires it into
+    /// `Pump::start` so headers/`/tasks` never go stale).
+    pub fn bytes_tx(&self, session: &str, id: TaskId) -> Option<watch::Sender<u64>> {
+        let guard = self.inner.lock().expect("registry lock poisoned");
+        guard
+            .sessions
+            .get(session)?
+            .tasks
+            .get(&id.0)
+            .map(|t| t.bytes.clone())
     }
 
     pub fn exit_rx(
@@ -393,7 +434,10 @@ mod tests {
             let r = reg.clone();
             handles.push(tokio::spawn(async move {
                 let mut child = true_child();
-                let id = r.register(&s, &child, "true", PathBuf::from("/tmp/x.log"));
+                // Per-session command so the isolation check below can tell
+                // a's t1 apart from b's t1 (ids collide numerically by design).
+                let cmd = if s.contains("conc-a") { "true-a" } else { "true-b" };
+                let id = r.register(&s, &child, cmd, PathBuf::from("/tmp/x.log"));
                 let _ = child.wait().await;
                 (s, id)
             }));
@@ -414,8 +458,10 @@ mod tests {
         assert_eq!(b_ids, vec![1, 2]);
         assert_eq!(reg.list(&a).len(), 2);
         assert_eq!(reg.list(&b).len(), 2);
-        // No leak across sessions.
-        assert!(reg.list(&a).iter().all(|t| reg.get(&b, t.id).is_none()));
+        // No leak across sessions: same numeric ids, but each session holds
+        // only its own tasks.
+        assert!(reg.list(&a).iter().all(|t| t.command == "true-a"));
+        assert!(reg.list(&b).iter().all(|t| t.command == "true-b"));
     }
 
     #[tokio::test]
