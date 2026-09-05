@@ -384,7 +384,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<crate::proxy::ProxyCmd>,
     },
-    /// Messaging gateway (Discord) — daemon on VPS
+    /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
     Gateway {
         #[command(subcommand)]
         cmd: Option<GatewayCmd>,
