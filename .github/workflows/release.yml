@@ -147,7 +147,7 @@ jobs:
         shell: bash
         run: |
           cat dist-all/SHA256SUMS-* > dist-all/SHA256SUMS
-          cd dist-all && sha256sum -c SHA256SUMS
+          (cd dist-all && sha256sum -c SHA256SUMS)
           awk '/^## \[/{if (++n==2) exit} n==1' CHANGELOG.md | sed '1d' > dist-all/NOTES.md
           [ -s dist-all/NOTES.md ] || { echo "::error::no CHANGELOG entry for $GITHUB_REF_NAME"; exit 1; }
       - name: create release once
