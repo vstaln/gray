@@ -10,3 +10,4 @@ pub mod registry;
 pub mod spawn;
 pub mod tools;
 pub mod view;
+pub mod wake;
