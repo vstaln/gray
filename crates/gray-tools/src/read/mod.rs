@@ -20,7 +20,7 @@ use gray_core::message::ToolDef;
 use serde_json::Value;
 use serde_json::json;
 
-use crate::truncate::{DEFAULT_MAX_BYTES, format_size, truncate_head};
+use crate::truncate::truncate_head;
 use crate::{FileLedger, LedgerEntry, Tool, fail, get_opt_u64, get_str, resolve_path};
 
 pub const READ_SNIPPET: &str = "Read file contents";
@@ -204,25 +204,21 @@ impl Tool for ReadTool {
             Some(_) => total_lines.saturating_sub(selected.len()) + 1,
             None => start + 1,
         };
+        // T1.1 clamp (T5.1): per-line ceiling in chars, before the byte cap
+        // so a minified line can't eat the budget. Char-boundary safe.
+        let max_chars = window::max_line_chars();
+        let (clamped_lines, clamped_count) = window::clamp_lines(&selected, max_chars);
+        let clamped_refs: Vec<&str> =
+            clamped_lines.iter().map(|s| s.as_str()).collect();
         // T1.2: cat -n prefixes with absolute numbers, before the caps so
         // truncation math (output_lines, next_offset) is unchanged.
-        let selected_content = window::prefix_lines(first_shown, &selected).join("\n");
+        let selected_content = window::prefix_lines(first_shown, &clamped_refs).join("\n");
         let truncation = truncate_head(&selected_content);
         let start_display = first_shown; // 1-indexed for messages
 
-        let output = if truncation.first_line_exceeds_limit {
-            let first_line = selected.first().copied().unwrap_or("");
-            let first_size = format_size(first_line.len());
-            format!(
-                "[Line {} is {}, exceeds {} limit. Use bash: sed -n '{}p' {} | head -c {}]",
-                start_display,
-                first_size,
-                format_size(DEFAULT_MAX_BYTES),
-                start_display,
-                path,
-                DEFAULT_MAX_BYTES
-            )
-        } else if truncation.truncated {
+        // T1.4 deferred this deletion until the clamp landed: clamped lines
+        // can no longer exceed the byte cap, so the sed-hint branch is dead.
+        let output = if truncation.truncated {
             let end_display = start_display + truncation.output_lines.saturating_sub(1);
             let next_offset = end_display + 1;
             let hint = if truncation.truncated_by == Some(crate::truncate::TruncatedBy::Lines) {
@@ -278,11 +274,18 @@ impl Tool for ReadTool {
             output
         };
 
+        // T1.1 clamp note (T5.1): a fact (is_error=false), blank-line
+        // separated via the shared join (note alone when no content).
+        let output = if clamped_count > 0 {
+            notices::join(&output, &notices::clamped(clamped_count))
+        } else {
+            output
+        };
+
         // T3.3 ledger: record what was shown (a miss re-arms dedup).
         // `full_view` = the window covered lines 1..=T with no line/byte cut
         // (a clamped-but-complete read still counts as full — the T3.2
-        // relational fix — once the T1.1 clamp lands; today only the
-        // truncation flags can cut).
+        // relational fix; clamp never cuts the window, only shortens lines).
         if let Ok(meta) = std::fs::metadata(&full) {
             let covers_all = match (tail_n, limit_opt) {
                 (Some(_), _) => selected.len() == total_lines,
