@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{Agent, PluginHooks, ToolContext};
+use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
@@ -101,13 +101,23 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
 /// Protocol v1 `command/run`: the first hook claiming `/name` owns it.
 /// `None` when no hook claims the command (the caller keeps the
 /// unknown-command message) or the owner declines to handle it.
+/// The outcome decides the caller's path: `Say` prints via `say()`,
+/// `Prompt` is submitted as a `ReplCommand::Prompt` turn.
 async fn run_plugin_command(
     hooks: &[Arc<dyn PluginHooks>],
     name: &str,
     argv: Vec<String>,
-) -> Option<String> {
+) -> Option<CommandOutcome> {
     let owner = hooks.iter().find(|h| h.commands().iter().any(|c| c.name == name))?;
     owner.run_command(name, argv).await
+}
+
+/// Graceful sidecar teardown (`plugin/shutdown`); best-effort, never fails.
+async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
+    let hooks: Vec<Arc<dyn PluginHooks>> = agent.map(|a| a.hooks().to_vec()).unwrap_or_default();
+    for h in &hooks {
+        h.shutdown().await;
+    }
 }
 
 /// Restores the inline viewport after an alternate-screen modal (model/provider/etc).
@@ -2362,6 +2372,7 @@ pub async fn run_repl_mode(
                         None => {
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
+                            shutdown_hooks(agent.as_ref()).await;
                             print_exit_hint(&session_state);
                             break;
                         }
@@ -2381,6 +2392,7 @@ pub async fn run_repl_mode(
                 }
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
+                    shutdown_hooks(agent.as_ref()).await;
                     break;
                 }
                 (buf.trim().to_string(), Vec::new())
@@ -2466,7 +2478,7 @@ pub async fn run_repl_mode(
                     let agent = agent.as_mut().expect("agent built above");
                     let cancel = tokio_util::sync::CancellationToken::new();
                     *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
-                    let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()) };
+                    let ctx = ToolContext { cwd: cwd.clone(), cancel: cancel.clone(), questions: Some(question_bridge.clone()), session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()) };
                     let user_msg = build_user_message_with_attachments(&prompt_text, &images);
                     let user_msg_for_retry = user_msg.clone();
                     let mut initial_count = agent.messages().len();
@@ -2555,6 +2567,7 @@ pub async fn run_repl_mode(
                                     cwd: cwd.clone(),
                                     cancel: cancel.clone(),
                                     questions: Some(question_bridge.clone()),
+                                    session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
                                 };
                                 let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
                                     dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
@@ -2610,6 +2623,7 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::Quit => {
+                shutdown_hooks(agent.as_ref()).await;
                 if let Some((shared, stop)) = &tui {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
                     let mut t = shared.lock().expect("tui lock");
@@ -2658,6 +2672,7 @@ pub async fn run_repl_mode(
                 continue;
             }
             ReplCommand::New(initial_prompt) => {
+                shutdown_hooks(agent.as_ref()).await;
                 pending_history.clear();
                 session_totals = SessionTotals::default();
                 session_state = None;
@@ -2821,9 +2836,19 @@ pub async fn run_repl_mode(
                     agent.as_ref().map(|a| a.hooks().to_vec()).unwrap_or_default();
                 let mut handled = false;
                 if let Some((name, argv)) = split_plugin_command(&cmd)
-                    && let Some(text) = run_plugin_command(&hooks, &name, argv).await
+                    && let Some(outcome) = run_plugin_command(&hooks, &name, argv).await
                 {
-                    say(tui.as_ref().map(|(s, _)| s), &text);
+                    match outcome {
+                        CommandOutcome::Say(text) => {
+                            say(tui.as_ref().map(|(s, _)| s), &text);
+                        }
+                        // Same path as a typed prompt: the next loop
+                        // iteration dispatches `ReplCommand::Prompt` (no
+                        // turn-running logic duplicated here).
+                        CommandOutcome::Prompt(prompt) => {
+                            pending_command = Some(ReplCommand::Prompt(prompt));
+                        }
+                    }
                     handled = true;
                 }
                 if !handled {
@@ -2901,6 +2926,7 @@ pub async fn run_repl_mode(
                     cwd: cwd.clone(),
                     cancel: cancel.clone(),
                     questions: Some(question_bridge.clone()),
+                    session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
                 };
                 let images = std::mem::take(&mut pending_images);
                 let user_msg = build_user_message_with_attachments(&prompt_text, &images);
@@ -3300,6 +3326,7 @@ pub async fn run_repl_mode(
                                 cwd: cwd.clone(),
                                 cancel: cancel.clone(),
                                 questions: Some(question_bridge.clone()),
+                                session_id: session_state.as_ref().map(|s| s.session_id.as_str().to_string()),
                             };
                             let mut on_event2 = |ev: &AgentEvent| {
                                 dispatch_agent_event(ev, tui_stream.as_ref(), interactive, &mut pending_tools, &mut turn_usage, &cwd, config.model.as_deref().unwrap_or(""), &mut session_totals, turn_start, &mut turn_duration_ms);
@@ -3612,7 +3639,7 @@ mod tests {
     }
 
     /// Stub plugin claiming `/echo`, like a sidecar manifest with
-    /// `commands:["/echo"]` answering `command/run`.
+    /// `commands:["/echo"]` answering `command/run` with `{"text"}`.
     struct EchoHook;
 
     #[async_trait::async_trait]
@@ -3624,8 +3651,26 @@ mod tests {
             }]
         }
 
-        async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<String> {
-            (name == "/echo").then(|| argv.join(" "))
+        async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<super::CommandOutcome> {
+            (name == "/echo").then(|| super::CommandOutcome::Say(argv.join(" ")))
+        }
+    }
+
+    /// Stub plugin claiming `/ask`, answering `command/run` with
+    /// `{"prompt"}` (asks the host to submit a turn instead of printing).
+    struct PromptHook;
+
+    #[async_trait::async_trait]
+    impl gray_core::agent::PluginHooks for PromptHook {
+        fn commands(&self) -> Vec<gray_core::agent::PluginCommand> {
+            vec![gray_core::agent::PluginCommand {
+                name: "/ask".to_string(),
+                description: "submit argv as a prompt".to_string(),
+            }]
+        }
+
+        async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<super::CommandOutcome> {
+            (name == "/ask").then(|| super::CommandOutcome::Prompt(argv.join(" ")))
         }
     }
 
@@ -3650,7 +3695,24 @@ mod tests {
         let hooks = echo_hooks();
         let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
         let out = super::run_plugin_command(&hooks, &name, argv).await;
-        assert_eq!(out.as_deref(), Some("hi"));
+        assert_eq!(out, Some(super::CommandOutcome::Say("hi".to_string())));
+    }
+
+    #[tokio::test]
+    async fn plugin_command_prompt_reply_takes_prompt_path() {
+        use super::CommandOutcome;
+        let hooks: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> =
+            vec![std::sync::Arc::new(PromptHook)];
+        let (name, argv) = super::split_plugin_command("/ask write tests").expect("splits");
+        let out = super::run_plugin_command(&hooks, &name, argv).await;
+        // Prompt replies stay distinct from Say: the `Unknown` handler
+        // routes this into `pending_command = ReplCommand::Prompt`, not `say()`.
+        assert!(matches!(out, Some(CommandOutcome::Prompt(ref p)) if p == "write tests"), "got {out:?}");
+        // And the text path is untouched.
+        let hooks = echo_hooks();
+        let (name, argv) = super::split_plugin_command("/echo hi").expect("splits");
+        let out = super::run_plugin_command(&hooks, &name, argv).await;
+        assert!(matches!(out, Some(CommandOutcome::Say(ref s)) if s == "hi"), "got {out:?}");
     }
 
     #[tokio::test]
