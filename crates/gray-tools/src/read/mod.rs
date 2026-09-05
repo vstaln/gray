@@ -3,6 +3,7 @@
 pub mod args;
 pub mod hygiene;
 mod guard;
+pub mod notices;
 mod tail;
 #[cfg(test)]
 pub(crate) mod testkit;
@@ -93,8 +94,13 @@ impl Tool for ReadTool {
             return fail(msg);
         }
         if let Ok(meta) = std::fs::metadata(&full) {
-            if let Err(msg) = guard::check_metadata(&meta, &display) {
-                return fail(msg);
+            match guard::check_metadata(&meta, &display) {
+                Err(msg) => return fail(msg),
+                // T1.3 directory note: a fact, not an error (is_error=false).
+                Ok(guard::MetadataDecision::Directory) => {
+                    return ToolOutput::ok(notices::directory(&display));
+                }
+                Ok(guard::MetadataDecision::RegularFile) => {}
             }
         }
         let data = match tokio::fs::read(&full).await {
