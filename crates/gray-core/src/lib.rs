@@ -5,7 +5,8 @@ pub mod message;
 pub mod questions;
 
 pub use agent::{
-    Agent, Provider, ProviderError, ProviderStream, ToolContext, ToolExecutor, ToolOutput,
+    Agent, PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream, ToolBefore,
+    ToolContext, ToolExecutor, ToolOutput,
 };
 pub use error::{CoreError, Result};
 pub use event::{AgentEvent, StopReason, StreamEvent, Usage};
