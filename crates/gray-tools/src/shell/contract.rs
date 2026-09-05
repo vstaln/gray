@@ -19,10 +19,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 // NOTE: `regex` is not a gray-tools dep yet; brief 3C adds it via Cargo
-// (orchestrator approves deps). `tokio` sync/task/process come from the
-// existing workspace dep.
+// (orchestrator approves deps) and swaps `NotifyPattern` for it.
+// `tokio` sync/task/process come from the existing workspace dep.
 use gray_core::agent::ToolContext;
-use regex::Regex;
 use tokio::process::{Child, ChildStderr, ChildStdout};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
@@ -44,6 +43,30 @@ pub const EXITED_TASK_KEEP: usize = 20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TaskId(pub u32); // Display: "t{n}"
+
+impl std::fmt::Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "t{}", self.0)
+    }
+}
+
+/// Substring stand-in for `regex::Regex` until brief 3C owns the `regex`
+/// dep (P1D ruling: the contract's `Regex` breaks compile today).
+/// 3C swaps the type; call sites are the constructor + `matches`.
+#[derive(Clone, Debug)]
+pub struct NotifyPattern(String);
+
+impl NotifyPattern {
+    pub fn new(expr: &str) -> Self {
+        Self(expr.to_string())
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn matches(&self, line: &str) -> bool {
+        !self.0.is_empty() && line.contains(self.0.as_str())
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct ExitReport {
@@ -87,6 +110,7 @@ pub enum WaitMode {
     Exit,
 }
 
+#[derive(Clone, Debug)] // Clone: broadcast::Sender<WakeEvent> requires it (P1D wiring fix)
 pub enum WakeEvent {
     Exited { id: TaskId, report: ExitReport },
     PatternMatched { id: TaskId, line: String },
@@ -139,15 +163,18 @@ pub fn fence(task: TaskId, body: &str) -> String {
     todo!()
 }
 
-// pump.rs (brief 1C)
+// pump.rs (brief 1C, as amended by P1D rulings: `id` first — the contract
+// signature has no source for `PatternMatched{id, ..}`; `NotifyPattern`
+// stub until 3C; `log_write_failed` required by the brief's tests)
 pub struct Pump;
 impl Pump {
     pub fn start(
+        id: TaskId,
         stdout: Option<ChildStdout>,
         stderr: Option<ChildStderr>,
         log_path: PathBuf,
         bytes_tx: watch::Sender<u64>,
-        pattern: Option<Regex>,
+        pattern: Option<NotifyPattern>,
         wake: Option<broadcast::Sender<WakeEvent>>,
     ) -> JoinHandle<PumpSummary> {
         todo!()
@@ -158,6 +185,9 @@ pub struct PumpSummary {
     pub total_lines: usize,
     pub head: Vec<u8>,
     pub tail: Vec<u8>,
+    /// Set when the log dir/file could not be created or a write failed.
+    /// The memory view stays alive either way; never panics.
+    pub log_write_failed: bool,
 }
 
 // registry.rs (brief 2A)
@@ -208,14 +238,15 @@ impl ProcessRegistry {
     }
 }
 
-// spawn.rs (brief 1D)
+// spawn.rs (brief 1D; P1D ruling: `task` param added — the 2-arg form
+// cannot set the brief-mandated `GRAY_TASK_ID` env on the child)
 pub struct Spawned {
     pub child: Child,
     pub pid: u32,
     pub pgid: i32,
     pub start_ticks: Option<u64>,
 }
-pub fn spawn(command: &str, cwd: &Path) -> io::Result<Spawned> {
+pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
     todo!()
 }
 

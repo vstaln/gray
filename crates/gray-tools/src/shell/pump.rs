@@ -1,17 +1,10 @@
 //! shell/pump.rs — bounded streaming pump: pipes → log file + memory + watch (brief 1C).
 //!
-//! Owner: 1C only. New file, intentionally UNWIRED (`mod pump` / `pub mod shell`
-//! land with 1D) — until then this file is the compile target, not part of the
-//! build. Items marked MIRROR copy `contract.rs` verbatim so wiring is a delete,
-//! not a rewrite. Deltas vs contract.rs (orchestrator follow-ups, P1C-report.md):
-//!   1. `Pump::start` takes `id: TaskId` first — `WakeEvent::PatternMatched{id,..}`
-//!      needs the task identity and the contract signature has no source for it.
-//!   2. `pattern: Option<NotifyPattern>` stubs `Option<regex::Regex>` — `regex` is
-//!      owned by 3C, so the stub is substring matching, swapped at 3C.
-//!   3. `PumpSummary` gains `log_write_failed: bool` — the brief requires it, the
-//!      contract struct lacks it.
-//!   4. `MEM_*` consts are mirrored here (same values) until 1D wires the module.
-//!
+//! Wired by 1D (`shell::pump`); types come from `super::contract`.
+//! Contract deltas ruled in P1D-report.md (kept here too): `Pump::start`
+//! takes `id: TaskId` first, `pattern` is the `NotifyPattern` substring
+//! stub until 3C swaps in `regex::Regex`, `PumpSummary` carries
+//! `log_write_failed`.
 //! Design: two reader tasks (8 KiB reads, arrival-interleaved) → `mpsc<Vec<u8>>`
 //! → one writer task owning the log file and the memory view. `start` returns the
 //! writer's `JoinHandle`, which resolves when both pipes hit EOF. Readers end on
@@ -19,7 +12,6 @@
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::fmt;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -30,10 +22,9 @@ use tokio::process::{ChildStderr, ChildStdout};
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio::task::JoinHandle;
 
-// ── MIRROR of contract.rs budgets (same values; dedupe at 1D wiring) ─────────
-
-pub const MEM_HEAD_BYTES: usize = 16 * 1024;
-pub const MEM_TAIL_BYTES: usize = 48 * 1024;
+use super::contract::{
+    MEM_HEAD_BYTES, MEM_TAIL_BYTES, NotifyPattern, PumpSummary, TaskId, WakeEvent,
+};
 
 const READ_BUF_BYTES: usize = 8 * 1024;
 const PUMP_CHANNEL_CHUNKS: usize = 64;
@@ -49,61 +40,8 @@ const MAX_WAKE_LINE_CHARS: usize = 200;
 /// Log line appended when the pattern fires for the 5th time (brief 1C wording).
 pub const NOTIFY_DISABLED_NOTE: &str = "[gray: notify_on disabled after 5 matches]";
 
-// ── MIRROR of contract.rs identity/event types ───────────────────────────────
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TaskId(pub u32); // Display: "t{n}"
-
-impl fmt::Display for TaskId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "t{}", self.0)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ExitReport {
-    pub code: Option<i32>,
-    pub signal: Option<i32>,
-    pub effective: i32,
-    pub label: String,
-    pub note: Option<String>,
-    pub benign: bool,
-}
-
-#[derive(Clone, Debug)]
-pub enum WakeEvent {
-    Exited { id: TaskId, report: ExitReport },
-    PatternMatched { id: TaskId, line: String },
-    UserInput,
-}
-
-pub struct PumpSummary {
-    pub total_bytes: u64,
-    pub total_lines: usize,
-    pub head: Vec<u8>,
-    pub tail: Vec<u8>,
-    /// DELTA vs contract.rs: set when the log dir/file could not be created or a
-    /// write/flush failed. The memory view stays alive either way; never panics.
-    pub log_write_failed: bool,
-}
-
-// ── pattern stub (std-only; 3C swaps in regex::Regex) ────────────────────────
-
-/// Substring stand-in for `regex::Regex` until brief 3C owns the `regex` dep.
-#[derive(Clone, Debug)]
-pub struct NotifyPattern(String);
-
-impl NotifyPattern {
-    pub fn new(expr: &str) -> Self {
-        Self(expr.to_string())
-    }
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-    pub fn matches(&self, line: &str) -> bool {
-        !self.0.is_empty() && line.contains(self.0.as_str())
-    }
-}
+// Identity/event/budget types live in `super::contract` (mirrors deleted by
+// 1D wiring; `NotifyPattern` stays there as the std-only stub until 3C).
 
 // ── pure core (no I/O) ───────────────────────────────────────────────────────
 
@@ -489,7 +427,9 @@ mod tests {
 
     #[test]
     fn sanitize_drops_c0_except_tab_lf_cr_and_folds_crlf() {
-        assert_eq!(sanitize_text("a\x00b\tc\nd\re\r\nf"), "ab\tcd\re\nf");
+        // 1D wave-test fix: the old expectation ate the legitimate \n after
+        // "c". Brief 1C keeps \n (drops NUL, folds CRLF, keeps lone \r).
+        assert_eq!(sanitize_text("a\x00b\tc\nd\re\r\nf"), "ab\tc\nd\re\nf");
         assert_eq!(sanitize_text("\x1b[31mred\x07"), "[31mred"); // ESC + BEL dropped
         assert_eq!(sanitize_text("\x7f"), "\x7f"); // DEL is out of the 0x00–0x1f brief range: kept
     }
@@ -613,14 +553,20 @@ mod tests {
         let mut carry = Vec::new();
         let mut pending = String::new();
         feed_scan(&mut carry, &mut pending, &c1, &shared, &tx).await;
-        assert!(pending.is_empty()); // no complete line yet
+        // 1D wave-test fix: the partial line "server " is correctly buffered
+        // (complete-lines-only scan) — pending holds it, not empty.
+        assert_eq!(pending, "server "); // no complete line yet
         feed_scan(&mut carry, &mut pending, &c2, &shared, &tx).await;
         drop(tx);
         let mut fwd = Vec::new();
         while let Some(b) = rx.recv().await {
             fwd.extend_from_slice(&b);
         }
-        assert_eq!(fwd, [c1, c2].concat()); // forwarded raw, carry and all
+        // 1D wave-test fix: feed_scan never forwards raw bytes — read_pipe
+        // does that (verified by the e2e verbatim-log test). Here only the
+        // scan runs, and this line doesn't disable the pattern, so tx sees
+        // nothing. The carry is proven by the intact emoji in the wake line.
+        assert!(fwd.is_empty());
         match wake_rx.recv().await.unwrap() {
             WakeEvent::PatternMatched { id, line } => {
                 assert_eq!(id, TaskId(7));

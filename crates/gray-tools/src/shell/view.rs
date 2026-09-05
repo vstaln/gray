@@ -5,69 +5,18 @@
 //! then this file is standalone (std only) so it compiles without touching
 //! `lib.rs` / `mod.rs` / `contract.rs`.
 //!
-//! Mirrors `contract.rs` signatures exactly:
-//! `middle_out`, `header`, `resume_hint`, plus `VIEW_HEAD_FRACTION = 0.25`
-//! (authoritative, copied from `contract.rs`). `TaskId`/`ExitReport`/`View`/
-//! `TaskInfo` below are minimal mirrors for the standalone phase; 1D swaps
-//! them for `super::contract::*` without changing a `pub` signature.
+//! Types come from `super::contract` (mirrors deleted by 1D wiring;
+//! signatures unchanged).
 //!
 //! Marker protocol: `middle_out` leaves a literal `{{MARKER}}` line where
 //! `resume_hint(task, view)` output goes. The caller (1D) replaces it, so
 //! `middle_out` stays pure over `(log, budgets, base_offset)` with no task
 //! id in its signature.
 
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::time::Duration;
 
-/// Authoritative split: head 25%, tail 75%. Copy of `contract.rs`.
-pub const VIEW_HEAD_FRACTION: f32 = 0.25;
-
-// ── minimal contract mirrors (1D unifies with contract.rs) ──────────
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TaskId(pub u32);
-
-impl std::fmt::Display for TaskId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "t{}", self.0)
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ExitReport {
-    pub code: Option<i32>,
-    pub signal: Option<i32>,
-    pub effective: i32,
-    pub label: String,
-    pub note: Option<String>,
-    pub benign: bool,
-}
-
-pub struct View {
-    pub body: String,
-    pub shown_lines: (usize, usize),
-    pub omitted_lines: usize,
-    pub omitted_bytes: usize,
-    pub omitted_range: Option<(u64, u64)>,
-    pub total_lines: usize,
-    pub total_bytes: u64,
-}
-
-pub enum TaskState {
-    Running,
-    Exited { report: ExitReport, at: Instant },
-}
-
-pub struct TaskInfo {
-    pub id: TaskId,
-    pub pid: u32,
-    pub pgid: i32,
-    pub command: String,
-    pub started: Instant,
-    pub log_path: PathBuf,
-    pub bytes: u64,
-    pub state: TaskState,
-}
+use super::contract::{ExitReport, TaskId, TaskInfo, VIEW_HEAD_FRACTION, View};
 
 // ── formatting helpers ──────────────────────────────────────────────
 
@@ -260,7 +209,7 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
 
 /// Marker line for the `{{MARKER}}` slot. Empty string when nothing omitted.
 pub fn resume_hint(task: TaskId, view: &View) -> String {
-    let (Some((a, b))) = view.omitted_range else {
+    let Some((a, b)) = view.omitted_range else {
         return String::new();
     };
     if view.omitted_lines == 0 && view.omitted_bytes == 0 {
@@ -319,6 +268,10 @@ pub fn header(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use super::super::contract::TaskState;
 
     fn task() -> TaskInfo {
         TaskInfo {
@@ -344,8 +297,14 @@ mod tests {
         }
     }
 
+    // 1D wave-test fix: ~22 bytes/line so 3,000 lines ≈ 66 KiB, exceeding
+    // both the 50 KiB and 2,000-line budgets (the brief's "60 KiB,
+    // 3,000-line input"). The old 11-byte lines never tripped the byte cap.
     fn numbered_lines(n: usize) -> Vec<u8> {
-        (1..=n).map(|i| format!("line {i:05}\n")).collect::<String>().into_bytes()
+        (1..=n)
+            .map(|i| format!("line {i:05} {i:010}\n"))
+            .collect::<String>()
+            .into_bytes()
     }
 
     #[test]
@@ -366,8 +325,8 @@ mod tests {
         assert!(v.body.contains("{{MARKER}}"));
         let head_tail_bytes: usize = v.body.len().saturating_sub("{{MARKER}}".len() + 2);
         assert!(head_tail_bytes <= 50 * 1024, "{head_tail_bytes}");
-        assert!(v.body.starts_with("line 00001\n"));
-        assert!(v.body.ends_with("line 03000"));
+        assert!(v.body.starts_with("line 00001 "));
+        assert!(v.body.ends_with("0000003000"));
         assert_eq!(v.shown_lines.0 + v.shown_lines.1 + v.omitted_lines, v.total_lines);
         assert_eq!(v.total_lines, 3000);
         let (a, b) = v.omitted_range.unwrap();
@@ -405,7 +364,7 @@ mod tests {
 
     #[test]
     fn sanitize_drops_controls_and_folds_crlf() {
-        let mut log = b"a\x00b\x07c\td\re\r\nf\n".to_vec();
+        let log = b"a\x00b\x07c\td\re\r\nf\n".to_vec();
         let v = middle_out(&log, 50 * 1024, 2000, 0);
         assert_eq!(v.body, "abc\td\re\nf\n");
     }
