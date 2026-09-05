@@ -175,7 +175,7 @@ fn format_plan(plan: &Plan) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{TextContent, ToolKind};
+    use agent_client_protocol::schema::v1::TextContent;
 
     fn text_update(s: &str) -> SessionUpdate {
         SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(TextContent::new(
@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn tool_call_emits_start_then_end() {
         let mut m = EventMapper::new();
-        let tc = ToolCall::new("t1", "Read foo", ToolKind::Read);
+        let tc = ToolCall::new("t1", "Read foo");
         let evs = m.map_update(&SessionUpdate::ToolCall(tc));
         assert_eq!(evs.len(), 2);
         assert!(matches!(evs[0], AgentEvent::ToolCallStart { .. }));
