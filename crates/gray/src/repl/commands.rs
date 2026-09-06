@@ -667,6 +667,7 @@ mod tests {
             "acp",
             "agentsmd",
             "skills",
+            "plugin",
             "help",
             "quit",
         ] {
@@ -691,6 +692,7 @@ mod tests {
             ("cost", "usage"),
             ("perms", "permissions"),
             ("access", "permissions"),
+            ("plugins", "plugin"),
         ] {
             assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
             assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
@@ -778,6 +780,18 @@ mod tests {
     fn registry_parse_uses_canonical() {
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
+        assert!(matches!(
+            parse_command("/plugin list"),
+            ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/plugins list"),
+            ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/PLUGIN list"),
+            ReplCommand::Plugin(_)
+        ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
         // gateway left the TUI: /gateway and /gw are unknown (the `gray
         // gateway` CLI still runs the preserved gray-gateway crate).

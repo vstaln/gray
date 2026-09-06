@@ -142,12 +142,18 @@ mod tests {
             parse_plugin_args("/plugin install https://h/x.tar.gz"),
             Ok(PluginAction::Install(_))
         ));
-        assert!(matches!(parse_plugin_args("/plugins"), Ok(PluginAction::List)));
+        assert!(matches!(
+            parse_plugin_args("/plugins"),
+            Ok(PluginAction::List)
+        ));
     }
 
     #[test]
     fn parse_covers_every_subcommand() {
-        assert!(matches!(parse_plugin_args("/plugin"), Ok(PluginAction::List)));
+        assert!(matches!(
+            parse_plugin_args("/plugin"),
+            Ok(PluginAction::List)
+        ));
         assert!(matches!(
             parse_plugin_args("/plugin LIST"),
             Ok(PluginAction::List)
