@@ -241,10 +241,12 @@ pub fn split_clawhub_slug(slug: &str) -> (Option<String>, String) {
 }
 
 /// GET with one 429 → honor `Retry-After` (capped) → retry once.
+/// Shared by search, detail, versions, and the artifact download.
 async fn clawhub_get(
     client: &reqwest::Client,
     url: &str,
     query: &[(&str, &str)],
+    timeout_secs: u64,
 ) -> anyhow::Result<reqwest::Response> {
     crate::fetch::check_url(url)?;
     log::debug!("clawhub GET {}", crate::fetch::redact(url));
@@ -252,7 +254,7 @@ async fn clawhub_get(
         client
             .get(url)
             .query(query)
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .send()
     };
     let resp = send().await?;
@@ -278,10 +280,22 @@ pub async fn clawhub_search(
     query: &str,
 ) -> anyhow::Result<Vec<ClawHubEntry>> {
     let url = format!("{}/search", clawhub_base().trim_end_matches('/'));
-    let resp = clawhub_get(client, &url, &[("q", query), ("limit", "20")]).await?;
+    let resp = clawhub_get(client, &url, &[("q", query), ("limit", "20")], 10).await?;
     let body: serde_json::Value = resp.error_for_status()?.json().await?;
     let mut entries = parse_clawhub_search(&body);
     entries.truncate(20);
+    // Exact-version verdicts (one batch POST, best-effort) are fresher
+    // than the search-payload scan; the payload stays the fallback.
+    let keys: Vec<(String, String, String)> = entries
+        .iter()
+        .map(|e| (e.slug.clone(), e.owner.clone(), e.version.clone()))
+        .collect();
+    let verdicts = clawhub_verdicts_batch(client, &keys).await;
+    for e in &mut entries {
+        if let Some(scan) = verdicts.get(&(e.slug.clone(), e.owner.clone(), e.version.clone())) {
+            e.scan = scan.clone();
+        }
+    }
     Ok(entries)
 }
 
@@ -296,7 +310,6 @@ pub struct ClawHubDetail {
     pub summary: String,
     pub version: String,
     pub files: Vec<ClawHubFile>,
-    pub security_status: String,
 }
 
 /// One versions-endpoint file row (`path` + hex `sha256`).
@@ -324,7 +337,7 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
         owner_owned = o.to_string();
         q.push(("ownerHandle", &owner_owned));
     }
-    let resp = clawhub_get(client, &detail_url, &q).await?;
+    let resp = clawhub_get(client, &detail_url, &q, 10).await?;
     if resp.status() == reqwest::StatusCode::CONFLICT {
         anyhow::bail!("clawhub slug {bare:?} is ambiguous (qualify as owner/slug)");
     }
@@ -359,16 +372,17 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
             .unwrap_or("")
             .to_string()
     });
-    // Version files (hashes + scan status); soft-fail to empty — the
+    // Version files (install-time hashes); soft-fail to empty — the
     // install arm treats "no file list" as unverified, not fatal.
+    // Trust display is served by the verdicts batch at search time, not
+    // by this endpoint's security snapshot.
     let mut files = Vec::new();
-    let mut security_status = String::new();
     if !version.is_empty() {
         let ver_url = format!(
             "{}/skills/{bare}/versions/{version}",
             base.trim_end_matches('/')
         );
-        if let Ok(resp) = clawhub_get(client, &ver_url, &q).await
+        if let Ok(resp) = clawhub_get(client, &ver_url, &q, 10).await
             && let Ok(vbody) = resp.error_for_status()
         {
             match vbody.json::<serde_json::Value>().await {
@@ -396,17 +410,6 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
                             }
                         }
                     }
-                    security_status = v
-                        .get("version")
-                        .and_then(|x| x.get("security"))
-                        .or_else(|| v.get("security"))
-                        .and_then(|x| {
-                            x.get("status")
-                                .or_else(|| x.get("normalizedStatus"))
-                                .and_then(|s| s.as_str())
-                        })
-                        .unwrap_or("")
-                        .to_string();
                 }
                 Err(e) => log::debug!("clawhub versions parse failed: {e:#}"),
             }
@@ -419,7 +422,6 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
         summary: str_at(skill, "summary"),
         version,
         files,
-        security_status,
     })
 }
 
@@ -432,10 +434,23 @@ pub fn clawhub_canonical_url(owner: &str, slug: &str) -> String {
     }
 }
 
+/// Lock/dir key input for a ClawHub skill: `owner/slug` when the owner is
+/// known (the shared sanitizer turns it into `owner-slug`, matching the
+/// owner-qualified search display name), else the bare slug.
+pub fn clawhub_key_input(owner: &str, slug: &str) -> String {
+    if owner.trim().is_empty() {
+        slug.to_string()
+    } else {
+        format!("{}/{slug}", owner.trim())
+    }
+}
+
 /// Download the skill ZIP to `$GRAY_HOME/plugins/tmp/` (handles the
 /// GitHub-handoff JSON by following `archiveUrl`). Returns the kept path.
-/// `expected_len_cap` guards the in-memory handoff probe, not the archive:
-// archives stream through [`crate::fetch::download`] with its 64 MiB cap.
+/// Goes through [`clawhub_get`] (429 + `Retry-After` honored); the bytes
+/// must be sniffed for the handoff JSON before choosing the pipeline, so
+/// only the handoff branch delegates to [`crate::fetch::download`] while
+/// the ZIP branch keeps the same 64 MiB cap and tmp handling.
 pub async fn clawhub_download_bundle(
     client: &reqwest::Client,
     detail: &ClawHubDetail,
@@ -450,13 +465,8 @@ pub async fn clawhub_download_bundle(
     if !owner_owned.trim().is_empty() {
         q.push(("ownerHandle", &owner_owned));
     }
-    crate::fetch::check_url(&url)?;
     log::debug!("clawhub downloading {}", detail.slug);
-    let resp = client
-        .get(&url)
-        .query(&q)
-        .timeout(std::time::Duration::from_secs(30))
-        .send()
+    let resp = clawhub_get(client, &url, &q, 30)
         .await?
         .error_for_status()?;
     let bytes = resp.bytes().await?;
@@ -516,45 +526,126 @@ pub fn verify_clawhub_files(root: &Path, files: &[ClawHubFile]) -> anyhow::Resul
     Ok(true)
 }
 
-/// Best-effort trust verdict (`POST /skills/-/security-verdicts`).
-/// `None` on any failure — search/install degrade to official/community.
-pub async fn clawhub_verdict(
+/// Batch trust verdicts (`POST /skills/-/security-verdicts`, up to 100
+/// `(slug, owner, version)` items in one call). Returns the scan status
+/// for the items the endpoint answers `ok` on, keyed by the request
+/// triple. Best-effort: any failure is an empty map and callers keep the
+/// search-payload scan. Versionless entries are never queried.
+pub async fn clawhub_verdicts_batch(
     client: &reqwest::Client,
-    slug: &str,
-    owner: &str,
-    version: &str,
-) -> Option<String> {
+    items: &[(String, String, String)],
+) -> std::collections::BTreeMap<(String, String, String), String> {
+    let mut out = std::collections::BTreeMap::new();
+    let items: Vec<&(String, String, String)> = items
+        .iter()
+        .filter(|(_, _, v)| !v.trim().is_empty())
+        .take(100)
+        .collect();
+    if items.is_empty() {
+        return out;
+    }
     let url = format!(
         "{}/skills/-/security-verdicts",
         clawhub_base().trim_end_matches('/')
     );
-    crate::fetch::check_url(&url).ok()?;
-    let mut item = serde_json::json!({"slug": slug, "version": version});
-    if !owner.trim().is_empty() {
-        item["ownerHandle"] = serde_json::Value::String(owner.to_string());
+    if crate::fetch::check_url(&url).is_err() {
+        return out;
     }
-    let body: serde_json::Value = client
+    let req_items: Vec<serde_json::Value> = items
+        .iter()
+        .map(|(slug, owner, version)| {
+            let mut o = serde_json::json!({"slug": slug, "version": version});
+            if !owner.trim().is_empty() {
+                o["ownerHandle"] = serde_json::Value::String(owner.clone());
+            }
+            o
+        })
+        .collect();
+    let resp = match client
         .post(&url)
         .timeout(std::time::Duration::from_secs(10))
-        .json(&serde_json::json!({"items": [item]}))
+        .json(&serde_json::json!({"items": req_items}))
         .send()
         .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json()
-        .await
-        .ok()?;
-    let first = body.get("items")?.as_array()?.first()?;
-    if first.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-        return None;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log::debug!("clawhub verdicts failed: {e:#}");
+            return out;
+        }
+    };
+    // 429 on the write-bucket twin: honor and retry once like reads.
+    let resp = match resp.status() {
+        reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            let wait = resp
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(2)
+                .min(30);
+            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+            match client
+                .post(&url)
+                .timeout(std::time::Duration::from_secs(10))
+                .json(&serde_json::json!({"items": req_items}))
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    log::debug!("clawhub verdicts retry failed: {e:#}");
+                    return out;
+                }
+            }
+        }
+        _ => resp,
+    };
+    let body: serde_json::Value = match resp.error_for_status() {
+        Ok(r) => match r.json().await {
+            Ok(b) => b,
+            Err(_) => return out,
+        },
+        Err(_) => return out,
+    };
+    let results = body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for r in &results {
+        if r.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            continue;
+        }
+        let status = r
+            .get("security")
+            .and_then(|s| s.get("status"))
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or("");
+        if status.is_empty() {
+            continue;
+        }
+        let (Some(rs), Some(rv)) = (
+            r.get("requestedSlug").and_then(|v| v.as_str()),
+            r.get("requestedVersion").and_then(|v| v.as_str()),
+        ) else {
+            continue;
+        };
+        let ro = r
+            .get("requestedOwnerHandle")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        // Match back to the request triple (owner echoes only when the
+        // request qualified it).
+        if let Some(key) = items
+            .iter()
+            .find(|(s, o, v)| s == rs && v == rv && (ro.is_empty() || o == ro))
+        {
+            out.insert((**key).clone(), status.to_string());
+        }
     }
-    first
-        .get("security")
-        .and_then(|s| s.get("status"))
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())
-        .map(str::to_string)
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,6 +1293,17 @@ mod tests {
         assert_eq!(entries[0].scan, "clean");
         assert_eq!(clawhub_trust(true, "clean"), "official + scan:clean");
         assert_eq!(clawhub_trust(false, ""), "community");
+    }
+
+    #[test]
+    fn clawhub_key_input_qualifies_owner() {
+        assert_eq!(clawhub_key_input("arein", "test"), "arein/test");
+        assert_eq!(clawhub_key_input("", "test"), "test");
+        // Downstream sanitize turns it into the collision-free lock key.
+        assert_eq!(
+            crate::ops::sanitize_npm_key(&clawhub_key_input("arein", "test")),
+            "arein-test"
+        );
     }
 
     #[test]
