@@ -40,21 +40,31 @@ pub fn run_effort_modal(
     let accent_peach = Color::Rgb(246, 173, 126);
     let text_dim = Color::Rgb(120, 120, 120);
 
+    let bg_snapshot = bg
+        .cloned()
+        .unwrap_or_else(BackgroundSnapshot::default_initial);
+
+    // Provider-driven levels (opencode parity): only offer efforts the
+    // current model's family accepts; non-reasoning models get just `off`.
+    let owned_levels: Vec<(&str, &str)> =
+        super::context::supported_thinking_levels(&bg_snapshot.model_name);
+    let levels: &[(&str, &str)] = if owned_levels.is_empty() {
+        THINKING_LEVELS
+    } else {
+        &owned_levels
+    };
+
     let current_level = config
         .thinking_effort
         .clone()
         .unwrap_or_else(|| "high".to_string());
-    let mut sel = THINKING_LEVELS
+    let mut sel = levels
         .iter()
         .position(|(l, _)| *l == current_level)
-        .unwrap_or(4);
+        .unwrap_or(levels.len().saturating_sub(1));
     // Extra trailing row: reasoning-text display toggle (not an effort level).
-    let rows = THINKING_LEVELS.len() + 1;
+    let rows = levels.len() + 1;
     let max_sel = rows.saturating_sub(1);
-
-    let bg_snapshot = bg
-        .cloned()
-        .unwrap_or_else(BackgroundSnapshot::default_initial);
 
     let result = (|| -> anyhow::Result<bool> {
         loop {
@@ -115,8 +125,8 @@ pub fn run_effort_modal(
                 // rows = len+1: the last iteration renders the display-toggle row.
                 #[allow(clippy::needless_range_loop)]
                 for idx in 0..rows {
-                    let (level, desc, is_current) = if idx < THINKING_LEVELS.len() {
-                        let (l, d) = THINKING_LEVELS[idx];
+                    let (level, desc, is_current) = if idx < levels.len() {
+                        let (l, d) = levels[idx];
                         (l, d, current_level == l)
                     } else {
                         let shown = config.show_reasoning.unwrap_or(true);
@@ -233,7 +243,7 @@ pub fn run_effort_modal(
                     KeyCode::Down => sel = (sel + 1).min(max_sel),
                     KeyCode::Esc => return Ok(false),
                     KeyCode::Enter => {
-                        if sel == THINKING_LEVELS.len() {
+                        if sel == levels.len() {
                             // Display toggle: flip, persist, stay open.
                             let shown = !config.show_reasoning.unwrap_or(true);
                             config.show_reasoning = Some(shown);
@@ -243,7 +253,7 @@ pub fn run_effort_modal(
                             save_saved_config_at(&path, &saved)?;
                             continue;
                         }
-                        let (chosen, _) = THINKING_LEVELS[sel];
+                        let (chosen, _) = levels[sel];
                         config.thinking_effort = Some(chosen.to_string());
 
                         let path = saved_config_path()?;
