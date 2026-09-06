@@ -85,8 +85,8 @@ reorder/empty-name modes against the fixtures in
 | Subcommand | REPL | CLI | What it does |
 |---|---|---|---|
 | `list` | `/plugin list` | `gray plugin list` | list installed plugins (`[disabled]` marks boot-skipped) |
-| `search <q>` | `/plugin search <q>` | `gray plugin search <q>` | substring search over the Gray Index (on miss: try an https URL) |
-| `install <name\|url>` | `/plugin install <…>` | `gray plugin install <…>` | install by Gray Index name or https tarball URL |
+| `search <q>` | `/plugin search <q>` | `gray plugin search <q>` | fans out over the Gray Index + Pi Gallery (preview) (total miss: `not in index: …`; pi-side failure prints the advisory line, exit 0) |
+| `install <name\|url>` | `/plugin install <…>` | `gray plugin install <…>` | install by Gray Index name, https tarball URL, `npm:<pkg>[@<version>]`, or `git:<url>[@<ref>]` (pi installs are skills-only — see below) |
 | `remove <name>` | `/plugin remove <name>` | `gray plugin remove <name>` | remove an installed plugin |
 | `update [name\|all]` | `/plugin update` | `gray plugin update [all]` | update one plugin or everything (bare = `all`) |
 | `enable <name>` | `/plugin enable <name>` | `gray plugin enable <name>` | re-enable a disabled plugin |
@@ -95,9 +95,54 @@ reorder/empty-name modes against the fixtures in
 
 Copy rule: the gray source is always labeled `Gray Index`; the pi
 source is always labeled exactly `Pi Gallery (preview)` — same strings
-as the `/plugin search` completion row. `search` covers the Gray Index
-today; Pi Gallery (preview) is the P2 source (see the P2 Pi Gallery
-design); official plugins below ship from the Gray Index.
+as the `/plugin search` output rows. Official plugins below ship from
+the Gray Index.
+
+## Pi Gallery (preview)
+
+A second plugin source drawn from the pi package universe. The
+`(preview)` label is display-time copy only (the lock stores
+`ecosystem: "pi-gallery"`, never the label), and "preview" means
+exactly this: search is advisory and installs are **skills-only** —
+anything beyond skills waits for the P3 runtime bridge.
+
+Install specs:
+
+| Spec | Example | What happens |
+|---|---|---|
+| `npm:<pkg>[@<version>]` | `npm:pi-foo`, `npm:@scope/bar@1.2.3` (split on the last `@`, so scoped names keep their leading `@`; unpinned resolves `dist-tags.latest`) | metadata via the npm registry; tarball downloaded and verified against `dist.integrity` (`sha512-<base64>`, `dist.shasum` fallback) |
+| `git:<url>[@<ref>]` | `git:https://host/o/r.git@main`; raw `https://….git`, `ssh://`, `git://`, `git@host:…` forms parse too (ref splits on the last `@` after the authority) | shallow `git clone --depth 1` (+ `--branch <ref>` when pinned) via the `git` CLI — never reimplemented |
+
+Locked behavior:
+
+- Skills-only honesty: only `.md` skill files are copied, into
+  `<plugins_dir>/pi/<name>/` (`@scope/name` becomes `scope-name`);
+  package code is never executed. The installer reports
+  `skills taken: …` and, when present,
+  `skipped N extension files (P3)` / `skipped N theme files (P3)` —
+  extensions/themes are left behind for P3. A package with no skills
+  bails honestly (`ships no skills (nothing to install;
+  extensions/themes need P3)`) and writes nothing.
+- Installed pi skills light up in discovery with no extra step
+  (`<agent_dir>/plugins/pi/<pkg>/` is a skills root).
+- `git:` installs print `warning: unverified install …` (no index hash
+  to check against; the lock records the post-clone commit sha).
+  `npm:` installs are hash-verified and record the registry integrity
+  string. Failures remove the staging dir / dest and write nothing (no
+  half-state); reinstalls preserve the existing `enabled` flag.
+
+Search scope: `search` fans out over the Gray Index (substring over the
+cached index — hits first, name-sorted) plus the pi side (npm
+`/-/v1/search`, up to 20 hits). Gray wins name collisions (the pi
+duplicate is suppressed). Each hit renders
+`name version [source] - desc`, with the ` - desc` suffix omitted when
+empty — always the case for Gray Index hits (the index carries no
+descriptions). The pi side never fails the search: on error it prints
+exactly `Pi Gallery (preview): unreachable` and still exits 0. Miss
+shape is locked: no hits with a reachable pi side renders the bare line
+`not in index: <q> (try /plugin install <https-url>)` (REPL prints it;
+the CLI exits nonzero with the same string); no gray hits with an
+unreachable pi side prints the advisory line only.
 
 Trust: a project-scoped plugin installs only after the project is
 trusted — never auto-install from an untrusted checkout.
@@ -131,5 +176,5 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
   double-run.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
 - Gateway (chat delivery, shares the agent builder): `crates/gray-gateway/`.
-- Pi Gallery (preview): the P2 plugin source (see the P2 Pi Gallery design);
-  official plugins above ship from the Gray Index.
+- Pi Gallery (preview): the pi skill source (see `Pi Gallery (preview)`
+  above); official plugins above ship from the Gray Index.
