@@ -448,6 +448,7 @@ mod tests {
             context_window: None,
             context_reserve: None,
             context_keep: None,
+            permissions: None,
         };
         let compacted = auto_compact_if_needed(&mut agent, &config, None, "threshold")
             .await
@@ -557,6 +558,7 @@ mod tests {
                 context_window: None,
                 context_reserve: None,
                 context_keep: None,
+                permissions: None,
             }
         }
 

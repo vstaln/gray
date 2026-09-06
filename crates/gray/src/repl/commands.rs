@@ -1,6 +1,4 @@
 /// Single slash-command registry driving `/help`, completion, and parsing.
-/// `portal` is both a canonical row (display) and a `proxy` alias (dispatch
-/// shares Proxy) — resolve() prefers the canonical exact match.
 pub(crate) struct CmdDef {
     pub(crate) name: &'static str,
     pub(crate) desc: &'static str,
@@ -20,11 +18,8 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef { name: "usage", desc: "session tokens & cost", aliases: &["cost"], args_hint: "" },
     CmdDef { name: "permissions", desc: "choose what gray is allowed to do", aliases: &["perms"], args_hint: "" },
     CmdDef { name: "feedback", desc: "send feedback", aliases: &[], args_hint: "" },
-    CmdDef { name: "cron", desc: "cron jobs", aliases: &[], args_hint: "" },
-    CmdDef { name: "proxy", desc: "share Codex/Grok/OpenRouter via :8645", aliases: &["portal"], args_hint: "" },
     CmdDef { name: "gateway", desc: "messaging gateway (Discord)", aliases: &["gw"], args_hint: "" },
     CmdDef { name: "acp", desc: "run as an external ACP agent (claude, codex, cursor…)", aliases: &[], args_hint: "" },
-    CmdDef { name: "portal", desc: "portal status", aliases: &[], args_hint: "" },
     CmdDef { name: "agentsmd", desc: "edit system prompt", aliases: &["sys"], args_hint: "" },
     CmdDef { name: "skills", desc: "list skills (/skills:<name> [args] to run one)", aliases: &[], args_hint: "" },
     CmdDef { name: "help", desc: "show commands", aliases: &[], args_hint: "" },
@@ -253,11 +248,7 @@ pub enum ReplCommand {
     Feedback(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
-    /// Cron jobs: /cron, /cron list, /cron create --schedule ... --prompt ...
-    Cron(String),
-    /// Local proxy: /proxy start|stop|status, /portal alias
-    Proxy(String),
-    /// Messaging gateway: /gateway, /gateway status|run|install (bare opens picker like /proxy)
+    /// Messaging gateway: /gateway, /gateway status|run|install
     Gateway(String),
     /// External ACP agent: /acp (picker), /acp <agent> [--yolo], /acp off|status|list
     Acp(String),
@@ -330,12 +321,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some(d.name)
     } else if lower_t.starts_with("/model") {
         Some("model")
-    } else if lower_t.starts_with("/cron") {
-        Some("cron")
-    } else if lower_t.starts_with("/proxy") {
-        Some("proxy")
-    } else if lower_t.starts_with("/portal") {
-        Some("portal")
     } else if lower_t.starts_with("/gateway") || lower_t.starts_with("/gw") {
         Some("gateway")
     } else {
@@ -371,8 +356,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
         }
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
-        Some("cron") => ReplCommand::Cron(t.to_string()),
-        Some("proxy") | Some("portal") => ReplCommand::Proxy(t.to_string()),
         Some("gateway") => ReplCommand::Gateway(t.to_string()),
         Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("skills") => {
@@ -451,7 +434,7 @@ mod tests {
     fn registry_resolve_canonical_and_aliases() {
         for name in [
             "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "permissions", "feedback", "cron", "proxy", "gateway", "acp", "portal", "agentsmd", "skills", "help", "quit",
+            "permissions", "feedback", "gateway", "acp", "agentsmd", "skills", "help", "quit",
         ] {
             let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
             assert_eq!(d.name, name);
@@ -478,17 +461,6 @@ mod tests {
             assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
             assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
         }
-        // `portal` is both a canonical command and a legacy alias for `proxy`;
-        // canonical exact wins in resolve(), dispatch still maps both to Proxy.
-        assert_eq!(super::resolve("portal").unwrap().name, "portal");
-        assert!(
-            super::REGISTRY
-                .iter()
-                .find(|d| d.name == "proxy")
-                .unwrap()
-                .aliases
-                .contains(&"portal")
-        );
         assert!(super::resolve("boguscmd").is_none());
         assert!(super::resolve("/boguscmd").is_none());
         assert!(super::resolve("").is_none());
@@ -500,15 +472,15 @@ mod tests {
         let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
         for expected in [
             "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "permissions", "feedback", "cron", "proxy", "gateway", "acp", "portal", "agentsmd", "skills", "help", "quit",
+            "permissions", "feedback", "gateway", "acp", "agentsmd", "skills", "help", "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 19);
+        assert_eq!(super::REGISTRY.len(), 16);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 19);
+        assert_eq!(all.len(), 16);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -529,7 +501,6 @@ mod tests {
             ("reasoning", "thinking"),
             ("compress", "compact"),
             ("sys", "agentsmd"),
-            ("portal", "proxy"),
             ("gw", "gateway"),
             ("cost", "usage"),
             ("perms", "permissions"),
@@ -539,9 +510,6 @@ mod tests {
                 "completion {alias} -> {target}"
             );
         }
-        let m = super::completion_matches("portal");
-        assert!(m.iter().any(|(n, _)| *n == "portal"));
-        assert!(m.iter().any(|(n, _)| *n == "proxy"));
     }
 
     #[test]
@@ -549,7 +517,6 @@ mod tests {
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-        assert!(matches!(parse_command("/portal"), ReplCommand::Proxy(_)));
         assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(_)));
         assert!(matches!(parse_command("/keys foo"), ReplCommand::Unknown(_)));
         assert!(matches!(parse_command("/connect foo"), ReplCommand::Unknown(_)));

@@ -172,7 +172,14 @@ fn tips_line(q: &QuestionSession) -> Line<'static> {
         q.answers[q.current_idx].notes_visible || !q.answers[q.current_idx].draft.trim().is_empty();
     let mut tips: Vec<(String, bool)> = Vec::new();
     let sel = q.answers[q.current_idx].selected_idx.is_some();
-    if sel && !notes_visible {
+    let is_approval = q.questions[q.current_idx].id == "tool-approval"
+        && q.questions[q.current_idx].options.len() == 3;
+    if is_approval {
+        tips.push(("y accept".into(), true));
+        tips.push(("a accept for session".into(), true));
+        tips.push(("n decline".into(), false));
+        tips.push(("esc cancel".into(), false));
+    } else if sel && !notes_visible {
         tips.push(("tab to add notes".into(), true));
     } else if sel && notes_visible {
         tips.push(("tab or esc to clear notes".into(), false));

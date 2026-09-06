@@ -112,12 +112,19 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     let cwd = std::env::current_dir()?;
     let cancel = tokio_util::sync::CancellationToken::new();
+    let permissions = crate::setup::load_saved_config_at(
+        &crate::setup::saved_config_path().unwrap_or_else(|_| std::path::PathBuf::from("/dev/null")),
+    )
+    .permissions;
     let ctx = ToolContext {
         cwd: cwd.clone(),
         cancel,
         questions: None,
         session_id: None, // one-shot print mode has no session
         permission: PermissionMode::resolve(true), // auto for -p unless GRAY_PERMISSION=ask
+        approvals: Some(gray_core::approvals::ApprovalGate::new(
+            permissions.as_deref().unwrap_or(gray_core::approvals::MODE_AUTO),
+        )),
     };
 
     let mut agent = build_agent(config, &cwd, None).await?;

@@ -17,6 +17,7 @@ pub(crate) async fn run_empty_turn(
     pending_history: &mut Vec<Message>,
     unconfigured: &mut bool,
     question_bridge: &QuestionBridge,
+    approval_gate: &gray_core::approvals::ApprovalGate,
 ) -> anyhow::Result<()> {
     if !pending_images.is_empty() {
         // image(s) without text: treat as prompt with images
@@ -103,6 +104,7 @@ pub(crate) async fn run_empty_turn(
                 .as_ref()
                 .map(|s| s.session_id.as_str().to_string()),
             permission: PermissionMode::resolve(false),
+            approvals: Some(approval_gate.clone()),
         };
         let user_msg = build_user_message_with_attachments(&prompt_text, &images);
         let user_msg_for_retry = user_msg.clone();
@@ -187,6 +189,7 @@ pub(crate) async fn run_empty_turn(
                         .as_ref()
                         .map(|s| s.session_id.as_str().to_string()),
                     permission: gray_core::agent::PermissionMode::resolve(false),
+                    approvals: Some(approval_gate.clone()),
                 };
                 let mut on_event2 = |ev: &gray_core::event::AgentEvent| {
                     dispatch_agent_event(

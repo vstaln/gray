@@ -129,6 +129,11 @@ impl QuestionSession {
         &self.questions[self.current_idx]
     }
 
+    fn is_approval(&self) -> bool {
+        self.questions[self.current_idx].id == "tool-approval"
+            && self.questions[self.current_idx].options.len() == 3
+    }
+
     /// Options plus the auto-added "Other" row (codex other_option_enabled).
     pub(crate) fn options_len(&self) -> usize {
         let q = self.current_question();
@@ -440,6 +445,23 @@ impl QuestionSession {
 
         match self.focus {
             Focus::Options => match code {
+                KeyCode::Char('y') if self.is_approval() => {
+                    self.answers[self.current_idx].selected_idx = Some(0);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Char('a') if self.is_approval() && self.options_len() > 1 => {
+                    self.answers[self.current_idx].selected_idx = Some(1);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Char('n') if self.is_approval() => {
+                    let last = self.options_len().saturating_sub(1);
+                    self.answers[self.current_idx].selected_idx = Some(last);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Esc if self.is_approval() => self.skip_current(ta),
                 KeyCode::Left | KeyCode::Char('h') => {
                     self.move_question(false, ta);
                     QuestionOutcome::Redraw

@@ -22,6 +22,7 @@ pub(crate) async fn dispatch_command(
     pending_history: &mut Vec<Message>,
     unconfigured: &mut bool,
     hide_thinking: &mut bool,
+    approval_gate: &gray_core::approvals::ApprovalGate,
 ) -> anyhow::Result<Flow> {
     Ok(match cmd {
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
@@ -206,7 +207,22 @@ pub(crate) async fn dispatch_command(
             handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
-        ReplCommand::Permissions(_) | ReplCommand::Feedback(_) => {
+        ReplCommand::Permissions(mode) => {
+            handle_permissions(
+                config,
+                mode,
+                approval_gate,
+                tui.as_ref().map(|(s, _)| s),
+            );
+            Flow::Continue
+        }
+        ReplCommand::Feedback(text) => {
+            handle_feedback(
+                text,
+                config,
+                session_state,
+                tui.as_ref().map(|(s, _)| s),
+            );
             Flow::Continue
         }
         ReplCommand::Provider => {
