@@ -16,6 +16,10 @@ pub struct LockFile {
     pub plugins: BTreeMap<String, LockEntry>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 // TODO(2.4): switch to gray_plugin::lock
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LockEntry {
@@ -35,6 +39,8 @@ pub struct LockEntry {
     pub installed_at: String,
     #[serde(default)]
     pub scope: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Install target: index name or https URL.
@@ -158,6 +164,7 @@ async fn install_index(
         entry.scope.clone()
     };
     let mut lock = read_lock()?.unwrap_or_default();
+    let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
     lock.plugins.insert(
         name.to_string(),
         LockEntry {
@@ -169,6 +176,7 @@ async fn install_index(
             adapter_version: env!("CARGO_PKG_VERSION").to_string(),
             installed_at: now_secs(),
             scope,
+            enabled,
         },
     );
     write_lock(&lock)?;
@@ -205,6 +213,7 @@ async fn install_url(
     }
     let _ = std::fs::remove_file(&archive);
     let mut lock = read_lock()?.unwrap_or_default();
+    let enabled = lock.plugins.get(&name).map(|e| e.enabled).unwrap_or(true);
     lock.plugins.insert(
         name.clone(),
         LockEntry {
@@ -216,6 +225,7 @@ async fn install_url(
             adapter_version: env!("CARGO_PKG_VERSION").to_string(),
             installed_at: now_secs(),
             scope: opts.scope.clone().unwrap_or_else(|| "user".to_string()),
+            enabled,
         },
     );
     write_lock(&lock)?;
@@ -240,6 +250,18 @@ pub fn remove(name: &str) -> anyhow::Result<()> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
+    write_lock(&lock)?;
+    Ok(())
+}
+
+/// Flip a plugin's `enabled` flag (boot skips disabled entries).
+/// Miss message matches `remove`.
+pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
+    let mut lock = read_lock()?.unwrap_or_default();
+    let Some(entry) = lock.plugins.get_mut(name) else {
+        anyhow::bail!("not installed: {name}");
+    };
+    entry.enabled = on;
     write_lock(&lock)?;
     Ok(())
 }
@@ -315,6 +337,7 @@ mod tests {
                 adapter_version: "0.1.0".into(),
                 installed_at: "1".into(),
                 scope: "user".into(),
+                enabled: true,
             },
         );
         let v: serde_json::Value =
@@ -333,5 +356,49 @@ mod tests {
         ] {
             assert!(e.get(k).is_some(), "missing {k}");
         }
+    }
+
+    #[test]
+    fn lock_enabled_defaults_true_and_roundtrips_false() {
+        // Old locks without `enabled` load as enabled.
+        let old: LockFile = serde_json::from_str(
+            r#"{"schema":1,"plugins":{"demo":{"ecosystem":"gray-native","version":"1.0.0","hash":"sha256:abc","source":"https://h/demo.tar.gz","argv":[],"adapter_version":"0.1.0","installed_at":"1","scope":"user"}}}"#,
+        )
+        .unwrap();
+        assert!(old.plugins["demo"].enabled);
+        // New locks round-trip an explicit `false`.
+        let mut lock = old.clone();
+        lock.plugins.get_mut("demo").unwrap().enabled = false;
+        let back: LockFile =
+            serde_json::from_str(&serde_json::to_string(&lock).unwrap()).unwrap();
+        assert!(!back.plugins["demo"].enabled);
+    }
+
+    #[test]
+    fn set_enabled_flips_flag_and_bails_on_miss() {
+        // Only env-touching test in this binary: GRAY_HOME points at a
+        // tempdir so the real lockfile is never disturbed.
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: no other test in this binary touches env.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        let mut lock = LockFile::default();
+        lock.plugins.insert(
+            "demo".to_string(),
+            LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "1.0.0".into(),
+                enabled: true,
+                ..LockEntry::default()
+            },
+        );
+        write_lock(&lock).unwrap();
+        set_enabled("demo", false).unwrap();
+        assert!(!list().unwrap()["demo"].enabled);
+        set_enabled("demo", true).unwrap();
+        assert!(list().unwrap()["demo"].enabled);
+        let err = set_enabled("nope", false).unwrap_err();
+        assert_eq!(err.to_string(), "not installed: nope");
     }
 }
