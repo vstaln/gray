@@ -169,7 +169,9 @@ async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
             let home = std::env::var("GRAY_HOME")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|_| {
-                    std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".gray")).unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"))
+                    std::env::var("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".gray"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"))
                 });
             let h = gray_supervise::health::probe(&home);
             println!("{}", h.reason);

@@ -8,9 +8,18 @@ pub struct Health {
 
 pub fn probe(home: &Path) -> Health {
     match crate::heartbeat::heartbeat_age_secs(home) {
-        None => Health { healthy: false, reason: "unhealthy: no heartbeat yet (gateway not running?)".into() },
-        Some(age) if age < 60 => Health { healthy: true, reason: format!("healthy: heartbeat {age}s ago") },
-        Some(age) => Health { healthy: false, reason: format!("unhealthy: heartbeat stale ({age}s ago)") },
+        None => Health {
+            healthy: false,
+            reason: "unhealthy: no heartbeat yet (gateway not running?)".into(),
+        },
+        Some(age) if age < 60 => Health {
+            healthy: true,
+            reason: format!("healthy: heartbeat {age}s ago"),
+        },
+        Some(age) => Health {
+            healthy: false,
+            reason: format!("unhealthy: heartbeat stale ({age}s ago)"),
+        },
     }
 }
 
@@ -22,7 +31,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = probe(dir.path());
         assert!(!h.healthy);
-        assert!(h.reason.contains("heartbeat"), "reason must name heartbeat, got: {}", h.reason);
+        assert!(
+            h.reason.contains("heartbeat"),
+            "reason must name heartbeat, got: {}",
+            h.reason
+        );
     }
     #[test]
     fn fresh_heartbeat_is_healthy() {
