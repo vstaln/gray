@@ -9,6 +9,26 @@ struct SkillFrontmatter {
     name: Option<String>,
     description: Option<String>,
     disable_model_invocation: bool,
+    args: Vec<String>,
+}
+
+/// Split a frontmatter `args:`/`arguments:` value into declared arg names.
+/// Accepts comma- and/or whitespace-separated (`foo, bar`, `foo bar`,
+/// `[foo, bar]`); surrounding quotes already stripped by the caller.
+pub(crate) fn parse_declared_args(val: &str) -> Vec<String> {
+    let t = val.trim();
+    let t = t.strip_prefix('[').unwrap_or(t);
+    let t = t.strip_suffix(']').unwrap_or(t);
+    t.split([',', ' ', '\t'])
+        .map(|s| {
+            s.trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim_start_matches('-')
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String> {
@@ -77,6 +97,9 @@ fn parse_yaml_like(s: &str) -> SkillFrontmatter {
                 "description" => fm.description = Some(val),
                 "disable-model-invocation" | "disable_model_invocation" => {
                     fm.disable_model_invocation = val == "true" || val == "True" || val == "TRUE"
+                }
+                "args" | "arguments" => {
+                    fm.args = parse_declared_args(&val);
                 }
                 _ => {}
             }
@@ -223,6 +246,7 @@ pub(crate) fn load_skill_from_file(
         base_dir: skill_dir,
         disable_model_invocation: frontmatter.disable_model_invocation,
         source: source.to_string(),
+        args: frontmatter.args.clone(),
     };
     (Some(skill), diagnostics)
 }
@@ -354,5 +378,41 @@ pub(crate) fn load_skills_from_dir_internal(
     LoadSkillsResult {
         skills,
         diagnostics,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[test]
+    fn declared_args_split_commas_and_spaces() {
+        assert_eq!(parse_declared_args("env, force"), vec!["env", "force"]);
+        assert_eq!(parse_declared_args("env force"), vec!["env", "force"]);
+        assert_eq!(parse_declared_args("[env, force]"), vec!["env", "force"]);
+        assert!(parse_declared_args("").is_empty());
+    }
+
+    #[test]
+    fn frontmatter_args_land_on_skill() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            "---\nname: deploy\ndescription: test skill\nargs: env, force\n---\nBody"
+        )
+        .unwrap();
+        let (skill, _) = load_skill_from_file(f.path(), "path");
+        let skill = skill.expect("loads");
+        assert_eq!(skill.args, vec!["env".to_string(), "force".to_string()]);
+    }
+
+    #[test]
+    fn frontmatter_without_args_means_no_args() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "---\ndescription: test skill\n---\nBody").unwrap();
+        let (skill, _) = load_skill_from_file(f.path(), "path");
+        let skill = skill.expect("loads");
+        assert!(skill.args.is_empty());
     }
 }

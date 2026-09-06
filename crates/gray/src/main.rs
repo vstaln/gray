@@ -3,7 +3,7 @@
 use clap::Parser;
 use gray::Cli;
 use gray::config::Config;
-use gray::print::run_print_mode;
+use gray::print::run_print_mode_with_session;
 use gray::repl::run_repl_mode;
 
 #[tokio::main]
@@ -60,7 +60,8 @@ async fn main() -> anyhow::Result<()> {
         if let Some(agent) = cli.acp.as_deref() {
             return run_acp_print_mode(agent, prompt).await;
         }
-        run_print_mode(&config, prompt).await?;
+        run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
+            .await?;
     } else {
         gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
@@ -118,14 +119,8 @@ async fn run_resume_subcommand(
     };
     let store = JsonlSessionStore::new(root);
     let target_id = if let Some(raw) = session_id {
-        if let Some(resolved) = gray::resume::resolve_prefix(&store, raw, all).await {
-            resolved
-        } else {
-            match store.load(&gray_session::SessionId::new(raw)).await {
-                Ok(_) => gray_session::SessionId::new(raw),
-                Err(e) => anyhow::bail!("no session matching '{raw}': {e}"),
-            }
-        }
+        // Shared with `-p --session`: one validation, one error message.
+        gray::resume::resolve_session_strict(&store, raw, all).await?
     } else if last {
         let cwd = std::env::current_dir().ok();
         let summaries = store.list().await;
@@ -146,6 +141,18 @@ async fn run_resume_subcommand(
             None => return Ok(()),
         }
     };
+    // Non-TTY (`resume <id> < /dev/null`, scripts): the REPL would hit EOF
+    // and exit silently, so announce what was resumed first — never exit 0
+    // with no output. Interactive terminals skip this (the TUI owns the screen).
+    {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            println!(
+                "{}",
+                gray::resume::resumed_session_line(&store, &target_id).await?
+            );
+        }
+    }
     let _ = crossterm::terminal::disable_raw_mode();
     // NOTE: an earlier `PROMPT` positional was deleted —
     // it was accepted and then discarded. To send a first message on resume,
@@ -180,12 +187,79 @@ fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
 }
 
 async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
+    // Uniform with `Check`: user-facing errors go to stderr as
+    // `error: …` with exit 1 (not anyhow's `Error: …` dump).
+    let res = run_plugin_inner(cmd).await;
+    if let Err(e) = res {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
+    use gray::PluginCmd;
     match cmd {
-        gray::PluginCmd::Check { dir } => {
-            if let Err(e) = gray::plugin_check::check_plugin_dir(&dir).await {
-                eprintln!("error: {e:#}");
-                std::process::exit(1);
+        PluginCmd::Check { dir } => {
+            gray::plugin_check::check_plugin_dir(&dir).await?;
+            Ok(())
+        }
+        PluginCmd::List => {
+            let plugins = gray_pkg::ops::list()?;
+            if plugins.is_empty() {
+                println!("no plugins installed");
             }
+            for (name, e) in &plugins {
+                let state = if e.enabled { "" } else { " [disabled]" };
+                println!("{} {} ({}){state}", name, e.version, e.scope);
+            }
+            Ok(())
+        }
+        PluginCmd::Search { query } => {
+            let client = gray_pkg::fetch::client()?;
+            let index = gray_pkg::index::fetch_index(&client).await?;
+            let mut hits: Vec<(&String, &gray_pkg::index::Entry)> = index
+                .plugins
+                .iter()
+                .filter(|(n, _)| n.contains(query.as_str()))
+                .collect();
+            hits.sort_by(|a, b| a.0.cmp(b.0));
+            if hits.is_empty() {
+                anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
+            }
+            for (name, e) in hits {
+                println!("{} {}", name, e.version);
+            }
+            Ok(())
+        }
+        PluginCmd::Install { spec } => {
+            let r = gray_pkg::ops::install(spec, gray_pkg::ops::InstallOpts::default()).await?;
+            println!("installed {} {} at {}", r.name, r.version, r.path.display());
+            Ok(())
+        }
+        PluginCmd::Remove { name } => {
+            gray_pkg::ops::remove(&name)?;
+            println!("removed {name}");
+            Ok(())
+        }
+        PluginCmd::Update { target } => {
+            let reports = gray_pkg::ops::update(&target).await?;
+            if reports.is_empty() {
+                println!("up to date");
+            }
+            for r in reports {
+                println!("updated {} {}", r.name, r.version);
+            }
+            Ok(())
+        }
+        PluginCmd::Enable { name } => {
+            gray_pkg::ops::set_enabled(&name, true)?;
+            println!("enabled {name}");
+            Ok(())
+        }
+        PluginCmd::Disable { name } => {
+            gray_pkg::ops::set_enabled(&name, false)?;
+            println!("disabled {name}");
             Ok(())
         }
     }

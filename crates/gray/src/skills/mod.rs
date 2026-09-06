@@ -31,6 +31,9 @@ pub struct Skill {
     pub disable_model_invocation: bool,
     /// synthetic source label: "user" | "project" | "path"
     pub source: String,
+    /// declared invocation args from frontmatter `args:`/`arguments:`;
+    /// empty = the skill takes no arguments.
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -282,6 +285,7 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
         "Use the skill tool to load a skill's instructions when the task matches its description."
             .to_string(),
+        "Only load a skill for multi-step or specialized work that genuinely requires its workflow — trivial single-step edits and direct answers never require a skill.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
@@ -305,6 +309,66 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 
 pub fn format_skill_invocation(skill: &Skill) -> String {
     format!("Skill `{}`: {}", skill.name, skill.description)
+}
+
+// ---------------------------------------------------------------------------
+// Invocation-arg validation (Bug1: `/skills:<name> <bogus-args>` silently
+// ignored args while `/skills:bogus-name` errored). Skills declare args via
+// frontmatter `args:`/`arguments:` (see `load::parse_declared_args`); empty
+// means the skill takes no arguments, so any passed arg is an error naming
+// the valid args. Callers (REPL `/skills:` expansion, `SkillTool`) must
+// surface the Err string locally instead of invoking the model.
+// ---------------------------------------------------------------------------
+
+/// Validate free-form invocation args against a skill's declared `args`.
+/// `args` is the raw text after the skill name (`None`/blank = no args).
+/// Returns `Ok` when no args were passed or every token matches; otherwise
+/// `Err` naming the valid args for local display.
+pub fn validate_skill_args(skill: &Skill, args: Option<&str>) -> Result<(), String> {
+    let raw = args.unwrap_or("").trim();
+    if raw.is_empty() {
+        return Ok(());
+    }
+    if skill.args.is_empty() {
+        return Err(format!(
+            "skill '{}' takes no arguments (valid args: (none)) — got '{}'",
+            skill.name, raw
+        ));
+    }
+    let mut unknown: Vec<String> = Vec::new();
+    for tok in raw.split_whitespace() {
+        for part in tok.split(',') {
+            let p = part.trim();
+            if p.is_empty() {
+                continue;
+            }
+            let key = p
+                .trim_start_matches('-')
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .trim_start_matches('-')
+                .trim()
+                .to_string();
+            if key.is_empty() {
+                continue;
+            }
+            if !skill.args.iter().any(|a| a == &key) {
+                unknown.push(key);
+            }
+        }
+    }
+    if unknown.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "unknown argument '{}' for skill '{}' (valid args: {})",
+            unknown.join(", "),
+            skill.name,
+            skill.args.join(", ")
+        ))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -589,4 +653,55 @@ pub fn discover_skills(cwd: &Path) -> LoadSkillsResult {
         skill_paths: vec![],
         include_defaults: true,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_skill(name: &str, args: &[&str]) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: "test".to_string(),
+            file_path: PathBuf::from("/tmp/SKILL.md"),
+            base_dir: PathBuf::from("/tmp"),
+            disable_model_invocation: false,
+            source: "path".to_string(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn no_args_skill_rejects_any_arg() {
+        let s = test_skill("deploy", &[]);
+        assert!(validate_skill_args(&s, None).is_ok());
+        assert!(validate_skill_args(&s, Some("")).is_ok());
+        assert!(validate_skill_args(&s, Some("   ")).is_ok());
+        let err = validate_skill_args(&s, Some("bogus-args")).unwrap_err();
+        assert!(err.contains("deploy"), "names skill: {err}");
+        assert!(err.contains("(none)"), "names valid args: {err}");
+    }
+
+    #[test]
+    fn declared_args_reject_unknown_naming_valid() {
+        let s = test_skill("deploy", &["env", "force"]);
+        assert!(validate_skill_args(&s, Some("env")).is_ok());
+        assert!(validate_skill_args(&s, Some("env force")).is_ok());
+        assert!(validate_skill_args(&s, Some("--env --force")).is_ok());
+        let err = validate_skill_args(&s, Some("bogus")).unwrap_err();
+        assert!(err.contains("bogus"), "names unknown: {err}");
+        assert!(err.contains("env"), "names valid: {err}");
+        assert!(err.contains("force"), "names valid: {err}");
+    }
+
+    #[test]
+    fn prompt_block_routes_trivial_work_away_from_skills() {
+        let s = test_skill("anything", &[]);
+        let out = format_skills_for_prompt(&[s]);
+        assert!(
+            out.contains("trivial single-step"),
+            "routing hint missing: {out}"
+        );
+        assert!(out.contains("<available_skills>"));
+    }
 }

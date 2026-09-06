@@ -59,9 +59,15 @@ pub fn format_elapsed(d: Duration) -> String {
     }
 }
 
-/// Home-relative log path: $HOME/... -> ~/.gray/...
+/// Home-relative log path: $GRAY_HOME/... -> ~/... else $HOME/... -> ~/...
 pub fn home_relative(p: &Path) -> String {
     let s = p.to_string_lossy();
+    if let Ok(gray) = std::env::var("GRAY_HOME")
+        && !gray.trim().is_empty()
+        && (s.as_ref() == gray || s.starts_with(&format!("{gray}/")))
+    {
+        return format!("~{}", &s[gray.len()..]);
+    }
     if let Ok(home) = std::env::var("HOME")
         && !home.is_empty()
         && (s.as_ref() == home || s.starts_with(&format!("{home}/")))
@@ -403,6 +409,26 @@ mod tests {
             resume_hint(TaskId(4), &middle_out(b"hi\n", 50 * 1024, 2000, 0)),
             ""
         );
+    }
+
+    #[test]
+    fn home_relative_respects_gray_home() {
+        // Bug 1: isolated GRAY_HOME must shorten to ~, not leak real HOME.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gray = dir.path().to_string_lossy().into_owned();
+        let prev = std::env::var("GRAY_HOME").ok();
+        unsafe { std::env::set_var("GRAY_HOME", &gray) };
+        let p = std::path::PathBuf::from(&gray).join("shell/s/t1.log");
+        let shown = home_relative(&p);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+            None => unsafe { std::env::remove_var("GRAY_HOME") },
+        }
+        assert!(
+            shown.starts_with("~/"),
+            "GRAY_HOME path must shorten to ~, got {shown}"
+        );
+        assert!(shown.contains("shell/s/t1.log"), "{shown}");
     }
 
     #[test]

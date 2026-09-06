@@ -77,6 +77,31 @@ fails nonzero with per-check PASS/FAIL lines. Test the hang/crash/
 reorder/empty-name modes against the fixtures in
 `crates/gray-plugin/testdata/`.
 
+## `/plugin` reference (REPL + CLI parity)
+
+`/plugin` in the REPL (`/plugins` alias, case-insensitive) mirrors the
+`gray plugin` CLI one-to-one; bare `/plugin` lists.
+
+| Subcommand | REPL | CLI | What it does |
+|---|---|---|---|
+| `list` | `/plugin list` | `gray plugin list` | list installed plugins (`[disabled]` marks boot-skipped) |
+| `search <q>` | `/plugin search <q>` | `gray plugin search <q>` | substring search over the Gray Index (on miss: try an https URL) |
+| `install <name\|url>` | `/plugin install <…>` | `gray plugin install <…>` | install by Gray Index name or https tarball URL |
+| `remove <name>` | `/plugin remove <name>` | `gray plugin remove <name>` | remove an installed plugin |
+| `update [name\|all]` | `/plugin update` | `gray plugin update [all]` | update one plugin or everything (bare = `all`) |
+| `enable <name>` | `/plugin enable <name>` | `gray plugin enable <name>` | re-enable a disabled plugin |
+| `disable <name>` | `/plugin disable <name>` | `gray plugin disable <name>` | skip at boot without uninstalling |
+| `check <dir>` | `/plugin check <dir>` | `gray plugin check <dir>` | conformance checks on a plugin dir (see above) |
+
+Copy rule: the gray source is always labeled `Gray Index`; the pi
+source is always labeled exactly `Pi Gallery (preview)` — same strings
+as the `/plugin search` completion row. `search` covers the Gray Index
+today; Pi Gallery (preview) is the P2 source (see the P2 Pi Gallery
+design); official plugins below ship from the Gray Index.
+
+Trust: a project-scoped plugin installs only after the project is
+trusted — never auto-install from an untrusted checkout.
+
 ## Publish
 
 Ship a directory with an executable (see `plugins/echo/`); users enable
@@ -85,6 +110,14 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 
 ## Links
 
+- Official plugins (the Gray Index seed,
+  [`plugins/official.json`](../plugins/official.json)): `gateway` (source
+  `plugins/gateway`). (`echo` stays a protocol reference only — see the top
+  of this file — not an official plugin.) `cron` is now an external plugin.
+- Gateway sidecar ([`plugins/gateway/gateway.sh`](../plugins/gateway/gateway.sh)):
+  answers `/gateway` over `command/run` by delegating argv to the
+  `gray gateway …` CLI (`status|install|uninstall|pairing|invite`),
+  manifest `commands:["/gateway"]` + `capabilities:["exec"]`.
 - Cron ([`plugins/cron/cron.sh`](../plugins/cron/cron.sh), exec wrapper
   over the `gray-cron-sidecar` binary): the scheduler lives in the
   sidecar — same store/parser as in-process `gray-cron` (no
@@ -98,3 +131,5 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
   double-run.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
 - Gateway (chat delivery, shares the agent builder): `crates/gray-gateway/`.
+- Pi Gallery (preview): the P2 plugin source (see the P2 Pi Gallery design);
+  official plugins above ship from the Gray Index.

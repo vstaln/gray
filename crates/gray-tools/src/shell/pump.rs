@@ -233,8 +233,9 @@ async fn pump_main(
     }
     drop(tx); // writer now lives on the reader clones; ends at double EOF
 
-    // Missing parents are created (`~/.gray/shell/<session>/`); anything that
-    // fails here (or any later write) sets the flag — never panics.
+    // Missing parents are created (`$GRAY_HOME/shell/<session>/`, fallback
+    // `~/.gray/shell/<session>/`); anything that fails here (or any later
+    // write) sets the flag — never panics.
     let mut log_failed = false;
     if let Some(parent) = log_path.parent()
         && !parent.as_os_str().is_empty()

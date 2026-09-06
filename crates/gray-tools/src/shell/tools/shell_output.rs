@@ -176,21 +176,40 @@ fn parse_task_id(raw: &str) -> Option<TaskId> {
 }
 
 fn unknown_task(session: &str, raw: &str) -> String {
+    // Chosen fix for session-scoped tasks: keep scoping (frozen contract),
+    // make errors unambiguous by naming sessions and where the id lives.
     let ids: Vec<String> = registry()
         .list(session)
         .iter()
         .map(|t| t.id.to_string())
         .collect();
-    if ids.is_empty() {
+    let mut out = if ids.is_empty() {
         format!(
-            "unknown task \"{raw}\" this session. No tasks this session yet — bash(background=true) starts one."
+            "unknown task \"{raw}\" in session \"{session}\". No tasks this session yet — bash(background=true) starts one."
         )
     } else {
         format!(
-            "unknown task \"{raw}\" this session. Known tasks: {}.",
+            "unknown task \"{raw}\" in session \"{session}\". Known tasks: {}.",
             ids.join(", ")
         )
+    };
+    // If the numeric id parses and lives in other session(s), say where —
+    // tasks are session-scoped, so cross-session refs need the owning session.
+    let num = raw.trim().strip_prefix(['t', 'T']).unwrap_or(raw.trim());
+    if let Ok(n) = num.parse::<u32>() {
+        let others: Vec<String> = registry()
+            .sessions_with_task(crate::shell::contract::TaskId(n))
+            .into_iter()
+            .filter(|s| s != session)
+            .collect();
+        if !others.is_empty() {
+            out.push_str(&format!(
+                " Exists in session-scoped session(s): {}. Tasks are session-scoped.",
+                others.join(", ")
+            ));
+        }
     }
+    out
 }
 
 /// No task_id: one line per task (id-sorted; `list` already sorts) plus a
@@ -710,6 +729,34 @@ mod tests {
             .await;
         assert!(!page2.is_error, "{}", page2.content);
         assert!(page2.content.contains("…more available"), "pages chain");
+    }
+
+    #[tokio::test]
+    async fn cross_session_read_error_names_other_session() {
+        // Bug 3: session-scoped by design; error must say where tN actually lives.
+        let sess_a = sess("cross-a");
+        let sess_b = sess("cross-b");
+        let ctx_a = ctx_for(&sess_a);
+        let bg = BashTool
+            .execute(&ctx_a, json!({"command": "echo hi", "background": true}))
+            .await;
+        assert!(!bg.is_error, "{}", bg.content);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let ctx_b = ctx_for(&sess_b);
+        let out = ShellOutputTool
+            .execute(&ctx_b, json!({"task_id": "t1"}))
+            .await;
+        assert!(
+            out.is_error,
+            "cross-session read must stay scoped, got {}",
+            out.content
+        );
+        assert!(out.content.contains("unknown task"), "{}", out.content);
+        assert!(
+            out.content.contains(&sess_a) || out.content.contains("session-scoped"),
+            "error must name where t1 lives (session {sess_a}), got {}",
+            out.content
+        );
     }
 
     #[tokio::test]

@@ -386,6 +386,12 @@ pub struct AcpSession {
     cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Display-only label for the permission posture (`on`/`off`).
+/// No approval-logic effect; used by `/acp status` rendering.
+pub fn auto_approve_label(auto_approve: bool) -> &'static str {
+    if auto_approve { "on" } else { "off" }
+}
+
 impl AcpSession {
     pub async fn start(opts: AcpSessionOptions) -> Result<Self, AcpError> {
         let display = if opts.display.is_empty() {
@@ -399,7 +405,16 @@ impl AcpSession {
                 opts.spec.install_hint.to_string(),
             ));
         }
-        let spec = opts.spec.clone();
+        // The pinned codex adapter predates the current ~/.codex/config.toml
+        // schema and crashes parsing it: run it under an isolated CODEX_HOME
+        // (defaults + copied auth) instead of the user's real one.
+        let mut spec = opts.spec.clone();
+        if spec.key == "codex" && !spec.env.iter().any(|(k, _)| k == "CODEX_HOME") {
+            let home = crate::registry::ensure_codex_home();
+            spec.env
+                .push(("CODEX_HOME".to_string(), home.display().to_string()));
+        }
+        let spec = spec;
         let cwd = opts.cwd.clone();
         let resume = opts.resume_session_id.clone();
         let prompt_impl = opts.permission_prompt.clone();
@@ -465,6 +480,13 @@ impl AcpSession {
 
     pub fn usage_text(&self) -> Option<&str> {
         self.usage_text.as_deref()
+    }
+
+    /// Whether this session auto-approves permission requests
+    /// (`--yolo` / `GRAY_ACP_AUTO_APPROVE=1`). Display-only accessor;
+    /// approval logic itself is unchanged.
+    pub fn auto_approve(&self) -> bool {
+        self.auto_approve
     }
 
     pub async fn prompt(
@@ -609,4 +631,15 @@ impl AcpSession {
 fn _keep_content_imports(block: ContentBlock, text: TextContent) {
     let _ = ContentBlock::Text(text);
     let _ = block;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::auto_approve_label;
+
+    #[test]
+    fn auto_approve_label_renders_on_off() {
+        assert_eq!(auto_approve_label(true), "on");
+        assert_eq!(auto_approve_label(false), "off");
+    }
 }

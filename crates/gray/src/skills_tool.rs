@@ -160,6 +160,19 @@ impl Tool for SkillTool {
             Ok(c) => c,
             Err(e) => return fail(format!("read failed for {}: {e}", path.display())),
         };
+        // Bug1: unknown invocation args must fail locally (naming valid args)
+        // instead of silently substituting/ignoring. Skills with no declared
+        // `args:` take none — any passed arg is an error.
+        if let Some(a) = args_str.as_deref()
+            && !a.trim().is_empty()
+        {
+            let (maybe_skill, _) = crate::skills::load_skill_from_file(&path, "path");
+            if let Some(skill) = maybe_skill
+                && let Err(msg) = crate::skills::validate_skill_args(&skill, Some(a))
+            {
+                return fail(msg);
+            }
+        }
         let skill_dir = path.parent().unwrap_or(Path::new(".")).to_string_lossy();
         let body = strip_frontmatter(&content);
         let body = apply_substitutions(body, args_str.as_deref(), &skill_dir);
@@ -210,5 +223,76 @@ mod tests {
         let resolved = resolve_skill_name(tmp.path(), "commit").unwrap();
         assert_eq!(resolved, dir.join("SKILL.md"));
         assert!(resolve_skill_name(tmp.path(), "missing").is_none());
+    }
+
+    fn tool_ctx(cwd: &std::path::Path) -> gray_core::agent::ToolContext {
+        gray_core::agent::ToolContext {
+            cwd: cwd.to_path_buf(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn skill_tool_rejects_unknown_args_naming_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".gray/skills/deploy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: deploy\ndescription: test\nargs: env, force\n---\nDeploy $ARGUMENTS.",
+        )
+        .unwrap();
+        let tool = SkillTool;
+        let ctx = tool_ctx(tmp.path());
+        let skill_path = dir.join("SKILL.md");
+        // known arg passes (no error)
+        let ok = tool
+            .execute(
+                &ctx,
+                serde_json::json!({"path": skill_path.to_string_lossy(), "args": "env"}),
+            )
+            .await;
+        assert!(!ok.is_error, "known arg must pass: {}", ok.content);
+        // unknown arg fails locally naming valid args, no model needed
+        let err = tool
+            .execute(
+                &ctx,
+                serde_json::json!({"path": skill_path.to_string_lossy(), "args": "bogus-args"}),
+            )
+            .await;
+        assert!(err.is_error, "unknown arg must fail");
+        assert!(
+            err.content.contains("bogus-args"),
+            "names unknown: {}",
+            err.content
+        );
+        assert!(err.content.contains("env"), "names valid: {}", err.content);
+    }
+
+    #[tokio::test]
+    async fn skill_tool_rejects_any_arg_when_no_args_declared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join(".gray/skills/plain");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: plain\ndescription: test\n---\nPlain body.",
+        )
+        .unwrap();
+        let tool = SkillTool;
+        let ctx = tool_ctx(tmp.path());
+        let skill_path = dir.join("SKILL.md");
+        let err = tool
+            .execute(
+                &ctx,
+                serde_json::json!({"path": skill_path.to_string_lossy(), "args": "bogus-args"}),
+            )
+            .await;
+        assert!(err.is_error, "arg on no-args skill must fail");
+        assert!(
+            err.content.contains("(none)"),
+            "names valid: {}",
+            err.content
+        );
     }
 }

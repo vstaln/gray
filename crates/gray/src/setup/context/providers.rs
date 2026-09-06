@@ -279,6 +279,18 @@ pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
     None
 }
 
+/// Ids in the in-memory model context cache (completion source for `/model`;
+/// no I/O, safe per keystroke; empty until models are fetched/cached).
+pub fn cached_model_ids() -> Vec<String> {
+    if let Ok(g) = model_context_cache().read() {
+        let mut ids: Vec<String> = g.keys().cloned().collect();
+        ids.sort();
+        ids
+    } else {
+        Vec::new()
+    }
+}
+
 /// Gap-fill insert: leaves an existing entry (e.g. provider-fetched) alone.
 /// Provider values always win over the LiteLLM table regardless of arrival order.
 pub fn cache_model_context_if_absent(model_id: &str, length: usize) {
