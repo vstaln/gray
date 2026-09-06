@@ -40,10 +40,9 @@ pub(crate) fn pad_card_row(line: Line<'static>, width: usize) -> Line<'static> {
     line
 }
 
-/// Paints gateway boot rows into `area` with no bg flood (transparent
-/// terminal bg, text only). The ONE painter for both surfaces —
-/// `insert_before` for the committed card and `frame.buffer_mut()` for the
-/// live viewport panel.
+/// Paints gateway boot rows into `area` (rows carry the card bg; no extra
+/// flood). The ONE painter for both surfaces — `insert_before` for the
+/// committed card and `frame.buffer_mut()` for the live viewport panel.
 pub(crate) fn paint_card(
     lines: &[Line<'static>],
     area: ratatui::layout::Rect,
@@ -57,13 +56,14 @@ pub(crate) fn paint_card(
 }
 
 /// Tight gateway boot card: top margin, header with ONE leading space, rows
-/// directly below (no breathing row), bottom margin. Transparent bg, text
-/// only — see [`pad_card_row`].
+/// directly below (no breathing row), bottom margin. Gray overlay band like
+/// every other card — see [`pad_card_row`].
 pub(crate) fn format_gateway_boot_card(
     header: Line<'static>,
     body: &[Line<'static>],
     width: usize,
 ) -> Vec<Line<'static>> {
+    let bg_color = Color::Rgb(22, 22, 22);
     let max_w = width.saturating_sub(4).max(1);
     let mut rows: Vec<Line<'static>> = Vec::new();
     rows.push(Line::from(""));
@@ -82,7 +82,18 @@ pub(crate) fn format_gateway_boot_card(
         rows.extend(wrap_styled_line(line, max_w));
     }
     rows.push(Line::from(""));
-    rows.into_iter().map(|l| pad_card_row(l, width)).collect()
+    rows.into_iter()
+        .map(|l| {
+            let mut l = pad_card_row(l, width);
+            l.style = l.style.bg(bg_color);
+            for span in l.spans.iter_mut() {
+                if span.style.bg.is_none() {
+                    span.style = span.style.bg(bg_color);
+                }
+            }
+            l
+        })
+        .collect()
 }
 
 /// True for the two gateway boot headers, so resize reflow can re-render
