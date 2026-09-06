@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "plugins": {
+    "cron": { "source": "plugins/cron", "scope": "official" },
+    "gateway": { "source": "plugins/gateway", "scope": "official" }
+  }
+}

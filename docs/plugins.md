@@ -85,6 +85,14 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 
 ## Links
 
+- Official plugins (the Gray Index seed,
+  [`plugins/official.json`](../plugins/official.json)): `cron` (source
+  `plugins/cron`), `gateway` (source `plugins/gateway`). (`echo` stays a
+  protocol reference only — see the top of this file — not an official plugin.)
+- Gateway sidecar ([`plugins/gateway/gateway.sh`](../plugins/gateway/gateway.sh)):
+  answers `/gateway` over `command/run` by delegating argv to the
+  `gray gateway …` CLI (`status|install|uninstall|pairing|invite`),
+  manifest `commands:["/gateway"]` + `capabilities:["exec"]`.
 - Cron ([`plugins/cron/cron.sh`](../plugins/cron/cron.sh), exec wrapper
   over the `gray-cron-sidecar` binary): the scheduler lives in the
   sidecar — same store/parser as in-process `gray-cron` (no
@@ -98,3 +106,5 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
   double-run.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
 - Gateway (chat delivery, shares the agent builder): `crates/gray-gateway/`.
+- Pi Gallery (preview): the P2 plugin source (see the P2 Pi Gallery design);
+  official plugins above ship from the Gray Index.
