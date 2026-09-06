@@ -2,6 +2,7 @@ pub mod agent;
 mod agent_compact;
 mod agent_loop;
 mod agent_tools;
+pub mod approvals;
 pub mod error;
 pub mod event;
 pub mod message;

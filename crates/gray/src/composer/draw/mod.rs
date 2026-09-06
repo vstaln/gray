@@ -329,24 +329,37 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         } else {
             tui.thinking_effort.clone()
         };
-        let right_parts = if model_display.is_empty() {
-            vec![Span::styled(
-                effort_display.clone(),
-                Style::default().fg(Color::Rgb(108, 108, 108)),
-            )]
-        } else {
-            vec![
-                Span::styled(
-                    model_display.clone(),
-                    Style::default().fg(Color::Rgb(140, 140, 140)),
-                ),
-                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
-                Span::styled(
+        let right_parts = {
+            let perm_badge: Option<(String, Color)> = match tui.permission_mode.as_str() {
+                "full" => Some((" · full access".to_string(), Color::Rgb(200, 120, 120))),
+                "read-only" => Some((" · read-only".to_string(), Color::Rgb(130, 145, 160))),
+                _ => None,
+            };
+            let mut v = if model_display.is_empty() {
+                vec![Span::styled(
                     effort_display.clone(),
                     Style::default().fg(Color::Rgb(108, 108, 108)),
-                ),
-            ]
+                )]
+            } else {
+                vec![
+                    Span::styled(
+                        model_display.clone(),
+                        Style::default().fg(Color::Rgb(140, 140, 140)),
+                    ),
+                    Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                    Span::styled(
+                        effort_display.clone(),
+                        Style::default().fg(Color::Rgb(108, 108, 108)),
+                    ),
+                ]
+            };
+            if let Some((badge, color)) = &perm_badge {
+                v.push(Span::styled(badge.clone(), Style::default().fg(*color)));
+            }
+            let badge_len = perm_badge.map(|(b, _)| b.chars().count()).unwrap_or(0);
+            (v, badge_len)
         };
+        let (right_parts, badge_len) = right_parts;
         // Cron ticking clock — next due countdown, ticks via tick_status
         let cron_display: Option<(String, Color)> =
             tui.next_cron.as_ref().and_then(|(name, next)| {
@@ -375,9 +388,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             .map(|(s, _)| s.chars().count() + 3)
             .unwrap_or(0);
         let right_len = if model_display.is_empty() {
-            effort_display.chars().count()
+            effort_display.chars().count() + badge_len
         } else {
-            model_display.chars().count() + 3 + effort_display.chars().count()
+            model_display.chars().count() + 3 + effort_display.chars().count() + badge_len
         };
         let left_len =
             1 + ctx_display.chars().count() + 3 + cache_display.chars().count() + cron_len;

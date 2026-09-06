@@ -104,6 +104,8 @@ pub struct ToolContext {
     pub questions: Option<crate::questions::QuestionBridge>,
     pub session_id: Option<String>,
     pub permission: PermissionMode,
+    /// Tool approval gate; `None` means everything runs ungated.
+    pub approvals: Option<crate::approvals::ApprovalGate>,
 }
 
 impl Default for ToolContext {
@@ -114,6 +116,7 @@ impl Default for ToolContext {
             questions: None,
             session_id: None,
             permission: PermissionMode::default(),
+            approvals: None,
         }
     }
 }
@@ -981,6 +984,7 @@ mod agent_tests {
                     questions: None,
                     session_id: None,
                     permission: PermissionMode::Ask,
+                    approvals: None,
                 },
             )
             .await
