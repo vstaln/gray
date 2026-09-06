@@ -63,15 +63,15 @@ fn parse_line_hint(v: &Value) -> Option<usize> {
     if let Some(n) = val.as_u64() {
         return Some(n as usize);
     }
-    if let Some(n) = val.as_i64() {
-        if n > 0 {
-            return Some(n as usize);
-        }
+    if let Some(n) = val.as_i64()
+        && n > 0
+    {
+        return Some(n as usize);
     }
-    if let Some(s) = val.as_str() {
-        if let Ok(n) = s.trim().parse::<usize>() {
-            return Some(n);
-        }
+    if let Some(s) = val.as_str()
+        && let Ok(n) = s.trim().parse::<usize>()
+    {
+        return Some(n);
     }
     None
 }

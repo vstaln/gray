@@ -867,10 +867,11 @@ pub fn extract_first_prefix_line_number(text: &str) -> Option<usize> {
         };
         let (head, _) = line.split_at(tab);
         let digits = head.trim_start_matches(|c: char| c.is_whitespace());
-        if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(n) = digits.parse::<usize>() {
-                return Some(n);
-            }
+        if !digits.is_empty()
+            && digits.bytes().all(|b| b.is_ascii_digit())
+            && let Ok(n) = digits.parse::<usize>()
+        {
+            return Some(n);
         }
     }
     None
