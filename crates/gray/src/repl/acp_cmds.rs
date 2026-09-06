@@ -88,6 +88,34 @@ fn set_model_label(tui: Option<&crate::composer::SharedTui>, label: &str) {
     }
 }
 
+/// Display-only: switched-to line gains ` (auto-approve)` when the session
+/// auto-approves (`--yolo` / `GRAY_ACP_AUTO_APPROVE=1`). No approval effect.
+pub(crate) fn switch_message(key: &str, auto_approve: bool) -> String {
+    if auto_approve {
+        format!("switched to acp:{key} (auto-approve) — prompts route there until /acp off")
+    } else {
+        format!("switched to acp:{key} — prompts route there until /acp off")
+    }
+}
+
+/// Display-only: `/acp status` line with `auto_approve: on/off` so the
+/// permission posture is visible. No approval effect.
+pub(crate) fn status_line(
+    agent_key: &str,
+    session_prefix: &str,
+    usage: Option<&str>,
+    auto_approve: bool,
+) -> String {
+    let mut line = format!(
+        "acp:{agent_key} · session {session_prefix}… · auto_approve: {}",
+        gray_acp::session::auto_approve_label(auto_approve)
+    );
+    if let Some(u) = usage {
+        line.push_str(&format!(" · {u}"));
+    }
+    line
+}
+
 /// Shared spawn path for one-shot delegates and sticky switches: resolves,
 /// starts, and announces the session. Returns `None` after printing why.
 async fn start_session(
@@ -194,11 +222,10 @@ pub(crate) async fn handle_acp_command(
             if let Some(s) = acp.as_ref() {
                 let sid = s.session_id().to_string();
                 let prefix: String = sid.chars().take(8).collect();
-                let mut line = format!("acp:{} · session {prefix}…", s.agent_key());
-                if let Some(u) = s.usage_text() {
-                    line.push_str(&format!(" · {u}"));
-                }
-                say(tui, &line);
+                say(
+                    tui,
+                    &status_line(s.agent_key(), &prefix, s.usage_text(), s.auto_approve()),
+                );
             } else {
                 say(tui, "acp: native mode — /acp <agent> to switch");
             }
@@ -232,11 +259,9 @@ pub(crate) async fn handle_acp_command(
             }
             if let Some(s) = start_session(spec, display, cwd, yolo, tui).await {
                 let key = s.agent_key().to_string();
+                let msg = switch_message(&key, s.auto_approve());
                 set_model_label(tui, &format!("acp:{key}"));
-                say(
-                    tui,
-                    &format!("switched to acp:{key} — prompts route there until /acp off"),
-                );
+                say(tui, &msg);
                 *acp = Some(s);
             }
         }
@@ -505,6 +530,8 @@ fn end_thinking_gap(tui: &TuiOpt) {
 mod acp_tests {
     use super::AcpAction;
     use super::parse_acp_args;
+    use super::status_line;
+    use super::switch_message;
 
     #[test]
     fn acp_args_parse() {
@@ -543,5 +570,33 @@ mod acp_tests {
             AcpAction::Delegate { yolo, .. } => assert!(yolo),
             _ => panic!("expected delegate"),
         }
+    }
+
+    #[test]
+    fn switch_message_marks_auto_approve() {
+        assert_eq!(
+            switch_message("codex", false),
+            "switched to acp:codex — prompts route there until /acp off"
+        );
+        assert_eq!(
+            switch_message("codex", true),
+            "switched to acp:codex (auto-approve) — prompts route there until /acp off"
+        );
+    }
+
+    #[test]
+    fn status_line_includes_auto_approve() {
+        assert_eq!(
+            status_line("codex", "abc12345", None, false),
+            "acp:codex · session abc12345… · auto_approve: off"
+        );
+        assert_eq!(
+            status_line("codex", "abc12345", None, true),
+            "acp:codex · session abc12345… · auto_approve: on"
+        );
+        assert_eq!(
+            status_line("codex", "abc12345", Some("1k tok"), true),
+            "acp:codex · session abc12345… · auto_approve: on · 1k tok"
+        );
     }
 }

@@ -101,10 +101,17 @@ async fn run_gateway_inner(
     token: tokio_util::sync::CancellationToken,
     board: Option<GatewayStatusBoard>,
 ) -> anyhow::Result<()> {
+    // Cross-process singleton: two gateway processes share one gateway.yaml /
+    // one Discord token, and Discord allows concurrent sessions — without
+    // this both connect and both reply to every message. `_lock` is held
+    // until return; flock releases on crash, so no stale state.
+    let Some(_lock) = crate::lock::try_acquire_gateway_lock() else {
+        anyhow::bail!(crate::lock::ALREADY_RUNNING_MESSAGE);
+    };
     let cfg = load_gateway_config();
     let mut runner = GatewayRunner::from_config(cfg)?;
     if runner.adapters.is_empty() {
-        anyhow::bail!("no gateway platforms enabled — edit ~/.gray/gateway.yaml");
+        anyhow::bail!("{}", crate::config::no_platforms_message());
     }
     // Warn loudly when a platform has no operator allowlist: everyone will pair.
     for (plat, pc) in &runner.config.platforms {

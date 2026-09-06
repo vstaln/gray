@@ -134,20 +134,10 @@ pub(crate) fn highlight_line_spans(
             if text.is_empty() {
                 continue;
             }
-            let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
-            let mut st = Style::default().fg(fg);
-            if style
-                .font_style
-                .contains(gray_markdown::syntect::highlighting::FontStyle::BOLD)
-            {
-                st = st.add_modifier(Modifier::BOLD);
-            }
-            if style
-                .font_style
-                .contains(gray_markdown::syntect::highlighting::FontStyle::ITALIC)
-            {
-                st = st.add_modifier(Modifier::ITALIC);
-            }
+            // Reuse the markdown code-color conversion so diffs honor the
+            // same terminal adaptation (256/16-color downgrade, NO_COLOR,
+            // polarity-safe) instead of raw truecolor RGB.
+            let mut st = gray_markdown::syntect_to_ratatui_fg(style);
             if let Some(bg_c) = bg {
                 st = st.bg(bg_c);
             }

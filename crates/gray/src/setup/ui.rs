@@ -49,19 +49,11 @@ impl BackgroundSnapshot {
                     ));
                 }
                 crate::composer::TranscriptEntry::ToolBox { header, body } => {
-                    if crate::composer::transcript::is_gateway_boot_header(header) {
-                        lines.extend(crate::composer::transcript::format_gateway_boot_card(
-                            header.clone(),
-                            body,
-                            w,
-                        ));
-                    } else {
-                        lines.extend(crate::composer::transcript::format_tool_box_lines(
-                            header.clone(),
-                            body,
-                            w,
-                        ));
-                    }
+                    lines.extend(crate::composer::transcript::format_tool_box_lines(
+                        header.clone(),
+                        body,
+                        w,
+                    ));
                 }
                 crate::composer::TranscriptEntry::StyledLines {
                     lines: styled,
