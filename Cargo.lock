@@ -1633,7 +1633,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
- "fs2",
  "futures",
  "gray-core",
  "gray-cron",

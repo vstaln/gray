@@ -313,8 +313,13 @@ mod tests {
     #[test]
     fn spec_splits_names_and_urls() {
         assert!(matches!(parse_spec("foo"), NameOrUrl::Name(_)));
+        assert!(matches!(parse_spec("  foo  "), NameOrUrl::Name(_)));
         assert!(matches!(
             parse_spec("https://h/x.tar.gz"),
+            NameOrUrl::Url(_)
+        ));
+        assert!(matches!(
+            parse_spec("http://h/x.tar.gz"),
             NameOrUrl::Url(_)
         ));
         assert_eq!(name_from_url("https://h/plugins/foo.tar.gz?x=1"), "foo");
