@@ -392,5 +392,21 @@ mod tests {
             result_summary_lines(&qs, &answered),
             vec!["? question 0?".to_string(), "  → Alpha".to_string()]
         );
+
+        let multi_qs = vec![UserQuestion {
+            id: "q1".into(),
+            header: "H".into(),
+            question: "Allow bash?\ndf -h /".into(),
+            options: vec![],
+            is_other: false,
+        }];
+        assert_eq!(
+            result_summary_lines(&multi_qs, &[]),
+            vec![
+                "? Allow bash?".to_string(),
+                "  df -h /".to_string(),
+                "  → skipped".to_string()
+            ]
+        );
     }
 }
