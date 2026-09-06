@@ -536,7 +536,7 @@ mod tests {
         );
         platforms.insert(
             Platform::Discord,
-            PlatformConfig::with_token(&"d".repeat(40)),
+            PlatformConfig::with_token("d".repeat(40)),
         );
         platforms.insert(
             Platform::Slack,
@@ -893,6 +893,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn boot_cap_is_lower_than_steady_state() {
         assert!(BOOT_MAX_ATTEMPTS >= 1);
         assert!(BOOT_MAX_ATTEMPTS < MAX_RECONNECT_ATTEMPTS);

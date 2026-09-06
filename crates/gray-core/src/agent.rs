@@ -623,7 +623,7 @@ mod agent_tests {
                 0,
                 Some(id.to_string()),
                 Some("read".to_string()),
-                &format!(r#"{{"path":"{path}"}}"#),
+                format!(r#"{{"path":"{path}"}}"#),
             ),
             StreamEvent::message_complete(Some(StopReason::ToolUse), None),
         ]

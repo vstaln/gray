@@ -1147,7 +1147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_turkish_dotted_I_hit_is_char_based() {
+    async fn search_turkish_dotted_i_hit_is_char_based() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
         // 100 × İ (U+0130, 2 bytes, lowercases to 2 chars) shifts lowercased
