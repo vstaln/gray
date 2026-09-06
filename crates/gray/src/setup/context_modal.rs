@@ -227,13 +227,21 @@ pub fn run_context_modal(
                     ])
                 };
                 let details = [
-                    row("■", c_sys, "System prompt", parts.system_prompt),
-                    row("■", c_ctx, "Project context", parts.project_context),
-                    row("■", c_tools, "System tools", parts.tools),
-                    row("■", c_skills, "Skills", parts.skills),
-                    row("■", c_msgs, "Messages", parts.messages),
+                    row(icon("cell"), c_sys, "System prompt", parts.system_prompt),
+                    row(
+                        icon("cell"),
+                        c_ctx,
+                        "Project context",
+                        parts.project_context,
+                    ),
+                    row(icon("cell"), c_tools, "System tools", parts.tools),
+                    row(icon("cell"), c_skills, "Skills", parts.skills),
+                    row(icon("cell"), c_msgs, "Messages", parts.messages),
                     Line::from(vec![
-                        Span::styled("· ", Style::default().fg(c_free).bg(box_bg)),
+                        Span::styled(
+                            format!("{} ", icon("cell_free")),
+                            Style::default().fg(c_free).bg(box_bg),
+                        ),
                         Span::styled(
                             format!(
                                 "Free space: {} ({}%)",
@@ -244,7 +252,10 @@ pub fn run_context_modal(
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled("▪ ", Style::default().fg(c_reserve).bg(box_bg)),
+                        Span::styled(
+                            format!("{} ", icon("cell_buffer")),
+                            Style::default().fg(c_reserve).bg(box_bg),
+                        ),
                         Span::styled(
                             format!(
                                 "Autocompact buffer: {} tokens ({}%)",
@@ -260,13 +271,13 @@ pub fn run_context_modal(
                     for c in 0..10usize {
                         let kind = flat[(r as usize) * 10 + c];
                         let (g, col) = match kind {
-                            0 => ("■", c_sys),
-                            1 => ("■", c_ctx),
-                            2 => ("■", c_tools),
-                            3 => ("■", c_skills),
-                            4 => ("■", c_msgs),
-                            5 => ("·", c_free),
-                            _ => ("▪", c_reserve),
+                            0 => (icon("cell"), c_sys),
+                            1 => (icon("cell"), c_ctx),
+                            2 => (icon("cell"), c_tools),
+                            3 => (icon("cell"), c_skills),
+                            4 => (icon("cell"), c_msgs),
+                            5 => (icon("cell_free"), c_free),
+                            _ => (icon("cell_buffer"), c_reserve),
                         };
                         spans.push(Span::styled(
                             format!("{g} "),
