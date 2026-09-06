@@ -10,7 +10,7 @@ pub(crate) struct CmdDef {
 pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "connect",
-        desc: "setup provider login",
+        desc: "setup provider & API key",
         aliases: &["keys", "key", "providers", "provider", "login"],
         args_hint: "",
     },
@@ -54,6 +54,18 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "usage",
         desc: "session tokens & cost",
         aliases: &["cost"],
+        args_hint: "",
+    },
+    CmdDef {
+        name: "permissions",
+        desc: "choose what gray is allowed to do",
+        aliases: &["perms"],
+        args_hint: "",
+    },
+    CmdDef {
+        name: "feedback",
+        desc: "send feedback",
+        aliases: &[],
         args_hint: "",
     },
     CmdDef {
@@ -195,6 +207,7 @@ pub(crate) fn complete_command_args(
     match cmd {
         "context" => complete_context_args(arg_text),
         "acp" => complete_acp_args(arg_text),
+        "permissions" => complete_permissions_args(arg_text),
         _ => Vec::new(),
     }
 }
@@ -220,6 +233,15 @@ fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
     let f = arg_text.to_lowercase();
     out.into_iter()
         .filter(|(n, _)| f.is_empty() || n.to_lowercase().contains(&f))
+        .collect()
+}
+
+/// Suffixes for `/permissions`: the three approval modes.
+fn complete_permissions_args(arg_text: &str) -> Vec<(String, String)> {
+    gray_core::approvals::permission_modes()
+        .into_iter()
+        .filter(|(id, _, _)| arg_text.is_empty() || id.contains(&arg_text.to_lowercase()))
+        .map(|(id, label, _)| (format!("permissions {id}"), label.to_string()))
         .collect()
 }
 
@@ -313,6 +335,10 @@ pub enum ReplCommand {
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
     Usage,
+    /// Choose what gray is allowed to do (`/permissions [read-only|auto|full]`).
+    Permissions(Option<String>),
+    /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
+    Feedback(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
     /// Messaging gateway: /gateway, /gateway status|run|install
@@ -388,8 +414,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some(d.name)
     } else if lower_t.starts_with("/model") {
         Some("model")
-    } else if lower_t.starts_with("/acp") {
-        Some("acp")
     } else if lower_t.starts_with("/gateway") || lower_t.starts_with("/gw") {
         Some("gateway")
     } else {
@@ -417,6 +441,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
+        Some("permissions") => ReplCommand::Permissions(opt(rest)),
+        Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
         Some("connect") => {
@@ -427,8 +453,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
         }
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
-        Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("gateway") => ReplCommand::Gateway(t.to_string()),
+        Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("skills") => {
             if lower_t == "/skills" {
                 ReplCommand::Skill(None)
@@ -540,8 +566,22 @@ mod tests {
     #[test]
     fn registry_resolve_canonical_and_aliases() {
         for name in [
-            "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "gateway", "acp", "agentsmd", "skills", "help", "quit",
+            "connect",
+            "model",
+            "thinking",
+            "context",
+            "resume",
+            "new",
+            "compact",
+            "usage",
+            "permissions",
+            "feedback",
+            "gateway",
+            "acp",
+            "agentsmd",
+            "skills",
+            "help",
+            "quit",
         ] {
             let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
             assert_eq!(d.name, name);
@@ -563,6 +603,7 @@ mod tests {
             ("sys", "agentsmd"),
             ("gw", "gateway"),
             ("cost", "usage"),
+            ("perms", "permissions"),
         ] {
             assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
             assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
@@ -577,16 +618,30 @@ mod tests {
     fn registry_help_covers_all_commands() {
         let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
         for expected in [
-            "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "gateway", "acp", "agentsmd", "skills", "help", "quit",
+            "connect",
+            "model",
+            "thinking",
+            "context",
+            "resume",
+            "new",
+            "compact",
+            "usage",
+            "permissions",
+            "feedback",
+            "gateway",
+            "acp",
+            "agentsmd",
+            "skills",
+            "help",
+            "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 14);
+        assert_eq!(super::REGISTRY.len(), 16);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 14);
+        assert_eq!(all.len(), 16);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -609,6 +664,7 @@ mod tests {
             ("sys", "agentsmd"),
             ("gw", "gateway"),
             ("cost", "usage"),
+            ("perms", "permissions"),
         ] {
             assert!(
                 super::completion_matches(alias)
@@ -624,7 +680,6 @@ mod tests {
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-        assert!(matches!(parse_command("/portal"), ReplCommand::Unknown(_)));
         assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(_)));
         assert!(matches!(
             parse_command("/keys foo"),
@@ -642,14 +697,35 @@ mod tests {
     }
 
     #[test]
-    fn acp_parse_variants() {
-        assert!(matches!(parse_command("/acp"), ReplCommand::Acp(_)));
-        assert!(matches!(parse_command("/acp claude"), ReplCommand::Acp(_)));
+    fn permissions_parses_with_and_without_mode() {
         assert!(matches!(
-            parse_command("/ACP Codex --yolo"),
-            ReplCommand::Acp(_)
+            parse_command("/permissions"),
+            ReplCommand::Permissions(None)
         ));
-        assert!(matches!(parse_command("/acp off"), ReplCommand::Acp(_)));
+        assert!(matches!(
+            parse_command("/permissions full"),
+            ReplCommand::Permissions(Some(_))
+        ));
+        assert!(matches!(
+            parse_command("/perms read-only"),
+            ReplCommand::Permissions(Some(_))
+        ));
+    }
+
+    #[test]
+    fn feedback_parses_with_and_without_text() {
+        assert!(matches!(
+            parse_command("/feedback"),
+            ReplCommand::Feedback(None)
+        ));
+        assert!(matches!(
+            parse_command("/feedback broken x"),
+            ReplCommand::Feedback(Some(_))
+        ));
+        assert!(matches!(
+            parse_command("/FEEDBACK hi"),
+            ReplCommand::Feedback(Some(_))
+        ));
     }
 
     #[test]

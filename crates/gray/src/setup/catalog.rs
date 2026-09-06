@@ -105,6 +105,9 @@ pub struct SavedConfig {
     /// Tail budget kept alongside the summary after compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_keep: Option<usize>,
+    /// Tool approval mode: "read-only" | "auto" | "full".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
 }
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
