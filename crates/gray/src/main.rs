@@ -216,19 +216,15 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             Ok(())
         }
         PluginCmd::Search { query } => {
-            let client = gray_pkg::fetch::client()?;
-            let index = gray_pkg::index::fetch_index(&client).await?;
-            let mut hits: Vec<(&String, &gray_pkg::index::Entry)> = index
-                .plugins
-                .iter()
-                .filter(|(n, _)| n.contains(query.as_str()))
-                .collect();
-            hits.sort_by(|a, b| a.0.cmp(b.0));
-            if hits.is_empty() {
+            let out = gray_pkg::ops::search_all(&query).await?;
+            if out.hits.is_empty() && !out.pi_unreachable {
                 anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
             }
-            for (name, e) in hits {
-                println!("{} {}", name, e.version);
+            for hit in &out.hits {
+                println!("{}", gray_pkg::ops::format_search_hit(hit));
+            }
+            if out.pi_unreachable {
+                println!("{}", gray_pkg::ops::PI_UNREACHABLE_LINE);
             }
             Ok(())
         }
