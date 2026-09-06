@@ -170,37 +170,6 @@ async fn run_gateway_inner(
                 .build()
                 .expect("gateway runtime");
             rt.block_on(tokio::task::LocalSet::new().run_until(async move {
-                // Cron: run due jobs here and deliver to home channels.
-                // Gated: the default `gray` build disables the `cron`
-                // feature (lean tree); Task 3 re-drives cron via plugins.
-                #[cfg(feature = "cron")]
-                if runner.config.cron_delivery {
-                    let r = Arc::clone(&runner);
-                    tokio::task::spawn_local(async move {
-                        let scheduler = gray_cron::Scheduler::from_active();
-                        let mut interval = tokio::time::interval(Duration::from_secs(60));
-                        loop {
-                            interval.tick().await;
-                            let due = match scheduler.scan_due_jobs() {
-                                Ok(d) => d,
-                                Err(e) => {
-                                    log::warn!("gateway cron scan failed: {e}");
-                                    continue;
-                                }
-                            };
-                            // Sequential inline dispatch — no dedup guard needed
-                            // (a claim would always release before the next scan).
-                            for job in due {
-                                // Atomic claim (flock): the cron sidecar may
-                                // have fired it first — skip, never double-fire.
-                                if !gray_cron::store::claim_job_run(&job.id, chrono::Utc::now()) {
-                                    continue;
-                                }
-                                r.run_cron_job(&job).await;
-                            }
-                        }
-                    });
-                }
                 loop {
                     tokio::select! {
                         ev = rx.recv() => match ev {

@@ -1,17 +1,12 @@
-//! Agent turns and cron delivery for the gateway (move-only split).
+//! Agent turns for the gateway (move-only split).
 //!
 //! [`GatewayRunner::run_agent`] runs one agent turn against the persisted
-//! session and streams deltas to the caller; `run_cron_job` (with the
-//! `cron` feature) runs a due cron job fresh and fans its output out to
-//! home channels.
+//! session and streams deltas to the caller. Cron delivery lives in the
+//! external cron plugin now (in-gateway firing removed with `gray-cron`).
 
 use crate::authz::GatedExecutor;
-#[cfg(feature = "cron")]
-use crate::config::Platform;
 use crate::daemon::GatewayRunner;
 use crate::daemon_stream::ProgressMsg;
-#[cfg(feature = "cron")]
-use crate::session::{SessionSource, build_session_key};
 
 impl GatewayRunner {
     /// Same agent every entry point builds: thin surface wrapper over
@@ -159,65 +154,12 @@ impl GatewayRunner {
         }
         Ok(reply)
     }
-
-    /// Run a due cron job through the agent and deliver its output to every
-    /// platform's home channel. Output is
-    /// also saved under `~/.gray/cron/output/` so nothing is lost when no
-    /// home channel is configured.
-    #[cfg(feature = "cron")]
-    pub async fn run_cron_job(&self, job: &gray_cron::CronJob) {
-        // Session keyed through build_session_key (never hand-built): the
-        // "platform" is the first home-channel platform, chat_type "cron".
-        let platform = Platform::ALL
-            .into_iter()
-            .find(|p| self.adapters.contains_key(p) && self.router.home_channel(*p).is_some());
-        let src = SessionSource {
-            platform: platform.unwrap_or(Platform::Telegram),
-            chat_id: job.id.clone(),
-            chat_type: "cron".into(),
-            user_id: None,
-            thread_id: None,
-            scope_id: None,
-            message_id: None,
-        };
-        let key = build_session_key(&src, false, false);
-        // Cron jobs start fresh each run (isolated per-run session).
-        let sid = self.store.reset(&key);
-        log::info!("gateway cron '{}' ({}) running as {sid}", job.name, job.id);
-        let output = match self.run_agent(&sid, &key, &job.prompt, None).await {
-            Ok(t) => t,
-            Err(e) => format!("cron job '{}' failed: {e}", job.name),
-        };
-        save_cron_output(&job.id, &job.name, &output);
-        let text = format!("⏰ {}\n\n{}", job.name, output);
-        if platform.is_none() {
-            log::info!(
-                "gateway cron '{}' done (no home_channel; output saved locally)",
-                job.name
-            );
-            return;
-        }
-        for (p, r) in self.router.deliver_home_all(&text).await {
-            if r.success {
-                log::info!("gateway cron '{}' delivered to {p} home", job.name);
-            } else {
-                log::warn!(
-                    "gateway cron '{}' delivery to {p} failed: {:?}",
-                    job.name,
-                    r.error
-                );
-            }
-        }
-    }
 }
 
 /// Plugin→host handler for gateway-spawned sidecars (`host/run`/`host/say`).
 /// `host/run` replays the prompt through a fresh `gray -p` child of the
 /// running binary (shared runner, no new deps); `host/say` is logged + saved
-/// under `cron/output`. Home-channel fan-out stays with the legacy
-/// `run_cron_job` path until the cron sidecar goes persistent (owed — the
-/// per-turn sidecars here live only for the turn, so the `daemon_boot`
-/// ticker remains the primary gateway firer; all tickers claim atomically).
+/// under `cron/output` (kept: the external cron plugin reports here).
 fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
     std::sync::Arc::new(move |method: String, params: serde_json::Value| {
         let cwd = cwd.clone();

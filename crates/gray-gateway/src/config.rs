@@ -169,9 +169,6 @@ pub struct GatewayConfig {
     /// Stream partial replies via edit-in-place where the platform supports it.
     #[serde(default = "default_true")]
     pub streaming: bool,
-    /// Run due cron jobs inside the gateway and deliver output to each platform's home channel.
-    #[serde(default = "default_true")]
-    pub cron_delivery: bool,
     /// Auto-reset policy for gateway sessions (default: never).
     #[serde(default)]
     pub reset_policy: ResetPolicy,
@@ -194,7 +191,6 @@ impl Default for GatewayConfig {
             autostart: false,
             denied_tools: Vec::new(),
             streaming: true,
-            cron_delivery: true,
             reset_policy: ResetPolicy::default(),
         }
     }

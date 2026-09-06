@@ -189,7 +189,6 @@ Key config keys (under `platforms.<telegram|discord|slack>` plus top level):
 | `autostart` | auto-start the in-process gateway when gray launches — default **off** |
 | `denied_tools` | extra tools blocked in gateway sessions (merged with the built-in deny set) |
 | `streaming` | stream replies (default on) |
-| `cron_delivery` | deliver due cron results to chat (default on) |
 
 Pairing flow (no `gateway.yaml` edit needed): the user DMs the bot, gray prints
 a code, the operator runs `gray gateway pairing approve <platform> <CODE>`;
