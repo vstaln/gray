@@ -11,14 +11,14 @@ use crate::edit_diff::{
 };
 use crate::ledger::{FileLedger, LedgerEntry};
 use crate::read::notices;
-use crate::{Tool, fail, get_opt_bool, resolve_path};
+use crate::{Tool, fail, resolve_path};
 
 pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
 pub const EDIT_GUIDELINES: &[&str] = &[
     "Use edit for precise changes (edits[].oldText must match exactly)",
     "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
     "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-    "Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.",
+    "Keep edits[].oldText as small as possible while still being unique in the file. If multiple occurrences exist, provide line_start, occurrence, or replace_all to disambiguate.",
 ];
 
 pub struct EditTool {
@@ -47,24 +47,127 @@ impl Default for EditTool {
     }
 }
 
+fn parse_line_hint(v: &Value) -> Option<usize> {
+    let val = v
+        .get("line_start")
+        .or_else(|| v.get("lineStart"))
+        .or_else(|| v.get("start_line"))
+        .or_else(|| v.get("StartLine"))
+        .or_else(|| v.get("startLine"))
+        .or_else(|| v.get("line"))
+        .or_else(|| v.get("line_number"))
+        .or_else(|| v.get("lineNumber"))
+        .or_else(|| v.get("lineHint"))
+        .or_else(|| v.get("line_hint"))?;
+
+    if let Some(n) = val.as_u64() {
+        return Some(n as usize);
+    }
+    if let Some(n) = val.as_i64() {
+        if n > 0 {
+            return Some(n as usize);
+        }
+    }
+    if let Some(s) = val.as_str() {
+        if let Ok(n) = s.trim().parse::<usize>() {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn parse_occurrence(v: &Value) -> Option<isize> {
+    let val = v
+        .get("occurrence")
+        .or_else(|| v.get("occurrence_index"))
+        .or_else(|| v.get("occurrenceIndex"))
+        .or_else(|| v.get("nth"))
+        .or_else(|| v.get("index"))
+        .or_else(|| v.get("match_index"))
+        .or_else(|| v.get("matchIndex"))?;
+
+    if let Some(n) = val.as_i64() {
+        return Some(n as isize);
+    }
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim().to_lowercase();
+        if trimmed == "first" {
+            return Some(1);
+        }
+        if trimmed == "last" {
+            return Some(-1);
+        }
+        if let Ok(n) = trimmed.parse::<isize>() {
+            return Some(n);
+        }
+    }
+    None
+}
+
+fn parse_replace_all(v: &Value) -> Option<bool> {
+    let val = v
+        .get("replace_all")
+        .or_else(|| v.get("replaceAll"))
+        .or_else(|| v.get("all"))
+        .or_else(|| v.get("allow_multiple"))
+        .or_else(|| v.get("allowMultiple"))
+        .or_else(|| v.get("AllowMultiple"))
+        .or_else(|| v.get("multiple"))?;
+
+    if let Some(b) = val.as_bool() {
+        return Some(b);
+    }
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim().to_lowercase();
+        if trimmed == "true" || trimmed == "1" || trimmed == "all" {
+            return Some(true);
+        }
+        if trimmed == "false" || trimmed == "0" {
+            return Some(false);
+        }
+    }
+    None
+}
+
 fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
-    if let Some(edits_val) = args.get("edits") {
+    let top_line_hint = parse_line_hint(args);
+    let top_occurrence = parse_occurrence(args);
+    let top_replace_all = parse_replace_all(args);
+
+    let mut edits = if let Some(edits_val) = args.get("edits") {
         if let Some(s) = edits_val.as_str() {
             let parsed: Value =
                 serde_json::from_str(s).map_err(|e| format!("edits JSON parse failed: {e}"))?;
-            return parse_edits_array(&parsed);
-        }
-        if edits_val.is_object() {
-            let e = parse_single_edit(edits_val)?;
-            return Ok(vec![e]);
-        }
-        if edits_val.is_array() {
-            return parse_edits_array(edits_val);
-        }
-        if !edits_val.is_null() {
+            parse_edits_array(&parsed)?
+        } else if edits_val.is_object() {
+            vec![parse_single_edit(edits_val)?]
+        } else if edits_val.is_array() {
+            parse_edits_array(edits_val)?
+        } else if !edits_val.is_null() {
             return Err("edits must be an array of {oldText, newText}".to_string());
+        } else {
+            parse_single_or_legacy(args)?
+        }
+    } else {
+        parse_single_or_legacy(args)?
+    };
+
+    for e in edits.iter_mut() {
+        if e.line_hint.is_none() {
+            e.line_hint = top_line_hint;
+        }
+        if e.occurrence.is_none() {
+            e.occurrence = top_occurrence;
+        }
+        if e.replace_all.is_none() {
+            e.replace_all = top_replace_all;
         }
     }
+
+    Ok(edits)
+}
+
+fn parse_single_or_legacy(args: &Value) -> Result<Vec<Edit>, String> {
     let old = args
         .get("oldText")
         .or_else(|| args.get("old_text"))
@@ -85,6 +188,9 @@ fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
             return Ok(vec![Edit {
                 old_text: os.to_string(),
                 new_text: ns.to_string(),
+                line_hint: parse_line_hint(args),
+                occurrence: parse_occurrence(args),
+                replace_all: parse_replace_all(args),
             }]);
         }
         return Err("oldText/newText must be strings".to_string());
@@ -112,9 +218,16 @@ fn parse_single_edit(v: &Value) -> Result<Edit, String> {
         .or_else(|| v.get("replace"))
         .and_then(|x| x.as_str())
         .ok_or("edit missing newText / ReplacementContent")?;
+    let line_hint = parse_line_hint(v);
+    let occurrence = parse_occurrence(v);
+    let replace_all = parse_replace_all(v);
+
     Ok(Edit {
         old_text: old.to_string(),
         new_text: new.to_string(),
+        line_hint,
+        occurrence,
+        replace_all,
     })
 }
 
@@ -132,7 +245,7 @@ impl Tool for EditTool {
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "edit",
-            "Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.",
+            "Edit a single file using exact text replacement. Every edits[].oldText matches a region in the original file. If multiple occurrences exist, provide line_start, occurrence, or replace_all to disambiguate.",
             json!({
                 "type": "object",
                 "properties": {
@@ -143,10 +256,13 @@ impl Tool for EditTool {
                         "items": {
                             "type": "object",
                             "properties": {
-                                "oldText": { "type": "string", "description": "Exact text for one targeted replacement. Must be unique and non-overlapping." },
+                                "oldText": { "type": "string", "description": "Exact text for one targeted replacement." },
                                 "newText": { "type": "string", "description": "Replacement text." },
                                 "old_text": { "type": "string" },
-                                "new_text": { "type": "string" }
+                                "new_text": { "type": "string" },
+                                "line_start": { "type": "integer", "description": "Optional 1-based line number hint to disambiguate multiple occurrences." },
+                                "occurrence": { "type": "integer", "description": "Optional 1-based occurrence index to target (e.g. 1 for first match, -1 for last)." },
+                                "replace_all": { "type": "boolean", "description": "Replace every occurrence of oldText." }
                             }
                         }
                     },
@@ -154,7 +270,9 @@ impl Tool for EditTool {
                     "new_text": { "type": "string", "description": "Legacy single-edit new text (aliases newText)" },
                     "oldText": { "type": "string" },
                     "newText": { "type": "string" },
-                    "replace_all": { "type": "boolean", "description": "Legacy: replace every occurrence (single-edit only)" }
+                    "line_start": { "type": "integer", "description": "Optional 1-based line number hint to disambiguate multiple occurrences." },
+                    "occurrence": { "type": "integer", "description": "Optional 1-based occurrence index to target (e.g. 1 for first match, -1 for last)." },
+                    "replace_all": { "type": "boolean", "description": "Replace every occurrence of oldText." }
                 },
                 "required": ["path"]
             }),
@@ -185,10 +303,7 @@ impl Tool for EditTool {
         if path.is_empty() {
             return fail("missing required argument 'path'".to_string());
         }
-        let replace_all = match get_opt_bool(&args, "replace_all") {
-            Ok(v) => v.unwrap_or(false),
-            Err(e) => return e,
-        };
+        let replace_all = parse_replace_all(&args).unwrap_or(false);
 
         let edits = match parse_edits(&args) {
             Ok(e) => e,
@@ -284,19 +399,23 @@ impl Tool for EditTool {
             &applied.new_content,
             3,
         );
-        let repair_note = if repaired {
-            format!("\n{EDIT_PREFIX_STRIP_NOTE}")
-        } else {
+        let mut all_notes = applied.notes;
+        if repaired {
+            all_notes.push(EDIT_PREFIX_STRIP_NOTE.to_string());
+        }
+        let notes_str = if all_notes.is_empty() {
             String::new()
+        } else {
+            format!("\n{}", all_notes.join("\n"))
         };
         if patch.is_empty() {
             ToolOutput::ok(format!(
-                "Successfully replaced {} block(s) in {}.{repair_note}",
+                "Successfully replaced {} block(s) in {}.{notes_str}",
                 edits.len(),
                 path
             ))
         } else {
-            ToolOutput::ok(format!("{patch}{repair_note}"))
+            ToolOutput::ok(format!("{patch}{notes_str}"))
         }
     }
 }
