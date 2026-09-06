@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ fn make_test_dir(prefix: &str) -> PathBuf {
     dir
 }
 
-fn lifecycle_argv(dir: &PathBuf) -> Vec<String> {
+fn lifecycle_argv(dir: &Path) -> Vec<String> {
     vec![
         "env".to_string(),
         format!("GRAY_TEST_DIR={}", dir.display()),
@@ -33,7 +33,7 @@ fn lifecycle_argv(dir: &PathBuf) -> Vec<String> {
     ]
 }
 
-fn bubble_argv(dir: &PathBuf) -> Vec<String> {
+fn bubble_argv(dir: &Path) -> Vec<String> {
     vec![
         "env".to_string(),
         format!("GRAY_TEST_DIR={}", dir.display()),
