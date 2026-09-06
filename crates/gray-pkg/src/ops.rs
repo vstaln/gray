@@ -68,6 +68,10 @@ pub enum NameOrUrl {
         name: String,
         version: Option<String>,
     },
+    Git {
+        url: String,
+        git_ref: Option<String>,
+    },
 }
 
 /// Split an `npm:<pkg>[@<version>]` body on the LAST `@` (regex-free).
@@ -101,11 +105,81 @@ pub fn parse_spec(s: &str) -> NameOrUrl {
     if let Some(body) = t.strip_prefix("npm:") {
         return parse_npm_spec(body);
     }
+    if let Some(body) = t.strip_prefix("git:") {
+        return parse_git_spec(body);
+    }
+    if t.starts_with("ssh://") || t.starts_with("git://") || t.starts_with("git@") {
+        return parse_git_spec(t);
+    }
+    if (t.starts_with("http://") || t.starts_with("https://")) && https_has_git_suffix(t) {
+        return parse_git_spec(t);
+    }
     if t.starts_with("http://") || t.starts_with("https://") {
         NameOrUrl::Url(t.to_string())
     } else {
         NameOrUrl::Name(t.to_string())
     }
+}
+
+/// Split `scheme://authority` off; returns `(head, remainder)`.
+fn split_authority(s: &str) -> Option<(&str, &str)> {
+    let (scheme, rest) = s.split_once("://")?;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    Some((&s[..scheme.len() + 3 + end], &rest[end..]))
+}
+
+/// Parse a git spec body (after `git:`, or the raw spec itself): strip
+/// scheme/authority first (so `user@host` never reads as a ref marker),
+/// then split the REMAINDER on the last `@` for the ref (R16). A trailing
+/// `@` is unpinned, mirroring [`parse_npm_spec`].
+fn parse_git_spec(body: &str) -> NameOrUrl {
+    let (head, remainder) = match split_authority(body) {
+        Some((h, r)) => (h, r),
+        None => match body.find(':') {
+            // scp-like `git@host:path`.
+            Some(i) => (&body[..=i], &body[i + 1..]),
+            // Bare local path.
+            None => ("", body),
+        },
+    };
+    let (path, git_ref) = match remainder.rfind('@') {
+        Some(i) if !remainder[i + 1..].is_empty() => {
+            (&remainder[..i], Some(remainder[i + 1..].to_string()))
+        }
+        Some(i) => (&remainder[..i], None),
+        None => (remainder, None),
+    };
+    NameOrUrl::Git {
+        url: format!("{head}{path}"),
+        git_ref,
+    }
+}
+
+/// Raw `http(s)` URL with a `.git` path suffix (after R16 ref-stripping)
+/// is a git source; anything else stays a tarball [`NameOrUrl::Url`].
+fn https_has_git_suffix(t: &str) -> bool {
+    let Some((_, remainder)) = split_authority(t) else {
+        return false;
+    };
+    let path = match remainder.rfind('@') {
+        Some(i) => &remainder[..i],
+        None => remainder,
+    };
+    path.split(['?', '#']).next().unwrap_or(path).ends_with(".git")
+}
+
+/// Install name from a git URL: last path segment minus `.git`.
+fn name_from_git_url(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let after_host = match path.split_once("://") {
+        Some((_, rest)) => rest.find('/').map(|i| &rest[i + 1..]).unwrap_or(""),
+        None => match path.find(':') {
+            Some(i) => &path[i + 1..],
+            None => path,
+        },
+    };
+    let last = after_host.rsplit('/').next().unwrap_or(after_host);
+    last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
 impl std::str::FromStr for NameOrUrl {
@@ -637,26 +711,27 @@ fn copy_skill_matches(dest: &Path, matches: &[SkillMatch]) -> anyhow::Result<()>
     Ok(())
 }
 
-/// Copy pi skills from a staged tarball into `<plugins_dir>/pi/<key>/`
+/// Copy pi skills from a staged root into `<plugins_dir>/pi/<key>/`
 /// (`.md` only — package code is never executed) and write ONE lock entry.
 /// Zero skills → honest bail with nothing written (R12); any copy/lock
-/// failure removes `dest` and writes nothing (no half-state).
+/// failure removes `dest` and writes nothing (no half-state). Shared by
+/// the npm (P2-1 staging) and git (P2-4 clone) arms.
 fn extract_pi_skills(
-    staged: &StagedPkg,
+    root: &Path,
+    key: &str,
+    version: &str,
+    hash: &str,
+    source: &str,
     opts: &InstallOpts,
 ) -> anyhow::Result<(PathBuf, PiInstallSummary)> {
-    let key = sanitize_npm_key(&staged.name);
-    let root = stage_root(staged.dir.path());
-    let (skill_globs, manifest_ext, manifest_themes) = pi_manifest_lists(&root);
-    let matches = collect_skill_matches(&root, &skill_globs);
+    let (skill_globs, manifest_ext, manifest_themes) = pi_manifest_lists(root);
+    let matches = collect_skill_matches(root, &skill_globs);
     if matches.is_empty() {
         anyhow::bail!(
-            "npm package {}@{} ships no skills (nothing to install; extensions/themes need P3)",
-            staged.name,
-            staged.version
+            "package {key}@{version} ships no skills (nothing to install; extensions/themes need P3)"
         );
     }
-    let dest = crate::plugins_dir().join("pi").join(&key);
+    let dest = crate::plugins_dir().join("pi").join(key);
     if dest.exists() {
         std::fs::remove_dir_all(&dest)?;
     }
@@ -664,7 +739,7 @@ fn extract_pi_skills(
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
     }
-    let (ext_n, theme_n) = count_skipped(&root);
+    let (ext_n, theme_n) = count_skipped(root);
     let summary = PiInstallSummary {
         taken: {
             let mut labels: Vec<String> = matches.iter().map(|m| m.label.clone()).collect();
@@ -686,19 +761,19 @@ fn extract_pi_skills(
     }
     let scope = opts.scope.clone().unwrap_or_else(|| "user".to_string());
     let mut lock = read_lock()?.unwrap_or_default();
-    let enabled = lock.plugins.get(&key).map(|e| e.enabled).unwrap_or(true);
+    let enabled = lock.plugins.get(key).map(|e| e.enabled).unwrap_or(true);
     let entry = LockEntry {
         ecosystem: "pi-gallery".to_string(),
-        version: staged.version.clone(),
-        hash: staged.integrity.clone(),
-        source: staged.tarball.clone(),
+        version: version.to_string(),
+        hash: hash.to_string(),
+        source: source.to_string(),
         argv: opts.argv.clone(),
         adapter_version: env!("CARGO_PKG_VERSION").to_string(),
         installed_at: now_secs(),
         scope,
         enabled,
     };
-    lock.plugins.insert(key.clone(), entry);
+    lock.plugins.insert(key.to_string(), entry);
     if let Err(e) = write_lock(&lock) {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
@@ -715,14 +790,98 @@ async fn install_npm(
     opts: InstallOpts,
 ) -> anyhow::Result<Report> {
     let staged = stage_npm_package(client, name, version).await?;
-    let (dest, summary) = extract_pi_skills(&staged, &opts)?;
     let key = sanitize_npm_key(&staged.name);
+    let root = stage_root(staged.dir.path());
+    let (dest, summary) = extract_pi_skills(
+        &root,
+        &key,
+        &staged.version,
+        &staged.integrity,
+        &staged.tarball,
+        &opts,
+    )?;
     eprintln!("skills taken: {}", summary.taken.join(", "));
     Ok(Report {
         name: key,
         version: staged.version,
         path: dest,
         unverified: false,
+        pi_summary: Some(summary),
+    })
+}
+
+/// Shallow-clone `url` into `dest` (must not exist yet) via the `git` CLI
+/// — never reimplemented. Returns the cloned HEAD commit sha. `--branch`
+/// only when pinned; `--` guards against flag-injection URLs.
+fn clone_git_repo(url: &str, git_ref: Option<&str>, dest: &Path) -> anyhow::Result<String> {
+    let mut clone_cmd = std::process::Command::new("git");
+    clone_cmd.arg("clone").arg("--depth").arg("1");
+    if let Some(r) = git_ref.filter(|r| !r.is_empty()) {
+        clone_cmd.arg("--branch").arg(r);
+    }
+    clone_cmd.arg("--").arg(url).arg(dest);
+    let out = clone_cmd
+        .output()
+        .map_err(|e| anyhow::anyhow!("cloning {}: git failed to run ({e})", redact_url(url)))?;
+    if !out.status.success() {
+        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        anyhow::bail!("cloning {} failed: {detail}", redact_url(url));
+    }
+    let sha_out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dest)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()?;
+    if !sha_out.status.success() {
+        anyhow::bail!("cloning {} failed: cannot read commit sha", redact_url(url));
+    }
+    let sha = String::from_utf8_lossy(&sha_out.stdout).trim().to_string();
+    if sha.is_empty() {
+        anyhow::bail!("cloning {} failed: empty commit sha", redact_url(url));
+    }
+    Ok(sha)
+}
+
+fn redact_url(url: &str) -> String {
+    crate::fetch::redact(url)
+}
+
+/// `Git` arm: shallow clone → P2-2 extractor over the clone → ONE lock
+/// write (R18: same `pi/` dest, same taken/skipped honesty, same
+/// zero-skills bail). No hash verify: honest `unverified` warning mirroring
+/// [`install_url`]; lock `hash` is the raw post-clone commit sha (R17).
+async fn install_git(url: &str, git_ref: Option<&str>, opts: InstallOpts) -> anyhow::Result<Report> {
+    if url.trim().is_empty() {
+        anyhow::bail!("git URL is empty");
+    }
+    eprintln!(
+        "warning: unverified install from {} (no index hash; use an index name for verified installs)",
+        redact_url(url)
+    );
+    let key = sanitize_npm_key(&name_from_git_url(url));
+    if key.is_empty() {
+        anyhow::bail!(
+            "cannot derive a plugin name from git URL: {}",
+            redact_url(url)
+        );
+    }
+    let tmp_root = crate::plugins_dir().join("tmp");
+    std::fs::create_dir_all(&tmp_root)?;
+    let stage = tempfile::tempdir_in(&tmp_root)?;
+    let clone_dir = stage.path().join("repo");
+    let sha = clone_git_repo(url, git_ref, &clone_dir)?;
+    let version = git_ref
+        .filter(|r| !r.is_empty())
+        .unwrap_or("0.0.0")
+        .to_string();
+    let (dest, summary) = extract_pi_skills(&clone_dir, &key, &version, &sha, url, &opts)?;
+    eprintln!("skills taken: {}", summary.taken.join(", "));
+    Ok(Report {
+        name: key,
+        version,
+        path: dest,
+        unverified: true,
         pi_summary: Some(summary),
     })
 }
@@ -734,6 +893,9 @@ pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Repor
         NameOrUrl::Url(url) => install_url(&client, &url, opts).await,
         NameOrUrl::Npm { name, version } => {
             install_npm(&client, &name, version.as_deref(), opts).await
+        }
+        NameOrUrl::Git { url, git_ref } => {
+            install_git(&url, git_ref.as_deref(), opts).await
         }
     }
 }
@@ -1135,6 +1297,51 @@ mod tests {
             }
             other => panic!("unexpected spec: {other:?}"),
         }
+    }
+
+    #[test]
+    fn spec_parses_git_forms() {
+        // `git:` prefix with and without ref.
+        match parse_spec("git:https://host/o/r.git@main") {
+            NameOrUrl::Git { url, git_ref } => {
+                assert_eq!(url, "https://host/o/r.git");
+                assert_eq!(git_ref, Some("main".to_string()));
+            }
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        match parse_spec("git:https://host/o/r.git") {
+            NameOrUrl::Git { url, git_ref } => {
+                assert_eq!(url, "https://host/o/r.git");
+                assert_eq!(git_ref, None);
+            }
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        // Raw forms are git by shape (R15); raw https stays tarball Url.
+        assert!(matches!(
+            parse_spec("ssh://git@host/o/r.git"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("git://host/o/r.git"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("git@host:o/r.git"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("https://host/o/r.git"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("https://h/x.tar.gz"),
+            NameOrUrl::Url(_)
+        ));
+        // `@ref` alone never flips a tarball URL to git (R15).
+        assert!(matches!(
+            parse_spec("https://h/x.tar.gz@main"),
+            NameOrUrl::Url(_)
+        ));
     }
 
     #[test]
@@ -1635,6 +1842,165 @@ mod tests {
         assert_eq!(summary.taken, vec!["weird"]);
         assert!(!summary.skipped_ext);
         assert!(!summary.skipped_themes);
+    }
+
+    // --- P2-4 git fixture repos (local commits only, no network) ---
+
+    /// `git` fixture repo with `files` committed on the default branch.
+    /// Returns the fixture dir (deleted on drop) and its `file://` URL.
+    fn init_git_fixture(files: &[(&str, &str)]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, content) in files {
+            let path = dir.path().join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&path, content).unwrap();
+        }
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "fixture"]);
+        let url = format!("file://{}", dir.path().display());
+        (dir, url)
+    }
+
+    fn git_fixture_sha(dir: &tempfile::TempDir) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    }
+
+    /// `GRAY_HOME` at a fresh tempdir (git installs need no registry stub).
+    /// Must be called under `ENV_GUARD`.
+    fn use_git_env() -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        home
+    }
+
+    fn git_fixture_key(dir: &tempfile::TempDir) -> String {
+        sanitize_npm_key(dir.path().file_name().unwrap().to_str().unwrap())
+    }
+
+    #[tokio::test]
+    async fn install_git_clones_and_extracts_skills() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let (repo, url) = init_git_fixture(&[
+            ("skills/mulch/SKILL.md", MULCH_SKILL),
+            ("extensions/mulch.ts", "export const x = 1;\n"),
+            ("README.md", "# demo\n"),
+        ]);
+        let sha = git_fixture_sha(&repo);
+        let key = git_fixture_key(&repo);
+        let _home = use_git_env();
+
+        let report = install(parse_spec(&format!("git:{url}")), InstallOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(report.name, key);
+        assert_eq!(report.version, "0.0.0");
+        assert!(report.unverified);
+        let summary = report.pi_summary.expect("pi summary");
+        assert_eq!(summary.taken, vec!["README.md", "mulch"]);
+        assert!(summary.skipped_ext);
+        assert!(!summary.skipped_themes);
+
+        assert_eq!(
+            std::fs::read(report.path.join("mulch/SKILL.md")).unwrap(),
+            MULCH_SKILL.as_bytes()
+        );
+        assert!(report.path.join("README.md").is_file());
+        assert!(!report.path.join("extensions").exists());
+
+        // R17 lock shape: raw 40-hex sha, source is the clone URL.
+        assert_eq!(sha.len(), 40);
+        let entry = list().unwrap().remove(&key).expect("lock entry");
+        assert_eq!(entry.ecosystem, "pi-gallery");
+        assert_eq!(entry.version, "0.0.0");
+        assert_eq!(entry.hash, sha);
+        assert_eq!(entry.source, url);
+        assert_eq!(entry.scope, "user");
+        assert!(entry.enabled);
+    }
+
+    #[tokio::test]
+    async fn install_git_pinned_ref_records_version() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let (repo, url) = init_git_fixture(&[("skills/a/SKILL.md", MULCH_SKILL)]);
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(repo.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        run(&["checkout", "-qb", "feature"]);
+        std::fs::create_dir_all(repo.path().join("skills/b")).unwrap();
+        std::fs::write(repo.path().join("skills/b/SKILL.md"), TMUX_SKILL).unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "feature"]);
+        let sha = git_fixture_sha(&repo);
+        let key = git_fixture_key(&repo);
+        let _home = use_git_env();
+
+        let report = install(
+            parse_spec(&format!("git:{url}@feature")),
+            InstallOpts::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.name, key);
+        assert_eq!(report.version, "feature");
+        assert!(report.path.join("b/SKILL.md").is_file());
+        let entry = list().unwrap().remove(&key).expect("lock entry");
+        assert_eq!(entry.version, "feature");
+        assert_eq!(entry.hash, sha);
+        assert_eq!(entry.source, url);
+    }
+
+    #[tokio::test]
+    async fn install_git_without_skills_bails_without_half_state() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let (repo, _url) = init_git_fixture(&[("notes.txt", "no skills here\n")]);
+        let key = git_fixture_key(&repo);
+        let _home = use_git_env();
+
+        let err = install(
+            parse_spec(&format!("git:file://{}", repo.path().display())),
+            InstallOpts::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no skills"), "honest reason: {err}");
+        assert!(list().unwrap().is_empty());
+        assert!(!crate::plugins_dir().join("pi").join(&key).exists());
     }
 
     #[tokio::test]
