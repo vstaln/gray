@@ -430,6 +430,17 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
             &mut all_diagnostics,
             &mut collision_diagnostics,
         );
+        // P2-2: pi installs land in `<agent_dir>/plugins/pi/<pkg>/`.
+        let pi_plugins = resolved_agent_dir.join("plugins").join("pi");
+        if pi_plugins.is_dir() && pi_plugins != global_skills {
+            do_add(
+                load_skills_from_dir(&pi_plugins, "user"),
+                &mut skill_map,
+                &mut real_path_set,
+                &mut all_diagnostics,
+                &mut collision_diagnostics,
+            );
+        }
         if let Some(home) = resolve_home() {
             // OpenCode global skills & plugins (e.g. superpowers)
             let config_base = std::env::var("XDG_CONFIG_HOME")
@@ -703,5 +714,35 @@ mod tests {
             "routing hint missing: {out}"
         );
         assert!(out.contains("<available_skills>"));
+    }
+
+    #[test]
+    fn pi_plugin_dir_is_a_discovery_root() {
+        // P2-2: `<agent_dir>/plugins/pi/<pkg>/<skill>/SKILL.md` (where pi
+        // installs land) must surface via default discovery.
+        let agent = tempfile::tempdir().unwrap();
+        let dir = agent
+            .path()
+            .join("plugins")
+            .join("pi")
+            .join("demo-pkg")
+            .join("pi-probe-zzz-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\ndescription: probe skill\n---\nBody",
+        )
+        .unwrap();
+        let res = load_skills(LoadSkillsOptions {
+            cwd: agent.path().to_path_buf(),
+            agent_dir: Some(agent.path().to_path_buf()),
+            skill_paths: vec![],
+            include_defaults: true,
+        });
+        assert!(
+            res.skills.iter().any(|s| s.name == "pi-probe-zzz-skill"),
+            "installed pi skill not discovered: {:?}",
+            res.skills.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
     }
 }
