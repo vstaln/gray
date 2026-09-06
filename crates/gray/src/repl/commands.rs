@@ -317,7 +317,8 @@ pub enum ReplCommand {
     Unknown(String),
     /// Messaging gateway: /gateway, /gateway status|run|install
     Gateway(String),
-    /// External ACP agent: /acp (picker), /acp <agent> [--yolo], /acp off|status|list
+    /// External ACP agent: /acp (picker), /acp <agent> switches sticky,
+    /// /acp <agent> <prompt> delegates one-shot, /acp off|status|list
     Acp(String),
     /// Skills: /skills lists; /skills:<name> [args] runs a skill
     Skill(Option<String>),
