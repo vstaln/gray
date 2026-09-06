@@ -21,6 +21,7 @@ gray-pkg = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
+gray-supervise = { workspace = true }
 gray-markdown = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }

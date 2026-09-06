@@ -323,13 +323,13 @@ impl GatewayRunner {
                 }
                 SlashCommand::Restart => {
                     // Remember the requester, reply, then exit;
-                    // systemd (Restart=always) revives us and boot pings back.
+                    // systemd (RestartForceExitStatus=75) revives us and boot pings back.
                     if let Ok(home) = crate::config::gray_home_dir() {
                         let _ = write_restart_marker_in(&home, platform, &chat_id);
                     }
                     std::thread::spawn(|| {
                         std::thread::sleep(Duration::from_secs(2));
-                        std::process::exit(0);
+                        std::process::exit(gray_supervise::exit::EXIT_RESTART);
                     });
                     "Restarting gateway…".into()
                 }

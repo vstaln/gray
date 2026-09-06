@@ -287,6 +287,7 @@ pub enum Commands {
         cmd: PluginCmd,
     },
     /// Update gray to the latest release
+    #[command(visible_alias = "upgrade")]
     Update,
 }
 
@@ -295,7 +296,11 @@ pub enum GatewayCmd {
     /// Run the gateway daemon (foreground)
     Run,
     /// Show gateway status
-    Status,
+    Status {
+        /// File-based health probe (heartbeat freshness), exit 0/1
+        #[arg(long)]
+        probe: bool,
+    },
     /// Install systemd user service (gray-gateway.service)
     Install,
     /// Uninstall systemd service

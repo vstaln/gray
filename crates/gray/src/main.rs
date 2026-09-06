@@ -164,8 +164,29 @@ async fn run_resume_subcommand(
 async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
     use gray::GatewayCmd;
     match cmd {
-        None | Some(GatewayCmd::Status) => gray_gateway::systemd::status(),
-        Some(GatewayCmd::Run) => gray_gateway::daemon::run_gateway().await,
+        None | Some(GatewayCmd::Status { probe: false }) => gray_gateway::systemd::status(),
+        Some(GatewayCmd::Status { probe: true }) => {
+            let home = std::env::var("GRAY_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::var("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".gray"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"))
+                });
+            let h = gray_supervise::health::probe(&home);
+            println!("{}", h.reason);
+            if !h.healthy {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some(GatewayCmd::Run) => match gray_gateway::daemon::run_gateway().await {
+            Err(e) if format!("{e:#}").contains("no gateway platforms enabled") => {
+                eprintln!("{e:#}");
+                std::process::exit(gray_supervise::exit::EXIT_FATAL);
+            }
+            r => r,
+        },
         Some(GatewayCmd::Install) => gray_gateway::systemd::install(),
         Some(GatewayCmd::Uninstall) => gray_gateway::systemd::uninstall(),
         Some(GatewayCmd::Invite { platform }) => print_invite(&platform),
@@ -217,11 +238,14 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
         }
         PluginCmd::Search { query } => {
             let out = gray_pkg::ops::search_all(&query).await?;
-            if out.hits.is_empty() && !out.pi_unreachable {
+            if out.hits.is_empty() && !out.pi_unreachable && !out.gray_unreachable {
                 anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
             }
             for hit in &out.hits {
                 println!("{}", gray_pkg::ops::format_search_hit(hit));
+            }
+            if out.gray_unreachable {
+                println!("{}", gray_pkg::ops::GRAY_UNREACHABLE_LINE);
             }
             if out.pi_unreachable {
                 println!("{}", gray_pkg::ops::PI_UNREACHABLE_LINE);
