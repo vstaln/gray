@@ -126,6 +126,7 @@ pub fn init() {
             return;
         };
         let path = home.join("logs").join("gray.log");
+        gray_supervise::rotation::rotate_if_needed(&path);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -174,5 +175,14 @@ mod tests {
     fn redact_leaves_plain_text_alone() {
         assert_eq!(redact("hello world, no secrets"), "hello world, no secrets");
         assert_eq!(redact("my x-api-key is secret"), "my x-api-key is secret");
+    }
+
+    #[test]
+    fn rotation_helper_caps_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("gray.log");
+        std::fs::write(&log, vec![b'x'; (10 * 1024 * 1024 + 1) as usize]).unwrap();
+        gray_supervise::rotation::rotate_if_needed(&log);
+        assert!(std::fs::metadata(&log).unwrap().len() < 10 * 1024 * 1024);
     }
 }
