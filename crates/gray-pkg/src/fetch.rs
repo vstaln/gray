@@ -2,7 +2,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 use tokio::io::AsyncWriteExt;
 
 /// Max download size: 64 MiB.
@@ -41,7 +41,7 @@ pub fn redact(url: &str) -> String {
 }
 
 /// https-only, except http loopback (127.0.0.1/::1/localhost) for tests.
-fn check_url(url: &str) -> anyhow::Result<()> {
+pub(crate) fn check_url(url: &str) -> anyhow::Result<()> {
     let redacted = || redact(url);
     let Some((scheme, rest)) = url.split_once("://") else {
         anyhow::bail!("refusing non-https plugin URL: {}", redacted());
@@ -64,8 +64,57 @@ fn check_url(url: &str) -> anyhow::Result<()> {
     anyhow::bail!("refusing non-https plugin URL: {}", redacted());
 }
 
+fn b64_val(c: u8) -> Option<u32> {
+    match c {
+        b'A'..=b'Z' => Some(u32::from(c - b'A')),
+        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
+        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+/// Decode standard base64 (npm `integrity` payloads). Hand-rolled: the
+/// workspace has `base64` but `gray-pkg` takes no new deps by design.
+fn b64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
+    let b = s.as_bytes();
+    if b.is_empty() || !b.len().is_multiple_of(4) {
+        anyhow::bail!("invalid base64 hash");
+    }
+    let mut out = Vec::with_capacity(b.len() / 4 * 3);
+    for (qi, quad) in b.chunks(4).enumerate() {
+        let last = qi == b.len() / 4 - 1;
+        let mut n: u32 = 0;
+        let mut pad = 0;
+        for &c in quad {
+            if c == b'=' {
+                pad += 1;
+                n <<= 6;
+            } else {
+                if pad > 0 {
+                    anyhow::bail!("invalid base64 hash");
+                }
+                n = (n << 6) | b64_val(c).ok_or_else(|| anyhow::anyhow!("invalid base64 hash"))?;
+            }
+        }
+        if pad > 2 || (pad > 0 && !last) {
+            anyhow::bail!("invalid base64 hash");
+        }
+        out.push((n >> 16) as u8);
+        if pad < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if pad == 0 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
+}
+
 /// Stream `url` to `$GRAY_HOME/plugins/tmp/`, enforcing the 64 MiB cap and
-/// verifying sha256 against `expected` (`"sha256:<hex>"`). The temp file is
+/// verifying against `expected` (`"sha256:<hex>"` or npm's `"sha512-<base64>"`).
+/// Anything else bails `unsupported hash algorithm`. The temp file is
 /// auto-deleted on failure; on success the kept path is returned.
 pub async fn download(
     client: &reqwest::Client,
@@ -82,7 +131,8 @@ pub async fn download(
     let temppath = tmp.into_temp_path();
     let path: PathBuf = temppath.to_path_buf();
     let mut file = tokio::fs::File::create(&path).await?;
-    let mut hasher = Sha256::new();
+    let mut sha256 = Sha256::new();
+    let mut sha512 = Sha512::new();
     let mut total: u64 = 0;
     loop {
         let chunk = resp.chunk().await?;
@@ -93,7 +143,8 @@ pub async fn download(
             // `temppath` drops here and deletes the partial file.
             anyhow::bail!("plugin archive exceeds 64 MiB cap");
         }
-        hasher.update(&bytes);
+        sha256.update(&bytes);
+        sha512.update(&bytes);
         file.write_all(&bytes).await?;
     }
     file.flush().await?;
@@ -106,12 +157,19 @@ pub async fn download(
             Some((a, h)) => (a, h),
             None => ("", want),
         };
-        if !algo.eq_ignore_ascii_case("sha256") {
+        if algo.eq_ignore_ascii_case("sha256") {
+            let got = format!("{:x}", sha256.finalize());
+            if !got.eq_ignore_ascii_case(hex) {
+                anyhow::bail!("hash mismatch for {}", redact(url));
+            }
+        } else if let Some(payload) = want.strip_prefix("sha512-") {
+            let want_raw = b64_decode(payload)
+                .map_err(|_| anyhow::anyhow!("invalid sha512 integrity for {}", redact(url)))?;
+            if sha512.finalize()[..] != want_raw[..] {
+                anyhow::bail!("hash mismatch for {}", redact(url));
+            }
+        } else {
             anyhow::bail!("unsupported hash algorithm in index entry");
-        }
-        let got = format!("{:x}", hasher.finalize());
-        if !got.eq_ignore_ascii_case(hex) {
-            anyhow::bail!("hash mismatch for {}", redact(url));
         }
     }
 
@@ -146,6 +204,44 @@ mod tests {
         assert_eq!(redact("https://u:p@h/x?token=1"), "https://h/x");
         assert_eq!(redact("https://h/x#frag"), "https://h/x");
         assert_eq!(redact("https://h/x"), "https://h/x");
+    }
+
+    #[test]
+    fn b64_decode_standard_vectors() {
+        assert_eq!(b64_decode("Zg==").unwrap(), b"f");
+        assert_eq!(b64_decode("Zm9v").unwrap(), b"foo");
+        assert_eq!(b64_decode("Zm9vYmFy").unwrap(), b"foobar");
+        // 64-byte digest shape (sha512 length) round-trips.
+        let raw: Vec<u8> = (0..64).collect();
+        let mut enc = String::new();
+        const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        for ch in raw.chunks(3) {
+            let mut n: u32 = 0;
+            for &b in ch {
+                n = (n << 8) | u32::from(b);
+            }
+            n <<= 8 * (3 - ch.len());
+            enc.push(ALPH[((n >> 18) & 63) as usize] as char);
+            enc.push(ALPH[((n >> 12) & 63) as usize] as char);
+            enc.push(if ch.len() > 1 {
+                ALPH[((n >> 6) & 63) as usize] as char
+            } else {
+                '='
+            });
+            enc.push(if ch.len() > 2 {
+                ALPH[(n & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+        assert_eq!(b64_decode(&enc).unwrap(), raw);
+    }
+
+    #[test]
+    fn b64_decode_rejects_garbage() {
+        for bad in ["", "!!!", "====", "Zm9v!", "Zm9vYmFy="] {
+            assert!(b64_decode(bad).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]
