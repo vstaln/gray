@@ -112,6 +112,7 @@ impl GatewayRunner {
             questions: None, // no interactive user → request_user_input is denied anyway
             session_id: Some(sid_str.to_string()),
             permission: PermissionMode::resolve(false),
+            approvals: None, // gateway daemon owns policy via GatedExecutor/authz instead
         };
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {

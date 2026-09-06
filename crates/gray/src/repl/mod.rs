@@ -465,6 +465,16 @@ pub async fn run_repl_mode(
         gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
     };
 
+    let approval_gate = gray_core::approvals::ApprovalGate::new(
+        config.permissions.as_deref().unwrap_or(gray_core::approvals::MODE_AUTO),
+    );
+    if let Some((shared, _)) = tui.as_ref() {
+        shared
+            .lock()
+            .expect("tui lock")
+            .set_permission_mode(approval_gate.mode());
+    }
+
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Reasoning is ON by default — user wants to see thinking (high effort).
     // Bare /thinking toggles visibility; picker sets level persisted to config.
@@ -564,6 +574,18 @@ pub async fn run_repl_mode(
                 (buf.trim().to_string(), Vec::new())
             };
             pending_images = images;
+            if let Some((shared, _)) = tui.as_ref() {
+                let pending = shared.lock().expect("tui lock").pending_permission_mode.take();
+                if let Some(mode) = pending {
+                    config.permissions = Some(mode.clone());
+                    approval_gate.set_mode(&mode);
+                    if let Ok(path) = crate::setup::saved_config_path() {
+                        let mut saved = crate::setup::load_saved_config_at(&path);
+                        saved.permissions = config.permissions.clone();
+                        let _ = crate::setup::save_saved_config_at(&path, &saved);
+                    }
+                }
+            }
             expand_skill_command(
                 parse_command(&line_text),
                 cwd.as_path(),
@@ -632,6 +654,7 @@ pub async fn run_repl_mode(
                     &mut pending_history,
                     &mut unconfigured,
                     &question_bridge,
+                    &approval_gate,
                 )
                 .await?;
             }
@@ -650,6 +673,7 @@ pub async fn run_repl_mode(
                     &mut pending_history,
                     &mut unconfigured,
                     &question_bridge,
+                    &approval_gate,
                 )
                 .await?;
             }
@@ -666,6 +690,7 @@ pub async fn run_repl_mode(
                     &mut pending_history,
                     &mut unconfigured,
                     &mut hide_thinking,
+                    &approval_gate,
                 )
                 .await?
                     == dispatch::Flow::Break
