@@ -4,12 +4,13 @@ mod providers;
 
 pub(crate) use providers::ensure_disk_loaded;
 pub use providers::{
-    ModelRate, cache_model_context, cache_model_context_if_absent, cache_models_dev_if_absent,
-    context_source, fetch_litellm_context_windows, fetch_live_provider_models,
-    fetch_models_dev_context, fetch_openrouter_rates, format_cost, friendly_model_name,
-    get_cached_model_context, get_model_rate, get_provider_models, get_provider_models_with_live,
-    load_models_cache_to_memory, parse_litellm_context_json, parse_models_dev_json,
-    parse_openrouter_models_json, save_models_cache_to_disk, turn_cost,
+    ModelRate, cache_model_context, cache_model_context_if_absent, cache_model_reasoning,
+    cache_models_dev_if_absent, context_source, fetch_litellm_context_windows,
+    fetch_live_provider_models, fetch_models_dev_context, fetch_openrouter_rates, format_cost,
+    friendly_model_name, get_cached_model_context, get_model_rate, get_provider_models,
+    get_provider_models_with_live, load_models_cache_to_memory, model_supports_reasoning,
+    parse_litellm_context_json, parse_models_dev_json, parse_openrouter_models_json,
+    save_models_cache_to_disk, supported_efforts, supported_thinking_levels, turn_cost,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
@@ -441,6 +442,44 @@ mod tests {
     fn compaction_defaults_match_legacy() {
         assert_eq!(user_reserve_tokens(), 16_384);
         assert_eq!(user_keep_recent_tokens(), 20_000);
+    }
+
+    #[test]
+    fn reasoning_capability_from_models_dev_and_live() {
+        // Unknown until a provider speaks.
+        assert_eq!(
+            model_supports_reasoning("test-reason-capability-never-seen"),
+            None
+        );
+        // models.dev `reasoning` flag.
+        let v: serde_json::Value = serde_json::json!({
+            "prov": {"models": {
+                "test-reason-thinker": {"reasoning": true, "limit": {"context": 200000}},
+                "test-reason-plain": {"reasoning": false, "limit": {"context": 32000}},
+            }},
+        });
+        parse_models_dev_json(&v);
+        assert_eq!(model_supports_reasoning("test-reason-thinker"), Some(true));
+        assert_eq!(
+            model_supports_reasoning("prov/test-reason-plain"),
+            Some(false)
+        );
+        // Non-reasoning models only get `off`.
+        assert_eq!(
+            supported_thinking_levels("prov/test-reason-plain"),
+            vec![("off", "No reasoning")]
+        );
+        // Family efforts are provider-driven, not the hardcoded catalog.
+        let grok: Vec<&str> = supported_thinking_levels("xai/grok-4")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(grok, vec!["off", "low", "high"]);
+        let claude: Vec<&str> = supported_thinking_levels("anthropic/claude-opus-4-6")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(claude, vec!["off", "low", "medium", "high", "max"]);
     }
 
     #[test]
