@@ -133,4 +133,12 @@ mod tests {
         };
         assert!(status_with_output(|| Ok(out)).is_ok());
     }
+
+    #[test]
+    fn probe_reports_healthy_after_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        gray_supervise::heartbeat::write_heartbeat(dir.path()).unwrap();
+        let h = gray_supervise::health::probe(dir.path());
+        assert!(h.healthy, "probe must be healthy, got: {}", h.reason);
+    }
 }
