@@ -378,8 +378,12 @@ impl Tui {
     pub fn set_thinking_effort(&mut self, effort: String) {
         self.thinking_effort = effort;
     }
-    pub fn set_permission_mode(&mut self, mode: String) { self.permission_mode = mode; }
-    pub fn permission_mode(&self) -> &str { &self.permission_mode }
+    pub fn set_permission_mode(&mut self, mode: String) {
+        self.permission_mode = mode;
+    }
+    pub fn permission_mode(&self) -> &str {
+        &self.permission_mode
+    }
     pub fn cycle_permission_mode(&mut self) -> String {
         let next = if self.permission_mode == gray_core::approvals::MODE_READ_ONLY {
             gray_core::approvals::MODE_AUTO
