@@ -340,7 +340,8 @@ impl ProcessRegistry {
         guard
             .sessions
             .iter()
-            .filter_map(|(s, tasks)| tasks.tasks.contains_key(&id.0).then(|| s.clone()))
+            .filter(|(_, tasks)| tasks.tasks.contains_key(&id.0))
+            .map(|(s, _)| s.clone())
             .collect()
     }
 

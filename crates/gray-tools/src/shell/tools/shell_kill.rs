@@ -73,21 +73,21 @@ impl Tool for ShellKillTool {
         match super::super::kill::kill(target, &session, ctx).await {
             Ok(rep) => ToolOutput::ok(rep.describe),
             Err(e) => {
-                if e.contains("unknown task") {
-                    if let Some(id) = task_id {
-                        let others: Vec<String> = crate::shell::registry::registry()
-                            .sessions_with_task(id)
-                            .into_iter()
-                            .filter(|s| s != &session)
-                            .collect();
-                        if !others.is_empty() {
-                            return fail(format!(
-                                "{e} in session \"{session}\". Exists in session-scoped session(s): {}. Tasks are session-scoped.",
-                                others.join(", ")
-                            ));
-                        }
-                        return fail(format!("{e} in session \"{session}\""));
+                if e.contains("unknown task")
+                    && let Some(id) = task_id
+                {
+                    let others: Vec<String> = crate::shell::registry::registry()
+                        .sessions_with_task(id)
+                        .into_iter()
+                        .filter(|s| s != &session)
+                        .collect();
+                    if !others.is_empty() {
+                        return fail(format!(
+                            "{e} in session \"{session}\". Exists in session-scoped session(s): {}. Tasks are session-scoped.",
+                            others.join(", ")
+                        ));
                     }
+                    return fail(format!("{e} in session \"{session}\""));
                 }
                 fail(e)
             }
