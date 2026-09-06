@@ -61,7 +61,7 @@ mod session;
 mod status;
 mod user_cmds;
 
-pub(crate) use acp_cmds::handle_acp;
+pub(crate) use acp_cmds::{handle_acp_command, run_acp_turn};
 pub(crate) use commands::{REGISTRY, completion_matches_dyn};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
@@ -316,6 +316,9 @@ pub async fn run_repl_mode(
     // The agent is built lazily so the REPL opens even with no model/key configured;
     // we surface a friendly hint on first use instead of refusing to start.
     let mut agent: Option<Agent> = None;
+    // Sticky ACP session: `/acp <agent>` parks one here; prompts route
+    // through it until `/acp off`. The native `agent` above sits idle meanwhile.
+    let mut acp: Option<gray_acp::AcpSession> = None;
     let mut session_state: Option<SessionState> = None;
     let mut session_totals = SessionTotals::default();
     let mut pending_history: Vec<Message> = Vec::new();
@@ -550,6 +553,9 @@ pub async fn run_repl_mode(
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
                             shutdown_hooks(agent.as_ref()).await;
+                            if let Some(s) = acp.take() {
+                                s.shutdown().await;
+                            }
                             shutdown_shell_tasks(&session_state, &tui).await;
                             print_exit_hint(&session_state);
                             break;
@@ -571,6 +577,9 @@ pub async fn run_repl_mode(
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     shutdown_hooks(agent.as_ref()).await;
+                    if let Some(s) = acp.take() {
+                        s.shutdown().await;
+                    }
                     shutdown_shell_tasks(&session_state, &tui).await;
                     break;
                 }
@@ -678,28 +687,46 @@ pub async fn run_repl_mode(
                 .await?;
             }
             ReplCommand::Prompt(prompt_text) => {
-                prompt_turn::run_prompt_turn(
-                    prompt_text,
-                    &mut pending_images,
-                    &mut agent,
-                    config,
-                    &cwd,
-                    &tui,
-                    interactive,
-                    &mut session_state,
-                    &mut session_totals,
-                    &mut pending_command,
-                    &mut pending_history,
-                    &mut unconfigured,
-                    &question_bridge,
-                    &approval_gate,
-                )
-                .await?;
+                if acp.is_some() {
+                    run_acp_turn(
+                        prompt_text,
+                        &mut pending_images,
+                        &mut acp,
+                        config,
+                        &cwd,
+                        &tui,
+                        interactive,
+                        &mut session_state,
+                        &mut session_totals,
+                        &mut pending_command,
+                        config.model.as_deref(),
+                    )
+                    .await?;
+                } else {
+                    prompt_turn::run_prompt_turn(
+                        prompt_text,
+                        &mut pending_images,
+                        &mut agent,
+                        config,
+                        &cwd,
+                        &tui,
+                        interactive,
+                        &mut session_state,
+                        &mut session_totals,
+                        &mut pending_command,
+                        &mut pending_history,
+                        &mut unconfigured,
+                        &question_bridge,
+                        &approval_gate,
+                    )
+                    .await?;
+                }
             }
             other => {
                 if dispatch::dispatch_command(
                     other,
                     &mut agent,
+                    &mut acp,
                     config,
                     &cwd,
                     &tui,
