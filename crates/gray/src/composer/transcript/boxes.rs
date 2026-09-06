@@ -225,11 +225,16 @@ impl Tui {
     }
 
     pub fn push_dim(&mut self, line: String) {
-        let styled = Line::from(vec![Span::styled(
-            line,
-            Style::new().add_modifier(Modifier::DIM),
-        )]);
-        self.push_styled_lines_with_hyperlinks(vec![styled], &[], 0);
+        let lines: Vec<Line<'static>> = line
+            .split('\n')
+            .map(|l| {
+                Line::from(vec![Span::styled(
+                    l.to_string(),
+                    Style::new().add_modifier(Modifier::DIM),
+                )])
+            })
+            .collect();
+        self.push_styled_lines_with_hyperlinks(lines, &[], 0);
     }
 
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {

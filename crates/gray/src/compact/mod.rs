@@ -205,7 +205,10 @@ pub async fn compact_with_keep(
 
 /// Best-effort snapshot of the pre-compact transcript plus the summary.
 /// Returns the file path on success. Lives in the OS temp dir, never the workspace.
-pub fn write_continuation_checkpoint(transcript: &str, summary: &str) -> Option<std::path::PathBuf> {
+pub fn write_continuation_checkpoint(
+    transcript: &str,
+    summary: &str,
+) -> Option<std::path::PathBuf> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
