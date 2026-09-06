@@ -98,6 +98,10 @@ pub(crate) fn expand_skill_command(
         );
         return ReplCommand::Empty;
     };
+    if let Err(msg) = crate::skills::validate_skill_args(skill, args.as_deref()) {
+        say(tui, &msg);
+        return ReplCommand::Empty;
+    };
     let expanded = match std::fs::read_to_string(&skill.file_path) {
         Ok(content) => {
             let body = crate::skills_tool::strip_frontmatter(&content);
@@ -149,6 +153,14 @@ pub(crate) async fn handle_sys(
             Err(e) => say(tui, &format!("failed to read {}: {e}", path.display())),
         },
         SysAction::Reset => {
+            match crate::sys_editor::backup_before_overwrite(&path) {
+                Ok(Some(backup)) => say(tui, &format!("backup: {}", backup.display())),
+                Ok(None) => {}
+                Err(e) => {
+                    say(tui, &format!("backup failed ({e}) — reset aborted"));
+                    return;
+                }
+            }
             if let Err(e) = std::fs::write(&path, DEFAULT_SYS_PROMPT) {
                 say(tui, &format!("failed to reset {}: {e}", path.display()));
                 return;
@@ -168,6 +180,22 @@ pub(crate) async fn handle_sys(
                     return;
                 }
             };
+            if crate::sys_editor::should_use_external_editor(
+                std::env::var("EDITOR").ok().as_deref(),
+            ) {
+                match crate::sys_editor::run_external_editor(&path, &initial) {
+                    Ok(Some(_)) => {
+                        say(
+                            tui,
+                            "✓ system prompt saved — applies from your next message",
+                        );
+                        reload_agent(agent, config, cwd).await;
+                    }
+                    Ok(None) => say(tui, "prompt unchanged"),
+                    Err(e) => say(tui, &format!("editor error: {e}")),
+                }
+                return;
+            }
             let tui_snap = tui.cloned();
             let editor_paused = if let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");
@@ -242,6 +270,17 @@ pub(crate) async fn handle_model(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if let Some(m) = direct {
+        let (_, _, known) = crate::setup::provider_models_for(
+            &config.base_url,
+            config.api_key.as_deref(),
+        );
+        let m = match crate::setup::validate_direct_model_id(&m, &known) {
+            Ok(canonical) => canonical,
+            Err(msg) => {
+                say(tui, &msg);
+                return;
+            }
+        };
         config.model = Some(m.clone());
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);

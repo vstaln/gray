@@ -17,13 +17,41 @@ use std::sync::Mutex as StdMutex;
 
 /// Static slash-command table driving both `/help` and the autocomplete panel.
 /// True while an agent turn is in flight: `Some(token)` cancels on first
-/// Ctrl-C (token consumed), a second press — or any press at the prompt —
-/// exits. Single mutex = no TOCTOU between flag and token.
+/// Ctrl-C (token consumed, turn handler reports it, REPL stays alive); a
+/// second press with no token in flight exits. At the prompt (no token)
+/// the first press clears the draft (or arms exit when already empty) and
+/// only a second press within 5 s exits — otherwise exit via /quit (or
+/// Ctrl-D on an empty line). Single mutex = no TOCTOU between flag and token.
 static TURN_STATE: StdMutex<Option<tokio_util::sync::CancellationToken>> = StdMutex::new(None);
 
+/// Window for a second Ctrl-C/SIGINT to confirm exit (both the global
+/// signal policy below and the prompt `read_line` key handler agree on 5 s).
+pub(crate) const CTRL_C_EXIT_WINDOW_MS: u64 = 5_000;
+
+/// Pure repeat check shared by the signal policy and (via the same window)
+/// the prompt handler: true only for a second press inside the window.
+pub(crate) fn sigint_should_exit(last_ms: u64, now_ms: u64) -> bool {
+    now_ms.wrapping_sub(last_ms) <= CTRL_C_EXIT_WINDOW_MS
+}
+
+/// Last at-prompt SIGINT (millis since epoch) for the two-press exit.
+/// Mid-turn presses consume the turn token instead and never touch this.
+static LAST_PROMPT_SIGINT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 /// Installs the single global Ctrl-C policy:
-/// - during a turn: cancel the turn (first press), the turn handler reports it
-/// - at the prompt: exit cleanly
+/// - during a turn: cancel the turn (first press), the turn handler reports
+///   it and the REPL stays alive; a second press with no token exits.
+/// - at the prompt: first press only arms exit (the `read_line` key handler
+///   clears the draft instead of quitting); a second press within 5 s exits
+///   cleanly, otherwise exit via /quit (or Ctrl-D on an empty line).
 async fn spawn_ctrl_c_policy() {
     loop {
         if tokio::signal::ctrl_c().await.is_err() {
@@ -33,14 +61,22 @@ async fn spawn_ctrl_c_policy() {
         if let Some(t) = token {
             t.cancel(); // first press mid-turn: cancel, stay alive
         } else {
-            // Say something — a bare exit(0) mid-turn looks like a crash.
-            let _ = crossterm::terminal::disable_raw_mode();
-            let _ = write!(
-                std::io::stdout(),
-                "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n"
-            );
-            let _ = std::io::stdout().flush();
-            std::process::exit(0);
+            let now = now_ms();
+            let last = LAST_PROMPT_SIGINT_MS.load(std::sync::atomic::Ordering::Relaxed);
+            if sigint_should_exit(last, now) && last != 0 {
+                // Second press within the window: exit cleanly.
+                // Say something — a bare exit(0) mid-turn looks like a crash.
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = write!(
+                    std::io::stdout(),
+                    "\x1b[?25h\r\n\x1b[2m(interrupted — bye)\x1b[0m\r\n"
+                );
+                let _ = std::io::stdout().flush();
+                std::process::exit(0);
+            }
+            // First press at the prompt: arm exit, stay alive (the prompt
+            // key handler clears the draft; exit via second press or /quit).
+            LAST_PROMPT_SIGINT_MS.store(now, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -53,7 +89,6 @@ pub mod commands;
 mod dispatch;
 mod empty_turn;
 pub mod format;
-mod gateway_cmds;
 mod handlers;
 mod key_watcher;
 mod plugin_cmds;
@@ -63,20 +98,10 @@ mod status;
 mod user_cmds;
 
 pub(crate) use acp_cmds::{handle_acp_command, run_acp_turn};
-pub(crate) use commands::{REGISTRY, completion_matches_dyn};
+pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
 pub use format::{THINKING_STYLE, fmt_event, fmt_usage, format_core_error};
-pub(crate) use gateway_cmds::{
-    GATEWAY_HANDLE, gateway_boot_rows, handle_gateway, spawn_gateway_boot_watcher,
-    start_gateway_in_background,
-};
-// Test-only surface (kept out of the non-test build to satisfy unused-imports).
-#[cfg(test)]
-pub(crate) use gateway_cmds::{
-    GatewayAction, PairingArgs, apply_connect, apply_disconnect, apply_enable,
-    gateway_status_lines, parse_gateway_args,
-};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
@@ -401,10 +426,26 @@ pub async fn run_repl_mode(
     // to plain cooked reads (scripts, tests).
     // The composer owns the bottom pane for the whole session. A tiny ticker
     // task refreshes the elapsed-seconds status while turns run.
-    let tui = interactive.then(|| {
+    // NOTE: `is_terminal()` alone still passes on headless ptys where the
+    // cursor-position query inside `Tui::new` (ratatui Inline viewport)
+    // fails. Probe upfront and map init failure to a clean error — a panic
+    // here exits 101 via the panic hook in main.rs (kept as-is for real
+    // bugs); a clean error exits non-zero with a readable message instead.
+    let tui: TuiOpt = if interactive {
         use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+        if crossterm::terminal::size().is_err() {
+            anyhow::bail!(
+                "not a terminal — the interactive composer needs a real terminal \
+                 (could not query terminal size); pipe input or run under a TTY"
+            );
+        }
         let shared = std::sync::Arc::new(std::sync::Mutex::new({
-            let mut t = crate::composer::Tui::new().expect("composer init");
+            let mut t = crate::composer::Tui::new().map_err(|e| {
+                anyhow::anyhow!(
+                    "not a terminal — the interactive composer needs a real terminal \
+                     (cursor position could not be read: {e:#}); pipe input or run under a TTY"
+                )
+            })?;
             if let Some(m) = &config.model {
                 t.set_model(m.clone());
             }
@@ -449,8 +490,10 @@ pub async fn run_repl_mode(
                 }
             }
         });
-        (shared, stop)
-    });
+        Some((shared, stop))
+    } else {
+        None
+    };
 
     // request_user_input bridge: TUI overlay when interactive,
     // stdin prompts when piped.
@@ -500,25 +543,9 @@ pub async fn run_repl_mode(
             }
         }
     }
-    // Gateway autostart (default off; /gateway autostart on to enable): boot the
-    // in-process daemon when any
-    // platform is enabled. Silent when nothing is configured. Shows a LIVE
-    // boot panel above the input (per-platform connecting → connected as …
-    // plus a shimmer-bar line); when every platform resolves, the final
-    // state is committed as ONE card with no trailing gap. No follow-ups.
-    if let Some((shared, _)) = tui.as_ref() {
-        let cfg = gray_gateway::config::load_gateway_config();
-        if cfg.autostart
-            && cfg.platforms.values().any(|p| p.enabled)
-            && let Some(board) = start_gateway_in_background(Some(shared))
-        {
-            shared
-                .lock()
-                .expect("tui lock")
-                .begin_gateway_boot("Gateway autostarted", &board);
-            spawn_gateway_boot_watcher(shared.clone(), board);
-        }
-    }
+    // The messaging gateway left gray core (the gray-gateway crate is
+    // preserved and still runs via the `gray gateway` CLI): no autostart,
+    // no boot card — the TUI starts clean.
     let mut pending_command: Option<ReplCommand> = None;
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
@@ -755,3 +782,19 @@ pub async fn run_repl_mode(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ctrl_c_policy_tests {
+    use super::*;
+
+    #[test]
+    fn sigint_second_press_within_window_exits() {
+        // First press (no prior) never exits — verified by last==0 guard at
+        // the call site; pure helper: far apart → false, close → true.
+        assert!(!sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS + 1));
+        assert!(sigint_should_exit(1_000, 1_000 + 1_000));
+        assert!(sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS));
+        // Clock skew backwards → wrapping_sub is huge → false.
+        assert!(!sigint_should_exit(2_000, 1_000));
+    }
+}

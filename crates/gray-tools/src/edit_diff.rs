@@ -459,11 +459,7 @@ pub fn apply_edits_to_normalized_content(
         } else if let Some(occ_spec) = edit.occurrence {
             let target_idx = if occ_spec > 0 {
                 let idx = (occ_spec - 1) as usize;
-                if idx < total {
-                    Some(idx)
-                } else {
-                    None
-                }
+                if idx < total { Some(idx) } else { None }
             } else if occ_spec < 0 {
                 let from_end = (-occ_spec) as usize;
                 if from_end <= total {
@@ -991,7 +987,10 @@ mod prefix_tests {
         // Target last occurrence (-1)
         let edits_last = vec![Edit::new("match", "LAST").with_occurrence(-1)];
         let res_last = apply_edits_to_normalized_content(content, &edits_last, "f.txt").unwrap();
-        assert_eq!(res_last.new_content, "one\nmatch\ntwo\nmatch\nthree\nLAST\n");
+        assert_eq!(
+            res_last.new_content,
+            "one\nmatch\ntwo\nmatch\nthree\nLAST\n"
+        );
     }
 
     #[test]

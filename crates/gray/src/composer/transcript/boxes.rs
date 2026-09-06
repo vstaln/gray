@@ -39,70 +39,6 @@ impl Tui {
         self.transcript.extend(box_lines);
     }
 
-    /// Live gateway boot panel: rendered in the viewport above the input
-    /// while platforms connect, then committed as ONE static card.
-    /// `header` is e.g. "Gateway autostarted"; rows come from
-    /// [`crate::repl::gateway_boot_rows`] (`  └─ Discord — connecting…`).
-    pub fn begin_gateway_boot(
-        &mut self,
-        header: &str,
-        board: &gray_gateway::status::GatewayStatusBoard,
-    ) {
-        self.gateway_boot = Some(GatewayBootPanel {
-            header: header.to_string(),
-            rows: crate::repl::gateway_boot_rows(board),
-        });
-        let _ = self.draw();
-    }
-
-    /// Refreshes the live panel rows. Never touches `status`: the boot card
-    /// above the input is the only boot indicator (no top shimmer row).
-    pub fn refresh_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
-        if let Some(p) = self.gateway_boot.as_mut() {
-            p.rows = crate::repl::gateway_boot_rows(board);
-        }
-    }
-
-    /// Clears the live panel + status and commits the final board state as
-    /// ONE card, followed by one bare row so the card never fuses with the
-    /// input band. Same formatter + same painter as the live panel, so the
-    /// commit is a no-op visually: nothing shifts, nothing restyles.
-    pub fn finish_gateway_boot(&mut self, board: &gray_gateway::status::GatewayStatusBoard) {
-        let Some(panel) = self.gateway_boot.take() else {
-            return;
-        };
-        if self.status_is_gateway_or_empty() {
-            self.status = None;
-        }
-        let (header, body) =
-            gateway_boot_card_parts(&panel.header, &crate::repl::gateway_boot_rows(board));
-        self.ensure_gap(1);
-        let w = self.width().max(10);
-        let box_lines = format_gateway_boot_card(header.clone(), &body, w);
-        let height = box_lines.len() as u16;
-        let _ = self.terminal.insert_before(height, |buf| {
-            paint_card(&box_lines, buf.area, buf);
-        });
-        self.history_entries
-            .push(crate::composer::TranscriptEntry::ToolBox { header, body });
-        self.transcript.extend(box_lines);
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
-        let _ = std::io::stdout().flush();
-        // Same bare row the live panel keeps between the card and the input
-        // band (draw.rs `boot_gap_h`), so committing never moves the input.
-        self.ensure_gap(1);
-        let _ = self.draw();
-    }
-
-    fn status_is_gateway_or_empty(&self) -> bool {
-        self.status
-            .as_ref()
-            .map(|(_, l)| l.starts_with("Gateway"))
-            .unwrap_or(true)
-    }
-
     pub fn push_line(&mut self, line: String) {
         self.push_line_styled(line, Style::default());
     }
@@ -205,17 +141,18 @@ impl Tui {
         &mut self,
         lines: Vec<Line<'static>>,
         hyperlinks: &[HyperlinkTarget],
-        _line_offset: usize,
+        line_offset: usize,
     ) {
         if lines.is_empty() {
             return;
         }
         let w = self.width().max(10);
-        let lines_only = self.render_and_insert_styled_lines(&lines, hyperlinks, w);
+        let rebased = rebase_hyperlinks_for_slice(hyperlinks, line_offset, lines.len());
+        let lines_only = self.render_and_insert_styled_lines(&lines, &rebased, w);
         self.history_entries
             .push(crate::composer::TranscriptEntry::StyledLines {
                 lines,
-                hyperlinks: hyperlinks.to_vec(),
+                hyperlinks: rebased,
             });
         self.transcript.extend(lines_only);
         if self.transcript.len() > 1000 {
@@ -470,5 +407,65 @@ impl Tui {
             self.set_usage(last_usage);
         }
         // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
+    }
+}
+
+/// Rebase absolute hyperlink targets onto a committed slice.
+///
+/// `hyperlinks` carry document-absolute `line_index` values while `lines` is
+/// the just-frozen slice starting at `line_offset` (see `stream_text` /
+/// `flush_markdown`). Keep only targets landing inside
+/// `[line_offset, line_offset + lines.len())` and shift them to slice-relative
+/// indices, so the `by_line` map in `render_and_insert_styled_lines` (and the
+/// stored history replayed on resize) attributes each URL to its own line.
+/// Without this, an incremental commit of line N resolves `by_line[0]` to
+/// line 0's URL — the second bullet steals the previous file's link.
+pub(crate) fn rebase_hyperlinks_for_slice(
+    hyperlinks: &[HyperlinkTarget],
+    line_offset: usize,
+    len: usize,
+) -> Vec<HyperlinkTarget> {
+    hyperlinks
+        .iter()
+        .filter_map(|h| {
+            if h.line_index < line_offset || h.line_index >= line_offset.saturating_add(len) {
+                return None;
+            }
+            let mut hc = h.clone();
+            hc.line_index -= line_offset;
+            Some(hc)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adjacent_file_links_do_not_steal_previous_url() {
+        // TODO-list shape: two adjacent bullets carrying different file URLs.
+        // Second commit arrives as slice [line 1] with absolute hyperlinks
+        // for lines 0..2 and offset 1; it must resolve to NOTES.txt, not the
+        // previous line's src/main.rs URL.
+        let hyperlinks = vec![
+            HyperlinkTarget {
+                line_index: 0,
+                column_range: 2..14,
+                url: "file:///repo/src/main.rs".to_string(),
+                id: 1,
+            },
+            HyperlinkTarget {
+                line_index: 1,
+                column_range: 2..13,
+                url: "file:///repo/NOTES.txt".to_string(),
+                id: 2,
+            },
+        ];
+        let rebased = rebase_hyperlinks_for_slice(&hyperlinks, 1, 1);
+        assert_eq!(rebased.len(), 1, "only the sliced line's link survives: {rebased:?}");
+        assert_eq!(rebased[0].line_index, 0);
+        assert_eq!(rebased[0].url, "file:///repo/NOTES.txt");
+        assert_eq!(rebased[0].column_range, 2..13);
     }
 }

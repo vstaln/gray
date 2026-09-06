@@ -3,7 +3,7 @@
 use clap::Parser;
 use gray::Cli;
 use gray::config::Config;
-use gray::print::run_print_mode;
+use gray::print::run_print_mode_with_session;
 use gray::repl::run_repl_mode;
 
 #[tokio::main]
@@ -60,7 +60,8 @@ async fn main() -> anyhow::Result<()> {
         if let Some(agent) = cli.acp.as_deref() {
             return run_acp_print_mode(agent, prompt).await;
         }
-        run_print_mode(&config, prompt).await?;
+        run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
+            .await?;
     } else {
         gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
@@ -118,14 +119,8 @@ async fn run_resume_subcommand(
     };
     let store = JsonlSessionStore::new(root);
     let target_id = if let Some(raw) = session_id {
-        if let Some(resolved) = gray::resume::resolve_prefix(&store, raw, all).await {
-            resolved
-        } else {
-            match store.load(&gray_session::SessionId::new(raw)).await {
-                Ok(_) => gray_session::SessionId::new(raw),
-                Err(e) => anyhow::bail!("no session matching '{raw}': {e}"),
-            }
-        }
+        // Shared with `-p --session`: one validation, one error message.
+        gray::resume::resolve_session_strict(&store, raw, all).await?
     } else if last {
         let cwd = std::env::current_dir().ok();
         let summaries = store.list().await;
@@ -146,6 +141,18 @@ async fn run_resume_subcommand(
             None => return Ok(()),
         }
     };
+    // Non-TTY (`resume <id> < /dev/null`, scripts): the REPL would hit EOF
+    // and exit silently, so announce what was resumed first — never exit 0
+    // with no output. Interactive terminals skip this (the TUI owns the screen).
+    {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            println!(
+                "{}",
+                gray::resume::resumed_session_line(&store, &target_id).await?
+            );
+        }
+    }
     let _ = crossterm::terminal::disable_raw_mode();
     // NOTE: an earlier `PROMPT` positional was deleted —
     // it was accepted and then discarded. To send a first message on resume,

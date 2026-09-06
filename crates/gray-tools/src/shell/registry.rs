@@ -95,11 +95,18 @@ impl ProcessRegistry {
     /// never reused within a session.
     pub fn reserve(&self, session: &str) -> TaskId {
         let mut guard = self.inner.lock().expect("registry lock poisoned");
+        // First-turn tools run as "nosession" (REPL session id is created after
+        // the first turn); a new real session must not reissue nosession's t1.
+        let inherit = if session != "nosession" && !guard.sessions.contains_key(session) {
+            guard.sessions.get("nosession").map(|s| s.next).unwrap_or(1)
+        } else {
+            1
+        };
         let sess = guard
             .sessions
             .entry(session.to_string())
             .or_insert_with(|| SessionTasks {
-                next: 1,
+                next: inherit.max(1),
                 tasks: BTreeMap::new(),
             });
         let id = TaskId(sess.next);
@@ -327,8 +334,19 @@ impl ProcessRegistry {
         }
     }
 
+    /// Sessions holding `id`, for session-scoped unknown-task hints (bug 3).
+    pub fn sessions_with_task(&self, id: TaskId) -> Vec<String> {
+        let guard = self.inner.lock().expect("registry lock poisoned");
+        guard
+            .sessions
+            .iter()
+            .filter_map(|(s, tasks)| tasks.tasks.contains_key(&id.0).then(|| s.clone()))
+            .collect()
+    }
+
     /// SIGTERM each Running task's group via 2D's `kill::term_then_kill`
-    /// (2 s grace, own-group guards inside), then drop the session.
+    /// (2 s grace, own-group guards inside), then drop the session's tasks
+    /// but keep its `next` counter so ids are never reused within a session.
     pub async fn shutdown_session(&self, session: &str) {
         let running: Vec<(u32, i32)> = {
             let guard = self.inner.lock().expect("registry lock poisoned");
@@ -349,11 +367,18 @@ impl ProcessRegistry {
         for (_pid, pgid) in running {
             let _ = super::kill::term_then_kill(pgid, SHUTDOWN_GRACE).await;
         }
-        self.inner
+        // Never reuse ids within a session: clear tasks but keep `next`.
+        // `get`/`list` still read empty (existing tests hold), yet the next
+        // `reserve` continues monotonically instead of reissuing t1.
+        if let Some(sess) = self
+            .inner
             .lock()
             .expect("registry lock poisoned")
             .sessions
-            .remove(session);
+            .get_mut(session)
+        {
+            sess.tasks.clear();
+        }
     }
 }
 
@@ -600,5 +625,24 @@ mod tests {
     #[test]
     fn global_registry_inits() {
         let _ = registry().wake_tx();
+    }
+
+    #[tokio::test]
+    async fn ids_never_reused_after_shutdown() {
+        // Bug 2: same session name reused (transcript still refs t1) must not reissue t1.
+        let reg = ProcessRegistry::new();
+        let s = sess("reuse");
+        let mut c1 = true_child();
+        let id1 = reg.register(&s, &c1, "true", PathBuf::from("/tmp/x.log"));
+        let _ = c1.wait().await;
+        assert_eq!(id1.0, 1);
+        reg.shutdown_session(&s).await;
+        let mut c2 = true_child();
+        let id2 = reg.register(&s, &c2, "true", PathBuf::from("/tmp/x.log"));
+        let _ = c2.wait().await;
+        assert_eq!(
+            id2.0, 2,
+            "never reuse t1 within a session, got {id2} after shutdown"
+        );
     }
 }

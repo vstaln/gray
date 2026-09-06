@@ -107,10 +107,40 @@ pub fn render_event_with_context<W: Write>(
 
 /// Executes a prompt in one-shot print mode, printing events to stdout and persisting the session.
 pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()> {
+    run_print_mode_with_session(config, prompt, None, false).await
+}
+
+/// Print mode with `--session <id>` / `-c` support: a resolved session is
+/// continued in place (new messages appended to its JSONL); otherwise a fresh
+/// session is created. Bogus ids fail with the same `no session matching`
+/// error as `gray resume <id>` (exit 1), before any model work starts.
+pub async fn run_print_mode_with_session(
+    config: &Config,
+    prompt: &str,
+    session: Option<&str>,
+    continue_last: bool,
+) -> anyhow::Result<()> {
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     let cwd = std::env::current_dir()?;
+    let store = JsonlSessionStore::default();
+    // Explicit `--session` wins over `-c` (same precedence as the REPL).
+    let resume_target: Option<SessionId> = match session {
+        Some(raw) => Some(crate::resume::resolve_session_strict(&store, raw, false).await?),
+        None if continue_last => crate::resume::latest_session_anywhere(&store).await,
+        None => None,
+    };
+    let history: Vec<Message> = match &resume_target {
+        Some(sid) => {
+            let (_, entries) = store.load(sid).await.map_err(|e| {
+                anyhow::anyhow!("could not resume session {}: {e}", sid.as_str())
+            })?;
+            entries.into_iter().map(|e| e.message).collect()
+        }
+        None => Vec::new(),
+    };
+    let initial_count = history.len();
     let cancel = tokio_util::sync::CancellationToken::new();
     let permissions = crate::setup::load_saved_config_at(
         &crate::setup::saved_config_path()
@@ -130,7 +160,15 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
         )),
     };
 
-    let mut agent = build_agent(config, &cwd, None).await?;
+    let mut agent = build_agent(
+        config,
+        &cwd,
+        resume_target.as_ref().map(|s| s.as_str()),
+    )
+    .await?;
+    if !history.is_empty() {
+        agent = agent.with_messages(history);
+    }
     for w in crate::take_profile_warnings() {
         eprintln!("warning: {w}");
     }
@@ -157,15 +195,19 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     };
     drop(result);
 
-    // Persist session to JSONL store
-    let store = JsonlSessionStore::default();
-    save_session(
-        &store,
-        config.model.as_deref().unwrap_or("unset"),
-        &cwd,
-        agent.messages(),
-    )
-    .await?;
+    // Persist session to JSONL store: a resumed session keeps its file
+    // (only the new turn is appended); otherwise a fresh session is created.
+    if let Some(sid) = &resume_target {
+        append_new_messages(&store, sid, initial_count, agent.messages()).await?;
+    } else {
+        save_session(
+            &store,
+            config.model.as_deref().unwrap_or("unset"),
+            &cwd,
+            agent.messages(),
+        )
+        .await?;
+    }
 
     // Cron (or other plugin-initiated) `host/say` lines queued mid-turn.
     for line in crate::host::take_host_say() {
@@ -176,6 +218,23 @@ pub async fn run_print_mode(config: &Config, prompt: &str) -> anyhow::Result<()>
     // the one-shot session unconditionally (exit code unaffected).
     let _ = crate::shell_drain::shutdown_shell_session("nosession").await;
 
+    Ok(())
+}
+
+/// Appends only messages at index `prior_count..` to an existing session
+/// (print-mode `--session`/`-c` continuation in place — never a new file).
+pub async fn append_new_messages(
+    store: &JsonlSessionStore,
+    sid: &SessionId,
+    prior_count: usize,
+    messages: &[Message],
+) -> anyhow::Result<()> {
+    for msg in &messages[prior_count.min(messages.len())..] {
+        store
+            .append(sid, msg)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
+    }
     Ok(())
 }
 
@@ -208,4 +267,40 @@ pub async fn save_session(
     }
 
     Ok(session_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn append_continues_session_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let sid = save_session(&store, "m", dir.path(), &[Message::user("first")]).await.unwrap();
+        let before = store.load(&sid).await.unwrap().1.len();
+        // Prior history + one new turn: only the new message lands in the file.
+        let with_new = vec![Message::user("first"), Message::user("second")];
+        append_new_messages(&store, &sid, before, &with_new)
+            .await
+            .unwrap();
+        let (_, entries) = store.load(&sid).await.unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].message.text_content(), "second");
+        // Same file, not a new session.
+        assert_eq!(store.list().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_bogus_session_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let err = append_new_messages(&store, &SessionId::new("bogus"), 0, &[Message::user("x")])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("failed to append message to session"),
+            "unexpected error: {err:#}"
+        );
+    }
 }

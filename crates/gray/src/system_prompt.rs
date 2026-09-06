@@ -220,6 +220,8 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
 
     add_guideline("Be concise in your responses".to_string());
     add_guideline("Show file paths clearly with clickable file:// or markdown links (e.g. file:///path/to/file or [filename](file:///path/to/file)) so users can click to open them".to_string());
+    add_guideline("When a tool call is declined, do NOT re-attempt it via write/edit/bash workarounds; ask the user instead".to_string());
+    add_guideline("Treat secret-bearing files as sensitive: never print their values, redact secrets when quoting".to_string());
 
     let guidelines = guidelines_list
         .iter()
@@ -265,4 +267,39 @@ fn get_docs_path() -> String {
 }
 fn get_examples_path() -> String {
     std::env::var("PI_EXAMPLES_PATH").unwrap_or_else(|_| "examples".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn default_opts() -> BuildSystemPromptOptions {
+        BuildSystemPromptOptions {
+            cwd: PathBuf::from("/tmp"),
+            context_files: Some(vec![]),
+            skills: Some(vec![]),
+            tool_snippets: Some(HashMap::from([
+                ("read".to_string(), "read files".to_string()),
+                ("bash".to_string(), "run commands".to_string()),
+            ])),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn default_prompt_forbids_decline_workarounds() {
+        let prompt = build_system_prompt(default_opts());
+        assert!(prompt.contains("do NOT re-attempt"), "{prompt}");
+        assert!(prompt.contains("write/edit/bash"), "{prompt}");
+        assert!(prompt.contains("ask the user instead"), "{prompt}");
+    }
+
+    #[test]
+    fn default_prompt_warns_on_secret_files() {
+        let prompt = build_system_prompt(default_opts());
+        assert!(prompt.contains("secret-bearing"), "{prompt}");
+        assert!(prompt.contains("never print"), "{prompt}");
+        assert!(prompt.contains("redact"), "{prompt}");
+    }
 }

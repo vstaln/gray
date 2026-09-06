@@ -121,12 +121,39 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
                 }
                 row_count += 1;
             } else {
+                // Word-aware wrap (question-panel `wrap_plain` parity): break
+                // at the last space in the window, hard-cut only a single
+                // overlong word — words never split across rows.
                 let chars: Vec<char> = raw_line.chars().collect();
-                let mut line_byte_offset = 0usize;
+                let mut windows: Vec<(usize, usize)> = Vec::new();
+                let mut start = 0usize;
+                while start < chars.len() {
+                    let mut end = (start + content_w).min(chars.len());
+                    if end < chars.len()
+                        && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
+                        && sp > 0
+                    {
+                        end = start + sp + 1;
+                    }
+                    windows.push((start, end));
+                    start = end;
+                }
+                // Byte offset of each char start (plus total at the end).
+                let mut byte_at: Vec<usize> = Vec::with_capacity(chars.len() + 1);
+                let mut b = 0usize;
+                for ch in &chars {
+                    byte_at.push(b);
+                    b += ch.len_utf8();
+                }
+                byte_at.push(b);
 
-                for (chunk_idx, chunk) in chars.chunks(content_w).enumerate() {
+                let mut line_byte_offset = byte_at[0];
+                let last_idx = windows.len().saturating_sub(1);
+
+                for (chunk_idx, (cs, ce)) in windows.iter().enumerate() {
+                    let chunk: Vec<char> = chars[*cs..*ce].to_vec();
                     let s: String = chunk.iter().collect();
-                    let chunk_byte_len: usize = chunk.iter().map(|c| c.len_utf8()).sum();
+                    let chunk_byte_len = byte_at[*ce] - byte_at[*cs];
 
                     if chunk_idx == 0 {
                         box_lines.push(Line::from(vec![
@@ -143,7 +170,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
                     if has_cursor && !cursor_found {
                         let cursor_in_line_bytes = cursor.saturating_sub(current_byte_pos);
                         if cursor_in_line_bytes <= line_byte_offset + chunk_byte_len
-                            || chunk_idx == chars.chunks(content_w).count() - 1
+                            || chunk_idx == last_idx
                         {
                             cur_row = row_count;
                             let bytes_into_chunk =
@@ -193,8 +220,7 @@ pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
     })
 }
 
-/// Height reserved above the input box for the live status:
-///   seam    1 row — ONLY when the transcript's last row is not already blank
+/// Height reserved above the input box for the live status:///   seam    1 row — ONLY when the transcript's last row is not already blank
 ///   status  1 row — the plain shimmer text
 ///   breath  1 row — bare space below, so it never melts into the input box
 ///
@@ -252,4 +278,46 @@ pub(crate) fn queued_preview_lines(
         )]));
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row_texts(ibox: &InputBox) -> Vec<String> {
+        ibox.lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn input_box_wraps_at_word_boundaries() {
+        // Narrow box forces a wrap inside "...with colors." — the word must
+        // move whole to the next row, never split as "c" / "olors.".
+        let text = "aa bb cc dd ee ff with colors.";
+        let ibox = build_input_box(text, text.len(), 20);
+        let rows = row_texts(&ibox);
+        let joined = rows.join("\n");
+        assert!(
+            joined.contains("colors."),
+            "word must survive whole: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.ends_with('c') && r.contains("with ")),
+            "must not split mid-word: {rows:?}"
+        );
+        // Cursor at end must land on the last content row (top/bottom
+        // margins excluded from cur_row).
+        assert_eq!(ibox.cur_row, rows.len() - 3, "rows: {rows:?}");
+    }
+
+    #[test]
+    fn input_box_hard_cuts_only_overlong_words() {
+        let text = "ok abcdefghijklmnopqrstuvwxyz0129 end";
+        let ibox = build_input_box(text, 0, 20);
+        let rows = row_texts(&ibox);
+        assert!(rows.iter().any(|r| r.contains("ok ")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
+    }
 }

@@ -68,7 +68,8 @@ pub(crate) async fn dispatch_command(
             if let Some((shared, _)) = tui {
                 let mut out = String::new();
                 for d in REGISTRY {
-                    out.push_str(&format!("  /{:<10} {}\n", d.name, d.desc));
+                    out.push_str(&commands::format_help_line(d));
+                    out.push('\n');
                 }
                 if let Some(a) = agent.as_ref() {
                     for (n, d) in plugin_help_entries(a.hooks()) {
@@ -82,7 +83,7 @@ pub(crate) async fn dispatch_command(
             } else {
                 println!("{}", crate::rule("commands"));
                 for d in REGISTRY {
-                    println!("  /{:<8} {}", d.name, d.desc);
+                    println!("{}", commands::format_help_line(d));
                 }
                 if let Some(a) = agent.as_ref() {
                     for (n, d) in plugin_help_entries(a.hooks()) {
@@ -286,25 +287,6 @@ pub(crate) async fn dispatch_command(
             // fully expanded into Prompt/Empty by expand_skill_command; defensive no-op
             Flow::Continue
         }
-        ReplCommand::Gateway(raw) => {
-            let t = tui.as_ref().map(|(s, _)| s);
-            // bare /gateway in the TUI opens the interactive picker; the
-            // modal returns an equivalent command string to execute
-            let cmd = if raw.trim() == "/gateway" && t.is_some() {
-                let bg = t.map(|s| s.lock().expect("tui lock").snapshot());
-                let running = GATEWAY_HANDLE.lock().map(|g| g.is_some()).unwrap_or(false);
-                match with_modal_sync(t, || crate::setup::run_gateway_modal(bg.as_ref(), running)) {
-                    Ok(Some(c)) => c,
-                    _ => String::new(),
-                }
-            } else {
-                raw.clone()
-            };
-            if !cmd.is_empty() {
-                handle_gateway(&cmd, t).await;
-            }
-            Flow::Continue
-        }
         ReplCommand::Acp(raw) => {
             handle_acp_command(
                 &raw,
@@ -345,10 +327,20 @@ pub(crate) async fn dispatch_command(
                 handled = true;
             }
             if !handled {
-                say(
-                    tui.as_ref().map(|(s, _)| s),
-                    &format!("unknown command '{cmd}' — type /help for available commands"),
-                );
+                // The gateway left the TUI (kept as the `gray gateway` CLI):
+                // point muscle memory at it instead of the generic unknown.
+                let first = cmd[1..].split_whitespace().next().unwrap_or("");
+                if first == "gateway" || first == "gw" {
+                    say(
+                        tui.as_ref().map(|(s, _)| s),
+                        "the TUI gateway is gone — run `gray gateway …` outside gray",
+                    );
+                } else {
+                    say(
+                        tui.as_ref().map(|(s, _)| s),
+                        &format!("unknown command '{cmd}' — type /help for available commands"),
+                    );
+                }
             }
             Flow::Continue
         }

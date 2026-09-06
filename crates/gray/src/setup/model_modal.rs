@@ -2,6 +2,25 @@
 
 use super::*;
 
+/// Provider id + display name resolved from the catalog by base URL,
+/// plus the known-model list behind the picker (live `/models`).
+/// Shared by the picker and direct `/model <id>` validation so both
+/// accept exactly the same ids.
+pub(crate) fn provider_models_for(
+    base_url: &str,
+    api_key: Option<&str>,
+) -> (String, String, Vec<(String, String)>) {
+    let catalog = load_catalog().unwrap_or_default();
+    let (item_id, item_name) =
+        if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == base_url) {
+            (pid.clone(), p.name.clone())
+        } else {
+            ("custom".to_string(), "Custom".to_string())
+        };
+    let models = get_provider_models_with_live(&item_id, base_url, api_key, &catalog);
+    (item_id, item_name, models)
+}
+
 pub fn run_model_modal(
     config: &mut Config,
     bg: Option<&BackgroundSnapshot>,
@@ -19,14 +38,8 @@ pub fn run_model_modal(
     use std::io::Write as _;
     use std::time::Duration;
 
-    let catalog = load_catalog().unwrap_or_default();
-
-    let (item_id, item_name) =
-        if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == config.base_url) {
-            (pid.clone(), p.name.clone())
-        } else {
-            ("custom".to_string(), "Custom".to_string())
-        };
+    let (item_id, item_name, models) =
+        provider_models_for(&config.base_url, config.api_key.as_deref());
 
     let item = ConnectItem {
         id: item_id.clone(),
@@ -38,13 +51,6 @@ pub fn run_model_modal(
         no_auth: false,
         oauth_capable: crate::setup::catalog::OAUTH_CAPABLE.contains(&item_id.as_str()),
     };
-
-    let models = get_provider_models_with_live(
-        &item_id,
-        &config.base_url,
-        config.api_key.as_deref(),
-        &catalog,
-    );
 
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     if !was_raw {
@@ -366,7 +372,13 @@ pub fn run_model_modal(
                         let chosen_model = if let Some(&(m_id, _)) = filtered_models.get(sel) {
                             m_id.clone()
                         } else if !filter.is_empty() {
-                            filter.trim().to_string()
+                            // Canonicalize known ids (case/tail); unknown
+                            // filters still fall through as custom models —
+                            // the picker keeps its "Use custom model" path.
+                            // Direct `/model <id>` callers must use
+                            // `validate_direct_model_id` and reject `Err`.
+                            validate_direct_model_id(filter.trim(), &models)
+                                .unwrap_or_else(|_| filter.trim().to_string())
                         } else {
                             "default".to_string()
                         };
@@ -402,4 +414,144 @@ pub fn run_model_modal(
     let _ = std::io::stdout().flush();
 
     result
+}
+
+/// Validates a directly-typed `/model <id>` against the picker's known list
+/// (live `/models` + catalog snapshot behind `get_provider_models_with_live`).
+/// Exact id (or display name) wins; case-insensitive and unique `provider/`
+/// tail matches canonicalize. Unknown ids are rejected with a hint mirroring
+/// the picker empty-state (`type /model to browse ...`) instead of being
+/// silently accepted until the first prompt fails. Empty known-list fails
+/// open (offline/custom endpoints like Ollama accept any id).
+pub(crate) fn validate_direct_model_id(
+    raw: &str,
+    models: &[(String, String)],
+) -> Result<String, String> {
+    let input = raw.trim();
+    if input.is_empty() {
+        return Err("usage: /model <model-id> — type /model to browse models".to_string());
+    }
+    if models.is_empty() {
+        return Ok(input.to_string());
+    }
+    if let Some((id, _)) = models.iter().find(|(id, _)| id == input) {
+        return Ok(id.clone());
+    }
+    let lower = input.to_lowercase();
+    if let Some((id, _)) = models
+        .iter()
+        .find(|(id, _)| id.to_lowercase() == lower)
+    {
+        return Ok(id.clone());
+    }
+    if let Some((id, _)) = models
+        .iter()
+        .find(|(_, name)| name.to_lowercase() == lower)
+    {
+        return Ok(id.clone());
+    }
+    if !input.contains('/') {
+        let tails: Vec<&(String, String)> = models
+            .iter()
+            .filter(|(id, _)| {
+                id.rsplit('/')
+                    .next()
+                    .is_some_and(|t| t.to_lowercase() == lower)
+            })
+            .collect();
+        if tails.len() == 1 {
+            return Ok(tails[0].0.clone());
+        }
+        if tails.len() > 1 {
+            let mut ids: Vec<&str> = tails.iter().map(|(id, _)| id.as_str()).collect();
+            ids.sort();
+            let shown = ids.iter().take(5).copied().collect::<Vec<_>>().join(", ");
+            return Err(format!(
+                "ambiguous model '{input}' — matches {} models ({shown}{}); type /model to pick",
+                ids.len(),
+                if ids.len() > 5 { ", …" } else { "" },
+            ));
+        }
+    }
+    Err(format!(
+        "unknown model '{input}' — no match; type /model to browse {} models",
+        models.len(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_direct_model_id;
+
+    fn models() -> Vec<(String, String)> {
+        vec![
+            ("zai/glm-5.2".to_string(), "GLM 5.2".to_string()),
+            ("openai/gpt-5".to_string(), "GPT 5".to_string()),
+        ]
+    }
+
+    #[test]
+    fn bogus_model_id_is_rejected_with_browse_hint() {
+        let err = validate_direct_model_id("bogus-model-xyz-123", &models()).unwrap_err();
+        assert!(err.contains("unknown model"), "{err}");
+        assert!(err.contains("bogus-model-xyz-123"), "{err}");
+        assert!(err.contains("/model"), "{err}");
+    }
+
+    #[test]
+    fn exact_id_is_accepted() {
+        assert_eq!(
+            validate_direct_model_id("zai/glm-5.2", &models()).unwrap(),
+            "zai/glm-5.2"
+        );
+    }
+
+    #[test]
+    fn input_is_trimmed() {
+        assert_eq!(
+            validate_direct_model_id("  zai/glm-5.2  ", &models()).unwrap(),
+            "zai/glm-5.2"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_id_canonicalizes() {
+        assert_eq!(
+            validate_direct_model_id("ZAI/GLM-5.2", &models()).unwrap(),
+            "zai/glm-5.2"
+        );
+    }
+
+    #[test]
+    fn unique_provider_tail_resolves() {
+        assert_eq!(
+            validate_direct_model_id("glm-5.2", &models()).unwrap(),
+            "zai/glm-5.2"
+        );
+    }
+
+    #[test]
+    fn ambiguous_tail_is_rejected() {
+        let dup = vec![
+            ("a/same".to_string(), "A".to_string()),
+            ("b/same".to_string(), "B".to_string()),
+        ];
+        let err = validate_direct_model_id("same", &dup).unwrap_err();
+        assert!(err.contains("ambiguous"), "{err}");
+        assert!(err.contains("/model"), "{err}");
+    }
+
+    #[test]
+    fn empty_known_list_fails_open_for_custom_endpoints() {
+        assert_eq!(
+            validate_direct_model_id("my-local-model", &[]).unwrap(),
+            "my-local-model"
+        );
+    }
+
+    #[test]
+    fn empty_input_is_usage_not_silent_default() {
+        let err = validate_direct_model_id("   ", &models()).unwrap_err();
+        assert!(err.contains("/model"), "{err}");
+    }
 }

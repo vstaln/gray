@@ -106,6 +106,36 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
 ];
 
+/// Help line with aliases inline (Bug2: `/exit` worked but was unlisted;
+/// welcome hinted `/provider` while `/help` showed only `/connect`).
+/// Single alias → `/quit (alias: /exit)`; several → `/connect (aliases: …)`;
+/// no aliases keeps the legacy `  /name desc` shape. Reads the existing
+/// `aliases` arrays so `/help` can never drift from `resolve`.
+pub(crate) fn format_help_line(d: &CmdDef) -> String {
+    if d.aliases.is_empty() {
+        format!("  /{:<10} {}", d.name, d.desc)
+    } else if d.aliases.len() == 1 {
+        format!("  /{} (alias: /{}) {}", d.name, d.aliases[0], d.desc)
+    } else {
+        let list = d
+            .aliases
+            .iter()
+            .map(|a| format!("/{a}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("  /{} (aliases: {}) {}", d.name, list, d.desc)
+    }
+}
+
+/// Full `/help` body for TUI + stdout paths (callers join plugin rows after).
+pub(crate) fn format_help_all() -> String {
+    REGISTRY
+        .iter()
+        .map(format_help_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Canonical lookup: strip one leading `/`, lowercase, exact wins then aliases.
 pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
     let n = name.strip_prefix('/').unwrap_or(name).to_lowercase();
@@ -735,6 +765,29 @@ mod tests {
         assert_eq!(all.len(), 16);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
+        }
+    }
+
+    #[test]
+    fn help_shows_aliases_inline() {
+        let help = super::format_help_all();
+        // hidden `/exit` must be visible as a quit alias
+        assert!(
+            help.contains("/quit (alias: /exit)"),
+            "quit alias missing: {help}"
+        );
+        // welcome advertises `/provider`; help listed only `/connect`
+        assert!(help.contains("/provider"), "provider alias missing: {help}");
+        assert!(help.contains("/connect"), "connect missing: {help}");
+        // every declared alias appears in the help text (no drift)
+        for d in super::REGISTRY {
+            for a in d.aliases {
+                assert!(
+                    help.contains(&format!("/{a}")),
+                    "alias /{a} of /{} missing: {help}",
+                    d.name
+                );
+            }
         }
     }
 
