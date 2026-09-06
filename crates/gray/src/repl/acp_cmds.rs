@@ -249,8 +249,7 @@ pub(crate) async fn handle_acp_command(
             let Some((spec, display)) = resolve_spec(&agent, tui) else {
                 return;
             };
-            let Some(mut session) = start_session(spec, display, cwd, yolo, tui).await
-            else {
+            let Some(mut session) = start_session(spec, display, cwd, yolo, tui).await else {
                 return;
             };
             let mut text = String::new();
@@ -433,7 +432,10 @@ pub(crate) async fn run_acp_turn(
             if let Some(dead) = acp.take() {
                 dead.shutdown().await;
             }
-            set_model_label(tui.as_ref().map(|(s, _)| s), native_model.unwrap_or("default"));
+            set_model_label(
+                tui.as_ref().map(|(s, _)| s),
+                native_model.unwrap_or("default"),
+            );
             let tail: String = stderr_tail.chars().take(500).collect();
             let msg = format!("agent exited (code {code}): {tail} — back to native");
             end_thinking_gap(tui);

@@ -242,13 +242,15 @@ mod tests {
         assert_eq!(text[1], " Gateway autostarted");
         assert_eq!(text[2], "  └─ Discord — connected as Gray");
         assert_eq!(text[3], "");
-        // Transparent bg, text only: rows still pad full-width with plain
-        // spaces so the live viewport and insert_before paint the same thing.
+        // Gray overlay band: every cell carries the card bg so the live
+        // viewport and insert_before paint the same block.
+        let bg = Some(Color::Rgb(22, 22, 22));
         for l in &lines {
             assert_eq!(l.width(), 80, "row must span the full card width");
+            assert_eq!(l.style.bg, bg, "row style carries the card bg");
             assert!(
-                l.style.bg.is_none() && l.spans.iter().all(|s| s.style.bg.is_none()),
-                "no span carries a bg"
+                l.spans.iter().all(|s| s.style.bg == bg),
+                "every span carries the card bg"
             );
         }
     }

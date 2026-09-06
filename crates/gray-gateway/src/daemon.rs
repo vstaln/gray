@@ -765,6 +765,7 @@ mod tests {
             questions: None,
             session_id: None,
             permission: gray_core::agent::PermissionMode::Ask,
+            approvals: None,
         };
         let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
         assert!(out.is_error);

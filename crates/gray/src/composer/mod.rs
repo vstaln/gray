@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use gray_markdown::HyperlinkTarget;
 
 pub(crate) const PANEL_ROWS: usize = 6;
-pub(crate) const VIEWPORT_H: u16 = 10;
+pub(crate) const VIEWPORT_H: u16 = 14;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -66,9 +66,11 @@ pub struct Tui {
     pub(crate) draft: String,
     pub(crate) attachments: Vec<(String, PathBuf)>,
     pub(crate) pending_pastes: Vec<(String, String)>,
+    pub(crate) pending_permission_mode: Option<String>,
     model_name: String,
     cwd: String,
     thinking_effort: String,
+    permission_mode: String,
     pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
@@ -214,9 +216,11 @@ impl Tui {
             draft: String::new(),
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
+            pending_permission_mode: None,
             model_name: String::new(),
             cwd,
             thinking_effort: String::new(),
+            permission_mode: gray_core::approvals::MODE_AUTO.to_string(),
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
@@ -373,6 +377,22 @@ impl Tui {
     }
     pub fn set_thinking_effort(&mut self, effort: String) {
         self.thinking_effort = effort;
+    }
+    pub fn set_permission_mode(&mut self, mode: String) {
+        self.permission_mode = mode;
+    }
+    pub fn permission_mode(&self) -> &str {
+        &self.permission_mode
+    }
+    pub fn cycle_permission_mode(&mut self) -> String {
+        let next = if self.permission_mode == gray_core::approvals::MODE_READ_ONLY {
+            gray_core::approvals::MODE_AUTO
+        } else {
+            gray_core::approvals::MODE_READ_ONLY
+        };
+        self.permission_mode = next.to_string();
+        let _ = self.draw();
+        next.to_string()
     }
     pub fn set_next_cron(
         &mut self,

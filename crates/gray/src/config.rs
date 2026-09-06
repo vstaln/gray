@@ -33,6 +33,8 @@ pub struct Config {
     pub context_reserve: Option<usize>,
     /// Tail budget kept alongside the summary after compaction.
     pub context_keep: Option<usize>,
+    /// Tool approval mode ("read-only" | "auto" | "full"). None = auto default.
+    pub permissions: Option<String>,
 }
 
 impl Config {
@@ -99,6 +101,8 @@ impl Config {
             })
             .or(saved.context_keep);
 
+        let permissions = nonempty(env("GRAY_PERMISSIONS").as_deref()).or(saved.permissions);
+
         let config = Self {
             model,
             base_url,
@@ -108,6 +112,7 @@ impl Config {
             context_window,
             context_reserve,
             context_keep,
+            permissions,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)

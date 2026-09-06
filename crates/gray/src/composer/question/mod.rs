@@ -31,7 +31,7 @@ pub(crate) const AUTO_RESOLUTION_VISIBLE_COUNTDOWN: Duration = Duration::from_se
 const OTHER_OPTION_LABEL: &str = "None of the above";
 const OTHER_OPTION_DESCRIPTION: &str = "Optionally, add details in notes (tab).";
 const UNANSWERED_CONFIRM_TITLE: &str = "Submit with unanswered questions?";
-const TIP_SEPARATOR: &str = " | ";
+const TIP_SEPARATOR: &str = " · ";
 
 const ACCENT: Color = Color::Rgb(246, 173, 126);
 const TEXT: Color = Color::Rgb(225, 225, 225);
@@ -359,6 +359,18 @@ mod tests {
     }
 
     #[test]
+    fn panel_lines_end_with_bottom_margin_constrained() {
+        let (q, _rx) = mk(1);
+        let lines = panel_lines(&q, 80, 8);
+        assert!(lines.len() <= 8);
+        let last = lines.last().unwrap();
+        assert!(
+            last.spans.iter().all(|s| s.content.trim().is_empty()),
+            "constrained panel row must end with bottom margin"
+        );
+    }
+
+    #[test]
     fn result_summary_stacks_question_and_outcome() {
         let qs = vec![UserQuestion {
             id: "q0".into(),
@@ -379,6 +391,22 @@ mod tests {
         assert_eq!(
             result_summary_lines(&qs, &answered),
             vec!["? question 0?".to_string(), "  → Alpha".to_string()]
+        );
+
+        let multi_qs = vec![UserQuestion {
+            id: "q1".into(),
+            header: "H".into(),
+            question: "Allow bash?\ndf -h /".into(),
+            options: vec![],
+            is_other: false,
+        }];
+        assert_eq!(
+            result_summary_lines(&multi_qs, &[]),
+            vec![
+                "? Allow bash?".to_string(),
+                "  df -h /".to_string(),
+                "  → skipped".to_string()
+            ]
         );
     }
 }

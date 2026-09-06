@@ -576,14 +576,12 @@ impl AcpSession {
                         AcpError::Other(anyhow::anyhow!(msg))
                     }
                 })
-                .map(
-                    |(stop, new_id): (gray_core::event::StopReason, String)| {
-                        // The agent may have rotated the id (load fallback,
-                        // fresh session after /new): track the effective one.
-                        self.session_id = new_id;
-                        stop
-                    },
-                )
+                .map(|(stop, new_id): (gray_core::event::StopReason, String)| {
+                    // The agent may have rotated the id (load fallback,
+                    // fresh session after /new): track the effective one.
+                    self.session_id = new_id;
+                    stop
+                })
         };
         let (reason, _) = tokio::join!(run, pump);
         let reason = reason?;
