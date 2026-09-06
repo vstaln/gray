@@ -49,25 +49,6 @@ pub(crate) fn parse_plugin_args(raw: &str) -> anyhow::Result<PluginAction> {
     }
 }
 
-/// Substring search over the Gray Index, mirroring `gray plugin search`.
-async fn search_index(query: &str) -> anyhow::Result<Vec<String>> {
-    let client = gray_pkg::fetch::client()?;
-    let index = gray_pkg::index::fetch_index(&client).await?;
-    let mut hits: Vec<(&String, &gray_pkg::index::Entry)> = index
-        .plugins
-        .iter()
-        .filter(|(n, _)| n.contains(query))
-        .collect();
-    hits.sort_by(|a, b| a.0.cmp(b.0));
-    if hits.is_empty() {
-        anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
-    }
-    Ok(hits
-        .iter()
-        .map(|(n, e)| format!("{n} {}", e.version))
-        .collect())
-}
-
 pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::composer::SharedTui>) {
     let action = match parse_plugin_args(raw) {
         Ok(a) => a,
@@ -87,10 +68,17 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             }
             Err(e) => say(tui, &format!("plugin list failed: {e:#}")),
         },
-        PluginAction::Search(query) => match search_index(&query).await {
-            Ok(lines) => {
-                for line in lines {
-                    say(tui, &line);
+        PluginAction::Search(query) => match ops::search_all(&query).await {
+            Ok(out) => {
+                if out.hits.is_empty() && !out.pi_unreachable {
+                    say(tui, &format!("not in index: {query} (try /plugin install <https-url>)"));
+                } else {
+                    for hit in &out.hits {
+                        say(tui, &ops::format_search_hit(hit));
+                    }
+                    if out.pi_unreachable {
+                        say(tui, ops::PI_UNREACHABLE_LINE);
+                    }
                 }
             }
             Err(e) => say(tui, &format!("search failed: {e:#}")),
