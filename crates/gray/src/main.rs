@@ -217,11 +217,14 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
         }
         PluginCmd::Search { query } => {
             let out = gray_pkg::ops::search_all(&query).await?;
-            if out.hits.is_empty() && !out.pi_unreachable {
+            if out.hits.is_empty() && !out.pi_unreachable && !out.gray_unreachable {
                 anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
             }
             for hit in &out.hits {
                 println!("{}", gray_pkg::ops::format_search_hit(hit));
+            }
+            if out.gray_unreachable {
+                println!("{}", gray_pkg::ops::GRAY_UNREACHABLE_LINE);
             }
             if out.pi_unreachable {
                 println!("{}", gray_pkg::ops::PI_UNREACHABLE_LINE);
