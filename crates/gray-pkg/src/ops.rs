@@ -165,7 +165,10 @@ fn https_has_git_suffix(t: &str) -> bool {
         Some(i) => &remainder[..i],
         None => remainder,
     };
-    path.split(['?', '#']).next().unwrap_or(path).ends_with(".git")
+    path.split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .ends_with(".git")
 }
 
 /// Install name from a git URL: last path segment minus `.git`.
@@ -413,19 +416,48 @@ pub(crate) async fn stage_npm_package(
 // are copied; everything else is left behind (and counted honestly).
 
 /// What a pi install took vs skipped. On [`Report::pi_summary` for callers
-/// to print; extensions/themes are P3 and never executed.
+/// to print; extensions/themes are P3 and never executed. `taken` holds
+/// loadable skill dirs only; dest-top-level `.md` files are listed in
+/// `docs` (copied for reference — the loader recurses with
+/// `include_root_files=false`, so they never load as skills).
 #[derive(Debug, Clone, Default)]
 pub struct PiInstallSummary {
     pub taken: Vec<String>,
+    pub docs: Vec<String>,
     pub skipped_ext: bool,
     pub skipped_themes: bool,
 }
 
 /// Lock key + `pi/` dir name for an npm package: `@scope/name` →
-/// `scope-name` (strip leading `@`, `/` → `-`). Sanitized keys never
-/// contain `/` or `..`, so [`remove`]'s traversal rejection still holds.
+/// `scope-name` (strip leading `@`, `/` → `-`, `..` → `-`). Sanitized
+/// keys never contain `/` or `..`, so [`remove`]'s traversal rejection
+/// still holds. Callers must still run [`validate_install_key`] (via
+/// [`install_key`]) — sanitize alone cannot turn `.`, empty, or `\`
+/// inputs into safe keys, so those are rejected, not mangled. This
+/// closes the parked npm-side `..` gap as well as the git `..` path:
+/// both arms derive keys through [`install_key`].
 pub fn sanitize_npm_key(name: &str) -> String {
-    name.strip_prefix('@').unwrap_or(name).replace('/', "-")
+    name.strip_prefix('@')
+        .unwrap_or(name)
+        .replace('/', "-")
+        .replace("..", "-")
+}
+
+/// Reject install keys that would escape `<plugins>/pi/`: empty, `.`,
+/// `..`, or anything still holding `/` or `\` after [`sanitize_npm_key`].
+fn validate_install_key(key: &str) -> anyhow::Result<()> {
+    if key.is_empty() || key == "." || key == ".." || key.contains('/') || key.contains('\\') {
+        anyhow::bail!("cannot derive a safe plugin name from package (got {key:?})");
+    }
+    Ok(())
+}
+
+/// Shared npm+git key derivation: sanitize then reject destructive keys
+/// before any clone/extract work.
+fn install_key(name: &str) -> anyhow::Result<String> {
+    let key = sanitize_npm_key(name);
+    validate_install_key(&key)?;
+    Ok(key)
 }
 
 /// npm tarballs wrap everything in `package/`; use it when present.
@@ -513,9 +545,24 @@ fn push_skill_dir(dir: &Path, out: &mut Vec<SkillMatch>, seen: &mut HashSet<Path
     }
 }
 
+/// A manifest `pi.skills` glob base is safe only when it stays under the
+/// staging root: reject absolute paths (which would discard `root` on
+/// join) and any non-`Normal` component (`..`, prefixes, root markers).
+fn glob_base_is_safe(base: &str) -> bool {
+    if base.is_empty() {
+        return false;
+    }
+    let p = Path::new(base);
+    if p.is_absolute() {
+        return false;
+    }
+    p.components().all(|c| matches!(c, Component::Normal(_)))
+}
+
 /// Collect skill matches: `skills/*/SKILL.md`, `*/SKILL.md`, manifest
-/// `pi.skills` globs, top-level `*.md` (R14: top-level `.md` are skills —
-/// copied and listed in `taken`). Deduped, `taken` order stable.
+/// `pi.skills` globs, top-level `*.md` (R14: top-level `.md` are copied
+/// for reference and listed in `docs`, not `taken`). Deduped, `taken`
+/// order stable.
 fn collect_skill_matches(root: &Path, globs: &[String]) -> Vec<SkillMatch> {
     let mut out: Vec<SkillMatch> = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
@@ -551,13 +598,20 @@ fn collect_skill_matches(root: &Path, globs: &[String]) -> Vec<SkillMatch> {
     }
 
     // Manifest `pi.skills` globs (`./skills`, `skills/*`, single files).
+    // Confined to the staging root: skip absolute bases and any base
+    // with `..`/prefix components, then belt-and-suspenders verify the
+    // joined candidate still strips to `root` before touching the fs.
     for glob in globs {
         let base = glob.strip_prefix("./").unwrap_or(glob);
         let base = base.strip_suffix("/*").unwrap_or(base);
-        if base.is_empty() {
+        if base.is_empty() || !glob_base_is_safe(base) {
             continue;
         }
-        let path = root.join(base);
+        let candidate = root.join(base);
+        if candidate.strip_prefix(root).is_err() {
+            continue;
+        }
+        let path = candidate;
         if path.is_dir() {
             if path.join("SKILL.md").is_file() {
                 push_skill_dir(&path, &mut out, &mut seen);
@@ -716,6 +770,14 @@ fn copy_skill_matches(dest: &Path, matches: &[SkillMatch]) -> anyhow::Result<()>
 /// Zero skills → honest bail with nothing written (R12); any copy/lock
 /// failure removes `dest` and writes nothing (no half-state). Shared by
 /// the npm (P2-1 staging) and git (P2-4 clone) arms.
+/// One shared summary printer: loadable skill dirs vs reference docs.
+fn emit_pi_summary(summary: &PiInstallSummary) {
+    eprintln!("skills taken: {}", summary.taken.join(", "));
+    if !summary.docs.is_empty() {
+        eprintln!("docs copied for reference: {}", summary.docs.join(", "));
+    }
+}
+
 fn extract_pi_skills(
     root: &Path,
     key: &str,
@@ -724,6 +786,9 @@ fn extract_pi_skills(
     source: &str,
     opts: &InstallOpts,
 ) -> anyhow::Result<(PathBuf, PiInstallSummary)> {
+    // Belt-and-suspenders: both arms validate via `install_key` first, but
+    // the destructive `remove_dir_all(dest)` below must never run on `..`.
+    validate_install_key(key)?;
     let (skill_globs, manifest_ext, manifest_themes) = pi_manifest_lists(root);
     let matches = collect_skill_matches(root, &skill_globs);
     if matches.is_empty() {
@@ -740,13 +805,24 @@ fn extract_pi_skills(
         return Err(e);
     }
     let (ext_n, theme_n) = count_skipped(root);
+    // Single-component rels are dest-top-level `.md` (undiscoverable by
+    // the loader, which recurses with `include_root_files=false`) → docs.
+    let mut taken: Vec<String> = Vec::new();
+    let mut docs: Vec<String> = Vec::new();
+    for m in &matches {
+        if m.rel.components().count() == 1 {
+            docs.push(m.label.clone());
+        } else {
+            taken.push(m.label.clone());
+        }
+    }
+    taken.sort();
+    taken.dedup();
+    docs.sort();
+    docs.dedup();
     let summary = PiInstallSummary {
-        taken: {
-            let mut labels: Vec<String> = matches.iter().map(|m| m.label.clone()).collect();
-            labels.sort();
-            labels.dedup();
-            labels
-        },
+        taken,
+        docs,
         skipped_ext: !manifest_ext.is_empty() || root.join("extensions").is_dir() || ext_n > 0,
         skipped_themes: !manifest_themes.is_empty()
             || root.join("themes").is_dir()
@@ -790,7 +866,7 @@ async fn install_npm(
     opts: InstallOpts,
 ) -> anyhow::Result<Report> {
     let staged = stage_npm_package(client, name, version).await?;
-    let key = sanitize_npm_key(&staged.name);
+    let key = install_key(&staged.name)?;
     let root = stage_root(staged.dir.path());
     let (dest, summary) = extract_pi_skills(
         &root,
@@ -800,7 +876,7 @@ async fn install_npm(
         &staged.tarball,
         &opts,
     )?;
-    eprintln!("skills taken: {}", summary.taken.join(", "));
+    emit_pi_summary(&summary);
     Ok(Report {
         name: key,
         version: staged.version,
@@ -851,7 +927,11 @@ fn redact_url(url: &str) -> String {
 /// write (R18: same `pi/` dest, same taken/skipped honesty, same
 /// zero-skills bail). No hash verify: honest `unverified` warning mirroring
 /// [`install_url`]; lock `hash` is the raw post-clone commit sha (R17).
-async fn install_git(url: &str, git_ref: Option<&str>, opts: InstallOpts) -> anyhow::Result<Report> {
+async fn install_git(
+    url: &str,
+    git_ref: Option<&str>,
+    opts: InstallOpts,
+) -> anyhow::Result<Report> {
     if url.trim().is_empty() {
         anyhow::bail!("git URL is empty");
     }
@@ -859,13 +939,19 @@ async fn install_git(url: &str, git_ref: Option<&str>, opts: InstallOpts) -> any
         "warning: unverified install from {} (no index hash; use an index name for verified installs)",
         redact_url(url)
     );
-    let key = sanitize_npm_key(&name_from_git_url(url));
-    if key.is_empty() {
+    let raw = name_from_git_url(url);
+    if raw.trim().is_empty() {
         anyhow::bail!(
             "cannot derive a plugin name from git URL: {}",
             redact_url(url)
         );
     }
+    let key = install_key(&raw).map_err(|_| {
+        anyhow::anyhow!(
+            "cannot derive a plugin name from git URL: {}",
+            redact_url(url)
+        )
+    })?;
     let tmp_root = crate::plugins_dir().join("tmp");
     std::fs::create_dir_all(&tmp_root)?;
     let stage = tempfile::tempdir_in(&tmp_root)?;
@@ -876,7 +962,7 @@ async fn install_git(url: &str, git_ref: Option<&str>, opts: InstallOpts) -> any
         .unwrap_or("0.0.0")
         .to_string();
     let (dest, summary) = extract_pi_skills(&clone_dir, &key, &version, &sha, url, &opts)?;
-    eprintln!("skills taken: {}", summary.taken.join(", "));
+    emit_pi_summary(&summary);
     Ok(Report {
         name: key,
         version,
@@ -894,9 +980,7 @@ pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Repor
         NameOrUrl::Npm { name, version } => {
             install_npm(&client, &name, version.as_deref(), opts).await
         }
-        NameOrUrl::Git { url, git_ref } => {
-            install_git(&url, git_ref.as_deref(), opts).await
-        }
+        NameOrUrl::Git { url, git_ref } => install_git(&url, git_ref.as_deref(), opts).await,
     }
 }
 
@@ -1115,9 +1199,17 @@ pub struct SearchHit {
 pub const PI_UNREACHABLE_LINE: &str = "Pi Gallery (preview): unreachable";
 
 /// Render one hit: `name version [source] - desc`, with the desc suffix
-/// omitted when empty (always the case for Gray Index hits).
+/// omitted when empty (always the case for Gray Index hits). Pi hits
+/// whose lock key differs from the raw npm name (e.g. `@scope/bar` →
+/// `scope-bar`) append `(install as <key>)` via the shared sanitizer.
 pub fn format_search_hit(hit: &SearchHit) -> String {
-    let base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
+    let mut base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
+    if hit.source == SearchSource::Pi {
+        let key = sanitize_npm_key(&hit.name);
+        if key != hit.name {
+            base.push_str(&format!(" (install as {key})"));
+        }
+    }
     let desc = hit.desc.trim();
     if desc.is_empty() {
         base
@@ -1686,6 +1778,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn install_key_confines_dotdot_and_backslash() {
+        // `..`, `a/../b`, `foo..bar` sanitize to safe keys …
+        for raw in ["..", "a/../b", "foo..bar"] {
+            let key = sanitize_npm_key(raw);
+            assert!(!key.contains(".."), "raw {raw:?} → {key:?}");
+            assert!(!key.contains('/'), "raw {raw:?} → {key:?}");
+            assert!(!key.contains('\\'), "raw {raw:?} → {key:?}");
+            assert!(!key.is_empty(), "raw {raw:?}");
+            assert_ne!(key, "..");
+            assert_ne!(key, ".");
+            // … and the shared validator accepts the sanitized form.
+            validate_install_key(&key).unwrap();
+            install_key(raw).unwrap();
+        }
+        // … while empty, `.`, and backslash keys are rejected, not mangled.
+        assert!(install_key("").is_err());
+        assert!(install_key(".").is_err());
+        assert!(validate_install_key("..").is_err());
+        assert!(validate_install_key("a/b").is_err());
+        assert!(validate_install_key("a\\b").is_err());
+        assert!(install_key("a\\b").is_err());
+        // `remove()` works on the sanitized forms (no traversal trap).
+        let _guard = ENV_GUARD.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        for raw in ["..", "a/../b", "foo..bar"] {
+            let key = sanitize_npm_key(raw);
+            let mut lock = LockFile::default();
+            lock.plugins.insert(
+                key.clone(),
+                LockEntry {
+                    ecosystem: "pi-gallery".into(),
+                    version: "1.0.0".into(),
+                    ..LockEntry::default()
+                },
+            );
+            write_lock(&lock).unwrap();
+            let dir = crate::plugins_dir().join("pi").join(&key);
+            std::fs::create_dir_all(&dir).unwrap();
+            remove(&key).unwrap();
+            assert!(!list().unwrap().contains_key(&key));
+            assert!(!dir.exists());
+        }
+    }
+
     /// Build a fixture tarball with `package/`-prefixed entries (npm layout).
     fn skill_tgz(files: &[(&str, &str)]) -> Vec<u8> {
         use std::io::Write;
@@ -1765,7 +1906,8 @@ mod tests {
         assert_eq!(report.version, "1.0.0");
         assert!(!report.unverified);
         let summary = report.pi_summary.expect("pi summary");
-        assert_eq!(summary.taken, vec!["README.md", "mulch", "run-in-tmux"]);
+        assert_eq!(summary.taken, vec!["mulch", "run-in-tmux"]);
+        assert_eq!(summary.docs, vec!["README.md"]);
         assert!(summary.skipped_ext);
         assert!(summary.skipped_themes);
 
@@ -1840,8 +1982,50 @@ mod tests {
             .unwrap();
         let summary = report.pi_summary.expect("pi summary");
         assert_eq!(summary.taken, vec!["weird"]);
+        assert!(summary.docs.is_empty());
         assert!(!summary.skipped_ext);
         assert!(!summary.skipped_themes);
+    }
+
+    #[test]
+    fn manifest_glob_bases_stay_in_staging_root() {
+        assert!(glob_base_is_safe("skills"));
+        assert!(glob_base_is_safe("custom/weird"));
+        assert!(!glob_base_is_safe("/etc/x.md"));
+        assert!(!glob_base_is_safe("../../evil.md"));
+        assert!(!glob_base_is_safe("a/../../b"));
+        assert!(!glob_base_is_safe(""));
+    }
+
+    #[test]
+    fn manifest_escape_globs_are_skipped_but_legit_match_survives() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("skills/legit")).unwrap();
+        std::fs::write(root.path().join("skills/legit/SKILL.md"), MULCH_SKILL).unwrap();
+        // Sibling outside the staging root that an escape glob would target.
+        let outside = root.path().join("evil.md");
+        std::fs::write(&outside, "evil").unwrap();
+        let matches = collect_skill_matches(
+            root.path(),
+            &[
+                "/etc/x.md".to_string(),
+                "../../evil.md".to_string(),
+                "./skills".to_string(),
+            ],
+        );
+        let labels: Vec<_> = matches.iter().map(|m| m.label.clone()).collect();
+        assert!(
+            labels.contains(&"legit".to_string()),
+            "legit skill survives: {labels:?}"
+        );
+        // Every match still resolves under the staging root.
+        for m in &matches {
+            assert!(
+                m.src.strip_prefix(root.path()).is_ok(),
+                "escape: {}",
+                m.src.display()
+            );
+        }
     }
 
     // --- P2-4 git fixture repos (local commits only, no network) ---
@@ -1921,7 +2105,8 @@ mod tests {
         assert_eq!(report.version, "0.0.0");
         assert!(report.unverified);
         let summary = report.pi_summary.expect("pi summary");
-        assert_eq!(summary.taken, vec!["README.md", "mulch"]);
+        assert_eq!(summary.taken, vec!["mulch"]);
+        assert_eq!(summary.docs, vec!["README.md"]);
         assert!(summary.skipped_ext);
         assert!(!summary.skipped_themes);
 
@@ -2275,7 +2460,10 @@ mod tests {
         assert_eq!(out.hits[0].name, "gray-foo");
         assert_eq!(out.hits[1].source, SearchSource::Pi);
         assert_eq!(out.hits[1].name, "pi-bar");
-        assert_eq!(format_search_hit(&out.hits[0]), "gray-foo 1.0.0 [Gray Index]");
+        assert_eq!(
+            format_search_hit(&out.hits[0]),
+            "gray-foo 1.0.0 [Gray Index]"
+        );
         assert_eq!(
             format_search_hit(&out.hits[1]),
             "pi-bar 2.0.0 [Pi Gallery (preview)] - does things"
@@ -2286,8 +2474,7 @@ mod tests {
     async fn search_collision_prefers_gray() {
         let _guard = ENV_GUARD.lock().unwrap();
         let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
-        let registry =
-            spawn_search_stub(search_objects(&[("gray-foo", "9.9.9", "pi copy")])).await;
+        let registry = spawn_search_stub(search_objects(&[("gray-foo", "9.9.9", "pi copy")])).await;
         let _home = use_search_env(&index_url, &registry);
 
         let out = search_all("gray").await.unwrap();
@@ -2356,6 +2543,43 @@ mod tests {
             source: SearchSource::Pi,
             ..bare
         };
-        assert_eq!(format_search_hit(&padded), "n 1.0.0 [Pi Gallery (preview)] - padded");
+        assert_eq!(
+            format_search_hit(&padded),
+            "n 1.0.0 [Pi Gallery (preview)] - padded"
+        );
+    }
+
+    #[test]
+    fn search_pi_scoped_hit_hints_install_key() {
+        // Same shared sanitizer, no duplication: raw `@scope/bar` hints the
+        // lock key `scope-bar`; unsanitized names stay bare.
+        let scoped = SearchHit {
+            name: "@scope/bar".to_string(),
+            version: "1.2.3".to_string(),
+            desc: "does things".to_string(),
+            source: SearchSource::Pi,
+        };
+        assert_eq!(
+            format_search_hit(&scoped),
+            "@scope/bar 1.2.3 [Pi Gallery (preview)] (install as scope-bar) - does things"
+        );
+        let plain = SearchHit {
+            name: "pi-bar".to_string(),
+            version: "2.0.0".to_string(),
+            desc: String::new(),
+            source: SearchSource::Pi,
+        };
+        assert_eq!(
+            format_search_hit(&plain),
+            "pi-bar 2.0.0 [Pi Gallery (preview)]"
+        );
+        // Gray hits never hint (index names install verbatim).
+        let gray = SearchHit {
+            name: "@scope/bar".to_string(),
+            version: "1.0.0".to_string(),
+            desc: String::new(),
+            source: SearchSource::Gray,
+        };
+        assert_eq!(format_search_hit(&gray), "@scope/bar 1.0.0 [Gray Index]");
     }
 }
