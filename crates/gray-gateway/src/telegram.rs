@@ -426,15 +426,12 @@ impl BasePlatformAdapter for TelegramAdapter {
         }
         #[cfg(not(feature = "telegram"))]
         {
-            self.stage("identifying");
-            self.stage("clearing webhook");
-            self.stage("polling");
-            self.stage("confirming");
-            log::info!(
-                "[telegram] stub connect (token {}…)",
-                &self.token[..self.token.len().min(6)]
-            );
+            // Honest stub: never pretend to connect (see discord stub).
+            return Err(anyhow::anyhow!(
+                "telegram support not compiled into this build (rebuild gray with `--features telegram`)"
+            ));
         }
+        #[allow(unreachable_code)]
         Ok(())
     }
 
@@ -811,21 +808,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_connect_walks_stages() {
-        // Stub-only: no network, connect still walks the staged path.
+    async fn stub_connect_refuses_honestly() {
+        // Stub-only: no network, connect must fail loudly, terminally.
         #[cfg(not(feature = "telegram"))]
         {
-            use crate::status::{GatewayStatusBoard, PlatformConnState};
+            use crate::status::GatewayStatusBoard;
             let a = TelegramAdapter::new(cfg("123456:ABCDEFGHIJ1234567890")).unwrap();
             let board = GatewayStatusBoard::new(&[Platform::Telegram]);
             a.set_status_board(board.clone());
-            a.connect().await.unwrap();
-            assert_eq!(
-                board.snapshot()[0].1,
-                PlatformConnState::Connecting {
-                    stage: "confirming"
-                },
-                "stub ends on the last pre-connected stage; the daemon marks connected"
+            let err = a.connect().await.unwrap_err();
+            assert!(
+                err.to_string().contains("not compiled"),
+                "stub must name the missing build feature: {err}"
+            );
+            assert!(
+                matches!(
+                    crate::daemon::classify_connect_error(&err.to_string()),
+                    crate::daemon::Fatal::Terminal(_)
+                ),
+                "stub refusal must be terminal (no retry loop): {err}"
             );
         }
     }
