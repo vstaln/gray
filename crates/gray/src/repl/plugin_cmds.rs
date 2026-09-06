@@ -34,7 +34,9 @@ pub(crate) fn parse_plugin_args(raw: &str) -> anyhow::Result<PluginAction> {
         Ok(arg.clone())
     };
     match sub.as_deref() {
-        None | Some("list") => Ok(PluginAction::List),
+        None => Ok(PluginAction::List),
+        Some("list") if arg.is_empty() => Ok(PluginAction::List),
+        Some("list") => anyhow::bail!("usage: /plugin list"),
         Some("search") => Ok(PluginAction::Search(need("search")?)),
         Some("install") => Ok(PluginAction::Install(need("install")?)),
         Some("remove") => Ok(PluginAction::Remove(need("remove")?)),
@@ -158,6 +160,8 @@ mod tests {
             parse_plugin_args("/plugin LIST"),
             Ok(PluginAction::List)
         ));
+        assert!(parse_plugin_args("/plugin list foo").is_err());
+        assert!(parse_plugin_args("/plugin list foo bar").is_err());
         assert!(matches!(
             parse_plugin_args("/plugin search foo"),
             Ok(PluginAction::Search(_))
