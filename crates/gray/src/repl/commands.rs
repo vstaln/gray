@@ -167,8 +167,7 @@ pub(crate) fn completion_matches_dyn(
             .map(|s| (format!("skills:{}", s.name), s.description.clone()))
             .collect();
     }
-    if cur_text.starts_with('/') {
-        let inner = &cur_text[1..];
+    if let Some(inner) = cur_text.strip_prefix('/') {
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);
             if cmd.contains(':') {
@@ -694,6 +693,22 @@ mod tests {
         assert!(matches!(
             parse_command("/skills foo"),
             ReplCommand::Unknown(_)
+        ));
+    }
+
+    #[test]
+    fn permissions_parses_with_and_without_mode() {
+        assert!(matches!(
+            parse_command("/permissions"),
+            ReplCommand::Permissions(None)
+        ));
+        assert!(matches!(
+            parse_command("/permissions full"),
+            ReplCommand::Permissions(Some(_))
+        ));
+        assert!(matches!(
+            parse_command("/perms read-only"),
+            ReplCommand::Permissions(Some(_))
         ));
     }
 

@@ -2,20 +2,6 @@
 
 use super::*;
 
-#[derive(Debug, PartialEq)]
-pub(crate) enum PermissionsAction {
-    Show,
-    Set(String),
-}
-
-pub(crate) fn parse_permissions_args(raw: &str) -> PermissionsAction {
-    let mut toks = raw.split_whitespace().skip(1);
-    match toks.next() {
-        None => PermissionsAction::Show,
-        Some(mode) => PermissionsAction::Set(mode.to_string()),
-    }
-}
-
 pub(crate) fn handle_feedback(
     text: Option<String>,
     config: &Config,
@@ -132,22 +118,5 @@ pub(crate) fn handle_permissions(
         }
         Ok(None) => {}
         Err(e) => say(tui, &format!("permissions error: {e}")),
-    }
-}
-
-#[cfg(test)]
-mod feedback_permissions_tests {
-    use super::{PermissionsAction, parse_permissions_args};
-
-    #[test]
-    fn permissions_args_parse() {
-        assert!(matches!(
-            parse_permissions_args("/permissions"),
-            PermissionsAction::Show
-        ));
-        match parse_permissions_args("/permissions full") {
-            PermissionsAction::Set(m) => assert_eq!(m, "full"),
-            _ => panic!("expected Set"),
-        }
     }
 }
