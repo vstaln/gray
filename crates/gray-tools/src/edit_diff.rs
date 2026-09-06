@@ -114,17 +114,51 @@ fn normalize_for_fuzzy_match(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Single replacement, mirroring `Edit` in `edit-diff.ts`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Edit {
     pub old_text: String,
     pub new_text: String,
+    /// 1-based line hint (e.g., start line of the edit) to disambiguate multiple occurrences.
+    pub line_hint: Option<usize>,
+    /// 1-based occurrence index to target (e.g., 1 for 1st, 2 for 2nd, -1 for last).
+    pub occurrence: Option<isize>,
+    /// If true, replace all occurrences of `old_text`.
+    pub replace_all: Option<bool>,
+}
+
+impl Edit {
+    pub fn new(old_text: impl Into<String>, new_text: impl Into<String>) -> Self {
+        Self {
+            old_text: old_text.into(),
+            new_text: new_text.into(),
+            line_hint: None,
+            occurrence: None,
+            replace_all: None,
+        }
+    }
+
+    pub fn with_line_hint(mut self, line: usize) -> Self {
+        self.line_hint = Some(line);
+        self
+    }
+
+    pub fn with_occurrence(mut self, occ: isize) -> Self {
+        self.occurrence = Some(occ);
+        self
+    }
+
+    pub fn with_replace_all(mut self, replace_all: bool) -> Self {
+        self.replace_all = Some(replace_all);
+        self
+    }
 }
 
 /// Result of [`apply_edits_to_normalized_content`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppliedEditsResult {
     pub base_content: String,
     pub new_content: String,
+    pub notes: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,47 +324,40 @@ fn apply_replacements_preserving_unchanged_lines(
 // Fuzzy find
 // ---------------------------------------------------------------------------
 
-struct FuzzyMatchResult {
-    found: bool,
+fn needs_fuzzy_match(content: &str, old_text: &str) -> bool {
+    if content.contains(old_text) {
+        return false;
+    }
+    let fuzzy_content = normalize_for_fuzzy_match(content);
+    let fuzzy_old = normalize_for_fuzzy_match(old_text);
+    fuzzy_content.contains(fuzzy_old.as_str())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Occurrence {
     index: usize,
-    match_length: usize,
-    used_fuzzy: bool,
+    length: usize,
 }
 
-fn fuzzy_find_text(content: &str, old_text: &str) -> FuzzyMatchResult {
-    if let Some(idx) = content.find(old_text) {
-        return FuzzyMatchResult {
-            found: true,
-            index: idx,
-            match_length: old_text.len(),
-            used_fuzzy: false,
-        };
+fn find_all_occurrences(content: &str, target: &str) -> Vec<Occurrence> {
+    if target.is_empty() {
+        return Vec::new();
     }
-    let fuzzy_content = normalize_for_fuzzy_match(content);
-    let fuzzy_old = normalize_for_fuzzy_match(old_text);
-    if let Some(idx) = fuzzy_content.find(fuzzy_old.as_str()) {
-        return FuzzyMatchResult {
-            found: true,
-            index: idx,
-            match_length: fuzzy_old.len(),
-            used_fuzzy: true,
-        };
+    let mut occurrences = Vec::new();
+    let mut start = 0;
+    while start < content.len() {
+        if let Some(pos) = content[start..].find(target) {
+            let match_index = start + pos;
+            occurrences.push(Occurrence {
+                index: match_index,
+                length: target.len(),
+            });
+            start = match_index + target.len().max(1);
+        } else {
+            break;
+        }
     }
-    FuzzyMatchResult {
-        found: false,
-        index: 0,
-        match_length: 0,
-        used_fuzzy: false,
-    }
-}
-
-fn count_occurrences(content: &str, old_text: &str) -> usize {
-    let fuzzy_content = normalize_for_fuzzy_match(content);
-    let fuzzy_old = normalize_for_fuzzy_match(old_text);
-    if fuzzy_old.is_empty() {
-        return 0;
-    }
-    fuzzy_content.matches(fuzzy_old.as_str()).count()
+    occurrences
 }
 
 // ---------------------------------------------------------------------------
@@ -339,14 +366,11 @@ fn count_occurrences(content: &str, old_text: &str) -> usize {
 
 /// Apply one or more exact-text replacements to LF-normalized `content`.
 ///
-/// All edits are matched against the same original content. Validation:
-/// - `oldText` must be non-empty
-/// - each `oldText` must occur exactly once (exact or fuzzy match)
-/// - edits must not overlap
+/// All edits are matched against the same original content.
+/// Handles multiple occurrences gracefully via line_hint, occurrence index,
+/// replace_all, or defaults to the first occurrence with an explanatory note.
 ///
-/// Returns `(baseContent, newContent)` where `baseContent` is the original
-/// normalized content and `newContent` is the result. Errors are human-readable
-/// strings mirroring `edit-diff.ts`.
+/// Returns [`AppliedEditsResult`] containing `(base_content, new_content, notes)`.
 pub fn apply_edits_to_normalized_content(
     normalized_content: &str,
     edits: &[Edit],
@@ -362,6 +386,9 @@ pub fn apply_edits_to_normalized_content(
         .map(|e| Edit {
             old_text: normalize_to_lf(&e.old_text),
             new_text: normalize_to_lf(&e.new_text),
+            line_hint: e.line_hint,
+            occurrence: e.occurrence,
+            replace_all: e.replace_all,
         })
         .collect();
 
@@ -376,11 +403,9 @@ pub fn apply_edits_to_normalized_content(
     }
 
     // Determine whether any edit requires fuzzy matching.
-    let initial_matches: Vec<FuzzyMatchResult> = normalized_edits
+    let used_fuzzy = normalized_edits
         .iter()
-        .map(|e| fuzzy_find_text(normalized_content, &e.old_text))
-        .collect();
-    let used_fuzzy = initial_matches.iter().any(|m| m.used_fuzzy);
+        .any(|e| needs_fuzzy_match(normalized_content, &e.old_text));
     let replacement_base: String = if used_fuzzy {
         normalize_for_fuzzy_match(normalized_content)
     } else {
@@ -388,9 +413,17 @@ pub fn apply_edits_to_normalized_content(
     };
 
     let mut matched: Vec<MatchedEdit> = Vec::with_capacity(normalized_edits.len());
+    let mut notes: Vec<String> = Vec::new();
+
     for (i, edit) in normalized_edits.iter().enumerate() {
-        let m = fuzzy_find_text(&replacement_base, &edit.old_text);
-        if !m.found {
+        let occurrences = if used_fuzzy {
+            let fuzzy_old = normalize_for_fuzzy_match(&edit.old_text);
+            find_all_occurrences(&replacement_base, &fuzzy_old)
+        } else {
+            find_all_occurrences(&replacement_base, &edit.old_text)
+        };
+
+        if occurrences.is_empty() {
             if normalized_edits.len() == 1 {
                 return Err(format!(
                     "Could not find the exact text in {path}. The old text must match exactly including all whitespace and newlines."
@@ -401,24 +434,115 @@ pub fn apply_edits_to_normalized_content(
                 ));
             }
         }
-        let occurrences = count_occurrences(&replacement_base, &edit.old_text);
-        if occurrences > 1 {
-            if normalized_edits.len() == 1 {
-                return Err(format!(
-                    "Found {occurrences} occurrences of the text in {path}. The text must be unique. Please provide more context to make it unique."
-                ));
-            } else {
-                return Err(format!(
-                    "Found {occurrences} occurrences of edits[{i}] in {path}. Each oldText must be unique. Please provide more context to make it unique."
+
+        let total = occurrences.len();
+        let edit_label = if normalized_edits.len() == 1 {
+            "the text".to_string()
+        } else {
+            format!("edits[{i}]")
+        };
+
+        if edit.replace_all == Some(true) {
+            for occ in &occurrences {
+                matched.push(MatchedEdit {
+                    edit_index: i,
+                    match_index: occ.index,
+                    match_length: occ.length,
+                    new_text: edit.new_text.clone(),
+                });
+            }
+            if total > 1 {
+                notes.push(format!(
+                    "[edit: replaced all {total} occurrences of {edit_label} in {path}]"
                 ));
             }
+        } else if let Some(occ_spec) = edit.occurrence {
+            let target_idx = if occ_spec > 0 {
+                let idx = (occ_spec - 1) as usize;
+                if idx < total { Some(idx) } else { None }
+            } else if occ_spec < 0 {
+                let from_end = (-occ_spec) as usize;
+                if from_end <= total {
+                    Some(total - from_end)
+                } else {
+                    None
+                }
+            } else {
+                return Err(format!(
+                    "occurrence index must not be 0 in {path} (use 1 for first occurrence, -1 for last)."
+                ));
+            };
+
+            let Some(idx) = target_idx else {
+                return Err(format!(
+                    "Occurrence {occ_spec} out of range in {path}. Found {total} occurrence(s)."
+                ));
+            };
+
+            let occ = occurrences[idx];
+            matched.push(MatchedEdit {
+                edit_index: i,
+                match_index: occ.index,
+                match_length: occ.length,
+                new_text: edit.new_text.clone(),
+            });
+            if total > 1 {
+                notes.push(format!(
+                    "[edit: targeted occurrence {} of {total} of {edit_label} in {path}]",
+                    idx + 1
+                ));
+            }
+        } else if let Some(target_line) = edit.line_hint {
+            let mut best_idx = 0;
+            let mut min_diff = usize::MAX;
+            let mut best_line = 1;
+
+            for (idx, occ) in occurrences.iter().enumerate() {
+                let occ_line = replacement_base[..occ.index].split('\n').count();
+                let diff = (occ_line as isize - target_line as isize).unsigned_abs();
+                if diff < min_diff {
+                    min_diff = diff;
+                    best_idx = idx;
+                    best_line = occ_line;
+                }
+            }
+
+            let occ = occurrences[best_idx];
+            matched.push(MatchedEdit {
+                edit_index: i,
+                match_index: occ.index,
+                match_length: occ.length,
+                new_text: edit.new_text.clone(),
+            });
+            if total > 1 {
+                notes.push(format!(
+                    "[edit: disambiguated {total} occurrences of {edit_label} in {path} to line {best_line} (closest to line hint {target_line})]"
+                ));
+            }
+        } else if total > 1 {
+            // Graceful handling of multiple occurrences when no disambiguation is provided:
+            // default to first occurrence and emit a helpful note.
+            let occ = occurrences[0];
+            let first_line = replacement_base[..occ.index].split('\n').count();
+            matched.push(MatchedEdit {
+                edit_index: i,
+                match_index: occ.index,
+                match_length: occ.length,
+                new_text: edit.new_text.clone(),
+            });
+            notes.push(format!(
+                "[edit: found {total} occurrences of {edit_label} in {path}; edited occurrence 1 at line {first_line} (provide line_start, occurrence, or replace_all to disambiguate)]"
+            ));
+        } else {
+            // Exactly 1 occurrence
+            let occ = occurrences[0];
+            matched.push(MatchedEdit {
+                edit_index: i,
+                match_index: occ.index,
+                match_length: occ.length,
+                new_text: edit.new_text.clone(),
+            });
         }
-        matched.push(MatchedEdit {
-            edit_index: i,
-            match_index: m.index,
-            match_length: m.match_length,
-            new_text: edit.new_text.clone(),
-        });
     }
 
     matched.sort_by_key(|m| m.match_index);
@@ -463,6 +587,7 @@ pub fn apply_edits_to_normalized_content(
     Ok(AppliedEditsResult {
         base_content,
         new_content,
+        notes,
     })
 }
 
@@ -734,6 +859,24 @@ fn strip_one_prefix(line: &str) -> &str {
     &line[tab + 1..]
 }
 
+/// Extract the line number from the first line that has a `cat -n` prefix.
+pub fn extract_first_prefix_line_number(text: &str) -> Option<usize> {
+    for line in text.split('\n') {
+        let Some(tab) = line.find('\t') else {
+            continue;
+        };
+        let (head, _) = line.split_at(tab);
+        let digits = head.trim_start_matches(|c: char| c.is_whitespace());
+        if !digits.is_empty()
+            && digits.bytes().all(|b| b.is_ascii_digit())
+            && let Ok(n) = digits.parse::<usize>()
+        {
+            return Some(n);
+        }
+    }
+    None
+}
+
 /// Strip prefixes from a set of edits for the T1.6 retry. Each edit's
 /// `old_text` drives: its `new_text` is stripped only when its `old_text`
 /// was (both or neither, never new alone). Returns `None` when no edit's
@@ -746,9 +889,13 @@ pub fn strip_edit_prefixes(edits: &[Edit]) -> Option<Vec<Edit>> {
             let stripped_old = strip_cat_n_prefixes(&e.old_text);
             if stripped_old != e.old_text {
                 changed = true;
+                let extracted_line = extract_first_prefix_line_number(&e.old_text);
                 Edit {
                     old_text: stripped_old,
                     new_text: strip_cat_n_prefixes(&e.new_text),
+                    line_hint: e.line_hint.or(extracted_line),
+                    occurrence: e.occurrence,
+                    replace_all: e.replace_all,
                 }
             } else {
                 e.clone()
@@ -781,42 +928,94 @@ mod prefix_tests {
     fn strip_set_gates_on_old_text_both_or_neither() {
         // oldText without a prefix → nothing to retry (None): newText alone
         // is never stripped.
-        let only_new = vec![Edit {
-            old_text: "foo".to_string(),
-            new_text: "   3\tbar".to_string(),
-        }];
+        let only_new = vec![Edit::new("foo", "   3\tbar")];
         assert!(strip_edit_prefixes(&only_new).is_none());
         // oldText with a prefix → both stripped together.
-        let both = vec![Edit {
-            old_text: "   3\tfoo".to_string(),
-            new_text: "   3\tbar".to_string(),
-        }];
+        let both = vec![Edit::new("   3\tfoo", "   3\tbar")];
         let got = strip_edit_prefixes(&both).unwrap();
         assert_eq!(got[0].old_text, "foo");
         assert_eq!(got[0].new_text, "bar");
+        assert_eq!(got[0].line_hint, Some(3));
     }
 
     #[test]
     fn stripped_retry_order_exact_first() {
-        // A file whose real content starts with `12\t` still matches
-        // exactly — the repair must never fire first (edit.rs retries only
-        // on failure; here the exact apply already succeeds).
         let content = "12\tfoo\n";
-        let exact = vec![Edit {
-            old_text: "12\tfoo".to_string(),
-            new_text: "12\tbaz".to_string(),
-        }];
+        let exact = vec![Edit::new("12\tfoo", "12\tbaz")];
         let applied = apply_edits_to_normalized_content(content, &exact, "f").unwrap();
         assert!(applied.new_content.contains("12\tbaz"));
-        // A prefixed oldText fails exact, but its stripped form matches —
-        // the two calls below are exactly what edit.rs does (try, then retry).
-        let prefixed = vec![Edit {
-            old_text: "   412\tfoo".to_string(),
-            new_text: "   412\tbaz".to_string(),
-        }];
+
+        let prefixed = vec![Edit::new("   412\tfoo", "   412\tbaz")];
         assert!(apply_edits_to_normalized_content(content, &prefixed, "f").is_err());
         let stripped = strip_edit_prefixes(&prefixed).unwrap();
         let repaired = apply_edits_to_normalized_content(content, &stripped, "f").unwrap();
         assert!(repaired.new_content.contains("12\tbaz"));
+    }
+
+    #[test]
+    fn multiple_occurrences_defaults_to_first_with_note() {
+        let content = "item\nother\nitem\n";
+        let edits = vec![Edit::new("item", "replaced")];
+        let result = apply_edits_to_normalized_content(content, &edits, "f.txt").unwrap();
+        assert_eq!(result.new_content, "replaced\nother\nitem\n");
+        assert_eq!(result.notes.len(), 1);
+        assert!(result.notes[0].contains("found 2 occurrences"));
+        assert!(result.notes[0].contains("edited occurrence 1"));
+    }
+
+    #[test]
+    fn multiple_occurrences_disambiguated_by_line_hint() {
+        let content = "line 1\nmatch\nline 3\nline 4\nmatch\nline 6\n";
+        // Second match is at line 5
+        let edits = vec![Edit::new("match", "second").with_line_hint(5)];
+        let result = apply_edits_to_normalized_content(content, &edits, "f.txt").unwrap();
+        assert_eq!(
+            result.new_content,
+            "line 1\nmatch\nline 3\nline 4\nsecond\nline 6\n"
+        );
+        assert!(result.notes[0].contains("disambiguated 2 occurrences"));
+        assert!(result.notes[0].contains("line 5"));
+    }
+
+    #[test]
+    fn multiple_occurrences_disambiguated_by_occurrence_index() {
+        let content = "one\nmatch\ntwo\nmatch\nthree\nmatch\n";
+        // Target 2nd occurrence
+        let edits2 = vec![Edit::new("match", "HIT").with_occurrence(2)];
+        let res2 = apply_edits_to_normalized_content(content, &edits2, "f.txt").unwrap();
+        assert_eq!(res2.new_content, "one\nmatch\ntwo\nHIT\nthree\nmatch\n");
+
+        // Target last occurrence (-1)
+        let edits_last = vec![Edit::new("match", "LAST").with_occurrence(-1)];
+        let res_last = apply_edits_to_normalized_content(content, &edits_last, "f.txt").unwrap();
+        assert_eq!(
+            res_last.new_content,
+            "one\nmatch\ntwo\nmatch\nthree\nLAST\n"
+        );
+    }
+
+    #[test]
+    fn multiple_occurrences_replace_all() {
+        let content = "foo a\nbar\nfoo b\n";
+        let edits = vec![Edit::new("foo", "qux").with_replace_all(true)];
+        let result = apply_edits_to_normalized_content(content, &edits, "f.txt").unwrap();
+        assert_eq!(result.new_content, "qux a\nbar\nqux b\n");
+        assert!(result.notes[0].contains("replaced all 2 occurrences"));
+    }
+
+    #[test]
+    fn cat_n_prefix_disambiguates_multiple_occurrences() {
+        let content = "line 1\nfoo\nline 3\nline 4\nfoo\nline 6\n";
+        // User passed cat -n prefix targeting line 5
+        let prefixed = vec![Edit::new("     5\tfoo", "     5\tbar")];
+        assert!(apply_edits_to_normalized_content(content, &prefixed, "f.txt").is_err());
+        let stripped = strip_edit_prefixes(&prefixed).unwrap();
+        assert_eq!(stripped[0].line_hint, Some(5));
+        let repaired = apply_edits_to_normalized_content(content, &stripped, "f.txt").unwrap();
+        assert_eq!(
+            repaired.new_content,
+            "line 1\nfoo\nline 3\nline 4\nbar\nline 6\n"
+        );
+        assert!(repaired.notes[0].contains("disambiguated 2 occurrences"));
     }
 }

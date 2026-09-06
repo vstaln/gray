@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -8,17 +9,13 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use gray_markdown::HyperlinkTarget;
 
-use super::GatewayBootPanel;
 use super::Tui;
 
 mod boxes;
 mod cards;
 mod rows;
 
-pub(crate) use cards::{
-    format_gateway_boot_card, format_tool_box_lines, gateway_boot_card_parts,
-    is_gateway_boot_header, paint_card,
-};
+pub(crate) use cards::format_tool_box_lines;
 pub use rows::redact_command_echo;
 pub(crate) use rows::{
     format_user_prompt_lines, left_pad, strip_ansi, thinking_style, word_flush_cut,
@@ -89,6 +86,7 @@ impl Tui {
         }
         if !self.thinking {
             self.ensure_gap(1);
+            self.thinking_started = Some(Instant::now());
         }
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Thinking") {
             self.set_status(Some("Thinking"));
@@ -156,11 +154,20 @@ impl Tui {
         if !self.thinking && self.pending.is_empty() {
             return;
         }
+        // Opencode parity (`Thought: <title> · <duration>`): the completed
+        // thinking run gets a summary line with its wall time. It lands
+        // AFTER the block — scrollback is append-only (`insert_before`),
+        // so unlike opencode's re-rendered header it can't sit on top.
+        let was_thinking = self.thinking;
+        let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
         if !self.hide_thinking {
             if !self.pending.is_empty() {
                 let rest = std::mem::take(&mut self.pending);
                 self.push_line_styled(rest, thinking_style());
+            }
+            if was_thinking && let Some(d) = elapsed {
+                self.push_line_spans(thought_summary_line(d));
             }
             if spacer {
                 self.ensure_gap(1);
@@ -212,48 +219,35 @@ impl Tui {
     }
 }
 
+/// Port of opencode's `Locale.duration`: `198ms`, `5.8s`, `1m 2s`.
+pub(crate) fn fmt_thought_duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 3_600_000 {
+        let secs = ms as f64 / 1000.0;
+        if secs < 60.0 {
+            format!("{secs:.1}s")
+        } else {
+            format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
+        }
+    } else {
+        format!("{}h {}m", ms / 3_600_000, (ms % 3_600_000) / 60_000)
+    }
+}
+
+/// Completed-thinking summary line: amber `Thought: <duration>` like
+/// opencode's `ReasoningHeader` (no title — gray carries no summary titles).
+fn thought_summary_line(elapsed: Duration) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        format!("Thought: {}", fmt_thought_duration(elapsed)),
+        Style::default().fg(Color::Rgb(246, 173, 126)),
+    )])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn gateway_boot_card_is_tight_with_one_space_header() {
-        let (header, body) = gateway_boot_card_parts(
-            "Gateway autostarted",
-            &["  └─ Discord — connected as Gray".to_string()],
-        );
-        assert!(is_gateway_boot_header(&header));
-        assert!(!is_gateway_boot_header(&Line::from("Ran foo")));
-        let lines = format_gateway_boot_card(header, &body, 80);
-        // top margin, header, row directly below (no middle blank), bottom margin.
-        assert_eq!(lines.len(), 4);
-        let text: Vec<String> = lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect();
-        assert_eq!(text[0], "");
-        assert_eq!(text[1], " Gateway autostarted");
-        assert_eq!(text[2], "  └─ Discord — connected as Gray");
-        assert_eq!(text[3], "");
-        // Gray overlay band: every cell carries the card bg so the live
-        // viewport and insert_before paint the same block.
-        let bg = Some(Color::Rgb(22, 22, 22));
-        for l in &lines {
-            assert_eq!(l.width(), 80, "row must span the full card width");
-            assert_eq!(l.style.bg, bg, "row style carries the card bg");
-            assert!(
-                l.spans.iter().all(|s| s.style.bg == bg),
-                "every span carries the card bg"
-            );
-        }
-    }
 
     #[test]
     fn redact_command_echo_hides_connect_token() {
@@ -295,6 +289,22 @@ mod tests {
     fn word_flush_cut_exact_fit_pushes_whole() {
         let chars: Vec<char> = "hi you".chars().collect();
         assert_eq!(word_flush_cut(&chars, 6), 6);
+    }
+
+    #[test]
+    fn thought_duration_matches_opencode_locale() {
+        assert_eq!(fmt_thought_duration(Duration::from_millis(198)), "198ms");
+        assert_eq!(fmt_thought_duration(Duration::from_millis(5800)), "5.8s");
+        assert_eq!(fmt_thought_duration(Duration::from_millis(9800)), "9.8s");
+        assert_eq!(fmt_thought_duration(Duration::from_millis(61_500)), "1m 1s");
+    }
+
+    #[test]
+    fn thought_summary_line_names_duration() {
+        let line = thought_summary_line(Duration::from_millis(5800));
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Thought: 5.8s");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(246, 173, 126)));
     }
 
     #[test]

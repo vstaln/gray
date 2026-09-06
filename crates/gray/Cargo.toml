@@ -17,6 +17,7 @@ path = "src/main.rs"
 gray-acp = { workspace = true }
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
+gray-pkg = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
@@ -42,8 +43,8 @@ tempfile = { workspace = true }
 async-trait = { workspace = true }
 # Phase 1 scope cut: platform adapters are opt-in (default build is the
 # harness core with gateway config/status only, no twilight/teloxide/slack).
-# The workspace edge disables gateway default features, keeping gray-cron
-# (and its `cron` package) out of the default tree; opt back in below.
+# The workspace edge disables gateway default features
+# out of the default tree; opt back in below.
 gray-gateway = { workspace = true }
 unicode-width = { workspace = true }
 ignore = { workspace = true }
@@ -58,8 +59,6 @@ telegram = ["gray-gateway/telegram"]
 discord = ["gray-gateway/discord"]
 slack = ["gray-gateway/slack"]
 all-platforms = ["gray-gateway/all-platforms"]
-# Gateway cron delivery (opt-in; needs the `cron` package).
-cron = ["gray-gateway/cron"]
 
 [dev-dependencies]
 async-trait = { workspace = true }

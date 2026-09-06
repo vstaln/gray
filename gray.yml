@@ -1,6 +1,5 @@
 plugins:
   - tools-basic
   - tools-search
-  - sidecar: plugins/cron/cron.sh
 # NOTE: providers-become-plugins is Phase-2-adjacent work; `provider-openai`
 # is intentionally not listed here (no provider plugin exists yet).

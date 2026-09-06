@@ -21,15 +21,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let w = cols as usize;
 
-    // Snapshot the live boot panel before the draw closure borrows the terminal.
-    // Same card content as the committed final card (margins), so the
-    // `starting` view never looks different from `autostarted`.
-    let boot_panel_lines: Vec<Line<'static>> = if tui.active_question.is_some() {
-        Vec::new()
-    } else {
-        tui.gateway_panel_lines(w)
-    };
-
     let text = tui.textarea.text().to_string();
     let cursor = tui.textarea.cursor().min(text.len());
     let ibox = build_input_box(&text, cursor, w);
@@ -64,25 +55,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let status_y = area.y;
         // Queued preview sits between status and input (codex PendingInputPreview
         // parity). Hidden while a question owns the viewport.
-        // Live gateway boot panel rides the same slot (above the input box):
-        // card rows with the committed card's bg, zero transcript lines.
         let queued_preview: Vec<Line<'static>> = if question_active {
             Vec::new()
         } else {
             queued_preview_lines(&tui.queued_inputs, w)
         };
-        // Live gateway boot panel rides the slot above the input box. Its rows
-        // come pre-padded with the card bg (transcript::format_gateway_boot_card)
-        // and ONE bare row separates the card from the input band — the same
-        // `ensure_gap(1)` the committed card gets, so the commit never shifts
-        // the input by a row.
-        let boot_lines: &[Line<'static>] = if question_active {
-            &[]
-        } else {
-            &boot_panel_lines
-        };
-        let boot_gap_h: u16 = u16::from(!boot_lines.is_empty());
-        let queued_h = (queued_preview.len() + boot_lines.len()) as u16 + boot_gap_h;
+        let queued_h = queued_preview.len() as u16;
         let box_y = status_y + status_h + queued_h;
         // No gap between the input band and the footer: the footer sits directly
         // below the band.
@@ -170,24 +148,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Rect::new(area.x, y, area.width, 1),
             );
         }
-        // Boot panel painted by the SAME helper the committed card uses
-        // (rows carry the card bg, paint_card just lays them), so live
-        // `validating token…` is pixel-identical to committed
-        // `connected as …`. The bare gap row below it is simply left unpainted.
-        if !boot_lines.is_empty() {
-            let boot_y = status_y + status_h + queued_preview.len() as u16;
-            if boot_y < area.bottom() {
-                let boot_h = (boot_lines.len() as u16).min(area.bottom() - boot_y);
-                if boot_h > 0 {
-                    super::transcript::paint_card(
-                        boot_lines,
-                        Rect::new(area.x, boot_y, area.width, boot_h),
-                        frame.buffer_mut(),
-                    );
-                }
-            }
-        }
-
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 && !question_active {
             let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
@@ -388,40 +348,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             (v, badge_len)
         };
         let (right_parts, badge_len) = right_parts;
-        // Cron ticking clock — next due countdown, ticks via tick_status
-        let cron_display: Option<(String, Color)> =
-            tui.next_cron.as_ref().and_then(|(name, next)| {
-                let now = chrono::Utc::now();
-                let secs = (*next - now).num_seconds();
-                if secs < -120 {
-                    None // past grace, stale
-                } else if secs <= 0 {
-                    Some((format!("⏰ {name} due!"), Color::Rgb(246, 173, 126)))
-                } else if secs < 60 {
-                    Some((format!("⏰ {name} {secs}s"), Color::Rgb(246, 173, 126)))
-                } else if secs < 3600 {
-                    let m = secs / 60;
-                    let s = secs % 60;
-                    Some((format!("⏰ {name} {m}m {s}s"), Color::Rgb(180, 160, 130)))
-                } else if secs < 86400 {
-                    let h = secs / 3600;
-                    let m = (secs % 3600) / 60;
-                    Some((format!("⏰ {name} {h}h {m}m"), Color::Rgb(140, 140, 140)))
-                } else {
-                    None // far future, don't clutter footer
-                }
-            });
-        let cron_len = cron_display
-            .as_ref()
-            .map(|(s, _)| s.chars().count() + 3)
-            .unwrap_or(0);
         let right_len = if model_display.is_empty() {
             effort_display.chars().count() + badge_len
         } else {
             model_display.chars().count() + 3 + effort_display.chars().count() + badge_len
         };
-        let left_len =
-            1 + ctx_display.chars().count() + 3 + cache_display.chars().count() + cron_len;
+        let left_len = 1 + ctx_display.chars().count() + 3 + cache_display.chars().count();
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
@@ -436,16 +368,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))),
             Span::styled(cache_display, Style::default().fg(cache_color)),
         ];
-        if let Some((cron_str, cron_color)) = cron_display {
-            footer_spans.push(Span::styled(
-                " \u{b7} ",
-                Style::default().fg(Color::Rgb(65, 65, 65)),
-            ));
-            footer_spans.push(Span::styled(
-                cron_str,
-                Style::default().fg(cron_color).add_modifier(Modifier::BOLD),
-            ));
-        }
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
         footer_spans.extend(right_parts);
         if footer_y < area.y + area.height {

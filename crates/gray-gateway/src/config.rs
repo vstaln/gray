@@ -169,9 +169,6 @@ pub struct GatewayConfig {
     /// Stream partial replies via edit-in-place where the platform supports it.
     #[serde(default = "default_true")]
     pub streaming: bool,
-    /// Run due cron jobs inside the gateway and deliver output to each platform's home channel.
-    #[serde(default = "default_true")]
-    pub cron_delivery: bool,
     /// Auto-reset policy for gateway sessions (default: never).
     #[serde(default)]
     pub reset_policy: ResetPolicy,
@@ -194,7 +191,6 @@ impl Default for GatewayConfig {
             autostart: false,
             denied_tools: Vec::new(),
             streaming: true,
-            cron_delivery: true,
             reset_policy: ResetPolicy::default(),
         }
     }
@@ -208,6 +204,24 @@ pub fn gray_home_dir() -> anyhow::Result<PathBuf> {
 pub fn gray_gateway_path() -> anyhow::Result<PathBuf> {
     gray_home_dir().map(|b| b.join("gateway.yaml"))
 }
+/// Display path for user-facing errors: the ACTUAL resolved location under
+/// `$GRAY_HOME` (or `$HOME/.gray`), never a hardcoded `~/.gray/...`.
+pub fn gateway_config_display() -> String {
+    gray_gateway_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "~/.gray/gateway.yaml".to_string())
+}
+/// Message for the all-disabled `gateway run` case, naming the real file.
+pub fn no_platforms_message() -> String {
+    format!(
+        "no gateway platforms enabled — edit {}",
+        gateway_config_display()
+    )
+}
+/// Serializes tests that mutate `GRAY_HOME` (process-global; parallel tests
+/// would otherwise race). Hold the guard for the whole set/remove cycle.
+#[cfg(test)]
+pub(crate) static GRAY_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else {
         return GatewayConfig::default();
@@ -316,5 +330,45 @@ mod tests {
         // Missing keys default, never fail old configs.
         let p: ResetPolicy = serde_yaml_ng::from_str("{}\n").unwrap();
         assert_eq!(p.mode, ResetMode::None);
+    }
+
+    #[test]
+    fn gateway_config_display_respects_gray_home() {
+        let _guard = super::GRAY_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::var("GRAY_HOME").ok();
+        // SAFETY: guarded by GRAY_HOME_TEST_LOCK; restored below.
+        unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
+        let display = super::gateway_config_display();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+            None => unsafe { std::env::remove_var("GRAY_HOME") },
+        }
+        let expected = dir.path().join("gateway.yaml").display().to_string();
+        assert_eq!(display, expected, "must print ACTUAL resolved path");
+        assert!(
+            !display.contains("~/.gray"),
+            "must not hardcode ~, got: {display}"
+        );
+    }
+
+    #[test]
+    fn no_platforms_message_names_actual_file() {
+        let _guard = super::GRAY_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::var("GRAY_HOME").ok();
+        // SAFETY: see above.
+        unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
+        let msg = super::no_platforms_message();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+            None => unsafe { std::env::remove_var("GRAY_HOME") },
+        }
+        let expected = dir.path().join("gateway.yaml").display().to_string();
+        assert!(msg.contains(&expected), "must name {expected}, got: {msg}");
+        assert!(
+            !msg.contains("~/.gray/gateway.yaml"),
+            "must not hardcode ~, got: {msg}"
+        );
     }
 }

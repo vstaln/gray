@@ -64,9 +64,33 @@ impl Tool for ShellKillTool {
             }
         };
         let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
+        // Chosen fix for session-scoped tasks: keep scoping (frozen contract),
+        // make errors unambiguous by naming sessions and where the id lives.
+        let task_id = match &target {
+            KillTarget::Task(id) => Some(*id),
+            _ => None,
+        };
         match super::super::kill::kill(target, &session, ctx).await {
             Ok(rep) => ToolOutput::ok(rep.describe),
-            Err(e) => fail(e),
+            Err(e) => {
+                if e.contains("unknown task")
+                    && let Some(id) = task_id
+                {
+                    let others: Vec<String> = crate::shell::registry::registry()
+                        .sessions_with_task(id)
+                        .into_iter()
+                        .filter(|s| s != &session)
+                        .collect();
+                    if !others.is_empty() {
+                        return fail(format!(
+                            "{e} in session \"{session}\". Exists in session-scoped session(s): {}. Tasks are session-scoped.",
+                            others.join(", ")
+                        ));
+                    }
+                    return fail(format!("{e} in session \"{session}\""));
+                }
+                fail(e)
+            }
         }
     }
 }
@@ -146,5 +170,47 @@ mod tests {
         assert_eq!(parse_task_id(Some(&json!(7))), Some(TaskId(7)));
         assert_eq!(parse_task_id(Some(&json!("zzz"))), None);
         assert_eq!(parse_task_id(None), None);
+    }
+
+    #[tokio::test]
+    async fn cross_session_kill_error_names_other_session() {
+        // Bug 3: session-scoped by design; error must say where tN actually lives.
+        use crate::shell::tools::bash::BashTool;
+        use gray_core::agent::Tool;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let tag = N.fetch_add(1, Ordering::Relaxed);
+        let sess_a = format!("kill-cross-a-{}-{tag}", std::process::id());
+        let sess_b = format!("kill-cross-b-{}-{tag}", std::process::id());
+        let ctx_a = ToolContext {
+            session_id: Some(sess_a.clone()),
+            ..ToolContext::default()
+        };
+        let bg = BashTool
+            .execute(&ctx_a, json!({"command": "sleep 30", "background": true}))
+            .await;
+        assert!(!bg.is_error, "{}", bg.content);
+        let ctx_b = ToolContext {
+            session_id: Some(sess_b.clone()),
+            ..ToolContext::default()
+        };
+        let out = ShellKillTool
+            .execute(&ctx_b, json!({"task_id": "t1"}))
+            .await;
+        assert!(
+            out.is_error,
+            "cross-session kill must stay scoped, got {}",
+            out.content
+        );
+        assert!(out.content.contains("unknown task"), "{}", out.content);
+        assert!(
+            out.content.contains(&sess_a) || out.content.contains("session-scoped"),
+            "error must name where t1 lives (session {sess_a}), got {}",
+            out.content
+        );
+        // Cleanup: kill from the owning session.
+        let _ = ShellKillTool
+            .execute(&ctx_a, json!({"task_id": "t1"}))
+            .await;
     }
 }

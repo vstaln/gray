@@ -292,18 +292,6 @@ pub fn format_tool_call_header(
                 Span::styled(format!("\"{skill_name}\""), cmd_style),
             ])
         }
-        "cron" => {
-            let sched = args
-                .get("cron")
-                .or_else(|| args.get("schedule"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            Line::from(vec![
-                bullet,
-                Span::styled("Cron ", action_style),
-                Span::styled(sched.to_string(), cmd_style),
-            ])
-        }
         other => {
             let path = shorten_path(arg_path(args), cwd);
             if !path.is_empty() {

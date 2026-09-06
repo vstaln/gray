@@ -28,12 +28,39 @@ pub fn build_title(text: &str) -> String {
     "Feedback".to_string()
 }
 
+/// First non-empty of `$TERM_PROGRAM`, `$TERM`, else "unknown".
+pub fn terminal_label(term_program: Option<&str>, term: Option<&str>) -> String {
+    for s in [term_program, term].into_iter().flatten() {
+        let s = s.trim();
+        if !s.is_empty() {
+            return s.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Basename after last `/`, else "unknown" for empty/missing.
+pub fn shell_label(shell: Option<&str>) -> String {
+    match shell.map(str::trim) {
+        Some(s) if !s.is_empty() => s.rsplit('/').next().unwrap_or(s).to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
 /// Bug-report body: `Summary` carries the title, `Actual Behavior` the raw
-/// feedback text; environment lines pin the version/OS/model/session.
-pub fn build_body(text: &str, version: &str, os: &str, model: &str, session: &str) -> String {
+/// feedback text; environment lines pin the version/OS/terminal/shell/model/session.
+pub fn build_body(
+    text: &str,
+    version: &str,
+    os: &str,
+    model: &str,
+    session: &str,
+    terminal: &str,
+    shell: &str,
+) -> String {
     let title = build_title(text);
     format!(
-        "## Summary\n{title}\n\n## Expected Behavior\n—\n\n## Actual Behavior\n{}\n\n## Steps to Reproduce\n—\n\n---\nCommand Code Version: {version}\nOperating System: {os}\nModel: {model}\nSession: {session}\n",
+        "## Summary\n{title}\n\n## Expected Behavior\n—\n\n## Actual Behavior\n{}\n\n## Steps to Reproduce\n—\n\nGray Version: {version}\nOperating System: {os}\nTerminal: {terminal}\nShell: {shell}\nModel: {model}\nSession: {session}\n\n## Fix prompt\n—\n\n## Additional context\n—\n",
         text.trim()
     )
 }
@@ -50,7 +77,11 @@ pub fn issue_url(title: &str, body: &str) -> String {
     let enc = |s: &str| {
         percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
     };
-    format!("{ISSUES_NEW_URL}?title={}&body={}", enc(title), enc(&short))
+    format!(
+        "{ISSUES_NEW_URL}?template=bug_report.yml&title={}&body={}",
+        enc(title),
+        enc(&short)
+    )
 }
 
 /// `feedback-20260905T120000Z.md`-style stamp for filenames.
@@ -117,15 +148,51 @@ mod tests {
 
     #[test]
     fn body_carries_environment_footer() {
-        let b = build_body("broken x", "0.1.0", "linux / x86_64", "m", "s1");
+        let b = build_body(
+            "broken x",
+            "0.1.0",
+            "linux / x86_64",
+            "m",
+            "s1",
+            "ghostty",
+            "bash",
+        );
         assert!(b.contains("## Summary\nbroken x"), "{b}");
         assert!(b.contains("## Expected Behavior\n—"), "{b}");
         assert!(b.contains("## Actual Behavior\nbroken x"), "{b}");
         assert!(b.contains("## Steps to Reproduce\n—"), "{b}");
-        assert!(b.contains("Command Code Version: 0.1.0"), "{b}");
+        assert!(b.contains("Gray Version: 0.1.0"), "{b}");
         assert!(b.contains("Operating System: linux / x86_64"), "{b}");
+        assert!(b.contains("Terminal: ghostty"), "{b}");
+        assert!(b.contains("Shell: bash"), "{b}");
         assert!(b.contains("Model: m"), "{b}");
         assert!(b.contains("Session: s1"), "{b}");
+        assert!(b.contains("## Fix prompt\n—"), "{b}");
+        assert!(b.contains("## Additional context\n—"), "{b}");
+    }
+
+    #[test]
+    fn terminal_label_prefers_term_program() {
+        assert_eq!(
+            terminal_label(Some("ghostty"), Some("xterm-256color")),
+            "ghostty"
+        );
+        assert_eq!(
+            terminal_label(None, Some("xterm-256color")),
+            "xterm-256color"
+        );
+        assert_eq!(terminal_label(Some(""), Some("xterm")), "xterm");
+        assert_eq!(terminal_label(None, None), "unknown");
+        assert_eq!(terminal_label(Some(""), Some("")), "unknown");
+    }
+
+    #[test]
+    fn shell_label_basename() {
+        assert_eq!(shell_label(Some("/bin/bash")), "bash");
+        assert_eq!(shell_label(Some("/usr/bin/zsh")), "zsh");
+        assert_eq!(shell_label(Some("fish")), "fish");
+        assert_eq!(shell_label(None), "unknown");
+        assert_eq!(shell_label(Some("")), "unknown");
     }
 
     #[test]

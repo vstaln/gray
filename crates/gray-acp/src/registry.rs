@@ -192,3 +192,73 @@ fn dirs_gray_home() -> PathBuf {
     }
     PathBuf::from(".gray")
 }
+
+/// Isolated `CODEX_HOME` for the `codex` adapter (`~/.gray/codex-home`).
+/// The pinned `@zed-industries/codex-acp` predates the current
+/// `~/.codex/config.toml` schema and crashes parsing it, so the adapter
+/// runs with a clean home: defaults work, auth is carried over by copying
+/// `~/.codex/auth.json` when present (refresh if the source is newer).
+pub fn ensure_codex_home() -> PathBuf {
+    let dir = gray_home_dir().join("codex-home");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(home) = std::env::var("HOME") {
+        let src = PathBuf::from(home).join(".codex").join("auth.json");
+        let dst = dir.join("auth.json");
+        let copy = std::fs::metadata(&src).ok().is_some_and(|m| {
+            std::fs::metadata(&dst)
+                .ok()
+                .and_then(|d| d.modified().ok())
+                .zip(m.modified().ok())
+                .is_none_or(|(d, s)| s > d)
+        });
+        if copy {
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+    dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_home_isolates_auth_and_avoids_user_config() {
+        let base =
+            std::env::temp_dir().join(format!("gray-test-codex-home-{}", std::process::id()));
+        let fake_home = base.join("home");
+        let fake_gray = base.join("gray");
+        std::fs::create_dir_all(fake_home.join(".codex")).unwrap();
+        std::fs::write(fake_home.join(".codex").join("auth.json"), r#"{"t":1}"#).unwrap();
+        // User config with a schema the old adapter chokes on — must NOT be copied.
+        std::fs::write(
+            fake_home.join(".codex").join("config.toml"),
+            "model_reasoning_effort = \"max\"\n",
+        )
+        .unwrap();
+        let prev_home = std::env::var("HOME").ok();
+        let prev_gray = std::env::var("GRAY_HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &fake_home);
+            std::env::set_var("GRAY_HOME", &fake_gray);
+        }
+        let dir = ensure_codex_home();
+        unsafe {
+            match prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match prev_gray {
+                Some(v) => std::env::set_var("GRAY_HOME", v),
+                None => std::env::remove_var("GRAY_HOME"),
+            }
+        }
+        assert_eq!(dir, fake_gray.join("codex-home"));
+        assert!(dir.join("auth.json").exists(), "auth must carry over");
+        assert!(
+            !dir.join("config.toml").exists(),
+            "user config must NOT leak into the isolated home"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+}

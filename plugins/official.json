@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "plugins": {
+    "gateway": { "source": "plugins/gateway", "scope": "official" }
+  }
+}
