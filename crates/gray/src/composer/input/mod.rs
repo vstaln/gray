@@ -8,13 +8,54 @@ use std::time::Duration;
 use super::Tui;
 
 mod attach;
+mod clipboard;
 
 pub(crate) use attach::{
     attach_image, sync_attachments, try_attach_clipboard_image, try_attach_image_paste,
 };
+pub(crate) use clipboard::paste_from_system_clipboard;
+
+/// Shift+Tab cycles ALL permission modes: Ask(auto) → ReadOnly → Full → Ask.
+/// Pure helper so the prompt loop and the mid-turn key watcher share one
+/// source of truth (the `Tui::cycle_permission_mode` in super only toggles
+/// two modes and lives in a file this fix may not touch).
+pub(crate) fn next_permission_mode(current: &str) -> &'static str {
+    use gray_core::approvals::{MODE_AUTO, MODE_FULL, MODE_READ_ONLY, normalize_mode};
+    match normalize_mode(current).unwrap_or(MODE_AUTO) {
+        MODE_READ_ONLY => MODE_FULL,
+        MODE_FULL => MODE_AUTO,
+        _ => MODE_READ_ONLY,
+    }
+}
+
+/// Ctrl-C at the prompt never exits on the first press: it clears the draft.
+/// Only a second press on an already-empty prompt within the window exits
+/// (mirrors the SIGINT policy in `repl`; exit also via /quit or Ctrl-D).
+pub(crate) const CTRL_C_EXIT_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
+pub(crate) fn ctrl_c_should_exit(
+    has_draft: bool,
+    last_empty_press: Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> bool {
+    if has_draft {
+        return false;
+    }
+    match last_empty_press {
+        Some(t) => now.duration_since(t) <= CTRL_C_EXIT_WINDOW,
+        None => false,
+    }
+}
 
 pub(crate) fn handle_paste(tui: &mut Tui, pasted: String) -> bool {
-    let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+    let pasted = clipboard::normalize_paste(&pasted);
+    // opencode parity: some terminals surface an image-only (or otherwise
+    // unreadable) clipboard as an EMPTY bracketed paste. Fall back to an
+    // explicit OS clipboard read instead of inserting nothing.
+    if pasted.trim().is_empty() {
+        return clipboard::paste_from_system_clipboard(tui);
+    }
     if try_attach_image_paste(tui, &pasted) {
         return true;
     }
@@ -230,10 +271,18 @@ pub(crate) fn read_line(
 
     // raw-mode is owned by mod.rs (Tui::new / Drop), but we ensure it here for
     // interactive loop; mod.rs remains canonical owner.
+    // Bracketed paste is terminal-global mode 2004: re-assert every prompt
+    // turn. Full-screen children ($EDITOR, pagers) commonly clear it on
+    // exit, which silently downgrades later pastes to raw keystrokes
+    // (multi-line paste then submits on the first Enter). Idempotent.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
 
     let mut needs_draw = true;
+    // Bare Ctrl-C never quits on first press: an empty-prompt press arms a
+    // 5 s window, a second press inside it exits (read repl Ctrl-C policy).
+    let mut last_ctrl_c_empty: Option<std::time::Instant> = None;
     loop {
         // Phase 1 (locked): resize deadlines, completion recompute, draw.
         // The guard drops at the end of this block, freeing the lock while
@@ -291,9 +340,8 @@ pub(crate) fn read_line(
                 ..
             }) = ev
             {
-                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
-                    return Ok(None);
-                }
+                // Ctrl-C on the question overlay cancels via the overlay
+                // handler — it must not quit the app (same as mid-turn).
                 crate::composer::handle_question_key(tui, code, modifiers);
             }
             continue;
@@ -310,11 +358,41 @@ pub(crate) fn read_line(
                 handle_paste(tui, data);
             }
             Event::Key(KeyEvent {
+                code: KeyCode::Insert,
+                modifiers,
+                kind: KeyEventKind::Press,
+                ..
+            }) if modifiers.contains(KeyModifiers::SHIFT) => {
+                // Shift+Insert reaches us as a key (not bracketed paste) on
+                // terminals that pass it through — same opencode prompt.paste.
+                paste_from_system_clipboard(tui);
+                tui.sel = 0;
+            }
+            Event::Key(KeyEvent {
                 code: KeyCode::Char('c'),
                 modifiers,
                 kind: KeyEventKind::Press,
                 ..
-            }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(None),
+            }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                let has_draft = !tui.textarea.is_empty()
+                    || !tui.attachments.is_empty()
+                    || !tui.pending_pastes.is_empty();
+                if has_draft {
+                    tui.textarea.set_text("");
+                    tui.attachments.clear();
+                    tui.pending_pastes.clear();
+                    tui.history_idx = None;
+                    tui.sel = 0;
+                    last_ctrl_c_empty = None;
+                    continue;
+                }
+                let now = std::time::Instant::now();
+                if ctrl_c_should_exit(false, last_ctrl_c_empty, now) {
+                    return Ok(None);
+                }
+                last_ctrl_c_empty = Some(now);
+                continue;
+            }
             Event::Key(KeyEvent {
                 code: KeyCode::Char('d'),
                 modifiers,
@@ -397,7 +475,10 @@ pub(crate) fn read_line(
                     tui.textarea.replace_range(cur..usize::MAX, "");
                 }
                 KeyCode::Char('v') | KeyCode::Char('V') => {
-                    try_attach_clipboard_image(tui);
+                    // opencode `prompt.paste`: image attach first, then OS
+                    // clipboard text — Ctrl+V must paste text even on builds
+                    // without the `clipboard` feature.
+                    paste_from_system_clipboard(tui);
                     tui.sel = 0;
                 }
                 KeyCode::Char('w') | KeyCode::Backspace => {
@@ -454,11 +535,7 @@ pub(crate) fn read_line(
                             && cur_text != format!("/{name} ")
                         {
                             // bare `/skills` opens the interactive skill picker
-                            let fill = if name == "skills" {
-                                "/skills:".to_string()
-                            } else {
-                                format!("/{name} ")
-                            };
+                            let fill = crate::repl::completion_fill(name);
                             tui.textarea.set_text(&fill);
                             tui.textarea.move_to_end();
                             continue;
@@ -504,16 +581,14 @@ pub(crate) fn read_line(
                         return Ok(Some((trimmed, attached)));
                     }
                     KeyCode::BackTab => {
-                        let mode = tui.cycle_permission_mode();
-                        tui.pending_permission_mode = Some(mode);
+                        let next = next_permission_mode(tui.permission_mode());
+                        tui.set_permission_mode(next.to_string());
+                        tui.pending_permission_mode = Some(next.to_string());
+                        let _ = tui.draw();
                     }
                     KeyCode::Tab => {
                         if let Some((name, _)) = tui.matches.get(tui.sel) {
-                            let fill = if name == "skills" {
-                                "/skills:".to_string()
-                            } else {
-                                format!("/{name} ")
-                            };
+                            let fill = crate::repl::completion_fill(name);
                             tui.textarea.set_text(&fill);
                             tui.textarea.move_to_end();
                         }
@@ -541,5 +616,45 @@ pub(crate) fn read_line(
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_tab_cycles_all_three_modes() {
+        use gray_core::approvals::{MODE_AUTO, MODE_FULL, MODE_READ_ONLY};
+        // Ask(auto) → ReadOnly → Full → Ask
+        assert_eq!(next_permission_mode(MODE_AUTO), MODE_READ_ONLY);
+        assert_eq!(next_permission_mode("ask"), MODE_READ_ONLY);
+        assert_eq!(next_permission_mode(MODE_READ_ONLY), MODE_FULL);
+        assert_eq!(next_permission_mode(MODE_FULL), MODE_AUTO);
+        assert_eq!(next_permission_mode("full-access"), MODE_AUTO);
+        // Full cycle returns to start (the stuck-two-mode bug never hit Full).
+        let mut m = MODE_AUTO;
+        for _ in 0..3 {
+            m = next_permission_mode(m);
+        }
+        assert_eq!(m, MODE_AUTO);
+        // Unknown falls back to auto → next is read-only.
+        assert_eq!(next_permission_mode("bogus"), MODE_READ_ONLY);
+    }
+
+    #[test]
+    fn ctrl_c_first_press_clears_second_within_window_exits() {
+        let now = std::time::Instant::now();
+        // Draft present → never exit (first press clears).
+        assert!(!ctrl_c_should_exit(true, None, now));
+        assert!(!ctrl_c_should_exit(true, Some(now), now));
+        // Empty, no prior press → arm, don't exit.
+        assert!(!ctrl_c_should_exit(false, None, now));
+        // Empty, second press inside 5 s → exit.
+        let first = now - std::time::Duration::from_secs(2);
+        assert!(ctrl_c_should_exit(false, Some(first), now));
+        // Empty, prior press expired → don't exit.
+        let stale = now - std::time::Duration::from_secs(30);
+        assert!(!ctrl_c_should_exit(false, Some(stale), now));
     }
 }

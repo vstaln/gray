@@ -59,6 +59,7 @@ pub struct Tui {
     pending: String,
     truecolor: bool,
     thinking: bool,
+    thinking_started: Option<Instant>,
     hide_thinking: bool,
     pending_tokens: Option<String>,
     pub(crate) history: Vec<String>,
@@ -80,15 +81,9 @@ pub struct Tui {
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
-    // Cron ticking UI — next due job for footer clock
-    pub(crate) next_cron: Option<(String, chrono::DateTime<chrono::Utc>)>,
-    pub(crate) last_cron_tick: Option<Instant>,
     // request_user_input overlay (codex port) + late non-blocking answers
     pub(crate) active_question: Option<question::QuestionSession>,
     pub pending_question_answers: Vec<String>,
-    /// Live gateway boot panel: painted in the viewport above the input while
-    /// platforms connect, then committed as ONE static card (no follow-ups).
-    pub(crate) gateway_boot: Option<GatewayBootPanel>,
 }
 
 #[derive(Clone, Debug)]
@@ -104,15 +99,6 @@ pub enum TranscriptEntry {
         hyperlinks: Vec<HyperlinkTarget>,
     },
     Gap(usize),
-}
-
-/// Live gateway boot panel state: the header plus one plain-text row per
-/// platform. Painted bare in the viewport while connecting; the same strings
-/// are committed into the final card (with card styling) when boot resolves.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct GatewayBootPanel {
-    pub header: String,
-    pub rows: Vec<String>,
 }
 
 pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
@@ -209,6 +195,7 @@ impl Tui {
             pending: String::new(),
             truecolor: true,
             thinking: false,
+            thinking_started: None,
             hide_thinking: false,
             pending_tokens: None,
             history: Vec::new(),
@@ -233,11 +220,8 @@ impl Tui {
             committed_markdown_lines: 0,
             pending_resize: None,
             live_streamed_tokens: 0,
-            next_cron: None,
-            last_cron_tick: None,
             active_question: None,
             pending_question_answers: Vec::new(),
-            gateway_boot: None,
         })
     }
 
@@ -250,6 +234,9 @@ impl Tui {
     pub(crate) fn reanchor_viewport(&mut self, cols: u16) {
         self.last_width = cols;
         self.pending_resize = None;
+        // Mode 2004 (bracketed paste) is terminal-global; re-assert after any
+        // alternate-screen modal in case a child cleared it.
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
         if let Ok(term) = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
@@ -307,33 +294,16 @@ impl Tui {
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::ToolBox { header, body } => {
-                    if crate::composer::transcript::is_gateway_boot_header(header) {
-                        let lines = crate::composer::transcript::format_gateway_boot_card(
-                            header.clone(),
-                            body,
-                            w,
-                        );
-                        let th = lines.len() as u16;
-                        let _ = self.terminal.insert_before(th, |buf| {
-                            crate::composer::transcript::paint_card(&lines, buf.area, buf);
-                        });
-                        new_transcript.extend(lines);
-                    } else {
-                        let lines = crate::composer::transcript::format_tool_box_lines(
-                            header.clone(),
-                            body,
-                            w,
-                        );
-                        let th = lines.len() as u16;
-                        let block =
-                            Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
-                        let _ = self.terminal.insert_before(th, |buf| {
-                            Paragraph::new(lines.clone())
-                                .block(block)
-                                .render(buf.area, buf);
-                        });
-                        new_transcript.extend(lines);
-                    }
+                    let lines =
+                        crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
+                    let th = lines.len() as u16;
+                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let _ = self.terminal.insert_before(th, |buf| {
+                        Paragraph::new(lines.clone())
+                            .block(block)
+                            .render(buf.area, buf);
+                    });
+                    new_transcript.extend(lines);
                 }
                 TranscriptEntry::StyledLines { lines, hyperlinks } => {
                     let lines_only = self.render_and_insert_styled_lines(lines, hyperlinks, w);
@@ -394,17 +364,6 @@ impl Tui {
         let _ = self.draw();
         next.to_string()
     }
-    pub fn set_next_cron(
-        &mut self,
-        name: Option<String>,
-        next: Option<chrono::DateTime<chrono::Utc>>,
-    ) {
-        match (name, next) {
-            (Some(n), Some(t)) => self.next_cron = Some((n, t)),
-            _ => self.next_cron = None,
-        }
-        let _ = self.draw();
-    }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.live_streamed_tokens = 0;
@@ -438,6 +397,12 @@ impl Tui {
 
     pub fn handle_paste(&mut self, pasted: String) -> bool {
         input::handle_paste(self, pasted)
+    }
+
+    /// opencode `prompt.paste` (ctrl+v): image attach first, then OS
+    /// clipboard text. Backend only; drawing is untouched.
+    pub fn paste_from_clipboard(&mut self) -> bool {
+        input::paste_from_system_clipboard(self)
     }
 
     pub fn begin_turn(&mut self, label: &str) {
@@ -563,19 +528,6 @@ impl Tui {
         self.pending_tokens = Some(tok_line);
     }
 
-    /// Viewport rows for the live gateway boot panel (empty when no boot is
-    /// active). Byte-for-byte the committed tight boot card (gray overlay +
-    /// top/bottom margins, no middle blank), so `starting` and `autostarted`
-    /// never look different.
-    pub(crate) fn gateway_panel_lines(&self, w: usize) -> Vec<Line<'static>> {
-        let Some(panel) = &self.gateway_boot else {
-            return Vec::new();
-        };
-        let (header, body) =
-            crate::composer::transcript::gateway_boot_card_parts(&panel.header, &panel.rows);
-        crate::composer::transcript::format_gateway_boot_card(header, &body, w)
-    }
-
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
         let (used_tokens, cache_hit_rate) =
             if let Some(u) = self.latest_usage.or(self.cumulative_usage) {
@@ -611,21 +563,7 @@ impl Tui {
             self.status = Some((Instant::now(), sleep_label(remaining, &reason)));
             sleep_tick = true;
         }
-        // Cron ticking clock — needs repaint even when idle, once per second
-        let needs_cron_tick = if let Some((_, next)) = &self.next_cron {
-            let now = chrono::Utc::now();
-            let secs = (*next - now).num_seconds();
-            let interval = if secs.abs() < 3600 {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(5)
-            };
-            self.last_cron_tick
-                .map(|t| t.elapsed() >= interval)
-                .unwrap_or(true)
-        } else {
-            false
-        };
+        let needs_cron_tick = false;
         // Reference: codex screen_size.rs + transcript_reflow.rs — trailing 75ms debounce.
         if let Some((cols, deadline)) = self.pending_resize {
             if Instant::now() >= deadline {
@@ -643,11 +581,8 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none() && !needs_cron_tick && !sleep_tick && self.gateway_boot.is_none() {
+        if self.status.is_none() && !needs_cron_tick && !sleep_tick {
             return;
-        }
-        if needs_cron_tick {
-            self.last_cron_tick = Some(Instant::now());
         }
         let _ = self.draw();
     }

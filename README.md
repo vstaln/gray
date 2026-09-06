@@ -79,7 +79,6 @@ run gray in a container/VM for untrusted work.
 | subcommand | what it does |
 |---|---|
 | `gray resume [--last] [--all] [SESSION_ID]` | resume a previous conversation (picker, most-recent, or by id/prefix) |
-| `gray cron list\|create\|add\|remove\|show\|run` | manage cron jobs — e.g. `gray cron create --schedule "every 30m" --prompt "check inbox"`, or shorthand `gray cron add "check inbox every 30m"`; `cron run` starts the scheduler daemon |
 | `gray proxy start\|status\|providers` | share Codex/Grok/OpenRouter auth via `http://127.0.0.1:8645/v1` (any bearer forwarded) |
 | `gray gateway run\|status\|install\|uninstall\|invite\|pairing` | messaging gateway daemon — `run` (foreground), `status`, `install`/`uninstall` (systemd user service, Linux-only), `invite` (OAuth2 invite URL), `pairing approve\|list\|revoke` (bind the owner without editing `gateway.yaml`) |
 | `gray update` | update gray to the latest release |

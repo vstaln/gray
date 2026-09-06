@@ -11,7 +11,7 @@ pub mod context;
 pub use context::{
     ContextParts, DEFAULT_KEEP_RECENT_TOKENS, DEFAULT_RESERVE_TOKENS, ModelRate,
     cache_model_context, cache_model_context_if_absent, cache_model_reasoning,
-    cache_models_dev_if_absent, context_source, default_keep_for_window,
+    cache_models_dev_if_absent, cached_model_ids, context_source, default_keep_for_window,
     default_reserve_for_window, estimate_str_tokens, extract_context_length_from_json,
     fetch_litellm_context_windows, fetch_live_provider_models, fetch_models_dev_context,
     fetch_openrouter_rates, format_context_length, format_cost, friendly_model_name,
@@ -32,7 +32,6 @@ pub use icons::{has_nerd_font, icon, init_nerd_font, set_nerd_font};
 mod acp_modal;
 mod context_modal;
 mod effort;
-mod gateway_modal;
 mod model_modal;
 mod permissions_modal;
 mod skills_modal;
@@ -45,8 +44,7 @@ mod connect_models;
 pub use acp_modal::run_acp_modal;
 pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
-pub use gateway_modal::run_gateway_modal;
-pub use model_modal::run_model_modal;
+pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 pub use permissions_modal::run_permissions_modal;
 pub use skills_modal::run_skills_modal;
 
@@ -82,78 +80,6 @@ pub async fn run_provider_menu(
     bg: Option<&BackgroundSnapshot>,
 ) -> anyhow::Result<bool> {
     run_connect_modal(config, bg)
-}
-
-/// Rows for the `/gateway` picker: (command, label, status). Platform rows
-/// carry an empty command — their action (connect vs disconnect) is decided at
-/// Enter time from the enabled state.
-pub fn gateway_modal_rows(
-    cfg: &gray_gateway::config::GatewayConfig,
-    running: bool,
-) -> Vec<(String, String, String)> {
-    use gray_gateway::config::Platform;
-    let mut rows = Vec::new();
-    for plat in [Platform::Telegram, Platform::Discord, Platform::Slack] {
-        let status = match cfg.platforms.get(&plat) {
-            Some(p) if p.enabled => "enabled".to_string(),
-            Some(p) if p.token.as_ref().is_some_and(|t| !t.is_empty()) => {
-                "disabled — token saved".to_string()
-            }
-            _ => "disabled — enter token".to_string(),
-        };
-        rows.push((String::new(), plat.label().to_string(), status));
-    }
-    rows.push(("__sep".to_string(), String::new(), String::new()));
-    rows.push((
-        format!("/gateway {}", if running { "stop" } else { "run" }),
-        if running {
-            "Stop gateway"
-        } else {
-            "Start gateway"
-        }
-        .to_string(),
-        String::new(),
-    ));
-    rows.push((
-        "/gateway install".to_string(),
-        "Install systemd service".to_string(),
-        String::new(),
-    ));
-    rows.push((
-        "/gateway uninstall".to_string(),
-        "Remove systemd service".to_string(),
-        String::new(),
-    ));
-    rows.push((
-        format!(
-            "/gateway autostart {}",
-            if cfg.autostart { "off" } else { "on" }
-        ),
-        format!(
-            "Autostart on launch: {}",
-            if cfg.autostart { "on" } else { "off" }
-        ),
-        String::new(),
-    ));
-    rows
-}
-
-/// Move a modal selection, skipping `__sep` spacer rows so arrow keys never
-/// land on the invisible gap (e.g. between platforms and actions).
-fn move_sel(rows: &[(String, String, String)], sel: usize, delta: i32) -> usize {
-    if rows.is_empty() {
-        return 0;
-    }
-    let max = rows.len() - 1;
-    let mut next = (sel as i32 + delta).clamp(0, max as i32) as usize;
-    while rows[next].0 == "__sep" {
-        let stepped = (next as i32 + delta.signum()).clamp(0, max as i32) as usize;
-        if stepped == next {
-            break;
-        }
-        next = stepped;
-    }
-    next
 }
 
 pub async fn run_skills_picker(

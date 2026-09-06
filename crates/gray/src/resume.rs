@@ -194,6 +194,194 @@ pub fn resume_command_hint(id: &SessionId) -> String {
     format!("gray resume {}", id.as_str())
 }
 
+/// Strict explicit-id resolution shared by `gray resume <id>` and `gray -p
+/// --session <id>`: prefix/exact match wins, else an exact load is attempted,
+/// else the same `no session matching` error both paths report (exit 1).
+pub async fn resolve_session_strict(
+    store: &JsonlSessionStore,
+    raw: &str,
+    all: bool,
+) -> anyhow::Result<SessionId> {
+    if let Some(resolved) = resolve_prefix(store, raw, all).await {
+        return Ok(resolved);
+    }
+    match store.load(&SessionId::new(raw)).await {
+        Ok(_) => Ok(SessionId::new(raw)),
+        Err(e) => anyhow::bail!("no session matching '{raw}': {e}"),
+    }
+}
+
+/// Latest session for `gray -p -c`: most recent in this directory, falling
+/// back to the global latest (mirrors the REPL `-c` path, which has no
+/// `--all` flag). `Ok(None)` when the store is empty (fresh print run).
+pub async fn latest_session_anywhere(store: &JsonlSessionStore) -> Option<SessionId> {
+    let summaries = store.list().await;
+    let cwd = std::env::current_dir().ok();
+    latest_summary(&summaries, cwd.as_deref())
+        .or_else(|| latest_summary(&summaries, None))
+        .map(|s| s.id.clone())
+}
+
+/// Single model priority for every resume path (explicit/config wins over the
+/// session's recorded model), so `resume`, `--session`, and `/resume` resolve
+/// the same model — and therefore the same context window — for one session.
+pub fn effective_session_model(
+    config_model: Option<&str>,
+    meta_model: &str,
+) -> Option<String> {
+    let nonempty = |s: &str| !s.trim().is_empty();
+    if let Some(m) = config_model
+        && nonempty(m)
+    {
+        return Some(m.to_string());
+    }
+    if nonempty(meta_model) {
+        return Some(meta_model.to_string());
+    }
+    None
+}
+
+/// Human-readable confirmation for non-TTY `gray resume <id>`: loads the
+/// session so the announcement states what was resumed (id + message count).
+/// `Err` when the session cannot be loaded (caller exits 1, like `--last`
+/// with no sessions — never a silent exit 0).
+pub async fn resumed_session_line(
+    store: &JsonlSessionStore,
+    id: &SessionId,
+) -> anyhow::Result<String> {
+    let (_, entries) = store.load(id).await.map_err(|e| {
+        anyhow::anyhow!("could not resume session {}: {e}", id.as_str())
+    })?;
+    Ok(format!(
+        "\u{2b22} Resumed session {} ({} messages)",
+        id.as_str(),
+        entries.len()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::message::Message;
+
+    async fn seed(
+        store: &JsonlSessionStore,
+        id: &str,
+        cwd: std::path::PathBuf,
+        texts: &[&str],
+    ) -> SessionId {
+        let sid = store
+            .create(gray_session::SessionMeta::new(
+                SessionId::new(id),
+                1,
+                cwd,
+                "test-model",
+            ))
+            .await
+            .unwrap();
+        for t in texts {
+            store.append(&sid, &Message::user(*t)).await.unwrap();
+        }
+        sid
+    }
+
+    #[tokio::test]
+    async fn strict_resolve_accepts_exact_and_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let cwd = std::env::current_dir().unwrap();
+        seed(&store, "test-alpha-1", cwd, &["hi"]).await;
+        assert_eq!(
+            resolve_session_strict(&store, "test-alpha-1", false)
+                .await
+                .unwrap()
+                .as_str(),
+            "test-alpha-1"
+        );
+        assert_eq!(
+            resolve_session_strict(&store, "test-alpha", false)
+                .await
+                .unwrap()
+                .as_str(),
+            "test-alpha-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_resolve_bogus_errors_like_resume() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let err = resolve_session_strict(&store, "bogus", false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("no session matching 'bogus'"),
+            "bogus id must report like `resume bogus`, got: {err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_fallback_empty_store_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        assert!(latest_session_anywhere(&store).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_fallback_finds_cwd_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let cwd = std::env::current_dir().unwrap();
+        seed(&store, "test-latest-1", cwd, &["hi"]).await;
+        assert_eq!(
+            latest_session_anywhere(&store)
+                .await
+                .unwrap()
+                .as_str(),
+            "test-latest-1"
+        );
+    }
+
+    #[test]
+    fn effective_session_model_prefers_config() {
+        assert_eq!(
+            effective_session_model(Some("cfg-model"), "meta-model"),
+            Some("cfg-model".to_string())
+        );
+        assert_eq!(
+            effective_session_model(None, "meta-model"),
+            Some("meta-model".to_string())
+        );
+        assert_eq!(effective_session_model(Some(""), "meta-model"), Some("meta-model".to_string()));
+        assert_eq!(effective_session_model(Some("  "), ""), None);
+        assert_eq!(effective_session_model(None, ""), None);
+    }
+
+    #[tokio::test]
+    async fn resumed_line_reports_id_and_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let cwd = std::env::current_dir().unwrap();
+        let sid = seed(&store, "test-line-1", cwd, &["one", "two"]).await;
+        let line = resumed_session_line(&store, &sid).await.unwrap();
+        assert!(
+            line.contains("test-line-1") && line.contains("2 messages"),
+            "announcement must state id + count, got: {line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resumed_line_bogus_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        assert!(
+            resumed_session_line(&store, &SessionId::new("bogus"))
+                .await
+                .is_err()
+        );
+    }
+}
+
 pub async fn run_resume_picker(
     show_all: bool,
     bg: Option<&crate::setup::BackgroundSnapshot>,

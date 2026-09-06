@@ -58,16 +58,32 @@ impl Default for Syntect {
 }
 
 /// Get a shared, static Syntect instance.
+///
+/// Uses the bundled Tokyo Night theme so production rendering matches the
+/// `test_syntect()` theme used across markdown tests. Previously this used
+/// `Syntect::default()` (base16-ocean.dark), so code colors differed between
+/// tests and the live TUI.
 pub fn get_syntect() -> &'static Syntect {
     static SYNTECT: std::sync::OnceLock<Syntect> = std::sync::OnceLock::new();
-    SYNTECT.get_or_init(Syntect::default)
+    SYNTECT.get_or_init(|| Syntect::new(include_bytes!("../assets/tokyo-night.tmTheme")))
 }
 
 /// Convert a syntect Style to a Ratatui Style with foreground and font modifiers.
+///
+/// The foreground goes through [`crate::colors::adapt_color`] so code colors
+/// respect the same terminal handling as every other markdown style:
+/// truecolor passthrough, 256/16-color downgrade, `NO_COLOR` (no fg), and
+/// polarity-safe remapping in minimal mode. Previously this emitted raw
+/// `Color::Rgb` unconditionally, so code blocks stayed truecolor while
+/// surrounding text was adapted (or vice versa) — the "sometimes wrong
+/// colors" inconsistency.
 pub fn syntect_to_ratatui_fg(style: syntect::highlighting::Style) -> ratatui::style::Style {
-    use ratatui::style::{Color, Modifier, Style};
-    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
-    let mut s = Style::default().fg(fg);
+    use ratatui::style::{Modifier, Style};
+    let rgb = anstyle::RgbColor(style.foreground.r, style.foreground.g, style.foreground.b);
+    let mut s = match crate::colors::adapt_color(anstyle::Color::Rgb(rgb)) {
+        Some(adapted) => Style::default().fg(crate::colors::anstyle_to_ratatui_color(adapted)),
+        None => Style::default(),
+    };
     if style
         .font_style
         .contains(syntect::highlighting::FontStyle::BOLD)
@@ -138,12 +154,32 @@ impl Syntect {
     /// batch `HighlightLines` path would have used — keeping the two
     /// byte-identical.
     pub(crate) fn find_syntax_for_fence_info(&self, fence_info: &str) -> Option<&SyntaxReference> {
-        if let Some((_, _, path)) = parse_line_citation_fence_info(fence_info)
+        // Fence info strings often carry extra params after the language
+        // (e.g. ```rust ignore, ```python linenums). Only the first
+        // whitespace-separated token is the language. Previously the full
+        // info string was passed to `find_syntax_by_token`, so any extra
+        // word — or a capitalised token like `Rust` — silently missed and
+        // the block fell back to unhighlighted (no colors), while clean
+        // fences highlighted fine: the "sometimes no colors" inconsistency.
+        let token = fence_info.split_whitespace().next().unwrap_or("").trim();
+        if token.is_empty() {
+            return None;
+        }
+        if let Some((_, _, path)) = parse_line_citation_fence_info(token)
             && let Some(s) = self.find_syntax_by_file_path(Path::new(path))
         {
             return Some(s);
         }
-        self.find_syntax_by_token(fence_info)
+        self.find_syntax_by_token(token)
+            .or_else(|| self.find_syntax_by_token(&token.to_ascii_lowercase()))
+            // Common LLM shorthand (` ```js `, ` ```sh `, ` ```yml `) is an
+            // extension, not a syntect token — resolve via extension lookup
+            // before giving up and rendering unhighlighted.
+            .or_else(|| self.syntax_set.find_syntax_by_extension(token))
+            .or_else(|| {
+                self.syntax_set
+                    .find_syntax_by_extension(&token.to_ascii_lowercase())
+            })
     }
 }
 

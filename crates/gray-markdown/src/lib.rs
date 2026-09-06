@@ -169,6 +169,9 @@ pub fn gray_markdown_style() -> MarkdownStyle {
     let cyan = rgb(125, 207, 255);
     let dim = rgb(140, 140, 140);
     let gray_text = rgb(225, 225, 225);
+    // Adapt to the terminal's color level so prose colors downgrade the same
+    // way syntect code colors now do (see `syntect_to_ratatui_fg`). Without
+    // this, text stayed truecolor while code was adapted (or vice versa).
     MarkdownStyle {
         heading_inner: [
             anstyle::Style::new().fg_color(Some(peach)).bold(),
@@ -204,6 +207,7 @@ pub fn gray_markdown_style() -> MarkdownStyle {
         text: anstyle::Style::new().fg_color(Some(gray_text)),
         math: anstyle::Style::new().italic(),
     }
+    .adapt()
 }
 
 #[cfg(test)]

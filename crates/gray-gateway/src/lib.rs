@@ -25,6 +25,7 @@ mod daemon_stream;
 mod daemon_supervise;
 pub mod delivery;
 pub mod discord;
+pub mod lock;
 pub mod pairing;
 pub mod platform;
 pub mod progress;

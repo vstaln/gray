@@ -105,12 +105,18 @@ pub(crate) async fn handle_resume(
         Ok((meta, entries)) => {
             let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
             let n = history.len();
-            let model = if meta.model.is_empty() {
-                config.model.as_deref().unwrap_or("")
-            } else {
-                meta.model.as_str()
-            };
-            match build_agent(config, cwd, Some(sid.as_str())).await {
+            // Single priority everywhere (mirrors the CLI `--session` block):
+            // explicit/config model wins, else the session's recorded model.
+            // Every consumer below (agent build, totals, TUI label) uses this
+            // one string, so the resolved context window agrees on all paths.
+            let eff_model = crate::resume::effective_session_model(
+                config.model.as_deref(),
+                meta.model.as_str(),
+            );
+            let model = eff_model.as_deref().unwrap_or("");
+            let mut build_config = config.clone();
+            build_config.model = eff_model.clone();
+            match build_agent(&build_config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
                     // T3.4 lifecycle: a resumed session has no guarantee the
@@ -127,6 +133,11 @@ pub(crate) async fn handle_resume(
                         let mut t = shared.lock().expect("tui lock");
                         t.replay_session_history(&entries, cwd);
                         t.ensure_gap(1);
+                        // Keep the status-bar model (and its context window)
+                        // on the same effective model as the resumed agent.
+                        if !model.is_empty() {
+                            t.set_model(model.to_string());
+                        }
                         t.push_dim(format!(
                             "\u{2b22} Resumed session {} ({n} messages)",
                             sid.as_str()

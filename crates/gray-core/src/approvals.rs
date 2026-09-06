@@ -261,9 +261,9 @@ impl ApprovalGate {
                         self.set_mode(MODE_FULL);
                         Ok(())
                     }
-                    Decision::Decline => {
-                        Err(format!("{tool} declined by user — continuing without it"))
-                    }
+                    Decision::Decline => Err(format!(
+                        "{tool} declined by user — do NOT re-attempt via write/edit/bash workarounds; ask the user instead"
+                    )),
                     Decision::Cancel => Err(format!("{tool} cancelled by user")),
                 }
             }
@@ -472,5 +472,18 @@ mod tests {
             .await
             .expect_err("fail-closed without a user");
         assert!(err.contains("declined"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn decline_message_forbids_workarounds() {
+        let gate = ApprovalGate::new("auto");
+        let err = gate
+            .check("bash", &json!({"command": "ls"}), &cwd(), "ls", None)
+            .await
+            .expect_err("fail-closed without a user");
+        assert!(err.contains("declined by user"), "{err}");
+        assert!(err.contains("do NOT re-attempt"), "{err}");
+        assert!(err.contains("write/edit/bash"), "{err}");
+        assert!(err.contains("ask the user instead"), "{err}");
     }
 }
