@@ -235,13 +235,13 @@ pub fn run_permissions_modal(
                         sel = (sel + 1).min(modes.len().saturating_sub(1))
                     }
                     KeyCode::Char('1') if !modes.is_empty() => {
-                        return Ok(Some(modes[0].0.to_string()))
+                        return Ok(Some(modes[0].0.to_string()));
                     }
                     KeyCode::Char('2') if modes.len() > 1 => {
-                        return Ok(Some(modes[1].0.to_string()))
+                        return Ok(Some(modes[1].0.to_string()));
                     }
                     KeyCode::Char('3') if modes.len() > 2 => {
-                        return Ok(Some(modes[2].0.to_string()))
+                        return Ok(Some(modes[2].0.to_string()));
                     }
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Enter => return Ok(Some(modes[sel].0.to_string())),
