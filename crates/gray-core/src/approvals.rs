@@ -48,6 +48,7 @@ pub enum Verdict {
 pub enum Decision {
     Accept,
     AcceptForSession,
+    AcceptAlways,
     Decline,
     Cancel,
 }
@@ -256,6 +257,10 @@ impl ApprovalGate {
                         self.remember(tool, args, cwd);
                         Ok(())
                     }
+                    Decision::AcceptAlways => {
+                        self.set_mode(MODE_FULL);
+                        Ok(())
+                    }
                     Decision::Decline => {
                         Err(format!("{tool} declined by user — continuing without it"))
                     }
@@ -306,6 +311,10 @@ pub async fn ask_user(tool: &str, label: &str, questions: Option<&QuestionBridge
                 description: "Run this and remember for the rest of the session.".to_string(),
             },
             UserOption {
+                label: "Yes, always (don't ask again)".to_string(),
+                description: "Run this and allow all future tools (YOLO mode).".to_string(),
+            },
+            UserOption {
                 label: "No".to_string(),
                 description: "Skip it; the turn continues.".to_string(),
             },
@@ -318,7 +327,11 @@ pub async fn ask_user(tool: &str, label: &str, questions: Option<&QuestionBridge
                 .iter()
                 .flat_map(|a| a.answers.iter().map(String::as_str))
                 .collect();
-            if picked.contains(&"Yes, for session") {
+            if picked.iter().any(|s| {
+                s.contains("always") || s.contains("YOLO") || s.contains("don't ask again")
+            }) {
+                Decision::AcceptAlways
+            } else if picked.contains(&"Yes, for session") {
                 Decision::AcceptForSession
             } else if picked.iter().any(|s| s.starts_with("Yes")) {
                 Decision::Accept
@@ -348,6 +361,7 @@ mod tests {
         assert_eq!(normalize_mode("RO"), Some(MODE_READ_ONLY));
         assert_eq!(normalize_mode("auto"), Some(MODE_AUTO));
         assert_eq!(normalize_mode("Full Access"), Some(MODE_FULL));
+        assert_eq!(normalize_mode("yolo"), Some(MODE_FULL));
         assert_eq!(normalize_mode("bogus"), None);
     }
 

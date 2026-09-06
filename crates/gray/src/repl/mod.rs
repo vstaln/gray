@@ -591,6 +591,18 @@ pub async fn run_repl_mode(
                         saved.permissions = config.permissions.clone();
                         let _ = crate::setup::save_saved_config_at(&path, &saved);
                     }
+                } else {
+                    let gate_mode = approval_gate.mode();
+                    let mut t = shared.lock().expect("tui lock");
+                    if t.permission_mode() != gate_mode {
+                        t.set_permission_mode(gate_mode.clone());
+                        config.permissions = Some(gate_mode.clone());
+                        if let Ok(path) = crate::setup::saved_config_path() {
+                            let mut saved = crate::setup::load_saved_config_at(&path);
+                            saved.permissions = config.permissions.clone();
+                            let _ = crate::setup::save_saved_config_at(&path, &saved);
+                        }
+                    }
                 }
             }
             expand_skill_command(

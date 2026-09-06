@@ -21,6 +21,12 @@ pub(crate) async fn run_prompt_turn(
     question_bridge: &QuestionBridge,
     approval_gate: &gray_core::approvals::ApprovalGate,
 ) -> anyhow::Result<()> {
+    let (shared, _) = if interactive {
+        (Some(tui.as_ref().expect("interactive implies tui")), ())
+    } else {
+        (None, ())
+    };
+    let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if agent.is_none() {
         if *unconfigured {
             let bg = tui
@@ -74,6 +80,13 @@ pub(crate) async fn run_prompt_turn(
         let sid = session_state
             .as_ref()
             .map(|s| s.session_id.as_str().to_string());
+        // Status on BEFORE the first build: skill discovery + provider setup
+        // can take ~1s with nothing else painting (ticker skips while status
+        // is unset), which left the fresh viewport blank after the user card
+        // shifted it. Ticker keeps the elapsed ticking from here.
+        if let Some(s) = &tui_stream {
+            s.lock().expect("tui lock").begin_turn("Working");
+        }
         let built = build_agent(config, cwd, sid.as_deref()).await;
         match built {
             Ok(built) => {
@@ -85,6 +98,12 @@ pub(crate) async fn run_prompt_turn(
             }
             Err(e) => {
                 println!("{e}");
+                if let Some(s) = &tui_stream {
+                    let mut t = s.lock().expect("tui lock");
+                    t.set_status(None);
+                    t.is_task_running = false;
+                    let _ = t.draw();
+                }
                 return Ok(());
             }
         }
@@ -122,14 +141,9 @@ pub(crate) async fn run_prompt_turn(
         .await;
     }
 
-    let (shared, _) = if interactive {
-        (Some(tui.as_ref().expect("interactive implies tui")), ())
-    } else {
-        (None, ())
-    };
-
     // status row on; events stream straight into the composer
-    let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
+    // (already begun above when the agent was built; re-assert here so the
+    // normal path keeps its exact paint).
     if let Some(s) = &tui_stream {
         s.lock().expect("tui lock").begin_turn("Working");
     }

@@ -131,7 +131,6 @@ impl QuestionSession {
 
     fn is_approval(&self) -> bool {
         self.questions[self.current_idx].id == "tool-approval"
-            && self.questions[self.current_idx].options.len() == 3
     }
 
     /// Options plus the auto-added "Other" row (codex other_option_enabled).
@@ -452,6 +451,11 @@ impl QuestionSession {
                 }
                 KeyCode::Char('a') if self.is_approval() && self.options_len() > 1 => {
                     self.answers[self.current_idx].selected_idx = Some(1);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Char('!') if self.is_approval() && self.options_len() > 2 => {
+                    self.answers[self.current_idx].selected_idx = Some(2);
                     self.select_current_option(true);
                     self.go_next_or_submit(ta)
                 }
