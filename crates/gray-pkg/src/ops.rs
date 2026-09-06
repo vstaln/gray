@@ -972,7 +972,38 @@ async fn install_git(
     })
 }
 
+/// `(source, item)` identity for install failures, from the spec kind —
+/// the honest attribution when the ecosystem isn't known yet.
+fn install_identity(spec: &NameOrUrl) -> (String, String) {
+    match spec {
+        NameOrUrl::Name(n) => ("index".to_string(), n.clone()),
+        NameOrUrl::Url(u) => ("url".to_string(), u.clone()),
+        NameOrUrl::Npm { name, .. } => ("npm".to_string(), name.clone()),
+        NameOrUrl::Git { url, .. } => ("git".to_string(), url.clone()),
+    }
+}
+
+/// Best-effort ecosystem attribution for the error registry: the lock
+/// entry's ecosystem when known, `"plugin"` otherwise (misses,
+/// unreadable lock).
+fn ecosystem_of(name: &str) -> String {
+    read_lock()
+        .ok()
+        .flatten()
+        .and_then(|l| l.plugins.get(name).map(|e| e.ecosystem.clone()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "plugin".to_string())
+}
+
 pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Report> {
+    let (source, item) = install_identity(&spec);
+    install_inner(spec, opts).await.map_err(|e| {
+        crate::errors::record(&source, &item, format!("{e:#}"));
+        e
+    })
+}
+
+async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Report> {
     let client = crate::fetch::client()?;
     match spec {
         NameOrUrl::Name(name) => install_index(&client, &name, opts).await,
@@ -1086,6 +1117,13 @@ pub fn list() -> anyhow::Result<BTreeMap<String, LockEntry>> {
 }
 
 pub fn remove(name: &str) -> anyhow::Result<()> {
+    remove_inner(name).map_err(|e| {
+        crate::errors::record(&ecosystem_of(name), name, format!("{e:#}"));
+        e
+    })
+}
+
+fn remove_inner(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.contains('/') || name.contains("..") {
         anyhow::bail!("not installed: {name}");
     }
@@ -1110,6 +1148,13 @@ pub fn remove(name: &str) -> anyhow::Result<()> {
 /// Flip a plugin's `enabled` flag (boot skips disabled entries).
 /// Miss message matches `remove`.
 pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
+    set_enabled_inner(name, on).map_err(|e| {
+        crate::errors::record(&ecosystem_of(name), name, format!("{e:#}"));
+        e
+    })
+}
+
+fn set_enabled_inner(name: &str, on: bool) -> anyhow::Result<()> {
     let mut lock = read_lock()?.unwrap_or_default();
     let Some(entry) = lock.plugins.get_mut(name) else {
         anyhow::bail!("not installed: {name}");
@@ -1124,6 +1169,13 @@ pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
 /// anything else is skipped with a warning. Returns per-plugin reports
 /// for the plugins that actually changed.
 pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {
+    update_inner(target).await.map_err(|e| {
+        crate::errors::record(&ecosystem_of(target), target, format!("{e:#}"));
+        e
+    })
+}
+
+async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
     let lock = read_lock()?.unwrap_or_default();
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
@@ -1340,13 +1392,14 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::await_holding_lock)]
     use super::*;
 
     // Serializes the process-global GRAY_HOME mutation within this test
     // binary (cargo runs tests in one process on multiple threads).
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Shared with `errors::tests` (same process-global env).
+    pub(crate) static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn default_entry_is_enabled() {
