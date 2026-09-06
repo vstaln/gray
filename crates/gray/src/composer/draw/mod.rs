@@ -342,7 +342,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cache_display = format!("{hit_rate:.1}% cache");
 
         let model_display = crate::setup::friendly_model_name(&tui.model_name);
-        let effort_display = if tui.hide_thinking {
+        // Provider-driven (opencode parity): no effort badge when the provider
+        // says this model doesn't reason. Unknown → show, as before.
+        let show_effort =
+            crate::setup::context::model_supports_reasoning(&tui.model_name) != Some(false);
+        let effort_display = if !show_effort {
+            String::new()
+        } else if tui.hide_thinking {
             if tui.thinking_effort.is_empty() {
                 "hidden".to_string()
             } else {

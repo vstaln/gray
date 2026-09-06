@@ -483,8 +483,12 @@ pub async fn run_repl_mode(
     let mut hide_thinking = config.reasoning_hidden();
     // Wire default: if no effort saved yet, enable reasoning so ThinkingDelta
     // actually streams on openrouter/zen etc. Persist once so future sessions
-    // keep it without relying on this default branch.
-    if config.thinking_effort.is_none() {
+    // keep it without relying on this default branch. Skipped when the
+    // provider says the model doesn't reason (opencode parity).
+    if config.thinking_effort.is_none()
+        && crate::setup::model_supports_reasoning(&config.model.clone().unwrap_or_default())
+            != Some(false)
+    {
         config.thinking_effort = Some("high".to_string());
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);

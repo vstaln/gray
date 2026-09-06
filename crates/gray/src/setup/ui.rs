@@ -249,15 +249,29 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let cache_display = format!("{:.1}% cache", bg.cache_hit_rate * 100.0);
 
     let model_display = friendly_model_name(&bg.model_name);
-    let effort_display = if bg.thinking_effort.is_empty() {
-        "high"
-    } else {
-        &bg.thinking_effort
-    };
+    // Provider-driven (opencode parity): no effort badge when the provider
+    // says this model doesn't reason. Unknown → show, as before.
+    let show_effort = super::context::model_supports_reasoning(&bg.model_name) != Some(false);
     let right_text = if model_display.is_empty() {
-        effort_display.to_string()
-    } else {
+        if show_effort {
+            let effort_display = if bg.thinking_effort.is_empty() {
+                "high"
+            } else {
+                &bg.thinking_effort
+            };
+            effort_display.to_string()
+        } else {
+            String::new()
+        }
+    } else if show_effort {
+        let effort_display = if bg.thinking_effort.is_empty() {
+            "high"
+        } else {
+            &bg.thinking_effort
+        };
         format!("{model_display} · {effort_display}")
+    } else {
+        model_display
     };
     let left_len = 2 + ctx_display.chars().count() + 3 + cache_display.chars().count();
     let pad_len = w.saturating_sub(left_len + right_text.chars().count());

@@ -32,6 +32,100 @@ pub fn friendly_model_name(model_id: &str) -> String {
     words.join(" ")
 }
 
+/// Whether a model can reason, keyed like the context cache (exact id +
+/// lowercase + `provider/` tail). Populated from models.dev's `reasoning`
+/// flag and live `/models` payloads (`supported_parameters` on OpenRouter,
+/// `reasoning` bool elsewhere) — the same sources opencode's
+/// `capabilities.reasoning` comes from. `None` = provider never said.
+static MODEL_REASONING: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, bool>>,
+> = std::sync::OnceLock::new();
+
+fn model_reasoning_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, bool>> {
+    MODEL_REASONING.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+pub fn cache_model_reasoning(model_id: &str, reasoning: bool) {
+    if let Ok(mut g) = model_reasoning_cell().write() {
+        g.insert(model_id.to_string(), reasoning);
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            g.insert(lower, reasoning);
+        }
+        if let Some((_, suffix)) = model_id.rsplit_once('/') {
+            g.insert(suffix.to_string(), reasoning);
+            g.insert(suffix.to_lowercase(), reasoning);
+        }
+    }
+}
+
+/// `Some(true/false)` when a provider source advertised reasoning support,
+/// `None` when no source has spoken for this model.
+pub fn model_supports_reasoning(model_id: &str) -> Option<bool> {
+    let g = model_reasoning_cell().read().ok()?;
+    if let Some(v) = g.get(model_id).copied() {
+        return Some(v);
+    }
+    let lower = model_id.to_lowercase();
+    if let Some(v) = g.get(&lower).copied() {
+        return Some(v);
+    }
+    if let Some((_, suffix)) = model_id.rsplit_once('/') {
+        if let Some(v) = g.get(suffix).copied() {
+            return Some(v);
+        }
+        if let Some(v) = g.get(&suffix.to_lowercase()).copied() {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Effort tiers a model family actually accepts, ported from opencode's
+/// `reasoningVariants` (transform.ts): xAI low/high, Gemini low/high,
+/// Anthropic adaptive low–max, OpenAI widely-supported low/medium/high.
+/// `None` = family unknown (offer the full catalog); empty = no reasoning.
+pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
+    let id = model_id.to_lowercase();
+    if id.contains("grok") || id.contains("xai") || id.contains("kimi") {
+        return Some(vec!["low", "high"]);
+    }
+    if id.contains("gemini") || id.contains("gemma") {
+        return Some(vec!["low", "high"]);
+    }
+    if id.contains("claude") || id.contains("anthropic") {
+        return Some(vec!["low", "medium", "high", "max"]);
+    }
+    if id.contains("gpt")
+        || id.starts_with("o1")
+        || id.starts_with("o3")
+        || id.starts_with("o4")
+        || id.contains("deep-research")
+    {
+        return Some(vec!["low", "medium", "high"]);
+    }
+    if id.contains("deepseek") && id.contains("reasoner") {
+        return Some(vec!["low", "medium", "high"]);
+    }
+    None
+}
+
+/// Levels from `THINKING_LEVELS` the model actually accepts (`off` always
+/// offered). Unknown family → full catalog; known non-reasoning → just `off`.
+pub fn supported_thinking_levels(model_id: &str) -> Vec<(&'static str, &'static str)> {
+    if model_supports_reasoning(model_id) == Some(false) {
+        return vec![("off", "No reasoning")];
+    }
+    let Some(want) = supported_efforts(model_id) else {
+        return super::super::THINKING_LEVELS.to_vec();
+    };
+    super::super::THINKING_LEVELS
+        .iter()
+        .filter(|(l, _)| *l == "off" || want.contains(l))
+        .copied()
+        .collect()
+}
+
 /// Returns the models list for a provider from the catalog.
 pub fn get_provider_models(_provider_id: &str, _catalog: &Catalog) -> Vec<(String, String)> {
     Vec::new()
@@ -112,6 +206,21 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                                             .unwrap_or_else(|| friendly_model_name(id_str));
                                         if let Some(len) = extract_context_length_from_json(item) {
                                             cache_model_context(id_str, len);
+                                        }
+                                        // OpenRouter advertises `supported_parameters:
+                                        // [..., "reasoning", ...]`; other OpenAI-style
+                                        // endpoints may carry a `reasoning` bool.
+                                        if let Some(r) = item
+                                            .get("supported_parameters")
+                                            .and_then(|v| v.as_array())
+                                            .map(|a| {
+                                                a.iter().any(|p| p.as_str() == Some("reasoning"))
+                                            })
+                                            .or_else(|| {
+                                                item.get("reasoning").and_then(|v| v.as_bool())
+                                            })
+                                        {
+                                            cache_model_reasoning(id_str, r);
                                         }
                                         models.push((id_str.to_string(), name));
                                     }
@@ -473,6 +582,11 @@ pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
                     cache_models_dev_if_absent(suffix, len);
                 }
                 n += 1;
+            }
+            // models.dev `reasoning` bool — same flag opencode maps to
+            // `capabilities.reasoning`.
+            if let Some(r) = entry.get("reasoning").and_then(|v| v.as_bool()) {
+                cache_model_reasoning(key, r);
             }
         }
     }
