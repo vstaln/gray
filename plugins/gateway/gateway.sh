@@ -5,7 +5,7 @@
 # carries an "id"; reply {"id":N,"result":{...}}. `event/notify` has no id
 # and gets no reply (ignored below like all unknowns).
 # `gray` resolves via PATH, else the workspace build tree (target/ below —
-# same shape as plugins/cron/cron.sh); without it `command/run` answers
+# same shape as plugins/echo/echo.sh); without it `command/run` answers
 # carry the miss as text and the manifest still serves.
 gray_bin() {
   if command -v gray >/dev/null 2>&1; then
