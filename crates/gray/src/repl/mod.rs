@@ -466,7 +466,10 @@ pub async fn run_repl_mode(
     };
 
     let approval_gate = gray_core::approvals::ApprovalGate::new(
-        config.permissions.as_deref().unwrap_or(gray_core::approvals::MODE_AUTO),
+        config
+            .permissions
+            .as_deref()
+            .unwrap_or(gray_core::approvals::MODE_AUTO),
     );
     if let Some((shared, _)) = tui.as_ref() {
         shared
@@ -575,7 +578,11 @@ pub async fn run_repl_mode(
             };
             pending_images = images;
             if let Some((shared, _)) = tui.as_ref() {
-                let pending = shared.lock().expect("tui lock").pending_permission_mode.take();
+                let pending = shared
+                    .lock()
+                    .expect("tui lock")
+                    .pending_permission_mode
+                    .take();
                 if let Some(mode) = pending {
                     config.permissions = Some(mode.clone());
                     approval_gate.set_mode(&mode);
