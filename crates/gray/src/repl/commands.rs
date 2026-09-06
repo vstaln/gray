@@ -1,4 +1,6 @@
 /// Single slash-command registry driving `/help`, completion, and parsing.
+/// `portal` is both a canonical row (display) and a `proxy` alias (dispatch
+/// shares Proxy) — resolve() prefers the canonical exact match.
 pub(crate) struct CmdDef {
     pub(crate) name: &'static str,
     pub(crate) desc: &'static str,
@@ -8,90 +10,25 @@ pub(crate) struct CmdDef {
 }
 
 pub(crate) const REGISTRY: &[CmdDef] = &[
-    CmdDef {
-        name: "connect",
-        desc: "setup provider login",
-        aliases: &["keys", "key", "providers", "provider", "login"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "model",
-        desc: "switch model",
-        aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "thinking",
-        desc: "reasoning effort",
-        aliases: &["effort", "reasoning"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "context",
-        desc: "set context window",
-        aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "resume",
-        desc: "resume conversation",
-        aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "new",
-        desc: "new conversation",
-        aliases: &["clear", "reset"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "compact",
-        desc: "summarize context",
-        aliases: &["compress"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "usage",
-        desc: "session tokens & cost",
-        aliases: &["cost"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "gateway",
-        desc: "messaging gateway (Discord)",
-        aliases: &["gw"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "acp",
-        desc: "run as an external ACP agent (claude, codex, cursor…)",
-        aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "agentsmd",
-        desc: "edit system prompt",
-        aliases: &["sys"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "skills",
-        desc: "list skills (/skills:<name> [args] to run one)",
-        aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "help",
-        desc: "show commands",
-        aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "quit",
-        desc: "exit",
-        aliases: &["exit"],
-        args_hint: "",
-    },
+    CmdDef { name: "connect", desc: "setup provider & API key", aliases: &["keys", "key", "providers", "provider", "login"], args_hint: "" },
+    CmdDef { name: "model", desc: "switch model", aliases: &[], args_hint: "" },
+    CmdDef { name: "thinking", desc: "reasoning effort", aliases: &["effort", "reasoning"], args_hint: "" },
+    CmdDef { name: "context", desc: "set context window", aliases: &[], args_hint: "" },
+    CmdDef { name: "resume", desc: "resume conversation", aliases: &[], args_hint: "" },
+    CmdDef { name: "new", desc: "new conversation", aliases: &["clear", "reset"], args_hint: "" },
+    CmdDef { name: "compact", desc: "summarize context", aliases: &["compress"], args_hint: "" },
+    CmdDef { name: "usage", desc: "session tokens & cost", aliases: &["cost"], args_hint: "" },
+    CmdDef { name: "permissions", desc: "choose what gray is allowed to do", aliases: &["perms"], args_hint: "" },
+    CmdDef { name: "feedback", desc: "send feedback", aliases: &[], args_hint: "" },
+    CmdDef { name: "cron", desc: "cron jobs", aliases: &[], args_hint: "" },
+    CmdDef { name: "proxy", desc: "share Codex/Grok/OpenRouter via :8645", aliases: &["portal"], args_hint: "" },
+    CmdDef { name: "gateway", desc: "messaging gateway (Discord)", aliases: &["gw"], args_hint: "" },
+    CmdDef { name: "acp", desc: "run as an external ACP agent (claude, codex, cursor…)", aliases: &[], args_hint: "" },
+    CmdDef { name: "portal", desc: "portal status", aliases: &[], args_hint: "" },
+    CmdDef { name: "agentsmd", desc: "edit system prompt", aliases: &["sys"], args_hint: "" },
+    CmdDef { name: "skills", desc: "list skills (/skills:<name> [args] to run one)", aliases: &[], args_hint: "" },
+    CmdDef { name: "help", desc: "show commands", aliases: &[], args_hint: "" },
+    CmdDef { name: "quit", desc: "exit", aliases: &["exit"], args_hint: "" },
 ];
 
 /// Canonical lookup: strip one leading `/`, lowercase, exact wins then aliases.
@@ -122,15 +59,9 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
             0
         } else if nl.starts_with(&f) {
             1
-        } else if REGISTRY
-            .iter()
-            .any(|d| d.name == *n && d.aliases.contains(&f.as_str()))
-        {
+        } else if REGISTRY.iter().any(|d| d.name == *n && d.aliases.contains(&f.as_str())) {
             2
-        } else if REGISTRY
-            .iter()
-            .any(|d| d.name == *n && d.aliases.iter().any(|a| a.starts_with(f.as_str())))
-        {
+        } else if REGISTRY.iter().any(|d| d.name == *n && d.aliases.iter().any(|a| a.starts_with(f.as_str()))) {
             3
         } else {
             4
@@ -139,13 +70,11 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
     matches
 }
 
+
 /// Completion for the composer prompt: static commands, skill names after
 /// `/skills:`, or per-command suffixes after `/cmd ` (Minecraft-style).
 /// Owned here so every read_loop call site stays in sync.
-pub(crate) fn completion_matches_dyn(
-    cur_text: &str,
-    cwd: &std::path::Path,
-) -> Vec<(String, String)> {
+pub(crate) fn completion_matches_dyn(cur_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
     if cur_text.starts_with("/skills:") && !cur_text[8..].contains(char::is_whitespace) {
         let filter = &cur_text[8..];
         return crate::skills::discover_skills(cwd)
@@ -155,7 +84,8 @@ pub(crate) fn completion_matches_dyn(
             .map(|s| (format!("skills:{}", s.name), s.description.clone()))
             .collect();
     }
-    if let Some(inner) = cur_text.strip_prefix('/') {
+    if cur_text.starts_with('/') {
+        let inner = &cur_text[1..];
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);
             if cmd.contains(':') {
@@ -195,6 +125,7 @@ pub(crate) fn complete_command_args(
     match cmd {
         "context" => complete_context_args(arg_text),
         "acp" => complete_acp_args(arg_text),
+        "permissions" => complete_permissions_args(arg_text),
         _ => Vec::new(),
     }
 }
@@ -223,6 +154,15 @@ fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Suffixes for `/permissions`: the three approval modes.
+fn complete_permissions_args(arg_text: &str) -> Vec<(String, String)> {
+    gray_core::approvals::permission_modes()
+        .into_iter()
+        .filter(|(id, _, _)| arg_text.is_empty() || id.contains(&arg_text.to_lowercase()))
+        .map(|(id, label, _)| (format!("permissions {id}"), label.to_string()))
+        .collect()
+}
+
 /// Suffixes for `/context`: L1 (`[number]|auto|status|reserve|keep`) and L2
 /// (`reserve <16k|auto>`, `keep <20k|auto|off>`).
 fn complete_context_args(arg_text: &str) -> Vec<(String, String)> {
@@ -233,8 +173,10 @@ fn complete_context_args(arg_text: &str) -> Vec<(String, String)> {
         ("reserve", "set reserve…"),
         ("keep", "set keep tail…"),
     ];
-    const RESERVE_VALS: &[(&str, &str)] =
-        &[("16k", "reserve 16k"), ("auto", "clear reserve → default")];
+    const RESERVE_VALS: &[(&str, &str)] = &[
+        ("16k", "reserve 16k"),
+        ("auto", "clear reserve → default"),
+    ];
     const KEEP_VALS: &[(&str, &str)] = &[
         ("20k", "keep 20k tail"),
         ("auto", "clear keep → default"),
@@ -260,16 +202,8 @@ fn complete_context_args(arg_text: &str) -> Vec<(String, String)> {
                 .map(|(s, d)| (format!("context {s}"), d.to_string()))
                 .collect();
         }
-        let vals = if head == "reserve" {
-            RESERVE_VALS
-        } else {
-            KEEP_VALS
-        };
-        let f = if parts.len() >= 2 {
-            parts[1].to_lowercase()
-        } else {
-            String::new()
-        };
+        let vals = if head == "reserve" { RESERVE_VALS } else { KEEP_VALS };
+        let f = if parts.len() >= 2 { parts[1].to_lowercase() } else { String::new() };
         return vals
             .iter()
             .filter(|(s, _)| f.is_empty() || s.to_lowercase().contains(&f))
@@ -313,9 +247,17 @@ pub enum ReplCommand {
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
     Usage,
+    /// Choose what gray is allowed to do (`/permissions [read-only|auto|full]`).
+    Permissions(Option<String>),
+    /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
+    Feedback(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
-    /// Messaging gateway: /gateway, /gateway status|run|install
+    /// Cron jobs: /cron, /cron list, /cron create --schedule ... --prompt ...
+    Cron(String),
+    /// Local proxy: /proxy start|stop|status, /portal alias
+    Proxy(String),
+    /// Messaging gateway: /gateway, /gateway status|run|install (bare opens picker like /proxy)
     Gateway(String),
     /// External ACP agent: /acp (picker), /acp <agent> [--yolo], /acp off|status|list
     Acp(String),
@@ -388,8 +330,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some(d.name)
     } else if lower_t.starts_with("/model") {
         Some("model")
-    } else if lower_t.starts_with("/acp") {
-        Some("acp")
+    } else if lower_t.starts_with("/cron") {
+        Some("cron")
+    } else if lower_t.starts_with("/proxy") {
+        Some("proxy")
+    } else if lower_t.starts_with("/portal") {
+        Some("portal")
     } else if lower_t.starts_with("/gateway") || lower_t.starts_with("/gw") {
         Some("gateway")
     } else {
@@ -398,11 +344,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
     match canon {
         Some("quit") => ReplCommand::Quit,
         Some("resume") => ReplCommand::Resume(if rest.is_empty() {
-            ResumeArgs {
-                target: None,
-                last: false,
-                all: false,
-            }
+            ResumeArgs { target: None, last: false, all: false }
         } else {
             parse_resume_args(rest)
         }),
@@ -417,6 +359,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
+        Some("permissions") => ReplCommand::Permissions(opt(rest)),
+        Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
         Some("connect") => {
@@ -427,8 +371,10 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
         }
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
-        Some("acp") => ReplCommand::Acp(t.to_string()),
+        Some("cron") => ReplCommand::Cron(t.to_string()),
+        Some("proxy") | Some("portal") => ReplCommand::Proxy(t.to_string()),
         Some("gateway") => ReplCommand::Gateway(t.to_string()),
+        Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("skills") => {
             if lower_t == "/skills" {
                 ReplCommand::Skill(None)
@@ -460,17 +406,11 @@ mod tests {
         // Reported bug: pasting Rust `///` doc comments said "unknown command".
         let pasted = "/// Default system prompt, shipped as markdown and materialized to `~/.gray/sys.md`\n/// on first run.";
         assert!(matches!(parse_command(pasted), ReplCommand::Prompt(_)));
-        assert!(matches!(
-            parse_command("// comment"),
-            ReplCommand::Prompt(_)
-        ));
+        assert!(matches!(parse_command("// comment"), ReplCommand::Prompt(_)));
         assert!(matches!(parse_command("/tmp/foo"), ReplCommand::Prompt(_)));
         assert!(matches!(parse_command("/"), ReplCommand::Prompt(_)));
         // Genuinely unknown single-token commands still error.
-        assert!(matches!(
-            parse_command("/boguscmd"),
-            ReplCommand::Unknown(_)
-        ));
+        assert!(matches!(parse_command("/boguscmd"), ReplCommand::Unknown(_)));
         // Known commands unaffected.
         assert!(matches!(parse_command("/help"), ReplCommand::Help));
         assert!(matches!(parse_command("/model foo"), ReplCommand::Model(_)));
@@ -478,18 +418,12 @@ mod tests {
 
     #[test]
     fn context_renamed_no_window_alias() {
-        assert!(matches!(
-            parse_command("/context"),
-            ReplCommand::ContextWindow(None)
-        ));
+        assert!(matches!(parse_command("/context"), ReplCommand::ContextWindow(None)));
         assert!(matches!(
             parse_command("/context 128k"),
             ReplCommand::ContextWindow(Some(_))
         ));
-        assert!(matches!(
-            parse_command("/context-window"),
-            ReplCommand::Unknown(_)
-        ));
+        assert!(matches!(parse_command("/context-window"), ReplCommand::Unknown(_)));
     }
 
     #[test]
@@ -498,50 +432,26 @@ mod tests {
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         use std::path::Path;
         let cwd = Path::new(".");
-        assert!(
-            super::completion_matches_dyn("/us", cwd)
-                .iter()
-                .any(|(n, _)| n == "usage")
-        );
+        assert!(super::completion_matches_dyn("/us", cwd).iter().any(|(n, _)| n == "usage"));
         // `cost` resolves through the alias table
-        assert!(
-            super::completion_matches("cost")
-                .iter()
-                .any(|(n, _)| *n == "usage")
-        );
+        assert!(super::completion_matches("cost").iter().any(|(n, _)| *n == "usage"));
     }
 
     #[test]
     fn thinking_effort_and_reasoning_aliases() {
-        assert!(matches!(
-            parse_command("/thinking"),
-            ReplCommand::Thinking(None)
-        ));
-        assert!(matches!(
-            parse_command("/effort"),
-            ReplCommand::Thinking(None)
-        ));
-        assert!(matches!(
-            parse_command("/reasoning"),
-            ReplCommand::Thinking(None)
-        ));
-        assert!(matches!(
-            parse_command("/reasoning max"),
-            ReplCommand::Thinking(Some(_))
-        ));
+        assert!(matches!(parse_command("/thinking"), ReplCommand::Thinking(None)));
+        assert!(matches!(parse_command("/effort"), ReplCommand::Thinking(None)));
+        assert!(matches!(parse_command("/reasoning"), ReplCommand::Thinking(None)));
+        assert!(matches!(parse_command("/reasoning max"), ReplCommand::Thinking(Some(_))));
         // `reasoning` resolves through the alias table
-        assert!(
-            super::completion_matches("reasoning")
-                .iter()
-                .any(|(n, _)| *n == "thinking")
-        );
+        assert!(super::completion_matches("reasoning").iter().any(|(n, _)| *n == "thinking"));
     }
 
     #[test]
     fn registry_resolve_canonical_and_aliases() {
         for name in [
             "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "gateway", "acp", "agentsmd", "skills", "help", "quit",
+            "permissions", "feedback", "cron", "proxy", "gateway", "acp", "portal", "agentsmd", "skills", "help", "quit",
         ] {
             let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
             assert_eq!(d.name, name);
@@ -563,10 +473,22 @@ mod tests {
             ("sys", "agentsmd"),
             ("gw", "gateway"),
             ("cost", "usage"),
+            ("perms", "permissions"),
         ] {
             assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
             assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
         }
+        // `portal` is both a canonical command and a legacy alias for `proxy`;
+        // canonical exact wins in resolve(), dispatch still maps both to Proxy.
+        assert_eq!(super::resolve("portal").unwrap().name, "portal");
+        assert!(
+            super::REGISTRY
+                .iter()
+                .find(|d| d.name == "proxy")
+                .unwrap()
+                .aliases
+                .contains(&"portal")
+        );
         assert!(super::resolve("boguscmd").is_none());
         assert!(super::resolve("/boguscmd").is_none());
         assert!(super::resolve("").is_none());
@@ -578,15 +500,15 @@ mod tests {
         let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
         for expected in [
             "connect", "model", "thinking", "context", "resume", "new", "compact", "usage",
-            "gateway", "acp", "agentsmd", "skills", "help", "quit",
+            "permissions", "feedback", "cron", "proxy", "gateway", "acp", "portal", "agentsmd", "skills", "help", "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 14);
+        assert_eq!(super::REGISTRY.len(), 19);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 14);
+        assert_eq!(all.len(), 19);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -607,16 +529,19 @@ mod tests {
             ("reasoning", "thinking"),
             ("compress", "compact"),
             ("sys", "agentsmd"),
+            ("portal", "proxy"),
             ("gw", "gateway"),
             ("cost", "usage"),
+            ("perms", "permissions"),
         ] {
             assert!(
-                super::completion_matches(alias)
-                    .iter()
-                    .any(|(n, _)| *n == target),
+                super::completion_matches(alias).iter().any(|(n, _)| *n == target),
                 "completion {alias} -> {target}"
             );
         }
+        let m = super::completion_matches("portal");
+        assert!(m.iter().any(|(n, _)| *n == "portal"));
+        assert!(m.iter().any(|(n, _)| *n == "proxy"));
     }
 
     #[test]
@@ -624,32 +549,19 @@ mod tests {
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-        assert!(matches!(parse_command("/portal"), ReplCommand::Unknown(_)));
+        assert!(matches!(parse_command("/portal"), ReplCommand::Proxy(_)));
         assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(_)));
-        assert!(matches!(
-            parse_command("/keys foo"),
-            ReplCommand::Unknown(_)
-        ));
-        assert!(matches!(
-            parse_command("/connect foo"),
-            ReplCommand::Unknown(_)
-        ));
+        assert!(matches!(parse_command("/keys foo"), ReplCommand::Unknown(_)));
+        assert!(matches!(parse_command("/connect foo"), ReplCommand::Unknown(_)));
         assert!(matches!(parse_command("/key foo"), ReplCommand::Provider));
-        assert!(matches!(
-            parse_command("/skills foo"),
-            ReplCommand::Unknown(_)
-        ));
+        assert!(matches!(parse_command("/skills foo"), ReplCommand::Unknown(_)));
     }
 
     #[test]
-    fn acp_parse_variants() {
-        assert!(matches!(parse_command("/acp"), ReplCommand::Acp(_)));
-        assert!(matches!(parse_command("/acp claude"), ReplCommand::Acp(_)));
-        assert!(matches!(
-            parse_command("/ACP Codex --yolo"),
-            ReplCommand::Acp(_)
-        ));
-        assert!(matches!(parse_command("/acp off"), ReplCommand::Acp(_)));
+    fn feedback_parses_with_and_without_text() {
+        assert!(matches!(parse_command("/feedback"), ReplCommand::Feedback(None)));
+        assert!(matches!(parse_command("/feedback broken x"), ReplCommand::Feedback(Some(_))));
+        assert!(matches!(parse_command("/FEEDBACK hi"), ReplCommand::Feedback(Some(_))));
     }
 
     #[test]
@@ -674,10 +586,7 @@ mod tests {
         assert!(dyn_all.iter().any(|(n, _)| n == "context reserve"));
         assert!(completion_matches_dyn("/model ", cwd).is_empty());
         // command-name path unaffected
-        assert!(
-            completion_matches_dyn("/cont", cwd)
-                .iter()
-                .any(|(n, _)| n == "context")
-        );
+        assert!(completion_matches_dyn("/cont", cwd).iter().any(|(n, _)| n == "context"));
     }
 }
+

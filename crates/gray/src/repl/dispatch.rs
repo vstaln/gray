@@ -206,6 +206,9 @@ pub(crate) async fn dispatch_command(
             handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
+        ReplCommand::Permissions(_) | ReplCommand::Feedback(_) => {
+            Flow::Continue
+        }
         ReplCommand::Provider => {
             let bg = tui
                 .as_ref()
