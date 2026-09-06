@@ -7,17 +7,16 @@ pub fn generate_unit(gray_bin: &Path) -> String {
     let gray_home = crate::config::gray_home_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| format!("{}/.gray", std::env::var("HOME").unwrap_or_default()));
-    format!(
-        "[Unit]\nDescription=Gray Gateway\nAfter=network.target\n\n[Service]\nExecStart={} gateway run\nRestart=always\nRestartSec=5\nEnvironment=GRAY_HOME={}\n\n[Install]\nWantedBy=default.target\n",
-        gray_bin.display(),
-        gray_home
-    )
+    gray_supervise::units::generate_systemd_unit(gray_bin, Path::new(&gray_home))
 }
 pub fn install() -> anyhow::Result<()> {
     let bin = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("gray"));
     let path = systemd_unit_path();
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
+    }
+    if path.exists() && !path.with_extension("service.bak").exists() {
+        let _ = std::fs::copy(&path, path.with_extension("service.bak"));
     }
     std::fs::write(&path, generate_unit(&bin))?;
     let _ = std::process::Command::new("systemctl")
@@ -27,6 +26,19 @@ pub fn install() -> anyhow::Result<()> {
         .args(["--user", "enable", "--now", "gray-gateway.service"])
         .status();
     println!("installed {}", path.display());
+    if !std::process::Command::new("loginctl")
+        .args([
+            "show-user",
+            &std::env::var("USER").unwrap_or_default(),
+            "-p",
+            "Linger",
+        ])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("Linger=yes"))
+        .unwrap_or(true)
+    {
+        println!("{}", gray_supervise::units::linger_hint());
+    }
     Ok(())
 }
 pub fn uninstall() -> anyhow::Result<()> {
@@ -120,5 +132,13 @@ mod tests {
             stderr: Vec::new(),
         };
         assert!(status_with_output(|| Ok(out)).is_ok());
+    }
+
+    #[test]
+    fn probe_reports_healthy_after_heartbeat() {
+        let dir = tempfile::tempdir().unwrap();
+        gray_supervise::heartbeat::write_heartbeat(dir.path()).unwrap();
+        let h = gray_supervise::health::probe(dir.path());
+        assert!(h.healthy, "probe must be healthy, got: {}", h.reason);
     }
 }

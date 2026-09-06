@@ -34,6 +34,7 @@ mod context_modal;
 mod effort;
 mod model_modal;
 mod permissions_modal;
+mod plugins_modal;
 mod skills_modal;
 
 pub use context_modal::run_context_modal;
@@ -46,6 +47,7 @@ pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 pub use permissions_modal::run_permissions_modal;
+pub use plugins_modal::run_plugins_modal;
 pub use skills_modal::run_skills_modal;
 
 use crate::{config::Config, tui::print_wrapped};
