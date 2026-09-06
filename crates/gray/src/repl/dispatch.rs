@@ -208,21 +208,11 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Permissions(mode) => {
-            handle_permissions(
-                config,
-                mode,
-                approval_gate,
-                tui.as_ref().map(|(s, _)| s),
-            );
+            handle_permissions(config, mode, approval_gate, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
         ReplCommand::Feedback(text) => {
-            handle_feedback(
-                text,
-                config,
-                session_state,
-                tui.as_ref().map(|(s, _)| s),
-            );
+            handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
         ReplCommand::Provider => {

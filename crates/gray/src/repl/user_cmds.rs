@@ -23,25 +23,43 @@ pub(crate) fn handle_feedback(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     let Some(raw) = text.filter(|t| !t.trim().is_empty()) else {
-        say(tui, "usage: /feedback <what happened> — saves locally and opens a prefilled issue");
+        say(
+            tui,
+            "usage: /feedback <what happened> — saves locally and opens a prefilled issue",
+        );
         return;
     };
     let title = crate::feedback::build_title(&raw);
     let version = env!("CARGO_PKG_VERSION");
     let os = format!("{} / {}", std::env::consts::OS, std::env::consts::ARCH);
     let model = config.model.as_deref().unwrap_or("no model");
-    let session = session_state.as_ref().map(|s| s.session_id.as_str()).unwrap_or("none");
+    let session = session_state
+        .as_ref()
+        .map(|s| s.session_id.as_str())
+        .unwrap_or("none");
     let body = crate::feedback::build_body(&raw, version, &os, model, session);
     let url = crate::feedback::issue_url(&title, &body);
     match crate::setup::gray_home().map(|h| h.join("feedback")) {
-        Ok(dir) => match crate::feedback::save_feedback(&dir, &title, &body, &crate::feedback::timestamp()) {
-            Ok(path) => {
-                crate::feedback::open_in_browser(&url);
-                say(tui, &format!("saved {}\nfile an issue: {url}", path.display()));
+        Ok(dir) => {
+            match crate::feedback::save_feedback(&dir, &title, &body, &crate::feedback::timestamp())
+            {
+                Ok(path) => {
+                    crate::feedback::open_in_browser(&url);
+                    say(
+                        tui,
+                        &format!("saved {}\nfile an issue: {url}", path.display()),
+                    );
+                }
+                Err(e) => say(
+                    tui,
+                    &format!("could not save feedback ({e}) — file manually: {url}"),
+                ),
             }
-            Err(e) => say(tui, &format!("could not save feedback ({e}) — file manually: {url}")),
-        },
-        Err(e) => say(tui, &format!("could not resolve gray home ({e}) — file manually: {url}")),
+        }
+        Err(e) => say(
+            tui,
+            &format!("could not resolve gray home ({e}) — file manually: {url}"),
+        ),
     }
 }
 
@@ -79,7 +97,10 @@ pub(crate) fn handle_permissions(
                 config.permissions = Some(mode.to_string());
                 gate.set_mode(mode);
                 if let Some(shared) = tui {
-                    shared.lock().expect("tui lock").set_permission_mode(mode.to_string());
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .set_permission_mode(mode.to_string());
                 }
                 persist(config);
                 announce(mode, tui);
@@ -93,13 +114,18 @@ pub(crate) fn handle_permissions(
     }
     let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
     let current = gate.mode();
-    let picked = with_modal_sync(tui, || crate::setup::run_permissions_modal(&current, bg.as_ref()));
+    let picked = with_modal_sync(tui, || {
+        crate::setup::run_permissions_modal(&current, bg.as_ref())
+    });
     match picked {
         Ok(Some(mode)) => {
             config.permissions = Some(mode.clone());
             gate.set_mode(&mode);
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").set_permission_mode(mode.clone());
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .set_permission_mode(mode.clone());
             }
             persist(config);
             announce(&mode, tui);
@@ -111,7 +137,7 @@ pub(crate) fn handle_permissions(
 
 #[cfg(test)]
 mod feedback_permissions_tests {
-    use super::{parse_permissions_args, PermissionsAction};
+    use super::{PermissionsAction, parse_permissions_args};
 
     #[test]
     fn permissions_args_parse() {
