@@ -58,8 +58,7 @@ pub fn run_permissions_modal(
                 }
                 render_dimmed_background(frame, &bg_snapshot);
                 let modal_w = (area.width.saturating_sub(4))
-                    .min(116)
-                    .max(56)
+                    .clamp(56, 116)
                     .min(area.width);
                 let modal_h = 12
                     .min(area.height.saturating_sub(2))
