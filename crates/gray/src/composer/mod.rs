@@ -391,6 +391,8 @@ impl Tui {
         input::sync_attachments(self)
     }
 
+    // In-flight (unwired): silenced for CI -D warnings; wire up or delete.
+    #[allow(dead_code)]
     pub(crate) fn try_attach_clipboard_image(&mut self) -> bool {
         input::try_attach_clipboard_image(self)
     }

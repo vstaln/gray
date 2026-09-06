@@ -128,6 +128,8 @@ pub(crate) fn format_help_line(d: &CmdDef) -> String {
 }
 
 /// Full `/help` body for TUI + stdout paths (callers join plugin rows after).
+// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
+#[allow(dead_code)]
 pub(crate) fn format_help_all() -> String {
     REGISTRY
         .iter()

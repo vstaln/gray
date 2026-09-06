@@ -30,12 +30,10 @@ pub fn build_title(text: &str) -> String {
 
 /// First non-empty of `$TERM_PROGRAM`, `$TERM`, else "unknown".
 pub fn terminal_label(term_program: Option<&str>, term: Option<&str>) -> String {
-    for cand in [term_program, term] {
-        if let Some(s) = cand {
-            let s = s.trim();
-            if !s.is_empty() {
-                return s.to_string();
-            }
+    for s in [term_program, term].into_iter().flatten() {
+        let s = s.trim();
+        if !s.is_empty() {
+            return s.to_string();
         }
     }
     "unknown".to_string()
