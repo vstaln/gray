@@ -316,6 +316,39 @@ pub enum GatewayCmd {
 /// `gray plugin ...` — plugin-side tooling.
 #[derive(Parser, Debug, Clone)]
 pub enum PluginCmd {
+    /// List installed plugins
+    List,
+    /// Search the Gray Index by substring
+    Search {
+        /// Substring to match against index names
+        query: String,
+    },
+    /// Install a plugin by index name or https URL
+    Install {
+        /// Index name or https URL
+        spec: gray_pkg::ops::NameOrUrl,
+    },
+    /// Remove an installed plugin
+    Remove {
+        /// Installed plugin name
+        name: String,
+    },
+    /// Update one plugin or all (`all`)
+    Update {
+        /// Plugin name or `all`
+        #[arg(default_value = "all")]
+        target: String,
+    },
+    /// Enable an installed plugin
+    Enable {
+        /// Installed plugin name
+        name: String,
+    },
+    /// Disable an installed plugin
+    Disable {
+        /// Installed plugin name
+        name: String,
+    },
     /// Run the sidecar conformance checks against a plugin dir
     Check {
         /// Plugin directory (executable, plugin.sh, or single executable)
