@@ -87,6 +87,8 @@ run gray in a container/VM for untrusted work.
 | `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
 | `gray update` | update gray to the latest release |
 
+Always-on: `gray gateway install` (systemd user service, `Restart=always`, survives reboot with linger) or `gray gateway run` under your own supervisor; `gray gateway status --probe` reports heartbeat health; heartbeats live in `~/.gray/state/gateway.heartbeat`, lifecycle in `state/gateway.lifecycle.json`; logs rotate at 10MB × 3.
+
 Global flags: `-p/--print` (one-shot prompt mode), `-c/--continue` (reopen latest session), `--session <ID>` (resume by id), `--acp <AGENT>` (run as an external ACP agent, works with `-p`), `--context-window <TOKENS>` (e.g. `128000`, `128k`), `--context-reserve`, `--context-keep`, `--dump-manifest` (print merged plugin manifest as JSON and exit).
 
 ## Shape
