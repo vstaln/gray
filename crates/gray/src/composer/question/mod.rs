@@ -31,7 +31,7 @@ pub(crate) const AUTO_RESOLUTION_VISIBLE_COUNTDOWN: Duration = Duration::from_se
 const OTHER_OPTION_LABEL: &str = "None of the above";
 const OTHER_OPTION_DESCRIPTION: &str = "Optionally, add details in notes (tab).";
 const UNANSWERED_CONFIRM_TITLE: &str = "Submit with unanswered questions?";
-const TIP_SEPARATOR: &str = " | ";
+const TIP_SEPARATOR: &str = " · ";
 
 const ACCENT: Color = Color::Rgb(246, 173, 126);
 const TEXT: Color = Color::Rgb(225, 225, 225);
@@ -355,6 +355,18 @@ mod tests {
         assert!(
             last.spans.iter().all(|s| s.content.trim().is_empty()),
             "last panel row must be blank (bottom margin)"
+        );
+    }
+
+    #[test]
+    fn panel_lines_end_with_bottom_margin_constrained() {
+        let (q, _rx) = mk(1);
+        let lines = panel_lines(&q, 80, 8);
+        assert!(lines.len() <= 8);
+        let last = lines.last().unwrap();
+        assert!(
+            last.spans.iter().all(|s| s.content.trim().is_empty()),
+            "constrained panel row must end with bottom margin"
         );
     }
 

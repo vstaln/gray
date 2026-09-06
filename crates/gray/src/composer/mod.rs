@@ -20,7 +20,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use gray_markdown::HyperlinkTarget;
 
 pub(crate) const PANEL_ROWS: usize = 6;
-pub(crate) const VIEWPORT_H: u16 = 10;
+pub(crate) const VIEWPORT_H: u16 = 14;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
