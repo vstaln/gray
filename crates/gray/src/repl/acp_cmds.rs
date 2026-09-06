@@ -1,5 +1,5 @@
-//! ACP slash-command: one-shot delegate `/acp <agent> <prompt>` plus
-//! `list` / `status` helpers (split from `repl`).
+//! ACP slash-command: sticky `/acp <agent>` mode plus one-shot
+//! `/acp <agent> <prompt>` delegate and `list` / `status` / `off` helpers.
 
 use super::*;
 
@@ -9,6 +9,10 @@ pub(crate) enum AcpAction {
     Status,
     Off,
     Help,
+    Switch {
+        agent: String,
+        yolo: bool,
+    },
     Delegate {
         agent: String,
         prompt: String,
@@ -34,10 +38,19 @@ pub(crate) fn parse_acp_args(raw: &str) -> AcpAction {
                 .copied()
                 .collect::<Vec<_>>()
                 .join(" ");
-            AcpAction::Delegate {
-                agent: agent.to_string(),
-                prompt,
-                yolo,
+            // Bare `/acp <agent>` (what the picker returns) switches the
+            // whole REPL to that agent; with prompt text it stays a one-shot.
+            if prompt.is_empty() {
+                AcpAction::Switch {
+                    agent: agent.to_string(),
+                    yolo,
+                }
+            } else {
+                AcpAction::Delegate {
+                    agent: agent.to_string(),
+                    prompt,
+                    yolo,
+                }
             }
         }
     }
@@ -65,14 +78,100 @@ fn acp_table(home: Option<&std::path::Path>) -> Vec<String> {
             ));
         }
     }
-    lines.push("usage: /acp <agent> <prompt> · /acp list · /acp off".to_string());
+    lines.push("usage: /acp <agent> [prompt] · /acp list · /acp off".to_string());
     lines
 }
 
-pub(crate) async fn handle_acp(
+fn set_model_label(tui: Option<&crate::composer::SharedTui>, label: &str) {
+    if let Some(t) = tui {
+        t.lock().expect("tui lock").set_model(label.to_string());
+    }
+}
+
+/// Shared spawn path for one-shot delegates and sticky switches: resolves,
+/// starts, and announces the session. Returns `None` after printing why.
+async fn start_session(
+    spec: gray_acp::AgentSpec,
+    display: String,
+    cwd: &std::path::Path,
+    yolo: bool,
+    tui: Option<&crate::composer::SharedTui>,
+) -> Option<gray_acp::AcpSession> {
+    if !gray_acp::installed(&spec) {
+        say(
+            tui,
+            &format!("agent '{}' not installed ({})", spec.key, spec.install_hint),
+        );
+        return None;
+    }
+    say(
+        tui,
+        &format!("acp:{key} starting {display}…", key = spec.key),
+    );
+    let auto_approve = yolo || std::env::var("GRAY_ACP_AUTO_APPROVE").as_deref() == Ok("1");
+    let opts = gray_acp::AcpSessionOptions {
+        spec,
+        cwd: cwd.to_path_buf(),
+        resume_session_id: None,
+        auto_approve,
+        permission_prompt: std::sync::Arc::new(gray_acp::DenyAllPrompt),
+        display,
+    };
+    match gray_acp::AcpSession::start(opts).await {
+        Ok(s) => {
+            let sid = s.session_id().to_string();
+            let prefix: String = sid.chars().take(8).collect();
+            say(
+                tui,
+                &format!("acp:{key} session {prefix}…", key = s.agent_key()),
+            );
+            Some(s)
+        }
+        Err(gray_acp::AcpError::NotInstalled(key, hint)) => {
+            say(tui, &format!("agent '{key}' not installed ({hint})"));
+            None
+        }
+        Err(gray_acp::AcpError::AuthRequired(methods)) => {
+            say(tui, &format!("agent requires auth: {methods}"));
+            None
+        }
+        Err(e) => {
+            say(tui, &format!("acp error: {e:#}"));
+            None
+        }
+    }
+}
+
+fn resolve_spec(
+    agent: &str,
+    tui: Option<&crate::composer::SharedTui>,
+) -> Option<(gray_acp::AgentSpec, String)> {
+    let home = gray_acp::gray_home_dir();
+    let home_opt = Some(home.as_path());
+    let Some(spec) = gray_acp::resolve(agent, home_opt) else {
+        say(tui, &format!("unknown agent '{agent}'"));
+        for line in acp_table(home_opt) {
+            say(tui, &line);
+        }
+        return None;
+    };
+    let display = if spec.display.is_empty() {
+        spec.key.to_string()
+    } else {
+        spec.display.to_string()
+    };
+    Some((spec, display))
+}
+
+/// Full `/acp` command surface including sticky mode: `/acp <agent>` parks
+/// an `AcpSession` in `acp` so later prompts route through it until `/acp off`.
+/// `native_model` restores the status-line label when leaving ACP mode.
+pub(crate) async fn handle_acp_command(
     raw: &str,
     cwd: &std::path::Path,
     tui: Option<&crate::composer::SharedTui>,
+    acp: &mut Option<gray_acp::AcpSession>,
+    native_model: Option<&str>,
 ) {
     let home = gray_acp::gray_home_dir();
     let home_opt = Some(home.as_path());
@@ -92,19 +191,51 @@ pub(crate) async fn handle_acp(
             }
         }
         AcpAction::Status => {
-            say(
-                tui,
-                "acp: native mode (no persistent session yet — /acp <agent> <prompt> delegates one-shot)",
-            );
+            if let Some(s) = acp.as_ref() {
+                let sid = s.session_id().to_string();
+                let prefix: String = sid.chars().take(8).collect();
+                let mut line = format!("acp:{} · session {prefix}…", s.agent_key());
+                if let Some(u) = s.usage_text() {
+                    line.push_str(&format!(" · {u}"));
+                }
+                say(tui, &line);
+            } else {
+                say(tui, "acp: native mode — /acp <agent> to switch");
+            }
         }
         AcpAction::Off => {
-            say(tui, "acp: already native");
+            if let Some(s) = acp.take() {
+                let key = s.agent_key().to_string();
+                s.shutdown().await;
+                set_model_label(tui, native_model.unwrap_or("default"));
+                say(tui, &format!("acp:{key} off — back to native"));
+            } else {
+                say(tui, "acp: already native");
+            }
         }
         AcpAction::Help => {
             say(
                 tui,
-                "usage: /acp <agent> <prompt> [--yolo] · /acp list · /acp status · /acp off",
+                "usage: /acp <agent> [--yolo] · /acp <agent> <prompt> [--yolo] · /acp list · /acp status · /acp off",
             );
+        }
+        AcpAction::Switch { agent, yolo } => {
+            let Some((spec, display)) = resolve_spec(&agent, tui) else {
+                return;
+            };
+            if acp.as_ref().is_some_and(|s| s.agent_key() == spec.key) {
+                say(tui, &format!("acp:{} already active", spec.key));
+                return;
+            }
+            if let Some(old) = acp.take() {
+                old.shutdown().await;
+            }
+            if let Some(s) = start_session(spec, display, cwd, yolo, tui).await {
+                let key = s.agent_key().to_string();
+                set_model_label(tui, &format!("acp:{key}"));
+                say(tui, &format!("switched to acp:{key} — prompts route there until /acp off"));
+                *acp = Some(s);
+            }
         }
         AcpAction::Delegate {
             agent,
@@ -115,59 +246,13 @@ pub(crate) async fn handle_acp(
                 say(tui, "usage: /acp <agent> <prompt> — prompt text required");
                 return;
             }
-            let Some(spec) = gray_acp::resolve(&agent, home_opt) else {
-                say(tui, &format!("unknown agent '{agent}'"));
-                for line in acp_table(home_opt) {
-                    say(tui, &line);
-                }
+            let Some((spec, display)) = resolve_spec(&agent, tui) else {
                 return;
             };
-            if !gray_acp::installed(&spec) {
-                say(
-                    tui,
-                    &format!("agent '{}' not installed ({})", spec.key, spec.install_hint),
-                );
+            let Some(mut session) = start_session(spec, display, cwd, yolo, tui).await
+            else {
                 return;
-            }
-            let display = if spec.display.is_empty() {
-                spec.key.to_string()
-            } else {
-                spec.display.to_string()
             };
-            say(
-                tui,
-                &format!("acp:{key} starting {display}…", key = spec.key),
-            );
-            let auto_approve = yolo || std::env::var("GRAY_ACP_AUTO_APPROVE").as_deref() == Ok("1");
-            let opts = gray_acp::AcpSessionOptions {
-                spec,
-                cwd: cwd.to_path_buf(),
-                resume_session_id: None,
-                auto_approve,
-                permission_prompt: std::sync::Arc::new(gray_acp::DenyAllPrompt),
-                display,
-            };
-            let mut session = match gray_acp::AcpSession::start(opts).await {
-                Ok(s) => s,
-                Err(gray_acp::AcpError::NotInstalled(key, hint)) => {
-                    say(tui, &format!("agent '{key}' not installed ({hint})"));
-                    return;
-                }
-                Err(gray_acp::AcpError::AuthRequired(methods)) => {
-                    say(tui, &format!("agent requires auth: {methods}"));
-                    return;
-                }
-                Err(e) => {
-                    say(tui, &format!("acp error: {e:#}"));
-                    return;
-                }
-            };
-            let sid = session.session_id().to_string();
-            let prefix: String = sid.chars().take(8).collect();
-            say(
-                tui,
-                &format!("acp:{key} session {prefix}…", key = session.agent_key()),
-            );
             let mut text = String::new();
             let mut thinking = String::new();
             let mut on_event = |ev: &gray_core::event::AgentEvent| {
@@ -207,6 +292,210 @@ pub(crate) async fn handle_acp(
     }
 }
 
+/// One turn through the sticky ACP session: same streaming scaffold as the
+/// native prompt turn (live events, Ctrl-C, persist) but no provider boot,
+/// no agent build, and no overflow-compact retry — the agent owns its context.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_acp_turn(
+    prompt_text: String,
+    pending_images: &mut Vec<std::path::PathBuf>,
+    acp: &mut Option<gray_acp::AcpSession>,
+    config: &Config,
+    cwd: &std::path::Path,
+    tui: &TuiOpt,
+    interactive: bool,
+    session_state: &mut Option<SessionState>,
+    session_totals: &mut SessionTotals,
+    pending_command: &mut Option<ReplCommand>,
+    native_model: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(session) = acp.as_mut() else {
+        return Ok(());
+    };
+    let images = std::mem::take(&mut *pending_images);
+    if !images.is_empty() {
+        say(
+            tui.as_ref().map(|(s, _)| s),
+            &format!(
+                "(+{} image(s) kept in transcript but not sent — ACP turns are text-only for now)",
+                images.len()
+            ),
+        );
+    }
+    let model_label = format!("acp:{}", session.agent_key());
+    let cancel = tokio_util::sync::CancellationToken::new();
+    *super::TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
+
+    let tui_stream = if interactive {
+        Some(tui.as_ref().expect("interactive implies tui").0.clone())
+    } else {
+        None
+    };
+    if let Some(s) = &tui_stream {
+        s.lock().expect("tui lock").begin_turn("Working");
+    }
+
+    // Raw mode swallows ^C (no SIGINT): same key-watcher bridge as native turns.
+    let watch_cancel = cancel.clone();
+    let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watcher_stopped = watch_stop.clone();
+    let watcher_tui = tui_stream.clone();
+    let cwd_for_watcher = cwd.to_path_buf();
+    let _key_watcher = super::key_watcher::spawn_key_watcher_with_typing(
+        watch_cancel,
+        watcher_stopped,
+        watcher_tui,
+        cwd_for_watcher,
+    );
+
+    let mut pending_tools: HashMap<String, (String, Option<serde_json::Value>)> = HashMap::new();
+    let mut turn_usage: Option<gray_core::event::Usage> = None;
+    let turn_start = std::time::Instant::now();
+    let mut turn_duration_ms: Option<u64> = None;
+    let mut text = String::new();
+    let run_result = {
+        let mut on_event = |ev: &AgentEvent| {
+            if let AgentEvent::TextDelta { delta } = ev {
+                text.push_str(delta);
+            }
+            dispatch_agent_event(
+                ev,
+                tui_stream.as_ref(),
+                interactive,
+                &mut pending_tools,
+                &mut turn_usage,
+                cwd,
+                &model_label,
+                &mut *session_totals,
+                turn_start,
+                &mut turn_duration_ms,
+            );
+        };
+        let mut run_future = Box::pin(session.prompt(&prompt_text, &mut on_event));
+        tokio::select! {
+            res = &mut run_future => res,
+            _ = cancel.cancelled() => {
+                drop(run_future);
+                session.cancel().await;
+                Err(gray_acp::AcpError::Cancelled)
+            }
+        }
+    };
+    super::TURN_STATE.lock().expect("turn state lock").take();
+    watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if turn_duration_ms.is_none() {
+        turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+    }
+
+    // Transcript first: the JSONL log must match what ran, whatever the outcome.
+    super::session::ensure_session_state(session_state, config, cwd).await;
+    if let Some(state) = session_state {
+        let user_msg = build_user_message_with_attachments(&prompt_text, &images);
+        if let Err(e) = state
+            .store
+            .append_with_usage_and_duration(&state.session_id, &user_msg, None, None)
+            .await
+        {
+            log::warn!(target: "gray_session", "session append failed: {e}");
+        }
+        if !text.trim().is_empty() {
+            let asst = Message::assistant(std::mem::take(&mut text));
+            if let Err(e) = state
+                .store
+                .append_with_usage_and_duration(
+                    &state.session_id,
+                    &asst,
+                    turn_usage,
+                    turn_duration_ms,
+                )
+                .await
+            {
+                log::warn!(target: "gray_session", "session append failed: {e}");
+            }
+        }
+    }
+
+    match run_result {
+        Ok(_) => {}
+        Err(gray_acp::AcpError::Cancelled) => {
+            end_thinking_gap(tui);
+            if interactive {
+                if let Some((shared, _)) = tui {
+                    shared.lock().expect("tui lock").stream("(interrupted)\n");
+                }
+            } else {
+                println!("(interrupted)");
+            }
+        }
+        // The agent died mid-turn: fall back to native rather than wedging
+        // the REPL on a dead session.
+        Err(gray_acp::AcpError::ProcessExited { code, stderr_tail }) => {
+            if let Some(dead) = acp.take() {
+                dead.shutdown().await;
+            }
+            set_model_label(tui.as_ref().map(|(s, _)| s), native_model.unwrap_or("default"));
+            let tail: String = stderr_tail.chars().take(500).collect();
+            let msg = format!("agent exited (code {code}): {tail} — back to native");
+            end_thinking_gap(tui);
+            if interactive {
+                if let Some((shared, _)) = tui {
+                    shared.lock().expect("tui lock").stream(&format!("{msg}\n"));
+                }
+            } else {
+                eprintln!("{msg}");
+            }
+        }
+        Err(e) => {
+            let msg = format!("acp error: {e:#}");
+            end_thinking_gap(tui);
+            if interactive {
+                if let Some((shared, _)) = tui {
+                    shared.lock().expect("tui lock").stream(&format!("{msg}\n"));
+                }
+            } else {
+                eprintln!("{msg}");
+            }
+        }
+    }
+    if let Some(s) = &tui_stream {
+        s.lock().expect("tui lock").end_turn();
+    }
+    // if we queued input while working, start it immediately
+    if interactive && let Some((shared, _)) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        if let Some(cmd_text) = t.local_command.take() {
+            // Esc mid-turn: command already echoed; run locally, never to the AI
+            drop(t);
+            *pending_command = Some(expand_skill_command(
+                parse_command(&cmd_text),
+                cwd,
+                Some(shared),
+                true,
+            ));
+        } else if let Some((qtext, qimages)) = t.queued_inputs.pop_front() {
+            let echo = crate::composer::transcript::redact_command_echo(&qtext);
+            t.push_user_prompt(&echo, &qimages, !qtext.starts_with('/'));
+            drop(t);
+            *pending_command = Some(expand_skill_command(
+                parse_command(&qtext),
+                cwd,
+                Some(shared),
+                false,
+            ));
+            *pending_images = qimages;
+        }
+    }
+    Ok(())
+}
+
+fn end_thinking_gap(tui: &TuiOpt) {
+    if let Some((shared, _)) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        t.end_thinking();
+        t.ensure_gap(1);
+    }
+}
+
 #[cfg(test)]
 mod acp_tests {
     use super::AcpAction;
@@ -218,6 +507,21 @@ mod acp_tests {
         assert!(matches!(parse_acp_args("/acp list"), AcpAction::List));
         assert!(matches!(parse_acp_args("/acp status"), AcpAction::Status));
         assert!(matches!(parse_acp_args("/acp off"), AcpAction::Off));
+        // Bare agent (what the picker returns) switches sticky mode.
+        match parse_acp_args("/acp claude") {
+            AcpAction::Switch { agent, yolo } => {
+                assert_eq!(agent, "claude");
+                assert!(!yolo);
+            }
+            _ => panic!("expected switch"),
+        }
+        match parse_acp_args("/acp codex --yolo") {
+            AcpAction::Switch { agent, yolo } => {
+                assert_eq!(agent, "codex");
+                assert!(yolo);
+            }
+            _ => panic!("expected switch"),
+        }
         match parse_acp_args("/acp claude hello world") {
             AcpAction::Delegate {
                 agent,
