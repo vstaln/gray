@@ -1,5 +1,12 @@
 //! Boot wiring: ordered plugins from profile + lockfile.
 //!
+//! TEST-ONLY harness: production (REPL, `-p`, gateway, cron) builds through
+//! [`crate::builder::active_plugins`] (via `builder::build_agent`) — the
+//! single production host. This module keeps the earlier split semantics for
+//! its integration tests only; do not call it from production code. Its
+//! profile-sidecar handling intentionally mirrors the builder's warn/skip
+//! filter (same messages), but the builder is authoritative when they differ.
+//!
 //! Moved out of the `gray` crate so the future gateway repo can reuse it.
 //! Depends only on gray-plugin + gray-core (+ std/tokio/serde_json/anyhow).
 //! Never touches gray-tools (would be a dependency cycle).

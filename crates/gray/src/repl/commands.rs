@@ -309,7 +309,7 @@ fn complete_plugin_args(
 ) -> Vec<(String, String)> {
     const SUBS: &[(&str, &str)] = &[
         ("list", "list installed plugins"),
-        ("search", "search Gray Index and Pi Gallery (preview)"),
+        ("search", "search Gray Index"),
         ("install", "install a plugin"),
         ("remove", "remove a plugin"),
         ("update", "update plugins"),
