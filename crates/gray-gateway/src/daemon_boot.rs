@@ -108,6 +108,24 @@ async fn run_gateway_inner(
     let Some(_lock) = crate::lock::try_acquire_gateway_lock() else {
         anyhow::bail!(crate::lock::ALREADY_RUNNING_MESSAGE);
     };
+    let home = crate::config::gray_home_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"));
+    if let Some(prev) = gray_supervise::lifecycle::Lifecycle::read(&home) {
+        if !prev.clean_shutdown {
+            log::warn!("gateway previous exit unclean (boot {})", prev.boot_id);
+        }
+    }
+    let _ = gray_supervise::lifecycle::Lifecycle::mark_boot(&home);
+    let _ = gray_supervise::heartbeat::write_heartbeat(&home);
+    let beat_home = home.clone();
+    let beat_every = gray_supervise::heartbeat_interval_secs();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(beat_every)).await;
+            let _ = gray_supervise::heartbeat::write_heartbeat(&beat_home);
+        }
+    });
+    let boot_deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(gray_supervise::watchdog::startup_timeout_secs());
     let cfg = load_gateway_config();
     let mut runner = GatewayRunner::from_config(cfg)?;
     if runner.adapters.is_empty() {
@@ -157,6 +175,10 @@ async fn run_gateway_inner(
     runner.sweep_pending().await;
 
     runner.send_startup_notifications().await;
+    if std::time::Instant::now() > boot_deadline {
+        log::error!("gateway startup watchdog: boot exceeded budget; exiting 75");
+        std::process::exit(gray_supervise::exit::EXIT_RESTART);
+    }
 
     let runner = Arc::new(runner);
     // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
@@ -195,7 +217,13 @@ async fn run_gateway_inner(
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         tokio::select! {
             _ = token.cancelled() => {},
-            _ = sigterm.recv() => {},
+            _ = sigterm.recv() => {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(gray_supervise::watchdog::SHUTDOWN_DRAIN_SECS),
+                    token.cancelled(),
+                )
+                .await;
+            },
             _ = sigint.recv() => {},
         }
     }
@@ -205,6 +233,9 @@ async fn run_gateway_inner(
             _ = token.cancelled() => {},
             _ = tokio::signal::ctrl_c() => {},
         }
+    }
+    if let Ok(home) = crate::config::gray_home_dir() {
+        let _ = gray_supervise::lifecycle::Lifecycle::mark_clean(&home);
     }
     Ok(())
 }
