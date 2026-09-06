@@ -1521,6 +1521,7 @@ dependencies = [
  "gray-plugin",
  "gray-provider",
  "gray-session",
+ "gray-supervise",
  "gray-tools",
  "ignore",
  "image",
@@ -1607,6 +1608,7 @@ dependencies = [
  "gray-plugin",
  "gray-provider",
  "gray-session",
+ "gray-supervise",
  "gray-tools",
  "log",
  "serde",
@@ -1711,6 +1713,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "gray-supervise"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
  "uuid",
 ]
