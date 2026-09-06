@@ -3,8 +3,8 @@
 //! Honest but thin: only gray-native-shaped sources install until the
 //! adapters land in Task 2.3.
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -127,6 +127,8 @@ pub struct Report {
     pub version: String,
     pub path: PathBuf,
     pub unverified: bool,
+    /// Pi installs only; `None` for index/URL installs. Callers print it.
+    pub pi_summary: Option<PiInstallSummary>,
 }
 
 fn lock_path() -> PathBuf {
@@ -293,6 +295,7 @@ pub(crate) struct StagedPkg {
     pub(crate) name: String,
     pub(crate) version: String,
     pub(crate) integrity: String,
+    pub(crate) tarball: String,
 }
 
 pub(crate) async fn stage_npm_package(
@@ -316,25 +319,412 @@ pub(crate) async fn stage_npm_package(
         name: name.to_string(),
         version: resolved.version,
         integrity: resolved.integrity,
+        tarball: resolved.tarball,
     })
 }
 
-/// `Npm` arm: resolve → verified download → staging unpack. Skill extraction
-/// and the lock write land in Task P2-2; until then this bails honestly after
-/// staging (the staging dir cleans itself, nothing is recorded).
+// --- P2-2 pi skills extraction + lock record ---
+//
+// Layout probe 2026-09-06 (3 real tarballs into /tmp, uncommitted):
+// - `@normful/picadillo@6.0.0`: `skills/mulch/SKILL.md` and
+//   `skills/run-in-tmux/SKILL.md` (plus a sibling `scripts/` dir, ignored),
+//   `extensions/*.ts` (skipped, P3).
+// - `pi-subagents-j0k3r@1.5.13`: `skills/subagents-configuration/SKILL.md`,
+//   manifest `"pi": {"skills": ["./skills"], "extensions": ["./index.ts"]}`,
+//   top-level `*.md` are docs (README/CHANGELOG — still copied per R14).
+// - `pi-skill-dollar@0.2.1`: NO skills at all, extension-only
+//   (`"pi": {"extensions": ["./dist/extension.js"]}`) → honest bail (R12).
+// Confirmed patterns: `skills/*/SKILL.md`, `*/SKILL.md`, top-level `*.md`,
+// manifest `pi.skills` globs. NEVER execute package code: only `.md` files
+// are copied; everything else is left behind (and counted honestly).
+
+/// What a pi install took vs skipped. On [`Report::pi_summary` for callers
+/// to print; extensions/themes are P3 and never executed.
+#[derive(Debug, Clone, Default)]
+pub struct PiInstallSummary {
+    pub taken: Vec<String>,
+    pub skipped_ext: bool,
+    pub skipped_themes: bool,
+}
+
+/// Lock key + `pi/` dir name for an npm package: `@scope/name` →
+/// `scope-name` (strip leading `@`, `/` → `-`). Sanitized keys never
+/// contain `/` or `..`, so [`remove`]'s traversal rejection still holds.
+pub fn sanitize_npm_key(name: &str) -> String {
+    name.strip_prefix('@').unwrap_or(name).replace('/', "-")
+}
+
+/// npm tarballs wrap everything in `package/`; use it when present.
+fn stage_root(dir: &Path) -> PathBuf {
+    let wrapped = dir.join("package");
+    if wrapped.is_dir() {
+        wrapped
+    } else {
+        dir.to_path_buf()
+    }
+}
+
+/// `(skills, extensions, themes)` globs/entries from `package.json`'s
+/// `"pi"` key. Missing manifest or key → all empty (patterns still apply).
+fn pi_manifest_lists(root: &Path) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let raw = std::fs::read_to_string(root.join("package.json"));
+    let Ok(raw) = raw else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (Vec::new(), Vec::new(), Vec::new());
+    };
+    let get = |key: &str| {
+        manifest
+            .get("pi")
+            .and_then(|pi| pi.get(key))
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    (get("skills"), get("extensions"), get("themes"))
+}
+
+/// One `.md` file to copy: `src` under the staging root → `rel` under the
+/// install dest, with `label` for the `taken` list.
+struct SkillMatch {
+    src: PathBuf,
+    rel: PathBuf,
+    label: String,
+}
+
+/// A `rel` built only from single file names is traversal-safe.
+fn safe_rel(parts: &[&str]) -> Option<PathBuf> {
+    let mut rel = PathBuf::new();
+    for p in parts {
+        if p.is_empty() || *p == "." || *p == ".." || p.contains(['/', '\\']) {
+            return None;
+        }
+        rel.push(p);
+    }
+    Some(rel)
+}
+
+/// Copy `dir`'s `.md` files as one skill: `<label>/<file>.md`,
+/// flattening the `skills/` container regardless of tarball depth.
+fn push_skill_dir(dir: &Path, out: &mut Vec<SkillMatch>, seen: &mut HashSet<PathBuf>) {
+    let Some(label) = dir.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| Path::new(n).extension().is_some_and(|e| e == "md"))
+        .collect();
+    files.sort_by_key(|n| (n != "SKILL.md", n.clone()));
+    for file in files {
+        // Flatten the `skills/` container: rel is `<label>/<file>.md`
+        // regardless of how deep the skill dir sat in the tarball.
+        let flat = PathBuf::from(label).join(&file);
+        if seen.insert(flat.clone()) {
+            out.push(SkillMatch {
+                src: dir.join(&file),
+                rel: flat,
+                label: label.to_string(),
+            });
+        }
+    }
+}
+
+/// Collect skill matches: `skills/*/SKILL.md`, `*/SKILL.md`, manifest
+/// `pi.skills` globs, top-level `*.md` (R14: top-level `.md` are skills —
+/// copied and listed in `taken`). Deduped, `taken` order stable.
+fn collect_skill_matches(root: &Path, globs: &[String]) -> Vec<SkillMatch> {
+    let mut out: Vec<SkillMatch> = Vec::new();
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+
+    // `skills/*/SKILL.md` (the common pi layout).
+    if let Ok(rd) = std::fs::read_dir(root.join("skills")) {
+        let mut dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            if dir.join("SKILL.md").is_file() {
+                push_skill_dir(&dir, &mut out, &mut seen);
+            }
+        }
+    }
+
+    // `*/SKILL.md` (one level under root; dedupe covers `skills/`).
+    if let Ok(rd) = std::fs::read_dir(root) {
+        let mut dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        dirs.sort();
+        for dir in dirs {
+            if dir.join("SKILL.md").is_file() {
+                push_skill_dir(&dir, &mut out, &mut seen);
+            }
+        }
+    }
+
+    // Manifest `pi.skills` globs (`./skills`, `skills/*`, single files).
+    for glob in globs {
+        let base = glob.strip_prefix("./").unwrap_or(glob);
+        let base = base.strip_suffix("/*").unwrap_or(base);
+        if base.is_empty() {
+            continue;
+        }
+        let path = root.join(base);
+        if path.is_dir() {
+            if path.join("SKILL.md").is_file() {
+                push_skill_dir(&path, &mut out, &mut seen);
+            }
+            if let Ok(rd) = std::fs::read_dir(&path) {
+                let mut dirs: Vec<PathBuf> = rd
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                dirs.sort();
+                for dir in dirs {
+                    if dir.join("SKILL.md").is_file() {
+                        push_skill_dir(&dir, &mut out, &mut seen);
+                    }
+                }
+            }
+        } else if path.is_file()
+            && path.extension().is_some_and(|e| e == "md")
+            && let Some(file) = path.file_name().and_then(|n| n.to_str())
+        {
+            if file == "SKILL.md" {
+                if let Some(parent) = path.parent() {
+                    push_skill_dir(parent, &mut out, &mut seen);
+                }
+            } else if let Some(rel) = safe_rel(&[file])
+                && seen.insert(rel.clone())
+            {
+                out.push(SkillMatch {
+                    src: path.clone(),
+                    rel,
+                    label: file.to_string(),
+                });
+            }
+        }
+    }
+
+    // Top-level `*.md`.
+    if let Ok(rd) = std::fs::read_dir(root) {
+        let mut files: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| Path::new(n).extension().is_some_and(|e| e == "md"))
+            .collect();
+        files.sort();
+        for file in files {
+            let Some(rel) = safe_rel(&[&file]) else {
+                continue;
+            };
+            if seen.insert(rel.clone()) {
+                out.push(SkillMatch {
+                    src: root.join(&file),
+                    rel,
+                    label: file,
+                });
+            }
+        }
+    }
+
+    out
+}
+
+/// Count skipped (never copied, never executed) payload: code files outside
+/// skill dirs (`.ts/.js/.mjs/.cjs/.tsx/.jsx`, or anything under
+/// `extensions/`/`dist/`) count as extensions; files under `themes/` or
+/// `theme/` count as themes. Manifest/doc/markdown files don't count.
+fn count_skipped(root: &Path) -> (usize, usize) {
+    const CODE_EXT: &[&str] = &["ts", "js", "mjs", "cjs", "tsx", "jsx"];
+    let mut ext = 0usize;
+    let mut themes = 0usize;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                if path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.') || n == "node_modules")
+                {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            // Never count skill content: anything under a dir with SKILL.md.
+            let mut under_skill = false;
+            for anc in rel.ancestors().skip(1) {
+                if anc.as_os_str().is_empty() {
+                    break;
+                }
+                if root.join(anc).join("SKILL.md").is_file() {
+                    under_skill = true;
+                    break;
+                }
+            }
+            if under_skill {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || name == "package.json" {
+                continue;
+            }
+            if path.extension().is_some_and(|e| e == "md") {
+                continue;
+            }
+            let in_dir = |d: &str| rel.components().any(|c| c.as_os_str() == d);
+            if in_dir("themes") || in_dir("theme") {
+                themes += 1;
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| CODE_EXT.contains(&e))
+                || in_dir("extensions")
+                || in_dir("dist")
+            {
+                ext += 1;
+            }
+        }
+    }
+    (ext, themes)
+}
+
+/// Copy matched `.md` files into `dest` (parents created; non-`md`
+/// refused defensively — matches are `.md` by construction).
+fn copy_skill_matches(dest: &Path, matches: &[SkillMatch]) -> anyhow::Result<()> {
+    for m in matches {
+        if m.src.extension().is_some_and(|e| e != "md") || m.src.extension().is_none() {
+            continue;
+        }
+        if m.rel
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            anyhow::bail!("refusing unsafe skill path: {}", m.rel.display());
+        }
+        let target = dest.join(&m.rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&m.src, &target)?;
+    }
+    Ok(())
+}
+
+/// Copy pi skills from a staged tarball into `<plugins_dir>/pi/<key>/`
+/// (`.md` only — package code is never executed) and write ONE lock entry.
+/// Zero skills → honest bail with nothing written (R12); any copy/lock
+/// failure removes `dest` and writes nothing (no half-state).
+fn extract_pi_skills(
+    staged: &StagedPkg,
+    opts: &InstallOpts,
+) -> anyhow::Result<(PathBuf, PiInstallSummary)> {
+    let key = sanitize_npm_key(&staged.name);
+    let root = stage_root(staged.dir.path());
+    let (skill_globs, manifest_ext, manifest_themes) = pi_manifest_lists(&root);
+    let matches = collect_skill_matches(&root, &skill_globs);
+    if matches.is_empty() {
+        anyhow::bail!(
+            "npm package {}@{} ships no skills (nothing to install; extensions/themes need P3)",
+            staged.name,
+            staged.version
+        );
+    }
+    let dest = crate::plugins_dir().join("pi").join(&key);
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)?;
+    }
+    if let Err(e) = copy_skill_matches(&dest, &matches) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
+    let (ext_n, theme_n) = count_skipped(&root);
+    let summary = PiInstallSummary {
+        taken: {
+            let mut labels: Vec<String> = matches.iter().map(|m| m.label.clone()).collect();
+            labels.sort();
+            labels.dedup();
+            labels
+        },
+        skipped_ext: !manifest_ext.is_empty() || root.join("extensions").is_dir() || ext_n > 0,
+        skipped_themes: !manifest_themes.is_empty()
+            || root.join("themes").is_dir()
+            || root.join("theme").is_dir()
+            || theme_n > 0,
+    };
+    if summary.skipped_ext {
+        eprintln!("skipped {ext_n} extension files (P3)");
+    }
+    if summary.skipped_themes {
+        eprintln!("skipped {theme_n} theme files (P3)");
+    }
+    let scope = opts.scope.clone().unwrap_or_else(|| "user".to_string());
+    let mut lock = read_lock()?.unwrap_or_default();
+    let enabled = lock.plugins.get(&key).map(|e| e.enabled).unwrap_or(true);
+    let entry = LockEntry {
+        ecosystem: "pi-gallery".to_string(),
+        version: staged.version.clone(),
+        hash: staged.integrity.clone(),
+        source: staged.tarball.clone(),
+        argv: opts.argv.clone(),
+        adapter_version: env!("CARGO_PKG_VERSION").to_string(),
+        installed_at: now_secs(),
+        scope,
+        enabled,
+    };
+    lock.plugins.insert(key.clone(), entry);
+    if let Err(e) = write_lock(&lock) {
+        let _ = std::fs::remove_dir_all(&dest);
+        return Err(e);
+    }
+    Ok((dest, summary))
+}
+
+/// `Npm` arm: resolve → verified download → staging unpack → skills
+/// extraction + ONE lock write (no half-state on failure).
 async fn install_npm(
     client: &reqwest::Client,
     name: &str,
     version: Option<&str>,
-    _opts: InstallOpts,
+    opts: InstallOpts,
 ) -> anyhow::Result<Report> {
     let staged = stage_npm_package(client, name, version).await?;
-    anyhow::bail!(
-        "npm package {}@{} verified (integrity {}) but skill extraction lands in Task P2-2",
-        staged.name,
-        staged.version,
-        staged.integrity
-    )
+    let (dest, summary) = extract_pi_skills(&staged, &opts)?;
+    let key = sanitize_npm_key(&staged.name);
+    eprintln!("skills taken: {}", summary.taken.join(", "));
+    Ok(Report {
+        name: key,
+        version: staged.version,
+        path: dest,
+        unverified: false,
+        pi_summary: Some(summary),
+    })
 }
 
 pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Report> {
@@ -391,6 +781,7 @@ async fn install_index(
         version: entry.version.clone(),
         path: dest,
         unverified: false,
+        pi_summary: None,
     })
 }
 
@@ -440,6 +831,7 @@ async fn install_url(
         version: "0.0.0".to_string(),
         path: dest,
         unverified: true,
+        pi_summary: None,
     })
 }
 
@@ -455,9 +847,15 @@ pub fn remove(name: &str) -> anyhow::Result<()> {
     if lock.plugins.remove(name).is_none() {
         anyhow::bail!("not installed: {name}");
     }
-    let dir = crate::plugins_dir().join(name);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)?;
+    // Gray-native/URL installs live at `<plugins_dir>/<name>`; pi installs
+    // at `<plugins_dir>/pi/<name>` (R13: sanitized keys hold no `/`).
+    for dir in [
+        crate::plugins_dir().join(name),
+        crate::plugins_dir().join("pi").join(name),
+    ] {
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
     }
     write_lock(&lock)?;
     Ok(())
@@ -1069,27 +1467,220 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sanitize_npm_key_cases() {
+        assert_eq!(sanitize_npm_key("pi-foo"), "pi-foo");
+        assert_eq!(sanitize_npm_key("@scope/bar"), "scope-bar");
+        // Sanitized keys can never trip `remove`'s traversal rejection.
+        for key in [sanitize_npm_key("pi-foo"), sanitize_npm_key("@scope/bar")] {
+            assert!(!key.contains('/'));
+            assert!(!key.contains(".."));
+            assert!(!key.is_empty());
+        }
+    }
+
+    /// Build a fixture tarball with `package/`-prefixed entries (npm layout).
+    fn skill_tgz(files: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut ar = tar::Builder::new(Vec::new());
+        for (name, content) in files {
+            let mut hdr = tar::Header::new_gnu();
+            hdr.set_size(content.len() as u64);
+            hdr.set_mode(0o644);
+            hdr.set_mtime(0);
+            hdr.set_cksum();
+            ar.append_data(&mut hdr, format!("package/{name}"), content.as_bytes())
+                .unwrap();
+        }
+        let tar_bytes = ar.into_inner().unwrap();
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&tar_bytes).unwrap();
+        enc.finish().unwrap()
+    }
+
+    /// Registry stub serving one metadata doc on ANY path (scoped names).
+    async fn spawn_registry_any(meta: serde_json::Value) -> String {
+        use axum::{Json, Router, routing::get};
+        let router = Router::new().route(
+            "/*rest",
+            get(move || {
+                let meta = meta.clone();
+                async move { Json(meta) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    const MULCH_SKILL: &str = "---\ndescription: mulch skill\n---\nMulch body";
+    const TMUX_SKILL: &str = "---\ndescription: tmux skill\n---\nTmux body";
+
+    fn pi_foo_meta(tarball: &str, integrity: &str) -> serde_json::Value {
+        serde_json::json!({
+            "dist-tags": {"latest": "1.0.0"},
+            "versions": {
+                "1.0.0": {"dist": {"tarball": tarball, "integrity": integrity}},
+            }
+        })
+    }
+
     #[tokio::test]
-    async fn install_npm_defers_extraction_to_p2_2() {
+    async fn install_npm_extracts_skills_and_writes_lock() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let tgz = skill_tgz(&[
+            (
+                "package.json",
+                r#"{"name":"pi-foo","version":"1.0.0","pi":{"extensions":["./dist/extension.js"]}}"#,
+            ),
+            ("skills/mulch/SKILL.md", MULCH_SKILL),
+            ("skills/run-in-tmux/SKILL.md", TMUX_SKILL),
+            (
+                "skills/run-in-tmux/scripts/run-in-tmux",
+                "#!/bin/sh\necho hi\n",
+            ),
+            ("extensions/mulch.ts", "export const x = 1;\n"),
+            ("themes/dark.css", "body {}\n"),
+            ("README.md", "# pi-foo\n"),
+        ]);
+        let tarball = spawn_tarball(tgz.clone()).await;
+        let integrity = sha512_integrity(&tgz);
+        let base = spawn_registry(pi_foo_meta(&tarball, &integrity)).await;
+        let _home = use_npm_env(&base);
+
+        let report = install(parse_spec("npm:pi-foo"), InstallOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(report.name, "pi-foo");
+        assert_eq!(report.version, "1.0.0");
+        assert!(!report.unverified);
+        let summary = report.pi_summary.expect("pi summary");
+        assert_eq!(summary.taken, vec!["README.md", "mulch", "run-in-tmux"]);
+        assert!(summary.skipped_ext);
+        assert!(summary.skipped_themes);
+
+        // `.md` only: skills + top-level doc land, code never does.
+        assert_eq!(
+            std::fs::read(report.path.join("mulch/SKILL.md")).unwrap(),
+            MULCH_SKILL.as_bytes()
+        );
+        assert!(report.path.join("run-in-tmux/SKILL.md").is_file());
+        assert!(report.path.join("README.md").is_file());
+        assert!(!report.path.join("run-in-tmux/scripts/run-in-tmux").exists());
+        assert!(!report.path.join("extensions").exists());
+        assert!(!report.path.join("package.json").exists());
+
+        // ONE lock entry, exact shape.
+        let entry = list().unwrap().remove("pi-foo").expect("lock entry");
+        assert_eq!(entry.ecosystem, "pi-gallery");
+        assert_eq!(entry.version, "1.0.0");
+        assert_eq!(entry.hash, integrity);
+        assert_eq!(entry.source, tarball);
+        assert_eq!(entry.scope, "user");
+        assert!(entry.enabled);
+    }
+
+    #[tokio::test]
+    async fn install_npm_scoped_name_sanitizes_key_and_dir() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let tgz = skill_tgz(&[("skills/a/SKILL.md", MULCH_SKILL)]);
+        let tarball = spawn_tarball(tgz.clone()).await;
+        let integrity = sha512_integrity(&tgz);
+        let meta = serde_json::json!({
+            "dist-tags": {"latest": "2.0.0"},
+            "versions": {
+                "2.0.0": {"dist": {"tarball": tarball, "integrity": integrity}},
+            }
+        });
+        let base = spawn_registry_any(meta).await;
+        let _home = use_npm_env(&base);
+
+        let report = install(parse_spec("npm:@scope/bar"), InstallOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(report.name, "scope-bar");
+        assert!(
+            report.path.ends_with("pi/scope-bar"),
+            "{}",
+            report.path.display()
+        );
+        assert!(report.path.join("a/SKILL.md").is_file());
+        let entry = list().unwrap().remove("scope-bar").expect("lock entry");
+        assert_eq!(entry.ecosystem, "pi-gallery");
+        assert_eq!(entry.version, "2.0.0");
+    }
+
+    #[tokio::test]
+    async fn install_npm_honors_manifest_skill_globs() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let tgz = skill_tgz(&[
+            (
+                "package.json",
+                r#"{"name":"pi-foo","version":"1.0.0","pi":{"skills":["./custom"]}}"#,
+            ),
+            ("custom/weird/SKILL.md", MULCH_SKILL),
+        ]);
+        let tarball = spawn_tarball(tgz.clone()).await;
+        let integrity = sha512_integrity(&tgz);
+        let base = spawn_registry(pi_foo_meta(&tarball, &integrity)).await;
+        let _home = use_npm_env(&base);
+
+        let report = install(parse_spec("npm:pi-foo"), InstallOpts::default())
+            .await
+            .unwrap();
+        let summary = report.pi_summary.expect("pi summary");
+        assert_eq!(summary.taken, vec!["weird"]);
+        assert!(!summary.skipped_ext);
+        assert!(!summary.skipped_themes);
+    }
+
+    #[tokio::test]
+    async fn install_npm_without_skills_bails_without_half_state() {
         let _guard = ENV_GUARD.lock().unwrap();
         let tgz = tiny_tgz();
         let tarball = spawn_tarball(tgz.clone()).await;
-        let meta = serde_json::json!({
-            "dist-tags": {"latest": "1.0.0"},
-            "versions": {
-                "1.0.0": {"dist": {"tarball": tarball, "integrity": sha512_integrity(&tgz)}},
-            }
-        });
-        let base = spawn_registry(meta).await;
+        let integrity = sha512_integrity(&tgz);
+        let base = spawn_registry(pi_foo_meta(&tarball, &integrity)).await;
         let _home = use_npm_env(&base);
 
         let err = install(parse_spec("npm:pi-foo"), InstallOpts::default())
             .await
             .unwrap_err()
             .to_string();
-        assert!(err.contains("P2-2"), "unexpected error: {err}");
-        // Nothing recorded: no half-state.
+        assert!(err.contains("pi-foo"), "names package: {err}");
+        assert!(err.contains("no skills"), "honest reason: {err}");
+        // Nothing recorded, nothing left behind.
         assert!(list().unwrap().is_empty());
+        assert!(!crate::plugins_dir().join("pi").exists());
+    }
+
+    #[test]
+    fn remove_deletes_pi_subdir() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        let mut lock = LockFile::default();
+        lock.plugins.insert(
+            "scope-bar".to_string(),
+            LockEntry {
+                ecosystem: "pi-gallery".into(),
+                version: "2.0.0".into(),
+                ..LockEntry::default()
+            },
+        );
+        write_lock(&lock).unwrap();
+        let dir = crate::plugins_dir().join("pi").join("scope-bar");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "x").unwrap();
+        remove("scope-bar").unwrap();
+        assert!(!list().unwrap().contains_key("scope-bar"));
+        assert!(!dir.exists());
     }
 
     #[test]
