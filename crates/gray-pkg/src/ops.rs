@@ -2414,10 +2414,7 @@ mod tests {
     /// Gray Index stub that always 404s (the unpublished production index).
     async fn spawn_index_404_stub() -> String {
         use axum::{Router, http::StatusCode, routing::get};
-        let router = Router::new().route(
-            "/index.json",
-            get(|| async { StatusCode::NOT_FOUND }),
-        );
+        let router = Router::new().route("/index.json", get(|| async { StatusCode::NOT_FOUND }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -2426,7 +2423,8 @@ mod tests {
         format!("http://127.0.0.1:{port}/index.json")
     }
 
-    async fn spawn_search_stub(objects: serde_json::Value) -> String {        use axum::{Json, Router, routing::get};
+    async fn spawn_search_stub(objects: serde_json::Value) -> String {
+        use axum::{Json, Router, routing::get};
         let router = Router::new().route(
             "/-/v1/search",
             get(move || {
@@ -2594,7 +2592,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_empty_both_sides_reports_no_hits() {        let _guard = ENV_GUARD.lock().unwrap();
+    async fn search_empty_both_sides_reports_no_hits() {
+        let _guard = ENV_GUARD.lock().unwrap();
         let index_url = spawn_index_stub(index_fixture(&[])).await;
         let registry = spawn_search_stub(search_objects(&[])).await;
         let _home = use_search_env(&index_url, &registry);
