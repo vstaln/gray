@@ -3,6 +3,8 @@
 pub mod compact;
 pub mod composer;
 pub mod config;
+pub mod cron_cli;
+pub mod feedback;
 pub mod host;
 pub mod logging;
 pub mod plugin_check;
