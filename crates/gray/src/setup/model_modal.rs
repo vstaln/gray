@@ -438,16 +438,10 @@ pub(crate) fn validate_direct_model_id(
         return Ok(id.clone());
     }
     let lower = input.to_lowercase();
-    if let Some((id, _)) = models
-        .iter()
-        .find(|(id, _)| id.to_lowercase() == lower)
-    {
+    if let Some((id, _)) = models.iter().find(|(id, _)| id.to_lowercase() == lower) {
         return Ok(id.clone());
     }
-    if let Some((id, _)) = models
-        .iter()
-        .find(|(_, name)| name.to_lowercase() == lower)
-    {
+    if let Some((id, _)) = models.iter().find(|(_, name)| name.to_lowercase() == lower) {
         return Ok(id.clone());
     }
     if !input.contains('/') {
