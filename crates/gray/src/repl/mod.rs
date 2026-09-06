@@ -59,6 +59,7 @@ mod key_watcher;
 mod prompt_turn;
 mod session;
 mod status;
+mod user_cmds;
 
 pub(crate) use acp_cmds::handle_acp;
 pub(crate) use commands::{REGISTRY, completion_matches_dyn};
@@ -85,6 +86,7 @@ pub(crate) use session::{
 pub(crate) use status::{
     SessionTotals, handle_compact, handle_context_window, handle_usage, turn_footer,
 };
+pub(crate) use user_cmds::{handle_feedback, handle_permissions};
 
 /// Shared TUI handle: the composer plus its shutdown flag.
 pub(crate) type TuiOpt = Option<(
@@ -99,7 +101,7 @@ pub(crate) struct SessionState {
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
 /// Raw println! while the composer viewport is live collides with the next draw (ghost input).
-fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
+pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     if let Some(t) = tui {
         let mut t = t.lock().expect("tui lock");
         // No gap above: command cards skip their trailing gap so this hugs them.
