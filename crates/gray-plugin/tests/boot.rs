@@ -55,6 +55,14 @@ fn lock_entry(argv: Vec<&str>) -> LockEntry {
         adapter_version: "1".to_string(),
         installed_at: "2026-09-05T00:00:00Z".to_string(),
         scope: "test".to_string(),
+        enabled: true,
+    }
+}
+
+fn disabled_entry(argv: Vec<&str>) -> LockEntry {
+    LockEntry {
+        enabled: false,
+        ..lock_entry(argv)
     }
 }
 
@@ -145,4 +153,27 @@ async fn dead_lock_sidecar_warns_and_others_still_load() {
         "lock warnings must not leak argv: {:?}",
         report.warnings
     );
+}
+
+#[tokio::test]
+async fn disabled_lock_entries_never_spawn() {
+    let home = tempfile::tempdir().unwrap();
+    save_lock(
+        home.path(),
+        BTreeMap::from([
+            // Disabled builtin-style entry: would resolve to "beta".
+            ("prof-b".to_string(), disabled_entry(vec![])),
+            // Disabled sidecar: never spawned (no dead-binary warning).
+            (
+                "dead-plugin".to_string(),
+                disabled_entry(vec!["definitely-not-a-real-binary-xyz"]),
+            ),
+            ("lock-good".to_string(), lock_entry(vec![])),
+        ]),
+    );
+
+    let (plugins, report) = active_plugins(None, home.path(), &resolve).await.unwrap();
+    assert_eq!(manifest_names(&plugins), ["good"]);
+    assert!(!report.used_fallback);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
 }
