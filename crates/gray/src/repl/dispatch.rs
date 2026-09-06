@@ -13,6 +13,7 @@ pub(crate) enum Flow {
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
     agent: &mut Option<Agent>,
+    acp: &mut Option<gray_acp::AcpSession>,
     config: &mut Config,
     cwd: &std::path::Path,
     tui: &TuiOpt,
@@ -28,6 +29,9 @@ pub(crate) async fn dispatch_command(
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
         ReplCommand::Quit => {
             shutdown_hooks(agent.as_ref()).await;
+            if let Some(s) = acp.take() {
+                s.shutdown().await;
+            }
             if let Some((shared, stop)) = tui {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut t = shared.lock().expect("tui lock");
@@ -103,6 +107,14 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::New(initial_prompt) => {
             shutdown_hooks(agent.as_ref()).await;
+            // Sticky ACP mode survives /new on a fresh agent thread.
+            if let Some(s) = acp.as_mut() {
+                let t = tui.as_ref().map(|(s, _)| s);
+                match s.new_session().await {
+                    Ok(()) => say(t, &format!("acp:{} new thread", s.agent_key())),
+                    Err(e) => say(t, &format!("acp new thread failed: {e:#}")),
+                }
+            }
             pending_history.clear();
             *session_totals = SessionTotals::default();
             *session_state = None;
@@ -294,7 +306,14 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Acp(raw) => {
-            handle_acp(&raw, cwd, tui.as_ref().map(|(s, _)| s)).await;
+            handle_acp_command(
+                &raw,
+                cwd,
+                tui.as_ref().map(|(s, _)| s),
+                &mut *acp,
+                config.model.as_deref(),
+            )
+            .await;
             Flow::Continue
         }
         ReplCommand::Unknown(cmd) => {
