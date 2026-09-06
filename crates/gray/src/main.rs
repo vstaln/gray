@@ -180,12 +180,81 @@ fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
 }
 
 async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
+    // Uniform with `Check`: user-facing errors go to stderr as
+    // `error: …` with exit 1 (not anyhow's `Error: …` dump).
+    let res = run_plugin_inner(cmd).await;
+    if let Err(e) = res {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
+    use gray::PluginCmd;
     match cmd {
-        gray::PluginCmd::Check { dir } => {
-            if let Err(e) = gray::plugin_check::check_plugin_dir(&dir).await {
-                eprintln!("error: {e:#}");
-                std::process::exit(1);
+        PluginCmd::Check { dir } => {
+            gray::plugin_check::check_plugin_dir(&dir).await?;
+            Ok(())
+        }
+        PluginCmd::List => {
+            let plugins = gray_pkg::ops::list()?;
+            if plugins.is_empty() {
+                println!("no plugins installed");
             }
+            for (name, e) in &plugins {
+                let state = if e.enabled { "" } else { " [disabled]" };
+                println!("{} {} ({}){state}", name, e.version, e.scope);
+            }
+            Ok(())
+        }
+        PluginCmd::Search { query } => {
+            let client = gray_pkg::fetch::client()?;
+            let index = gray_pkg::index::fetch_index(&client).await?;
+            let mut hits: Vec<(&String, &gray_pkg::index::Entry)> = index
+                .plugins
+                .iter()
+                .filter(|(n, _)| n.contains(query.as_str()))
+                .collect();
+            hits.sort_by(|a, b| a.0.cmp(b.0));
+            if hits.is_empty() {
+                anyhow::bail!(
+                    "not in index: {query} (try /plugin install <https-url>)"
+                );
+            }
+            for (name, e) in hits {
+                println!("{} {}", name, e.version);
+            }
+            Ok(())
+        }
+        PluginCmd::Install { spec } => {
+            let r = gray_pkg::ops::install(spec, gray_pkg::ops::InstallOpts::default()).await?;
+            println!("installed {} {} at {}", r.name, r.version, r.path.display());
+            Ok(())
+        }
+        PluginCmd::Remove { name } => {
+            gray_pkg::ops::remove(&name)?;
+            println!("removed {name}");
+            Ok(())
+        }
+        PluginCmd::Update { target } => {
+            let reports = gray_pkg::ops::update(&target).await?;
+            if reports.is_empty() {
+                println!("up to date");
+            }
+            for r in reports {
+                println!("updated {} {}", r.name, r.version);
+            }
+            Ok(())
+        }
+        PluginCmd::Enable { name } => {
+            gray_pkg::ops::set_enabled(&name, true)?;
+            println!("enabled {name}");
+            Ok(())
+        }
+        PluginCmd::Disable { name } => {
+            gray_pkg::ops::set_enabled(&name, false)?;
+            println!("disabled {name}");
             Ok(())
         }
     }

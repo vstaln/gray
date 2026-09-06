@@ -17,6 +17,7 @@ path = "src/main.rs"
 gray-acp = { workspace = true }
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
+gray-pkg = { workspace = true }
 gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
