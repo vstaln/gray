@@ -233,7 +233,10 @@ pub(crate) async fn handle_acp_command(
             if let Some(s) = start_session(spec, display, cwd, yolo, tui).await {
                 let key = s.agent_key().to_string();
                 set_model_label(tui, &format!("acp:{key}"));
-                say(tui, &format!("switched to acp:{key} — prompts route there until /acp off"));
+                say(
+                    tui,
+                    &format!("switched to acp:{key} — prompts route there until /acp off"),
+                );
                 *acp = Some(s);
             }
         }
