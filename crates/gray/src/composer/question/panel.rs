@@ -4,7 +4,12 @@ use super::*;
 
 /// Builds the panel lines for the inline viewport (draw side). Rows are
 /// capped at `max_rows`; the option window scrolls around the selection.
-pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec<Line<'static>> {
+pub(crate) fn panel_lines(
+    q: &QuestionSession,
+    draft: &str,
+    w: usize,
+    max_rows: usize,
+) -> Vec<Line<'static>> {
     let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
     let mut lines: Vec<Line<'static>> = Vec::new();
     // top margin — like 4f8cc65 [WORKING WORKING FINAL ULTRA MEGA SUPREME...] padded card box
@@ -84,9 +89,9 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     let q_lines = q_lines_vec.len();
     lines.extend(q_lines_vec);
 
-    // Budget: top(1) + progress(1) + question + tips(1) + bottom margin(1);
-    // rest goes to options.
-    let overhead = 4 + q_lines;
+    // Budget: top(1) + progress(1) + question + notes(0/1) + tips(1) +
+    // bottom margin(1); rest goes to options.
+    let overhead = 4 + q_lines + usize::from(q.notes_editor_visible());
     let budget = max_rows.saturating_sub(overhead);
     let len = q.options_len();
     // Cursor position vs committed pick are different things: the cursor row
@@ -119,11 +124,39 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         }
     }
 
+    // Editable notes row (Tab): the composer box is hidden while a question
+    // owns the viewport, so without this row typed notes are invisible.
+    if q.notes_editor_visible() {
+        lines.push(notes_row(draft));
+    }
     lines.push(tips_line(q));
     // bottom margin mirrors the top one — without it the footer jams
     // against the tips line.
     lines.push(Line::from("").style(bg_style));
     lines
+}
+
+/// Editable notes input row: mirrors the composer textarea draft, which is
+/// where keystrokes land while the question owns the viewport.
+fn notes_row(draft: &str) -> Line<'static> {
+    let flat: String = draft.replace('\n', " ");
+    if flat.trim().is_empty() {
+        Line::from(vec![
+            Span::styled("› ".to_string(), Style::default().fg(DIM)),
+            Span::styled(
+                "add notes…".to_string(),
+                Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                "› ".to_string(),
+                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(flat, Style::default().fg(TEXT)),
+        ])
+    }
 }
 
 /// One option as wrapped rows: the head row keeps the picked styling, long
