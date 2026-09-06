@@ -55,6 +55,8 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/key [provider]` | add or rotate a key without leaving the chat |
 | `/compact [instructions]` | summarize context (auto-compacts when near limit) |
 | `/usage` | session tokens & cost |
+| `/permissions [mode]` | choose what gray is allowed to do — read-only · auto · full (Shift+Tab cycles read-only ↔ auto) |
+| `/feedback <text>` | save feedback locally + open a prefilled GitHub issue |
 | `/context [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
 | `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/acp [agent] [prompt]` | run as an external ACP agent (claude, codex, cursor, opencode…) |

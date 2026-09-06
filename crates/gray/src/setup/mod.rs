@@ -33,6 +33,7 @@ mod context_modal;
 mod effort;
 mod gateway_modal;
 mod model_modal;
+mod permissions_modal;
 mod skills_modal;
 
 pub use context_modal::run_context_modal;
@@ -45,6 +46,7 @@ pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
 pub use gateway_modal::run_gateway_modal;
 pub use model_modal::run_model_modal;
+pub use permissions_modal::run_permissions_modal;
 pub use skills_modal::run_skills_modal;
 
 use crate::{config::Config, tui::print_wrapped};
