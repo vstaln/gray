@@ -110,10 +110,10 @@ async fn run_gateway_inner(
     };
     let home =
         crate::config::gray_home_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"));
-    if let Some(prev) = gray_supervise::lifecycle::Lifecycle::read(&home) {
-        if !prev.clean_shutdown {
-            log::warn!("gateway previous exit unclean (boot {})", prev.boot_id);
-        }
+    if let Some(prev) = gray_supervise::lifecycle::Lifecycle::read(&home)
+        && !prev.clean_shutdown
+    {
+        log::warn!("gateway previous exit unclean (boot {})", prev.boot_id);
     }
     let _ = gray_supervise::lifecycle::Lifecycle::mark_boot(&home);
     let _ = gray_supervise::heartbeat::write_heartbeat(&home);
