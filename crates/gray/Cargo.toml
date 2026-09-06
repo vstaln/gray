@@ -35,6 +35,7 @@ reqwest = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
+percent-encoding = { workspace = true }
 arboard = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 tempfile = { workspace = true }
