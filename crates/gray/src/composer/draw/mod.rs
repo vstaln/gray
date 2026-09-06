@@ -65,15 +65,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // Queued preview sits between status and input (codex PendingInputPreview
         // parity). Hidden while a question owns the viewport.
         // Live gateway boot panel rides the same slot (above the input box):
-        // card rows with no bg (text only), zero transcript lines.
+        // card rows with the committed card's bg, zero transcript lines.
         let queued_preview: Vec<Line<'static>> = if question_active {
             Vec::new()
         } else {
             queued_preview_lines(&tui.queued_inputs, w)
         };
         // Live gateway boot panel rides the slot above the input box. Its rows
-        // come pre-padded (transcript::format_gateway_boot_card, no bg) and
-        // ONE bare row separates the card from the input band — the same
+        // come pre-padded with the card bg (transcript::format_gateway_boot_card)
+        // and ONE bare row separates the card from the input band — the same
         // `ensure_gap(1)` the committed card gets, so the commit never shifts
         // the input by a row.
         let boot_lines: &[Line<'static>] = if question_active {
@@ -171,8 +171,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
         // Boot panel painted by the SAME helper the committed card uses
-        // (paint_card lays the rows, no bg), so live `validating token…` is
-        // pixel-identical to committed `connected as …`.
+        // (rows carry the card bg, paint_card just lays them), so live
+        // `validating token…` is pixel-identical to committed
+        // `connected as …`. The bare gap row below it is simply left unpainted.
         if !boot_lines.is_empty() {
             let boot_y = status_y + status_h + queued_preview.len() as u16;
             if boot_y < area.bottom() {
@@ -189,8 +190,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 && !question_active {
+            let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
             frame.render_widget(
-                Paragraph::new(ibox.lines),
+                Paragraph::new(ibox.lines).block(box_block),
                 Rect::new(area.x, box_y, area.width, rendered_box_h),
             );
         }
@@ -329,24 +331,37 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         } else {
             tui.thinking_effort.clone()
         };
-        let right_parts = if model_display.is_empty() {
-            vec![Span::styled(
-                effort_display.clone(),
-                Style::default().fg(Color::Rgb(108, 108, 108)),
-            )]
-        } else {
-            vec![
-                Span::styled(
-                    model_display.clone(),
-                    Style::default().fg(Color::Rgb(140, 140, 140)),
-                ),
-                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
-                Span::styled(
+        let right_parts = {
+            let perm_badge: Option<(String, Color)> = match tui.permission_mode.as_str() {
+                "full" => Some((" · full access".to_string(), Color::Rgb(200, 120, 120))),
+                "read-only" => Some((" · read-only".to_string(), Color::Rgb(130, 145, 160))),
+                _ => None,
+            };
+            let mut v = if model_display.is_empty() {
+                vec![Span::styled(
                     effort_display.clone(),
                     Style::default().fg(Color::Rgb(108, 108, 108)),
-                ),
-            ]
+                )]
+            } else {
+                vec![
+                    Span::styled(
+                        model_display.clone(),
+                        Style::default().fg(Color::Rgb(140, 140, 140)),
+                    ),
+                    Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                    Span::styled(
+                        effort_display.clone(),
+                        Style::default().fg(Color::Rgb(108, 108, 108)),
+                    ),
+                ]
+            };
+            if let Some((badge, color)) = &perm_badge {
+                v.push(Span::styled(badge.clone(), Style::default().fg(*color)));
+            }
+            let badge_len = perm_badge.map(|(b, _)| b.chars().count()).unwrap_or(0);
+            (v, badge_len)
         };
+        let (right_parts, badge_len) = right_parts;
         // Cron ticking clock — next due countdown, ticks via tick_status
         let cron_display: Option<(String, Color)> =
             tui.next_cron.as_ref().and_then(|(name, next)| {
@@ -375,9 +390,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             .map(|(s, _)| s.chars().count() + 3)
             .unwrap_or(0);
         let right_len = if model_display.is_empty() {
-            effort_display.chars().count()
+            effort_display.chars().count() + badge_len
         } else {
-            model_display.chars().count() + 3 + effort_display.chars().count()
+            model_display.chars().count() + 3 + effort_display.chars().count() + badge_len
         };
         let left_len =
             1 + ctx_display.chars().count() + 3 + cache_display.chars().count() + cron_len;

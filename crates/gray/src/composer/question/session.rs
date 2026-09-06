@@ -129,6 +129,10 @@ impl QuestionSession {
         &self.questions[self.current_idx]
     }
 
+    fn is_approval(&self) -> bool {
+        self.questions[self.current_idx].id == "tool-approval"
+    }
+
     /// Options plus the auto-added "Other" row (codex other_option_enabled).
     pub(crate) fn options_len(&self) -> usize {
         let q = self.current_question();
@@ -440,6 +444,28 @@ impl QuestionSession {
 
         match self.focus {
             Focus::Options => match code {
+                KeyCode::Char('y') if self.is_approval() => {
+                    self.answers[self.current_idx].selected_idx = Some(0);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Char('a') if self.is_approval() && self.options_len() > 1 => {
+                    self.answers[self.current_idx].selected_idx = Some(1);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Char('!') if self.is_approval() && self.options_len() > 2 => {
+                    self.answers[self.current_idx].selected_idx = Some(2);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Char('n') if self.is_approval() => {
+                    let last = self.options_len().saturating_sub(1);
+                    self.answers[self.current_idx].selected_idx = Some(last);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
+                KeyCode::Esc if self.is_approval() => self.skip_current(ta),
                 KeyCode::Left | KeyCode::Char('h') => {
                     self.move_question(false, ta);
                     QuestionOutcome::Redraw
@@ -583,6 +609,10 @@ pub(crate) fn attach_request(
     t.sel = 0;
     t.textarea.set_text("");
     t.active_question = Some(QuestionSession::new(questions, blocking, tx, resolved));
+    // Breathing room: a true blank transcript row above the panel so its gray
+    // top edge never fuses with the tool echo above it. No-op when the
+    // transcript already ends blank (e.g. queued activation after a summary).
+    t.ensure_gap(1);
     let _ = t.draw();
 }
 
@@ -680,7 +710,15 @@ pub(crate) fn result_summary_lines(
             .find(|a| a.id == q.id)
             .map(|a| a.answers.join(" · "))
             .unwrap_or_default();
-        lines.push(format!("? {}", q.question));
+        let mut q_lines = q.question.lines();
+        if let Some(first) = q_lines.next() {
+            lines.push(format!("? {first}"));
+            for rest in q_lines {
+                lines.push(format!("  {rest}"));
+            }
+        } else {
+            lines.push(format!("? {}", q.question));
+        }
         if joined.is_empty() {
             lines.push("  → skipped".to_string());
         } else {

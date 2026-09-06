@@ -503,6 +503,10 @@ pub(crate) fn read_line(
                         tui.push_user_prompt(&echo, &attached, !trimmed.starts_with('/'));
                         return Ok(Some((trimmed, attached)));
                     }
+                    KeyCode::BackTab => {
+                        let mode = tui.cycle_permission_mode();
+                        tui.pending_permission_mode = Some(mode);
+                    }
                     KeyCode::Tab => {
                         if let Some((name, _)) = tui.matches.get(tui.sel) {
                             let fill = if name == "skills" {

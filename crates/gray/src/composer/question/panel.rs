@@ -46,20 +46,48 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
         Style::default().fg(DIM),
     )));
 
-    let question_text = format!(" {}", q.current_question().question);
-    let wrapped = wrap_plain(&question_text, w);
-    let q_lines = wrapped.len();
-    lines.extend(wrapped.into_iter().map(|l| {
-        Line::from(Span::styled(
-            l,
-            Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
-        ))
-    }));
+    let raw_q = &q.current_question().question;
+    let mut q_lines_vec: Vec<Line<'static>> = Vec::new();
+    let q_parts: Vec<&str> = raw_q.split('\n').collect();
+    if q_parts.len() <= 1 {
+        let wrapped = wrap_plain(raw_q, w.saturating_sub(4).max(10));
+        for l in wrapped {
+            q_lines_vec.push(Line::from(Span::styled(
+                format!(" {l}"),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )));
+        }
+    } else {
+        // First line is question title (e.g. "Allow bash?")
+        let title_wrapped = wrap_plain(q_parts[0], w.saturating_sub(4).max(10));
+        for l in title_wrapped {
+            q_lines_vec.push(Line::from(Span::styled(
+                format!(" {l}"),
+                Style::default().fg(TEXT).add_modifier(Modifier::BOLD),
+            )));
+        }
+        // Remaining lines are command / details preview with side padding (indented by 2 spaces)
+        for part in &q_parts[1..] {
+            if part.is_empty() {
+                q_lines_vec.push(Line::from(""));
+            } else {
+                let cmd_wrapped = wrap_plain(part, w.saturating_sub(6).max(10));
+                for l in cmd_wrapped {
+                    q_lines_vec.push(Line::from(Span::styled(
+                        format!("  {l}"),
+                        Style::default().fg(Color::Rgb(210, 210, 210)),
+                    )));
+                }
+            }
+        }
+    }
+    let q_lines = q_lines_vec.len();
+    lines.extend(q_lines_vec);
 
     // Budget: top(1) + progress(1) + question + tips(1) + bottom margin(1);
     // rest goes to options.
-    // Min 3 options so long questions don't squeeze to 1.
-    let budget = max_rows.saturating_sub(4 + q_lines.min(max_rows.saturating_sub(4)));
+    let overhead = 4 + q_lines;
+    let budget = max_rows.saturating_sub(overhead);
     let len = q.options_len();
     // Cursor position vs committed pick are different things: the cursor row
     // always shows the arrow and gets accent styling from the start, so the
@@ -68,7 +96,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
     // unanswered until Enter, Space, a digit, or notes confirm it).
     let picked = q.answers[q.current_idx].selected_idx.is_some();
     let cursor = q.answers[q.current_idx].selected_idx.unwrap_or(0);
-    let visible = budget.min(len).max(3.min(len));
+    let visible = budget.min(len).max(1);
     let start = cursor.saturating_sub(visible.saturating_sub(1)).min(cursor);
     for i in start..len.min(start + visible) {
         let is_cursor = i == cursor;
@@ -93,7 +121,7 @@ pub(crate) fn panel_lines(q: &QuestionSession, w: usize, max_rows: usize) -> Vec
 
     lines.push(tips_line(q));
     // bottom margin mirrors the top one — without it the footer jams
-    // against "enter to submit".
+    // against the tips line.
     lines.push(Line::from("").style(bg_style));
     lines
 }
@@ -172,21 +200,27 @@ fn tips_line(q: &QuestionSession) -> Line<'static> {
         q.answers[q.current_idx].notes_visible || !q.answers[q.current_idx].draft.trim().is_empty();
     let mut tips: Vec<(String, bool)> = Vec::new();
     let sel = q.answers[q.current_idx].selected_idx.is_some();
-    if sel && !notes_visible {
-        tips.push(("tab to add notes".into(), true));
-    } else if sel && notes_visible {
-        tips.push(("tab or esc to clear notes".into(), false));
-    }
-    let is_last = q.current_idx + 1 >= q.questions.len();
-    let submit = if q.questions.len() == 1 || is_last {
-        "enter picks + submits"
+    let is_approval = q.questions[q.current_idx].id == "tool-approval";
+    if is_approval {
+        tips.push(("enter confirm".into(), true));
+        tips.push(("esc cancel".into(), false));
     } else {
-        "enter picks + next"
-    };
-    tips.push(("backspace skips question".into(), false));
-    tips.push((submit.into(), true));
-    if q.questions.len() > 1 {
-        tips.push(("←/→ to change question".into(), false));
+        if sel && !notes_visible {
+            tips.push(("tab notes".into(), true));
+        } else if sel && notes_visible {
+            tips.push(("esc clear notes".into(), false));
+        }
+        let is_last = q.current_idx + 1 >= q.questions.len();
+        let submit = if q.questions.len() == 1 || is_last {
+            "enter submit"
+        } else {
+            "enter next"
+        };
+        tips.push((submit.into(), true));
+        if q.questions.len() > 1 {
+            tips.push(("backspace skip".into(), false));
+            tips.push(("←/→ navigate".into(), false));
+        }
     }
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
     for (i, (text, highlight)) in tips.iter().enumerate() {
