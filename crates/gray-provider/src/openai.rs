@@ -155,7 +155,7 @@ impl OpenAiProvider {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiChatRequest {
+pub(crate) struct OpenAiChatRequest {
     model: String,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -778,7 +778,7 @@ fn responses_url(base_url: &Url) -> Result<Url, ProviderError> {
 }
 
 #[derive(Debug, Serialize)]
-struct ResponsesRequest {
+pub(crate) struct ResponsesRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
