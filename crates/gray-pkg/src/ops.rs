@@ -515,6 +515,158 @@ pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {
     Ok(out)
 }
 
+// --- P2-3 `search` fan-out (Gray Index + Pi Gallery preview) ---
+//
+// Probe 2026-09-06: pi.dev/packages is SSR HTML (no JSON search API);
+// npm `/-/v1/search` recalls known pi packages 3/3
+// (@braintrust/pi-extension, bigpowers, context-mode), so the pi side
+// reads npm search on the shared registry base. No per-hit filtering:
+// matches are listed labeled `(preview)`; install stays skills-only.
+
+/// Where a search hit came from. Labels are display-time copy only:
+/// pi hits read exactly `Pi Gallery (preview)` (never stored).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchSource {
+    Gray,
+    Pi,
+}
+
+impl SearchSource {
+    /// Display label for a source (`Pi Gallery (preview)` is exact copy).
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchSource::Gray => "Gray Index",
+            SearchSource::Pi => "Pi Gallery (preview)",
+        }
+    }
+}
+
+/// One merged search hit. Gray entries carry no description (the index
+/// has none); pi hits carry npm's description (possibly empty).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub name: String,
+    pub version: String,
+    pub desc: String,
+    pub source: SearchSource,
+}
+
+/// Advisory line printed when the pi side fails; search still exits 0.
+pub const PI_UNREACHABLE_LINE: &str = "Pi Gallery (preview): unreachable";
+
+/// Render one hit: `name version [source] - desc`, with the desc suffix
+/// omitted when empty (always the case for Gray Index hits).
+pub fn format_search_hit(hit: &SearchHit) -> String {
+    let base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
+    let desc = hit.desc.trim();
+    if desc.is_empty() {
+        base
+    } else {
+        format!("{base} - {desc}")
+    }
+}
+
+/// Outcome of [`search_all`]: merged hits (gray first, gray wins name
+/// collisions) plus whether the pi side failed. Callers print
+/// [`PI_UNREACHABLE_LINE`] when `pi_unreachable` is set — never an
+/// error exit for a pi-side failure.
+#[derive(Debug)]
+pub struct SearchOutput {
+    pub hits: Vec<SearchHit>,
+    pub pi_unreachable: bool,
+}
+
+/// Query the pi side via npm search (`/-/v1/search`, `size=20`) on the
+/// shared registry base ([`npm_registry_base`], so tests point this at
+/// loopback). Any failure is an `Err` for [`search_all`] to downgrade
+/// to the advisory path.
+async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<SearchHit>> {
+    let url = format!("{}/-/v1/search", npm_registry_base().trim_end_matches('/'));
+    crate::fetch::check_url(&url)?;
+    log::debug!("searching pi gallery via {}", crate::fetch::redact(&url));
+    let resp: serde_json::Value = client
+        .get(&url)
+        .query(&[("text", query), ("size", "20")])
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let mut hits = Vec::new();
+    if let Some(objects) = resp.get("objects").and_then(|v| v.as_array()) {
+        for obj in objects {
+            let pkg = obj.get("package");
+            let name = pkg
+                .and_then(|p| p.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if name.is_empty() {
+                continue;
+            }
+            let version = pkg
+                .and_then(|p| p.get("version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let desc = pkg
+                .and_then(|p| p.get("description"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            hits.push(SearchHit {
+                name: name.to_string(),
+                version,
+                desc,
+                source: SearchSource::Pi,
+            });
+        }
+    }
+    hits.truncate(20);
+    Ok(hits)
+}
+
+/// Fan out `query` over the Gray Index (substring over the
+/// `fetch_index` cache) and the pi side ([`search_pi`]). Gray wins name
+/// collisions (the pi duplicate is suppressed). A pi-side failure sets
+/// `pi_unreachable` instead of erroring; gray-side (index) failures
+/// still return `Err`.
+pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
+    let client = crate::fetch::client()?;
+    let index = crate::index::fetch_index(&client).await?;
+    // `plugins` is a BTreeMap, so gray hits come out name-sorted.
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut gray_names = std::collections::BTreeSet::new();
+    for (name, entry) in index.plugins.iter().filter(|(n, _)| n.contains(query)) {
+        gray_names.insert(name.clone());
+        hits.push(SearchHit {
+            name: name.clone(),
+            version: entry.version.clone(),
+            desc: String::new(),
+            source: SearchSource::Gray,
+        });
+    }
+    let pi_unreachable = match search_pi(&client, query).await {
+        Ok(pi_hits) => {
+            for hit in pi_hits {
+                if !gray_names.contains(&hit.name) {
+                    hits.push(hit);
+                }
+            }
+            false
+        }
+        Err(e) => {
+            log::debug!("pi gallery search failed: {e:#}");
+            true
+        }
+    };
+    Ok(SearchOutput {
+        hits,
+        pi_unreachable,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::await_holding_lock)]
@@ -1076,5 +1228,177 @@ mod tests {
         remove("demo").unwrap();
         assert!(!list().unwrap().contains_key("demo"));
         assert!(!dir.exists());
+    }
+
+    // --- P2-3 search fan-out fixtures (loopback only, no live network) ---
+
+    async fn spawn_index_stub(index: serde_json::Value) -> String {
+        use axum::{Json, Router, routing::get};
+        let router = Router::new().route(
+            "/index.json",
+            get(move || {
+                let index = index.clone();
+                async move { Json(index) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://127.0.0.1:{port}/index.json")
+    }
+
+    async fn spawn_search_stub(objects: serde_json::Value) -> String {
+        use axum::{Json, Router, routing::get};
+        let router = Router::new().route(
+            "/-/v1/search",
+            get(move || {
+                let objects = objects.clone();
+                async move { Json(serde_json::json!({"objects": objects})) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn index_fixture(names: &[(&str, &str)]) -> serde_json::Value {
+        let mut plugins = serde_json::Map::new();
+        for (name, version) in names {
+            plugins.insert(
+                (*name).to_string(),
+                serde_json::json!({
+                    "ecosystem": "gray-native",
+                    "version": version,
+                    "source": {"type": "https", "url": "https://h/x.tar.gz"},
+                    "hash": "sha256:abc",
+                }),
+            );
+        }
+        serde_json::json!({"schema": 1, "generated": "", "plugins": plugins})
+    }
+
+    fn search_objects(pkgs: &[(&str, &str, &str)]) -> serde_json::Value {
+        pkgs.iter()
+            .map(|(name, version, desc)| {
+                serde_json::json!({"package": {"name": name, "version": version, "description": desc}})
+            })
+            .collect()
+    }
+
+    /// Point `GRAY_HOME` at a fresh tempdir and the index + npm search at
+    /// stubs. Must be called under `ENV_GUARD`.
+    fn use_search_env(index_url: &str, registry_base: &str) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+            std::env::set_var(crate::index::INDEX_URL_ENV, index_url);
+            std::env::set_var(NPM_REGISTRY_ENV, registry_base);
+        }
+        home
+    }
+
+    #[tokio::test]
+    async fn search_merges_gray_first_with_source_labels() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
+        let registry =
+            spawn_search_stub(search_objects(&[("pi-bar", "2.0.0", "does things")])).await;
+        let _home = use_search_env(&index_url, &registry);
+
+        let out = search_all("gray").await.unwrap();
+        assert!(!out.pi_unreachable);
+        assert_eq!(out.hits.len(), 2);
+        assert_eq!(out.hits[0].source, SearchSource::Gray);
+        assert_eq!(out.hits[0].name, "gray-foo");
+        assert_eq!(out.hits[1].source, SearchSource::Pi);
+        assert_eq!(out.hits[1].name, "pi-bar");
+        assert_eq!(format_search_hit(&out.hits[0]), "gray-foo 1.0.0 [Gray Index]");
+        assert_eq!(
+            format_search_hit(&out.hits[1]),
+            "pi-bar 2.0.0 [Pi Gallery (preview)] - does things"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_collision_prefers_gray() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
+        let registry =
+            spawn_search_stub(search_objects(&[("gray-foo", "9.9.9", "pi copy")])).await;
+        let _home = use_search_env(&index_url, &registry);
+
+        let out = search_all("gray").await.unwrap();
+        assert!(!out.pi_unreachable);
+        assert_eq!(out.hits.len(), 1);
+        assert_eq!(out.hits[0].name, "gray-foo");
+        assert_eq!(out.hits[0].version, "1.0.0");
+        assert_eq!(out.hits[0].source, SearchSource::Gray);
+    }
+
+    #[tokio::test]
+    async fn search_pi_unreachable_is_advisory_not_error() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        // Closed loopback port: connection refused, instantly.
+        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
+        let _home = use_search_env(&index_url, "http://127.0.0.1:1");
+
+        let out = search_all("gray").await.unwrap();
+        assert!(out.pi_unreachable);
+        assert_eq!(out.hits.len(), 1);
+        assert_eq!(out.hits[0].source, SearchSource::Gray);
+        assert_eq!(PI_UNREACHABLE_LINE, "Pi Gallery (preview): unreachable");
+    }
+
+    #[tokio::test]
+    async fn search_pi_unreachable_with_gray_miss_still_ok() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[])).await;
+        let _home = use_search_env(&index_url, "http://127.0.0.1:1");
+
+        // Ok (not Err): callers print the advisory line and exit 0.
+        let out = search_all("nothing-matches").await.unwrap();
+        assert!(out.pi_unreachable);
+        assert!(out.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_empty_both_sides_reports_no_hits() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[])).await;
+        let registry = spawn_search_stub(search_objects(&[])).await;
+        let _home = use_search_env(&index_url, &registry);
+
+        // Ok + empty + reachable: callers keep the `not in index` miss.
+        let out = search_all("nothing-matches").await.unwrap();
+        assert!(!out.pi_unreachable);
+        assert!(out.hits.is_empty());
+    }
+
+    #[test]
+    fn search_copy_rules_are_exact() {
+        assert_eq!(SearchSource::Gray.label(), "Gray Index");
+        assert_eq!(SearchSource::Pi.label(), "Pi Gallery (preview)");
+        assert!(SearchSource::Pi.label().contains("(preview)"));
+        assert_eq!(PI_UNREACHABLE_LINE, "Pi Gallery (preview): unreachable");
+        // Empty desc omits the suffix; surrounding whitespace is trimmed.
+        let bare = SearchHit {
+            name: "n".to_string(),
+            version: "1.0.0".to_string(),
+            desc: String::new(),
+            source: SearchSource::Gray,
+        };
+        assert_eq!(format_search_hit(&bare), "n 1.0.0 [Gray Index]");
+        let padded = SearchHit {
+            desc: "  padded  ".to_string(),
+            source: SearchSource::Pi,
+            ..bare
+        };
+        assert_eq!(format_search_hit(&padded), "n 1.0.0 [Pi Gallery (preview)] - padded");
     }
 }
