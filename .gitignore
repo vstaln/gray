@@ -9,6 +9,11 @@
 # local gray state (fallback when $HOME unset)
 .gray/
 
+# dogfooder harness ships; runs stay local (seeded gray-homes inside
+# runs/ contain real key copies, transcripts may quote secrets)
+# ponytail: track the loop, never its output
+/dogfood/runs/
+
 # opencode / tooling
 .commandcode/
 .superpowers/

@@ -19,7 +19,7 @@
 
 ---
 
-### Task P2-1: `npm:` spec + registry metadata + tarball install
+### Task 1: P2-1 `npm:` spec + registry metadata + tarball install
 
 **Files:**
 - Modify: `crates/gray-pkg/src/ops.rs` (`NameOrUrl`/`parse_spec`, `install` dispatch, namer), `crates/gray-pkg/src/fetch.rs` (sha512 verify path)
@@ -34,7 +34,7 @@
 - [ ] **Step 4: Wire `install`** — `Npm` arm: resolve → download (verified) → unpack to staging tempdir → hand path to Task P2-2's extractor (define `pub(crate) async fn stage_npm_package(...) -> anyhow::Result<StagedPkg{dir, name, version, integrity}>` EXACTLY with that name/shape; P2-2 consumes it). Lock write happens in P2-2 after extraction (single write, no half-state).
 - [ ] **Step 5: Run + commit** — `cargo test -p gray-pkg --quiet` PASS. `git add crates/gray-pkg/src/ops.rs crates/gray-pkg/src/fetch.rs` + commit `feat(pkg): npm: spec with verified tarball staging`.
 
-### Task P2-2: Skills extraction + lock record
+### Task 2: P2-2 Skills extraction + lock record
 
 **Files:**
 - Modify: `crates/gray-pkg/src/ops.rs` (extractor + lock write), optionally `crates/gray/src/skills/*` (ONLY if discovery misses a dir — verify first, prefer no change)
@@ -49,7 +49,7 @@
 - [ ] **Step 4: Discovery check** — verify installed skills appear via existing `discover_skills` roots (gray already scans `.pi/skills`; if `<plugins_dir>/pi` isn't scanned, add that ONE root + test). Test: install fixture tarball → skill discoverable by name.
 - [ ] **Step 5: Run + commit** — `cargo test -p gray-pkg --quiet` (+ gray skills tests if touched). Commit `feat(pkg): install skills from pi tarballs`.
 
-### Task P2-3: `search` fan-out with (preview) labels
+### Task 3: P2-3 `search` fan-out with (preview) labels
 
 **Files:**
 - Modify: `crates/gray/src/repl/plugin_cmds.rs` (`Search` arm), `crates/gray/src/main.rs` (`Search` arm) — replace honest stubs with real fan-out; `crates/gray-pkg/src/index.rs` ONLY if a helper is needed (prefer local fn in callers).
@@ -63,7 +63,7 @@
 - [ ] **Step 3: Tests** — collision fixture (same name both sides → gray line only + pi line suppressed), unreachable-pi fixture (timeout/refused → advisory line, exit 0), copy-rule asserts (exact `(preview)` string).
 - [ ] **Step 4: Run + commit** — `cargo test -p gray-pkg` + `cargo test -p gray --lib repl::` PASS. Commit `feat(plugin): search fans out to Pi Gallery (preview)`.
 
-### Task P2-4: `git:` specs (phase b)
+### Task 4: P2-4 `git:` specs (phase b)
 
 **Files:** Modify: `crates/gray-pkg/src/ops.rs`, `fetch.rs` (only if a helper is needed).
 
@@ -71,7 +71,7 @@
 - [ ] **Step 2:** Reuse P2-2 extractor on the clone (skills only, same taken/skipped honesty).
 - [ ] **Step 3:** Tests with local `git` fixture repos (no network). Commit `feat(pkg): git: plugin sources`.
 
-### Task P2-5: Docs + P2 verification
+### Task 5: P2-5 Docs + P2 verification
 
 **Files:** Modify: `docs/plugins.md`, plan-adjacent tests only.
 - [ ] Document `npm:`/`git:` specs, `(preview)` meaning, skills-only honesty statement, trust note (project installs after trust), P3 pointer for extensions.
