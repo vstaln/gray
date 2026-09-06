@@ -111,9 +111,9 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 ## Links
 
 - Official plugins (the Gray Index seed,
-  [`plugins/official.json`](../plugins/official.json)): `cron` (source
-  `plugins/cron`), `gateway` (source `plugins/gateway`). (`echo` stays a
-  protocol reference only — see the top of this file — not an official plugin.)
+  [`plugins/official.json`](../plugins/official.json)): `gateway` (source
+  `plugins/gateway`). (`echo` stays a protocol reference only — see the top
+  of this file — not an official plugin.) `cron` is now an external plugin.
 - Gateway sidecar ([`plugins/gateway/gateway.sh`](../plugins/gateway/gateway.sh)):
   answers `/gateway` over `command/run` by delegating argv to the
   `gray gateway …` CLI (`status|install|uninstall|pairing|invite`),
