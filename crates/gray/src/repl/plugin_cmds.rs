@@ -71,7 +71,10 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
         PluginAction::Search(query) => match ops::search_all(&query).await {
             Ok(out) => {
                 if out.hits.is_empty() && !out.pi_unreachable {
-                    say(tui, &format!("not in index: {query} (try /plugin install <https-url>)"));
+                    say(
+                        tui,
+                        &format!("not in index: {query} (try /plugin install <https-url>)"),
+                    );
                 } else {
                     for hit in &out.hits {
                         say(tui, &ops::format_search_hit(hit));
