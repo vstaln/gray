@@ -55,21 +55,42 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
     let mut names: Vec<String> = entries.keys().cloned().collect();
     let mut sel = 0usize;
     let mut changed = false;
+    let mut toggle_err: Option<String> = None;
 
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     if !was_raw {
         enable_raw_mode()?;
     }
+    // Roll back raw mode / alt screen manually: a `?` here would skip the
+    // cleanup at the end of the function and leak the terminal state.
     let mut stdout_handle = std::io::stdout();
-    crossterm::execute!(
+    if let Err(e) = crossterm::execute!(
         stdout_handle,
         EnterAlternateScreen,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::Hide
-    )?;
+    ) {
+        if !was_raw {
+            let _ = disable_raw_mode();
+        }
+        return Err(e.into());
+    }
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = match Terminal::new(backend) {
+        Ok(t) => t,
+        Err(e) => {
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            );
+            if !was_raw {
+                let _ = disable_raw_mode();
+            }
+            return Err(e.into());
+        }
+    };
 
     let box_bg = Color::Rgb(22, 22, 22);
     let accent_peach = Color::Rgb(246, 173, 126);
@@ -130,8 +151,15 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                 );
                 let mut cur_y = inner.y + 2;
                 let bottom = inner.y + inner_h;
+                let footer_y = (inner.y + inner_h).saturating_sub(1);
+                // Reserve the line above the footer for a toggle error, if any.
+                let rows_cap = if toggle_err.is_some() {
+                    footer_y.saturating_sub(1).max(inner.y + 2)
+                } else {
+                    bottom
+                };
                 if names.is_empty() {
-                    if cur_y < bottom {
+                    if cur_y < rows_cap {
                         let text = "no plugins installed — /plugin install <spec>";
                         let fill = (inner.width as usize).saturating_sub(text.chars().count());
                         frame.render_widget(
@@ -144,7 +172,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     }
                 } else {
                     for (idx, name) in names.iter().enumerate() {
-                        if cur_y >= bottom {
+                        if cur_y >= rows_cap {
                             break;
                         }
                         let is_selected = idx == sel;
@@ -179,7 +207,29 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                         cur_y += 1;
                     }
                 }
-                let footer_y = (inner.y + inner_h).saturating_sub(1);
+                if let Some(msg) = toggle_err.as_deref() {
+                    let err_y = footer_y.saturating_sub(1);
+                    if err_y > inner.y + 1 {
+                        let text: String = format!("toggle failed: {msg}")
+                            .chars()
+                            .take(inner.width as usize)
+                            .collect();
+                        let fill = (inner.width as usize).saturating_sub(text.chars().count());
+                        frame.render_widget(
+                            Paragraph::new(Line::from(vec![
+                                Span::styled(
+                                    text,
+                                    Style::default()
+                                        .fg(Color::Rgb(220, 120, 120))
+                                        .add_modifier(Modifier::BOLD)
+                                        .bg(box_bg),
+                                ),
+                                Span::styled(" ".repeat(fill), Style::default().bg(box_bg)),
+                            ])),
+                            Rect::new(inner.x, err_y, inner.width, 1),
+                        );
+                    }
+                }
                 let footer_line = Line::from(vec![
                     Span::styled(
                         "↑↓ ",
@@ -190,7 +240,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     ),
                     Span::styled("navigate · ", Style::default().fg(text_dim).bg(box_bg)),
                     Span::styled(
-                        "Enter ",
+                        "Enter/Space ",
                         Style::default()
                             .fg(Color::White)
                             .add_modifier(Modifier::BOLD)
@@ -233,23 +283,23 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     KeyCode::Esc => return Ok(changed),
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         if names.is_empty() {
-                            return Ok(false);
+                            return Ok(changed);
                         }
                         let name = names[sel].clone();
                         let enabled = entries.get(&name).map(|e| e.enabled).unwrap_or(true);
-                        if gray_pkg::ops::set_enabled(&name, !enabled).is_ok() {
-                            changed = true;
-                        }
-                        // Re-read and stay open (toggle-stays-open pattern).
-                        match gray_pkg::ops::list() {
-                            Ok(fresh) => {
-                                entries = fresh;
-                                names = entries.keys().cloned().collect();
-                            }
-                            Err(_) => {
-                                if let Some(e) = entries.get_mut(&name) {
-                                    e.enabled = !enabled;
+                        match gray_pkg::ops::set_enabled(&name, !enabled) {
+                            Ok(()) => {
+                                changed = true;
+                                toggle_err = None;
+                                // Re-read and stay open (toggle-stays-open pattern);
+                                // entries only ever come from a fresh list().
+                                if let Ok(fresh) = gray_pkg::ops::list() {
+                                    entries = fresh;
+                                    names = entries.keys().cloned().collect();
                                 }
+                            }
+                            Err(e) => {
+                                toggle_err = Some(format!("{e:#}"));
                             }
                         }
                         sel = sel.min(names.len().saturating_sub(1));
