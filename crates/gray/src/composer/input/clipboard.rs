@@ -81,6 +81,8 @@ pub(crate) fn text_clipboard_candidates() -> Vec<(String, Vec<String>)> {
 
 /// True when `cmd` resolves inside `paths` (a `PATH`-shaped list) to an
 /// existing file. Absolute/relative paths are checked directly.
+// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
+#[allow(dead_code)]
 pub(crate) fn have_in(cmd: &str, paths: &str) -> bool {
     resolve_in(cmd, paths).is_some()
 }
@@ -102,7 +104,7 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
             return None;
         }
         let p = std::path::Path::new(dir).join(cmd);
-        p.is_file().then(|| p)
+        p.is_file().then_some(p)
     })
 }
 
@@ -111,6 +113,8 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
 /// The `probe` gate decides whether the helper may run at all: production
 /// passes [`have_in`] against the real PATH, tests inject shims (a real
 /// `xclip` on PATH must not shadow the shim under test).
+// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
+#[allow(dead_code)]
 pub(crate) fn run_candidate_with_probe(
     cmd: &str,
     args: &[String],
@@ -131,6 +135,8 @@ pub(crate) fn run_candidate_with_probe(
 }
 
 /// Production runner: a helper runs only when found on the real PATH.
+// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
+#[allow(dead_code)]
 pub(crate) fn run_candidate(cmd: &str, args: &[String]) -> Option<String> {
     let paths = std::env::var_os("PATH").unwrap_or_default();
     let paths = paths.to_string_lossy().into_owned();

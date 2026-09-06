@@ -180,7 +180,7 @@ pub fn run_permissions_modal(
                         Span::styled("   ", Style::default().bg(row_bg))
                     };
                     let name_span = Span::styled(
-                        format!("{label}"),
+                        label.to_string(),
                         Style::default()
                             .fg(if is_selected {
                                 Color::Black
