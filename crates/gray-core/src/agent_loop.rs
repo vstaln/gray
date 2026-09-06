@@ -38,7 +38,7 @@ impl Agent {
     /// outputs back as tool-result messages. Stops when a turn ends without
     /// tool calls (`TurnEnd`) or when cancellation fires
     /// ([`CoreError::Cancelled`]). Two stall guards abort runaway loops:
-    /// 3 identical consecutive tool calls, or 20 consecutive read-only
+    /// 3 identical consecutive tool calls, or 18 consecutive read-only
     /// (read/ls/find/grep) rounds with no file changes — nudged at 12.
     /// Tool failures are *not* errors: they become `is_error` tool results
     /// so the model can recover.
@@ -107,10 +107,18 @@ impl Agent {
             if let Some(m) = self.max_rounds
                 && round >= m
             {
+                // Budget stop, not a loop: long productive runs (50+ tool
+                // rounds of edits/builds) hit this while making progress.
+                // End gracefully so the UI shows a normal footer + resume
+                // note instead of `agent error: Tool loop detected`.
+                let note = format!(
+                    "Stopped after {m} tool rounds — progress saved. Say 'continue' to carry on."
+                );
+                self.messages.push(Message::assistant(note.clone()));
+                emit!(AgentEvent::text_delta(format!("\n{note}\n")));
+                emit!(AgentEvent::turn_end(StopReason::EndTurn, total_usage));
                 self.emit_turn_end(&total_usage).await;
-                return Err(CoreError::LoopDetected(format!(
-                    "max rounds ({m}) exceeded"
-                )));
+                return Ok(events);
             }
             round += 1;
             self.drain_steer(round == 1);
@@ -411,7 +419,8 @@ impl Agent {
             // then abort — a varied-args read loop never trips the signature
             // guard above but burns tokens forever otherwise.
             const STALL_NUDGE_ROUNDS: usize = 12;
-            const STALL_ABORT_ROUNDS: usize = 20;
+            const STALL_POST_NUDGE_ROUNDS: usize = 6;
+            const STALL_ABORT_ROUNDS: usize = STALL_NUDGE_ROUNDS + STALL_POST_NUDGE_ROUNDS;
             const EXPLORATION_TOOLS: [&str; 4] = ["read", "ls", "find", "grep"];
             if tool_uses
                 .iter()
@@ -424,8 +433,10 @@ impl Agent {
             if stall_rounds >= STALL_ABORT_ROUNDS {
                 answer_pending_tools(self, &tool_uses, 0, "aborted: exploration stall");
                 self.emit_turn_end(&total_usage).await;
+                let explored: Vec<String> = tool_uses.iter().map(|(_, n, _)| n.clone()).collect();
                 return Err(CoreError::LoopDetected(format!(
-                    "exploration stall: {stall_rounds} read-only tool rounds with no file changes"
+                    "Stopped: {stall_rounds} consecutive exploration rounds with no file changes — last round used [{}]",
+                    explored.join(", ")
                 )));
             }
 

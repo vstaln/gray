@@ -900,6 +900,58 @@ mod agent_tests {
     }
 
     #[tokio::test]
+    async fn exploration_stall_aborts_six_rounds_after_nudge() {
+        // Nudge at 12 + 6 post-nudge rounds = abort at 18.
+        let scripts: Vec<Vec<StreamEvent>> = (0..18)
+            .map(|i| read_script(&format!("r{i}"), &format!("/tmp/f{i}.rs")))
+            .collect();
+        let provider = FakeProvider::new(scripts);
+        let executor = FakeExecutor::new(ToolOutput::ok("file body"));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+
+        let err = agent
+            .run(Message::user("explore"), ToolContext::default())
+            .await
+            .expect_err("18 exploration-only rounds should abort");
+
+        match err {
+            CoreError::LoopDetected(msg) => assert!(
+                msg.starts_with("Stopped: 18 consecutive exploration rounds"),
+                "got {msg:?}"
+            ),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exploration_stall_post_nudge_reset_continues() {
+        // 12 reads (nudge) → 1 write (reset) → 12 reads (nudge again) → end:
+        // post-nudge counter resets so the turn completes.
+        let mut scripts: Vec<Vec<StreamEvent>> = (0..12)
+            .map(|i| read_script(&format!("a{i}"), &format!("/tmp/a{i}.rs")))
+            .collect();
+        scripts.push(write_script("w1"));
+        for i in 0..12 {
+            scripts.push(read_script(&format!("b{i}"), &format!("/tmp/b{i}.rs")));
+        }
+        scripts.push(end_script());
+        let provider = FakeProvider::new(scripts);
+        let executor = FakeExecutor::new(ToolOutput::ok("ok"));
+        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+
+        let events = agent
+            .run(Message::user("work"), ToolContext::default())
+            .await
+            .expect("a write after the nudge must reset the post-nudge counter");
+
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        );
+    }
+
+    #[tokio::test]
     async fn stream_error_notices_forward_live_without_ending_turn() {
         // Codex steal: provider `Reconnecting...` notices ride as Ok events
         // so the turn continues; agent must forward them verbatim.
@@ -1450,7 +1502,7 @@ mod agent_tests {
     }
 
     #[tokio::test]
-    async fn max_rounds_bound_aborts_runaway_loop() {
+    async fn max_rounds_bound_stops_gracefully_without_error() {
         let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2")]);
         let mut agent = Agent::new(
             Box::new(provider),
@@ -1459,12 +1511,26 @@ mod agent_tests {
         .with_tools(vec![tool_def()])
         .with_max_rounds(Some(1));
 
-        let err = agent
+        // Budget stop is not a loop error: productive runs hit this while
+        // making progress, so the turn ends normally with a resume note.
+        let events = agent
             .run(Message::user("loop"), ToolContext::default())
             .await
-            .expect_err("max rounds must abort");
+            .expect("max rounds must stop gracefully");
 
-        assert!(matches!(err, CoreError::LoopDetected(_)), "got {err:?}");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::TurnEnd { .. })),
+            "expected a TurnEnd event, got {events:?}"
+        );
+        assert!(
+            agent
+                .messages()
+                .last()
+                .is_some_and(|m| m.text_content().contains("Say 'continue'")),
+            "expected a resume note in history"
+        );
     }
 
     #[test]
