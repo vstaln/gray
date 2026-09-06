@@ -395,6 +395,50 @@ fn promotion_string(id: TaskId, pid: u32, log_path: &Path, secs: u64) -> String 
     out
 }
 
+/// Last PROMOTION_TAIL_BYTES of the log + its total length (bounded seek —
+/// never read_to_string a possibly multi-GB log).
+fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = match std::fs::File::open(log_path) {
+        Ok(f) => f,
+        Err(_) => return (Vec::new(), 0),
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(PROMOTION_TAIL_BYTES as u64);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(start)).is_ok() {
+        let _ = f.take(PROMOTION_TAIL_BYTES as u64).read_to_end(&mut buf);
+    }
+    (buf, len)
+}
+
+/// Bounded view: the whole log read back from disk when it fits the byte
+/// budget (≤50 KiB read), else one middle-out pass over head ++ tail.
+/// `{{MARKER}}` is replaced only when bytes were actually omitted, so user
+/// text can never collide with the slot.
+fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
+    let raw: Vec<u8> = if summary.total_bytes <= VIEW_BUDGET_BYTES as u64 {
+        match std::fs::read(log_path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let mut cat = summary.head.clone();
+                cat.extend_from_slice(&summary.tail);
+                cat
+            }
+        }
+    } else {
+        let mut cat = summary.head.clone();
+        cat.extend_from_slice(&summary.tail);
+        cat
+    };
+    let mut view = middle_out(&raw, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
+    if view.omitted_range.is_some() {
+        let hint = resume_hint(id, &view);
+        view.body = view.body.replace("{{MARKER}}", &hint);
+    }
+    view
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,48 +532,4 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
-
-/// Last PROMOTION_TAIL_BYTES of the log + its total length (bounded seek —
-/// never read_to_string a possibly multi-GB log).
-fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = match std::fs::File::open(log_path) {
-        Ok(f) => f,
-        Err(_) => return (Vec::new(), 0),
-    };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(PROMOTION_TAIL_BYTES as u64);
-    let mut buf = Vec::new();
-    if f.seek(SeekFrom::Start(start)).is_ok() {
-        let _ = f.take(PROMOTION_TAIL_BYTES as u64).read_to_end(&mut buf);
-    }
-    (buf, len)
-}
-
-/// Bounded view: the whole log read back from disk when it fits the byte
-/// budget (≤50 KiB read), else one middle-out pass over head ++ tail.
-/// `{{MARKER}}` is replaced only when bytes were actually omitted, so user
-/// text can never collide with the slot.
-fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
-    let raw: Vec<u8> = if summary.total_bytes <= VIEW_BUDGET_BYTES as u64 {
-        match std::fs::read(log_path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                let mut cat = summary.head.clone();
-                cat.extend_from_slice(&summary.tail);
-                cat
-            }
-        }
-    } else {
-        let mut cat = summary.head.clone();
-        cat.extend_from_slice(&summary.tail);
-        cat
-    };
-    let mut view = middle_out(&raw, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
-    if view.omitted_range.is_some() {
-        let hint = resume_hint(id, &view);
-        view.body = view.body.replace("{{MARKER}}", &hint);
-    }
-    view
 }

@@ -48,8 +48,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let b = Lifecycle::mark_boot(dir.path()).unwrap();
         assert!(!b.clean_shutdown);
-        assert_eq!(Lifecycle::read(dir.path()).unwrap().clean_shutdown, false);
+        assert!(!Lifecycle::read(dir.path()).unwrap().clean_shutdown);
         Lifecycle::mark_clean(dir.path()).unwrap();
-        assert_eq!(Lifecycle::read(dir.path()).unwrap().clean_shutdown, true);
+        assert!(Lifecycle::read(dir.path()).unwrap().clean_shutdown);
     }
 }

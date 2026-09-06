@@ -716,7 +716,7 @@ mod tests {
         );
         cfg.platforms.insert(
             Platform::Discord,
-            PlatformConfig::with_token(&"x".repeat(40)),
+            PlatformConfig::with_token("x".repeat(40)),
         );
         cfg
     }

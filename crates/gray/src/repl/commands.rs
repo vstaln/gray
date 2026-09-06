@@ -1016,7 +1016,7 @@ mod tests {
 
     #[test]
     fn resume_and_agentsmd_arg_completion() {
-        use super::{complete_command_args, completion_matches_dyn};
+        use super::complete_command_args;
         use std::path::Path;
         let cwd = Path::new(".");
         let r = complete_command_args("resume", "", cwd);

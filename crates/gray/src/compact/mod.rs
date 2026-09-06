@@ -411,6 +411,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // serializes against switch-flipping tests for the whole test
     async fn auto_compact_triggers_on_threshold() {
         let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
         use crate::config::Config;
@@ -527,6 +528,7 @@ mod tests {
     }
 
     mod switch_tests {
+        #![allow(clippy::await_holding_lock)] // serial guard must cover each whole test (global switch + env)
         use super::*;
         use crate::config::Config;
         use async_trait::async_trait;

@@ -386,9 +386,11 @@ done
         p.run_command("/sess", vec![]).await,
         Some(CommandOutcome::Say("ok".into()))
     );
-    let mut ctx = ToolContext::default();
-    ctx.cwd = "/tmp/session-tool-cwd".into();
-    ctx.session_id = Some("sess-123".into());
+    let ctx = ToolContext {
+        cwd: "/tmp/session-tool-cwd".into(),
+        session_id: Some("sess-123".into()),
+        ..Default::default()
+    };
     let out = p.tools()[0].execute(&ctx, serde_json::json!({})).await;
     assert!(!out.is_error, "{out:?}");
     use gray_core::event::Usage;
