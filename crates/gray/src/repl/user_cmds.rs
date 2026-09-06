@@ -23,7 +23,12 @@ pub(crate) fn handle_feedback(
         .as_ref()
         .map(|s| s.session_id.as_str())
         .unwrap_or("none");
-    let body = crate::feedback::build_body(&raw, version, &os, model, session);
+    let terminal = crate::feedback::terminal_label(
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+    );
+    let shell = crate::feedback::shell_label(std::env::var("SHELL").ok().as_deref());
+    let body = crate::feedback::build_body(&raw, version, &os, model, session, &terminal, &shell);
     let url = crate::feedback::issue_url(&title, &body);
     match crate::setup::gray_home().map(|h| h.join("feedback")) {
         Ok(dir) => {

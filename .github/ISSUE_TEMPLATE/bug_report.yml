@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a problem with gray
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: Summary
+      description: Briefly describe the issue and how it affects your workflow
+      placeholder: What happened and why it matters
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Expected Behavior
+      placeholder: What you expected to happen
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual Behavior
+      placeholder: What actually happened
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to Reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+        4.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Gray Version
+      description: Run `gray --version` to get the version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal/IDE
+      description: Which terminal or IDE are you using?
+      placeholder: e.g. ghostty, wezterm, VS Code
+    validations:
+      required: true
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      description: Which shell are you using?
+      placeholder: e.g. bash, zsh, fish
+    validations:
+      required: true
+  - type: textarea
+    id: session
+    attributes:
+      label: Session file
+      description: Run with your session and attach the .jsonl session file. Redact secrets first — it holds the whole session.
+      placeholder: Paste relevant session excerpt or attach the file
+    validations:
+      required: false
+  - type: textarea
+    id: fix-prompt
+    attributes:
+      label: Fix prompt
+      description: How would you prompt a coding agent to fix this? Where it lives, what's correct, how to check.
+      placeholder: Where it lives, what's correct, how to check
+    validations:
+      required: false
+  - type: textarea
+    attributes:
+      label: Additional context
+      placeholder: Anything else that might help
+    validations:
+      required: false
