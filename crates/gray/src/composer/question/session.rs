@@ -605,6 +605,10 @@ pub(crate) fn attach_request(
     t.sel = 0;
     t.textarea.set_text("");
     t.active_question = Some(QuestionSession::new(questions, blocking, tx, resolved));
+    // Breathing room: a true blank transcript row above the panel so its gray
+    // top edge never fuses with the tool echo above it. No-op when the
+    // transcript already ends blank (e.g. queued activation after a summary).
+    t.ensure_gap(1);
     let _ = t.draw();
 }
 
