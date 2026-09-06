@@ -179,6 +179,138 @@ pub async fn download(
     Ok(path)
 }
 
+/// Unpack a ZIP archive (ClawHub skill bundles), rejecting absolute
+/// paths and `..` entries. Stored (method 0) and deflate (method 8)
+/// entries only; encrypted entries and data descriptors are refused.
+/// CRC32 is NOT checked here — ClawHub callers verify per-file sha256
+/// afterwards ([`crate::sources::verify_clawhub_files`]). Total
+/// uncompressed output is capped at 256 MiB (zip-bomb guard).
+/// Hand-rolled: `gray-pkg` takes no new deps by design (flate2 for
+/// inflate is already aboard).
+pub fn unpack_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+    const MAX_OUT: u64 = 256 * 1024 * 1024;
+    let bytes = std::fs::read(archive)?;
+    let u16le = |i: usize| -> anyhow::Result<u16> {
+        bytes
+            .get(i..i + 2)
+            .and_then(|b| b.try_into().ok())
+            .map(u16::from_le_bytes)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))
+    };
+    let u32le = |i: usize| -> anyhow::Result<u32> {
+        bytes
+            .get(i..i + 4)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))
+    };
+    if bytes.len() < 22 {
+        anyhow::bail!("invalid zip archive");
+    }
+    // EOCD hunt over the last 64 KiB + 22 (comment max + EOCD size).
+    let mut eocd = None;
+    let from = bytes.len().saturating_sub(65_557 + 22);
+    let mut i = bytes.len() - 22;
+    loop {
+        if bytes[i..].starts_with(b"PK\x05\x06") {
+            eocd = Some(i);
+            break;
+        }
+        if i == from {
+            break;
+        }
+        i -= 1;
+    }
+    let e = eocd.ok_or_else(|| anyhow::anyhow!("invalid zip archive"))?;
+    let total = u16le(e + 10)? as usize;
+    let cd_size = u32le(e + 12)? as usize;
+    let cd_off = u32le(e + 16)? as usize;
+    if cd_off
+        .checked_add(cd_size)
+        .is_none_or(|end| end > bytes.len())
+    {
+        anyhow::bail!("invalid zip archive");
+    }
+    let mut total_out: u64 = 0;
+    let mut p = cd_off;
+    for _ in 0..total {
+        if bytes.get(p..p + 4) != Some(b"PK\x01\x02".as_slice()) {
+            anyhow::bail!("invalid zip archive");
+        }
+        let flags = u16le(p + 8)?;
+        let method = u16le(p + 10)?;
+        if flags & 0x1 != 0 {
+            anyhow::bail!("refusing encrypted zip entry");
+        }
+        if flags & 0x8 != 0 {
+            anyhow::bail!("unsupported zip data descriptor");
+        }
+        if method != 0 && method != 8 {
+            anyhow::bail!("unsupported zip method {method}");
+        }
+        let comp = u32le(p + 20)? as usize;
+        let name_len = u16le(p + 28)? as usize;
+        let extra_len = u16le(p + 30)? as usize;
+        let comment_len = u16le(p + 32)? as usize;
+        let local_off = u32le(p + 42)? as usize;
+        let name_start = p
+            .checked_add(46)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))?;
+        let name_end = name_start
+            .checked_add(name_len)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))?;
+        if name_end > bytes.len() {
+            anyhow::bail!("invalid zip archive");
+        }
+        let name = std::str::from_utf8(&bytes[name_start..name_end])
+            .map_err(|_| anyhow::anyhow!("invalid zip entry name"))?;
+        p = name_end
+            .checked_add(extra_len + comment_len)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))?;
+        if name.ends_with('/') {
+            continue;
+        }
+        let rel = Path::new(name);
+        if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+            anyhow::bail!("refusing unsafe archive entry: {name}");
+        }
+        // Local header: skip name+extra to reach the data.
+        if bytes.get(local_off..local_off + 4) != Some(b"PK\x03\x04".as_slice()) {
+            anyhow::bail!("invalid zip archive");
+        }
+        let lh_name = u16le(local_off + 26)? as usize;
+        let lh_extra = u16le(local_off + 28)? as usize;
+        let data_start = local_off
+            .checked_add(30 + lh_name + lh_extra)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))?;
+        let data_end = data_start
+            .checked_add(comp)
+            .ok_or_else(|| anyhow::anyhow!("invalid zip archive"))?;
+        if data_end > bytes.len() {
+            anyhow::bail!("invalid zip archive");
+        }
+        let data: Vec<u8> = if method == 0 {
+            bytes[data_start..data_end].to_vec()
+        } else {
+            use std::io::Read;
+            let mut dec = flate2::read::DeflateDecoder::new(&bytes[data_start..data_end]);
+            let mut v = Vec::new();
+            dec.read_to_end(&mut v)?;
+            v
+        };
+        total_out += data.len() as u64;
+        if total_out > MAX_OUT {
+            anyhow::bail!("zip archive exceeds 256 MiB cap");
+        }
+        let target = dest.join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, &data)?;
+    }
+    Ok(())
+}
+
 /// Unpack a tar.gz, rejecting absolute paths and `..` entries.
 pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
     let file = std::fs::File::open(archive)?;
@@ -250,6 +382,102 @@ mod tests {
         assert!(check_url("https://example.com/x.tar.gz").is_ok());
         assert!(check_url("http://127.0.0.1:9/x.tar.gz").is_ok());
         assert!(check_url("http://localhost:9/x.tar.gz").is_ok());
+    }
+
+    /// Minimal stored-ZIP builder (method selectable per file).
+    fn tiny_zip(files: &[(&str, &[u8], u16)]) -> Vec<u8> {
+        use std::io::Write;
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, data, method) in files {
+            let payload: Vec<u8> = if *method == 8 {
+                let mut enc =
+                    flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::fast());
+                enc.write_all(data).unwrap();
+                enc.finish().unwrap()
+            } else {
+                data.to_vec()
+            };
+            let off = out.len() as u32;
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&20u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&method.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&payload);
+            central.extend_from_slice(b"PK\x01\x02");
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&20u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&method.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u16.to_le_bytes());
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&off.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+        }
+        let cd_off = out.len() as u32;
+        let cd_size = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_off.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    #[test]
+    fn zip_roundtrips_stored_and_deflated() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("a.zip");
+        std::fs::write(
+            &archive,
+            tiny_zip(&[("SKILL.md", b"# hi\n", 0), ("sub/notes.md", b"nested\n", 8)]),
+        )
+        .unwrap();
+        let dest = dir.path().join("out");
+        unpack_zip(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("SKILL.md")).unwrap(), b"# hi\n");
+        assert_eq!(
+            std::fs::read(dest.join("sub/notes.md")).unwrap(),
+            b"nested\n"
+        );
+    }
+
+    #[test]
+    fn zip_rejects_traversal_garbage_and_method() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("out");
+        let archive = dir.path().join("a.zip");
+        std::fs::write(&archive, tiny_zip(&[("../evil", b"x", 0)])).unwrap();
+        assert!(unpack_zip(&archive, &dest).is_err());
+        std::fs::write(&archive, tiny_zip(&[("/abs", b"x", 0)])).unwrap();
+        assert!(unpack_zip(&archive, &dest).is_err());
+        std::fs::write(&archive, tiny_zip(&[("a", b"x", 12)])).unwrap();
+        assert!(unpack_zip(&archive, &dest).is_err());
+        std::fs::write(&archive, b"not a zip at all................").unwrap();
+        assert!(unpack_zip(&archive, &dest).is_err());
+        std::fs::write(&archive, b"PK").unwrap();
+        assert!(unpack_zip(&archive, &dest).is_err());
     }
 
     #[test]

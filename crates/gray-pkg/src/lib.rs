@@ -8,6 +8,7 @@ pub mod errors;
 pub mod fetch;
 pub mod index;
 pub mod ops;
+pub mod sources;
 
 use std::path::PathBuf;
 
