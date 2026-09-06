@@ -5,7 +5,8 @@ use super::*;
 /// Expands `/skills:<name> [args]` (or the `/skill <name> [args]` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). Bare `/skills` opens an interactive picker like /resume.
+/// appended). Bare `/skills` opens the installed-skills manager (TTY) or
+/// prints the text list (headless). `/skill <name>` runs one (Task 4).
 /// With `local` set (Esc mid-turn), the skill is announced but never expanded
 /// into an AI prompt — the turn was cancelled, nothing talks to the model.
 pub(crate) fn expand_skill_command(
@@ -27,57 +28,53 @@ pub(crate) fn expand_skill_command(
     };
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
-        // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
-        let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match with_modal_sync(tui, || crate::setup::run_skills_modal(cwd, bg.as_ref()))
-        {
-            Ok(v) => v,
-            Err(e) => {
-                say(tui, &format!("skills picker error: {e}"));
-                return ReplCommand::Empty;
+        // Bare /skills — installed manager on TTY (like /plugins),
+        // text list headless.
+        if tui.is_some() {
+            let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
+            match with_modal_sync(tui, || crate::setup::run_skills_modal(bg.as_ref())) {
+                Ok(true) => {
+                    if let Some(shared) = tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        t.push_action("Skills updated", None);
+                        let _ = t.draw();
+                    }
+                }
+                Ok(false) => {
+                    if let Some(shared) = tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        t.textarea.set_text("");
+                        t.matches.clear();
+                        t.sel = 0;
+                        t.history_idx = None;
+                        t.draft.clear();
+                        t.attachments.clear();
+                        t.pending_pastes.clear();
+                        let _ = t.draw();
+                    }
+                }
+                Err(e) => {
+                    say(tui, &format!("skills error: {e}"));
+                }
             }
-        };
-        let Some((skill, picked_args)) = picked else {
-            // Esc — picker cancelled; viewport already restored
             return ReplCommand::Empty;
-        };
-        // load skill body and optionally append args part from query
-        let expanded = match std::fs::read_to_string(&skill.file_path) {
-            Ok(content) => {
-                let body = crate::skills_tool::strip_frontmatter(&content);
-                let mut out = format!(
-                    "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
-                    skill.name,
-                    skill.file_path.display(),
-                    body
-                );
-                if !picked_args.trim().is_empty() {
-                    out.push_str(&format!("\n\n**ARGUMENTS:** {}", picked_args.trim()));
-                }
-                out
+        }
+        match gray_pkg::skills_ops::list() {
+            Ok(skills) if skills.is_empty() => {
+                say(tui, "no skills installed — /marketplace to browse");
             }
-            Err(e) => {
-                say(
-                    tui,
-                    &format!("failed to read {}: {e}", skill.file_path.display()),
-                );
-                return ReplCommand::Empty;
-            }
-        };
-        // surface a dim line like resume does so user sees the pick
-        say(
-            tui,
-            &format!(
-                "→ /skills:{} {}",
-                skill.name,
-                if picked_args.trim().is_empty() {
-                    String::new()
-                } else {
-                    picked_args.trim().to_string()
+            Ok(skills) => {
+                for s in &skills {
+                    if s.version.trim().is_empty() {
+                        say(tui, &format!("{} [{}]", s.name, s.source));
+                    } else {
+                        say(tui, &format!("{} {} [{}]", s.name, s.version, s.source));
+                    }
                 }
-            ),
-        );
-        return to_prompt(expanded);
+            }
+            Err(e) => say(tui, &format!("skills list failed: {e:#}")),
+        }
+        return ReplCommand::Empty;
     };
     let (name, args) = match rest.split_once(char::is_whitespace) {
         Some((n, a)) => (n.trim(), Some(a.trim().to_string())),

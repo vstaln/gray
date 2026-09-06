@@ -82,7 +82,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "skills",
-        desc: "list skills (/skill <name> [args] or /skills:<name> [args] to run one)",
+        desc: "manage installed skills (/skill <name> [args] or /skills:<name> [args] to run one)",
         aliases: &[],
         args_hint: "",
     },
@@ -90,6 +90,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "plugin",
         desc: "manage plugins",
         aliases: &["plugins"],
+        args_hint: "",
+    },
+    CmdDef {
+        name: "marketplace",
+        desc: "browse and install plugins/skills",
+        aliases: &[],
         args_hint: "",
     },
     CmdDef {
@@ -480,7 +486,9 @@ pub enum ReplCommand {
     /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
     /// `/plugins` is an alias.
     Plugin(String),
-    /// Skills: /skills lists; /skills:<name> [args] or /skill <name> [args] runs a skill
+    /// Store: /marketplace browses+installs plugins/skills.
+    Marketplace(String),
+    /// Skills: /skills manages installed; /skills:<name> [args] or /skill <name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
@@ -589,6 +597,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
         Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
+        Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
             if lower_t == "/skills" || lower_t == "/skill" {
                 ReplCommand::Skill(None)
@@ -718,6 +727,7 @@ mod tests {
             "agentsmd",
             "skills",
             "plugin",
+            "marketplace",
             "help",
             "quit",
         ] {
@@ -773,16 +783,17 @@ mod tests {
             "agentsmd",
             "skills",
             "plugin",
+            "marketplace",
             "help",
             "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 16);
+        assert_eq!(super::REGISTRY.len(), 17);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 16);
+        assert_eq!(all.len(), 17);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -864,6 +875,10 @@ mod tests {
         assert!(matches!(
             parse_command("/PLUGIN list"),
             ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/marketplace"),
+            ReplCommand::Marketplace(_)
         ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
         // gateway left the TUI: /gateway and /gw are unknown (the `gray
