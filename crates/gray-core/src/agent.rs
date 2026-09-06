@@ -1240,7 +1240,7 @@ mod agent_tests {
         assert!(
             agent.messages()[0]
                 .text_content()
-                .contains("<conversation_summary>"),
+                .contains("Another language model started"),
             "history must start with the summary pair"
         );
     }
@@ -1567,7 +1567,7 @@ mod agent_tests {
         let [u, a] = super::summary_pair("  hello world  ");
         assert_eq!(
             u.text_content(),
-            "<conversation_summary>\nhello world\n</conversation_summary>\n\nPlease continue assisting based on the summary above."
+            "Another language model started to solve this problem and produced a summary of its thinking process. Use this to build on the work already done and avoid duplicating work. Here is the summary, use the information in it to assist with your own analysis:\n\n<s>\nhello world\n</s>"
         );
         assert_eq!(
             a.text_content(),
