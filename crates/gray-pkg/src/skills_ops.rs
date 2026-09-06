@@ -112,6 +112,7 @@ fn spec_identity(spec: &str) -> (String, String) {
     let t = spec.trim();
     match t.split_once(':') {
         Some(("clawhub", _)) => ("clawhub".to_string(), t.to_string()),
+        Some(("claude", _)) => ("claude".to_string(), t.to_string()),
         Some(("github", _)) => ("github".to_string(), t.to_string()),
         Some(("url", _)) => ("url".to_string(), t.to_string()),
         _ => ("local".to_string(), t.to_string()),
@@ -636,6 +637,40 @@ mod tests {
         std::fs::write(bundle.join("SKILL.md"), FIXTURE_SKILL).unwrap();
         std::fs::write(bundle.join("references/notes.md"), "# notes\n").unwrap();
         (root, bundle)
+    }
+
+    #[test]
+    fn spec_identity_routes_each_scheme() {
+        assert_eq!(
+            spec_identity("clawhub:owner/slug"),
+            ("clawhub".to_string(), "clawhub:owner/slug".to_string())
+        );
+        assert_eq!(
+            spec_identity("claude:grep-skills"),
+            ("claude".to_string(), "claude:grep-skills".to_string())
+        );
+        assert_eq!(
+            spec_identity("claude:grep-skills@dogfood-fix"),
+            (
+                "claude".to_string(),
+                "claude:grep-skills@dogfood-fix".to_string()
+            )
+        );
+        assert_eq!(
+            spec_identity("github:owner/repo"),
+            ("github".to_string(), "github:owner/repo".to_string())
+        );
+        assert_eq!(
+            spec_identity("url:https://h/x-skill/SKILL.md"),
+            (
+                "url".to_string(),
+                "url:https://h/x-skill/SKILL.md".to_string()
+            )
+        );
+        assert_eq!(
+            spec_identity("/tmp/demo-skill"),
+            ("local".to_string(), "/tmp/demo-skill".to_string())
+        );
     }
 
     #[test]

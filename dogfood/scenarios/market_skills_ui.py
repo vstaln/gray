@@ -106,7 +106,7 @@ def run(sess, ctx):
         return False, "skills-ui: claude skill install did not fail inline"
     if f"install: {CLAUDE_SPEC}" not in sess.text():
         return False, "skills-ui: modal did not stay open after failed install"
-    rows = _error_rows(ctx["gray_home"], "local", CLAUDE_SPEC)
+    rows = _error_rows(ctx["gray_home"], "claude", CLAUDE_SPEC)
     if not rows:
         return False, "skills-ui: failed install recorded no errors row"
     sess.shot("msk-skills-failed-inline")
