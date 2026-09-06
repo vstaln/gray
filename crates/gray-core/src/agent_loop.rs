@@ -96,6 +96,22 @@ impl Agent {
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
 
+        // Protocol v1 `prompt/context`: fetched once per turn, not per round,
+        // so the system prefix stays byte-stable across a turn's requests
+        // (provider prefix caching survives multi-round turns) and sidecar
+        // hooks pay one call per turn instead of one per tool round.
+        let mut hook_context = String::new();
+        for hook in &self.hooks {
+            if let Some(text) = hook.prompt_context().await
+                && !text.trim().is_empty()
+            {
+                if !hook_context.is_empty() {
+                    hook_context.push_str("\n\n");
+                }
+                hook_context.push_str(&text);
+            }
+        }
+
         'turn: loop {
             // Cancellation is honored between turns, never mid-stream: a
             // half-finished assistant message would leave the transcript
@@ -123,19 +139,14 @@ impl Agent {
             round += 1;
             self.drain_steer(round == 1);
 
-            // Protocol v1 `prompt/context`: every hook's reply concatenates
-            // onto this turn's system prompt, in hook order. No hooks (or no
-            // replies) leaves `self.system` untouched.
+            // Per-turn hook context (fetched once above) concatenates onto
+            // this turn's system prompt. Empty when no hooks replied.
             let mut system = self.system.clone();
-            for hook in &self.hooks {
-                if let Some(text) = hook.prompt_context().await
-                    && !text.trim().is_empty()
-                {
-                    if !system.is_empty() {
-                        system.push_str("\n\n");
-                    }
-                    system.push_str(&text);
+            if !hook_context.is_empty() {
+                if !system.is_empty() {
+                    system.push_str("\n\n");
                 }
+                system.push_str(&hook_context);
             }
 
             let req = ChatRequest {

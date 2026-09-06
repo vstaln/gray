@@ -288,6 +288,15 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_is_byte_stable() {
+        // Prefix-cache invariant: identical inputs must rebuild to identical
+        // bytes, or providers rebill the whole prefix every turn.
+        let a = build_system_prompt(default_opts());
+        let b = build_system_prompt(default_opts());
+        assert_eq!(a, b, "system prompt rebuild diverged");
+    }
+
+    #[test]
     fn default_prompt_forbids_decline_workarounds() {
         let prompt = build_system_prompt(default_opts());
         assert!(prompt.contains("do NOT re-attempt"), "{prompt}");
