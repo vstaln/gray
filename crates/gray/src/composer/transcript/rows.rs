@@ -148,11 +148,11 @@ pub(crate) fn wrap_styled_line_with_ranges(
             (0, None, None, max_w)
         };
 
-    // Tokenize content into words (non-space runs) with byte ranges
+    // Tokenize content into words (non-whitespace runs) with byte ranges
     let mut words: Vec<Range<usize>> = Vec::new();
     let mut i = content_start;
     while i < flat.len() {
-        while i < flat.len() && flat[i..].starts_with(' ') {
+        while i < flat.len() && flat[i..].chars().next().is_some_and(|c| c.is_whitespace()) {
             let ch = flat[i..].chars().next().unwrap();
             i += ch.len_utf8();
         }
@@ -162,7 +162,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
         let start = i;
         while i < flat.len() {
             let ch = flat[i..].chars().next().unwrap();
-            if ch == ' ' {
+            if ch.is_whitespace() {
                 break;
             }
             i += ch.len_utf8();

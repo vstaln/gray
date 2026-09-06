@@ -196,10 +196,6 @@ async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
 fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     if let Some(shared) = tui {
         let mut t = shared.lock().expect("tui lock");
-        // Breathing room when a modal is dismissed with no output: command
-        // cards skip their trailing gap, so without this the next prompt
-        // would jam against the card. Idempotent after output with a gap.
-        t.ensure_gap(1);
         let cols = crossterm::terminal::size()
             .map(|(c, _)| c)
             .unwrap_or(t.last_width);

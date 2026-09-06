@@ -15,7 +15,7 @@ pub fn summary_pair(summary: &str) -> [Message; 2] {
     let s = summary.trim();
     [
         Message::user(format!(
-            "<conversation_summary>\n{s}\n</conversation_summary>\n\nPlease continue assisting based on the summary above."
+            "Another language model started to solve this problem and produced a summary of its thinking process. Use this to build on the work already done and avoid duplicating work. Here is the summary, use the information in it to assist with your own analysis:\n\n<s>\n{s}\n</s>"
         )),
         Message::assistant(
             "Understood. I have reviewed the conversation summary and context, and I am ready to continue.",

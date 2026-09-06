@@ -10,7 +10,7 @@ pub fn run_context_modal(
     parts: &ContextParts,
     model: &str,
     bg: Option<&BackgroundSnapshot>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<String>> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use crossterm::terminal::{
         EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -34,6 +34,47 @@ pub fn run_context_modal(
         }
     }
 
+    fn compute_diffs(
+        cfg: &Config,
+        init_win: Option<usize>,
+        init_res: Option<usize>,
+        init_kp: Option<usize>,
+    ) -> Option<String> {
+        let mut diffs = Vec::new();
+        if cfg.context_window != init_win {
+            let s = cfg
+                .context_window
+                .map(format_context_length)
+                .unwrap_or_else(|| "auto".to_string());
+            diffs.push(format!("window → {s}"));
+        }
+        if cfg.context_reserve != init_res {
+            let s = cfg
+                .context_reserve
+                .map(format_context_length)
+                .unwrap_or_else(|| "auto".to_string());
+            diffs.push(format!("reserve → {s}"));
+        }
+        if cfg.context_keep != init_kp {
+            let s = cfg
+                .context_keep
+                .map(|k| {
+                    if k == 0 {
+                        "off".to_string()
+                    } else {
+                        format_context_length(k)
+                    }
+                })
+                .unwrap_or_else(|| "auto".to_string());
+            diffs.push(format!("keep → {s}"));
+        }
+        if diffs.is_empty() {
+            None
+        } else {
+            Some(diffs.join(" · "))
+        }
+    }
+
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     if !was_raw {
         enable_raw_mode()?;
@@ -49,28 +90,31 @@ pub fn run_context_modal(
     let mut terminal = Terminal::new(backend)?;
 
     let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(246, 173, 126);
-    let text_dim = Color::Rgb(120, 120, 120);
-    // jewel-tone category colors (deliberately not Claude's purple/pink)
-    let c_sys = Color::Rgb(148, 163, 184); // slate
-    let c_ctx = Color::Rgb(45, 212, 191); // teal
-    let c_tools = Color::Rgb(56, 189, 248); // sky
-    let c_skills = Color::Rgb(163, 230, 53); // lime
-    let c_msgs = Color::Rgb(251, 191, 36); // amber
-    let c_free = Color::Rgb(90, 90, 90);
-    let c_reserve = Color::Rgb(251, 113, 133); // rose
+    let accent_peach = Color::Rgb(254, 215, 170); // soft pastel peach
+    let text_dim = Color::Rgb(140, 140, 140);
+    // soft pastel category colors
+    let c_sys = Color::Rgb(203, 213, 225); // pastel slate
+    let c_ctx = Color::Rgb(167, 243, 208); // pastel mint
+    let c_tools = Color::Rgb(186, 230, 253); // pastel sky blue
+    let c_skills = Color::Rgb(217, 249, 157); // pastel matcha
+    let c_msgs = Color::Rgb(254, 240, 138); // pastel warm butter
+    let c_free = Color::Rgb(100, 116, 139); // muted slate
+    let c_reserve = Color::Rgb(254, 205, 211); // pastel rose
+
+    let initial_window = config.context_window;
+    let initial_reserve = config.context_reserve;
+    let initial_keep = config.context_keep;
 
     let mut sel = 0usize;
     let mut editing: Option<usize> = None;
     let mut buf = String::new();
     let mut status: String = String::new();
-    let mut changed = false;
     let bg_snapshot = bg
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
     let setting_labels = ["Window", "Reserve", "Keep"];
 
-    let result = (|| -> anyhow::Result<bool> {
+    let result = (|| -> anyhow::Result<Option<String>> {
         loop {
             let window = resolve_model_context_length(model);
             let max = model_max_context(model);
@@ -340,7 +384,14 @@ pub fn run_context_modal(
                     modifiers,
                     kind: KeyEventKind::Press,
                     ..
-                }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(changed),
+                }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(compute_diffs(
+                        config,
+                        initial_window,
+                        initial_reserve,
+                        initial_keep,
+                    ));
+                }
                 Event::Key(KeyEvent {
                     code,
                     modifiers,
@@ -420,7 +471,6 @@ pub fn run_context_modal(
                                 match saved {
                                     Some(_) => {
                                         persist(config);
-                                        changed = true;
                                         status = format!("{} updated", setting_labels[idx]);
                                         editing = None;
                                         buf.clear();
@@ -443,7 +493,14 @@ pub fn run_context_modal(
                     match code {
                         KeyCode::Up => sel = sel.saturating_sub(1),
                         KeyCode::Down => sel = (sel + 1).min(2),
-                        KeyCode::Esc | KeyCode::Char('q') => return Ok(changed),
+                        KeyCode::Esc | KeyCode::Char('q') => {
+                            return Ok(compute_diffs(
+                                config,
+                                initial_window,
+                                initial_reserve,
+                                initial_keep,
+                            ));
+                        }
                         KeyCode::Enter => {
                             buf = match sel {
                                 0 => get_user_context_window()

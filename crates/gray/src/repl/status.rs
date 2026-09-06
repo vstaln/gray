@@ -138,18 +138,17 @@ pub(crate) async fn handle_context_window(
 ) {
     fn emit(msg: String, tui: Option<&crate::composer::SharedTui>, ok: bool) {
         if let Some(shared) = tui {
+            let mut t = shared.lock().expect("tui lock");
             if ok {
-                let mut t = shared.lock().expect("tui lock");
-                t.push_dim(format!("└ {msg}"));
-                let _ = t.draw();
+                t.push_action("Context updated", Some(&msg));
             } else {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(format!("└ {msg}"));
+                for line in msg.lines() {
+                    t.push_dim(format!("└ {line}"));
+                }
             }
+            let _ = t.draw();
         } else if ok {
-            println!("✓ {msg}");
+            println!("✓ Context updated: {msg}");
         } else {
             println!("{msg}");
         }
@@ -211,56 +210,38 @@ pub(crate) async fn handle_context_window(
                 .unwrap_or(0)
         };
         let f = crate::setup::format_context_length;
-        let ic = crate::setup::icon;
-        // 10x10 hexagon grid, kinds: 0-4 categories, 5 free, 6 buffer.
-        let grid_cells = parts.grid_cells(window, reserve);
-        let mut flat: Vec<usize> = Vec::with_capacity(100);
-        for (kind, n) in grid_cells.iter().enumerate() {
-            flat.extend(std::iter::repeat_n(kind, *n));
-        }
-        while flat.len() < 100 {
-            flat.push(5);
-        }
-        let cell = |kind: usize| match kind {
-            0..=4 => ic("cell"),
-            5 => ic("cell_free"),
-            _ => ic("cell_buffer"),
-        };
-        let mut grid = String::new();
-        for r in 0..10 {
-            for c in 0..10 {
-                grid.push_str(cell(flat[r * 10 + c]));
-                grid.push(' ');
-            }
-            grid.push('\n');
-        }
+        let model_label = if model.is_empty() { "no model" } else { model };
         format!(
-            "Context Usage\n{} · {}/{} tokens ({}%) — source: {source} / max {} ({})\n{grid}\nEstimated usage by category\n{} System prompt: {} tokens ({}%)\n{} Project context: {} tokens ({}%)\n{} System tools: {} tokens ({}%)\n{} Skills: {} tokens ({}%)\n{} Messages: {} tokens ({}%)\n{} Free space: {} ({}%)\n{} Autocompact buffer: {} tokens ({}%)\n  reserve: {}  keep: {}\n  set: /context 128k | /context reserve 16k | /context keep 20k  |  clear: /context auto",
-            if model.is_empty() { "no model" } else { model },
+            "Context Usage · {model_label}\n\
+             {}/{} tokens ({}%) — source: {source} (max {})\n\
+             \n\
+             Estimated usage by category:\n\
+               · System prompt:      {} tokens ({}%)\n\
+               · Project context:    {} tokens ({}%)\n\
+               · System tools:       {} tokens ({}%)\n\
+               · Skills:             {} tokens ({}%)\n\
+               · Messages:           {} tokens ({}%)\n\
+               · Free space:         {} ({}%)\n\
+               · Autocompact buffer: {} tokens ({}%)\n\
+             \n\
+             Settings: reserve: {}  keep: {}\n\
+             Commands: /context <size> | /context reserve <size> | /context keep <size> | /context auto",
             f(used),
             f(window),
             pct(used),
-            max,
             f(max),
-            ic("cell"),
             f(parts.system_prompt),
             pct(parts.system_prompt),
-            ic("cell"),
             f(parts.project_context),
             pct(parts.project_context),
-            ic("cell"),
             f(parts.tools),
             pct(parts.tools),
-            ic("cell"),
             f(parts.skills),
             pct(parts.skills),
-            ic("cell"),
             f(parts.messages),
             pct(parts.messages),
-            ic("cell_free"),
             f(free),
             pct(free),
-            ic("cell_buffer"),
             f(reserve),
             pct(reserve),
             f(reserve),
@@ -277,12 +258,8 @@ pub(crate) async fn handle_context_window(
                 crate::setup::run_context_modal(config, &breakdown, &model, bg.as_ref())
             });
             match res {
-                Ok(true) => emit(
-                    breakdown_text(config, &collect_parts(cwd, agent, tui)),
-                    tui,
-                    false,
-                ),
-                Ok(false) => {}
+                Ok(Some(summary)) => emit(summary, tui, true),
+                Ok(None) => {}
                 Err(e) => emit(format!("context error: {e}"), tui, false),
             }
         } else {
@@ -321,7 +298,7 @@ pub(crate) async fn handle_context_window(
             crate::setup::resolve_model_context_length(config.model.as_deref().unwrap_or(""));
         emit(
             format!(
-                "context window cleared → auto ({} / {})",
+                "window reset to auto ({} / {})",
                 effective,
                 crate::setup::format_context_length(effective)
             ),
@@ -411,14 +388,14 @@ pub(crate) async fn handle_context_window(
             persist_window(config);
             let msg = if clamped {
                 format!(
-                    "context window clamped to model max {} ({}) — requested {}",
+                    "window clamped to model max {} ({}) — requested {}",
                     final_n,
                     crate::setup::format_context_length(final_n),
                     crate::setup::format_context_length(n)
                 )
             } else {
                 format!(
-                    "context window set to {} tokens ({}) — overrides auto-fetched value",
+                    "window set to {} tokens ({})",
                     final_n,
                     crate::setup::format_context_length(final_n)
                 )
@@ -493,7 +470,7 @@ pub(crate) async fn handle_compact(
     }
 
     match compact_res {
-        Ok(true) => {
+        Ok(Some(summary)) => {
             // Record to session storage if active (helper already set_messages)
             if let Some(state) = session_state {
                 for msg in ag.messages().to_vec() {
@@ -502,18 +479,20 @@ pub(crate) async fn handle_compact(
             }
 
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!(
-                    "└ compressed context ({} turns -> structured summary)",
-                    msg_count
+                let mut tui = shared.lock().expect("tui lock");
+                tui.ensure_gap(1);
+                tui.push_dim(format!(
+                    "└ compressed context ({msg_count} turns -> structured summary)"
                 ));
+                tui.ensure_gap(1);
+                tui.push_dim(summary);
+                tui.ensure_gap(1);
             } else {
-                println!(
-                    "compressed context ({} turns -> structured summary)",
-                    msg_count
-                );
+                println!("compressed context ({msg_count} turns -> structured summary)\n");
+                println!("{summary}\n");
             }
         }
-        Ok(false) => {
+        Ok(None) => {
             if let Some(shared) = tui {
                 shared
                     .lock()

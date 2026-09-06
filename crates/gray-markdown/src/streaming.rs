@@ -581,6 +581,23 @@ mod streaming_torn_tests {
     }
 
     #[test]
+    fn repro_soft_break_space_across_chunks() {
+        let full = "Analyzing possible latency causes like API delay, cold start, network, and system load for a concise explanation.\nSeparating local execution from external API latency and noting the absence of internal timing data.\n\n";
+        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+        let chars: Vec<char> = full.chars().collect();
+        for w in chars.chunks(7) {
+            let s: String = w.iter().collect();
+            r.push_and_render(&s, None);
+        }
+        let view = r.finish(None);
+        let flat: String = lines_text(view.lines).join("");
+        assert!(
+            flat.contains("explanation. Separating"),
+            "soft break must collapse to a space, got: {flat:?}"
+        );
+    }
+
+    #[test]
     fn torn_hyperlink_brackets_across_chunks_preserve_hyperlink_offset() {
         // `[click](url)` split inside `](` — pretty mode rewrites `[`/`](` so
         // column ranges must still land on the visible "click" glyphs.
