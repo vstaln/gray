@@ -212,6 +212,37 @@ pub fn take_builder_warnings() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Resolve the gray home dir (`$GRAY_HOME` else `$HOME/.gray`), mirroring
+/// `gray-pkg` (which owns the lockfile writes; this crate must not depend
+/// on it — networking lives there, never here). `None` when neither
+/// resolves: user-scope filtering is skipped, the project overlay still
+/// applies.
+fn gray_home() -> Option<PathBuf> {
+    std::env::var("GRAY_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".gray"))
+        })
+}
+
+/// Disabled sidecar argv lists from the user lock + project overlay
+/// (`<cwd>/.gray/plugins.json`, same shape, wins per name on the flag).
+/// Missing files are empty (silent); corrupt files queue one warning each
+/// (paths only, never argv/URLs).
+fn load_disabled_argvs() -> Vec<Vec<String>> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let (disabled, warnings) =
+        crate::lock::load_disabled_sidecar_argvs(gray_home().as_deref(), &cwd);
+    for w in warnings {
+        push_builder_warning(w);
+    }
+    disabled
+}
+
 // ---------------------------------------------------------------------------
 // Profile resolution
 // ---------------------------------------------------------------------------
@@ -220,7 +251,10 @@ pub fn take_builder_warnings() -> Vec<String> {
 /// profile is missing/unparseable/empty. Sidecars spawn once per build with
 /// `handler` installed (`host/run`/`host/say`). A spawn failure aborts when
 /// `abort_on_spawn_failure` (interactive boot) else warns + skips (the daemon
-/// must stay up). Unknown builtin names always warn + skip.
+/// must stay up). Unknown builtin names always warn + skip. Sidecars
+/// disabled in the plugin lock (`enabled: false` in the user lock,
+/// `<cwd>/.gray/plugins.json` overlay winning per name) warn + skip before
+/// spawning — the flag never aborts, even when `abort_on_spawn_failure`.
 pub async fn active_plugins(
     defaults: Vec<Arc<dyn Plugin>>,
     profile_path: &str,
@@ -230,6 +264,13 @@ pub async fn active_plugins(
     match load_entries(profile_path) {
         Ok(entries) => {
             let mut plugins = Vec::new();
+            // Disabled lookup once per build (file reads, not per sidecar);
+            // skipped entirely for builtin-only profiles.
+            let disabled = entries
+                .iter()
+                .any(|e| matches!(e, PluginEntry::Sidecar(_)))
+                .then(load_disabled_argvs)
+                .unwrap_or_default();
             for (i, e) in entries.iter().enumerate() {
                 match e {
                     PluginEntry::Builtin(n) => {
@@ -241,6 +282,12 @@ pub async fn active_plugins(
                         }
                     }
                     PluginEntry::Sidecar(spec) => {
+                        if !spec.0.is_empty() && disabled.contains(&spec.0) {
+                            push_builder_warning(format!(
+                                "sidecar[{i}] disabled in plugin lock — skipping"
+                            ));
+                            continue;
+                        }
                         let label = spec.0.join(" ");
                         match SidecarPlugin::spawn(spec.0.clone()).await {
                             Ok(p) => {

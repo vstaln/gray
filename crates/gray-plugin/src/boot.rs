@@ -28,6 +28,9 @@ pub struct BootReport {
 /// - Sidecar entries spawn via `SidecarPlugin::spawn`: profile-path failure
 ///   is a hard `Err` naming entry index + argv; lock-path failure is a
 ///   warning, others still load.
+/// - Lock entries with `enabled: false` never spawn (silent: intentional
+///   state). The project overlay (`<cwd>/.gray/plugins.json`, same shape)
+///   wins per name on the flag.
 /// - `used_fallback` is true when the final list is empty.
 pub async fn active_plugins(
     profile: Option<&std::path::Path>,
@@ -78,6 +81,26 @@ pub async fn active_plugins(
         }
     };
 
+    // Project overlay (cwd, same shape): same-name entries win on the
+    // `enabled` flag. Missing file is empty; corrupt file warns (path only,
+    // never argv/URLs).
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let project_p = lock::project_lock_path(&cwd);
+    let project_file: lock::LockFile = match lock::LockFile::load(&project_p) {
+        Ok(pf) => pf,
+        Err(e) => {
+            warnings.push(format!(
+                "cannot load {} ({e:#}); ignoring",
+                project_p.display()
+            ));
+            lock::LockFile {
+                schema: 1,
+                plugins: std::collections::BTreeMap::new(),
+            }
+        }
+    };
+    // (Per-name flags drive the lock loop below; the argv-set helper in
+    // `lock` serves the gray.yml-driven builder path instead.)
     for (i, e) in profile_entries.iter().enumerate() {
         match e {
             profile::PluginEntry::Builtin(n) => match resolve_builtin(n) {
@@ -98,6 +121,16 @@ pub async fn active_plugins(
     }
 
     for (name, entry) in lock_file.plugins.iter() {
+        // Disabled entries never spawn (user flag, project overlay wins
+        // per name). Silent: intentional state, not a problem.
+        let enabled = project_file
+            .plugins
+            .get(name)
+            .map(|e| e.enabled)
+            .unwrap_or(entry.enabled);
+        if !enabled {
+            continue;
+        }
         if entry.argv.is_empty() {
             match resolve_builtin(name) {
                 Some(p) => ordered.push(p),
