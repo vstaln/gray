@@ -362,14 +362,12 @@ impl BasePlatformAdapter for SlackAdapter {
         }
         #[cfg(not(feature = "slack"))]
         {
-            self.stage("authenticating");
-            self.stage("starting socket");
-            log::info!(
-                "[slack] stub connect bot={}… app_token={}",
-                &self.bot_token[..self.bot_token.len().min(8)],
-                self.has_socket_mode()
-            );
+            // Honest stub: never pretend to connect (see discord stub).
+            return Err(anyhow::anyhow!(
+                "slack support not compiled into this build (rebuild gray with `--features slack`)"
+            ));
         }
+        #[allow(unreachable_code)]
         Ok(())
     }
 
@@ -629,21 +627,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_connect_walks_stages() {
-        // Stub-only: no network, connect still walks the staged path.
+    async fn stub_connect_refuses_honestly() {
+        // Stub-only: no network, connect must fail loudly, terminally.
         #[cfg(not(feature = "slack"))]
         {
-            use crate::status::{GatewayStatusBoard, PlatformConnState};
+            use crate::status::GatewayStatusBoard;
             let a = SlackAdapter::new(cfg("xoxb-1234567890-abc", None)).unwrap();
             let board = GatewayStatusBoard::new(&[Platform::Slack]);
             a.set_status_board(board.clone());
-            a.connect().await.unwrap();
-            assert_eq!(
-                board.snapshot()[0].1,
-                PlatformConnState::Connecting {
-                    stage: "starting socket"
-                },
-                "stub ends on the last pre-connected stage; the daemon marks connected"
+            let err = a.connect().await.unwrap_err();
+            assert!(
+                err.to_string().contains("not compiled"),
+                "stub must name the missing build feature: {err}"
+            );
+            assert!(
+                matches!(
+                    crate::daemon::classify_connect_error(&err.to_string()),
+                    crate::daemon::Fatal::Terminal(_)
+                ),
+                "stub refusal must be terminal (no retry loop): {err}"
             );
         }
     }
