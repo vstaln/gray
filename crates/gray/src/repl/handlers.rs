@@ -2,7 +2,8 @@
 
 use super::*;
 
-/// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
+/// Expands `/skills:<name> [args]` (or the `/skill <name> [args]` alias —
+/// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
 /// appended). Bare `/skills` opens an interactive picker like /resume.
 /// With `local` set (Esc mid-turn), the skill is announced but never expanded
