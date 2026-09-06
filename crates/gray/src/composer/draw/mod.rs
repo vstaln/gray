@@ -4,6 +4,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 use super::{PANEL_ROWS, Tui};
 
@@ -94,16 +95,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let need = if question_active {
             tui.active_question
                 .as_ref()
-                .map(|q| super::question::panel_lines(q, w, 100).len() as u16)
+                .map(|q| super::question::panel_lines(q, tui.textarea.text(), w, 100).len() as u16)
                 .unwrap_or(PANEL_ROWS as u16)
         } else {
             PANEL_ROWS as u16
         };
         let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
         let question_lines: Option<Vec<Line<'static>>> = if question_active {
-            tui.active_question
-                .as_ref()
-                .map(|q| super::question::panel_lines(q, w, panel_cap.max(1) as usize))
+            tui.active_question.as_ref().map(|q| {
+                super::question::panel_lines(q, tui.textarea.text(), w, panel_cap.max(1) as usize)
+            })
         } else {
             None
         };
@@ -210,6 +211,26 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         .block(Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)))),
                     Rect::new(area.x, item_y, area.width, 1),
                 );
+            }
+            // Notes editing owns the cursor: park it on the notes row
+            // (second-to-last content row: notes, tips, bottom margin).
+            // Without this, Tab opens notes but typing lands invisibly.
+            if let Some(q) = tui.active_question.as_ref()
+                && q.notes_focused()
+                && q.notes_editor_visible()
+            {
+                let notes_at = qlines.len().saturating_sub(3);
+                if notes_at < visible_count {
+                    let y = panel_y + notes_at as u16;
+                    if y < area.y + area.height {
+                        let text = tui.textarea.text();
+                        let cursor = tui.textarea.cursor().min(text.len());
+                        let col = 2 + unicode_width::UnicodeWidthStr::width(
+                            text.get(..cursor).unwrap_or(""),
+                        );
+                        frame.set_cursor_position(Position::new(area.x + col as u16, y));
+                    }
+                }
             }
         } else if visible_count > 0 {
             let start = tui
@@ -443,7 +464,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        if tui.status.is_none() && !tui.is_task_running {
+        // A parked question owns the cursor (notes row above); never park it
+        // on the hidden composer box instead.
+        if tui.status.is_none() && !tui.is_task_running && tui.active_question.is_none() {
             let cur_x =
                 (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
             let cur_y =
