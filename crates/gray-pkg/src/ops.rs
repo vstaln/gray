@@ -346,10 +346,7 @@ mod tests {
             parse_spec("https://h/x.tar.gz"),
             NameOrUrl::Url(_)
         ));
-        assert!(matches!(
-            parse_spec("http://h/x.tar.gz"),
-            NameOrUrl::Url(_)
-        ));
+        assert!(matches!(parse_spec("http://h/x.tar.gz"), NameOrUrl::Url(_)));
         assert_eq!(name_from_url("https://h/plugins/foo.tar.gz?x=1"), "foo");
     }
 
@@ -402,8 +399,7 @@ mod tests {
         // New locks round-trip an explicit `false`.
         let mut lock = old.clone();
         lock.plugins.get_mut("demo").unwrap().enabled = false;
-        let back: LockFile =
-            serde_json::from_str(&serde_json::to_string(&lock).unwrap()).unwrap();
+        let back: LockFile = serde_json::from_str(&serde_json::to_string(&lock).unwrap()).unwrap();
         assert!(!back.plugins["demo"].enabled);
     }
 
@@ -456,7 +452,11 @@ mod tests {
         write_lock(&lock).unwrap();
         for bad in ["../evil", "a/b", "..", ""] {
             let err = remove(bad).unwrap_err();
-            assert_eq!(err.to_string(), format!("not installed: {bad}"), "name {bad:?}");
+            assert_eq!(
+                err.to_string(),
+                format!("not installed: {bad}"),
+                "name {bad:?}"
+            );
         }
         // The lock entry and the plugins dir survive the rejections.
         assert!(list().unwrap().contains_key("demo"));

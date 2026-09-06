@@ -169,8 +169,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             && let Ok(mut t) = shared.try_lock()
                         {
                             let cur = t.permission_mode().to_string();
-                            let next =
-                                crate::composer::input::next_permission_mode(&cur);
+                            let next = crate::composer::input::next_permission_mode(&cur);
                             t.set_permission_mode(next.to_string());
                             t.pending_permission_mode = Some(next.to_string());
                             let _ = t.draw();

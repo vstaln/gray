@@ -107,7 +107,10 @@ fn project_overlay_wins_on_the_flag_only() {
     };
     assert_eq!(
         disabled_sidecar_argvs(&user_lock(), &project),
-        vec![vec!["dead-bin".to_string()], vec!["sidecar-bin".to_string()]]
+        vec![
+            vec!["dead-bin".to_string()],
+            vec!["sidecar-bin".to_string()]
+        ]
     );
     // Project re-enables a user-disabled entry.
     let project = LockFile {

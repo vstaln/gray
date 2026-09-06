@@ -31,8 +31,7 @@ pub(crate) fn next_permission_mode(current: &str) -> &'static str {
 /// Ctrl-C at the prompt never exits on the first press: it clears the draft.
 /// Only a second press on an already-empty prompt within the window exits
 /// (mirrors the SIGINT policy in `repl`; exit also via /quit or Ctrl-D).
-pub(crate) const CTRL_C_EXIT_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(5);
+pub(crate) const CTRL_C_EXIT_WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(crate) fn ctrl_c_should_exit(
     has_draft: bool,

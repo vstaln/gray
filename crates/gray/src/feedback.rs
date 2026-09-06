@@ -179,7 +179,10 @@ mod tests {
             terminal_label(Some("ghostty"), Some("xterm-256color")),
             "ghostty"
         );
-        assert_eq!(terminal_label(None, Some("xterm-256color")), "xterm-256color");
+        assert_eq!(
+            terminal_label(None, Some("xterm-256color")),
+            "xterm-256color"
+        );
         assert_eq!(terminal_label(Some(""), Some("xterm")), "xterm");
         assert_eq!(terminal_label(None, None), "unknown");
         assert_eq!(terminal_label(Some(""), Some("")), "unknown");

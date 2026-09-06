@@ -225,10 +225,7 @@ pub async fn latest_session_anywhere(store: &JsonlSessionStore) -> Option<Sessio
 /// Single model priority for every resume path (explicit/config wins over the
 /// session's recorded model), so `resume`, `--session`, and `/resume` resolve
 /// the same model — and therefore the same context window — for one session.
-pub fn effective_session_model(
-    config_model: Option<&str>,
-    meta_model: &str,
-) -> Option<String> {
+pub fn effective_session_model(config_model: Option<&str>, meta_model: &str) -> Option<String> {
     let nonempty = |s: &str| !s.trim().is_empty();
     if let Some(m) = config_model
         && nonempty(m)
@@ -249,9 +246,10 @@ pub async fn resumed_session_line(
     store: &JsonlSessionStore,
     id: &SessionId,
 ) -> anyhow::Result<String> {
-    let (_, entries) = store.load(id).await.map_err(|e| {
-        anyhow::anyhow!("could not resume session {}: {e}", id.as_str())
-    })?;
+    let (_, entries) = store
+        .load(id)
+        .await
+        .map_err(|e| anyhow::anyhow!("could not resume session {}: {e}", id.as_str()))?;
     Ok(format!(
         "\u{2b22} Resumed session {} ({} messages)",
         id.as_str(),
@@ -334,10 +332,7 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         seed(&store, "test-latest-1", cwd, &["hi"]).await;
         assert_eq!(
-            latest_session_anywhere(&store)
-                .await
-                .unwrap()
-                .as_str(),
+            latest_session_anywhere(&store).await.unwrap().as_str(),
             "test-latest-1"
         );
     }
@@ -352,7 +347,10 @@ mod tests {
             effective_session_model(None, "meta-model"),
             Some("meta-model".to_string())
         );
-        assert_eq!(effective_session_model(Some(""), "meta-model"), Some("meta-model".to_string()));
+        assert_eq!(
+            effective_session_model(Some(""), "meta-model"),
+            Some("meta-model".to_string())
+        );
         assert_eq!(effective_session_model(Some("  "), ""), None);
         assert_eq!(effective_session_model(None, ""), None);
     }
