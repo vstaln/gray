@@ -463,7 +463,11 @@ mod tests {
             },
         ];
         let rebased = rebase_hyperlinks_for_slice(&hyperlinks, 1, 1);
-        assert_eq!(rebased.len(), 1, "only the sliced line's link survives: {rebased:?}");
+        assert_eq!(
+            rebased.len(),
+            1,
+            "only the sliced line's link survives: {rebased:?}"
+        );
         assert_eq!(rebased[0].line_index, 0);
         assert_eq!(rebased[0].url, "file:///repo/NOTES.txt");
         assert_eq!(rebased[0].column_range, 2..13);

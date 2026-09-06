@@ -225,8 +225,7 @@ pub fn no_platforms_message() -> String {
 /// Serializes tests that mutate `GRAY_HOME` (process-global; parallel tests
 /// would otherwise race). Hold the guard for the whole set/remove cycle.
 #[cfg(test)]
-pub(crate) static GRAY_HOME_TEST_LOCK: std::sync::Mutex<()> =
-    std::sync::Mutex::new(());
+pub(crate) static GRAY_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub fn load_gateway_config() -> GatewayConfig {
     let Ok(path) = gray_gateway_path() else {
         return GatewayConfig::default();
@@ -351,7 +350,10 @@ mod tests {
         }
         let expected = dir.path().join("gateway.yaml").display().to_string();
         assert_eq!(display, expected, "must print ACTUAL resolved path");
-        assert!(!display.contains("~/.gray"), "must not hardcode ~, got: {display}");
+        assert!(
+            !display.contains("~/.gray"),
+            "must not hardcode ~, got: {display}"
+        );
     }
 
     #[test]
@@ -367,10 +369,7 @@ mod tests {
             None => unsafe { std::env::remove_var("GRAY_HOME") },
         }
         let expected = dir.path().join("gateway.yaml").display().to_string();
-        assert!(
-            msg.contains(&expected),
-            "must name {expected}, got: {msg}"
-        );
+        assert!(msg.contains(&expected), "must name {expected}, got: {msg}");
         assert!(
             !msg.contains("~/.gray/gateway.yaml"),
             "must not hardcode ~, got: {msg}"

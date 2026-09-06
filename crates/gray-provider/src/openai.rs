@@ -2478,7 +2478,10 @@ mod tests {
     fn chat_mapping_off_sends_thinking_disabled_only() {
         let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("off"));
         let v = serde_json::to_value(&body).expect("serializes");
-        assert!(v.get("reasoning_effort").is_none(), "off sends no reasoning_effort: {v}");
+        assert!(
+            v.get("reasoning_effort").is_none(),
+            "off sends no reasoning_effort: {v}"
+        );
         assert!(v.get("reasoning").is_none(), "off sends no reasoning: {v}");
         assert_eq!(
             v.get("thinking"),
@@ -2497,17 +2500,23 @@ mod tests {
             "reasoning_effort: {v}"
         );
         assert_eq!(
-            v.get("reasoning").and_then(|r| r.get("effort")).and_then(|s| s.as_str()),
+            v.get("reasoning")
+                .and_then(|r| r.get("effort"))
+                .and_then(|s| s.as_str()),
             Some("low"),
             "reasoning.effort: {v}"
         );
         assert_eq!(
-            v.get("thinking").and_then(|t| t.get("type")).and_then(|s| s.as_str()),
+            v.get("thinking")
+                .and_then(|t| t.get("type"))
+                .and_then(|s| s.as_str()),
             Some("enabled"),
             "thinking enabled: {v}"
         );
         assert_eq!(
-            v.get("thinking").and_then(|t| t.get("budget_tokens")).and_then(|n| n.as_u64()),
+            v.get("thinking")
+                .and_then(|t| t.get("budget_tokens"))
+                .and_then(|n| n.as_u64()),
             Some(1024),
             "low budget: {v}"
         );
@@ -2585,7 +2594,10 @@ mod tests {
     #[test]
     fn strip_chat_reasoning_omits_all_three_wire_fields() {
         let mut body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low"));
-        assert!(chat_has_reasoning_params(&body), "precondition: low sends params");
+        assert!(
+            chat_has_reasoning_params(&body),
+            "precondition: low sends params"
+        );
         strip_chat_reasoning_params(&mut body);
         assert!(!chat_has_reasoning_params(&body), "stripped");
         let v = serde_json::to_value(&body).expect("serializes");

@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use gray_plugin::Plugin;
 use gray_plugin::builder::{active_plugins, default_plugins, take_builder_warnings};
 use gray_plugin::lock::{LockEntry, LockFile, lock_path, project_lock_path};
-use gray_plugin::Plugin;
 
 // Serializes the process-global mutation below (GRAY_HOME + cwd) within
 // this test binary; every other suite runs in its own process.
@@ -105,7 +105,10 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
     assert!(manifest_names(&plugins).contains(&"echo".to_string()));
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("sidecar[0]"), "{warnings:?}");
-    assert!(warnings[0].contains("disabled in plugin lock"), "{warnings:?}");
+    assert!(
+        warnings[0].contains("disabled in plugin lock"),
+        "{warnings:?}"
+    );
 
     // Re-enable dead too (no abort): the spawn is re-armed, fails, and the
     // daemon-style path warns + skips while echo stays present.
@@ -148,8 +151,11 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     }
 
     // Fake install: executable dir like a real `install` unpack.
-    let fixture =
-        std::fs::read(format!("{}/testdata/echo_plugin.sh", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let fixture = std::fs::read(format!(
+        "{}/testdata/echo_plugin.sh",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
     let dir = home.path().join("plugins").join("demo-echo");
     std::fs::create_dir_all(&dir).unwrap();
     let script = dir.join("plugin.sh");
@@ -157,7 +163,11 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     // Missing profile: lock installs still activate (no gray.yml needed).
-    let missing_profile = work.path().join("no-such-gray.yml").to_string_lossy().into_owned();
+    let missing_profile = work
+        .path()
+        .join("no-such-gray.yml")
+        .to_string_lossy()
+        .into_owned();
     let save_user = |enabled: bool| {
         LockFile {
             schema: 1,
@@ -240,7 +250,9 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     assert!(fallback, "{:?}", manifest_names(&plugins));
     let warnings = take_builder_warnings();
     assert!(
-        warnings.iter().any(|w| w.contains("disabled in plugin lock")),
+        warnings
+            .iter()
+            .any(|w| w.contains("disabled in plugin lock")),
         "{warnings:?}"
     );
     assert!(

@@ -440,9 +440,8 @@ pub async fn active_plugins(
                         plugins.push(Arc::new(p) as Arc<dyn Plugin>);
                     }
                     Err(e) if abort_on_spawn_failure => {
-                        return Err(e).with_context(|| {
-                            format!("sidecar[{i}] ({label}) failed to spawn")
-                        });
+                        return Err(e)
+                            .with_context(|| format!("sidecar[{i}] ({label}) failed to spawn"));
                     }
                     Err(e) => push_builder_warning(format!(
                         "sidecar[{i}] ({label}) failed to spawn, skipping: {e:#}"

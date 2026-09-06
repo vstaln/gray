@@ -270,10 +270,8 @@ pub(crate) async fn handle_model(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if let Some(m) = direct {
-        let (_, _, known) = crate::setup::provider_models_for(
-            &config.base_url,
-            config.api_key.as_deref(),
-        );
+        let (_, _, known) =
+            crate::setup::provider_models_for(&config.base_url, config.api_key.as_deref());
         let m = match crate::setup::validate_direct_model_id(&m, &known) {
             Ok(canonical) => canonical,
             Err(msg) => {

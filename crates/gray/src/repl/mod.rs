@@ -36,8 +36,7 @@ pub(crate) fn sigint_should_exit(last_ms: u64, now_ms: u64) -> bool {
 
 /// Last at-prompt SIGINT (millis since epoch) for the two-press exit.
 /// Mid-turn presses consume the turn token instead and never touch this.
-static LAST_PROMPT_SIGINT_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static LAST_PROMPT_SIGINT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -791,7 +790,10 @@ mod ctrl_c_policy_tests {
     fn sigint_second_press_within_window_exits() {
         // First press (no prior) never exits — verified by last==0 guard at
         // the call site; pure helper: far apart → false, close → true.
-        assert!(!sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS + 1));
+        assert!(!sigint_should_exit(
+            1_000,
+            1_000 + CTRL_C_EXIT_WINDOW_MS + 1
+        ));
         assert!(sigint_should_exit(1_000, 1_000 + 1_000));
         assert!(sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS));
         // Clock skew backwards → wrapping_sub is huge → false.

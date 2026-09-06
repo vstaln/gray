@@ -225,9 +225,7 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
                 .collect();
             hits.sort_by(|a, b| a.0.cmp(b.0));
             if hits.is_empty() {
-                anyhow::bail!(
-                    "not in index: {query} (try /plugin install <https-url>)"
-                );
+                anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
             }
             for (name, e) in hits {
                 println!("{} {}", name, e.version);

@@ -133,9 +133,10 @@ pub async fn run_print_mode_with_session(
     };
     let history: Vec<Message> = match &resume_target {
         Some(sid) => {
-            let (_, entries) = store.load(sid).await.map_err(|e| {
-                anyhow::anyhow!("could not resume session {}: {e}", sid.as_str())
-            })?;
+            let (_, entries) = store
+                .load(sid)
+                .await
+                .map_err(|e| anyhow::anyhow!("could not resume session {}: {e}", sid.as_str()))?;
             entries.into_iter().map(|e| e.message).collect()
         }
         None => Vec::new(),
@@ -160,12 +161,7 @@ pub async fn run_print_mode_with_session(
         )),
     };
 
-    let mut agent = build_agent(
-        config,
-        &cwd,
-        resume_target.as_ref().map(|s| s.as_str()),
-    )
-    .await?;
+    let mut agent = build_agent(config, &cwd, resume_target.as_ref().map(|s| s.as_str())).await?;
     if !history.is_empty() {
         agent = agent.with_messages(history);
     }
@@ -277,7 +273,9 @@ mod tests {
     async fn append_continues_session_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let sid = save_session(&store, "m", dir.path(), &[Message::user("first")]).await.unwrap();
+        let sid = save_session(&store, "m", dir.path(), &[Message::user("first")])
+            .await
+            .unwrap();
         let before = store.load(&sid).await.unwrap().1.len();
         // Prior history + one new turn: only the new message lands in the file.
         let with_new = vec![Message::user("first"), Message::user("second")];
@@ -299,7 +297,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("failed to append message to session"),
+            err.to_string()
+                .contains("failed to append message to session"),
             "unexpected error: {err:#}"
         );
     }
