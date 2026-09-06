@@ -493,7 +493,7 @@ pub(crate) async fn handle_compact(
     }
 
     match compact_res {
-        Ok(true) => {
+        Ok(Some(summary)) => {
             // Record to session storage if active (helper already set_messages)
             if let Some(state) = session_state {
                 for msg in ag.messages().to_vec() {
@@ -502,18 +502,20 @@ pub(crate) async fn handle_compact(
             }
 
             if let Some(shared) = tui {
-                shared.lock().expect("tui lock").push_dim(format!(
-                    "└ compressed context ({} turns -> structured summary)",
-                    msg_count
+                let mut tui = shared.lock().expect("tui lock");
+                tui.ensure_gap(1);
+                tui.push_dim(format!(
+                    "└ compressed context ({msg_count} turns -> structured summary)"
                 ));
+                tui.ensure_gap(1);
+                tui.push_dim(summary);
+                tui.ensure_gap(1);
             } else {
-                println!(
-                    "compressed context ({} turns -> structured summary)",
-                    msg_count
-                );
+                println!("compressed context ({msg_count} turns -> structured summary)\n");
+                println!("{summary}\n");
             }
         }
-        Ok(false) => {
+        Ok(None) => {
             if let Some(shared) = tui {
                 shared
                     .lock()
