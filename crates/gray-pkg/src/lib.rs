@@ -4,6 +4,7 @@
 //! Ecosystem adapters land in Task 2.3.
 
 pub mod adapter;
+pub mod errors;
 pub mod fetch;
 pub mod index;
 pub mod ops;
