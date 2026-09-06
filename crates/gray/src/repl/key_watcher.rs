@@ -161,6 +161,21 @@ pub(crate) fn spawn_key_watcher_with_typing(
                         watch_cancel.cancel();
                         return;
                     }
+                    // Shift+Tab mid-turn cycles ALL permission modes
+                    // (Ask→ReadOnly→Full→Ask, same helper as the prompt
+                    // loop) without cancelling the turn.
+                    if code == KeyCode::BackTab {
+                        if let Some(shared) = watcher_tui.as_ref()
+                            && let Ok(mut t) = shared.try_lock()
+                        {
+                            let cur = t.permission_mode().to_string();
+                            let next = crate::composer::input::next_permission_mode(&cur);
+                            t.set_permission_mode(next.to_string());
+                            t.pending_permission_mode = Some(next.to_string());
+                            let _ = t.draw();
+                        }
+                        continue;
+                    }
                     // When a turn is running, allow typing and queue on Enter
                     let Some(shared) = watcher_tui.as_ref() else {
                         continue;
@@ -175,7 +190,8 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(code, KeyCode::Char('v') | KeyCode::Char('V'))
                     {
-                        t.try_attach_clipboard_image();
+                        // opencode `prompt.paste`: image first, then clipboard text.
+                        t.paste_from_clipboard();
                         // sync matches after clipboard attach may insert placeholder
                         let cur_text = t.textarea.text().to_string();
                         t.matches =

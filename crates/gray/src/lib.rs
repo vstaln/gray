@@ -112,7 +112,7 @@ pub use gray_plugin::builder::{
 
 /// Builds the interactive [`gray_core::agent::Agent`]: thin surface wrapper
 /// over [`gray_plugin::builder::build_agent`] (the single profile-aware
-/// builder for REPL, `-p`, gateway, and cron).
+/// builder for REPL, `-p`, and gateway).
 ///
 /// Surface policy owned here: missing-model help text, `AGENTS.md` body,
 /// skills + context-file discovery, the `skill` tool default, and the
@@ -182,7 +182,7 @@ pub async fn build_agent(
             },
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
-        // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
+        // / `host/say` don't fall back to loud `{"error":…}`.
         extra_tools: vec![Arc::new(SkillTool)],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
@@ -316,6 +316,39 @@ pub enum GatewayCmd {
 /// `gray plugin ...` — plugin-side tooling.
 #[derive(Parser, Debug, Clone)]
 pub enum PluginCmd {
+    /// List installed plugins
+    List,
+    /// Search the Gray Index by substring
+    Search {
+        /// Substring to match against index names
+        query: String,
+    },
+    /// Install a plugin by index name or https URL
+    Install {
+        /// Index name or https URL
+        spec: gray_pkg::ops::NameOrUrl,
+    },
+    /// Remove an installed plugin
+    Remove {
+        /// Installed plugin name
+        name: String,
+    },
+    /// Update one plugin or all (`all`)
+    Update {
+        /// Plugin name or `all`
+        #[arg(default_value = "all")]
+        target: String,
+    },
+    /// Enable an installed plugin
+    Enable {
+        /// Installed plugin name
+        name: String,
+    },
+    /// Disable an installed plugin
+    Disable {
+        /// Installed plugin name
+        name: String,
+    },
     /// Run the sidecar conformance checks against a plugin dir
     Check {
         /// Plugin directory (executable, plugin.sh, or single executable)

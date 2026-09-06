@@ -59,25 +59,13 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     CmdDef {
         name: "permissions",
         desc: "choose what gray is allowed to do",
-        aliases: &["perms"],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "yolo",
-        desc: "enable YOLO mode (full access, don't ask again)",
-        aliases: &[],
+        aliases: &["perms", "access"],
         args_hint: "",
     },
     CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
-        args_hint: "",
-    },
-    CmdDef {
-        name: "gateway",
-        desc: "messaging gateway (Discord)",
-        aliases: &["gw"],
         args_hint: "",
     },
     CmdDef {
@@ -99,6 +87,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         args_hint: "",
     },
     CmdDef {
+        name: "plugin",
+        desc: "manage plugins",
+        aliases: &["plugins"],
+        args_hint: "",
+    },
+    CmdDef {
         name: "help",
         desc: "show commands",
         aliases: &[],
@@ -111,6 +105,38 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         args_hint: "",
     },
 ];
+
+/// Help line with aliases inline (Bug2: `/exit` worked but was unlisted;
+/// welcome hinted `/provider` while `/help` showed only `/connect`).
+/// Single alias → `/quit (alias: /exit)`; several → `/connect (aliases: …)`;
+/// no aliases keeps the legacy `  /name desc` shape. Reads the existing
+/// `aliases` arrays so `/help` can never drift from `resolve`.
+pub(crate) fn format_help_line(d: &CmdDef) -> String {
+    if d.aliases.is_empty() {
+        format!("  /{:<10} {}", d.name, d.desc)
+    } else if d.aliases.len() == 1 {
+        format!("  /{} (alias: /{}) {}", d.name, d.aliases[0], d.desc)
+    } else {
+        let list = d
+            .aliases
+            .iter()
+            .map(|a| format!("/{a}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("  /{} (aliases: {}) {}", d.name, list, d.desc)
+    }
+}
+
+/// Full `/help` body for TUI + stdout paths (callers join plugin rows after).
+// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
+#[allow(dead_code)]
+pub(crate) fn format_help_all() -> String {
+    REGISTRY
+        .iter()
+        .map(format_help_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Canonical lookup: strip one leading `/`, lowercase, exact wins then aliases.
 pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
@@ -199,6 +225,20 @@ pub(crate) fn completion_matches_dyn(
     Vec::new()
 }
 
+/// Fill text for an accepted popup row. Built-ins, aliases and `cmd args`
+/// rows fill `/{name} ` as before; anything else is a skill name and fills
+/// `/skills:{name} ` so the existing skill dispatch runs it — skills never
+/// become real top-level commands.
+pub(crate) fn completion_fill(name: &str) -> String {
+    if name == "skills" {
+        return "/skills:".to_string();
+    }
+    if name.contains([' ', ':']) || resolve(name).is_some() {
+        return format!("/{name} ");
+    }
+    format!("/skills:{name} ")
+}
+
 /// Universal per-command suffix completion hook.
 ///
 /// `cmd` is lowercased without the leading `/`; `arg_text` is everything
@@ -208,14 +248,65 @@ pub(crate) fn completion_matches_dyn(
 pub(crate) fn complete_command_args(
     cmd: &str,
     arg_text: &str,
-    _cwd: &std::path::Path,
+    cwd: &std::path::Path,
 ) -> Vec<(String, String)> {
     match cmd {
         "context" => complete_context_args(arg_text),
         "acp" => complete_acp_args(arg_text),
-        "permissions" => complete_permissions_args(arg_text),
+        "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
+        "permissions" | "perms" | "access" => complete_permissions_args(cmd, arg_text),
+        "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
+        "resume" => complete_resume_args(cmd, arg_text),
+        "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
+        "model" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
     }
+}
+
+/// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): levels from
+/// [`crate::setup::THINKING_LEVELS`], the exact set `handle_thinking` accepts.
+fn complete_thinking_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
+    let f = arg_text.to_lowercase();
+    crate::setup::THINKING_LEVELS
+        .iter()
+        .filter(|(l, _)| f.is_empty() || l.contains(f.as_str()))
+        .map(|(l, d)| (format!("{cmd} {l}"), d.to_string()))
+        .collect()
+}
+
+/// Suffixes for `/resume`: session picker flags.
+fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
+    const FLAGS: &[(&str, &str)] = &[
+        ("--last", "resume most recent session"),
+        ("--all", "include other directories"),
+    ];
+    let f = arg_text.to_lowercase();
+    FLAGS
+        .iter()
+        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
+        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
+        .collect()
+}
+
+/// Suffixes for `/agentsmd` (alias `/sys`).
+fn complete_agentsmd_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
+    const SUBS: &[(&str, &str)] = &[("show", "print prompt file"), ("reset", "restore default")];
+    let f = arg_text.to_lowercase();
+    SUBS.iter()
+        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
+        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
+        .collect()
+}
+
+/// Suffixes for `/model`: ids from the in-memory model cache (empty until
+/// models are fetched; the picker covers discovery).
+fn complete_model_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
+    let f = arg_text.to_lowercase();
+    crate::setup::cached_model_ids()
+        .into_iter()
+        .filter(|id| f.is_empty() || id.to_lowercase().contains(&f))
+        .map(|id| (format!("{cmd} {id}"), "cached model".to_string()))
+        .collect()
 }
 
 /// Suffixes for `/acp`: subcommands plus installed agent names.
@@ -242,12 +333,35 @@ fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Suffixes for `/permissions`: the three approval modes.
-fn complete_permissions_args(arg_text: &str) -> Vec<(String, String)> {
+/// Suffixes for `/plugin` (alias `/plugins`): plugin manager subcommands.
+fn complete_plugin_args(
+    cmd: &str,
+    arg_text: &str,
+    _cwd: &std::path::Path,
+) -> Vec<(String, String)> {
+    const SUBS: &[(&str, &str)] = &[
+        ("list", "list installed plugins"),
+        ("search", "search Gray Index"),
+        ("install", "install a plugin"),
+        ("remove", "remove a plugin"),
+        ("update", "update plugins"),
+        ("enable", "enable a plugin"),
+        ("disable", "disable a plugin"),
+        ("check", "run conformance checks on a plugin dir"),
+    ];
+    let f = arg_text.to_lowercase();
+    SUBS.iter()
+        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
+        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
+        .collect()
+}
+
+/// Suffixes for `/permissions` (aliases `/perms`, `/access`): approval modes.
+fn complete_permissions_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
     gray_core::approvals::permission_modes()
         .into_iter()
         .filter(|(id, _, _)| arg_text.is_empty() || id.contains(&arg_text.to_lowercase()))
-        .map(|(id, label, _)| (format!("permissions {id}"), label.to_string()))
+        .map(|(id, label, _)| (format!("{cmd} {id}"), label.to_string()))
         .collect()
 }
 
@@ -347,11 +461,12 @@ pub enum ReplCommand {
     Feedback(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
-    /// Messaging gateway: /gateway, /gateway status|run|install
-    Gateway(String),
     /// External ACP agent: /acp (picker), /acp <agent> switches sticky,
     /// /acp <agent> <prompt> delegates one-shot, /acp off|status|list
     Acp(String),
+    /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
+    /// `/plugins` is an alias.
+    Plugin(String),
     /// Skills: /skills lists; /skills:<name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
@@ -421,8 +536,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some(d.name)
     } else if lower_t.starts_with("/model") {
         Some("model")
-    } else if lower_t.starts_with("/gateway") || lower_t.starts_with("/gw") {
-        Some("gateway")
     } else {
         None
     };
@@ -449,7 +562,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
         Some("permissions") => ReplCommand::Permissions(opt(rest)),
-        Some("yolo") => ReplCommand::Permissions(Some("full".to_string())),
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
@@ -461,8 +573,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
             }
         }
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
-        Some("gateway") => ReplCommand::Gateway(t.to_string()),
         Some("acp") => ReplCommand::Acp(t.to_string()),
+        Some("plugin") => ReplCommand::Plugin(t.to_string()),
         Some("skills") => {
             if lower_t == "/skills" {
                 ReplCommand::Skill(None)
@@ -583,12 +695,11 @@ mod tests {
             "compact",
             "usage",
             "permissions",
-            "yolo",
             "feedback",
-            "gateway",
             "acp",
             "agentsmd",
             "skills",
+            "plugin",
             "help",
             "quit",
         ] {
@@ -610,13 +721,16 @@ mod tests {
             ("reasoning", "thinking"),
             ("compress", "compact"),
             ("sys", "agentsmd"),
-            ("gw", "gateway"),
             ("cost", "usage"),
             ("perms", "permissions"),
+            ("access", "permissions"),
+            ("plugins", "plugin"),
         ] {
             assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
             assert_eq!(super::resolve(&format!("/{alias}")).unwrap().name, target);
         }
+        assert!(super::resolve("yolo").is_none());
+        assert!(super::resolve("/yolo").is_none());
         assert!(super::resolve("boguscmd").is_none());
         assert!(super::resolve("/boguscmd").is_none());
         assert!(super::resolve("").is_none());
@@ -636,24 +750,46 @@ mod tests {
             "compact",
             "usage",
             "permissions",
-            "yolo",
             "feedback",
-            "gateway",
             "acp",
             "agentsmd",
             "skills",
+            "plugin",
             "help",
             "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 17);
+        assert_eq!(super::REGISTRY.len(), 16);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 17);
+        assert_eq!(all.len(), 16);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
+        }
+    }
+
+    #[test]
+    fn help_shows_aliases_inline() {
+        let help = super::format_help_all();
+        // hidden `/exit` must be visible as a quit alias
+        assert!(
+            help.contains("/quit (alias: /exit)"),
+            "quit alias missing: {help}"
+        );
+        // welcome advertises `/provider`; help listed only `/connect`
+        assert!(help.contains("/provider"), "provider alias missing: {help}");
+        assert!(help.contains("/connect"), "connect missing: {help}");
+        // every declared alias appears in the help text (no drift)
+        for d in super::REGISTRY {
+            for a in d.aliases {
+                assert!(
+                    help.contains(&format!("/{a}")),
+                    "alias /{a} of /{} missing: {help}",
+                    d.name
+                );
+            }
         }
     }
 
@@ -672,9 +808,10 @@ mod tests {
             ("reasoning", "thinking"),
             ("compress", "compact"),
             ("sys", "agentsmd"),
-            ("gw", "gateway"),
             ("cost", "usage"),
             ("perms", "permissions"),
+            ("access", "permissions"),
+            ("plugins", "plugin"),
         ] {
             assert!(
                 super::completion_matches(alias)
@@ -683,14 +820,41 @@ mod tests {
                 "completion {alias} -> {target}"
             );
         }
+        // `/plug` surfaces `plugin`; bare `/plugin ` offers all 8 subcommands.
+        use std::path::Path;
+        let cwd = Path::new(".");
+        assert!(
+            super::completion_matches_dyn("/plug", cwd)
+                .iter()
+                .any(|(n, _)| n == "plugin")
+        );
+        assert_eq!(super::complete_command_args("plugin", "", cwd).len(), 8);
     }
 
     #[test]
     fn registry_parse_uses_canonical() {
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
+        assert!(matches!(
+            parse_command("/plugin list"),
+            ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/plugins list"),
+            ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/PLUGIN list"),
+            ReplCommand::Plugin(_)
+        ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-        assert!(matches!(parse_command("/gw"), ReplCommand::Gateway(_)));
+        // gateway left the TUI: /gateway and /gw are unknown (the `gray
+        // gateway` CLI still runs the preserved gray-gateway crate).
+        assert!(matches!(parse_command("/gw"), ReplCommand::Unknown(_)));
+        assert!(matches!(
+            parse_command("/gateway status"),
+            ReplCommand::Unknown(_)
+        ));
         assert!(matches!(
             parse_command("/keys foo"),
             ReplCommand::Unknown(_)
@@ -721,9 +885,14 @@ mod tests {
             ReplCommand::Permissions(Some(_))
         ));
         assert!(matches!(
-            parse_command("/yolo"),
+            parse_command("/access"),
+            ReplCommand::Permissions(None)
+        ));
+        assert!(matches!(
+            parse_command("/access full"),
             ReplCommand::Permissions(Some(_))
         ));
+        assert!(matches!(parse_command("/yolo"), ReplCommand::Unknown(_)));
     }
 
     #[test]
@@ -758,16 +927,110 @@ mod tests {
         let r2 = complete_command_args("context", "reserve ", cwd);
         assert!(r2.iter().any(|(n, _)| n == "context reserve 16k"));
         // unknown command has no suffixes (universal hook default)
-        assert!(complete_command_args("model", "", cwd).is_empty());
+        assert!(complete_command_args("boguscmd", "", cwd).is_empty());
         // dyn dispatch through the composer entry point
         let dyn_all = completion_matches_dyn("/context ", cwd);
         assert!(dyn_all.iter().any(|(n, _)| n == "context reserve"));
-        assert!(completion_matches_dyn("/model ", cwd).is_empty());
         // command-name path unaffected
         assert!(
             completion_matches_dyn("/cont", cwd)
                 .iter()
                 .any(|(n, _)| n == "context")
         );
+    }
+
+    fn temp_skill_cwd(name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join(".gray").join("skills").join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: Temp skill for completion tests\n---\n# temp\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn top_level_query_never_surfaces_skills() {
+        use super::completion_matches_dyn;
+        let dir = temp_skill_cwd("commit");
+        let cwd = dir.path();
+        // sanity: the skill is discoverable
+        assert!(
+            crate::skills::discover_skills(cwd)
+                .skills
+                .iter()
+                .any(|s| s.name == "commit")
+        );
+        // top-level `/` completion must not surface it…
+        let top = completion_matches_dyn("/com", cwd);
+        assert!(
+            !top.iter().any(|(n, _)| n == "commit"),
+            "skill must not appear in / completion: {top:?}"
+        );
+        // …but the /skills: prefix still completes it
+        let scoped = completion_matches_dyn("/skills:com", cwd);
+        assert!(
+            scoped.iter().any(|(n, _)| n == "skills:commit"),
+            "skill must complete under /skills:: {scoped:?}"
+        );
+    }
+
+    #[test]
+    fn thinking_effort_arg_completion() {
+        use super::complete_command_args;
+        use std::path::Path;
+        let cwd = Path::new(".");
+        for cmd in ["thinking", "effort", "reasoning"] {
+            let all = complete_command_args(cmd, "", cwd);
+            for level in ["off", "minimal", "low", "medium", "high", "xhigh", "max"] {
+                assert!(
+                    all.iter().any(|(n, _)| n == &format!("{cmd} {level}")),
+                    "{cmd} must complete level {level}: {all:?}"
+                );
+            }
+            let f = complete_command_args(cmd, "hi", cwd);
+            assert!(f.iter().any(|(n, _)| n == &format!("{cmd} high")));
+            assert!(f.iter().any(|(n, _)| n == &format!("{cmd} xhigh")));
+        }
+    }
+
+    #[test]
+    fn resume_and_agentsmd_arg_completion() {
+        use super::{complete_command_args, completion_matches_dyn};
+        use std::path::Path;
+        let cwd = Path::new(".");
+        let r = complete_command_args("resume", "", cwd);
+        assert!(r.iter().any(|(n, _)| n == "resume --last"));
+        assert!(r.iter().any(|(n, _)| n == "resume --all"));
+        for cmd in ["agentsmd", "sys"] {
+            let a = complete_command_args(cmd, "", cwd);
+            assert!(a.iter().any(|(n, _)| n == &format!("{cmd} show")));
+            assert!(a.iter().any(|(n, _)| n == &format!("{cmd} reset")));
+        }
+    }
+
+    #[test]
+    fn model_completes_cached_ids() {
+        use super::complete_command_args;
+        use std::path::Path;
+        let cwd = Path::new(".");
+        crate::setup::cache_model_context("test-completion-model-xyz", 128000);
+        let rows = complete_command_args("model", "", cwd);
+        assert!(
+            rows.iter()
+                .any(|(n, _)| n == "model test-completion-model-xyz"),
+            "cached model id must complete: {rows:?}"
+        );
+        let filtered = complete_command_args("model", "xyz", cwd);
+        assert!(
+            filtered
+                .iter()
+                .any(|(n, _)| n == "model test-completion-model-xyz")
+        );
+        // an impossible filter still yields nothing (deterministic even
+        // when other tests pollute the process-global cache)
+        assert!(complete_command_args("model", "no-such-model-xyz-123", cwd).is_empty());
     }
 }

@@ -592,4 +592,21 @@ mod tests {
             & 0o777;
         assert_eq!(mode, 0o600);
     }
+
+    #[test]
+    fn pairing_list_works_without_gateway_yaml() {
+        let _guard = crate::config::GRAY_HOME_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // Empty home: no gateway.yaml on disk.
+        let prev = std::env::var("GRAY_HOME").ok();
+        // SAFETY: guarded by GRAY_HOME_TEST_LOCK; restored below.
+        unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
+        let out = super::pairing_list(Some("telegram"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+            None => unsafe { std::env::remove_var("GRAY_HOME") },
+        }
+        let out = out.expect("pairing list must work without gateway.yaml");
+        assert!(out.contains("telegram"), "got: {out}");
+    }
 }

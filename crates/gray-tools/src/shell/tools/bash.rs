@@ -1,6 +1,6 @@
 //! shell/tools/bash.rs — bash with background mode + timeout promotion (brief 2B).
 //!
-//! Always logs (`~/.gray/shell/<session>/t{n}.log` from the first chunk),
+//! Always logs (`$GRAY_HOME/shell/<session>/t{n}.log` from the first chunk),
 //! one middle-out view, honest header, fenced body. `is_error` only for
 //! harness failures (spawn error, guard deny, bad args); any exit status,
 //! signal death, promotion or cancel returns `ToolOutput::ok`.
@@ -273,11 +273,20 @@ fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
     }
 }
 
-fn shell_dir() -> PathBuf {
-    let home = std::env::var("HOME")
+fn gray_home() -> PathBuf {
+    std::env::var("GRAY_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    home.join(".gray/shell")
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".gray"))
+                .unwrap_or_else(|_| std::env::temp_dir().join(".gray"))
+        })
+}
+
+fn shell_dir() -> PathBuf {
+    gray_home().join("shell")
 }
 
 /// Shared waiter: background starts and promoted timeouts differ only in
@@ -384,6 +393,101 @@ fn promotion_string(id: TaskId, pid: u32, log_path: &Path, secs: u64) -> String 
         "shell_output(task_id=\"{id}\", from_offset={len}) for the rest · next_offset={len}"
     ));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::agent::Tool;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SESS_N: AtomicU64 = AtomicU64::new(0);
+
+    fn sess(tag: &str) -> String {
+        format!(
+            "bash-2b-{tag}-{}-{}",
+            std::process::id(),
+            SESS_N.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    fn ctx_for(session: &str) -> ToolContext {
+        ToolContext {
+            session_id: Some(session.to_string()),
+            ..ToolContext::default()
+        }
+    }
+
+    #[test]
+    fn shell_dir_respects_gray_home() {
+        // Bug 1: isolated GRAY_HOME must own shell logs, not real HOME.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let gray = dir.path().to_string_lossy().into_owned();
+        let prev = std::env::var("GRAY_HOME").ok();
+        unsafe { std::env::set_var("GRAY_HOME", &gray) };
+        let d = shell_dir();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+            None => unsafe { std::env::remove_var("GRAY_HOME") },
+        }
+        assert!(
+            d.starts_with(dir.path()),
+            "shell_dir must live under GRAY_HOME, got {}",
+            d.display()
+        );
+        assert_eq!(d.file_name().and_then(|s| s.to_str()), Some("shell"));
+    }
+
+    #[tokio::test]
+    async fn two_background_spawns_are_t1_then_t2() {
+        // Bug 2: monotonic per-session ids, never reuse within a session.
+        let session = sess("mono");
+        let ctx = ctx_for(&session);
+        let tool = BashTool;
+        let r1 = tool
+            .execute(&ctx, json!({"command": "echo one", "background": true}))
+            .await;
+        assert!(!r1.is_error, "{}", r1.content);
+        let r2 = tool
+            .execute(&ctx, json!({"command": "echo two", "background": true}))
+            .await;
+        assert!(!r2.is_error, "{}", r2.content);
+        let n1: u32 = r1
+            .content
+            .lines()
+            .next()
+            .and_then(|h| h.split("started t").nth(1))
+            .and_then(|s| {
+                s.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+            .expect("t1 header");
+        let n2: u32 = r2
+            .content
+            .lines()
+            .next()
+            .and_then(|h| h.split("started t").nth(1))
+            .and_then(|s| {
+                s.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+            .expect("t2 header");
+        assert_eq!(
+            (n1, n2),
+            (1, 2),
+            "expected t1 then t2, got t{n1} then t{n2}: {:?} / {:?}",
+            r1.content,
+            r2.content
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Last PROMOTION_TAIL_BYTES of the log + its total length (bounded seek —

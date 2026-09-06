@@ -2,6 +2,32 @@
 
 use super::*;
 
+/// Word-wraps `s` to `width` columns (greedy, splits on spaces). Never
+/// returns an empty vec so callers can always advance the cursor.
+fn wrap_words(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(20);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if cur.chars().count() + 1 + word.chars().count() <= width {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 /// Interactive `/permissions` picker: Ask for approval / Full Access / Read
 /// Only, mirroring codex's preset label + description copy. Returns the
 /// chosen mode id, or `None` on cancel.
@@ -60,9 +86,40 @@ pub fn run_permissions_modal(
                 let modal_w = (area.width.saturating_sub(4))
                     .clamp(56, 116)
                     .min(area.width);
-                let modal_h = 12
-                    .min(area.height.saturating_sub(2))
-                    .max(10)
+                let pad_x = 3u16;
+                let inner_w = modal_w.saturating_sub(pad_x * 2);
+                // Two-line rows: label on line 1, wrapped description below,
+                // so the full text is always visible (no truncation).
+                let desc_width =
+                    (inner_w as usize).saturating_sub(6).max(20);
+                let wrapped: Vec<Vec<String>> = modes
+                    .iter()
+                    .map(|(_, _, desc)| wrap_words(desc, desc_width))
+                    .collect();
+                let rows_h: u16 = wrapped
+                    .iter()
+                    .map(|w| 1 + w.len() as u16)
+                    .sum();
+                let sel_id = modes.get(sel).map(|(id, _, _)| *id).unwrap_or("");
+                let detail_text = match sel_id {
+                    gray_core::approvals::MODE_FULL => {
+                        "Full Access edits anywhere and uses the network without asking. Exercise caution."
+                    }
+                    gray_core::approvals::MODE_READ_ONLY => {
+                        "Read Only disables all mutating tools. Mutating actions are rejected."
+                    }
+                    _ => {
+                        "Ask for approval prompts before running commands or editing outside files."
+                    }
+                };
+                let detail_lines =
+                    wrap_words(detail_text, inner_w as usize).len() as u16;
+                // header(1) + gap(1) + rows + gap(1) + detail + gap(1) + footer(1)
+                // + 2 for modal top/bottom padding.
+                let needed_h = rows_h + detail_lines + 8;
+                let modal_h = needed_h
+                    .clamp(12, 24)
+                    .min(area.height.saturating_sub(2).max(10))
                     .min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
                 let modal_y = (area.height.saturating_sub(modal_h)) / 3;
@@ -72,8 +129,6 @@ pub fn run_permissions_modal(
                     Block::default().style(Style::default().bg(box_bg)),
                     modal_rect,
                 );
-                let pad_x = 3u16;
-                let inner_w = modal_w.saturating_sub(pad_x * 2);
                 let inner_h = modal_h.saturating_sub(2);
                 let inner = Rect::new(
                     modal_x + pad_x,
@@ -100,95 +155,89 @@ pub fn run_permissions_modal(
                     Paragraph::new(header_line),
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
-                let list_y = inner.y + 2;
-                for (idx, (id, label, desc)) in modes.iter().enumerate() {
+                let mut cur_y = inner.y + 2;
+                let bottom = inner.y + inner_h;
+                for (idx, (id, label, _)) in modes.iter().enumerate() {
+                    if cur_y >= bottom {
+                        break;
+                    }
                     let is_selected = idx == sel;
                     let is_current = *id == current;
-                    let row_line = if is_selected {
-                        let check_span = if is_current {
-                            Span::styled(
-                                " ✓ ",
-                                Style::default()
-                                    .fg(Color::Rgb(20, 80, 30))
-                                    .add_modifier(Modifier::BOLD)
-                                    .bg(accent_peach),
-                            )
-                        } else {
-                            Span::styled("   ", Style::default().bg(accent_peach))
-                        };
-                        let name_span = Span::styled(
-                            format!("{label}  "),
+                    let row_bg = if is_selected { accent_peach } else { box_bg };
+                    let check_span = if is_current {
+                        Span::styled(
+                            " ✓ ",
                             Style::default()
-                                .fg(Color::Black)
+                                .fg(if is_selected {
+                                    Color::Rgb(20, 80, 30)
+                                } else {
+                                    Color::Rgb(74, 222, 128)
+                                })
                                 .add_modifier(Modifier::BOLD)
-                                .bg(accent_peach),
-                        );
-                        let desc_span = Span::styled(
-                            *desc,
-                            Style::default()
-                                .fg(Color::Rgb(60, 50, 50))
-                                .bg(accent_peach),
-                        );
-                        let used_w = 3 + label.chars().count() + 2 + desc.chars().count();
-                        let pad_w = (inner.width as usize).saturating_sub(used_w);
-                        let pad_span =
-                            Span::styled(" ".repeat(pad_w), Style::default().bg(accent_peach));
-                        Line::from(vec![check_span, name_span, desc_span, pad_span])
+                                .bg(row_bg),
+                        )
                     } else {
-                        let check_span = if is_current {
-                            Span::styled(
-                                " ✓ ",
-                                Style::default()
-                                    .fg(Color::Rgb(74, 222, 128))
-                                    .add_modifier(Modifier::BOLD)
-                                    .bg(box_bg),
-                            )
-                        } else {
-                            Span::styled("   ", Style::default().bg(box_bg))
-                        };
-                        let name_span = Span::styled(
-                            format!("{label}  "),
-                            Style::default()
-                                .fg(Color::White)
-                                .add_modifier(Modifier::BOLD)
-                                .bg(box_bg),
-                        );
-                        let desc_span = Span::styled(
-                            *desc,
-                            Style::default().fg(Color::Rgb(130, 130, 130)).bg(box_bg),
-                        );
-                        let used_w = 3 + label.chars().count() + 2 + desc.chars().count();
-                        let pad_w = (inner.width as usize).saturating_sub(used_w);
-                        let pad_span =
-                            Span::styled(" ".repeat(pad_w), Style::default().bg(box_bg));
-                        Line::from(vec![check_span, name_span, desc_span, pad_span])
+                        Span::styled("   ", Style::default().bg(row_bg))
                     };
-                    frame.render_widget(
-                        Paragraph::new(row_line),
-                        Rect::new(inner.x, list_y + idx as u16, inner.width, 1),
+                    let name_span = Span::styled(
+                        label.to_string(),
+                        Style::default()
+                            .fg(if is_selected {
+                                Color::Black
+                            } else {
+                                Color::White
+                            })
+                            .add_modifier(Modifier::BOLD)
+                            .bg(row_bg),
                     );
-                }
-                let footer_y = (inner.y + inner_h).saturating_sub(2);
-                let detail_y = list_y + modes.len() as u16 + 1;
-                if detail_y < footer_y {
-                    let sel_id = modes.get(sel).map(|(id, _, _)| *id).unwrap_or("");
-                    let detail_line = match sel_id {
-                        gray_core::approvals::MODE_FULL => Line::from(Span::styled(
-                            "Full Access edits anywhere and uses the network without asking. Exercise caution.",
-                            Style::default().fg(Color::Rgb(220, 120, 120)).bg(box_bg),
-                        )),
-                        gray_core::approvals::MODE_READ_ONLY => Line::from(Span::styled(
-                            "Read Only disables all mutating tools. Mutating actions are rejected.",
-                            Style::default().fg(text_dim).bg(box_bg),
-                        )),
-                        _ => Line::from(Span::styled(
-                            "Ask for approval prompts before running commands or editing outside files.",
-                            Style::default().fg(text_dim).bg(box_bg),
-                        )),
-                    };
+                    let used_w = 3 + label.chars().count();
+                    let pad_w = (inner.width as usize).saturating_sub(used_w);
+                    let pad_span = Span::styled(" ".repeat(pad_w), Style::default().bg(row_bg));
                     frame.render_widget(
-                        Paragraph::new(detail_line),
-                        Rect::new(inner.x, detail_y, inner.width, 1),
+                        Paragraph::new(Line::from(vec![check_span, name_span, pad_span])),
+                        Rect::new(inner.x, cur_y, inner.width, 1),
+                    );
+                    cur_y += 1;
+                    let desc_fg = if is_selected {
+                        Color::Rgb(60, 50, 50)
+                    } else {
+                        Color::Rgb(130, 130, 130)
+                    };
+                    for wline in &wrapped[idx] {
+                        if cur_y >= bottom {
+                            break;
+                        }
+                        let text = format!("      {wline}");
+                        let fill = (inner.width as usize).saturating_sub(text.chars().count());
+                        let dline = Line::from(vec![
+                            Span::styled(text, Style::default().fg(desc_fg).bg(row_bg)),
+                            Span::styled(" ".repeat(fill), Style::default().bg(row_bg)),
+                        ]);
+                        frame.render_widget(
+                            Paragraph::new(dline),
+                            Rect::new(inner.x, cur_y, inner.width, 1),
+                        );
+                        cur_y += 1;
+                    }
+                }
+                let footer_y = (inner.y + inner_h).saturating_sub(1);
+                // Wrapped detail block between the list and the footer.
+                let detail_style = if sel_id == gray_core::approvals::MODE_FULL {
+                    Style::default().fg(Color::Rgb(220, 120, 120)).bg(box_bg)
+                } else {
+                    Style::default().fg(text_dim).bg(box_bg)
+                };
+                for (di, wline) in wrap_words(detail_text, inner_w as usize)
+                    .iter()
+                    .enumerate()
+                {
+                    let dy = cur_y + 1 + di as u16;
+                    if dy >= footer_y {
+                        break;
+                    }
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(wline.clone(), detail_style))),
+                        Rect::new(inner.x, dy, inner.width, 1),
                     );
                 }
                 let footer_line = Line::from(vec![
@@ -264,4 +313,39 @@ pub fn run_permissions_modal(
     }
     let _ = std::io::stdout().flush();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_words;
+
+    #[test]
+    fn wrap_keeps_lines_within_width_and_lossless() {
+        for (desc, width) in [
+            (
+                "Read and edit files in the workspace, run commands. Approval is required to access the internet or edit other files.",
+                40,
+            ),
+            (
+                "Edit files outside the workspace and access the internet without asking for approval. Exercise caution.",
+                40,
+            ),
+            (
+                "Read files in the workspace. Approval is required to edit files or access the internet.",
+                40,
+            ),
+        ] {
+            let lines = wrap_words(desc, width);
+            assert!(lines.len() > 1, "long desc should wrap: {desc}");
+            for line in &lines {
+                assert!(
+                    line.chars().count() <= width,
+                    "line too wide ({line:?} > {width})"
+                );
+            }
+            let joined = lines.join(" ");
+            let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(norm(&joined), norm(desc));
+        }
+    }
 }

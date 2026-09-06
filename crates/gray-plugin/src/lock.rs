@@ -8,6 +8,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+fn default_true() -> bool {
+    true
+}
+
 /// One locked plugin entry.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LockEntry {
@@ -19,6 +23,10 @@ pub struct LockEntry {
     pub adapter_version: String,
     pub installed_at: String,
     pub scope: String,
+    /// Disabled plugins are skipped at boot (old locks without the field
+    /// load as enabled).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 }
 
 /// Lockfile body: schema + plugins keyed by manifest name.
@@ -31,6 +39,70 @@ pub struct LockFile {
 /// Lockfile path for a home dir: `<home>/plugins/lock.json`.
 pub fn lock_path(home: &Path) -> PathBuf {
     home.join("plugins/lock.json")
+}
+
+/// Project-scope lock path: `<cwd>/.gray/plugins.json` (same `LockFile`
+/// shape as the user lock). Runtime data, never committed. A project entry
+/// for the same plugin name wins over the user entry (see
+/// [`disabled_sidecar_argvs`]).
+pub fn project_lock_path(cwd: &Path) -> PathBuf {
+    cwd.join(".gray/plugins.json")
+}
+
+/// Sidecar argv lists disabled by the user lock with the project lock
+/// overlaid as an enabled-flag-only delta: a project entry for the same
+/// name wins on the flag. Boot skips spawning a sidecar whose argv is in
+/// the result. Names without argv (builtins) never match a spawn, and
+/// project-only names (no user entry, so no known argv) contribute nothing:
+/// the overlay toggles, it never discovers.
+pub fn disabled_sidecar_argvs(user: &LockFile, project: &LockFile) -> Vec<Vec<String>> {
+    let names: std::collections::BTreeSet<&String> =
+        user.plugins.keys().chain(project.plugins.keys()).collect();
+    let mut out = Vec::new();
+    for name in names {
+        let enabled = project
+            .plugins
+            .get(name)
+            .map(|e| e.enabled)
+            .or_else(|| user.plugins.get(name).map(|e| e.enabled))
+            .unwrap_or(true);
+        if !enabled
+            && let Some(entry) = user.plugins.get(name)
+            && !entry.argv.is_empty()
+        {
+            out.push(entry.argv.clone());
+        }
+    }
+    out
+}
+
+/// Load the user lock + project overlay for boot filtering. Missing files
+/// are empty (not an error); corrupt files yield one warning each (paths
+/// only, never argv/URLs). `home` is `None` when no home resolves — the
+/// user scope is then skipped but the project overlay still applies.
+pub fn load_disabled_sidecar_argvs(
+    home: Option<&Path>,
+    cwd: &Path,
+) -> (Vec<Vec<String>>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut load = |path: PathBuf| -> LockFile {
+        match LockFile::load(&path) {
+            Ok(lf) => lf,
+            Err(e) => {
+                warnings.push(format!("cannot load {} ({e:#}); ignoring", path.display()));
+                LockFile {
+                    schema: 1,
+                    plugins: BTreeMap::new(),
+                }
+            }
+        }
+    };
+    let user = home.map(|h| load(lock_path(h))).unwrap_or(LockFile {
+        schema: 1,
+        plugins: BTreeMap::new(),
+    });
+    let project = load(project_lock_path(cwd));
+    (disabled_sidecar_argvs(&user, &project), warnings)
 }
 
 impl LockFile {

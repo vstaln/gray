@@ -155,7 +155,7 @@ impl OpenAiProvider {
 }
 
 #[derive(Debug, Serialize)]
-struct OpenAiChatRequest {
+pub(crate) struct OpenAiChatRequest {
     model: String,
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -778,7 +778,7 @@ fn responses_url(base_url: &Url) -> Result<Url, ProviderError> {
 }
 
 #[derive(Debug, Serialize)]
-struct ResponsesRequest {
+pub(crate) struct ResponsesRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     instructions: Option<String>,
@@ -999,6 +999,99 @@ fn map_responses_reasoning(reasoning_effort: Option<&str>) -> Option<Value> {
     }
 }
 
+/// True when a chat-completions body carries any reasoning wire params
+/// (`reasoning_effort` / `reasoning` / `thinking`). Pure: drives the
+/// strip-and-retry decision without touching the network.
+pub(crate) fn chat_has_reasoning_params(body: &OpenAiChatRequest) -> bool {
+    body.reasoning_effort.is_some() || body.reasoning.is_some() || body.thinking.is_some()
+}
+
+/// Drops all three reasoning wire params so a provider that rejects them
+/// (e.g. glm-5.2 400ing `Extra inputs are not permitted, field: 'reasoning'`,
+/// or a thinking-only model 400ing `thinking: disabled`) falls back to its
+/// defaults. The requested effort label is untouched (no cosmetic switch).
+pub(crate) fn strip_chat_reasoning_params(body: &mut OpenAiChatRequest) {
+    body.reasoning_effort = None;
+    body.reasoning = None;
+    body.thinking = None;
+}
+
+/// True when a Responses body carries reasoning (`include` rides with it).
+pub(crate) fn responses_has_reasoning(body: &ResponsesRequest) -> bool {
+    body.reasoning.is_some()
+}
+
+/// Drops Responses reasoning + its encrypted-content include.
+pub(crate) fn strip_responses_reasoning(body: &mut ResponsesRequest) {
+    body.reasoning = None;
+    body.include = None;
+}
+
+/// Retry predicate for the glm-5.2 catch-22: at max/low the wire `reasoning`
+/// field 400s (`Extra inputs are not permitted`); at off the `thinking:
+/// disabled` 400s on a thinking-only model. On a 400 naming reasoning params
+/// with params actually sent, retry ONCE with them omitted. Pure, no network.
+pub(crate) fn should_retry_without_reasoning(
+    status: u16,
+    snippet: &str,
+    had_reasoning_params: bool,
+) -> bool {
+    if status != 400 || !had_reasoning_params {
+        return false;
+    }
+    let lower = snippet.to_lowercase();
+    let names_reasoning = lower.contains("reasoning")
+        || lower.contains("thinking")
+        || lower.contains("reasoning_effort")
+        || lower.contains("effort");
+    if !names_reasoning {
+        return false;
+    }
+    const REJECTION_HINTS: [&str; 13] = [
+        "extra",
+        "permitted",
+        "not allowed",
+        "unsupported",
+        "unknown",
+        "unexpected",
+        "additional",
+        "unrecognized",
+        "invalid",
+        "only",
+        "required",
+        "must",
+        "not permitted",
+    ];
+    REJECTION_HINTS.iter().any(|h| lower.contains(h))
+}
+
+/// Clear terminal error naming the conflict (model + rejected field + fix).
+/// Appends to the classified message so status/cf-ray/request-id survive.
+pub(crate) fn reasoning_conflict_hint(model: &str, snippet: &str) -> String {
+    format!(
+        "{snippet} [model '{model}' rejected reasoning params — try /thinking off (or another effort); no setting was changed]"
+    )
+}
+
+/// Wraps a terminal `BadRequest` that names reasoning params with the
+/// conflict hint. Non-reasoning errors pass through untouched.
+pub(crate) fn maybe_annotate_reasoning_conflict(err: ProviderError, model: &str) -> ProviderError {
+    match err {
+        ProviderError::BadRequest(msg) => {
+            let lower = msg.to_lowercase();
+            let names = lower.contains("reasoning")
+                || lower.contains("thinking")
+                || lower.contains("effort");
+            if names {
+                ProviderError::BadRequest(reasoning_conflict_hint(model, &msg))
+            } else {
+                ProviderError::BadRequest(msg)
+            }
+        }
+        other => other,
+    }
+}
+
 pub(crate) fn classify_http_error(
     status: reqwest::StatusCode,
     snippet: &str,
@@ -1110,7 +1203,7 @@ async fn send_json_once(
     api_key: &str,
     body: &Value,
     attempt: usize,
-) -> Result<reqwest::Response, (ProviderError, Option<Duration>)> {
+) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
     let base = if api_key.is_empty() {
         client.post(url.clone())
     } else {
@@ -1144,6 +1237,7 @@ async fn send_json_once(
             Err((
                 classify_http_error(status, &snippet, cf_ray.as_deref(), req_id.as_deref()),
                 retry_after,
+                status.as_u16(),
             ))
         }
         Err(e) => Err((
@@ -1155,6 +1249,7 @@ async fn send_json_once(
                 ProviderError::Stream(e.to_string())
             },
             None,
+            0,
         )),
     }
 }
@@ -1330,7 +1425,34 @@ fn stream_unfold_step(
                                 completed: false,
                             };
                         }
-                        Err((err, floor)) => {
+                        Err((err, floor, http_status)) => {
+                            // glm-5.2 catch-22: a 400 naming reasoning params
+                            // retries ONCE with them omitted (provider
+                            // defaults apply; the effort label is unchanged).
+                            if attempt == 1
+                                && chat_has_reasoning_params(&body)
+                                && should_retry_without_reasoning(
+                                    http_status,
+                                    &err.to_string(),
+                                    true,
+                                )
+                            {
+                                log::warn!(target: "gray_provider", "retrying without reasoning params after 400: {err}");
+                                let mut stripped = body;
+                                let model = stripped.model.clone();
+                                strip_chat_reasoning_params(&mut stripped);
+                                log::warn!(target: "gray_provider", "stripped reasoning params for model {model}");
+                                state = StreamState::Init {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body: stripped,
+                                    initial_backoff,
+                                    attempt: attempt + 1,
+                                    retry_after: floor,
+                                };
+                                continue;
+                            }
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
                                 let next = StreamState::Init {
@@ -1352,6 +1474,8 @@ fn stream_unfold_step(
                                 state = next;
                                 continue;
                             }
+                            let model = body.model.clone();
+                            let err = maybe_annotate_reasoning_conflict(err, &model);
                             log::error!(target: "gray_provider", "stream request failed: {err}");
                             return Some((Err(err), StreamState::Done));
                         }
@@ -1389,7 +1513,31 @@ fn stream_unfold_step(
                                 completed: false,
                             };
                         }
-                        Err((err, floor)) => {
+                        Err((err, floor, http_status)) => {
+                            if attempt == 1
+                                && responses_has_reasoning(&body)
+                                && should_retry_without_reasoning(
+                                    http_status,
+                                    &err.to_string(),
+                                    true,
+                                )
+                            {
+                                log::warn!(target: "gray_provider", "retrying responses without reasoning after 400: {err}");
+                                let mut stripped = body;
+                                let model = stripped.model.clone();
+                                strip_responses_reasoning(&mut stripped);
+                                log::warn!(target: "gray_provider", "stripped responses reasoning for model {model}");
+                                state = StreamState::ResponsesInit {
+                                    client,
+                                    url,
+                                    api_key,
+                                    body: stripped,
+                                    initial_backoff,
+                                    attempt: attempt + 1,
+                                    retry_after: floor,
+                                };
+                                continue;
+                            }
                             if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
                                 let next = StreamState::ResponsesInit {
@@ -1409,6 +1557,8 @@ fn stream_unfold_step(
                                 state = next;
                                 continue;
                             }
+                            let model = body.model.clone();
+                            let err = maybe_annotate_reasoning_conflict(err, &model);
                             log::error!(target: "gray_provider", "responses request failed: {err}");
                             return Some((Err(err), StreamState::Done));
                         }
@@ -2314,5 +2464,156 @@ mod tests {
         );
         assert_eq!(parse_retry_after(&headers), None);
         assert_eq!(parse_retry_after(&reqwest::header::HeaderMap::new()), None);
+    }
+
+    fn empty_chat_req() -> gray_core::message::ChatRequest {
+        gray_core::message::ChatRequest {
+            system: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn chat_mapping_off_sends_thinking_disabled_only() {
+        let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("off"));
+        let v = serde_json::to_value(&body).expect("serializes");
+        assert!(
+            v.get("reasoning_effort").is_none(),
+            "off sends no reasoning_effort: {v}"
+        );
+        assert!(v.get("reasoning").is_none(), "off sends no reasoning: {v}");
+        assert_eq!(
+            v.get("thinking"),
+            Some(&serde_json::json!({"type": "disabled"})),
+            "off disables thinking: {v}"
+        );
+    }
+
+    #[test]
+    fn chat_mapping_low_sends_all_three_reasoning_params() {
+        let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low"));
+        let v = serde_json::to_value(&body).expect("serializes");
+        assert_eq!(
+            v.get("reasoning_effort").and_then(|s| s.as_str()),
+            Some("low"),
+            "reasoning_effort: {v}"
+        );
+        assert_eq!(
+            v.get("reasoning")
+                .and_then(|r| r.get("effort"))
+                .and_then(|s| s.as_str()),
+            Some("low"),
+            "reasoning.effort: {v}"
+        );
+        assert_eq!(
+            v.get("thinking")
+                .and_then(|t| t.get("type"))
+                .and_then(|s| s.as_str()),
+            Some("enabled"),
+            "thinking enabled: {v}"
+        );
+        assert_eq!(
+            v.get("thinking")
+                .and_then(|t| t.get("budget_tokens"))
+                .and_then(|n| n.as_u64()),
+            Some(1024),
+            "low budget: {v}"
+        );
+    }
+
+    #[test]
+    fn responses_reasoning_maps_max_to_xhigh_and_off_to_none() {
+        assert!(map_responses_reasoning(None).is_none());
+        assert!(map_responses_reasoning(Some("off")).is_none());
+        let max = map_responses_reasoning(Some("max")).expect("max maps");
+        assert_eq!(max.get("effort").and_then(|s| s.as_str()), Some("xhigh"));
+        assert_eq!(max.get("summary").and_then(|s| s.as_str()), Some("auto"));
+        let high = map_responses_reasoning(Some("high")).expect("high maps");
+        assert_eq!(high.get("effort").and_then(|s| s.as_str()), Some("high"));
+    }
+
+    #[test]
+    fn reasoning_400_with_extra_inputs_retries_without_reasoning() {
+        assert!(
+            should_retry_without_reasoning(
+                400,
+                "Extra inputs are not permitted, field: 'reasoning'",
+                true
+            ),
+            "glm max/low 400 must retry stripped"
+        );
+        assert!(
+            should_retry_without_reasoning(
+                400,
+                "status 400: Extra inputs are not permitted, field: 'reasoning'",
+                true
+            ),
+            "classified BadRequest message must also match"
+        );
+    }
+
+    #[test]
+    fn thinking_only_400_retries_without_reasoning_when_params_were_sent() {
+        // glm at off sends `thinking: disabled`; a thinking-only model 400s.
+        // Stripping the disable lets the provider fall back to default thinking.
+        assert!(
+            should_retry_without_reasoning(400, "thinking-only model", true),
+            "off-path 400 must retry stripped"
+        );
+    }
+
+    #[test]
+    fn reasoning_retry_predicate_rejects_non_cases() {
+        assert!(
+            !should_retry_without_reasoning(
+                400,
+                "Extra inputs are not permitted, field: 'reasoning'",
+                false
+            ),
+            "nothing to strip -> no retry"
+        );
+        assert!(
+            !should_retry_without_reasoning(400, "model not found: xyz", true),
+            "unrelated 400 -> no retry"
+        );
+        assert!(
+            !should_retry_without_reasoning(
+                429,
+                "Extra inputs are not permitted, field: 'reasoning'",
+                true
+            ),
+            "only 400 retries"
+        );
+        assert!(
+            !should_retry_without_reasoning(500, "internal error", true),
+            "only 400 retries"
+        );
+    }
+
+    #[test]
+    fn strip_chat_reasoning_omits_all_three_wire_fields() {
+        let mut body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low"));
+        assert!(
+            chat_has_reasoning_params(&body),
+            "precondition: low sends params"
+        );
+        strip_chat_reasoning_params(&mut body);
+        assert!(!chat_has_reasoning_params(&body), "stripped");
+        let v = serde_json::to_value(&body).expect("serializes");
+        assert!(v.get("reasoning").is_none());
+        assert!(v.get("reasoning_effort").is_none());
+        assert!(v.get("thinking").is_none());
+    }
+
+    #[test]
+    fn reasoning_conflict_error_names_model_and_conflict() {
+        let msg = reasoning_conflict_hint(
+            "zai/glm-5.2",
+            "status 400: Extra inputs are not permitted, field: 'reasoning'",
+        );
+        assert!(msg.contains("zai/glm-5.2"), "names model: {msg}");
+        assert!(msg.contains("reasoning"), "names conflict: {msg}");
+        assert!(msg.contains("/thinking"), "actionable hint: {msg}");
     }
 }

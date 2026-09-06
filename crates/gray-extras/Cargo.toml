@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 gray = { workspace = true }
-gray-cron = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

@@ -139,6 +139,33 @@ impl GatewayStatusBoard {
     }
 }
 
+/// One boot-card row per platform: `  └─ Discord — connecting…` →
+/// `  └─ Discord — connected as GrayBot`. The two-space indent matches the
+/// card header (`format_tool_box_lines`); shared verbatim by the live
+/// viewport panel and the committed final card.
+pub fn gateway_boot_rows(board: &GatewayStatusBoard) -> Vec<String> {
+    let snap = board.snapshot();
+    snap.iter()
+        .enumerate()
+        .map(|(i, (plat, st))| {
+            let branch = if i + 1 == snap.len() {
+                "└─"
+            } else {
+                "├─"
+            };
+            let status = match st {
+                PlatformConnState::Connecting { stage } => format!("{stage}…"),
+                PlatformConnState::Connected { identity: Some(id) } => {
+                    format!("connected as {id}")
+                }
+                PlatformConnState::Connected { identity: None } => "connected".to_string(),
+                PlatformConnState::Failed(e) => format!("connect failed: {e}"),
+            };
+            format!("  {branch} {} — {status}", plat.label())
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +196,23 @@ mod tests {
                 identity: Some("GrayBot".into())
             }
         );
+    }
+
+    #[test]
+    fn boot_rows_render_all_states() {
+        let b = GatewayStatusBoard::new(&[Platform::Discord, Platform::Telegram]);
+        b.mark_connected(Platform::Discord, Some("GrayBot".into()));
+        b.mark_failed(Platform::Telegram, "timeout");
+        let rows = super::gateway_boot_rows(&b);
+        assert_eq!(rows.len(), 2);
+        // Canonical platform order: Telegram first, Discord last (└─).
+        assert!(rows[0].starts_with("  ├─ Telegram — "), "row: {}", rows[0]);
+        assert!(
+            rows[0].contains("connect failed: timeout"),
+            "row: {}",
+            rows[0]
+        );
+        assert_eq!(rows[1], "  └─ Discord — connected as GrayBot");
     }
 
     #[test]

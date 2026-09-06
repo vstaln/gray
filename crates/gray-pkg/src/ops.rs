@@ -16,8 +16,12 @@ pub struct LockFile {
     pub plugins: BTreeMap<String, LockEntry>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 // TODO(2.4): switch to gray_plugin::lock
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LockEntry {
     #[serde(default)]
     pub ecosystem: String,
@@ -35,6 +39,24 @@ pub struct LockEntry {
     pub installed_at: String,
     #[serde(default)]
     pub scope: String,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for LockEntry {
+    fn default() -> Self {
+        Self {
+            ecosystem: String::new(),
+            version: String::new(),
+            hash: String::new(),
+            source: String::new(),
+            argv: Vec::new(),
+            adapter_version: String::new(),
+            installed_at: String::new(),
+            scope: String::new(),
+            enabled: true,
+        }
+    }
 }
 
 /// Install target: index name or https URL.
@@ -158,6 +180,7 @@ async fn install_index(
         entry.scope.clone()
     };
     let mut lock = read_lock()?.unwrap_or_default();
+    let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
     lock.plugins.insert(
         name.to_string(),
         LockEntry {
@@ -169,6 +192,7 @@ async fn install_index(
             adapter_version: env!("CARGO_PKG_VERSION").to_string(),
             installed_at: now_secs(),
             scope,
+            enabled,
         },
     );
     write_lock(&lock)?;
@@ -205,6 +229,7 @@ async fn install_url(
     }
     let _ = std::fs::remove_file(&archive);
     let mut lock = read_lock()?.unwrap_or_default();
+    let enabled = lock.plugins.get(&name).map(|e| e.enabled).unwrap_or(true);
     lock.plugins.insert(
         name.clone(),
         LockEntry {
@@ -216,6 +241,7 @@ async fn install_url(
             adapter_version: env!("CARGO_PKG_VERSION").to_string(),
             installed_at: now_secs(),
             scope: opts.scope.clone().unwrap_or_else(|| "user".to_string()),
+            enabled,
         },
     );
     write_lock(&lock)?;
@@ -232,6 +258,9 @@ pub fn list() -> anyhow::Result<BTreeMap<String, LockEntry>> {
 }
 
 pub fn remove(name: &str) -> anyhow::Result<()> {
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        anyhow::bail!("not installed: {name}");
+    }
     let mut lock = read_lock()?.unwrap_or_default();
     if lock.plugins.remove(name).is_none() {
         anyhow::bail!("not installed: {name}");
@@ -240,6 +269,18 @@ pub fn remove(name: &str) -> anyhow::Result<()> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }
+    write_lock(&lock)?;
+    Ok(())
+}
+
+/// Flip a plugin's `enabled` flag (boot skips disabled entries).
+/// Miss message matches `remove`.
+pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
+    let mut lock = read_lock()?.unwrap_or_default();
+    let Some(entry) = lock.plugins.get_mut(name) else {
+        anyhow::bail!("not installed: {name}");
+    };
+    entry.enabled = on;
     write_lock(&lock)?;
     Ok(())
 }
@@ -288,13 +329,24 @@ pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {
 mod tests {
     use super::*;
 
+    // Serializes the process-global GRAY_HOME mutation within this test
+    // binary (cargo runs tests in one process on multiple threads).
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn default_entry_is_enabled() {
+        assert!(LockEntry::default().enabled);
+    }
+
     #[test]
     fn spec_splits_names_and_urls() {
         assert!(matches!(parse_spec("foo"), NameOrUrl::Name(_)));
+        assert!(matches!(parse_spec("  foo  "), NameOrUrl::Name(_)));
         assert!(matches!(
             parse_spec("https://h/x.tar.gz"),
             NameOrUrl::Url(_)
         ));
+        assert!(matches!(parse_spec("http://h/x.tar.gz"), NameOrUrl::Url(_)));
         assert_eq!(name_from_url("https://h/plugins/foo.tar.gz?x=1"), "foo");
     }
 
@@ -315,6 +367,7 @@ mod tests {
                 adapter_version: "0.1.0".into(),
                 installed_at: "1".into(),
                 scope: "user".into(),
+                enabled: true,
             },
         );
         let v: serde_json::Value =
@@ -333,5 +386,105 @@ mod tests {
         ] {
             assert!(e.get(k).is_some(), "missing {k}");
         }
+    }
+
+    #[test]
+    fn lock_enabled_defaults_true_and_roundtrips_false() {
+        // Old locks without `enabled` load as enabled.
+        let old: LockFile = serde_json::from_str(
+            r#"{"schema":1,"plugins":{"demo":{"ecosystem":"gray-native","version":"1.0.0","hash":"sha256:abc","source":"https://h/demo.tar.gz","argv":[],"adapter_version":"0.1.0","installed_at":"1","scope":"user"}}}"#,
+        )
+        .unwrap();
+        assert!(old.plugins["demo"].enabled);
+        // New locks round-trip an explicit `false`.
+        let mut lock = old.clone();
+        lock.plugins.get_mut("demo").unwrap().enabled = false;
+        let back: LockFile = serde_json::from_str(&serde_json::to_string(&lock).unwrap()).unwrap();
+        assert!(!back.plugins["demo"].enabled);
+    }
+
+    #[test]
+    fn set_enabled_flips_flag_and_bails_on_miss() {
+        // GRAY_HOME points at a tempdir so the real lockfile is never
+        // disturbed (serialized by ENV_GUARD).
+        let _guard = ENV_GUARD.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        let mut lock = LockFile::default();
+        lock.plugins.insert(
+            "demo".to_string(),
+            LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "1.0.0".into(),
+                enabled: true,
+                ..LockEntry::default()
+            },
+        );
+        write_lock(&lock).unwrap();
+        set_enabled("demo", false).unwrap();
+        assert!(!list().unwrap()["demo"].enabled);
+        set_enabled("demo", true).unwrap();
+        assert!(list().unwrap()["demo"].enabled);
+        let err = set_enabled("nope", false).unwrap_err();
+        assert_eq!(err.to_string(), "not installed: nope");
+    }
+
+    #[test]
+    fn remove_rejects_traversal_and_empty_names() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        let mut lock = LockFile::default();
+        lock.plugins.insert(
+            "demo".to_string(),
+            LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "1.0.0".into(),
+                ..LockEntry::default()
+            },
+        );
+        write_lock(&lock).unwrap();
+        for bad in ["../evil", "a/b", "..", ""] {
+            let err = remove(bad).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("not installed: {bad}"),
+                "name {bad:?}"
+            );
+        }
+        // The lock entry and the plugins dir survive the rejections.
+        assert!(list().unwrap().contains_key("demo"));
+    }
+
+    #[test]
+    fn remove_deletes_entry_and_dir() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        let mut lock = LockFile::default();
+        lock.plugins.insert(
+            "demo".to_string(),
+            LockEntry {
+                ecosystem: "gray-native".into(),
+                version: "1.0.0".into(),
+                ..LockEntry::default()
+            },
+        );
+        write_lock(&lock).unwrap();
+        let dir = crate::plugins_dir().join("demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.sh"), "#!/bin/sh\n").unwrap();
+        remove("demo").unwrap();
+        assert!(!list().unwrap().contains_key("demo"));
+        assert!(!dir.exists());
     }
 }
