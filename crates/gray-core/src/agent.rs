@@ -1697,6 +1697,59 @@ mod agent_tests {
         assert!(a.unwrap() < b.unwrap(), "hook order kept, got: {system}");
     }
 
+    /// Counting `prompt/context` hook: proves the turn fetches once.
+    struct CountingCtxHook {
+        text: String,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl PluginHooks for CountingCtxHook {
+        async fn prompt_context(&self) -> Option<String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(self.text.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_context_fetched_once_per_turn() {
+        // Prefix-cache invariant: hook context is turn-scoped, so a
+        // multi-round turn reuses one fetch across all its requests.
+        let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
+        let seen = provider.seen_systems();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_system("BASE-SYSTEM")
+        .with_tools(vec![tool_def()])
+        .with_hooks(vec![Arc::new(CountingCtxHook {
+            text: "STABLE-CTX".to_string(),
+            calls: Arc::clone(&calls),
+        })]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "hook must run once per turn"
+        );
+        let seen = seen.lock().expect("seen lock poisoned");
+        assert_eq!(seen.len(), 2, "two rounds → two requests, got {seen:?}");
+        for system in seen.iter() {
+            let system = system.as_deref().unwrap_or("");
+            assert!(
+                system.contains("STABLE-CTX"),
+                "every request carries hook context, got: {system}"
+            );
+        }
+    }
+
     /// Stub `tool/before` hook: denies or rewrites every call, like a
     /// sidecar's `{"decision":"deny"|"modify",…}` reply.
     struct VetoHook {
