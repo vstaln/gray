@@ -49,6 +49,7 @@ pub(crate) async fn dispatch_command(
                 action,
                 &mut *agent,
                 tui.as_ref().map(|(s, _)| s),
+                session_state.as_ref().map(|s| s.session_id.as_str()),
             )
             .await;
             Flow::Continue
@@ -60,6 +61,7 @@ pub(crate) async fn dispatch_command(
                 direct,
                 &mut *agent,
                 tui.as_ref().map(|(s, _)| s),
+                session_state.as_ref().map(|s| s.session_id.as_str()),
             )
             .await;
             Flow::Continue
@@ -208,6 +210,7 @@ pub(crate) async fn dispatch_command(
                 &mut *agent,
                 tui.as_ref().map(|(s, _)| s),
                 &mut *hide_thinking,
+                session_state.as_ref().map(|s| s.session_id.as_str()),
             )
             .await;
             Flow::Continue
@@ -255,7 +258,13 @@ pub(crate) async fn dispatch_command(
                         t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
                         let _ = t.draw();
                     }
-                    reload_agent(&mut *agent, config, cwd).await;
+                    reload_agent(
+                        &mut *agent,
+                        config,
+                        cwd,
+                        session_state.as_ref().map(|s| s.session_id.as_str()),
+                    )
+                    .await;
                 }
                 Ok(false) => {
                     if let Some((shared, _)) = tui {

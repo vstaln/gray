@@ -134,6 +134,7 @@ pub(crate) async fn handle_sys(
     action: SysAction,
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
+    session_id: Option<&str>,
 ) {
     let path = match crate::sys_prompt_path() {
         Ok(p) => p,
@@ -169,7 +170,7 @@ pub(crate) async fn handle_sys(
                 tui,
                 &format!("✓ system prompt restored to default ({})", path.display()),
             );
-            reload_agent(agent, config, cwd).await;
+            reload_agent(agent, config, cwd, session_id).await;
         }
         SysAction::Edit => {
             // Make sure the file exists before opening an editor on it.
@@ -189,7 +190,7 @@ pub(crate) async fn handle_sys(
                             tui,
                             "✓ system prompt saved — applies from your next message",
                         );
-                        reload_agent(agent, config, cwd).await;
+                        reload_agent(agent, config, cwd, session_id).await;
                     }
                     Ok(None) => say(tui, "prompt unchanged"),
                     Err(e) => say(tui, &format!("editor error: {e}")),
@@ -230,7 +231,7 @@ pub(crate) async fn handle_sys(
                         tui,
                         "✓ system prompt saved — applies from your next message",
                     );
-                    reload_agent(agent, config, cwd).await;
+                    reload_agent(agent, config, cwd, session_id).await;
                 }
                 Ok(None) => {
                     say(tui, "prompt unchanged");
@@ -244,9 +245,16 @@ pub(crate) async fn handle_sys(
 }
 
 /// Rebuilds the agent after a system-prompt change, preserving conversation history.
-pub(crate) async fn reload_agent(agent: &mut Option<Agent>, config: &Config, cwd: &Path) {
+/// `session_id` pins the Responses `prompt_cache_key` shard: rebuilding with
+/// `None` would rotate the shard mid-session and bust prefix-cache hits.
+pub(crate) async fn reload_agent(
+    agent: &mut Option<Agent>,
+    config: &Config,
+    cwd: &Path,
+    session_id: Option<&str>,
+) {
     let old = agent.take();
-    let mut rebuilt = match build_agent(config, cwd, None).await {
+    let mut rebuilt = match build_agent(config, cwd, session_id).await {
         Ok(a) => a,
         Err(e) => {
             println!("{e}");
@@ -268,6 +276,7 @@ pub(crate) async fn handle_model(
     direct: Option<String>,
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
+    session_id: Option<&str>,
 ) {
     if let Some(m) = direct {
         let (_, _, known) =
@@ -301,7 +310,7 @@ pub(crate) async fn handle_model(
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }
-        reload_agent(agent, config, cwd).await;
+        reload_agent(agent, config, cwd, session_id).await;
         return;
     }
 
@@ -327,7 +336,7 @@ pub(crate) async fn handle_model(
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }
-            reload_agent(agent, config, cwd).await;
+            reload_agent(agent, config, cwd, session_id).await;
         }
         Ok(false) => {
             if let Some(shared) = tui {
@@ -363,6 +372,7 @@ pub(crate) async fn handle_thinking(
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
     hide_thinking: &mut bool,
+    session_id: Option<&str>,
 ) {
     if let Some(eff) = direct {
         let eff_clean = eff.to_lowercase();
@@ -386,7 +396,7 @@ pub(crate) async fn handle_thinking(
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
             }
-            reload_agent(agent, config, cwd).await;
+            reload_agent(agent, config, cwd, session_id).await;
             return;
         }
         let msg = format!(
@@ -418,7 +428,7 @@ pub(crate) async fn handle_thinking(
                 }
                 let _ = t.draw();
             }
-            reload_agent(agent, config, cwd).await;
+            reload_agent(agent, config, cwd, session_id).await;
         }
         Ok(false) => {
             if !has_explicit_level {

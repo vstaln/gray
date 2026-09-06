@@ -422,7 +422,13 @@ pub(crate) async fn handle_compact(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     if agent.is_none() {
-        reload_agent(agent, config, cwd).await;
+        reload_agent(
+            agent,
+            config,
+            cwd,
+            session_state.as_ref().map(|s| s.session_id.as_str()),
+        )
+        .await;
     }
     let Some(ag) = agent.as_mut() else {
         if let Some(shared) = tui {
