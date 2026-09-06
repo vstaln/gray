@@ -39,6 +39,11 @@ pub const FAST_FAILURE_WINDOW: Duration = Duration::from_secs(60);
 /// (timeouts, resets, shard ends) is retryable.
 pub fn classify_connect_error(err: &str) -> Fatal {
     let lower = err.to_ascii_lowercase();
+    // Feature-stub refusal (platform not compiled in) is deterministic config,
+    // never retry: surface the rebuild instruction immediately.
+    if lower.contains("not compiled") {
+        return Fatal::Terminal(err.to_string());
+    }
     // Privileged-intents close (4014 contains "401") is reconnectable, never terminal.
     if lower.contains("4014") || lower.contains("intent") {
         return Fatal::Retryable(err.to_string());

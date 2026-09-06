@@ -129,6 +129,21 @@ impl QuestionSession {
         &self.questions[self.current_idx]
     }
 
+    /// True when the editable notes row should render: Tab-opened (or a
+    /// restored non-empty draft), outside the end-confirmation surface.
+    pub(crate) fn notes_editor_visible(&self) -> bool {
+        if self.confirm_unanswered.is_some() {
+            return false;
+        }
+        let a = &self.answers[self.current_idx];
+        a.notes_visible || !a.draft.trim().is_empty()
+    }
+
+    /// True when keystrokes are landing in notes (cursor belongs on its row).
+    pub(crate) fn notes_focused(&self) -> bool {
+        matches!(self.focus, Focus::Notes)
+    }
+
     fn is_approval(&self) -> bool {
         self.questions[self.current_idx].id == "tool-approval"
     }

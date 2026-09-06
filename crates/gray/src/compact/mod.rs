@@ -12,13 +12,17 @@ use gray_core::message::{ContentBlock, Message, Role};
 
 use crate::config::Config;
 
-pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are a context summarization assistant. Your task is to read a conversation between a user and an AI coding assistant, then produce a structured, concise summary.
+pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a continuation summary for another LLM that will resume the task. Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary."#;
 
 const BASE_SUMMARIZATION_PROMPT: &str = r#"The messages below are conversation messages from the current session.
 
-Produce a structured summary of the conversation and work completed so far.
+Create a continuation summary for another LLM that will resume the task. Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, file paths, or references needed to continue
 
 Use this EXACT format:
 
@@ -160,19 +164,20 @@ pub async fn auto_compact_if_needed(
         return Ok(false);
     }
     let keep = crate::setup::user_keep_recent_tokens();
-    compact_with_keep(agent, None, keep).await
+    Ok(compact_with_keep(agent, None, keep).await?.is_some())
 }
 
 /// Summary + recent tail: replaces history with `[summary_user, summary_assistant,
 /// ...tail]` where tail fits in `keep_tokens`. `keep_tokens == 0` = legacy 2-message result.
+/// Returns the summary text on success (`None` when there was nothing to compact).
 pub async fn compact_with_keep(
     agent: &mut Agent,
     custom_instructions: Option<&str>,
     keep_tokens: usize,
-) -> Result<bool, CoreError> {
+) -> Result<Option<String>, CoreError> {
     let messages = agent.messages().to_vec();
     if messages.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
     let tail = tail_messages(&messages, keep_tokens);
     let transcript = serialize_conversation(&messages);
@@ -189,7 +194,30 @@ pub async fn compact_with_keep(
     if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
         ledger.disarm_all_dedup();
     }
-    Ok(true)
+    // Reversible checkpoint: full pre-compact transcript + summary on disk, so
+    // nothing is truly lost. Best-effort; compaction succeeds even if it fails.
+    let path = write_continuation_checkpoint(&transcript, &summary);
+    if let Some(p) = path {
+        eprintln!("continuation checkpoint: {}", p.display());
+    }
+    Ok(Some(summary))
+}
+
+/// Best-effort snapshot of the pre-compact transcript plus the summary.
+/// Returns the file path on success. Lives in the OS temp dir, never the workspace.
+pub fn write_continuation_checkpoint(
+    transcript: &str,
+    summary: &str,
+) -> Option<std::path::PathBuf> {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("gray-continuation-{ts}.md"));
+    let doc = format!(
+        "# Gray continuation checkpoint ({ts})\n\n## Summary\n\n{summary}\n\n## Suggested next capabilities\n\n- tdd: red-green-refactor at pre-agreed seams\n- diagnosing-bugs: red repro loop before fixing\n- code-review: standards + spec axes on the diff\n\n## Full pre-compact transcript\n\n{transcript}\n"
+    );
+    std::fs::write(&path, doc).ok().map(|_| path)
 }
 
 /// Core compaction primitive used by both manual `/compact` and auto paths.
@@ -630,7 +658,7 @@ mod tests {
             let out = compact_with_keep(&mut ag, None, 0)
                 .await
                 .expect("manual compact must run when disabled");
-            assert!(out);
+            assert!(out.is_some());
             assert!(ag.messages()[0].text_content().contains("summarized"));
             let mut ag2 = agent();
             let out2 = compact_with_instructions(&mut ag2, None)

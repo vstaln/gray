@@ -493,21 +493,16 @@ impl BasePlatformAdapter for DiscordAdapter {
         }
         #[cfg(not(feature = "discord"))]
         {
-            self.stage("connecting gateway");
-            if let Some(old) = self.shard.lock().unwrap().take() {
-                old.abort();
-            }
-            // Stub shard: pends forever so disconnect-abort is testable without network.
-            // On real shards death the task exits and the next supervised
-            // `connect_adapter_with_retry` restarts it (see daemon ladder).
-            *self.shard.lock().unwrap() =
-                Some(tokio::spawn(async { std::future::pending::<()>().await }));
-            self.stage("waiting for ready");
-            log::info!(
-                "[discord] stub connect (token {}…)",
-                &self.token[..self.token.len().min(6)]
-            );
+            // Honest stub: never pretend to connect. A success here made the
+            // boot card claim "connected" with no bot online, so fail loudly
+            // with the rebuild instruction instead (terminal, no retries).
+            // (disconnect-abort stays testable: that test injects its shard
+            // directly and never calls connect.)
+            return Err(anyhow::anyhow!(
+                "discord support not compiled into this build (rebuild gray with `--features discord`)"
+            ));
         }
+        #[allow(unreachable_code)]
         Ok(())
     }
 
@@ -867,38 +862,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stub_connect_walks_stages_for_supervision() {
-        // Stub-only: no network, connect still walks the staged path.
+    async fn stub_connect_refuses_honestly_for_supervision() {
+        // Stub-only: no network, connect must fail loudly (never pretend to
+        // connect — a fake Ok made the boot card claim "connected").
         #[cfg(not(feature = "discord"))]
         {
-            use crate::status::{GatewayStatusBoard, PlatformConnState};
+            use crate::status::GatewayStatusBoard;
             let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
             let board = GatewayStatusBoard::new(&[Platform::Discord]);
             a.set_status_board(board.clone());
-            a.connect().await.unwrap();
-            assert!(a.has_shard(), "connect must store the shard task");
-            assert_eq!(
-                board.snapshot()[0].1,
-                PlatformConnState::Connecting {
-                    stage: "waiting for ready"
-                },
-                "stub ends on the last pre-connected stage; the daemon marks connected"
+            let err = a.connect().await.unwrap_err();
+            assert!(
+                err.to_string().contains("not compiled"),
+                "stub must name the missing build feature: {err}"
             );
-            a.disconnect().await.unwrap();
-            assert!(!a.has_shard());
-        }
-    }
-
-    #[tokio::test]
-    async fn stub_connect_stores_shard_for_supervision() {
-        // Stub-only: no network, connect must store the shard task.
-        #[cfg(not(feature = "discord"))]
-        {
-            let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
-            a.connect().await.unwrap();
-            assert!(a.has_shard(), "connect must store the shard task");
-            a.disconnect().await.unwrap();
-            assert!(!a.has_shard());
+            assert!(
+                matches!(
+                    crate::daemon::classify_connect_error(&err.to_string()),
+                    crate::daemon::Fatal::Terminal(_)
+                ),
+                "stub refusal must be terminal (no retry loop): {err}"
+            );
+            assert!(!a.has_shard(), "failed connect stores nothing");
         }
     }
 

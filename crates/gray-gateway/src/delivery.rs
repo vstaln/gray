@@ -758,9 +758,10 @@ mod tests {
         assert!(send_once(&cfg, "telegram:1", "   ").await.is_err());
         assert!(send_once(&cfg, "slack:C1", "hi").await.is_err()); // not configured
         assert!(send_once(&cfg, "nope:1", "hi").await.is_err());
-        // Stub adapters "connect" offline; with the real feature this would need network.
+        // Stub adapters refuse offline (honest failure, no fake connect);
+        // with the real feature this would need network.
         #[cfg(not(feature = "telegram"))]
-        assert!(send_once(&cfg, "telegram:1", "hi").await.is_ok());
+        assert!(send_once(&cfg, "telegram:1", "hi").await.is_err());
     }
 
     // --- delivery ledger + dead targets (workstream A-gw1) ---

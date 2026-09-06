@@ -237,7 +237,7 @@ mod tests {
     #[test]
     fn cursor_row_highlighted_on_entry() {
         let (q, _rx) = mk(1);
-        let lines = panel_lines(&q, 80, 100);
+        let lines = panel_lines(&q, "", 80, 100);
         let head: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -347,9 +347,35 @@ mod tests {
     }
 
     #[test]
+    fn tab_opens_visible_notes_row() {
+        let (mut q, _rx) = mk(1);
+        let plain: Vec<String> = panel_lines(&q, "", 80, 100)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            !plain.iter().any(|t| t.starts_with("›")),
+            "no notes row before Tab: {plain:?}"
+        );
+        // Tab: Options -> Notes (same transition as the live key handler).
+        q.answers[0].notes_visible = true;
+        let with: Vec<String> = panel_lines(&q, "hello", 80, 100)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(with.len(), plain.len() + 1, "notes row takes one row");
+        // notes, tips, bottom margin close the panel.
+        let notes = &with[with.len() - 3];
+        assert!(
+            notes.starts_with("› hello"),
+            "notes row mirrors the draft: {with:?}"
+        );
+    }
+
+    #[test]
     fn panel_lines_end_with_bottom_margin() {
         let (q, _rx) = mk(1);
-        let lines = panel_lines(&q, 80, 100);
+        let lines = panel_lines(&q, "", 80, 100);
         assert!(lines.len() > 3, "panel should render, got {}", lines.len());
         let last = lines.last().unwrap();
         assert!(
@@ -361,7 +387,7 @@ mod tests {
     #[test]
     fn panel_lines_end_with_bottom_margin_constrained() {
         let (q, _rx) = mk(1);
-        let lines = panel_lines(&q, 80, 8);
+        let lines = panel_lines(&q, "", 80, 8);
         assert!(lines.len() <= 8);
         let last = lines.last().unwrap();
         assert!(
