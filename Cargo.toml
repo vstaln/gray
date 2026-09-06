@@ -9,6 +9,7 @@ members = [
     "crates/gray-markdown",
     "crates/gray-provider",
     "crates/gray-session",
+    "crates/gray-supervise",
     "crates/gray-tools",
     "crates/gray-plugin",
     "crates/gray-pkg",
@@ -42,6 +43,7 @@ gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }
 gray-session = { path = "crates/gray-session" }
+gray-supervise = { path = "crates/gray-supervise" }
 gray-markdown = { path = "crates/gray-markdown" }
 gray-pkg = { path = "crates/gray-pkg" }
 

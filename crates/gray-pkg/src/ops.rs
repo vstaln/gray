@@ -1198,6 +1198,11 @@ pub struct SearchHit {
 /// Advisory line printed when the pi side fails; search still exits 0.
 pub const PI_UNREACHABLE_LINE: &str = "Pi Gallery (preview): unreachable";
 
+/// Advisory line printed when the Gray Index fetch fails (network error,
+/// 404, timeout); search continues with pi hits and still exits 0.
+/// Exact mirror of the pi-side voice.
+pub const GRAY_UNREACHABLE_LINE: &str = "Gray Index: unreachable";
+
 /// Render one hit: `name version [source] - desc`, with the desc suffix
 /// omitted when empty (always the case for Gray Index hits). Pi hits
 /// whose lock key differs from the raw npm name (e.g. `@scope/bar` →
@@ -1219,13 +1224,14 @@ pub fn format_search_hit(hit: &SearchHit) -> String {
 }
 
 /// Outcome of [`search_all`]: merged hits (gray first, gray wins name
-/// collisions) plus whether the pi side failed. Callers print
-/// [`PI_UNREACHABLE_LINE`] when `pi_unreachable` is set — never an
-/// error exit for a pi-side failure.
+/// collisions) plus whether either side failed. Callers print
+/// [`PI_UNREACHABLE_LINE`] / [`GRAY_UNREACHABLE_LINE`] when the
+/// corresponding flag is set — never an error exit for a fetch failure.
 #[derive(Debug)]
 pub struct SearchOutput {
     pub hits: Vec<SearchHit>,
     pub pi_unreachable: bool,
+    pub gray_unreachable: bool,
 }
 
 /// Query the pi side via npm search (`/-/v1/search`, `size=20`) on the
@@ -1281,12 +1287,25 @@ async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<
 
 /// Fan out `query` over the Gray Index (substring over the
 /// `fetch_index` cache) and the pi side ([`search_pi`]). Gray wins name
-/// collisions (the pi duplicate is suppressed). A pi-side failure sets
-/// `pi_unreachable` instead of erroring; gray-side (index) failures
-/// still return `Err`.
+/// collisions (the pi duplicate is suppressed). A fetch failure on either
+/// side sets the corresponding `*_unreachable` flag instead of erroring;
+/// only corrupt local state (not a fetch failure) still returns `Err`.
 pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
     let client = crate::fetch::client()?;
-    let index = crate::index::fetch_index(&client).await?;
+    let (index, gray_unreachable) = match crate::index::fetch_index(&client).await {
+        Ok(index) => (index, false),
+        Err(e) => {
+            log::debug!("gray index fetch failed: {e:#}");
+            (
+                crate::index::Index {
+                    schema: 0,
+                    generated: String::new(),
+                    plugins: Default::default(),
+                },
+                true,
+            )
+        }
+    };
     // `plugins` is a BTreeMap, so gray hits come out name-sorted.
     let mut hits: Vec<SearchHit> = Vec::new();
     let mut gray_names = std::collections::BTreeSet::new();
@@ -1316,6 +1335,7 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
     Ok(SearchOutput {
         hits,
         pi_unreachable,
+        gray_unreachable,
     })
 }
 
@@ -2391,6 +2411,18 @@ mod tests {
         format!("http://127.0.0.1:{port}/index.json")
     }
 
+    /// Gray Index stub that always 404s (the unpublished production index).
+    async fn spawn_index_404_stub() -> String {
+        use axum::{Router, http::StatusCode, routing::get};
+        let router = Router::new().route("/index.json", get(|| async { StatusCode::NOT_FOUND }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://127.0.0.1:{port}/index.json")
+    }
+
     async fn spawn_search_stub(objects: serde_json::Value) -> String {
         use axum::{Json, Router, routing::get};
         let router = Router::new().route(
@@ -2509,6 +2541,54 @@ mod tests {
         let out = search_all("nothing-matches").await.unwrap();
         assert!(out.pi_unreachable);
         assert!(out.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_gray_404_is_advisory_with_pi_hits() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_404_stub().await;
+        let registry =
+            spawn_search_stub(search_objects(&[("pi-bar", "2.0.0", "does things")])).await;
+        let _home = use_search_env(&index_url, &registry);
+
+        let out = search_all("pi").await.unwrap();
+        assert!(out.gray_unreachable);
+        assert!(!out.pi_unreachable);
+        assert_eq!(out.hits.len(), 1);
+        assert_eq!(out.hits[0].source, SearchSource::Pi);
+        assert_eq!(GRAY_UNREACHABLE_LINE, "Gray Index: unreachable");
+    }
+
+    #[tokio::test]
+    async fn search_gray_404_and_pi_down_is_advisory_not_error() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_404_stub().await;
+        // Closed loopback port: connection refused, instantly.
+        let _home = use_search_env(&index_url, "http://127.0.0.1:1");
+
+        // Ok (not Err): callers print both advisories and exit 0.
+        let out = search_all("nothing-matches").await.unwrap();
+        assert!(out.gray_unreachable);
+        assert!(out.pi_unreachable);
+        assert!(out.hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_corrupt_cache_still_degrades_not_errors() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_404_stub().await;
+        let registry =
+            spawn_search_stub(search_objects(&[("pi-bar", "2.0.0", "does things")])).await;
+        let home = use_search_env(&index_url, &registry);
+        // Ruling 1b: corrupt local cache stays swallowed (`.ok()`), so a
+        // fetch failure still degrades to advisory instead of erroring.
+        let cache = home.path().join("plugins/index-cache.json");
+        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+        std::fs::write(&cache, "{not json").unwrap();
+
+        let out = search_all("pi").await.unwrap();
+        assert!(out.gray_unreachable);
+        assert_eq!(out.hits.len(), 1);
     }
 
     #[tokio::test]
