@@ -582,6 +582,7 @@ mod tests {
             "compact",
             "usage",
             "permissions",
+            "yolo",
             "feedback",
             "gateway",
             "acp",
@@ -634,6 +635,7 @@ mod tests {
             "compact",
             "usage",
             "permissions",
+            "yolo",
             "feedback",
             "gateway",
             "acp",
@@ -644,11 +646,11 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 16);
+        assert_eq!(super::REGISTRY.len(), 17);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 16);
+        assert_eq!(all.len(), 17);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
