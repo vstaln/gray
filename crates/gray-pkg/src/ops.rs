@@ -1118,7 +1118,13 @@ async fn install_clawhub(
             ))
         );
     }
-    let key = install_key(&detail.slug)?;
+    // Owner-qualified key (`owner-slug` after sanitizing): two owners
+    // shipping the same slug no longer collide on one `pi/<slug>` dir,
+    // and the key derives from the searched display name.
+    let key = install_key(&crate::sources::clawhub_key_input(
+        &detail.owner,
+        &detail.slug,
+    ))?;
     let (dest, summary) = extract_pi_skills(
         &root,
         &key,
@@ -1431,12 +1437,13 @@ pub const CLAWHUB_UNREACHABLE_LINE: &str = "ClawHub: unreachable";
 pub const CLAUDE_UNREACHABLE_LINE: &str = "Claude: unreachable";
 
 /// Render one hit: `name version [source] - desc`, with the desc suffix
-/// omitted when empty (always the case for Gray Index hits). Pi hits
-/// whose lock key differs from the raw npm name (e.g. `@scope/bar` →
-/// `scope-bar`) append `(install as <key>)` via the shared sanitizer.
+/// omitted when empty (always the case for Gray Index hits). Pi and
+/// ClawHub hits whose lock key differs from the display name (e.g.
+/// `@scope/bar` → `scope-bar`, `arein/test` → `arein-test`) append
+/// `(install as <key>)` via the shared sanitizer.
 pub fn format_search_hit(hit: &SearchHit) -> String {
     let mut base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
-    if hit.source == SearchSource::Pi {
+    if hit.source == SearchSource::Pi || hit.source == SearchSource::ClawHub {
         let key = sanitize_npm_key(&hit.name);
         if key != hit.name {
             base.push_str(&format!(" (install as {key})"));
@@ -3091,16 +3098,40 @@ pub(crate) mod tests {
     }
 
     /// ClawHub stub: fixed `/search` results plus a `fixture/demo` skill
-    /// (detail + empty version files + ZIP download).
+    /// (detail + empty version files + ZIP download). The download 429s
+    /// once (with `Retry-After: 0`) to prove the retry routing; the
+    /// verdicts endpoint answers for `claw-foo` only, so `claw-bar` pins
+    /// the search-payload fallback path.
+    #[derive(Clone)]
+    struct ClawStub {
+        zip: Vec<u8>,
+        downloads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
     async fn spawn_clawhub_stub(zip: Vec<u8>) -> String {
-        use axum::{Json, Router, routing::get};
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::{HeaderMap, StatusCode},
+            routing::{get, post},
+        };
+        use std::sync::atomic::Ordering;
+        // `claw-foo` carries NO payload trust: its `scan:clean` must come
+        // from the verdicts batch or the test fails.
         let search = serde_json::json!({"results": [
             {"slug": "claw-foo", "displayName": "Claw Foo",
              "summary": "does claw things", "version": "4.0.0",
-             "ownerHandle": "fixture", "official": false,
-             "trust": {"clawHubVerdict": "clean"}},
+             "ownerHandle": "fixture", "official": false},
+            {"slug": "claw-bar", "displayName": "Claw Bar",
+             "summary": "payload trust only", "version": "1.0.0",
+             "official": false, "trust": {"clawHubVerdict": "clean"}},
             {"slug": "gray-foo", "displayName": "Gray Copy",
              "summary": "suppressed duplicate", "version": "9.9.9"},
+        ]});
+        let verdicts = serde_json::json!({"items": [
+            {"ok": true, "decision": "pass", "requestedSlug": "claw-foo",
+             "requestedOwnerHandle": "fixture", "requestedVersion": "4.0.0",
+             "version": "4.0.0", "security": {"status": "clean", "passed": true}},
         ]});
         let detail = serde_json::json!({
             "skill": {"slug": "demo", "displayName": "Demo", "summary": "demo skill"},
@@ -3134,11 +3165,26 @@ pub(crate) mod tests {
             )
             .route(
                 "/api/v1/download",
-                get(move || {
-                    let zip = zip.clone();
-                    async move { zip }
+                get(|State(st): State<ClawStub>| async move {
+                    if st.downloads.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let mut h = HeaderMap::new();
+                        h.insert("retry-after", "0".parse().unwrap());
+                        return (StatusCode::TOO_MANY_REQUESTS, h, Vec::new());
+                    }
+                    (StatusCode::OK, HeaderMap::new(), st.zip.clone())
                 }),
-            );
+            )
+            .route(
+                "/api/v1/skills/-/security-verdicts",
+                post(move || {
+                    let verdicts = verdicts.clone();
+                    async move { Json(verdicts) }
+                }),
+            )
+            .with_state(ClawStub {
+                zip,
+                downloads: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -3202,14 +3248,23 @@ pub(crate) mod tests {
                 ("pi-foo", SearchSource::Pi),
                 ("claude-foo", SearchSource::Claude),
                 ("fixture/claw-foo", SearchSource::ClawHub),
+                ("claw-bar", SearchSource::ClawHub),
             ]
         );
+        // `claw-foo` ships no payload trust: `scan:clean` proves the
+        // verdicts batch ran. `claw-bar` has no verdict: payload fallback.
         let claw = out
             .hits
             .iter()
             .find(|h| h.name == "fixture/claw-foo")
             .unwrap();
         assert_eq!(claw.trust, "community + scan:clean");
+        assert_eq!(
+            format_search_hit(claw),
+            "fixture/claw-foo 4.0.0 [ClawHub] (install as fixture-claw-foo) - does claw things"
+        );
+        let bar = out.hits.iter().find(|h| h.name == "claw-bar").unwrap();
+        assert_eq!(bar.trust, "community + scan:clean");
         let claude = out.hits.iter().find(|h| h.name == "claude-foo").unwrap();
         assert_eq!(claude.version, "3.0.0");
         assert_eq!(claude.version_detail, "./plugins/claude-foo");
@@ -3256,14 +3311,16 @@ pub(crate) mod tests {
         let report = install(parse_spec("clawhub:fixture/demo"), InstallOpts::default())
             .await
             .unwrap();
-        assert_eq!(report.name, "demo");
+        // Owner-qualified key: no collision with another owner's `demo`.
+        assert_eq!(report.name, "fixture-demo");
         assert_eq!(report.version, "1.0.0");
         // No version file list from the stub → honest unverified path.
+        // (The stub 429s the download once: success proves the retry.)
         assert!(report.unverified);
         let summary = report.pi_summary.expect("pi summary");
         assert_eq!(summary.taken, vec!["greeter"]);
         assert!(report.path.join("greeter/SKILL.md").is_file());
-        let entry = list().unwrap().remove("demo").expect("lock entry");
+        let entry = list().unwrap().remove("fixture-demo").expect("lock entry");
         assert_eq!(entry.ecosystem, "clawhub");
         assert_eq!(entry.version, "1.0.0");
         assert_eq!(entry.source, "https://clawhub.ai/fixture/skills/demo");
