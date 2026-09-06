@@ -28,11 +28,11 @@ pub(crate) fn normalize_paste(s: &str) -> String {
 pub(crate) fn text_clipboard_candidates() -> Vec<(String, Vec<String>)> {
     #[cfg(target_os = "macos")]
     {
-        return vec![("pbpaste".to_string(), vec![])];
+        vec![("pbpaste".to_string(), vec![])]
     }
     #[cfg(target_os = "windows")]
     {
-        return vec![(
+        vec![(
             "powershell.exe".to_string(),
             vec![
                 "-NoProfile".to_string(),
@@ -40,7 +40,7 @@ pub(crate) fn text_clipboard_candidates() -> Vec<(String, Vec<String>)> {
                 "-Command".to_string(),
                 "Get-Clipboard".to_string(),
             ],
-        )];
+        )]
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
