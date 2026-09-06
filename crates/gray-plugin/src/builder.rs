@@ -11,7 +11,7 @@
 //! [`BuilderOptions`]. Cron needs no direct call — the sidecar fires through
 //! `host/run` (`gray -p`) and gateway delivery runs through `run_agent`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -229,94 +229,132 @@ fn gray_home() -> Option<PathBuf> {
         })
 }
 
-/// Disabled sidecar argv lists from the user lock + project overlay
-/// (`<cwd>/.gray/plugins.json`, same shape, wins per name on the flag).
-/// Missing files are empty (silent); corrupt files queue one warning each
-/// (paths only, never argv/URLs).
-fn load_disabled_argvs() -> Vec<Vec<String>> {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let (disabled, warnings) =
-        crate::lock::load_disabled_sidecar_argvs(gray_home().as_deref(), &cwd);
-    for w in warnings {
-        push_builder_warning(w);
+/// Install dir for lock entries (`<home>/plugins`), mirroring `gray-pkg`
+/// (which owns the lockfile writes; this crate must not depend on it).
+/// `None` when no home resolves.
+fn plugins_dir() -> Option<PathBuf> {
+    gray_home().map(|h| h.join("plugins"))
+}
+
+/// Resolve the spawn argv for an installed plugin dir: the dir itself when
+/// executable, else `plugin.sh`, else the single executable inside.
+///
+/// Mirrors `gray::plugin_check::resolve_argv` (private to `gray`; this crate
+/// must not depend on it). Keep the two in sync — do not invent a third
+/// resolution rule.
+fn resolve_install_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
+    use std::os::unix::fs::PermissionsExt;
+    let is_exec = |p: &Path| {
+        std::fs::metadata(p)
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    };
+    if is_exec(dir) {
+        return Ok(vec![dir.to_string_lossy().into_owned()]);
     }
-    disabled
+    if !dir.is_dir() {
+        anyhow::bail!("{} is not a directory (or executable)", dir.display());
+    }
+    let script = dir.join("plugin.sh");
+    if is_exec(&script) {
+        return Ok(vec![script.to_string_lossy().into_owned()]);
+    }
+    let mut execs = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if is_exec(&path) {
+            execs.push(path);
+        }
+    }
+    match execs.len() {
+        1 => Ok(vec![execs[0].to_string_lossy().into_owned()]),
+        0 => anyhow::bail!(
+            "no executable in {} (expected plugin.sh or one executable)",
+            dir.display()
+        ),
+        _ => anyhow::bail!(
+            "ambiguous plugin dir {}: several executables, add plugin.sh",
+            dir.display()
+        ),
+    }
+}
+
+/// User lock + project overlay (`<cwd>/.gray/plugins.json`, same shape)
+/// for lock-entry spawning and the disabled filter. Missing files are empty
+/// (silent); corrupt files yield one warning each (paths only, never
+/// argv/URLs). `None` home skips the user scope; the project overlay still
+/// applies.
+fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile, Vec<String>) {
+    use std::collections::BTreeMap;
+    let mut warnings = Vec::new();
+    let mut load = |path: PathBuf| -> crate::lock::LockFile {
+        match crate::lock::LockFile::load(&path) {
+            Ok(lf) => lf,
+            Err(e) => {
+                warnings.push(format!("cannot load {} ({e:#}); ignoring", path.display()));
+                crate::lock::LockFile {
+                    schema: 1,
+                    plugins: BTreeMap::new(),
+                }
+            }
+        }
+    };
+    let user = gray_home()
+        .map(|h| load(crate::lock::lock_path(&h)))
+        .unwrap_or(crate::lock::LockFile {
+            schema: 1,
+            plugins: BTreeMap::new(),
+        });
+    let project = load(crate::lock::project_lock_path(cwd));
+    (user, project, warnings)
+}
+
+/// Effective `enabled` flag for a lock entry: the project overlay wins per
+/// name on the flag (same rule as [`crate::lock::disabled_sidecar_argvs`]).
+fn effective_enabled(
+    name: &str,
+    user: &crate::lock::LockFile,
+    project: &crate::lock::LockFile,
+) -> bool {
+    project
+        .plugins
+        .get(name)
+        .map(|e| e.enabled)
+        .or_else(|| user.plugins.get(name).map(|e| e.enabled))
+        .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
 // Profile resolution
 // ---------------------------------------------------------------------------
 
-/// Ordered active plugins: the profile file order, or `defaults` when the
-/// profile is missing/unparseable/empty. Sidecars spawn once per build with
-/// `handler` installed (`host/run`/`host/say`). A spawn failure aborts when
-/// `abort_on_spawn_failure` (interactive boot) else warns + skips (the daemon
-/// must stay up). Unknown builtin names always warn + skip. Sidecars
-/// disabled in the plugin lock (`enabled: false` in the user lock,
-/// `<cwd>/.gray/plugins.json` overlay winning per name) warn + skip before
-/// spawning — the flag never aborts, even when `abort_on_spawn_failure`.
+/// Ordered active plugins: the profile file order followed by enabled
+/// lock-file installs, or `defaults` when both are empty. Sidecars spawn
+/// once per build with `handler` installed (`host/run`/`host/say`).
+/// A profile-sidecar spawn failure aborts when `abort_on_spawn_failure`
+/// (interactive boot) else warns + skips (the daemon must stay up).
+/// Lock-entry spawn failures always warn + skip (names only, never argv).
+/// Unknown builtin names always warn + skip. Sidecars disabled in the
+/// plugin lock (`enabled: false` in the user lock, `<cwd>/.gray/plugins.json`
+/// overlay winning per name) warn + skip before spawning — the flag never
+/// aborts, even when `abort_on_spawn_failure`.
+///
+/// This is the single production host: profile entries first, then enabled
+/// lock entries (real installs resolve their executable from
+/// `<home>/plugins/<name>` via [`resolve_install_argv`]; legacy entries
+/// with an explicit `argv` spawn it directly). See [`crate::boot`] (kept
+/// as a test-only harness) for the legacy split.
 pub async fn active_plugins(
     defaults: Vec<Arc<dyn Plugin>>,
     profile_path: &str,
     handler: Option<HostHandler>,
     abort_on_spawn_failure: bool,
 ) -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
-    match load_entries(profile_path) {
-        Ok(entries) => {
-            let mut plugins = Vec::new();
-            // Disabled lookup once per build (file reads, not per sidecar);
-            // skipped entirely for builtin-only profiles.
-            let disabled = entries
-                .iter()
-                .any(|e| matches!(e, PluginEntry::Sidecar(_)))
-                .then(load_disabled_argvs)
-                .unwrap_or_default();
-            for (i, e) in entries.iter().enumerate() {
-                match e {
-                    PluginEntry::Builtin(n) => {
-                        match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
-                            Some(p) => plugins.push(p),
-                            None => push_builder_warning(format!(
-                                "unknown plugin {n:?} in {profile_path} — ignoring"
-                            )),
-                        }
-                    }
-                    PluginEntry::Sidecar(spec) => {
-                        if !spec.0.is_empty() && disabled.contains(&spec.0) {
-                            push_builder_warning(format!(
-                                "sidecar[{i}] disabled in plugin lock — skipping"
-                            ));
-                            continue;
-                        }
-                        let label = spec.0.join(" ");
-                        match SidecarPlugin::spawn(spec.0.clone()).await {
-                            Ok(p) => {
-                                if let Some(h) = &handler {
-                                    p.set_host_handler(h.clone()).await;
-                                }
-                                plugins.push(Arc::new(p) as Arc<dyn Plugin>);
-                            }
-                            Err(e) if abort_on_spawn_failure => {
-                                return Err(e).with_context(|| {
-                                    format!("sidecar[{i}] ({label}) failed to spawn")
-                                });
-                            }
-                            Err(e) => push_builder_warning(format!(
-                                "sidecar[{i}] ({label}) failed to spawn, skipping: {e:#}"
-                            )),
-                        }
-                    }
-                }
-            }
-            if plugins.is_empty() {
-                Ok((defaults, true))
-            } else {
-                Ok((plugins, false))
-            }
-        }
+    // Profile entries: missing file is the default state (silent, empty);
+    // anything else (parse error) warns once via the caller's drain.
+    let entries: Vec<PluginEntry> = match load_entries(profile_path) {
+        Ok(entries) => entries,
         Err(e) => {
-            // Missing file is the default state — silent. Anything else
-            // (parse error) warns once via the caller's drain.
             let missing = e
                 .downcast_ref::<std::io::Error>()
                 .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
@@ -325,9 +363,140 @@ pub async fn active_plugins(
                     "cannot load {profile_path} profile ({e}); using builtin plugins"
                 ));
             }
-            Ok((defaults, true))
+            Vec::new()
+        }
+    };
+
+    // Lock state once per build (file reads, not per sidecar).
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let (user_lock, project_lock, lock_warnings) = load_lock_files(&cwd);
+    for w in lock_warnings {
+        push_builder_warning(w);
+    }
+    // Legacy exact-argv disabled set (non-empty-argv entries only).
+    let disabled = crate::lock::disabled_sidecar_argvs(&user_lock, &project_lock);
+    // Path correlation for real installs (empty-argv locks): resolved
+    // executable paths + install dirs of disabled entries, so a profile
+    // sidecar pointing at the same install matches even though the lock
+    // argv is empty.
+    let pdir = plugins_dir();
+    let mut disabled_paths: Vec<String> = Vec::new();
+    let mut disabled_dirs: Vec<String> = Vec::new();
+    for name in user_lock.plugins.keys() {
+        if effective_enabled(name, &user_lock, &project_lock) {
+            continue;
+        }
+        if let Some(pd) = &pdir {
+            let dir = pd.join(name);
+            disabled_dirs.push(dir.to_string_lossy().into_owned());
+            if let Ok(argv) = resolve_install_argv(&dir) {
+                disabled_paths.extend(argv);
+            }
         }
     }
+    let profile_disabled = |spec: &[String]| -> bool {
+        if !spec.is_empty() && disabled.contains(&spec.to_vec()) {
+            return true;
+        }
+        // Single-path specs (dir or executable) match a disabled install
+        // by resolved executable or install dir.
+        if spec.len() == 1 {
+            if disabled_paths.contains(&spec[0]) || disabled_dirs.contains(&spec[0]) {
+                return true;
+            }
+            if let Ok(argv) = resolve_install_argv(Path::new(&spec[0]))
+                && argv.iter().any(|a| disabled_paths.contains(a))
+            {
+                return true;
+            }
+        }
+        false
+    };
+
+    let mut plugins = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        match e {
+            PluginEntry::Builtin(n) => {
+                match defaults.iter().find(|p| p.manifest().name == *n).cloned() {
+                    Some(p) => plugins.push(p),
+                    None => push_builder_warning(format!(
+                        "unknown plugin {n:?} in {profile_path} — ignoring"
+                    )),
+                }
+            }
+            PluginEntry::Sidecar(spec) => {
+                if profile_disabled(&spec.0) {
+                    push_builder_warning(format!(
+                        "sidecar[{i}] disabled in plugin lock — skipping"
+                    ));
+                    continue;
+                }
+                let label = spec.0.join(" ");
+                match SidecarPlugin::spawn(spec.0.clone()).await {
+                    Ok(p) => {
+                        if let Some(h) = &handler {
+                            p.set_host_handler(h.clone()).await;
+                        }
+                        plugins.push(Arc::new(p) as Arc<dyn Plugin>);
+                    }
+                    Err(e) if abort_on_spawn_failure => {
+                        return Err(e).with_context(|| {
+                            format!("sidecar[{i}] ({label}) failed to spawn")
+                        });
+                    }
+                    Err(e) => push_builder_warning(format!(
+                        "sidecar[{i}] ({label}) failed to spawn, skipping: {e:#}"
+                    )),
+                }
+            }
+        }
+    }
+
+    // Enabled lock entries (the project overlay wins per name on the flag;
+    // the overlay toggles, it never discovers — project-only names have no
+    // known argv/dir, so only user names spawn). Real installs (empty argv)
+    // resolve their executable from the install dir; legacy entries spawn
+    // their recorded argv. Failures warn (names only) and never abort.
+    for (name, entry) in user_lock.plugins.iter() {
+        if !effective_enabled(name, &user_lock, &project_lock) {
+            continue;
+        }
+        let argv: Vec<String> = if !entry.argv.is_empty() {
+            entry.argv.clone()
+        } else {
+            let Some(pd) = &pdir else { continue };
+            match resolve_install_argv(&pd.join(name)) {
+                Ok(a) => a,
+                Err(_) => continue,
+            }
+        };
+        match SidecarPlugin::spawn(argv).await {
+            Ok(p) => {
+                if let Some(h) = &handler {
+                    p.set_host_handler(h.clone()).await;
+                }
+                plugins.push(Arc::new(p) as Arc<dyn Plugin>);
+            }
+            Err(e) => push_builder_warning(format!(
+                "lock plugin {name:?} failed to spawn ({e:#}); ignoring"
+            )),
+        }
+    }
+
+    if plugins.is_empty() {
+        return Ok((defaults, true));
+    }
+    // Later manifests win on name conflict (same rule as `merge_manifests`
+    // and the legacy boot harness).
+    let mut deduped: Vec<Arc<dyn Plugin>> = Vec::new();
+    for p in plugins {
+        let name = p.manifest().name.clone();
+        if let Some(pos) = deduped.iter().position(|e| e.manifest().name == name) {
+            deduped.remove(pos);
+        }
+        deduped.push(p);
+    }
+    Ok((deduped, false))
 }
 
 // ---------------------------------------------------------------------------
