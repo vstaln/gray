@@ -19,6 +19,12 @@ pub(crate) async fn run_empty_turn(
     question_bridge: &QuestionBridge,
     approval_gate: &gray_core::approvals::ApprovalGate,
 ) -> anyhow::Result<()> {
+    let (shared, _) = if interactive {
+        (Some(tui.as_ref().expect("interactive implies tui")), ())
+    } else {
+        (None, ())
+    };
+    let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
     if !pending_images.is_empty() {
         // image(s) without text: treat as prompt with images
         let images = std::mem::take(&mut *pending_images);
@@ -78,6 +84,11 @@ pub(crate) async fn run_empty_turn(
             let sid = session_state
                 .as_ref()
                 .map(|s| s.session_id.as_str().to_string());
+            // Status on BEFORE the first build: see prompt_turn — the slow
+            // first build otherwise leaves the fresh viewport blank ~1s.
+            if let Some(s) = &tui_stream {
+                s.lock().expect("tui lock").begin_turn("Working");
+            }
             let built = build_agent(config, cwd, sid.as_deref()).await;
             match built {
                 Ok(built) => {
@@ -89,6 +100,12 @@ pub(crate) async fn run_empty_turn(
                 }
                 Err(e) => {
                     println!("{e}");
+                    if let Some(s) = &tui_stream {
+                        let mut t = s.lock().expect("tui lock");
+                        t.set_status(None);
+                        t.is_task_running = false;
+                        let _ = t.draw();
+                    }
                     return Ok(());
                 }
             }
@@ -124,12 +141,8 @@ pub(crate) async fn run_empty_turn(
             )
             .await;
         }
-        let (shared, _) = if interactive {
-            (Some(tui.as_ref().expect("interactive implies tui")), ())
-        } else {
-            (None, ())
-        };
-        let tui_stream = shared.as_ref().map(|(s, _)| (*s).clone());
+        // Status row on (already begun above when the agent was built;
+        // re-assert here so the normal path keeps its exact paint).
         if let Some(s) = &tui_stream {
             s.lock().expect("tui lock").begin_turn("Working");
         }

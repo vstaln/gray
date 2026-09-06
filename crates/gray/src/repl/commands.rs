@@ -63,6 +63,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         args_hint: "",
     },
     CmdDef {
+        name: "yolo",
+        desc: "enable YOLO mode (full access, don't ask again)",
+        aliases: &[],
+        args_hint: "",
+    },
+    CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
@@ -442,6 +448,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
         Some("permissions") => ReplCommand::Permissions(opt(rest)),
+        Some("yolo") => ReplCommand::Permissions(Some("full".to_string())),
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
@@ -708,6 +715,10 @@ mod tests {
         ));
         assert!(matches!(
             parse_command("/perms read-only"),
+            ReplCommand::Permissions(Some(_))
+        ));
+        assert!(matches!(
+            parse_command("/yolo"),
             ReplCommand::Permissions(Some(_))
         ));
     }
