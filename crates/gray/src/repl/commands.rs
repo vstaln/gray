@@ -63,6 +63,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         args_hint: "",
     },
     CmdDef {
+        name: "yolo",
+        desc: "enable YOLO mode (full access, don't ask again)",
+        aliases: &[],
+        args_hint: "",
+    },
+    CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
@@ -343,7 +349,8 @@ pub enum ReplCommand {
     Unknown(String),
     /// Messaging gateway: /gateway, /gateway status|run|install
     Gateway(String),
-    /// External ACP agent: /acp (picker), /acp <agent> [--yolo], /acp off|status|list
+    /// External ACP agent: /acp (picker), /acp <agent> switches sticky,
+    /// /acp <agent> <prompt> delegates one-shot, /acp off|status|list
     Acp(String),
     /// Skills: /skills lists; /skills:<name> [args] runs a skill
     Skill(Option<String>),
@@ -442,6 +449,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
         Some("permissions") => ReplCommand::Permissions(opt(rest)),
+        Some("yolo") => ReplCommand::Permissions(Some("full".to_string())),
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
@@ -575,6 +583,7 @@ mod tests {
             "compact",
             "usage",
             "permissions",
+            "yolo",
             "feedback",
             "gateway",
             "acp",
@@ -627,6 +636,7 @@ mod tests {
             "compact",
             "usage",
             "permissions",
+            "yolo",
             "feedback",
             "gateway",
             "acp",
@@ -637,11 +647,11 @@ mod tests {
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 16);
+        assert_eq!(super::REGISTRY.len(), 17);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 16);
+        assert_eq!(all.len(), 17);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -708,6 +718,10 @@ mod tests {
         ));
         assert!(matches!(
             parse_command("/perms read-only"),
+            ReplCommand::Permissions(Some(_))
+        ));
+        assert!(matches!(
+            parse_command("/yolo"),
             ReplCommand::Permissions(Some(_))
         ));
     }

@@ -6,9 +6,11 @@
 //! home channels.
 
 use crate::authz::GatedExecutor;
+#[cfg(feature = "cron")]
 use crate::config::Platform;
 use crate::daemon::GatewayRunner;
 use crate::daemon_stream::ProgressMsg;
+#[cfg(feature = "cron")]
 use crate::session::{SessionSource, build_session_key};
 
 impl GatewayRunner {

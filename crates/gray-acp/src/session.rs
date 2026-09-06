@@ -481,6 +481,9 @@ impl AcpSession {
         self.cancel_flag
             .store(false, std::sync::atomic::Ordering::SeqCst);
         let cancel_flag = self.cancel_flag.clone();
+        // The connect closure below moves its own clone; keep one here so the
+        // result mapping can read cancellation without borrowing `self`.
+        let cancel_flag_for_result = cancel_flag.clone();
         let spec = self.spec.clone();
         let cwd = self.cwd.clone();
         let resume = Some(self.session_id.clone());
@@ -499,7 +502,7 @@ impl AcpSession {
                         agent_client_protocol::Error::internal_error()
                             .data(serde_json::json!(format!("{method}: {message}")))
                     };
-                    let (mut session, _id) = open_session(&conn, cwd, resume, None)
+                    let (mut session, opened_id) = open_session(&conn, cwd, resume, None)
                         .await
                         .map_err(|e| err("session/new", e.to_string()))?;
                     let cancel_conn = conn.clone();
@@ -543,7 +546,7 @@ impl AcpSession {
                                     return Err(agent_client_protocol::Error::internal_error()
                                         .data(serde_json::json!("cancelled")));
                                 }
-                                return Ok(mapper.map_stop(&stop));
+                                return Ok((mapper.map_stop(&stop), opened_id));
                             }
                             _ => {}
                         }
@@ -565,7 +568,7 @@ impl AcpSession {
                 .map_err(|_| AcpError::Timeout(PROMPT_TIMEOUT))?
                 .map_err(|e| {
                     let msg = e.to_string();
-                    if self.cancel_flag.load(std::sync::atomic::Ordering::SeqCst)
+                    if cancel_flag_for_result.load(std::sync::atomic::Ordering::SeqCst)
                         || msg.contains("cancelled")
                     {
                         AcpError::Cancelled
@@ -573,7 +576,12 @@ impl AcpSession {
                         AcpError::Other(anyhow::anyhow!(msg))
                     }
                 })
-                .map(|stop: gray_core::event::StopReason| stop)
+                .map(|(stop, new_id): (gray_core::event::StopReason, String)| {
+                    // The agent may have rotated the id (load fallback,
+                    // fresh session after /new): track the effective one.
+                    self.session_id = new_id;
+                    stop
+                })
         };
         let (reason, _) = tokio::join!(run, pump);
         let reason = reason?;

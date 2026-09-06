@@ -131,7 +131,6 @@ impl QuestionSession {
 
     fn is_approval(&self) -> bool {
         self.questions[self.current_idx].id == "tool-approval"
-            && self.questions[self.current_idx].options.len() == 3
     }
 
     /// Options plus the auto-added "Other" row (codex other_option_enabled).
@@ -455,6 +454,11 @@ impl QuestionSession {
                     self.select_current_option(true);
                     self.go_next_or_submit(ta)
                 }
+                KeyCode::Char('!') if self.is_approval() && self.options_len() > 2 => {
+                    self.answers[self.current_idx].selected_idx = Some(2);
+                    self.select_current_option(true);
+                    self.go_next_or_submit(ta)
+                }
                 KeyCode::Char('n') if self.is_approval() => {
                     let last = self.options_len().saturating_sub(1);
                     self.answers[self.current_idx].selected_idx = Some(last);
@@ -605,6 +609,10 @@ pub(crate) fn attach_request(
     t.sel = 0;
     t.textarea.set_text("");
     t.active_question = Some(QuestionSession::new(questions, blocking, tx, resolved));
+    // Breathing room: a true blank transcript row above the panel so its gray
+    // top edge never fuses with the tool echo above it. No-op when the
+    // transcript already ends blank (e.g. queued activation after a summary).
+    t.ensure_gap(1);
     let _ = t.draw();
 }
 
@@ -702,7 +710,15 @@ pub(crate) fn result_summary_lines(
             .find(|a| a.id == q.id)
             .map(|a| a.answers.join(" · "))
             .unwrap_or_default();
-        lines.push(format!("? {}", q.question));
+        let mut q_lines = q.question.lines();
+        if let Some(first) = q_lines.next() {
+            lines.push(format!("? {first}"));
+            for rest in q_lines {
+                lines.push(format!("  {rest}"));
+            }
+        } else {
+            lines.push(format!("? {}", q.question));
+        }
         if joined.is_empty() {
             lines.push("  → skipped".to_string());
         } else {
