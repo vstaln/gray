@@ -304,15 +304,21 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
 
     let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
 
-    // Live-TUI order: transcript, input box right below it, footer, then
-    // empty filler. Pinning the box to the bottom edge (filler in the
-    // middle) moved the text area away from where the live TUI keeps it.
+    // Live TUI: the inline viewport owns the bottom edge of the screen
+    // (composer input box + footer), while transcript fills upward into
+    // scrollback. When the transcript is shorter than transcript_avail_h,
+    // any empty filler belongs at the TOP of the screen, anchoring the
+    // composer and footer to the bottom.
     let transcript = bg.rebuild_transcript(w);
     let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {
         &transcript
     } else {
         &transcript[transcript.len() - transcript_avail_h..]
     };
+    let top_pad = transcript_avail_h.saturating_sub(tail.len());
+    for _ in 0..top_pad {
+        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
+    }
     for l in tail {
         full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
     }
@@ -320,9 +326,6 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         full_screen_lines.push(pad_backdrop_line(l, w));
     }
     full_screen_lines.push(pad_backdrop_line(footer_line, w));
-    while full_screen_lines.len() < h {
-        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
-    }
 
     full_screen_lines.truncate(h);
 
@@ -350,10 +353,8 @@ mod tests {
 
     #[test]
     fn backdrop_mirrors_live_layout_with_multiline_prompt() {
-        // Live TUI: transcript, input box right below it, footer, then empty
-        // space. The backdrop used to pin the box to the bottom edge (filler
-        // between transcript and box, footer truncated for long drafts) and
-        // painted the box near-black instead of the composer gray.
+        // Live TUI: the composer input box and footer are anchored to the
+        // bottom edge of the terminal, with empty space / transcript above.
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
         let bg = BackgroundSnapshot {
@@ -366,20 +367,21 @@ mod tests {
             .draw(|frame| render_dimmed_background(frame, &bg))
             .expect("draw");
         let rows = buffer_rows(terminal.backend(), 40, 10);
-        // 4 wrapped prompt rows + top/bottom blank = 6 box rows, footer next.
+        // 4 wrapped prompt rows + top/bottom blank = 6 box rows, 1 footer row = 7 rows total.
+        // In a 10-row viewport with 0 transcript rows, rows 0..3 are top filler.
         assert!(
-            rows[6].contains("cache"),
-            "footer follows the box: {rows:?}"
+            rows[0..3].iter().all(|r| r.trim().is_empty()),
+            "filler before transcript/box: {rows:?}"
         );
         assert!(
-            rows[7..].iter().all(|r| r.trim().is_empty()),
-            "filler after footer: {rows:?}"
+            rows[4].contains("❯"),
+            "prompt box starts right after top filler: {rows:?}"
         );
         assert!(
-            rows[1].contains("❯"),
-            "prompt box right after transcript: {rows:?}"
+            rows[9].contains("cache"),
+            "footer anchored at the bottom: {rows:?}"
         );
-        let box_bg = terminal.backend().buffer()[(0, 1)].bg;
+        let box_bg = terminal.backend().buffer()[(0, 4)].bg;
         assert_eq!(
             box_bg,
             ratatui::style::Color::Rgb(22, 22, 22),

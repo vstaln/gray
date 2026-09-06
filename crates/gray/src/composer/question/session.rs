@@ -710,7 +710,15 @@ pub(crate) fn result_summary_lines(
             .find(|a| a.id == q.id)
             .map(|a| a.answers.join(" · "))
             .unwrap_or_default();
-        lines.push(format!("? {}", q.question));
+        let mut q_lines = q.question.lines();
+        if let Some(first) = q_lines.next() {
+            lines.push(format!("? {first}"));
+            for rest in q_lines {
+                lines.push(format!("  {rest}"));
+            }
+        } else {
+            lines.push(format!("? {}", q.question));
+        }
         if joined.is_empty() {
             lines.push("  → skipped".to_string());
         } else {

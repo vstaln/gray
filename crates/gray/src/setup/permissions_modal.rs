@@ -57,8 +57,11 @@ pub fn run_permissions_modal(
                     return;
                 }
                 render_dimmed_background(frame, &bg_snapshot);
-                let modal_w = 72.min(area.width.saturating_sub(4)).max(44).min(area.width);
-                let modal_h = (modes.len() as u16 + 7)
+                let modal_w = (area.width.saturating_sub(4))
+                    .min(116)
+                    .max(56)
+                    .min(area.width);
+                let modal_h = 12
                     .min(area.height.saturating_sub(2))
                     .max(10)
                     .min(area.height);
@@ -72,11 +75,12 @@ pub fn run_permissions_modal(
                 );
                 let pad_x = 3u16;
                 let inner_w = modal_w.saturating_sub(pad_x * 2);
+                let inner_h = modal_h.saturating_sub(2);
                 let inner = Rect::new(
                     modal_x + pad_x,
                     modal_y + 1,
                     inner_w,
-                    modal_h.saturating_sub(2),
+                    inner_h,
                 );
                 let title_str = "Update Model Permissions";
                 let esc_str = "esc";
@@ -101,18 +105,36 @@ pub fn run_permissions_modal(
                 for (idx, (id, label, desc)) in modes.iter().enumerate() {
                     let is_selected = idx == sel;
                     let is_current = *id == current;
-                    let check = if is_current { "✓ " } else { "  " };
-                    let raw_content = format!(" {check}{label}");
-                    let fill = (inner.width as usize).saturating_sub(raw_content.chars().count());
-                    let full_row_str = format!("{}{}", raw_content, " ".repeat(fill));
                     let row_line = if is_selected {
-                        Line::from(Span::styled(
-                            full_row_str,
+                        let check_span = if is_current {
+                            Span::styled(
+                                " ✓ ",
+                                Style::default()
+                                    .fg(Color::Rgb(20, 80, 30))
+                                    .add_modifier(Modifier::BOLD)
+                                    .bg(accent_peach),
+                            )
+                        } else {
+                            Span::styled("   ", Style::default().bg(accent_peach))
+                        };
+                        let name_span = Span::styled(
+                            format!("{label}  "),
                             Style::default()
                                 .fg(Color::Black)
-                                .bg(accent_peach)
-                                .add_modifier(Modifier::BOLD),
-                        ))
+                                .add_modifier(Modifier::BOLD)
+                                .bg(accent_peach),
+                        );
+                        let desc_span = Span::styled(
+                            *desc,
+                            Style::default()
+                                .fg(Color::Rgb(60, 50, 50))
+                                .bg(accent_peach),
+                        );
+                        let used_w = 3 + label.chars().count() + 2 + desc.chars().count();
+                        let pad_w = (inner.width as usize).saturating_sub(used_w);
+                        let pad_span =
+                            Span::styled(" ".repeat(pad_w), Style::default().bg(accent_peach));
+                        Line::from(vec![check_span, name_span, desc_span, pad_span])
                     } else {
                         let check_span = if is_current {
                             Span::styled(
@@ -136,7 +158,10 @@ pub fn run_permissions_modal(
                             *desc,
                             Style::default().fg(Color::Rgb(130, 130, 130)).bg(box_bg),
                         );
-                        let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(box_bg));
+                        let used_w = 3 + label.chars().count() + 2 + desc.chars().count();
+                        let pad_w = (inner.width as usize).saturating_sub(used_w);
+                        let pad_span =
+                            Span::styled(" ".repeat(pad_w), Style::default().bg(box_bg));
                         Line::from(vec![check_span, name_span, desc_span, pad_span])
                     };
                     frame.render_widget(
@@ -144,14 +169,29 @@ pub fn run_permissions_modal(
                         Rect::new(inner.x, list_y + idx as u16, inner.width, 1),
                     );
                 }
-                let list_end = list_y + modes.len() as u16;
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        "Full Access edits anywhere and uses the network without asking.",
-                        Style::default().fg(Color::Rgb(200, 120, 120)).bg(box_bg),
-                    ))),
-                    Rect::new(inner.x, list_end, inner.width, 1),
-                );
+                let footer_y = (inner.y + inner_h).saturating_sub(2);
+                let detail_y = list_y + modes.len() as u16 + 1;
+                if detail_y < footer_y {
+                    let sel_id = modes.get(sel).map(|(id, _, _)| *id).unwrap_or("");
+                    let detail_line = match sel_id {
+                        gray_core::approvals::MODE_FULL => Line::from(Span::styled(
+                            "Full Access edits anywhere and uses the network without asking. Exercise caution.",
+                            Style::default().fg(Color::Rgb(220, 120, 120)).bg(box_bg),
+                        )),
+                        gray_core::approvals::MODE_READ_ONLY => Line::from(Span::styled(
+                            "Read Only disables all mutating tools. Mutating actions are rejected.",
+                            Style::default().fg(text_dim).bg(box_bg),
+                        )),
+                        _ => Line::from(Span::styled(
+                            "Ask for approval prompts before running commands or editing outside files.",
+                            Style::default().fg(text_dim).bg(box_bg),
+                        )),
+                    };
+                    frame.render_widget(
+                        Paragraph::new(detail_line),
+                        Rect::new(inner.x, detail_y, inner.width, 1),
+                    );
+                }
                 let footer_line = Line::from(vec![
                     Span::styled(
                         "↑↓ ",
@@ -172,7 +212,7 @@ pub fn run_permissions_modal(
                 ]);
                 frame.render_widget(
                     Paragraph::new(footer_line),
-                    Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+                    Rect::new(inner.x, footer_y, inner.width, 1),
                 );
             })?;
             if !poll(Duration::from_millis(100))? {
@@ -190,8 +230,19 @@ pub fn run_permissions_modal(
                     kind: KeyEventKind::Press,
                     ..
                 }) => match code {
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(modes.len().saturating_sub(1)),
+                    KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        sel = (sel + 1).min(modes.len().saturating_sub(1))
+                    }
+                    KeyCode::Char('1') if !modes.is_empty() => {
+                        return Ok(Some(modes[0].0.to_string()))
+                    }
+                    KeyCode::Char('2') if modes.len() > 1 => {
+                        return Ok(Some(modes[1].0.to_string()))
+                    }
+                    KeyCode::Char('3') if modes.len() > 2 => {
+                        return Ok(Some(modes[2].0.to_string()))
+                    }
                     KeyCode::Esc => return Ok(None),
                     KeyCode::Enter => return Ok(Some(modes[sel].0.to_string())),
                     _ => {}
