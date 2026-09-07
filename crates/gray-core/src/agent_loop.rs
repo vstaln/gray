@@ -495,7 +495,9 @@ impl Agent {
                 // event-identical to the sequential path), `post_tool` hooks,
                 // `tool_result` events, history writes.
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
-                    let Some(run_end) = idxs.last().map(|i| *i + 1) else {
+                    let (Some(run_start), Some(run_end)) =
+                        (idxs.first().copied(), idxs.last().map(|i| *i + 1))
+                    else {
                         continue;
                     };
                     let mut ready: Vec<(usize, String, serde_json::Value)> =
@@ -553,14 +555,16 @@ impl Agent {
                         }
                         ready.push((idx, name.clone(), effective_args));
                     }
-                    if let Some(g) = cancelled_at {
-                        // Nothing from g on ran: backfill this run's
-                        // remainder, then everything after it, and bail —
-                        // history must never hold an orphaned call.
+                    if cancelled_at.is_some() {
+                        // Nothing in the run executed: the pre-pass only
+                        // validates into `ready`/`inline_errors` and emits
+                        // nothing, so no run index has a result yet — backfill
+                        // the whole run exactly once, then everything after
+                        // it, and bail. History must never hold an orphaned call.
                         crate::agent_tools::answer_pending_range(
                             self,
                             &tool_uses,
-                            g,
+                            run_start,
                             run_end,
                             "cancelled by user",
                         );
