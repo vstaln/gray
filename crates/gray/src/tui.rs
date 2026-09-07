@@ -35,8 +35,6 @@ pub fn visible_width(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(strip_ansi(s).as_str())
 }
 
-
-
 /// Greedy word-wrap to at most `width` visible chars per line. ANSI spans may
 /// cross line breaks; callers wrap whole styled strings and re-emit codes per
 /// line only when needed (Text keeps styling by wrapping the raw string).

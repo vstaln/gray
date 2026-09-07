@@ -249,8 +249,6 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
     }
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Frontmatter
 mod load;
