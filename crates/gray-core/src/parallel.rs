@@ -78,22 +78,41 @@ pub fn plan_segments(
 }
 
 /// Run `futs` with at most `max_workers` in flight, returning
-/// `(input_index, output)` in input-index order. `None` output means the
-/// call never completed (cancel fired first). Task panics become
-/// `is_error` outputs — tool failures are data, never crashes.
+/// `(input_index, output)` in input-index order — one entry per input.
+/// `None` output means the call never completed (cancel fired first).
+/// Task panics become `is_error` outputs under the panicking call's real
+/// input index — tool failures are data, never crashes.
 pub async fn join_ordered(
     futs: Vec<(usize, BoxFuture<'static, ToolOutput>)>,
     max_workers: usize,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Vec<(usize, Option<ToolOutput>)> {
+    use futures::FutureExt as _;
+    use std::panic::AssertUnwindSafe;
     use std::sync::Arc;
+    let inputs: Vec<usize> = futs.iter().map(|(idx, _)| *idx).collect();
     let sem = Arc::new(tokio::sync::Semaphore::new(max_workers.max(1)));
     let mut set: JoinSet<(usize, ToolOutput)> = JoinSet::new();
     for (idx, fut) in futs {
         let permit_owner = sem.clone();
         set.spawn(async move {
             let _permit = permit_owner.acquire_owned().await.expect("semaphore closed");
-            (idx, fut.await)
+            // Panics are data: catch inside the wrapper so the real input
+            // index survives — no sentinel, Task 4 reconciles by index.
+            match AssertUnwindSafe(fut).catch_unwind().await {
+                Ok(out) => (idx, out),
+                Err(id) => {
+                    let msg = id
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| id.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic");
+                    (
+                        idx,
+                        ToolOutput::error(format!("tool task panicked: {msg}")),
+                    )
+                }
+            }
         });
     }
     let mut done: Vec<(usize, Option<ToolOutput>)> = Vec::new();
@@ -107,24 +126,24 @@ pub async fn join_ordered(
                         done.push((idx, Some(out)));
                     }
                 }
+                // Every input not completed yields None — None means
+                // cancelled, never "never submitted".
+                let completed: HashSet<usize> = done.iter().map(|(i, _)| *i).collect();
+                for idx in inputs {
+                    if !completed.contains(&idx) {
+                        done.push((idx, None));
+                    }
+                }
                 break;
             }
             res = set.join_next() => {
                 match res {
                     None => break,
                     Some(Ok((idx, out))) => done.push((idx, Some(out))),
-                    Some(Err(e)) => {
-                        // JoinError here means the task panicked (cancellation
-                        // is handled above via abort_all + graceful drain).
-                        if let Ok(id) = e.try_into_panic() {
-                            let msg = id.downcast_ref::<&str>().copied()
-                                .or_else(|| id.downcast_ref::<String>().map(String::as_str))
-                                .unwrap_or("unknown panic");
-                            // Index is lost on panic; attribute to no call —
-                            // the loop layer treats a shortfall as an error.
-                            done.push((usize::MAX, Some(ToolOutput::error(format!("tool task panicked: {msg}")))));
-                        }
-                    }
+                    // Unreachable in practice: the spawned wrapper catches
+                    // panics via catch_unwind, so tasks only end via abort
+                    // (handled above) or success.
+                    Some(Err(_)) => {}
                 }
             }
         }
@@ -244,6 +263,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let got = join_ordered(futs, 4, &cancel).await;
         assert_eq!(got.len(), 1);
+        assert_eq!(got[0].0, 0, "panic keeps its real input index");
         let (_, out) = &got[0];
         assert!(out.as_ref().unwrap().is_error, "panic must be data, not a crash");
     }
@@ -265,6 +285,8 @@ mod tests {
             c2.cancel();
         });
         let got = join_ordered(vec![mk(0), mk(1)], 4, &cancel).await;
+        assert_eq!(got.len(), 2, "every input yields an entry, even when cancelled");
+        assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1]);
         assert!(got.iter().all(|(_, o)| o.is_none()), "cancelled calls yield None");
     }
 }
