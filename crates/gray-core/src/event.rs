@@ -49,11 +49,6 @@ impl Usage {
         }
     }
 
-    /// Visible output tokens = output - reasoning, clamped to 0 (opencode `visibleOutputTokens`).
-    pub fn visible_output_tokens(&self) -> usize {
-        self.output_tokens.saturating_sub(self.reasoning_tokens)
-    }
-
     /// Computes the total tokens consumed — prefers provider `total_tokens` if set.
     pub fn total(&self) -> usize {
         if self.total_tokens != 0 {

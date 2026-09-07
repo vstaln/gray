@@ -9,8 +9,6 @@ default = ["adapter-gray-native"]
 adapter-gray-native = []
 
 [dependencies]
-gray-plugin = { workspace = true }
-gray-core = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
