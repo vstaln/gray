@@ -5,7 +5,6 @@ mod bulk;
 mod dedup;
 mod guard;
 pub mod hygiene;
-pub mod image;
 pub mod notices;
 mod resolve;
 pub mod stream;
