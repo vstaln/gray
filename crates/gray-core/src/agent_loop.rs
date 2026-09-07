@@ -14,6 +14,7 @@ use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
 use crate::message::{ChatRequest, ContentBlock, Message, Role};
+use crate::turn_queue::{Submission, SubmitMode, TurnState};
 
 /// Empty-turn provider retries before nudging or ending on `(empty)`.
 const MAX_EMPTY_RETRIES: u8 = 2;
@@ -32,6 +33,9 @@ impl Agent {
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///
+    /// Admission first: `input` goes through [`Agent::submit`] (empty input
+    /// rejected before it touches history), then the admitted turn executes.
+    ///
     /// Per turn: build a [`ChatRequest`], stream the response while
     /// forwarding `TextDelta`s in arrival order, finalize the assistant
     /// message, then execute any requested tools sequentially and feed their
@@ -47,7 +51,19 @@ impl Agent {
         input: Message,
         ctx: ToolContext,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        self.run_inner(input, ctx, None).await
+        match self.submit(input, SubmitMode::StartOrSteer) {
+            Submission::Started { turn_id } => {
+                self.turn_state = TurnState::Busy { turn_id };
+                let out = self.run_inner(ctx, None).await;
+                self.turn_state = TurnState::Idle;
+                out
+            }
+            // Defensive only: Busy needs reentrancy, impossible under `&mut`
+            // today — no turn ran, the input is already queued as steer.
+            Submission::Steered { .. } => Ok(vec![]),
+            // Defensive only (see above): rejection mutated nothing.
+            Submission::NotSubmitted(_) => Ok(vec![]),
+        }
     }
 
     /// Streaming variant of [`run`]: every [`AgentEvent`] is handed to
@@ -59,16 +75,27 @@ impl Agent {
         ctx: ToolContext,
         on_event: &mut dyn FnMut(&AgentEvent),
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        self.run_inner(input, ctx, Some(on_event)).await
+        match self.submit(input, SubmitMode::StartOrSteer) {
+            Submission::Started { turn_id } => {
+                self.turn_state = TurnState::Busy { turn_id };
+                let out = self.run_inner(ctx, Some(on_event)).await;
+                self.turn_state = TurnState::Idle;
+                out
+            }
+            // Defensive only: Busy needs reentrancy, impossible under `&mut`
+            // today — no turn ran, the input is already queued as steer.
+            Submission::Steered { .. } => Ok(vec![]),
+            // Defensive only (see above): rejection mutated nothing.
+            Submission::NotSubmitted(_) => Ok(vec![]),
+        }
     }
 
     async fn run_inner(
         &mut self,
-        input: Message,
         ctx: ToolContext,
         mut sink: Option<&mut dyn FnMut(&AgentEvent)>,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len() + 1);
+        log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
         // Stall guard: 3 identical consecutive tool calls → LoopDetected.
         let mut last_sig: Option<String> = None;
@@ -87,7 +114,6 @@ impl Agent {
             }};
         }
         emit!(AgentEvent::Start);
-        self.messages.push(input);
         let mut total_usage = Usage::default();
         let mut round: u32 = 0;
         let mut empty_retries: u8 = 0;
