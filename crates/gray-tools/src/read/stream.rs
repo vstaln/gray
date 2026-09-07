@@ -98,6 +98,12 @@ pub const LINE_BYTE_CAP: usize = MAX_LINE_CHARS * 4;
 /// larger files skip the count ([`count_skipped_total`]) but keep `next_offset`.
 pub const COUNT_SKIP_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Cap for exact line totals: past this many remaining lines the read tool
+/// reports the count-skipped lower bound instead of scanning the file.
+/// 100k lines ≈ tens of MB of the slowest per-byte work; files under the
+/// ledger hash limit with fewer lines are unaffected (exact + hashed).
+pub const MAX_COUNT_LINES: u64 = 100_000;
+
 /// `[read: cancelled after <n> lines]` — delegates to `notices.rs`.
 pub fn cancelled_note(lines_read: usize) -> String {
     super::notices::cancelled_note(lines_read)
@@ -321,6 +327,13 @@ impl LineStream {
     /// whether any byte was seen, and whether the tail ends with `\n`.
     /// Bytes flow through the hasher, so the full-file hash stays complete.
     async fn drain_rest(&mut self) -> std::io::Result<(u64, bool, bool)> {
+        self.drain_rest_capped(None).await.map(|(n, s, e, _)| (n, s, e))
+    }
+
+    async fn drain_rest_capped(
+        &mut self,
+        cap: Option<u64>,
+    ) -> std::io::Result<(u64, bool, bool, bool)> {
         let mut newlines: u64 = 0;
         let mut saw_any = false;
         let mut ended_newline = true;
@@ -335,12 +348,37 @@ impl LineStream {
                 break;
             }
             saw_any = true;
-            newlines += chunk.iter().filter(|&&b| b == b'\n').count() as u64;
+            let chunk_newlines = chunk.iter().filter(|&&b| b == b'\n').count() as u64;
+            if let Some(max) = cap
+                && newlines + chunk_newlines >= max
+            {
+                // Stop at exactly the max-th newline: consume through it and
+                // leave the rest buffered (the capped caller discards the
+                // hash, so the partial drain never poisons the ledger).
+                let mut need = max - newlines;
+                let mut pos = chunk.len();
+                if need == 0 {
+                    pos = 0;
+                } else {
+                    for (i, &b) in chunk.iter().enumerate() {
+                        if b == b'\n' {
+                            need -= 1;
+                            if need == 0 {
+                                pos = i + 1;
+                                break;
+                            }
+                        }
+                    }
+                }
+                self.reader.consume(pos);
+                return Ok((max, saw_any, false, true));
+            }
+            newlines += chunk_newlines;
             ended_newline = chunk.last() == Some(&b'\n');
             let len = chunk.len();
             self.reader.consume(len);
         }
-        Ok((newlines, saw_any, ended_newline))
+        Ok((newlines, saw_any, ended_newline, false))
     }
 
     /// Newline-count-only drain of the rest of the file (no per-line
@@ -356,6 +394,28 @@ impl LineStream {
     pub async fn count_rest_lines(&mut self) -> std::io::Result<u64> {
         let (newlines, saw_any, ended_newline) = self.drain_rest().await?;
         Ok(newlines + u64::from(saw_any && !ended_newline))
+    }
+
+    /// Like [`count_rest_lines`](Self::count_rest_lines), but stops draining
+    /// after `max_lines` newlines. Returns `(count, capped)`. When capped,
+    /// the caller must take the count-skipped path AND
+    /// [`discard_hash`](Self::discard_hash): partial bytes must never
+    /// masquerade as a full-file ledger hash.
+    pub async fn count_rest_lines_capped(
+        &mut self,
+        max_lines: u64,
+    ) -> std::io::Result<(u64, bool)> {
+        let (newlines, saw_any, ended_newline, capped) =
+            self.drain_rest_capped(Some(max_lines)).await?;
+        if capped {
+            return Ok((newlines, true));
+        }
+        Ok((newlines + u64::from(saw_any && !ended_newline), false))
+    }
+
+    /// Drop the incremental hash (capped-count path only).
+    pub fn discard_hash(&mut self) {
+        self.reader.get_mut().hash = None;
     }
 
     /// Incremental raw-byte hash for the T3.2 write guard (rule 5): `Some`
@@ -695,5 +755,23 @@ mod tests {
         let l2 = s.next_line().await.unwrap().unwrap();
         assert!(l2.had_newline);
         assert_eq!(s.count_rest_lines().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn count_capped_stops_early_and_reports() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("big.txt");
+        std::fs::write(&p, "x\n".repeat(200_000)).unwrap();
+        let mut s = LineStream::open(&p, "big.txt", token()).await.unwrap();
+        let (count, capped) = s.count_rest_lines_capped(100_000).await.unwrap();
+        assert!(capped);
+        assert!(count <= 100_001);
+        // Small stream under the cap: exact, uncapped.
+        let p2 = dir.path().join("small.txt");
+        std::fs::write(&p2, "x\n".repeat(10)).unwrap();
+        let mut s2 = LineStream::open(&p2, "small.txt", token()).await.unwrap();
+        let (count2, capped2) = s2.count_rest_lines_capped(100_000).await.unwrap();
+        assert!(!capped2);
+        assert_eq!(count2, 10);
     }
 }
