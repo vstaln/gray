@@ -7,6 +7,20 @@
 use crate::agent::Agent;
 use crate::message::{ContentBlock, Message, Role};
 
+/// One synthetic `is_error` tool result: the shared push behind every
+/// backfill so orphaned calls never brick the transcript. Message only, no
+/// event — mirrors the long-standing cancel-path convention.
+pub(crate) fn push_synthetic(agent: &mut Agent, id: &str, reason: &str) {
+    agent.messages.push(Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            id: id.to_string(),
+            content: format!("[{reason}]"),
+            is_error: true,
+        }],
+    });
+}
+
 /// Synthetic tool results for calls that never ran (cancellation, loop
 /// abort). History must never contain a `function_call` without its output:
 /// strict providers 400 on the orphan and the session bricks permanently.
@@ -17,14 +31,25 @@ pub(crate) fn answer_pending_tools(
     reason: &str,
 ) {
     for (id, _, _) in tool_uses.iter().skip(from_idx) {
-        agent.messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult {
-                id: id.clone(),
-                content: format!("[{reason}]"),
-                is_error: true,
-            }],
-        });
+        push_synthetic(agent, id, reason);
+    }
+}
+
+/// [`answer_pending_tools`] over `[from_idx, to_idx)`: backfills synthetic
+/// results for one parallel run's uncompleted calls on cancellation.
+pub(crate) fn answer_pending_range(
+    agent: &mut Agent,
+    tool_uses: &[(String, String, serde_json::Value)],
+    from_idx: usize,
+    to_idx: usize,
+    reason: &str,
+) {
+    for (id, _, _) in tool_uses
+        .iter()
+        .skip(from_idx)
+        .take(to_idx.saturating_sub(from_idx))
+    {
+        push_synthetic(agent, id, reason);
     }
 }
 

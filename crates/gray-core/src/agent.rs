@@ -514,6 +514,7 @@ pub(crate) fn salvage_partial_text(
 mod agent_tests {
     use super::*;
     use crate::event::{AgentEvent, StopReason, Usage};
+    use crate::parallel::ENV_LOCK;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -636,6 +637,57 @@ mod agent_tests {
     }
 
     const TOOL_NAME: &str = "lookup";
+
+    /// Concurrency probe: records peak in-flight executions (Task 4: proves
+    /// the parallel lane actually overlaps batchable calls).
+    struct PeakExecutor {
+        cur: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for PeakExecutor {
+        fn execute(
+            &self,
+            _ctx: &ToolContext,
+            name: &str,
+            _args: serde_json::Value,
+        ) -> BoxFuture<'static, ToolOutput> {
+            let cur = self.cur.clone();
+            let peak = self.peak.clone();
+            let name = name.to_string();
+            Box::pin(async move {
+                let n = cur.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                peak.fetch_max(n, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                cur.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                ToolOutput::ok(format!("{name}-done"))
+            })
+        }
+    }
+
+    fn read_tool() -> ToolDef {
+        ToolDef::new("read", "r", serde_json::json!({"type": "object"}))
+    }
+
+    /// One turn issuing two `read` calls (stream indices 0 and 1).
+    fn two_read_script() -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::tool_call_delta(
+                0,
+                Some("c1".into()),
+                Some("read".into()),
+                r#"{"path":"a"}"#,
+            ),
+            StreamEvent::tool_call_delta(
+                1,
+                Some("c2".into()),
+                Some("read".into()),
+                r#"{"path":"b"}"#,
+            ),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+        ]
+    }
 
     fn tool_def() -> ToolDef {
         ToolDef::new(TOOL_NAME, "A fake lookup tool", serde_json::json!({}))
@@ -1959,5 +2011,82 @@ mod agent_tests {
         );
         // Sidecar-provided tools run through the same executor call site as
         // builtin tools, so this emission covers both by construction.
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ENV_LOCK is test-only env serialization; holding it across await is its job
+    async fn parallel_batch_overlaps_reads_with_ordered_results() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GRAY_PARALLEL_READS").ok();
+        unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
+        let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor = PeakExecutor {
+            cur: Default::default(),
+            peak: peak.clone(),
+        };
+        let mut agent =
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![read_tool()]);
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+        }
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "both reads must overlap"
+        );
+        let results: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolResult { id, output, .. } => Some((id.clone(), output.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                ("c1".to_string(), "read-done".to_string()),
+                ("c2".to_string(), "read-done".to_string()),
+            ],
+            "results stay in input order, {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ENV_LOCK is test-only env serialization; holding it across await is its job
+    async fn lane_off_matches_sequential_events() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GRAY_PARALLEL_READS").ok();
+        let mut runs = Vec::new();
+        for val in [Some("0"), None] {
+            match val {
+                Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+                None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+            }
+            let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
+            let executor = FakeExecutor::new(ToolOutput::ok("x"));
+            let mut agent =
+                Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![read_tool()]);
+            runs.push(
+                agent
+                    .run(Message::user("go"), ToolContext::default())
+                    .await
+                    .unwrap(),
+            );
+        }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+        }
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            runs[0], runs[1],
+            "lane off must match lane on event-for-event"
+        );
     }
 }
