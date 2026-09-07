@@ -21,6 +21,9 @@
 
 # secrets
 .env
+auth.json
+gateway.yaml
+pairing/
 
 # build artifacts that should never be committed
 dist/dl/
