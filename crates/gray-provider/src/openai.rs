@@ -34,6 +34,16 @@ pub struct OpenAiProvider {
     /// Stable per-process id sent as `prompt_cache_key` (Responses API) so the
     /// gateway pins one cache shard for prompt caching.
     session_id: Option<String>,
+    /// Pre-stream POST retry bound (replaces the single `MAX_ATTEMPTS` gate in
+    /// `Init`/`ResponsesInit`). Default 3 reproduces today's behavior.
+    request_max_retries: usize,
+    /// Mid-stream retry bound. Armed-but-inert in Task 1: mid-stream errors
+    /// stay terminal exactly as today; Task 2 wires this into the resume arms.
+    stream_max_retries: usize,
+    /// Per-SSE-event idle deadline. `None` (default) leaves the 120s
+    /// reqwest `read_timeout` governing. When set, a stalled event poll
+    /// returns terminal `Timeout` today; Task 2 turns that arm into resume.
+    stream_idle_timeout: Option<Duration>,
 }
 
 /// Builder for constructing an `OpenAiProvider`.
@@ -46,6 +56,9 @@ pub struct OpenAiProviderBuilder {
     initial_backoff: Option<Duration>,
     reasoning_effort: Option<String>,
     session_id: Option<String>,
+    request_max_retries: Option<usize>,
+    stream_max_retries: Option<usize>,
+    stream_idle_timeout: Option<Duration>,
 }
 
 impl OpenAiProviderBuilder {
@@ -59,6 +72,9 @@ impl OpenAiProviderBuilder {
             initial_backoff: None,
             reasoning_effort: None,
             session_id: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout: None,
         }
     }
 
@@ -93,6 +109,24 @@ impl OpenAiProviderBuilder {
         self
     }
 
+    /// Sets the pre-stream POST retry bound (default `MAX_ATTEMPTS`).
+    pub fn request_max_retries(mut self, n: usize) -> Self {
+        self.request_max_retries = Some(n);
+        self
+    }
+
+    /// Sets the mid-stream retry bound (default `MAX_ATTEMPTS`; Task 2 wires it).
+    pub fn stream_max_retries(mut self, n: usize) -> Self {
+        self.stream_max_retries = Some(n);
+        self
+    }
+
+    /// Sets the per-SSE-event idle deadline (default `None`: read_timeout governs).
+    pub fn stream_idle_timeout(mut self, idle: Duration) -> Self {
+        self.stream_idle_timeout = Some(idle);
+        self
+    }
+
     /// Builds the `OpenAiProvider` instance.
     pub fn build(self) -> Result<OpenAiProvider, String> {
         let base_url_str = self
@@ -121,6 +155,9 @@ impl OpenAiProviderBuilder {
             initial_backoff: self.initial_backoff.unwrap_or(Duration::from_millis(50)),
             reasoning_effort: self.reasoning_effort,
             session_id: self.session_id,
+            request_max_retries: self.request_max_retries.unwrap_or(MAX_ATTEMPTS),
+            stream_max_retries: self.stream_max_retries.unwrap_or(MAX_ATTEMPTS),
+            stream_idle_timeout: self.stream_idle_timeout,
         })
     }
 }
@@ -151,6 +188,21 @@ impl OpenAiProvider {
     /// Returns the configured model name.
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Returns the pre-stream POST retry bound.
+    pub fn request_max_retries(&self) -> usize {
+        self.request_max_retries
+    }
+
+    /// Returns the mid-stream retry bound (Task 2 wires it into resume arms).
+    pub fn stream_max_retries(&self) -> usize {
+        self.stream_max_retries
+    }
+
+    /// Returns the per-SSE-event idle deadline, if set.
+    pub fn stream_idle_timeout(&self) -> Option<Duration> {
+        self.stream_idle_timeout
     }
 }
 
@@ -1268,6 +1320,8 @@ enum StreamState {
         initial_backoff: Duration,
         attempt: usize,
         retry_after: Option<Duration>,
+        request_max_retries: usize,
+        stream_idle_timeout: Option<Duration>,
     },
     ResponsesInit {
         client: reqwest::Client,
@@ -1277,6 +1331,8 @@ enum StreamState {
         initial_backoff: Duration,
         attempt: usize,
         retry_after: Option<Duration>,
+        request_max_retries: usize,
+        stream_idle_timeout: Option<Duration>,
     },
     Streaming {
         event_stream: BoxedEventStream,
@@ -1285,6 +1341,7 @@ enum StreamState {
         last_usage: Option<Usage>,
         pending_events: VecDeque<StreamEvent>,
         completed: bool,
+        stream_idle_timeout: Option<Duration>,
     },
     ResponsesStreaming {
         event_stream: BoxedEventStream,
@@ -1295,6 +1352,7 @@ enum StreamState {
         last_usage: Option<Usage>,
         pending_events: VecDeque<StreamEvent>,
         completed: bool,
+        stream_idle_timeout: Option<Duration>,
     },
     Done,
 }
@@ -1398,6 +1456,8 @@ fn stream_unfold_step(
                     initial_backoff,
                     attempt,
                     retry_after,
+                    request_max_retries,
+                    stream_idle_timeout,
                 } => {
                     // Backoff for attempts 2+ runs here so the previous
                     // `Reconnecting...` notice is already on screen (Codex:
@@ -1423,6 +1483,7 @@ fn stream_unfold_step(
                                 last_usage: None,
                                 pending_events: VecDeque::new(),
                                 completed: false,
+                                stream_idle_timeout,
                             };
                         }
                         Err((err, floor, http_status)) => {
@@ -1450,10 +1511,12 @@ fn stream_unfold_step(
                                     initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
+                                    request_max_retries,
+                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
-                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
+                            if is_retryable_error(&err) && attempt < request_max_retries {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
                                 let next = StreamState::Init {
                                     client,
@@ -1463,12 +1526,15 @@ fn stream_unfold_step(
                                     initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
+                                    request_max_retries,
+                                    stream_idle_timeout,
                                 };
                                 // One notice per burst: the transcript is
                                 // append-only, so retries 2+ stay silent
                                 // instead of stacking `Reconnecting...` cells.
                                 if attempt == 1 {
-                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                    let notice =
+                                        retry_notice_event(attempt, request_max_retries, &err);
                                     return Some((Ok(notice), next));
                                 }
                                 state = next;
@@ -1489,6 +1555,8 @@ fn stream_unfold_step(
                     initial_backoff,
                     attempt,
                     retry_after,
+                    request_max_retries,
+                    stream_idle_timeout,
                 } => {
                     if attempt > 1 {
                         tokio::time::sleep(backoff_delay(
@@ -1511,6 +1579,7 @@ fn stream_unfold_step(
                                 last_usage: None,
                                 pending_events: VecDeque::new(),
                                 completed: false,
+                                stream_idle_timeout,
                             };
                         }
                         Err((err, floor, http_status)) => {
@@ -1535,10 +1604,12 @@ fn stream_unfold_step(
                                     initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
+                                    request_max_retries,
+                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
-                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
+                            if is_retryable_error(&err) && attempt < request_max_retries {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
                                 let next = StreamState::ResponsesInit {
                                     client,
@@ -1548,10 +1619,13 @@ fn stream_unfold_step(
                                     initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
+                                    request_max_retries,
+                                    stream_idle_timeout,
                                 };
                                 // One notice per burst (see Init above).
                                 if attempt == 1 {
-                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
+                                    let notice =
+                                        retry_notice_event(attempt, request_max_retries, &err);
                                     return Some((Ok(notice), next));
                                 }
                                 state = next;
@@ -1571,6 +1645,7 @@ fn stream_unfold_step(
                     mut last_usage,
                     mut pending_events,
                     mut completed,
+                    stream_idle_timeout,
                 } => {
                     if let Some(event) = pending_events.pop_front() {
                         return Some((
@@ -1582,6 +1657,7 @@ fn stream_unfold_step(
                                 last_usage,
                                 pending_events,
                                 completed,
+                                stream_idle_timeout,
                             },
                         ));
                     }
@@ -1590,7 +1666,25 @@ fn stream_unfold_step(
                         return None;
                     }
 
-                    match event_stream.next().await {
+                    // Per-SSE idle deadline (Task 1): a configured timeout
+                    // fires before read_timeout would. Terminal today — the
+                    // same shape as any other mid-stream stall; Task 2 turns
+                    // this arm into resume instead of terminal.
+                    let next = if let Some(idle) = stream_idle_timeout {
+                        match tokio::time::timeout(idle, event_stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                let err = ProviderError::Timeout(format!(
+                                    "stream stalled: no SSE event within {idle:?}"
+                                ));
+                                log::error!(target: "gray_provider", "stream idle timeout: {err}");
+                                return Some((Err(err), StreamState::Done));
+                            }
+                        }
+                    } else {
+                        event_stream.next().await
+                    };
+                    match next {
                         Some(Ok(sse_event)) => {
                             let data = sse_event.data.trim();
                             if data == "[DONE]" {
@@ -1698,6 +1792,7 @@ fn stream_unfold_step(
                                 last_usage,
                                 pending_events,
                                 completed,
+                                stream_idle_timeout,
                             };
                         }
                         Some(Err(err)) => {
@@ -1725,6 +1820,7 @@ fn stream_unfold_step(
                                     last_usage,
                                     pending_events,
                                     completed,
+                                    stream_idle_timeout,
                                 };
                             } else {
                                 return None;
@@ -1739,6 +1835,7 @@ fn stream_unfold_step(
                     mut last_usage,
                     mut pending_events,
                     mut completed,
+                    stream_idle_timeout,
                 } => {
                     if let Some(event) = pending_events.pop_front() {
                         return Some((
@@ -1750,13 +1847,30 @@ fn stream_unfold_step(
                                 last_usage,
                                 pending_events,
                                 completed,
+                                stream_idle_timeout,
                             },
                         ));
                     }
                     if completed {
                         return None;
                     }
-                    match event_stream.next().await {
+                    // Same idle arm as Streaming (see above); terminal today,
+                    // resume in Task 2.
+                    let next = if let Some(idle) = stream_idle_timeout {
+                        match tokio::time::timeout(idle, event_stream.next()).await {
+                            Ok(next) => next,
+                            Err(_) => {
+                                let err = ProviderError::Timeout(format!(
+                                    "stream stalled: no SSE event within {idle:?}"
+                                ));
+                                log::error!(target: "gray_provider", "responses stream idle timeout: {err}");
+                                return Some((Err(err), StreamState::Done));
+                            }
+                        }
+                    } else {
+                        event_stream.next().await
+                    };
+                    match next {
                         Some(Ok(sse_event)) => {
                             let data = sse_event.data.trim();
                             if data.is_empty() {
@@ -1767,6 +1881,7 @@ fn stream_unfold_step(
                                     last_usage,
                                     pending_events,
                                     completed,
+                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
@@ -2026,6 +2141,7 @@ fn stream_unfold_step(
                                 last_usage,
                                 pending_events,
                                 completed,
+                                stream_idle_timeout,
                             };
                         }
                         Some(Err(err)) => {
@@ -2066,6 +2182,7 @@ fn stream_unfold_step(
                                     last_usage,
                                     pending_events,
                                     completed,
+                                    stream_idle_timeout,
                                 };
                             } else {
                                 return None;
@@ -2108,6 +2225,8 @@ impl Provider for OpenAiProvider {
                 initial_backoff: self.initial_backoff,
                 attempt: 1,
                 retry_after: None,
+                request_max_retries: self.request_max_retries,
+                stream_idle_timeout: self.stream_idle_timeout,
             };
             return stream::unfold(init_state, stream_unfold_step).boxed();
         }
@@ -2125,6 +2244,8 @@ impl Provider for OpenAiProvider {
             initial_backoff: self.initial_backoff,
             attempt: 1,
             retry_after: None,
+            request_max_retries: self.request_max_retries,
+            stream_idle_timeout: self.stream_idle_timeout,
         };
 
         stream::unfold(init_state, stream_unfold_step).boxed()
@@ -2231,6 +2352,97 @@ mod tests {
         assert!(
             matches!(events.last(), Some(Err(_))),
             "burst ends with terminal error: {events:?}"
+        );
+    }
+
+    #[test]
+    fn retry_knobs_default_to_current_behavior() {
+        let p = OpenAiProvider::builder("k", "m").build().unwrap();
+        assert_eq!(p.request_max_retries(), 3); // == MAX_ATTEMPTS today
+        assert_eq!(p.stream_max_retries(), 3); // == today's effective stream bound
+        assert_eq!(p.stream_idle_timeout(), None); // read_timeout governs until set
+    }
+
+    #[test]
+    fn retry_knobs_settable() {
+        let p = OpenAiProvider::builder("k", "m")
+            .request_max_retries(4)
+            .stream_max_retries(5)
+            .stream_idle_timeout(Duration::from_secs(300))
+            .build()
+            .unwrap();
+        assert_eq!(
+            (
+                p.request_max_retries(),
+                p.stream_max_retries(),
+                p.stream_idle_timeout()
+            ),
+            (4, 5, Some(Duration::from_secs(300)))
+        );
+    }
+
+    #[tokio::test]
+    async fn request_max_retries_bounds_pre_stream_retries() {
+        // Threading proof: request_max_retries(1) must skip the retry burst
+        // entirely — no notice, terminal Err on the first 500.
+        use futures::StreamExt;
+        use gray_core::message::ChatRequest;
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::builder("key", "test-model")
+            .base_url(server.uri())
+            .initial_backoff(Duration::from_millis(1))
+            .request_max_retries(1)
+            .build()
+            .expect("provider builds");
+        let req = ChatRequest {
+            system: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let events: Vec<_> = provider.stream(req).collect().await;
+        let notices = events
+            .iter()
+            .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
+            .count();
+        assert_eq!(notices, 0, "max 1 attempt = no retry, no notice: {events:?}");
+        assert!(
+            matches!(events.last(), Some(Err(_))),
+            "burst ends with terminal error: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_idle_timeout_fires_on_stalled_stream() {
+        // Unfold-step level: wiremock cannot stage "headers, one SSE event,
+        // then silence", so drive a never-resolving event stream directly.
+        // A configured 50ms idle must surface a fast terminal Err (the same
+        // terminal shape a transport stall gets today); Task 2 turns this
+        // arm into resume instead of terminal.
+        let pending: BoxedEventStream = stream::pending().boxed();
+        let state = StreamState::Streaming {
+            event_stream: pending,
+            accumulated_tools: BTreeMap::new(),
+            last_finish_reason: None,
+            last_usage: None,
+            pending_events: VecDeque::new(),
+            completed: false,
+            stream_idle_timeout: Some(Duration::from_millis(50)),
+        };
+        let start = std::time::Instant::now();
+        let out = stream_unfold_step(state).await;
+        let elapsed = start.elapsed();
+        match out {
+            Some((Err(ProviderError::Timeout(_)), StreamState::Done)) => {}
+            Some((Err(_), _)) => panic!("expected Timeout terminal Err"),
+            _ => panic!("expected terminal Err + Done"),
+        }
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "idle timeout must fire fast: {elapsed:?}"
         );
     }
 
