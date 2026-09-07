@@ -37,6 +37,8 @@ impl GatewayRunner {
             api_key: api_key.unwrap_or_default(),
             base_url: base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
             reasoning_effort: None,
+            // Window unknown outside the gray crate; overflow recovery still guards.
+            context_window: None,
             session_id: session_id.map(str::to_string),
             cwd,
             system_prompt: gray_plugin::builder::SystemPrompt::Literal(load_system_prompt()),
@@ -47,9 +49,9 @@ impl GatewayRunner {
             // Advertise the full registry: denials belong to GatedExecutor so the
             // model gets the gate's accurate reason instead of "does not exist".
             wrap_executor: Some(Box::new(
-                move |inner: Box<dyn gray_core::agent::ToolExecutor>| {
-                    Box::new(GatedExecutor::new(inner, denied))
-                        as Box<dyn gray_core::agent::ToolExecutor>
+                move |inner: std::sync::Arc<dyn gray_core::agent::ToolExecutor>| {
+                    std::sync::Arc::new(GatedExecutor::new(inner, denied))
+                        as std::sync::Arc<dyn gray_core::agent::ToolExecutor>
                 },
             )),
         })

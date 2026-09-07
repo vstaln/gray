@@ -3,12 +3,15 @@ mod agent_compact;
 mod agent_loop;
 mod agent_tools;
 pub mod approvals;
+mod compact_v2;
 pub mod error;
 pub mod event;
 pub mod message;
+pub mod parallel;
 pub mod questions;
 pub mod redaction;
 pub mod tool_out;
+pub mod turn_queue;
 
 pub use agent::{
     Agent, CommandOutcome, PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream,

@@ -149,6 +149,7 @@ When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray 
 | `GRAY_INSTALL_DIR` | installer destination dir (overrides default `~/.local/bin`; `--system` installs system-wide) |
 | `GRAY_GUARD_BYPASS=1` | disable the destructive-command guard entirely (CI/piped mode) |
 | `GRAY_PERMISSION` | tool permission: `ask` (prompt before risky commands, default) or `auto` (no prompts; default in `-p` print mode) |
+| `GRAY_PARALLEL_READS` | tool parallelism: `0` runs every tool sequentially (default runs read-only tools concurrently, input order preserved) |
 | `GRAY_ACP_AUTO_APPROVE=1` | auto-approve ACP permission requests (same as `/acp <agent> --yolo`) |
 | `GRAY_ACP_ALLOW_ANY_PATH=1` | allow ACP `fs/*` handlers outside the workspace (default: workspace only) |
 | `GRAY_READ_DEDUP=0` | disable the read dedup stub (repeat reads always return full content) |
@@ -196,9 +197,9 @@ a code, the operator runs `gray gateway pairing approve <platform> <CODE>`;
 
 ## Acknowledgements
 
-Ideas and designs informed by [pi](https://github.com/badlogic/pi-mono), Codex,
-OpenClaw, hermes, and dcg — thanks to those projects and their authors.
-ACP support builds on [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) (Apache-2.0) and the t3code ACP provider layer.
+Ideas and designs informed by the projects listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — thanks to those projects
+and their authors.
 
 A naming note: `cargo install gray` belongs to another crate, so the install
 path is the installer script above (or a source build); the binary stays `gray`.
