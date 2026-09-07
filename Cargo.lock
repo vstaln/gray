@@ -1544,7 +1544,6 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
- "futures",
  "gray-core",
  "log",
  "serde",
@@ -1559,7 +1558,6 @@ dependencies = [
 name = "gray-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "futures",
  "log",
@@ -1655,8 +1653,6 @@ dependencies = [
  "anyhow",
  "axum",
  "flate2",
- "gray-core",
- "gray-plugin",
  "log",
  "reqwest",
  "serde",
@@ -1706,7 +1702,6 @@ dependencies = [
 name = "gray-session"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "gray-core",
  "log",
  "serde",
