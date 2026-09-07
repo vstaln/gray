@@ -627,7 +627,11 @@ mod capped_count_tests {
             .execute(&ctx, serde_json::json!({"path": "huge.txt", "limit": 10}))
             .await;
         assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.contains("count skipped"), "{}", tail(&out.content));
+        assert!(
+            out.content.contains("count skipped"),
+            "{}",
+            tail(&out.content)
+        );
         assert!(out.content.contains("offset=11"), "{}", tail(&out.content));
         assert!(!out.content.contains("of 150000"), "{}", tail(&out.content));
     }

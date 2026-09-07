@@ -327,7 +327,9 @@ impl LineStream {
     /// whether any byte was seen, and whether the tail ends with `\n`.
     /// Bytes flow through the hasher, so the full-file hash stays complete.
     async fn drain_rest(&mut self) -> std::io::Result<(u64, bool, bool)> {
-        self.drain_rest_capped(None).await.map(|(n, s, e, _)| (n, s, e))
+        self.drain_rest_capped(None)
+            .await
+            .map(|(n, s, e, _)| (n, s, e))
     }
 
     async fn drain_rest_capped(
