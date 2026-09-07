@@ -220,7 +220,7 @@ async fn e2e_sidecar_prompt_context_lands_in_system() {
     let seen = provider.seen_systems.clone();
     let mut agent = Agent::new(
         Box::new(provider),
-        Box::new(RecordingExecutor {
+        Arc::new(RecordingExecutor {
             calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             output: ToolOutput::ok("unused"),
         }),
@@ -262,7 +262,7 @@ async fn e2e_sidecar_tool_before_deny_blocks_executor() {
     let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut agent = Agent::new(
         Box::new(provider),
-        Box::new(RecordingExecutor {
+        Arc::new(RecordingExecutor {
             calls: calls.clone(),
             output: ToolOutput::ok("must-not-run"),
         }),
