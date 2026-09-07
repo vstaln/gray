@@ -112,9 +112,8 @@ impl Tui {
                 };
                 Paragraph::new(line.clone()).render(row_area, buf);
                 for h in hls {
-                    let pad = crate::tui::padding_x(1);
                     for col in h.column_range.clone() {
-                        let padded_col = col + pad;
+                        let padded_col = col + 1;
                         if padded_col >= area.width as usize {
                             continue;
                         }
