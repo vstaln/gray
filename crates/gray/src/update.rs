@@ -195,10 +195,7 @@ fn write_last_check(now_secs: u64) {
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    chrono::Utc::now().timestamp().try_into().unwrap_or(0)
 }
 
 /// Called before the REPL starts. Checks for a newer release, prompts y/n.
