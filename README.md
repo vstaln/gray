@@ -197,9 +197,9 @@ a code, the operator runs `gray gateway pairing approve <platform> <CODE>`;
 
 ## Acknowledgements
 
-Ideas and designs informed by [pi](https://github.com/badlogic/pi-mono), Codex,
-OpenClaw, hermes, and dcg — thanks to those projects and their authors.
-ACP support builds on [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) (Apache-2.0) and the t3code ACP provider layer.
+Ideas and designs informed by the projects listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) — thanks to those projects
+and their authors.
 
 A naming note: `cargo install gray` belongs to another crate, so the install
 path is the installer script above (or a source build); the binary stays `gray`.

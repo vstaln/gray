@@ -14,9 +14,8 @@
 //! `ToolResult`s); boundary truncation charges text by middle-truncation and
 //! images atomically per-block (Task 4).
 //!
-//! Staged port: later compaction-v2 tasks wire this module up; until then the
-//! crate-level `dead_code` allow keeps `cargo clippy -- -D warnings` green.
-#![allow(dead_code)]
+//! Wired live in Task 5: [`Agent::try_compact_budgeted`](crate::agent::Agent)
+//! runs trim → trigger call → retained walk → summary-last assembly.
 
 use crate::agent::Agent;
 use crate::error::CoreError;
@@ -91,8 +90,8 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 ///
 /// Unknown window (`None`) returns `(0, 0)` immediately, mirroring v2's early
 /// return. Returns (rewritten block count, estimated deleted tokens).
-// Brief-mandated `&mut Vec` signature (matches `salvage_partial_text` precedent).
-#[allow(clippy::ptr_arg)]
+// Brief-mandated `&mut Vec` signature (matches `salvage_partial_text` precedent,
+// which likewise carries no `ptr_arg` allow).
 pub(crate) fn trim_tool_results_to_fit(
     messages: &mut Vec<Message>,
     window: Option<usize>,

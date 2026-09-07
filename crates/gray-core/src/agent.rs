@@ -1425,11 +1425,13 @@ mod agent_tests {
             Box::new(provider),
             Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
-        // Budgeted compaction keeps a 20k-token verbatim tail: seed enough
-        // history that a summarizable head exists (a lone short message now
+        // v2 compaction retains the newest history within min(64k,
+        // window−reserve) and appends the summary LAST: seed more than the
+        // 64k retained budget (unknown window) so the oldest messages drop
+        // and the replacement strictly shrinks (a fully-retained history
         // correctly reports "nothing to gain" and surfaces the error).
         .with_messages(
-            (0..25)
+            (0..80)
                 .map(|i| Message::user(format!("bulk{i}:{}", "x".repeat(3990))))
                 .collect(),
         );
@@ -1444,11 +1446,26 @@ mod agent_tests {
                 .iter()
                 .any(|e| *e == AgentEvent::text_delta("continued"))
         );
+        let msgs = agent.messages();
+        let summary_at = msgs
+            .iter()
+            .position(|m| m.text_content().contains("Another language model started"))
+            .expect("history must contain the summary pair");
         assert!(
-            agent.messages()[0]
-                .text_content()
-                .contains("Another language model started"),
-            "history must start with the summary pair"
+            summary_at > 0 && summary_at + 2 < msgs.len(),
+            "v2 order: [retained..., summary_user, summary_ack, ...], got summary at {summary_at} of {}",
+            msgs.len()
+        );
+        assert!(
+            msgs[summary_at + 1].text_content().contains("Understood"),
+            "summary_ack follows summary_user"
+        );
+        assert!(
+            msgs[..summary_at].iter().all(|m| {
+                let t = m.text_content();
+                t.starts_with("bulk") || t == "go"
+            }),
+            "everything before the summary is retained history (bulks + the turn's go)"
         );
     }
 

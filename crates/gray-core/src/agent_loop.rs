@@ -10,7 +10,7 @@ use futures::StreamExt as _;
 use crate::agent::{
     Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
 };
-use crate::agent_compact::{KEEP_TAIL_TOKENS, needs_pre_turn_compact};
+use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
@@ -155,7 +155,7 @@ impl Agent {
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever.
                 while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
-                    if !self.try_compact_budgeted(KEEP_TAIL_TOKENS).await? {
+                    if !self.try_compact_budgeted().await? {
                         break;
                     }
                 }
@@ -292,7 +292,7 @@ impl Agent {
                             // Context overflow: compact via budgeted complete_prompt,
                             // then retry the turn; otherwise surface the error.
                             if e.should_compress() {
-                                match self.try_compact_budgeted(KEEP_TAIL_TOKENS).await {
+                                match self.try_compact_budgeted().await {
                                     Ok(true) => continue 'turn,
                                     _ => {
                                         let err = CoreError::from(e);
