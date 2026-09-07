@@ -2790,7 +2790,7 @@ mod tests {
         );
     }
 
-    fn responses_req_with_thinking(model: &str) -> ChatRequest {
+    fn responses_req_with_thinking(_model: &str) -> ChatRequest {
         use gray_core::message::Message;
         ChatRequest {
             system: Some("sys".to_string()),
