@@ -2,7 +2,6 @@
 use std::path::Path;
 
 pub const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
-pub const LOG_KEEP: usize = 2;
 
 /// If `path` exceeds `LOG_MAX_BYTES`, shift `.1`→`.2`, `path`→`.1`, truncate `path`.
 /// Missing/small files are left alone. All errors swallowed (logging must not crash boot).
