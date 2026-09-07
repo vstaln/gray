@@ -90,10 +90,10 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 ///
 /// Unknown window (`None`) returns `(0, 0)` immediately, mirroring v2's early
 /// return. Returns (rewritten block count, estimated deleted tokens).
-// Brief-mandated `&mut Vec` signature (matches `salvage_partial_text` precedent,
-// which likewise carries no `ptr_arg` allow).
+// Slice (not `&mut Vec`): only iteration is needed, so the narrower type
+// keeps `ptr_arg` clean without an allow.
 pub(crate) fn trim_tool_results_to_fit(
-    messages: &mut Vec<Message>,
+    messages: &mut [Message],
     window: Option<usize>,
 ) -> (usize, u64) {
     let Some(window) = window else {
