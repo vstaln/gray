@@ -98,8 +98,8 @@ fn est_token(m: &Message) -> usize {
 }
 
 /// Shared transcript estimate: the tail walk and the shrink comparison above
-/// use this (mirrors `Agent::estimate_tokens` in agent.rs — same one-liner,
-/// duplicated so this module stays self-contained).
+/// use this, as do `Agent::estimate_tokens` (agent.rs) and the compaction-v2
+/// port (`compact_v2::message_tokens`) — single owner, no mirrors.
 pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
     msgs.iter().map(est_token).sum()
 }
