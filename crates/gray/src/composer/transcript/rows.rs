@@ -17,8 +17,6 @@ pub(crate) fn strip_ansi(s: &str) -> String {
     crate::tui::strip_ansi(s)
 }
 
-
-
 /// Redact secrets from slash-command echo cards: `/gateway connect <platform> <token>`
 /// renders as `/gateway connect <platform> ••••`, same for `/gateway pairing approve`
 /// codes. Everything else passes through untouched. Execution always uses the raw
