@@ -400,6 +400,16 @@ mod tests {
     }
 
     #[test]
+    fn reload_path_keeps_session_cache_shard() {
+        // Steady-state builds (prompt_turn/empty_turn) and the reload path
+        // must resolve the identical key for one session id; the pre-fix
+        // reload passed None, rotating to the fallback shard (~0% hits).
+        let sid = "cc5d154d-4c24-42ee-b8a8-6a5735bdcfc9";
+        assert_eq!(provider_cache_key(Some(sid)), provider_cache_key(Some(sid)));
+        assert_ne!(provider_cache_key(Some(sid)), provider_cache_key(None));
+    }
+
+    #[test]
     fn cache_key_fallback_is_stable_per_process() {
         // Rebuilds mid-session (reload, lazy builds) must not rotate the key.
         assert_eq!(provider_cache_key(None), provider_cache_key(None));
