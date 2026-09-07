@@ -217,6 +217,14 @@ fn prefix_ignore_pattern(line: &str, prefix: &str) -> Option<String> {
     }
 }
 
+fn pathdiff_relative(path: &Path, base: &Path) -> PathBuf {
+    // minimal relative; fallback to full path if not under base
+    if let Ok(rel) = path.strip_prefix(base) {
+        return rel.to_path_buf();
+    }
+    path.to_path_buf()
+}
+
 fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
     let relative_dir = pathdiff_relative(dir, root_dir);
     let prefix = if relative_dir.as_os_str().is_empty() {
@@ -241,13 +249,7 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
     }
 }
 
-fn pathdiff_relative(path: &Path, base: &Path) -> PathBuf {
-    // minimal relative; fallback to file name if not under base
-    if let Ok(rel) = path.strip_prefix(base) {
-        return rel.to_path_buf();
-    }
-    path.to_path_buf()
-}
+
 
 // ---------------------------------------------------------------------------
 // Frontmatter
