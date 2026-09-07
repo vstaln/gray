@@ -155,9 +155,10 @@ impl PairingStore {
         crate::config::gray_home_dir().map(|h| h.join("pairing"))
     }
 
-    pub fn open_default() -> Self {
-        let dir = Self::default_dir().unwrap_or_else(|_| PathBuf::from("/tmp/gray-pairing"));
-        Self::new(dir)
+    pub fn open_default() -> anyhow::Result<Self> {
+        // Fail closed: pairing secrets must never fall back to a world-readable
+        // /tmp dir when the home directory is unresolvable.
+        Ok(Self::new(Self::default_dir()?))
     }
 
     fn pending_path(&self, platform: Platform) -> PathBuf {
@@ -396,7 +397,7 @@ pub fn pairing_approve_with(
 /// Approve against the default store + live gateway.yaml (CLI/REPL entry point).
 pub fn pairing_approve(platform_raw: &str, code: &str) -> anyhow::Result<String> {
     let platform = parse_platform(platform_raw)?;
-    let store = PairingStore::open_default();
+    let store = PairingStore::open_default()?;
     let mut cfg = crate::config::load_gateway_config();
     let msg = pairing_approve_with(&store, &mut cfg, platform, code)?;
     crate::config::save_gateway_config(&cfg)?;
@@ -410,7 +411,7 @@ pub fn pairing_list(platform_raw: Option<&str>) -> anyhow::Result<String> {
         Some(p) if !p.eq_ignore_ascii_case("all") => vec![parse_platform(p)?],
         _ => vec![Telegram, Discord, Slack],
     };
-    let store = PairingStore::open_default();
+    let store = PairingStore::open_default()?;
     let mut out = String::new();
     for p in plats {
         let pending = store.list_pending(p);
@@ -433,7 +434,7 @@ pub fn pairing_list(platform_raw: Option<&str>) -> anyhow::Result<String> {
 /// Drop a user's approval (pairing store only; config allowlists are untouched).
 pub fn pairing_revoke(platform_raw: &str, user_raw: &str) -> anyhow::Result<String> {
     let platform = parse_platform(platform_raw)?;
-    let store = PairingStore::open_default();
+    let store = PairingStore::open_default()?;
     if store.revoke(platform, user_raw) {
         Ok(format!("revoked {platform} user {}", user_raw.trim()))
     } else {
@@ -591,6 +592,29 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn open_default_fails_closed_without_home() {
+        let _guard = crate::config::GRAY_HOME_TEST_LOCK.lock().unwrap();
+        let prev_gray = std::env::var("GRAY_HOME").ok();
+        let prev_home = std::env::var("HOME").ok();
+        // SAFETY: guarded by GRAY_HOME_TEST_LOCK; restored below.
+        unsafe { std::env::remove_var("GRAY_HOME") };
+        unsafe { std::env::remove_var("HOME") };
+        let r = PairingStore::open_default();
+        match prev_gray {
+            Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+            None => unsafe { std::env::remove_var("GRAY_HOME") },
+        }
+        match prev_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(
+            r.is_err(),
+            "must fail closed, never fall back to world-readable /tmp"
+        );
     }
 
     #[test]

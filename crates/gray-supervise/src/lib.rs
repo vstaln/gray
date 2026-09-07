@@ -25,3 +25,17 @@ pub fn heartbeat_interval_secs() -> u64 {
         .unwrap_or(15)
         .max(5)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn paths_for_home_nests_state_files() {
+        let (state, beat, lc) = paths_for_home(Path::new("/home/u/.gray"));
+        assert_eq!(state, Path::new("/home/u/.gray/state"));
+        assert_eq!(beat, Path::new("/home/u/.gray/state/gateway.heartbeat"));
+        assert_eq!(lc, Path::new("/home/u/.gray/state/gateway.lifecycle.json"));
+    }
+}
