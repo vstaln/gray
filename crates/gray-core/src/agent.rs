@@ -364,13 +364,10 @@ impl Agent {
     }
 
     /// Rough transcript size in tokens (bytes/4 — same approximation as
-    /// `gray_tools::stats::est_tokens`, reimplemented here to keep core
-    /// dependency-free).
+    /// `gray_tools::stats::est_tokens`). Delegates to the shared
+    /// `agent_compact::est_tokens` owner so the estimators can never drift.
     pub(crate) fn estimate_tokens(&self) -> usize {
-        self.messages
-            .iter()
-            .map(|m| m.context_text().len() / 4)
-            .sum()
+        crate::agent_compact::est_tokens(&self.messages)
     }
 
     /// Queues a steering note for the running turn. Drained before the next

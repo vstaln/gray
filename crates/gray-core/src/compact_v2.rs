@@ -8,13 +8,16 @@
 //!
 //! Sanctioned adaptations: token math is bytes/4 (gray has no tiktoken dep);
 //! trim applies to `messages` only (codex folds base instructions into its
-//! estimate — gray's system prompt is constant, so it is excluded here).
+//! estimate — gray's system prompt is constant, so it is excluded here);
+//! codex's per-`ResponseItem` groups become atomic slices of gray's flat
+//! `Vec<Message>` (an assistant `ToolUse` fuses with the next user message's
+//! `ToolResult`s); boundary truncation is text-only (images are Task 4).
 //!
 //! Staged port: later compaction-v2 tasks wire this module up; until then the
 //! crate-level `dead_code` allow keeps `cargo clippy -- -D warnings` green.
 #![allow(dead_code)]
 
-use crate::message::{ContentBlock, Message};
+use crate::message::{ContentBlock, Message, Role};
 
 /// Verbatim copy of codex's `CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE`
 /// (`compact_remote.rs`): user-facing model text, kept identical for
@@ -22,11 +25,10 @@ use crate::message::{ContentBlock, Message};
 pub(crate) const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
 
-/// One message's token estimate (bytes/4 over billable text — same one-liner
-/// as `agent_compact::est_tokens`, duplicated so this module stays
-/// self-contained).
+/// One message's token estimate: delegates to the shared
+/// `agent_compact::est_tokens` owner (bytes/4 over billable text).
 fn message_tokens(m: &Message) -> usize {
-    m.context_text().len() / 4
+    crate::agent_compact::est_tokens(std::slice::from_ref(m))
 }
 
 /// Replace newest-first `ToolResult` block contents with the placeholder until
@@ -80,6 +82,197 @@ pub(crate) fn trim_tool_results_to_fit(
         }
     }
     (rewritten, initial.saturating_sub(estimated) as u64)
+}
+
+/// Retained-history token budget, mirroring codex v2's
+/// `RETAINED_MESSAGE_TOKEN_BUDGET` verbatim.
+pub(crate) const RETAINED_MESSAGE_TOKEN_BUDGET: usize = 64_000;
+/// Per-group cap for retained assistant-only groups, mirroring codex v2's
+/// `MAX_RETAINED_AGENT_MESSAGE_TOKENS`. `i64` kept verbatim — converted at use.
+/// Single assistant messages over this are progress/completion chatter.
+pub(crate) const MAX_RETAINED_AGENT_MESSAGE_TOKENS: i64 = 10_000;
+/// Boundary-truncation marker, inlined between the kept head+tail halves. Gray
+/// has no message marker convention; documented here. Marker bytes come out of
+/// the token budget so truncated output still estimates within budget.
+const TRUNCATION_MARKER: &str = "[…truncated…]";
+
+/// Build the retained history: group atomically → retention filter →
+/// newest-first budget walk → chronological order. Mirrors codex v2's
+/// `build_v2_compacted_history` minus the summary append (Task 5) and image
+/// charging (Task 4).
+pub(crate) fn build_retained(messages: &[Message], budget: usize) -> Vec<Message> {
+    let mut kept_reversed: Vec<Vec<Message>> = Vec::new();
+    let mut remaining = budget;
+    for group in atomic_groups(messages)
+        .into_iter()
+        .filter(|g| group_is_retained(g))
+        .rev()
+    {
+        if remaining == 0 {
+            continue;
+        }
+        let cost = group_tokens(group).max(1);
+        if cost <= remaining {
+            remaining -= cost;
+            kept_reversed.push(group.to_vec());
+        } else if let Some(truncated) = truncate_group_to_budget(group, remaining) {
+            kept_reversed.push(truncated);
+            remaining = 0;
+        }
+        // Ineligible boundary group (images / no truncatable text): dropped,
+        // walk continues with `remaining` untouched.
+    }
+    kept_reversed.into_iter().rev().flatten().collect()
+}
+
+/// Split chronological `messages` into atomic retain/drop groups: an assistant
+/// message's `ToolUse` ids fuse with the NEXT user message's `ToolResult` ids
+/// on id intersection; unmatched strays are singleton groups. Pairs therefore
+/// retain/drop atomically — never an orphaned call or result.
+fn atomic_groups(messages: &[Message]) -> Vec<&[Message]> {
+    let mut groups = Vec::new();
+    let mut i = 0;
+    while i < messages.len() {
+        let pair = messages[i].role == Role::Assistant
+            && messages.get(i + 1).is_some_and(|next| {
+                next.role == Role::User && tool_ids_intersect(&messages[i], next)
+            });
+        if pair {
+            groups.push(&messages[i..i + 2]);
+            i += 2;
+        } else {
+            groups.push(&messages[i..i + 1]);
+            i += 1;
+        }
+    }
+    groups
+}
+
+fn tool_use_ids(m: &Message) -> impl Iterator<Item = &str> {
+    m.content.iter().filter_map(|b| match b {
+        ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+        _ => None,
+    })
+}
+
+fn tool_ids_intersect(assistant: &Message, user: &Message) -> bool {
+    tool_use_ids(assistant).any(|id| {
+        user.content.iter().any(|b| match b {
+            ContentBlock::ToolResult { id: result_id, .. } => result_id == id,
+            _ => false,
+        })
+    })
+}
+
+fn has_text(m: &Message) -> bool {
+    m.content.iter().any(|b| match b {
+        ContentBlock::Text { text } => !text.is_empty(),
+        _ => false,
+    })
+}
+
+fn has_image(m: &Message) -> bool {
+    m.content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }))
+}
+
+/// Assistant message with ≥1 `ToolUse` and zero text: v2's
+/// descendant-progress/completion chatter equivalent.
+fn is_tool_use_only(m: &Message) -> bool {
+    m.role == Role::Assistant && tool_use_ids(m).next().is_some() && !has_text(m)
+}
+
+fn group_tokens(group: &[Message]) -> usize {
+    group.iter().map(message_tokens).sum()
+}
+
+/// Retention filter per group, mirroring v2's
+/// `is_retained_for_remote_compaction_v2`: `ToolUse`-only chatter drops
+/// together with its paired results; user/system groups are always retained
+/// (the budget walk sizes them); text-carrying assistant-only groups survive
+/// iff within the per-group cap.
+fn group_is_retained(group: &[Message]) -> bool {
+    if group.iter().any(is_tool_use_only) {
+        return false;
+    }
+    if group
+        .iter()
+        .any(|m| matches!(m.role, Role::User | Role::System))
+    {
+        return true;
+    }
+    i64::try_from(group_tokens(group)).unwrap_or(i64::MAX) <= MAX_RETAINED_AGENT_MESSAGE_TOKENS
+}
+
+/// Middle-truncate a group's `Text` blocks to `budget` tokens, walking blocks
+/// in order like v2's `truncate_message_text_to_token_budget` (fits → keep;
+/// first overflow → head+tail truncate; later text dropped). Non-text blocks
+/// pass through (tool results own the Task 1 trim budget; thinking/tool-use
+/// args are small). `Image` blocks make a group ineligible here — image
+/// charging is Task 4 — so `None` (caller drops the whole group). `None` also
+/// when the group holds no truncatable text.
+fn truncate_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>> {
+    if group.iter().any(has_image) {
+        return None;
+    }
+    let mut out = group.to_vec();
+    let mut remaining = budget;
+    let mut saw_text = false;
+    for msg in &mut out {
+        for block in &mut msg.content {
+            let ContentBlock::Text { text } = block else {
+                continue;
+            };
+            if text.is_empty() {
+                continue;
+            }
+            saw_text = true;
+            if remaining == 0 {
+                text.clear();
+            } else if text.len() / 4 <= remaining {
+                remaining -= text.len() / 4;
+            } else {
+                *text = truncate_text_to_budget(text, remaining);
+                remaining = 0;
+            }
+        }
+        msg.content.retain(|b| match b {
+            ContentBlock::Text { text } => !text.is_empty(),
+            _ => true,
+        });
+    }
+    saw_text.then_some(out)
+}
+
+/// Middle-truncate `text` to `max_tokens`: keep head+tail halves with
+/// [`TRUNCATION_MARKER`] inline. Already-small text returns untouched (no
+/// marker). Splits on char boundaries.
+fn truncate_text_to_budget(text: &str, max_tokens: usize) -> String {
+    if text.len() / 4 <= max_tokens {
+        return text.to_string();
+    }
+    let usable = max_tokens
+        .saturating_mul(4)
+        .saturating_sub(TRUNCATION_MARKER.len());
+    let (head, tail) = split_head_tail(text, usable);
+    format!("{head}{TRUNCATION_MARKER}{tail}")
+}
+
+fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
+    let right = usable - usable / 2;
+    let mut head_end = (usable / 2).min(s.len());
+    while !s.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = s.len().saturating_sub(right);
+    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    if tail_start < head_end {
+        tail_start = head_end;
+    }
+    (&s[..head_end], &s[tail_start..])
 }
 
 #[cfg(test)]
@@ -143,5 +336,103 @@ mod tests {
             "deleted {deleted} ≈ expected {expected}"
         );
         assert!(deleted > 0);
+    }
+
+    // --- Task 2 (RED): retention grouping + budget walk --------------------
+
+    fn assistant_tool_use(id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::tool_use(id, "sh", serde_json::json!({}))],
+        }
+    }
+
+    fn user_tool_result(id: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::tool_result(id, "ok", false)],
+        }
+    }
+
+    fn is_subsequence(hay: &[Message], needle: &[Message]) -> bool {
+        let mut j = 0;
+        for m in hay {
+            if j < needle.len() && *m == needle[j] {
+                j += 1;
+            }
+        }
+        j == needle.len()
+    }
+
+    #[test]
+    fn retention_drops_tool_chatter_atomically() {
+        let msgs = vec![
+            Message::assistant("thinking out loud"),
+            assistant_tool_use("c1"),
+            user_tool_result("c1"),
+            Message::user("done?"),
+        ];
+        let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+        let mut uses: Vec<&str> = out
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut results: Vec<&str> = out
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        uses.sort();
+        results.sort();
+        assert_eq!(uses, results, "no orphaned calls either direction");
+        assert!(
+            is_subsequence(&msgs, &out),
+            "output preserves chronological order"
+        );
+        assert_eq!(out.last().unwrap(), &Message::user("done?"));
+    }
+
+    #[test]
+    fn oversized_single_assistant_dropped() {
+        let big = Message::assistant("y".repeat(12_000 * 4));
+        assert!(
+            build_retained(std::slice::from_ref(&big), RETAINED_MESSAGE_TOKEN_BUDGET).is_empty()
+        );
+    }
+
+    #[test]
+    fn boundary_group_middle_truncated_not_dropped() {
+        let old = Message::user("a".repeat(4000));
+        let new = Message::user("b".repeat(4000));
+        let out = build_retained(&[old, new.clone()], 1500);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1], new, "newest group kept verbatim");
+        let text = out[0].text_content();
+        assert!(text.contains(TRUNCATION_MARKER), "boundary group truncated");
+        assert!(
+            crate::agent_compact::est_tokens(&out) <= 1500,
+            "truncated output fits budget"
+        );
+    }
+
+    #[test]
+    fn budget_walk_newest_first() {
+        // Exact-fit sizing: 3 × 32k tokens at a 64k budget leaves
+        // `remaining == 0` after the two newest, so the oldest is dropped (a
+        // 30k sizing would boundary-truncate it instead — covered above).
+        let mk =
+            |tag: &str| Message::user(format!("{tag}:{}", "z".repeat(32_000 * 4 - tag.len() - 1)));
+        let msgs = vec![mk("m1"), mk("m2"), mk("m3")];
+        let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].text_content().starts_with("m2:"));
+        assert!(out[1].text_content().starts_with("m3:"));
     }
 }
