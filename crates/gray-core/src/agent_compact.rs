@@ -26,10 +26,12 @@ pub fn summary_pair(summary: &str) -> [Message; 2] {
 impl Agent {
     /// One-shot transcript compaction preserving a recent tail: splits history into
     /// head (summarized) + newest messages totaling ≤ `keep_tail_tokens`
-    /// (kept verbatim), then `messages = summary_pair + tail`. False when
-    /// there is nothing worth compacting (empty, blank, or everything fits
-    /// in the tail). Each success strictly shrinks history, so pre-turn
-    /// callers can retry the check without looping forever.
+    /// (kept verbatim), then `messages = summary_pair + tail`. Returns `Ok(true)`
+    /// iff the replacement history is strictly smaller in estimated tokens;
+    /// otherwise `self.messages` is left untouched and `Ok(false)` is returned
+    /// (empty, blank, everything fits in the tail, or the summary would not
+    /// shrink history). Callers can therefore retry on `Ok(true)` knowing each
+    /// success makes progress, and must stop on `Ok(false)`.
     pub(crate) async fn try_compact_budgeted(
         &mut self,
         keep_tail_tokens: usize,
@@ -37,14 +39,11 @@ impl Agent {
         if self.messages.is_empty() {
             return Ok(false);
         }
-        // Walk back newest-first while the tail fits the budget (always keep
-        // at least the newest message out of the summary input? No — if even
-        // the newest exceeds the budget it still belongs in the tail (most
-        // relevant); the head may then be empty → return false below).
+        // Tail walk, newest-first: the newest message is always kept verbatim and older ones join while the budget allows.
         let mut tail_count = 0usize;
         let mut tail_tokens = 0usize;
         for m in self.messages.iter().rev() {
-            let t = m.context_text().len() / 4;
+            let t = est_token(m);
             if tail_count > 0 && tail_tokens + t > keep_tail_tokens {
                 break;
             }
@@ -82,9 +81,27 @@ impl Agent {
         let mut next = Vec::with_capacity(2 + tail.len());
         next.extend(summary_pair(&summary));
         next.extend(tail);
+        // Enforced shrink: a replacement that is not strictly smaller is not
+        // a compaction — leave history untouched so both the pre-turn retry
+        // and the overflow retry terminate on `false`.
+        if est_tokens(&next) >= est_tokens(&self.messages) {
+            return Ok(false);
+        }
         self.messages = next;
         Ok(true)
     }
+}
+
+/// One message's token estimate (bytes/4 over billable text).
+fn est_token(m: &Message) -> usize {
+    m.context_text().len() / 4
+}
+
+/// Shared transcript estimate: the tail walk and the shrink comparison above
+/// use this (mirrors `Agent::estimate_tokens` in agent.rs — same one-liner,
+/// duplicated so this module stays self-contained).
+pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
+    msgs.iter().map(est_token).sum()
 }
 
 /// Tokens held back from compaction no matter what (Codex parity).
@@ -188,6 +205,25 @@ mod compact_tests {
         let ok = agent.try_compact_budgeted(20_000).await.unwrap();
         assert!(!ok);
         assert_eq!(agent.messages(), &before);
+    }
+
+    #[tokio::test]
+    async fn budgeted_compact_false_when_summary_would_not_shrink() {
+        // Already-compact 2-message history: head is message 1, tail is
+        // message 2, and the provider returns a summary LONGER than the head
+        // it replaces (the 2→2 spin). The enforced shrink invariant must
+        // return Ok(false) with history byte-identical.
+        let long = "z".repeat(2000);
+        let mut agent = test_agent(&long);
+        agent.set_messages(summary_pair("prior summary").into());
+        let before = agent.messages().to_vec();
+        let ok = agent.try_compact_budgeted(50).await.unwrap();
+        assert!(!ok);
+        assert_eq!(
+            agent.messages(),
+            &before,
+            "non-shrinking compact must leave history untouched"
+        );
     }
 
     #[tokio::test]
