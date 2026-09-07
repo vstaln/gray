@@ -59,3 +59,33 @@ impl std::fmt::Debug for QuestionBridge {
         f.write_str("QuestionBridge")
     }
 }
+
+#[cfg(test)]
+struct ScriptedAsker {
+    answers: Vec<String>,
+}
+
+#[cfg(test)]
+impl QuestionAsker for ScriptedAsker {
+    fn ask(
+        &self,
+        questions: Vec<UserQuestion>,
+        _blocking: bool,
+    ) -> BoxFuture<'static, Result<Vec<UserAnswer>, CoreError>> {
+        let answers = self.answers.clone();
+        Box::pin(async move {
+            Ok(vec![UserAnswer {
+                id: questions.first().map(|q| q.id.clone()).unwrap_or_default(),
+                answers,
+            }])
+        })
+    }
+}
+
+#[cfg(test)]
+impl QuestionBridge {
+    /// Test-only bridge answering every question with canned option labels.
+    pub fn scripted(answers: Vec<String>) -> Self {
+        Self(Arc::new(ScriptedAsker { answers }))
+    }
+}
