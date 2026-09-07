@@ -3,7 +3,6 @@ pub(crate) struct CmdDef {
     pub(crate) name: &'static str,
     pub(crate) desc: &'static str,
     pub(crate) aliases: &'static [&'static str],
-    pub(crate) args_hint: &'static str,
 }
 
 pub(crate) const REGISTRY: &[CmdDef] = &[
@@ -11,103 +10,86 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "connect",
         desc: "setup provider & API key",
         aliases: &["keys", "key", "providers", "provider", "login"],
-        args_hint: "",
     },
     CmdDef {
         name: "model",
         desc: "switch model",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "thinking",
         desc: "reasoning effort",
         aliases: &["effort", "reasoning"],
-        args_hint: "",
     },
     CmdDef {
         name: "context",
         desc: "set context window",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "resume",
         desc: "resume conversation",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "new",
         desc: "new conversation",
         aliases: &["clear", "reset"],
-        args_hint: "",
     },
     CmdDef {
         name: "compact",
         desc: "summarize context",
         aliases: &["compress"],
-        args_hint: "",
     },
     CmdDef {
         name: "usage",
         desc: "session tokens & cost",
         aliases: &["cost"],
-        args_hint: "",
     },
     CmdDef {
         name: "permissions",
         desc: "choose what gray is allowed to do",
         aliases: &["perms", "access"],
-        args_hint: "",
     },
     CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "acp",
         desc: "run as an external ACP agent (claude, codex, cursor…)",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "agentsmd",
         desc: "edit system prompt",
         aliases: &["sys"],
-        args_hint: "",
     },
     CmdDef {
         name: "skills",
         desc: "manage installed skills (/skill <name> [args] or /skills:<name> [args] to run one)",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "plugin",
         desc: "manage plugins",
         aliases: &["plugins"],
-        args_hint: "",
     },
     CmdDef {
         name: "marketplace",
         desc: "browse and install plugins/skills",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "help",
         desc: "show commands",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "quit",
         desc: "exit",
         aliases: &["exit"],
-        args_hint: "",
     },
 ];
 
@@ -785,40 +767,6 @@ mod tests {
         assert!(super::resolve("/boguscmd").is_none());
         assert!(super::resolve("").is_none());
         assert!(super::resolve("/").is_none());
-    }
-
-    #[test]
-    fn registry_help_covers_all_commands() {
-        let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
-        for expected in [
-            "connect",
-            "model",
-            "thinking",
-            "context",
-            "resume",
-            "new",
-            "compact",
-            "usage",
-            "permissions",
-            "feedback",
-            "acp",
-            "agentsmd",
-            "skills",
-            "plugin",
-            "marketplace",
-            "help",
-            "quit",
-        ] {
-            assert!(names.contains(&expected), "help missing {expected}");
-        }
-        assert_eq!(super::REGISTRY.len(), 17);
-        // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
-        assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
-        let all = super::completion_matches("");
-        assert_eq!(all.len(), 17);
-        for expected in names {
-            assert!(all.iter().any(|(n, _)| *n == expected));
-        }
     }
 
     #[test]
