@@ -21,6 +21,9 @@ use gray_markdown::HyperlinkTarget;
 
 pub(crate) const PANEL_ROWS: usize = 6;
 pub(crate) const VIEWPORT_H: u16 = 14;
+/// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
+/// bottom pad + context footer. No cleared slack below the footer.
+pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
@@ -81,6 +84,10 @@ pub struct Tui {
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
+    /// Current inline viewport height. `draw` keeps it at the exact-fit
+    /// content height (clamped to `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is
+    /// never cleared slack below the footer; popups can grow it back up.
+    pub(crate) viewport_h: u16,
     // request_user_input overlay (codex port) + late non-blocking answers
     pub(crate) active_question: Option<question::QuestionSession>,
     pub pending_question_answers: Vec<String>,
@@ -165,7 +172,7 @@ impl Tui {
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+                viewport: ratatui::Viewport::Inline(MIN_VIEWPORT_H),
             },
         )?;
 
@@ -220,6 +227,7 @@ impl Tui {
             committed_markdown_lines: 0,
             pending_resize: None,
             live_streamed_tokens: 0,
+            viewport_h: MIN_VIEWPORT_H,
             active_question: None,
             pending_question_answers: Vec::new(),
         })
@@ -240,7 +248,7 @@ impl Tui {
         if let Ok(term) = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+                viewport: ratatui::Viewport::Inline(self.viewport_h.max(MIN_VIEWPORT_H)),
             },
         ) {
             self.terminal = term;
@@ -262,7 +270,7 @@ impl Tui {
         if let Ok(term) = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+                viewport: ratatui::Viewport::Inline(self.viewport_h.max(MIN_VIEWPORT_H)),
             },
         ) {
             self.terminal = term;

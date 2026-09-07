@@ -684,6 +684,23 @@ mod tests {
     }
 
     #[test]
+    fn empty_prompt_hides_slash_popup_like_codex() {
+        // codex `command_under_cursor`: empty text / no leading slash / cursor
+        // past the command name → no popup. Deleting `/` must close it, not
+        // strand stale matches (ghost popup + double footer + scrollback growth).
+        use std::path::Path;
+        let cwd = Path::new(".");
+        assert!(super::completion_matches_dyn("", cwd).is_empty());
+        assert!(super::completion_matches_dyn("hello", cwd).is_empty());
+        assert!(super::completion_matches_dyn("/ ", cwd).is_empty());
+        // bare `/` opens the popup with every command.
+        assert_eq!(
+            super::completion_matches_dyn("/", cwd).len(),
+            super::REGISTRY.len()
+        );
+    }
+
+    #[test]
     fn registry_resolve_canonical_and_aliases() {
         for name in [
             "connect",
