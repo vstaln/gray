@@ -3,6 +3,7 @@ mod agent_compact;
 mod agent_loop;
 mod agent_tools;
 pub mod approvals;
+mod compact_v2;
 pub mod error;
 pub mod event;
 pub mod message;
