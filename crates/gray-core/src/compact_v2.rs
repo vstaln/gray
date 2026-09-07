@@ -11,7 +11,8 @@
 //! estimate — gray's system prompt is constant, so it is excluded here);
 //! codex's per-`ResponseItem` groups become atomic slices of gray's flat
 //! `Vec<Message>` (an assistant `ToolUse` fuses with the next user message's
-//! `ToolResult`s); boundary truncation is text-only (images are Task 4).
+//! `ToolResult`s); boundary truncation charges text by middle-truncation and
+//! images atomically per-block (Task 4).
 //!
 //! Staged port: later compaction-v2 tasks wire this module up; until then the
 //! crate-level `dead_code` allow keeps `cargo clippy -- -D warnings` green.
@@ -27,10 +28,53 @@ use crate::message::{ContentBlock, Message, Role};
 pub(crate) const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
     "Output exceeded the available model context and was truncated";
 
-/// One message's token estimate: delegates to the shared
-/// `agent_compact::est_tokens` owner (bytes/4 over billable text).
+/// One message's token estimate: image-aware budgeting over the shared
+/// `agent_compact::est_tokens` owner (bytes/4 over billable text). Messages
+/// without images delegate verbatim so text/tool/thinking estimates can never
+/// drift; messages with images price each `Image` block via
+/// [`image_block_tokens`] (base64 at bytes/4 would overcharge ~5× — the
+/// payload is base64, not raw bytes). Block separators (`\n` in
+/// `context_text`) are sub-token and ignored on the image path.
 fn message_tokens(m: &Message) -> usize {
-    crate::agent_compact::est_tokens(std::slice::from_ref(m))
+    if m.content
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }))
+    {
+        m.content.iter().map(block_tokens).sum()
+    } else {
+        crate::agent_compact::est_tokens(std::slice::from_ref(m))
+    }
+}
+
+/// One block's token estimate on the image path: billable bytes/4 exactly
+/// like `context_text`, except `Image` which uses [`image_block_tokens`].
+fn block_tokens(b: &ContentBlock) -> usize {
+    match b {
+        ContentBlock::Text { text } => text.len() / 4,
+        ContentBlock::Image { media_type, data } => image_block_tokens(media_type, data.len()),
+        ContentBlock::ToolResult { content, .. } => content.len() / 4,
+        ContentBlock::ToolUse { name, args, .. } => format!("{name}{args}").len() / 4,
+        ContentBlock::Thinking {
+            text,
+            encrypted_content,
+            ..
+        } => match encrypted_content {
+            Some(blob) => (text.len() + blob.len()) / 4,
+            None => text.len() / 4,
+        },
+    }
+}
+
+/// Token price of one `Image` block from its base64 length.
+///
+/// Sanctioned adaptation #3 (binding, from the port plan): codex prices
+/// images from estimated decoded bytes × detail level
+/// (`compact_remote_v2_images.rs` + `estimate_image_bytes`); gray has no
+/// detail levels, so price = decoded bytes/4 floored at 1_000 — the floor
+/// keeps images honest instead of free. `media_type` is kept for shape parity
+/// with codex's per-image pricer (currently unused).
+pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize {
+    (base64_len.saturating_mul(3) / 4 / 4).max(1_000)
 }
 
 /// Replace newest-first `ToolResult` block contents with the placeholder until
@@ -129,8 +173,8 @@ const TRUNCATION_MARKER: &str = "[…truncated…]";
 
 /// Build the retained history: group atomically → retention filter →
 /// newest-first budget walk → chronological order. Mirrors codex v2's
-/// `build_v2_compacted_history` minus the summary append (Task 5) and image
-/// charging (Task 4).
+/// `build_v2_compacted_history` minus the summary append (Task 5); images are
+/// charged atomically newest-first via [`image_block_tokens`].
 pub(crate) fn build_retained(messages: &[Message], budget: usize) -> Vec<Message> {
     let mut kept_reversed: Vec<Vec<Message>> = Vec::new();
     let mut remaining = budget;
@@ -150,7 +194,7 @@ pub(crate) fn build_retained(messages: &[Message], budget: usize) -> Vec<Message
             kept_reversed.push(truncated);
             remaining = 0;
         }
-        // Ineligible boundary group (images / no truncatable text): dropped,
+        // Untruncatable boundary group (no retainable text/image): dropped,
         // walk continues with `remaining` untouched.
     }
     kept_reversed.into_iter().rev().flatten().collect()
@@ -202,12 +246,6 @@ fn has_text(m: &Message) -> bool {
     })
 }
 
-fn has_image(m: &Message) -> bool {
-    m.content
-        .iter()
-        .any(|b| matches!(b, ContentBlock::Image { .. }))
-}
-
 /// Assistant message with ≥1 `ToolUse` and zero text: v2's
 /// descendant-progress/completion chatter equivalent.
 fn is_tool_use_only(m: &Message) -> bool {
@@ -236,44 +274,58 @@ fn group_is_retained(group: &[Message]) -> bool {
     i64::try_from(group_tokens(group)).unwrap_or(i64::MAX) <= MAX_RETAINED_AGENT_MESSAGE_TOKENS
 }
 
-/// Middle-truncate a group's `Text` blocks to `budget` tokens, walking blocks
-/// in order like v2's `truncate_message_text_to_token_budget` (fits → keep;
-/// first overflow → head+tail truncate; later text dropped). Non-text blocks
-/// pass through (tool results own the Task 1 trim budget; thinking/tool-use
-/// args are small). `Image` blocks make a group ineligible here — image
-/// charging is Task 4 — so `None` (caller drops the whole group). `None` also
-/// when the group holds no truncatable text.
+/// Middle-truncate a group's `Text` blocks to `budget` tokens while charging
+/// `Image` blocks atomically, newest-first like codex v2's
+/// `truncate_message_to_token_budget` (fits → keep; first overflow → head+tail
+/// truncate; later text dropped). An image that fits is kept whole and charged;
+/// one that doesn't is dropped whole — base64 is never split (mirrors codex's
+/// "images are handled atomically"). Non-image, non-text blocks pass through
+/// (tool results own the Task 1 trim budget; thinking/tool-use args are
+/// small). Returns `None` when nothing retainable survives (no text or image
+/// kept — e.g. an image-only group priced out of budget); the caller then
+/// drops the whole group with `remaining` untouched. `None` also when the
+/// group holds no text or image at all.
 fn truncate_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>> {
-    if group.iter().any(has_image) {
-        return None;
-    }
     let mut out = group.to_vec();
     let mut remaining = budget;
-    let mut saw_text = false;
-    for msg in &mut out {
-        for block in &mut msg.content {
-            let ContentBlock::Text { text } = block else {
-                continue;
-            };
-            if text.is_empty() {
-                continue;
-            }
-            saw_text = true;
-            if remaining == 0 {
-                text.clear();
-            } else if text.len() / 4 <= remaining {
-                remaining -= text.len() / 4;
-            } else {
-                *text = truncate_text_to_budget(text, remaining);
-                remaining = 0;
+    let mut retained_billable = false;
+    for msg in out.iter_mut().rev() {
+        for block in msg.content.iter_mut().rev() {
+            match block {
+                ContentBlock::Image { media_type, data } => {
+                    let price = image_block_tokens(media_type, data.len());
+                    if price <= remaining {
+                        remaining -= price;
+                        retained_billable = true;
+                    } else {
+                        data.clear(); // atomic drop; `retain` below removes it
+                    }
+                }
+                ContentBlock::Text { text } => {
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if remaining == 0 {
+                        text.clear();
+                    } else if text.len() / 4 <= remaining {
+                        remaining -= text.len() / 4;
+                        retained_billable = true;
+                    } else {
+                        *text = truncate_text_to_budget(text, remaining);
+                        remaining = 0;
+                        retained_billable = true;
+                    }
+                }
+                _ => {}
             }
         }
         msg.content.retain(|b| match b {
             ContentBlock::Text { text } => !text.is_empty(),
+            ContentBlock::Image { data, .. } => !data.is_empty(),
             _ => true,
         });
     }
-    saw_text.then_some(out)
+    retained_billable.then_some(out)
 }
 
 /// Middle-truncate `text` to `max_tokens`: keep head+tail halves with
@@ -600,5 +652,56 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert!(out[0].text_content().starts_with("m2:"));
         assert!(out[1].text_content().starts_with("m3:"));
+    }
+
+    // --- Task 4 (RED): atomic image budget ------------------------------
+
+    #[test]
+    fn images_priced_and_dropped_oldest_first() {
+        // Adaptation #3 pricing: decoded bytes/4, floored at 1_000.
+        assert_eq!(image_block_tokens("image/png", 5_000), 1_000);
+        assert_eq!(image_block_tokens("image/png", 16_000), 3_000);
+        assert_eq!(image_block_tokens("image/png", 64), 1_000);
+
+        let img = Message {
+            role: Role::User,
+            content: vec![ContentBlock::image("image/png", "a".repeat(5_000))],
+        };
+        let new = Message::user("b".repeat(400)); // 100 tokens
+        // Tight budget: newest text kept, oldest image group dropped whole.
+        assert_eq!(
+            build_retained(&[img.clone(), new.clone()], 500),
+            vec![new.clone()]
+        );
+        // Roomy budget (100 text + 1_000 priced image): both kept, image whole.
+        let out = build_retained(&[img, new.clone()], 1_100);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1], new);
+        match &out[0].content[..] {
+            [ContentBlock::Image { data, .. }] => {
+                assert_eq!(data.len(), 5_000, "atomic: no half-image")
+            }
+            other => panic!("expected single whole image block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn image_never_split_by_boundary_truncation() {
+        let old = Message::user("o".repeat(40)); // 10 tokens
+        let img = Message {
+            role: Role::User,
+            content: vec![ContentBlock::image("image/png", "a".repeat(5_000))], // 1_000 tokens
+        };
+        let new = Message::user("n".repeat(4_000)); // 1_000 tokens
+        // Newest kept (1_000); the image group doesn't fit in the remaining 10
+        // → whole-group drop with budget preserved, oldest text still kept.
+        let out = build_retained(&[old.clone(), img, new.clone()], 1_010);
+        assert_eq!(out, vec![old, new]);
+        assert!(
+            out.iter()
+                .flat_map(|m| &m.content)
+                .all(|b| !matches!(b, ContentBlock::Image { .. })),
+            "no split base64 survives anywhere"
+        );
     }
 }
