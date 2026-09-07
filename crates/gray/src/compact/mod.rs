@@ -247,6 +247,7 @@ pub async fn compact_with_instructions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn should_compact_threshold() {
@@ -462,7 +463,7 @@ mod tests {
         };
         let executor = NoopExecutor;
         crate::setup::set_user_keep_recent_tokens(Some(0));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor)).with_messages(vec![
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_messages(vec![
             Message::user("hello"),
             Message::assistant("hi there"),
             Message::user("more context"),
@@ -572,7 +573,7 @@ mod tests {
         }
 
         fn agent() -> Agent {
-            Agent::new(Box::new(FakeProvider), Box::new(NoopExecutor))
+            Agent::new(Box::new(FakeProvider), Arc::new(NoopExecutor))
                 .with_messages(vec![Message::user("hello"), Message::assistant("hi there")])
         }
 

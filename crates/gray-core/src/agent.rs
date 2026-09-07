@@ -279,7 +279,7 @@ pub use super::agent_compact::summary_pair;
 /// draining these events (or by swapping the return type for a receiver).
 pub struct Agent {
     pub(crate) provider: Box<dyn Provider>,
-    pub(crate) executor: Box<dyn ToolExecutor>,
+    pub(crate) executor: std::sync::Arc<dyn ToolExecutor>,
     pub(crate) system: String,
     pub(crate) tools: Vec<ToolDef>,
     pub(crate) messages: Vec<Message>,
@@ -291,7 +291,7 @@ pub struct Agent {
 
 impl Agent {
     /// Creates an agent over the given provider and tool executor.
-    pub fn new(provider: Box<dyn Provider>, executor: Box<dyn ToolExecutor>) -> Self {
+    pub fn new(provider: Box<dyn Provider>, executor: std::sync::Arc<dyn ToolExecutor>) -> Self {
         Self {
             provider,
             executor,
@@ -658,7 +658,7 @@ mod agent_tests {
             StreamEvent::message_complete(Some(StopReason::EndTurn), None),
         ]]);
         let executor = FakeExecutor::new(ToolOutput::ok("unused"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("go"), ToolContext::default())
@@ -706,7 +706,7 @@ mod agent_tests {
             ],
         ]);
         let executor = FakeExecutor::new(ToolOutput::ok("result payload"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_system("be terse")
             .with_tools(vec![tool_def()]);
 
@@ -763,7 +763,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("unused"))
             .with_output(TOOL_NAME, ToolOutput::error("disk on fire"));
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         let events = agent
             .run(Message::user("go"), ToolContext::default())
@@ -808,7 +808,7 @@ mod agent_tests {
         ]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
             .run(Message::user("loop forever"), ToolContext::default())
@@ -829,7 +829,7 @@ mod agent_tests {
             .collect();
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let err = agent
             .run(Message::user("explore"), ToolContext::default())
@@ -849,7 +849,7 @@ mod agent_tests {
         scripts.push(end_script());
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("explore"), ToolContext::default())
@@ -885,7 +885,7 @@ mod agent_tests {
         scripts.push(end_script());
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("work"), ToolContext::default())
@@ -907,7 +907,7 @@ mod agent_tests {
             .collect();
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let err = agent
             .run(Message::user("explore"), ToolContext::default())
@@ -937,7 +937,7 @@ mod agent_tests {
         scripts.push(end_script());
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("work"), ToolContext::default())
@@ -962,7 +962,7 @@ mod agent_tests {
         ]]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
 
         let events = agent
@@ -994,7 +994,7 @@ mod agent_tests {
         ]]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
 
         let events = agent
@@ -1025,7 +1025,7 @@ mod agent_tests {
         executor.on_execute = Some(std::sync::Arc::new(move || token.cancel()));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
             .run(
@@ -1061,7 +1061,7 @@ mod agent_tests {
         ];
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_messages(prior);
 
@@ -1097,7 +1097,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()]);
         let events = agent
@@ -1124,7 +1124,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
         let events = agent
             .run(Message::user("go"), ToolContext::default())
             .await
@@ -1170,7 +1170,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
         let events = agent
             .run(Message::user("go"), ToolContext::default())
             .await
@@ -1211,7 +1211,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
         let events = agent
             .run(Message::user("go"), ToolContext::default())
             .await
@@ -1276,7 +1276,7 @@ mod agent_tests {
         )]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let events = agent
@@ -1305,7 +1305,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let err = agent
@@ -1329,7 +1329,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let events = agent
@@ -1356,7 +1356,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
         )
         .with_tools(vec![tool_def()]);
 
@@ -1410,7 +1410,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()]);
 
@@ -1443,7 +1443,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         agent
@@ -1477,7 +1477,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let events = agent
@@ -1506,7 +1506,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2")]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
         .with_max_rounds(Some(1));
@@ -1537,7 +1537,7 @@ mod agent_tests {
     fn tool_timeout_builder_keeps_120s_default() {
         let agent = Agent::new(
             Box::new(FakeProvider::new(vec![])),
-            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
         assert_eq!(agent.tool_timeout, std::time::Duration::from_secs(120));
         let agent = agent.with_tool_timeout(std::time::Duration::from_millis(50));
@@ -1549,7 +1549,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let mut executor = FakeExecutor::new(ToolOutput::ok("too slow"));
         executor.delay = Some(std::time::Duration::from_secs(5));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_tools(vec![tool_def()])
             .with_tool_timeout(std::time::Duration::from_millis(50));
 
@@ -1583,7 +1583,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script(), end_script()]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("data"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("data"))),
         )
         .with_tools(vec![tool_def()]);
         agent
@@ -1616,7 +1616,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![end_script()]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         agent.steer("focus on tests".to_string());
@@ -1664,7 +1664,7 @@ mod agent_tests {
         let seen = provider.seen_systems();
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
         .with_system("BASE-SYSTEM")
         .with_hooks(vec![
@@ -1722,7 +1722,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let executor = FakeExecutor::new(ToolOutput::ok("must-not-run"));
         let call_log = executor.calls.clone();
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_tools(vec![tool_def()])
             .with_hooks(vec![Arc::new(VetoHook {
                 deny: Some("DENIED-XYZ".to_string()),
@@ -1775,7 +1775,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let arg_log = executor.call_args.clone();
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_tools(vec![tool_def()])
             .with_hooks(vec![Arc::new(VetoHook {
                 deny: None,
@@ -1802,7 +1802,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let arg_log = executor.call_args.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         agent
             .run(Message::user("go"), ToolContext::default())
@@ -1849,7 +1849,7 @@ mod agent_tests {
         let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let mut agent = Agent::new(
             Box::new(FakeProvider::new(vec![end_script()])),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
         .with_hooks(vec![Arc::new(LifecycleHook {
             turn_ends: ends.clone(),
@@ -1874,7 +1874,7 @@ mod agent_tests {
                 tool_script("c2"),
                 tool_script("c3"),
             ])),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
         .with_hooks(vec![Arc::new(LifecycleHook {
@@ -1899,7 +1899,7 @@ mod agent_tests {
         let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let mut agent = Agent::new(
             Box::new(FakeProvider::new(vec![tool_script("c1"), end_script()])),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
         .with_hooks(vec![Arc::new(LifecycleHook {
