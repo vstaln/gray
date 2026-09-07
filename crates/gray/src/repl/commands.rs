@@ -82,7 +82,7 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "skills",
-        desc: "list skills (/skills:<name> [args] to run one)",
+        desc: "manage installed skills (/skill <name> [args] or /skills:<name> [args] to run one)",
         aliases: &[],
         args_hint: "",
     },
@@ -90,6 +90,12 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "plugin",
         desc: "manage plugins",
         aliases: &["plugins"],
+        args_hint: "",
+    },
+    CmdDef {
+        name: "marketplace",
+        desc: "browse and install plugins/skills",
+        aliases: &[],
         args_hint: "",
     },
     CmdDef {
@@ -184,7 +190,7 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 }
 
 /// Completion for the composer prompt: static commands, skill names after
-/// `/skills:`, or per-command suffixes after `/cmd ` (Minecraft-style).
+/// `/skills:` or `/skill `, or per-command suffixes after `/cmd ` (Minecraft-style).
 /// Owned here so every read_loop call site stays in sync.
 pub(crate) fn completion_matches_dyn(
     cur_text: &str,
@@ -262,6 +268,7 @@ pub(crate) fn complete_command_args(
         "permissions" | "perms" | "access" => complete_permissions_args(cmd, arg_text),
         "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
         "resume" => complete_resume_args(cmd, arg_text),
+        "skill" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
@@ -296,6 +303,18 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         .iter()
         .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
         .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
+        .collect()
+}
+
+/// Suffixes for `/skill`: installed skill names (space-separated alias for
+/// the `/skills:<name>` prefix form; rows fill `/skill <name> `).
+fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
+    let f = arg_text.trim().to_lowercase();
+    crate::skills::discover_skills(cwd)
+        .skills
+        .iter()
+        .filter(|s| f.is_empty() || s.name.contains(f.as_str()))
+        .map(|s| (format!("{cmd} {}", s.name), s.description.clone()))
         .collect()
 }
 
@@ -478,7 +497,9 @@ pub enum ReplCommand {
     /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
     /// `/plugins` is an alias.
     Plugin(String),
-    /// Skills: /skills lists; /skills:<name> [args] runs a skill
+    /// Store: /marketplace browses+installs plugins/skills.
+    Marketplace(String),
+    /// Skills: /skills manages installed; /skills:<name> [args] or /skill <name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
@@ -541,15 +562,16 @@ pub fn parse_command(line: &str) -> ReplCommand {
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
     let lower_t = t.to_lowercase();
     let lower_cmd = cmd.to_lowercase();
-    let canon: Option<&str> = if lower_cmd == "/skills" || lower_t.starts_with("/skills:") {
-        Some("skills")
-    } else if let Some(d) = resolve(cmd) {
-        Some(d.name)
-    } else if lower_t.starts_with("/model") {
-        Some("model")
-    } else {
-        None
-    };
+    let canon: Option<&str> =
+        if lower_cmd == "/skills" || lower_cmd == "/skill" || lower_t.starts_with("/skills:") {
+            Some("skills")
+        } else if let Some(d) = resolve(cmd) {
+            Some(d.name)
+        } else if lower_t.starts_with("/model") {
+            Some("model")
+        } else {
+            None
+        };
     match canon {
         Some("quit") => ReplCommand::Quit,
         Some("resume") => ReplCommand::Resume(if rest.is_empty() {
@@ -581,11 +603,16 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
         Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
+        Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
-            if lower_t == "/skills" {
+            if lower_t == "/skills" || lower_t == "/skill" {
                 ReplCommand::Skill(None)
             } else if lower_t.starts_with("/skills:") {
                 ReplCommand::Skill(Some(t[8..].to_string()))
+            } else if lower_cmd == "/skill" {
+                // Singular space-separated alias: identical payload shape as
+                // `/skills:<name> [args]` so expansion/validation match exactly.
+                ReplCommand::Skill(Some(rest.to_string()))
             } else {
                 ReplCommand::Unknown(t.to_string())
             }
@@ -706,6 +733,7 @@ mod tests {
             "agentsmd",
             "skills",
             "plugin",
+            "marketplace",
             "help",
             "quit",
         ] {
@@ -761,16 +789,17 @@ mod tests {
             "agentsmd",
             "skills",
             "plugin",
+            "marketplace",
             "help",
             "quit",
         ] {
             assert!(names.contains(&expected), "help missing {expected}");
         }
-        assert_eq!(super::REGISTRY.len(), 16);
+        assert_eq!(super::REGISTRY.len(), 17);
         // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
         assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
         let all = super::completion_matches("");
-        assert_eq!(all.len(), 16);
+        assert_eq!(all.len(), 17);
         for expected in names {
             assert!(all.iter().any(|(n, _)| *n == expected));
         }
@@ -854,6 +883,10 @@ mod tests {
         assert!(matches!(
             parse_command("/PLUGIN list"),
             ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/marketplace"),
+            ReplCommand::Marketplace(_)
         ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
         // gateway left the TUI: /gateway and /gw are unknown (the `gray
@@ -1015,7 +1048,7 @@ mod tests {
 
     #[test]
     fn resume_and_agentsmd_arg_completion() {
-        use super::{complete_command_args, completion_matches_dyn};
+        use super::complete_command_args;
         use std::path::Path;
         let cwd = Path::new(".");
         let r = complete_command_args("resume", "", cwd);
@@ -1049,5 +1082,61 @@ mod tests {
         // an impossible filter still yields nothing (deterministic even
         // when other tests pollute the process-global cache)
         assert!(complete_command_args("model", "no-such-model-xyz-123", cwd).is_empty());
+    }
+
+    #[test]
+    fn skill_singular_is_alias_for_skills_colon() {
+        use super::super::handlers::expand_skill_command;
+        use super::completion_matches_dyn;
+        let dir = temp_skill_cwd("commit");
+        let cwd = dir.path();
+        // Parse parity: identical payloads.
+        assert_eq!(
+            parse_command("/skill commit"),
+            parse_command("/skills:commit")
+        );
+        assert_eq!(
+            parse_command("/skill commit extra"),
+            parse_command("/skills:commit extra")
+        );
+        assert_eq!(parse_command("/skill"), parse_command("/skills"));
+        assert_eq!(parse_command("/SKILL"), parse_command("/skills"));
+        assert_eq!(
+            parse_command("/SKILL commit"),
+            parse_command("/skills:commit")
+        );
+        // Expansion parity: same Prompt out.
+        let a = expand_skill_command(parse_command("/skill commit"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills:commit"), cwd, None, false);
+        assert!(matches!(a, ReplCommand::Prompt(_)));
+        assert_eq!(a, b);
+        // Bad args fail identically (skill takes no args): both expand to Empty.
+        let a = expand_skill_command(parse_command("/skill commit bogus-arg"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills:commit bogus-arg"), cwd, None, false);
+        assert_eq!(a, ReplCommand::Empty);
+        assert_eq!(a, b);
+        // Unknown skill fails identically.
+        let a = expand_skill_command(parse_command("/skill nope"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills:nope"), cwd, None, false);
+        assert_eq!(a, ReplCommand::Empty);
+        assert_eq!(a, b);
+        // `/skill <partial>` completes installed skill names…
+        let rows = completion_matches_dyn("/skill com", cwd);
+        assert!(
+            rows.iter().any(|(n, _)| n == "skill commit"),
+            "skill must complete under /skill : {rows:?}"
+        );
+        let rows = completion_matches_dyn("/skill ", cwd);
+        assert!(rows.iter().any(|(n, _)| n == "skill commit"));
+        // …while `/skills foo` (plural + space) stays unknown, as before.
+        assert!(matches!(
+            parse_command("/skills foo"),
+            ReplCommand::Unknown(_)
+        ));
+        // Help line documents the singular form.
+        assert!(
+            super::format_help_all().contains("/skill <name>"),
+            "help must mention /skill <name>"
+        );
     }
 }
