@@ -59,7 +59,8 @@ impl Default for LockEntry {
     }
 }
 
-/// Install target: index name, https URL, or npm package.
+/// Install target: index name, https URL, npm package, ClawHub skill,
+/// or Claude marketplace plugin.
 #[derive(Debug, Clone)]
 pub enum NameOrUrl {
     Name(String),
@@ -71,6 +72,13 @@ pub enum NameOrUrl {
     Git {
         url: String,
         git_ref: Option<String>,
+    },
+    ClawHub {
+        slug: String,
+    },
+    Claude {
+        plugin: String,
+        marketplace: Option<String>,
     },
 }
 
@@ -100,8 +108,35 @@ fn parse_npm_spec(body: &str) -> NameOrUrl {
     }
 }
 
+/// Split a `claude:<plugin>[@<marketplace>]` body on the LAST `@`
+/// (marketplace names never contain one). A trailing `@` leaves the
+/// marketplace unpinned, mirroring [`parse_npm_spec`].
+fn parse_claude_spec(body: &str) -> NameOrUrl {
+    match body.rfind('@') {
+        Some(i) if i > 0 && !body[i + 1..].is_empty() => NameOrUrl::Claude {
+            plugin: body[..i].to_string(),
+            marketplace: Some(body[i + 1..].to_string()),
+        },
+        _ => {
+            let plugin = body.strip_suffix('@').unwrap_or(body).to_string();
+            NameOrUrl::Claude {
+                plugin,
+                marketplace: None,
+            }
+        }
+    }
+}
+
 pub fn parse_spec(s: &str) -> NameOrUrl {
     let t = s.trim();
+    if let Some(body) = t.strip_prefix("clawhub:") {
+        return NameOrUrl::ClawHub {
+            slug: body.trim().to_string(),
+        };
+    }
+    if let Some(body) = t.strip_prefix("claude:") {
+        return parse_claude_spec(body.trim());
+    }
     if let Some(body) = t.strip_prefix("npm:") {
         return parse_npm_spec(body);
     }
@@ -454,14 +489,14 @@ fn validate_install_key(key: &str) -> anyhow::Result<()> {
 
 /// Shared npm+git key derivation: sanitize then reject destructive keys
 /// before any clone/extract work.
-fn install_key(name: &str) -> anyhow::Result<String> {
+pub(crate) fn install_key(name: &str) -> anyhow::Result<String> {
     let key = sanitize_npm_key(name);
     validate_install_key(&key)?;
     Ok(key)
 }
 
 /// npm tarballs wrap everything in `package/`; use it when present.
-fn stage_root(dir: &Path) -> PathBuf {
+pub(crate) fn stage_root(dir: &Path) -> PathBuf {
     let wrapped = dir.join("package");
     if wrapped.is_dir() {
         wrapped
@@ -771,19 +806,20 @@ fn copy_skill_matches(dest: &Path, matches: &[SkillMatch]) -> anyhow::Result<()>
 /// failure removes `dest` and writes nothing (no half-state). Shared by
 /// the npm (P2-1 staging) and git (P2-4 clone) arms.
 /// One shared summary printer: loadable skill dirs vs reference docs.
-fn emit_pi_summary(summary: &PiInstallSummary) {
+pub(crate) fn emit_pi_summary(summary: &PiInstallSummary) {
     eprintln!("skills taken: {}", summary.taken.join(", "));
     if !summary.docs.is_empty() {
         eprintln!("docs copied for reference: {}", summary.docs.join(", "));
     }
 }
 
-fn extract_pi_skills(
+pub(crate) fn extract_pi_skills(
     root: &Path,
     key: &str,
     version: &str,
     hash: &str,
     source: &str,
+    ecosystem: &str,
     opts: &InstallOpts,
 ) -> anyhow::Result<(PathBuf, PiInstallSummary)> {
     // Belt-and-suspenders: both arms validate via `install_key` first, but
@@ -839,7 +875,7 @@ fn extract_pi_skills(
     let mut lock = read_lock()?.unwrap_or_default();
     let enabled = lock.plugins.get(key).map(|e| e.enabled).unwrap_or(true);
     let entry = LockEntry {
-        ecosystem: "pi-gallery".to_string(),
+        ecosystem: ecosystem.to_string(),
         version: version.to_string(),
         hash: hash.to_string(),
         source: source.to_string(),
@@ -874,6 +910,7 @@ async fn install_npm(
         &staged.version,
         &staged.integrity,
         &staged.tarball,
+        "pi-gallery",
         &opts,
     )?;
     emit_pi_summary(&summary);
@@ -889,7 +926,11 @@ async fn install_npm(
 /// Shallow-clone `url` into `dest` (must not exist yet) via the `git` CLI
 /// — never reimplemented. Returns the cloned HEAD commit sha. `--branch`
 /// only when pinned; `--` guards against flag-injection URLs.
-fn clone_git_repo(url: &str, git_ref: Option<&str>, dest: &Path) -> anyhow::Result<String> {
+pub(crate) fn clone_git_repo(
+    url: &str,
+    git_ref: Option<&str>,
+    dest: &Path,
+) -> anyhow::Result<String> {
     let mut clone_cmd = std::process::Command::new("git");
     clone_cmd.arg("clone").arg("--depth").arg("1");
     if let Some(r) = git_ref.filter(|r| !r.is_empty()) {
@@ -961,7 +1002,8 @@ async fn install_git(
         .filter(|r| !r.is_empty())
         .unwrap_or("0.0.0")
         .to_string();
-    let (dest, summary) = extract_pi_skills(&clone_dir, &key, &version, &sha, url, &opts)?;
+    let (dest, summary) =
+        extract_pi_skills(&clone_dir, &key, &version, &sha, url, "pi-gallery", &opts)?;
     emit_pi_summary(&summary);
     Ok(Report {
         name: key,
@@ -972,7 +1014,49 @@ async fn install_git(
     })
 }
 
+/// `(source, item)` identity for install failures, from the spec kind —
+/// the honest attribution when the ecosystem isn't known yet.
+fn install_identity(spec: &NameOrUrl) -> (String, String) {
+    match spec {
+        NameOrUrl::Name(n) => ("index".to_string(), n.clone()),
+        NameOrUrl::Url(u) => ("url".to_string(), u.clone()),
+        NameOrUrl::Npm { name, .. } => ("npm".to_string(), name.clone()),
+        NameOrUrl::Git { url, .. } => ("git".to_string(), url.clone()),
+        NameOrUrl::ClawHub { slug } => ("clawhub".to_string(), slug.clone()),
+        NameOrUrl::Claude {
+            plugin,
+            marketplace,
+        } => (
+            "claude".to_string(),
+            match marketplace {
+                Some(m) => format!("{plugin}@{m}"),
+                None => plugin.clone(),
+            },
+        ),
+    }
+}
+
+/// Best-effort ecosystem attribution for the error registry: the lock
+/// entry's ecosystem when known, `"plugin"` otherwise (misses,
+/// unreadable lock).
+fn ecosystem_of(name: &str) -> String {
+    read_lock()
+        .ok()
+        .flatten()
+        .and_then(|l| l.plugins.get(name).map(|e| e.ecosystem.clone()))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "plugin".to_string())
+}
+
 pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Report> {
+    let (source, item) = install_identity(&spec);
+    install_inner(spec, opts).await.map_err(|e| {
+        crate::errors::record(&source, &item, format!("{e:#}"));
+        e
+    })
+}
+
+async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Report> {
     let client = crate::fetch::client()?;
     match spec {
         NameOrUrl::Name(name) => install_index(&client, &name, opts).await,
@@ -981,7 +1065,119 @@ pub async fn install(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Repor
             install_npm(&client, &name, version.as_deref(), opts).await
         }
         NameOrUrl::Git { url, git_ref } => install_git(&url, git_ref.as_deref(), opts).await,
+        NameOrUrl::ClawHub { slug } => install_clawhub(&client, &slug, opts).await,
+        NameOrUrl::Claude {
+            plugin,
+            marketplace,
+        } => install_claude(&client, &plugin, marketplace.as_deref(), opts).await,
     }
+}
+
+/// `ClawHub` arm: detail → ZIP download → per-file verify when the
+/// versions endpoint answers (else the honest unverified warning) →
+/// shared skills extraction + ONE lock write (`ecosystem: "clawhub"`).
+async fn install_clawhub(
+    client: &reqwest::Client,
+    slug: &str,
+    opts: InstallOpts,
+) -> anyhow::Result<Report> {
+    let detail = crate::sources::clawhub_detail(client, slug).await?;
+    let archive = crate::sources::clawhub_download_bundle(client, &detail).await?;
+    let tmp_root = crate::plugins_dir().join("tmp");
+    std::fs::create_dir_all(&tmp_root)?;
+    let stage = tempfile::tempdir_in(&tmp_root)?;
+    // Hosted skills are ZIPs; GitHub-handoff bundles are tarballs.
+    let is_zip = std::fs::read(&archive)
+        .map(|b| b.len() >= 2 && b[..2] == *b"PK")
+        .unwrap_or(false);
+    let unpacked = if is_zip {
+        crate::fetch::unpack_zip(&archive, stage.path())
+    } else {
+        crate::fetch::unpack_tar_gz(&archive, stage.path())
+    };
+    if let Err(e) = unpacked {
+        let _ = std::fs::remove_file(&archive);
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(&archive);
+    // ClawHub zips carry no `package/` wrapper; `stage_root` covers both.
+    let root = stage_root(stage.path());
+    let verified = crate::sources::verify_clawhub_files(&root, &detail.files)?;
+    let version = if detail.version.trim().is_empty() {
+        "0.0.0".to_string()
+    } else {
+        detail.version.clone()
+    };
+    let unverified = !verified;
+    if unverified {
+        eprintln!(
+            "warning: unverified install from {} (no index hash; use an index name for verified installs)",
+            crate::fetch::redact(&crate::sources::clawhub_canonical_url(
+                &detail.owner,
+                &detail.slug
+            ))
+        );
+    }
+    // Owner-qualified key (`owner-slug` after sanitizing): two owners
+    // shipping the same slug no longer collide on one `pi/<slug>` dir,
+    // and the key derives from the searched display name.
+    let key = install_key(&crate::sources::clawhub_key_input(
+        &detail.owner,
+        &detail.slug,
+    ))?;
+    let (dest, summary) = extract_pi_skills(
+        &root,
+        &key,
+        &version,
+        "",
+        &crate::sources::clawhub_canonical_url(&detail.owner, &detail.slug),
+        "clawhub",
+        &opts,
+    )?;
+    emit_pi_summary(&summary);
+    Ok(Report {
+        name: key,
+        version,
+        path: dest,
+        unverified,
+        pi_summary: Some(summary),
+    })
+}
+
+/// `Claude` arm: resolve via the marketplace adapter → shared skills
+/// extraction + ONE lock write (`ecosystem: "claude"`). Unpinned/local
+/// sources keep the honest unverified warning.
+async fn install_claude(
+    client: &reqwest::Client,
+    plugin: &str,
+    marketplace: Option<&str>,
+    opts: InstallOpts,
+) -> anyhow::Result<Report> {
+    let resolved = crate::sources::claude_resolve(client, plugin, marketplace).await?;
+    if resolved.unverified {
+        eprintln!(
+            "warning: unverified install from {} (no index hash; use an index name for verified installs)",
+            crate::fetch::redact(&resolved.source_url)
+        );
+    }
+    let key = install_key(plugin)?;
+    let (dest, summary) = extract_pi_skills(
+        &resolved.root,
+        &key,
+        &resolved.version,
+        &resolved.hash,
+        &resolved.source_url,
+        "claude",
+        &opts,
+    )?;
+    emit_pi_summary(&summary);
+    Ok(Report {
+        name: key,
+        version: resolved.version,
+        path: dest,
+        unverified: resolved.unverified,
+        pi_summary: Some(summary),
+    })
 }
 
 async fn install_index(
@@ -1086,6 +1282,13 @@ pub fn list() -> anyhow::Result<BTreeMap<String, LockEntry>> {
 }
 
 pub fn remove(name: &str) -> anyhow::Result<()> {
+    remove_inner(name).map_err(|e| {
+        crate::errors::record(&ecosystem_of(name), name, format!("{e:#}"));
+        e
+    })
+}
+
+fn remove_inner(name: &str) -> anyhow::Result<()> {
     if name.is_empty() || name.contains('/') || name.contains("..") {
         anyhow::bail!("not installed: {name}");
     }
@@ -1110,6 +1313,13 @@ pub fn remove(name: &str) -> anyhow::Result<()> {
 /// Flip a plugin's `enabled` flag (boot skips disabled entries).
 /// Miss message matches `remove`.
 pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
+    set_enabled_inner(name, on).map_err(|e| {
+        crate::errors::record(&ecosystem_of(name), name, format!("{e:#}"));
+        e
+    })
+}
+
+fn set_enabled_inner(name: &str, on: bool) -> anyhow::Result<()> {
     let mut lock = read_lock()?.unwrap_or_default();
     let Some(entry) = lock.plugins.get_mut(name) else {
         anyhow::bail!("not installed: {name}");
@@ -1124,6 +1334,13 @@ pub fn set_enabled(name: &str, on: bool) -> anyhow::Result<()> {
 /// anything else is skipped with a warning. Returns per-plugin reports
 /// for the plugins that actually changed.
 pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {
+    update_inner(target).await.map_err(|e| {
+        crate::errors::record(&ecosystem_of(target), target, format!("{e:#}"));
+        e
+    })
+}
+
+async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
     let lock = read_lock()?.unwrap_or_default();
     let names: Vec<String> = if target == "all" {
         lock.plugins.keys().cloned().collect()
@@ -1173,6 +1390,8 @@ pub async fn update(target: &str) -> anyhow::Result<Vec<Report>> {
 pub enum SearchSource {
     Gray,
     Pi,
+    Claude,
+    ClawHub,
 }
 
 impl SearchSource {
@@ -1181,18 +1400,26 @@ impl SearchSource {
         match self {
             SearchSource::Gray => "Gray Index",
             SearchSource::Pi => "Pi Gallery (preview)",
+            SearchSource::Claude => "Claude",
+            SearchSource::ClawHub => "ClawHub",
         }
     }
 }
 
 /// One merged search hit. Gray entries carry no description (the index
 /// has none); pi hits carry npm's description (possibly empty).
+/// `version_detail` (e.g. a source qualifier), `files`, and `trust`
+/// (e.g. ClawHub `official/community + scan status`) feed the
+/// preview+confirm pane; [`format_search_hit`] ignores them by design.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchHit {
     pub name: String,
     pub version: String,
     pub desc: String,
     pub source: SearchSource,
+    pub version_detail: String,
+    pub files: Vec<String>,
+    pub trust: String,
 }
 
 /// Advisory line printed when the pi side fails; search still exits 0.
@@ -1203,13 +1430,20 @@ pub const PI_UNREACHABLE_LINE: &str = "Pi Gallery (preview): unreachable";
 /// Exact mirror of the pi-side voice.
 pub const GRAY_UNREACHABLE_LINE: &str = "Gray Index: unreachable";
 
+/// Advisory line printed when the ClawHub side fails; search still exits 0.
+pub const CLAWHUB_UNREACHABLE_LINE: &str = "ClawHub: unreachable";
+
+/// Advisory line printed when the Claude side fails; search still exits 0.
+pub const CLAUDE_UNREACHABLE_LINE: &str = "Claude: unreachable";
+
 /// Render one hit: `name version [source] - desc`, with the desc suffix
-/// omitted when empty (always the case for Gray Index hits). Pi hits
-/// whose lock key differs from the raw npm name (e.g. `@scope/bar` →
-/// `scope-bar`) append `(install as <key>)` via the shared sanitizer.
+/// omitted when empty (always the case for Gray Index hits). Pi and
+/// ClawHub hits whose lock key differs from the display name (e.g.
+/// `@scope/bar` → `scope-bar`, `arein/test` → `arein-test`) append
+/// `(install as <key>)` via the shared sanitizer.
 pub fn format_search_hit(hit: &SearchHit) -> String {
     let mut base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
-    if hit.source == SearchSource::Pi {
+    if hit.source == SearchSource::Pi || hit.source == SearchSource::ClawHub {
         let key = sanitize_npm_key(&hit.name);
         if key != hit.name {
             base.push_str(&format!(" (install as {key})"));
@@ -1223,15 +1457,17 @@ pub fn format_search_hit(hit: &SearchHit) -> String {
     }
 }
 
-/// Outcome of [`search_all`]: merged hits (gray first, gray wins name
-/// collisions) plus whether either side failed. Callers print
-/// [`PI_UNREACHABLE_LINE`] / [`GRAY_UNREACHABLE_LINE`] when the
+/// Outcome of [`search_all`]: merged hits (Gray, Pi, Claude, ClawHub —
+/// Gray wins name collisions, first wins thereafter) plus whether any
+/// side failed. Callers print the `*_UNREACHABLE_LINE` consts when the
 /// corresponding flag is set — never an error exit for a fetch failure.
 #[derive(Debug)]
 pub struct SearchOutput {
     pub hits: Vec<SearchHit>,
     pub pi_unreachable: bool,
     pub gray_unreachable: bool,
+    pub clawhub_unreachable: bool,
+    pub claude_unreachable: bool,
 }
 
 /// Query the pi side via npm search (`/-/v1/search`, `size=20`) on the
@@ -1278,6 +1514,9 @@ async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<
                 version,
                 desc,
                 source: SearchSource::Pi,
+                version_detail: String::new(),
+                files: Vec::new(),
+                trust: String::new(),
             });
         }
     }
@@ -1285,11 +1524,12 @@ async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<
     Ok(hits)
 }
 
-/// Fan out `query` over the Gray Index (substring over the
-/// `fetch_index` cache) and the pi side ([`search_pi`]). Gray wins name
-/// collisions (the pi duplicate is suppressed). A fetch failure on either
-/// side sets the corresponding `*_unreachable` flag instead of erroring;
-/// only corrupt local state (not a fetch failure) still returns `Err`.
+/// Fan out `query` over Gray Index (substring over the `fetch_index`
+/// cache), pi ([`search_pi`]), Claude marketplaces, and ClawHub. Order is
+/// Gray, Pi, Claude, ClawHub; Gray wins name collisions and every later
+/// duplicate is suppressed (first wins). A fetch failure on any side sets
+/// the corresponding `*_unreachable` flag instead of erroring; only
+/// corrupt local state (not a fetch failure) still returns `Err`.
 pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
     let client = crate::fetch::client()?;
     let (index, gray_unreachable) = match crate::index::fetch_index(&client).await {
@@ -1308,20 +1548,23 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
     };
     // `plugins` is a BTreeMap, so gray hits come out name-sorted.
     let mut hits: Vec<SearchHit> = Vec::new();
-    let mut gray_names = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
     for (name, entry) in index.plugins.iter().filter(|(n, _)| n.contains(query)) {
-        gray_names.insert(name.clone());
+        seen.insert(name.clone());
         hits.push(SearchHit {
             name: name.clone(),
             version: entry.version.clone(),
             desc: String::new(),
             source: SearchSource::Gray,
+            version_detail: String::new(),
+            files: Vec::new(),
+            trust: String::new(),
         });
     }
     let pi_unreachable = match search_pi(&client, query).await {
         Ok(pi_hits) => {
             for hit in pi_hits {
-                if !gray_names.contains(&hit.name) {
+                if seen.insert(hit.name.clone()) {
                     hits.push(hit);
                 }
             }
@@ -1332,21 +1575,65 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
             true
         }
     };
+    // Claude (local catalog reads; git clones stay inside the adapter).
+    let (claude_entries, claude_unreachable) = crate::sources::claude_search_entries(query);
+    for e in claude_entries {
+        if seen.insert(e.name.clone()) {
+            hits.push(SearchHit {
+                name: e.name,
+                version: e.version,
+                desc: e.description,
+                source: SearchSource::Claude,
+                version_detail: e.qualifier,
+                files: Vec::new(),
+                trust: String::new(),
+            });
+        }
+    }
+    if claude_unreachable {
+        log::debug!("claude marketplace search partially or fully failed");
+    }
+    // ClawHub (HTTP; 429 honored inside the adapter).
+    let clawhub_unreachable = match crate::sources::clawhub_search(&client, query).await {
+        Ok(entries) => {
+            for e in entries {
+                if seen.insert(e.name.clone()) {
+                    hits.push(SearchHit {
+                        name: e.name,
+                        version: e.version,
+                        desc: e.summary,
+                        source: SearchSource::ClawHub,
+                        version_detail: String::new(),
+                        files: Vec::new(),
+                        trust: crate::sources::clawhub_trust(e.official, &e.scan),
+                    });
+                }
+            }
+            false
+        }
+        Err(e) => {
+            log::debug!("clawhub search failed: {e:#}");
+            true
+        }
+    };
     Ok(SearchOutput {
         hits,
         pi_unreachable,
         gray_unreachable,
+        clawhub_unreachable,
+        claude_unreachable,
     })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::await_holding_lock)]
     use super::*;
 
     // Serializes the process-global GRAY_HOME mutation within this test
     // binary (cargo runs tests in one process on multiple threads).
-    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // Shared with `errors::tests` (same process-global env).
+    pub(crate) static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn default_entry_is_enabled() {
@@ -2465,14 +2752,34 @@ mod tests {
     }
 
     /// Point `GRAY_HOME` at a fresh tempdir and the index + npm search at
-    /// stubs. Must be called under `ENV_GUARD`.
+    /// stubs. ClawHub + Claude point at guaranteed-unreachable endpoints
+    /// so these pre-Task-2 tests stay hermetic (no live network).
+    /// Must be called under `ENV_GUARD`.
     fn use_search_env(index_url: &str, registry_base: &str) -> tempfile::TempDir {
+        use_market_env(
+            index_url,
+            registry_base,
+            "http://127.0.0.1:1",
+            "file:///nonexistent-gray-fixture",
+        )
+    }
+
+    /// Full search env: index + npm registry + ClawHub base + Claude
+    /// marketplace specs. Must be called under `ENV_GUARD`.
+    fn use_market_env(
+        index_url: &str,
+        registry_base: &str,
+        clawhub_base: &str,
+        claude_markets: &str,
+    ) -> tempfile::TempDir {
         let home = tempfile::tempdir().unwrap();
         // SAFETY: serialized by ENV_GUARD.
         unsafe {
             std::env::set_var("GRAY_HOME", home.path());
             std::env::set_var(crate::index::INDEX_URL_ENV, index_url);
             std::env::set_var(NPM_REGISTRY_ENV, registry_base);
+            std::env::set_var(crate::sources::CLAWHUB_BASE_ENV, clawhub_base);
+            std::env::set_var(crate::sources::CLAUDE_MARKETPLACES_ENV, claude_markets);
         }
         home
     }
@@ -2616,6 +2923,9 @@ mod tests {
             version: "1.0.0".to_string(),
             desc: String::new(),
             source: SearchSource::Gray,
+            version_detail: String::new(),
+            files: Vec::new(),
+            trust: String::new(),
         };
         assert_eq!(format_search_hit(&bare), "n 1.0.0 [Gray Index]");
         let padded = SearchHit {
@@ -2638,6 +2948,9 @@ mod tests {
             version: "1.2.3".to_string(),
             desc: "does things".to_string(),
             source: SearchSource::Pi,
+            version_detail: String::new(),
+            files: Vec::new(),
+            trust: String::new(),
         };
         assert_eq!(
             format_search_hit(&scoped),
@@ -2648,6 +2961,9 @@ mod tests {
             version: "2.0.0".to_string(),
             desc: String::new(),
             source: SearchSource::Pi,
+            version_detail: String::new(),
+            files: Vec::new(),
+            trust: String::new(),
         };
         assert_eq!(
             format_search_hit(&plain),
@@ -2659,7 +2975,405 @@ mod tests {
             version: "1.0.0".to_string(),
             desc: String::new(),
             source: SearchSource::Gray,
+            version_detail: String::new(),
+            files: Vec::new(),
+            trust: String::new(),
         };
         assert_eq!(format_search_hit(&gray), "@scope/bar 1.0.0 [Gray Index]");
+    }
+
+    #[test]
+    fn spec_parses_clawhub_and_claude_forms() {
+        match parse_spec("clawhub:arein/test") {
+            NameOrUrl::ClawHub { slug } => assert_eq!(slug, "arein/test"),
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        match parse_spec("clawhub:test") {
+            NameOrUrl::ClawHub { slug } => assert_eq!(slug, "test"),
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        match parse_spec("claude:my-plugin@fixture-market") {
+            NameOrUrl::Claude {
+                plugin,
+                marketplace,
+            } => {
+                assert_eq!(plugin, "my-plugin");
+                assert_eq!(marketplace, Some("fixture-market".to_string()));
+            }
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        // No `@marketplace` stays unpinned; a trailing `@` is unpinned too.
+        match parse_spec("claude:my-plugin") {
+            NameOrUrl::Claude {
+                plugin,
+                marketplace,
+            } => {
+                assert_eq!(plugin, "my-plugin");
+                assert_eq!(marketplace, None);
+            }
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        match parse_spec("claude:my-plugin@") {
+            NameOrUrl::Claude {
+                plugin,
+                marketplace,
+            } => {
+                assert_eq!(plugin, "my-plugin");
+                assert_eq!(marketplace, None);
+            }
+            other => panic!("unexpected spec: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_source_labels_and_lines_are_exact() {
+        assert_eq!(SearchSource::Claude.label(), "Claude");
+        assert_eq!(SearchSource::ClawHub.label(), "ClawHub");
+        assert_eq!(CLAWHUB_UNREACHABLE_LINE, "ClawHub: unreachable");
+        assert_eq!(CLAUDE_UNREACHABLE_LINE, "Claude: unreachable");
+        // New fields never leak into the rendered hit (Task 1 copy frozen).
+        let hit = SearchHit {
+            name: "x".to_string(),
+            version: "1.0.0".to_string(),
+            desc: "d".to_string(),
+            source: SearchSource::ClawHub,
+            version_detail: "github:o/r@main".to_string(),
+            files: vec!["SKILL.md".to_string()],
+            trust: "community".to_string(),
+        };
+        assert_eq!(format_search_hit(&hit), "x 1.0.0 [ClawHub] - d");
+    }
+
+    // --- Task 2 search/install fixtures (loopback + local dirs only) ---
+
+    /// Minimal stored-ZIP builder (ClawHub serves ZIPs, not tarballs).
+    fn skill_zip(files: &[(&str, &str)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, content) in files {
+            let data = content.as_bytes();
+            let off = out.len() as u32;
+            out.extend_from_slice(b"PK\x03\x04");
+            for _ in 0..5 {
+                out.extend_from_slice(&0u16.to_le_bytes());
+            }
+            out.extend_from_slice(&0u32.to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&0u16.to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(data);
+            central.extend_from_slice(b"PK\x01\x02");
+            for _ in 0..3 {
+                central.extend_from_slice(&0u16.to_le_bytes());
+            }
+            central.extend_from_slice(&0u16.to_le_bytes());
+            for _ in 0..2 {
+                central.extend_from_slice(&0u16.to_le_bytes());
+            }
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            for _ in 0..4 {
+                central.extend_from_slice(&0u16.to_le_bytes());
+            }
+            central.extend_from_slice(&0u32.to_le_bytes());
+            central.extend_from_slice(&off.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+        }
+        let cd_off = out.len() as u32;
+        let cd_size = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(files.len() as u16).to_le_bytes());
+        out.extend_from_slice(&cd_size.to_le_bytes());
+        out.extend_from_slice(&cd_off.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out
+    }
+
+    /// ClawHub stub: fixed `/search` results plus a `fixture/demo` skill
+    /// (detail + empty version files + ZIP download). The download 429s
+    /// once (with `Retry-After: 0`) to prove the retry routing; the
+    /// verdicts endpoint answers for `claw-foo` only, so `claw-bar` pins
+    /// the search-payload fallback path.
+    #[derive(Clone)]
+    struct ClawStub {
+        zip: Vec<u8>,
+        downloads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    async fn spawn_clawhub_stub(zip: Vec<u8>) -> String {
+        use axum::{
+            Json, Router,
+            extract::State,
+            http::{HeaderMap, StatusCode},
+            routing::{get, post},
+        };
+        use std::sync::atomic::Ordering;
+        // `claw-foo` carries NO payload trust: its `scan:clean` must come
+        // from the verdicts batch or the test fails.
+        let search = serde_json::json!({"results": [
+            {"slug": "claw-foo", "displayName": "Claw Foo",
+             "summary": "does claw things", "version": "4.0.0",
+             "ownerHandle": "fixture", "official": false},
+            {"slug": "claw-bar", "displayName": "Claw Bar",
+             "summary": "payload trust only", "version": "1.0.0",
+             "official": false, "trust": {"clawHubVerdict": "clean"}},
+            {"slug": "gray-foo", "displayName": "Gray Copy",
+             "summary": "suppressed duplicate", "version": "9.9.9"},
+        ]});
+        let verdicts = serde_json::json!({"items": [
+            {"ok": true, "decision": "pass", "requestedSlug": "claw-foo",
+             "requestedOwnerHandle": "fixture", "requestedVersion": "4.0.0",
+             "version": "4.0.0", "security": {"status": "clean", "passed": true}},
+        ]});
+        let detail = serde_json::json!({
+            "skill": {"slug": "demo", "displayName": "Demo", "summary": "demo skill"},
+            "latestVersion": {"version": "1.0.0"},
+            "owner": {"handle": "fixture"},
+        });
+        let versions = serde_json::json!(
+            {"version": {"version": "1.0.0", "files": [], "security": {"status": "clean"}}}
+        );
+        let router = Router::new()
+            .route(
+                "/api/v1/search",
+                get(move || {
+                    let search = search.clone();
+                    async move { Json(search) }
+                }),
+            )
+            .route(
+                "/api/v1/skills/demo",
+                get(move || {
+                    let detail = detail.clone();
+                    async move { Json(detail) }
+                }),
+            )
+            .route(
+                "/api/v1/skills/demo/versions/1.0.0",
+                get(move || {
+                    let versions = versions.clone();
+                    async move { Json(versions) }
+                }),
+            )
+            .route(
+                "/api/v1/download",
+                get(|State(st): State<ClawStub>| async move {
+                    if st.downloads.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let mut h = HeaderMap::new();
+                        h.insert("retry-after", "0".parse().unwrap());
+                        return (StatusCode::TOO_MANY_REQUESTS, h, Vec::new());
+                    }
+                    (StatusCode::OK, HeaderMap::new(), st.zip.clone())
+                }),
+            )
+            .route(
+                "/api/v1/skills/-/security-verdicts",
+                post(move || {
+                    let verdicts = verdicts.clone();
+                    async move { Json(verdicts) }
+                }),
+            )
+            .with_state(ClawStub {
+                zip,
+                downloads: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://127.0.0.1:{port}/api/v1")
+    }
+
+    /// Local Claude marketplace fixture (no network): one path plugin
+    /// with a skill plus one command plugin (install must refuse it).
+    fn init_claude_fixture() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".claude-plugin/marketplace.json"),
+            r#"{"name":"fixture-market","plugins":[
+                {"name":"claude-foo","description":"does claude things","version":"3.0.0",
+                 "source":"./plugins/claude-foo"},
+                {"name":"claude-cmd","description":"command thing",
+                 "source":{"source":"command","command":"make plugin"}}
+            ]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("plugins/claude-foo/skills/greeter")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("plugins/claude-foo/skills/greeter/SKILL.md"),
+            MULCH_SKILL,
+        )
+        .unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn search_fans_out_gray_pi_claude_clawhub_in_order() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
+        let registry =
+            spawn_search_stub(search_objects(&[("pi-foo", "2.0.0", "does pi things")])).await;
+        let clawhub = spawn_clawhub_stub(skill_zip(&[("skills/a/SKILL.md", MULCH_SKILL)])).await;
+        let market = init_claude_fixture();
+        let markets = format!("file://{}", market.path().display());
+        let _home = use_market_env(&index_url, &registry, &clawhub, &markets);
+
+        let out = search_all("foo").await.unwrap();
+        assert!(!out.pi_unreachable);
+        assert!(!out.gray_unreachable);
+        assert!(!out.clawhub_unreachable);
+        assert!(!out.claude_unreachable);
+        // Order Gray, Pi, Claude, ClawHub; the clawhub `gray-foo`
+        // duplicate is suppressed (Gray wins).
+        let names: Vec<_> = out
+            .hits
+            .iter()
+            .map(|h| (h.name.as_str(), h.source))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("gray-foo", SearchSource::Gray),
+                ("pi-foo", SearchSource::Pi),
+                ("claude-foo", SearchSource::Claude),
+                ("fixture/claw-foo", SearchSource::ClawHub),
+                ("claw-bar", SearchSource::ClawHub),
+            ]
+        );
+        // `claw-foo` ships no payload trust: `scan:clean` proves the
+        // verdicts batch ran. `claw-bar` has no verdict: payload fallback.
+        let claw = out
+            .hits
+            .iter()
+            .find(|h| h.name == "fixture/claw-foo")
+            .unwrap();
+        assert_eq!(claw.trust, "community + scan:clean");
+        assert_eq!(
+            format_search_hit(claw),
+            "fixture/claw-foo 4.0.0 [ClawHub] (install as fixture-claw-foo) - does claw things"
+        );
+        let bar = out.hits.iter().find(|h| h.name == "claw-bar").unwrap();
+        assert_eq!(bar.trust, "community + scan:clean");
+        let claude = out.hits.iter().find(|h| h.name == "claude-foo").unwrap();
+        assert_eq!(claude.version, "3.0.0");
+        assert_eq!(claude.version_detail, "./plugins/claude-foo");
+        // Command plugins never surface (not installable).
+        assert!(!out.hits.iter().any(|h| h.name == "claude-cmd"));
+    }
+
+    #[tokio::test]
+    async fn search_clawhub_and_claude_down_is_advisory() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
+        let registry =
+            spawn_search_stub(search_objects(&[("pi-foo", "2.0.0", "does pi things")])).await;
+        let _home = use_market_env(
+            &index_url,
+            &registry,
+            "http://127.0.0.1:1",
+            "file:///nonexistent-gray-fixture",
+        );
+
+        let out = search_all("foo").await.unwrap();
+        assert!(out.clawhub_unreachable);
+        assert!(out.claude_unreachable);
+        assert!(!out.pi_unreachable);
+        assert!(!out.gray_unreachable);
+        assert_eq!(out.hits.len(), 2);
+        assert_eq!(CLAWHUB_UNREACHABLE_LINE, "ClawHub: unreachable");
+        assert_eq!(CLAUDE_UNREACHABLE_LINE, "Claude: unreachable");
+    }
+
+    #[tokio::test]
+    async fn install_clawhub_downloads_and_writes_lock() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let zip = skill_zip(&[
+            ("skills/greeter/SKILL.md", MULCH_SKILL),
+            ("README.md", "# demo\n"),
+        ]);
+        let clawhub = spawn_clawhub_stub(zip).await;
+        let market = init_claude_fixture();
+        let markets = format!("file://{}", market.path().display());
+        let index_url = spawn_index_stub(index_fixture(&[])).await;
+        let _home = use_market_env(&index_url, "http://127.0.0.1:1", &clawhub, &markets);
+
+        let report = install(parse_spec("clawhub:fixture/demo"), InstallOpts::default())
+            .await
+            .unwrap();
+        // Owner-qualified key: no collision with another owner's `demo`.
+        assert_eq!(report.name, "fixture-demo");
+        assert_eq!(report.version, "1.0.0");
+        // No version file list from the stub → honest unverified path.
+        // (The stub 429s the download once: success proves the retry.)
+        assert!(report.unverified);
+        let summary = report.pi_summary.expect("pi summary");
+        assert_eq!(summary.taken, vec!["greeter"]);
+        assert!(report.path.join("greeter/SKILL.md").is_file());
+        let entry = list().unwrap().remove("fixture-demo").expect("lock entry");
+        assert_eq!(entry.ecosystem, "clawhub");
+        assert_eq!(entry.version, "1.0.0");
+        assert_eq!(entry.source, "https://clawhub.ai/fixture/skills/demo");
+    }
+
+    #[tokio::test]
+    async fn install_claude_path_source_and_command_refusal() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let market = init_claude_fixture();
+        let markets = format!("file://{}", market.path().display());
+        let index_url = spawn_index_stub(index_fixture(&[])).await;
+        let _home = use_market_env(
+            &index_url,
+            "http://127.0.0.1:1",
+            "http://127.0.0.1:1",
+            &markets,
+        );
+
+        let report = install(
+            parse_spec("claude:claude-foo@fixture-market"),
+            InstallOpts::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.name, "claude-foo");
+        assert_eq!(report.version, "3.0.0");
+        assert!(report.unverified);
+        assert!(report.path.join("greeter/SKILL.md").is_file());
+        let entry = list().unwrap().remove("claude-foo").expect("lock entry");
+        assert_eq!(entry.ecosystem, "claude");
+
+        // `command` sources refuse with the warning string (never exec)…
+        let err = install(parse_spec("claude:claude-cmd"), InstallOpts::default())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("command source"), "warns honestly: {err}");
+        // …and the failure is recorded (Task 1 ruling holds for new arms).
+        let recorded = crate::errors::list();
+        assert!(
+            recorded
+                .iter()
+                .any(|e| e.source == "claude" && e.item == "claude-cmd"),
+            "registry keeps the failure: {recorded:?}"
+        );
+        // Unknown marketplace filters miss honestly too.
+        let err = install(
+            parse_spec("claude:claude-foo@no-such-market"),
+            InstallOpts::default(),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("not in claude marketplaces"), "miss: {err}");
     }
 }
