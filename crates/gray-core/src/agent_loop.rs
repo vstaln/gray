@@ -10,10 +10,12 @@ use futures::StreamExt as _;
 use crate::agent::{
     Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
 };
+use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
 use crate::message::{ChatRequest, ContentBlock, Message, Role};
+use crate::turn_queue::{Submission, SubmitMode, TurnState};
 
 /// Empty-turn provider retries before nudging or ending on `(empty)`.
 const MAX_EMPTY_RETRIES: u8 = 2;
@@ -32,6 +34,9 @@ impl Agent {
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///
+    /// Admission first: `input` goes through [`Agent::submit`] (empty input
+    /// rejected before it touches history), then the admitted turn executes.
+    ///
     /// Per turn: build a [`ChatRequest`], stream the response while
     /// forwarding `TextDelta`s in arrival order, finalize the assistant
     /// message, then execute any requested tools sequentially and feed their
@@ -47,7 +52,19 @@ impl Agent {
         input: Message,
         ctx: ToolContext,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        self.run_inner(input, ctx, None).await
+        match self.submit(input, SubmitMode::StartOrSteer) {
+            Submission::Started { turn_id } => {
+                self.turn_state = TurnState::Busy { turn_id };
+                let out = self.run_inner(ctx, None).await;
+                self.turn_state = TurnState::Idle;
+                out
+            }
+            // Defensive only: Busy needs reentrancy, impossible under `&mut`
+            // today — no turn ran, the input is already queued as steer.
+            Submission::Steered { .. } => Ok(vec![]),
+            // Defensive only (see above): rejection mutated nothing.
+            Submission::NotSubmitted(_) => Ok(vec![]),
+        }
     }
 
     /// Streaming variant of [`run`]: every [`AgentEvent`] is handed to
@@ -59,16 +76,27 @@ impl Agent {
         ctx: ToolContext,
         on_event: &mut dyn FnMut(&AgentEvent),
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        self.run_inner(input, ctx, Some(on_event)).await
+        match self.submit(input, SubmitMode::StartOrSteer) {
+            Submission::Started { turn_id } => {
+                self.turn_state = TurnState::Busy { turn_id };
+                let out = self.run_inner(ctx, Some(on_event)).await;
+                self.turn_state = TurnState::Idle;
+                out
+            }
+            // Defensive only: Busy needs reentrancy, impossible under `&mut`
+            // today — no turn ran, the input is already queued as steer.
+            Submission::Steered { .. } => Ok(vec![]),
+            // Defensive only (see above): rejection mutated nothing.
+            Submission::NotSubmitted(_) => Ok(vec![]),
+        }
     }
 
     async fn run_inner(
         &mut self,
-        input: Message,
         ctx: ToolContext,
         mut sink: Option<&mut dyn FnMut(&AgentEvent)>,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len() + 1);
+        log::info!(target: "gray_agent", "agent run start ({} messages)", self.messages.len());
         let mut events = Vec::new();
         // Stall guard: 3 identical consecutive tool calls → LoopDetected.
         let mut last_sig: Option<String> = None;
@@ -87,12 +115,10 @@ impl Agent {
             }};
         }
         emit!(AgentEvent::Start);
-        self.messages.push(input);
         let mut total_usage = Usage::default();
         let mut round: u32 = 0;
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
-        let mut compact_attempted = false;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
 
@@ -122,6 +148,18 @@ impl Agent {
             }
             round += 1;
             self.drain_steer(round == 1);
+
+            // Pre-turn budget: compact before the provider ever sees an overflow.
+            if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                // False = nothing to gain (all tail): fall through; the provider's
+                // own overflow path remains the backstop. Success strictly shrinks
+                // history, so re-check without looping forever.
+                while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                    if !self.try_compact_budgeted().await? {
+                        break;
+                    }
+                }
+            }
 
             // Protocol v1 `prompt/context`: every hook's reply concatenates
             // onto this turn's system prompt, in hook order. No hooks (or no
@@ -251,11 +289,10 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
-                            // Context overflow: compact once via complete_prompt,
+                            // Context overflow: compact via budgeted complete_prompt,
                             // then retry the turn; otherwise surface the error.
-                            if e.should_compress() && !compact_attempted {
-                                compact_attempted = true;
-                                match self.try_compact_once().await {
+                            if e.should_compress() {
+                                match self.try_compact_budgeted().await {
                                     Ok(true) => continue 'turn,
                                     _ => {
                                         let err = CoreError::from(e);
@@ -444,7 +481,210 @@ impl Agent {
             // reach the executor; each still gets one error tool result so the
             // assistant/user alternation stays intact.
             let available: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
-            for (idx, (id, name, args)) in tool_uses.iter().enumerate() {
+            // Parallel batch lane: a maximal run of batchable-known-object
+            // calls executes concurrently via `join_ordered`; everything else
+            // keeps the sequential path below, verbatim. Kill-switch off (or
+            // any barrier) degrades to all-`Single` — today's loop exactly.
+            let known: std::collections::HashSet<String> = available.iter().cloned().collect();
+            let segments = if crate::parallel::parallel_enabled() {
+                crate::parallel::plan_segments(&tool_uses, &known)
+            } else {
+                tool_uses
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| crate::parallel::Segment::Single(i))
+                    .collect()
+            };
+            for segment in segments {
+                // Parallel run over `tool_uses` indices. Pre-pass (loop
+                // thread, in order): cancel check, validation, `tool_before`
+                // verdicts, `pre_tool` hooks. Only `executor.execute` runs
+                // concurrently — never `ApprovalGate::check`: batchable names
+                // are statically `Allow` in every mode. Post-pass (loop
+                // thread, input order): `tool_call_start/end` emission (kept
+                // here, not in the pre-pass, so a cancel-free parallel run is
+                // event-identical to the sequential path), `post_tool` hooks,
+                // `tool_result` events, history writes.
+                if let crate::parallel::Segment::Parallel(idxs) = segment {
+                    let (Some(run_start), Some(run_end)) =
+                        (idxs.first().copied(), idxs.last().map(|i| *i + 1))
+                    else {
+                        continue;
+                    };
+                    let mut ready: Vec<(usize, String, serde_json::Value)> =
+                        Vec::with_capacity(idxs.len());
+                    let mut inline_errors: std::collections::HashMap<usize, ToolOutput> =
+                        std::collections::HashMap::new();
+                    let mut cancelled_at: Option<usize> = None;
+                    for &idx in &idxs {
+                        let (_, name, args) = &tool_uses[idx];
+                        if ctx.cancel.is_cancelled() {
+                            cancelled_at = Some(idx);
+                            break;
+                        }
+                        if !self.tools.iter().any(|t| t.name == *name) {
+                            let list = if available.is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                available.join(", ")
+                            };
+                            inline_errors.insert(
+                                idx,
+                                ToolOutput::error(format!(
+                                    "Tool '{name}' does not exist. Available: {list}"
+                                )),
+                            );
+                            continue;
+                        }
+                        if !args.is_object() {
+                            inline_errors.insert(
+                                idx,
+                                ToolOutput::error(format!(
+                                    "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
+                                )),
+                            );
+                            continue;
+                        }
+                        let mut effective_args = args.clone();
+                        let mut denial: Option<String> = None;
+                        for hook in &self.hooks {
+                            match hook.tool_before(name, &effective_args).await {
+                                ToolBefore::Allow => {}
+                                ToolBefore::Modify(rewritten) => effective_args = rewritten,
+                                ToolBefore::Deny(reason) => {
+                                    denial = Some(reason);
+                                    break;
+                                }
+                            }
+                        }
+                        if let Some(reason) = denial {
+                            inline_errors.insert(idx, ToolOutput::error(reason));
+                            continue;
+                        }
+                        for hook in &self.hooks {
+                            hook.pre_tool(name, &effective_args).await;
+                        }
+                        ready.push((idx, name.clone(), effective_args));
+                    }
+                    if cancelled_at.is_some() {
+                        // Nothing in the run executed: the pre-pass only
+                        // validates into `ready`/`inline_errors` and emits
+                        // nothing, so no run index has a result yet — backfill
+                        // the whole run exactly once, then everything after
+                        // it, and bail. History must never hold an orphaned call.
+                        crate::agent_tools::answer_pending_range(
+                            self,
+                            &tool_uses,
+                            run_start,
+                            run_end,
+                            "cancelled by user",
+                        );
+                        answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
+                        self.emit_turn_end(&total_usage).await;
+                        return Err(CoreError::Cancelled);
+                    }
+                    // Spawn: one future per ready item. Everything the future
+                    // touches is owned (`'static`): no borrow of `self`
+                    // escapes the loop thread.
+                    let timeout = self.tool_timeout;
+                    let mut futs = Vec::with_capacity(ready.len());
+                    for (idx, name, effective_args) in ready {
+                        let ex = self.executor.clone();
+                        let c = ctx.clone();
+                        futs.push((
+                            idx,
+                            Box::pin(async move {
+                                match tokio::time::timeout(
+                                    timeout,
+                                    ex.execute(&c, &name, effective_args),
+                                )
+                                .await
+                                {
+                                    Ok(output) => output,
+                                    Err(_) => ToolOutput::error(format!(
+                                        "Tool '{name}' timed out after {}s",
+                                        timeout.as_secs()
+                                    )),
+                                }
+                            })
+                                as futures::future::BoxFuture<'static, ToolOutput>,
+                        ));
+                    }
+                    let joined = crate::parallel::join_ordered(
+                        futs,
+                        crate::parallel::MAX_WORKERS,
+                        &ctx.cancel,
+                    )
+                    .await;
+                    // Reconcile by real index (no sentinel exists: every
+                    // entry carries its input index; panics arrive as error
+                    // outputs). `None`/absent means cancelled
+                    // pre-completion → synthetic backfill, message only.
+                    let by_idx: std::collections::HashMap<usize, Option<ToolOutput>> =
+                        joined.into_iter().collect();
+                    let mut shortfall = false;
+                    for &idx in &idxs {
+                        let (id, name, args) = &tool_uses[idx];
+                        if let Some(err) = inline_errors.remove(&idx) {
+                            if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
+                                emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
+                            }
+                            emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
+                            emit!(AgentEvent::tool_result(
+                                id.clone(),
+                                err.content.clone(),
+                                true
+                            ));
+                            self.messages.push(Message {
+                                role: Role::User,
+                                content: vec![ContentBlock::ToolResult {
+                                    id: id.clone(),
+                                    content: err.content,
+                                    is_error: true,
+                                }],
+                            });
+                            continue;
+                        }
+                        match by_idx.get(&idx) {
+                            Some(Some(output)) => {
+                                for hook in &self.hooks {
+                                    hook.post_tool(name, output).await;
+                                }
+                                if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
+                                    emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
+                                }
+                                emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
+                                emit!(AgentEvent::tool_result(
+                                    id.clone(),
+                                    output.content.clone(),
+                                    output.is_error,
+                                ));
+                                self.messages.push(Message {
+                                    role: Role::User,
+                                    content: vec![ContentBlock::ToolResult {
+                                        id: id.clone(),
+                                        content: output.content.clone(),
+                                        is_error: output.is_error,
+                                    }],
+                                });
+                            }
+                            _ => {
+                                shortfall = true;
+                                crate::agent_tools::push_synthetic(self, id, "cancelled by user");
+                            }
+                        }
+                    }
+                    if shortfall {
+                        answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
+                        self.emit_turn_end(&total_usage).await;
+                        return Err(CoreError::Cancelled);
+                    }
+                    continue;
+                }
+                let crate::parallel::Segment::Single(idx) = segment else {
+                    continue;
+                };
+                let (id, name, args) = &tool_uses[idx];
                 if ctx.cancel.is_cancelled() {
                     answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
                     self.emit_turn_end(&total_usage).await;

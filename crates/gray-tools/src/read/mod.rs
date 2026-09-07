@@ -379,9 +379,17 @@ impl ReadTool {
             if eof {
                 total = Some(s.line_no());
             } else if stream::should_count_exact(file_size) {
-                match s.count_rest_lines().await {
+                match s.count_rest_lines_capped(stream::MAX_COUNT_LINES).await {
                     Err(e) => return read_failed(e),
-                    Ok(rest) => total = Some(s.line_no() + rest as usize),
+                    Ok((rest, false)) => total = Some(s.line_no() + rest as usize),
+                    Ok((_, true)) => {
+                        // Capped: partial bytes must never masquerade as a
+                        // full-file ledger hash, so record content_hash: None
+                        // (fail-open to full re-reads, write-guard still
+                        // enforces mtime/size — same as >64MiB files today).
+                        s.discard_hash();
+                        total = None;
+                    }
                 }
                 if s.cancelled() {
                     return ToolOutput::ok(with_repaired(
@@ -599,6 +607,37 @@ impl ReadTool {
             };
         }
         Some(ToolOutput::ok(out))
+    }
+}
+
+#[cfg(test)]
+mod capped_count_tests {
+    use super::*;
+    use gray_core::agent::ToolContext;
+
+    #[tokio::test]
+    async fn huge_line_count_uses_count_skipped_wording() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("huge.txt"), "x\n".repeat(150_000)).unwrap();
+        let ctx = ToolContext {
+            cwd: dir.path().to_path_buf(),
+            ..ToolContext::default()
+        };
+        let out = ReadTool::default()
+            .execute(&ctx, serde_json::json!({"path": "huge.txt", "limit": 10}))
+            .await;
+        assert!(!out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("count skipped"),
+            "{}",
+            tail(&out.content)
+        );
+        assert!(out.content.contains("offset=11"), "{}", tail(&out.content));
+        assert!(!out.content.contains("of 150000"), "{}", tail(&out.content));
+    }
+
+    fn tail(s: &str) -> &str {
+        &s[s.len().saturating_sub(500)..]
     }
 }
 

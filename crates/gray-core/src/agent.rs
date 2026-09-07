@@ -279,7 +279,7 @@ pub use super::agent_compact::summary_pair;
 /// draining these events (or by swapping the return type for a receiver).
 pub struct Agent {
     pub(crate) provider: Box<dyn Provider>,
-    pub(crate) executor: Box<dyn ToolExecutor>,
+    pub(crate) executor: std::sync::Arc<dyn ToolExecutor>,
     pub(crate) system: String,
     pub(crate) tools: Vec<ToolDef>,
     pub(crate) messages: Vec<Message>,
@@ -287,11 +287,14 @@ pub struct Agent {
     pub(crate) tool_timeout: Duration,
     pub(crate) pending_steer: Vec<String>,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
+    pub(crate) turn_state: crate::turn_queue::TurnState,
+    pub(crate) next_turn_id: u64,
+    pub(crate) context_window: Option<usize>,
 }
 
 impl Agent {
     /// Creates an agent over the given provider and tool executor.
-    pub fn new(provider: Box<dyn Provider>, executor: Box<dyn ToolExecutor>) -> Self {
+    pub fn new(provider: Box<dyn Provider>, executor: std::sync::Arc<dyn ToolExecutor>) -> Self {
         Self {
             provider,
             executor,
@@ -302,6 +305,9 @@ impl Agent {
             tool_timeout: Duration::from_secs(120),
             pending_steer: Vec::new(),
             hooks: Vec::new(),
+            turn_state: crate::turn_queue::TurnState::Idle,
+            next_turn_id: 1,
+            context_window: None,
         }
     }
 
@@ -348,12 +354,63 @@ impl Agent {
         self
     }
 
+    /// Known model context window in tokens (`None` = unknown: only
+    /// overflow-recovery compaction runs). Set via
+    /// [`with_context_window`](Self::with_context_window) from
+    /// `resolve_model_context_length` at build surfaces.
+    pub fn with_context_window(mut self, window: Option<usize>) -> Self {
+        self.context_window = window;
+        self
+    }
+
+    /// Rough transcript size in tokens (bytes/4 — same approximation as
+    /// `gray_tools::stats::est_tokens`). Delegates to the shared
+    /// `agent_compact::est_tokens` owner so the estimators can never drift.
+    pub(crate) fn estimate_tokens(&self) -> usize {
+        crate::agent_compact::est_tokens(&self.messages)
+    }
+
     /// Queues a steering note for the running turn. Drained before the next
     /// request: appended to the newest tool result when one exists, else held
     /// for the next turn boundary as a real user message. `redirect` is just
     /// cancelling the [`ToolContext`] token, then calling this.
     pub fn steer(&mut self, s: String) {
         self.pending_steer.push(s);
+    }
+
+    /// Admit one input WITHOUT executing. Rejections mutate nothing.
+    pub fn submit(
+        &mut self,
+        input: Message,
+        mode: crate::turn_queue::SubmitMode,
+    ) -> crate::turn_queue::Submission {
+        use crate::turn_queue::{RejectReason, Submission, SubmitMode, TurnState, is_empty_input};
+        if is_empty_input(&input) {
+            return Submission::NotSubmitted(RejectReason::EmptyInput);
+        }
+        match (mode, self.turn_state) {
+            (_, TurnState::Idle) => {
+                let turn_id = self.next_turn_id;
+                self.next_turn_id += 1;
+                self.messages.push(input);
+                Submission::Started { turn_id }
+            }
+            (SubmitMode::StartOrSteer, TurnState::Busy { turn_id }) => {
+                self.pending_steer.push(input.context_text());
+                Submission::Steered { turn_id }
+            }
+            (SubmitMode::StartIfIdle, TurnState::Busy { turn_id }) => {
+                Submission::NotSubmitted(RejectReason::NotIdle { turn_id })
+            }
+        }
+    }
+
+    /// Live turn id, if a turn is executing.
+    pub fn current_turn(&self) -> Option<u64> {
+        match self.turn_state {
+            crate::turn_queue::TurnState::Idle => None,
+            crate::turn_queue::TurnState::Busy { turn_id } => Some(turn_id),
+        }
     }
 
     /// Read-only view of the accumulated conversation so far.
@@ -376,27 +433,47 @@ impl Agent {
         &*self.provider
     }
 
+    /// System prompt sent with every request. `pub(crate)` because the
+    /// compaction-v2 trigger call (sibling module `compact_v2`) reuses it
+    /// verbatim: private fields are visible only in the defining module, so
+    /// the sibling cannot read `self.system` directly.
+    pub(crate) fn system_text(&self) -> &str {
+        &self.system
+    }
+
+    /// Tools advertised to the model. `pub(crate)` for the same reason as
+    /// [`system_text`](Self::system_text): the compaction-v2 trigger call
+    /// reuses them verbatim.
+    pub(crate) fn tool_defs(&self) -> &[ToolDef] {
+        &self.tools
+    }
+
     /// Single-turn text completion with optional system prompt (used for compaction & summarization).
     pub async fn complete_prompt(
         &self,
         prompt: &str,
         system: Option<&str>,
     ) -> Result<String, CoreError> {
+        self.complete_with_history(system, vec![Message::user(prompt)], Vec::new())
+            .await
+    }
+
+    /// [`complete_prompt`](Self::complete_prompt) generalized over history +
+    /// tools: streams one assistant reply and returns its prose. The
+    /// compaction-v2 in-band trigger call passes the live system + tools so
+    /// the request prefix stays cache-hot.
+    pub async fn complete_with_history(
+        &self,
+        system: Option<&str>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+    ) -> Result<String, CoreError> {
         let req = ChatRequest {
             system: system.map(|s| s.to_string()),
-            messages: vec![Message::user(prompt)],
-            tools: Vec::new(),
+            messages,
+            tools,
         };
-        let mut stream = self.provider.stream(req);
-        let mut result = String::new();
-        while let Some(event) = stream.next().await {
-            match event? {
-                StreamEvent::TextDelta { delta } => result.push_str(&delta),
-                StreamEvent::MessageComplete { .. } => break,
-                _ => {}
-            }
-        }
-        Ok(result)
+        drain_reply_text(self.provider.stream(req)).await
     }
 
     /// Drains queued [`steer`](Self::steer) text into history before the next
@@ -416,6 +493,24 @@ impl Agent {
             self.messages.push(Message::user(joined));
         }
     }
+}
+
+/// Shared single-turn reply drain behind [`Agent::complete_prompt`] and
+/// [`Agent::complete_with_history`]: collects `Text`/`Thinking` prose only
+/// and drops tool calls — the compaction trigger reply must never execute
+/// tools (codex v2 likewise collects only the compaction output item).
+async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreError> {
+    let mut result = String::new();
+    while let Some(event) = stream.next().await {
+        match event? {
+            StreamEvent::TextDelta { delta } | StreamEvent::ThinkingDelta { delta } => {
+                result.push_str(&delta);
+            }
+            StreamEvent::MessageComplete { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(result)
 }
 
 /// Newest tool-result content in history, for [`Agent::steer`] injection.
@@ -475,6 +570,7 @@ pub(crate) fn salvage_partial_text(
 mod agent_tests {
     use super::*;
     use crate::event::{AgentEvent, StopReason, Usage};
+    use crate::parallel::ENV_LOCK;
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
@@ -598,6 +694,57 @@ mod agent_tests {
 
     const TOOL_NAME: &str = "lookup";
 
+    /// Concurrency probe: records peak in-flight executions (Task 4: proves
+    /// the parallel lane actually overlaps batchable calls).
+    struct PeakExecutor {
+        cur: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        peak: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for PeakExecutor {
+        fn execute(
+            &self,
+            _ctx: &ToolContext,
+            name: &str,
+            _args: serde_json::Value,
+        ) -> BoxFuture<'static, ToolOutput> {
+            let cur = self.cur.clone();
+            let peak = self.peak.clone();
+            let name = name.to_string();
+            Box::pin(async move {
+                let n = cur.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                peak.fetch_max(n, std::sync::atomic::Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                cur.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                ToolOutput::ok(format!("{name}-done"))
+            })
+        }
+    }
+
+    fn read_tool() -> ToolDef {
+        ToolDef::new("read", "r", serde_json::json!({"type": "object"}))
+    }
+
+    /// One turn issuing two `read` calls (stream indices 0 and 1).
+    fn two_read_script() -> Vec<StreamEvent> {
+        vec![
+            StreamEvent::tool_call_delta(
+                0,
+                Some("c1".into()),
+                Some("read".into()),
+                r#"{"path":"a"}"#,
+            ),
+            StreamEvent::tool_call_delta(
+                1,
+                Some("c2".into()),
+                Some("read".into()),
+                r#"{"path":"b"}"#,
+            ),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+        ]
+    }
+
     fn tool_def() -> ToolDef {
         ToolDef::new(TOOL_NAME, "A fake lookup tool", serde_json::json!({}))
     }
@@ -658,7 +805,7 @@ mod agent_tests {
             StreamEvent::message_complete(Some(StopReason::EndTurn), None),
         ]]);
         let executor = FakeExecutor::new(ToolOutput::ok("unused"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("go"), ToolContext::default())
@@ -706,7 +853,7 @@ mod agent_tests {
             ],
         ]);
         let executor = FakeExecutor::new(ToolOutput::ok("result payload"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_system("be terse")
             .with_tools(vec![tool_def()]);
 
@@ -763,7 +910,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("unused"))
             .with_output(TOOL_NAME, ToolOutput::error("disk on fire"));
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         let events = agent
             .run(Message::user("go"), ToolContext::default())
@@ -808,7 +955,7 @@ mod agent_tests {
         ]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
             .run(Message::user("loop forever"), ToolContext::default())
@@ -829,7 +976,7 @@ mod agent_tests {
             .collect();
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let err = agent
             .run(Message::user("explore"), ToolContext::default())
@@ -849,7 +996,7 @@ mod agent_tests {
         scripts.push(end_script());
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("explore"), ToolContext::default())
@@ -885,7 +1032,7 @@ mod agent_tests {
         scripts.push(end_script());
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("work"), ToolContext::default())
@@ -907,7 +1054,7 @@ mod agent_tests {
             .collect();
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("file body"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let err = agent
             .run(Message::user("explore"), ToolContext::default())
@@ -937,7 +1084,7 @@ mod agent_tests {
         scripts.push(end_script());
         let provider = FakeProvider::new(scripts);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor));
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
 
         let events = agent
             .run(Message::user("work"), ToolContext::default())
@@ -962,7 +1109,7 @@ mod agent_tests {
         ]]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
 
         let events = agent
@@ -994,7 +1141,7 @@ mod agent_tests {
         ]]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
 
         let events = agent
@@ -1025,7 +1172,7 @@ mod agent_tests {
         executor.on_execute = Some(std::sync::Arc::new(move || token.cancel()));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         let err = agent
             .run(
@@ -1061,7 +1208,7 @@ mod agent_tests {
         ];
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_messages(prior);
 
@@ -1097,7 +1244,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()]);
         let events = agent
@@ -1124,7 +1271,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
         let events = agent
             .run(Message::user("go"), ToolContext::default())
             .await
@@ -1170,7 +1317,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
         let events = agent
             .run(Message::user("go"), ToolContext::default())
             .await
@@ -1211,7 +1358,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("should-not-reach"));
         let call_log = executor.calls.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
         let events = agent
             .run(Message::user("go"), ToolContext::default())
             .await
@@ -1276,7 +1423,17 @@ mod agent_tests {
         )]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        // v2 compaction retains the newest history within min(64k,
+        // window−reserve) and appends the summary LAST: seed more than the
+        // 64k retained budget (unknown window) so the oldest messages drop
+        // and the replacement strictly shrinks (a fully-retained history
+        // correctly reports "nothing to gain" and surfaces the error).
+        .with_messages(
+            (0..80)
+                .map(|i| Message::user(format!("bulk{i}:{}", "x".repeat(3990))))
+                .collect(),
         );
 
         let events = agent
@@ -1289,11 +1446,26 @@ mod agent_tests {
                 .iter()
                 .any(|e| *e == AgentEvent::text_delta("continued"))
         );
+        let msgs = agent.messages();
+        let summary_at = msgs
+            .iter()
+            .position(|m| m.text_content().contains("Another language model started"))
+            .expect("history must contain the summary pair");
         assert!(
-            agent.messages()[0]
-                .text_content()
-                .contains("Another language model started"),
-            "history must start with the summary pair"
+            summary_at > 0 && summary_at + 2 < msgs.len(),
+            "v2 order: [retained..., summary_user, summary_ack, ...], got summary at {summary_at} of {}",
+            msgs.len()
+        );
+        assert!(
+            msgs[summary_at + 1].text_content().contains("Understood"),
+            "summary_ack follows summary_user"
+        );
+        assert!(
+            msgs[..summary_at].iter().all(|m| {
+                let t = m.text_content();
+                t.starts_with("bulk") || t == "go"
+            }),
+            "everything before the summary is retained history (bulks + the turn's go)"
         );
     }
 
@@ -1305,7 +1477,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let err = agent
@@ -1329,7 +1501,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let events = agent
@@ -1356,7 +1528,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("tool says hi"))),
         )
         .with_tools(vec![tool_def()]);
 
@@ -1410,7 +1582,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()]);
 
@@ -1443,7 +1615,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         agent
@@ -1477,7 +1649,7 @@ mod agent_tests {
         ]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         let events = agent
@@ -1506,7 +1678,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2")]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
         .with_max_rounds(Some(1));
@@ -1537,7 +1709,7 @@ mod agent_tests {
     fn tool_timeout_builder_keeps_120s_default() {
         let agent = Agent::new(
             Box::new(FakeProvider::new(vec![])),
-            Box::new(FakeExecutor::new(ToolOutput::ok(""))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
         assert_eq!(agent.tool_timeout, std::time::Duration::from_secs(120));
         let agent = agent.with_tool_timeout(std::time::Duration::from_millis(50));
@@ -1549,7 +1721,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let mut executor = FakeExecutor::new(ToolOutput::ok("too slow"));
         executor.delay = Some(std::time::Duration::from_secs(5));
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_tools(vec![tool_def()])
             .with_tool_timeout(std::time::Duration::from_millis(50));
 
@@ -1583,7 +1755,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script(), end_script()]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("data"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("data"))),
         )
         .with_tools(vec![tool_def()]);
         agent
@@ -1616,7 +1788,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![end_script()]);
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         );
 
         agent.steer("focus on tests".to_string());
@@ -1664,7 +1836,7 @@ mod agent_tests {
         let seen = provider.seen_systems();
         let mut agent = Agent::new(
             Box::new(provider),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
         .with_system("BASE-SYSTEM")
         .with_hooks(vec![
@@ -1722,7 +1894,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let executor = FakeExecutor::new(ToolOutput::ok("must-not-run"));
         let call_log = executor.calls.clone();
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_tools(vec![tool_def()])
             .with_hooks(vec![Arc::new(VetoHook {
                 deny: Some("DENIED-XYZ".to_string()),
@@ -1775,7 +1947,7 @@ mod agent_tests {
         let provider = FakeProvider::new(vec![tool_script("c1"), end_script()]);
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let arg_log = executor.call_args.clone();
-        let mut agent = Agent::new(Box::new(provider), Box::new(executor))
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
             .with_tools(vec![tool_def()])
             .with_hooks(vec![Arc::new(VetoHook {
                 deny: None,
@@ -1802,7 +1974,7 @@ mod agent_tests {
         let executor = FakeExecutor::new(ToolOutput::ok("ok"));
         let arg_log = executor.call_args.clone();
         let mut agent =
-            Agent::new(Box::new(provider), Box::new(executor)).with_tools(vec![tool_def()]);
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
 
         agent
             .run(Message::user("go"), ToolContext::default())
@@ -1849,7 +2021,7 @@ mod agent_tests {
         let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let mut agent = Agent::new(
             Box::new(FakeProvider::new(vec![end_script()])),
-            Box::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
         )
         .with_hooks(vec![Arc::new(LifecycleHook {
             turn_ends: ends.clone(),
@@ -1874,7 +2046,7 @@ mod agent_tests {
                 tool_script("c2"),
                 tool_script("c3"),
             ])),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
         .with_hooks(vec![Arc::new(LifecycleHook {
@@ -1899,7 +2071,7 @@ mod agent_tests {
         let calls = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
         let mut agent = Agent::new(
             Box::new(FakeProvider::new(vec![tool_script("c1"), end_script()])),
-            Box::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
         .with_tools(vec![tool_def()])
         .with_hooks(vec![Arc::new(LifecycleHook {
@@ -1920,5 +2092,144 @@ mod agent_tests {
         );
         // Sidecar-provided tools run through the same executor call site as
         // builtin tools, so this emission covers both by construction.
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ENV_LOCK is test-only env serialization; holding it across await is its job
+    async fn parallel_batch_overlaps_reads_with_ordered_results() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GRAY_PARALLEL_READS").ok();
+        unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
+        let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor = PeakExecutor {
+            cur: Default::default(),
+            peak: peak.clone(),
+        };
+        let mut agent =
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![read_tool()]);
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+        }
+        assert_eq!(
+            peak.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "both reads must overlap"
+        );
+        let results: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolResult { id, output, .. } => Some((id.clone(), output.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                ("c1".to_string(), "read-done".to_string()),
+                ("c2".to_string(), "read-done".to_string()),
+            ],
+            "results stay in input order, {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ENV_LOCK is test-only env serialization; holding it across await is its job
+    async fn lane_off_matches_sequential_events() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GRAY_PARALLEL_READS").ok();
+        let mut runs = Vec::new();
+        for val in [Some("0"), None] {
+            match val {
+                Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+                None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+            }
+            let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
+            let executor = FakeExecutor::new(ToolOutput::ok("x"));
+            let mut agent =
+                Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![read_tool()]);
+            runs.push(
+                agent
+                    .run(Message::user("go"), ToolContext::default())
+                    .await
+                    .unwrap(),
+            );
+        }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+        }
+        assert_eq!(runs.len(), 2);
+        assert_eq!(
+            runs[0], runs[1],
+            "lane off must match lane on event-for-event"
+        );
+    }
+
+    /// Cancels the run's token inside the first `tool_before` verdict, so the
+    /// parallel pre-pass observes cancellation at the SECOND index — past the
+    /// first ready item.
+    struct CancelOnFirstBefore {
+        token: tokio_util::sync::CancellationToken,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl PluginHooks for CancelOnFirstBefore {
+        async fn tool_before(&self, _name: &str, _args: &serde_json::Value) -> ToolBefore {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                self.token.cancel();
+            }
+            ToolBefore::Allow
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ENV_LOCK is test-only env serialization; holding it across await is its job
+    async fn parallel_prepass_cancel_backfills_whole_run_exactly_once() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GRAY_PARALLEL_READS").ok();
+        unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
+        let executor = FakeExecutor::new(ToolOutput::ok("x"));
+        let call_log = executor.calls.clone();
+        let ctx = ToolContext {
+            cancel: cancel.clone(),
+            ..ToolContext::default()
+        };
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
+            .with_tools(vec![read_tool()])
+            .with_hooks(vec![Arc::new(CancelOnFirstBefore {
+                token: cancel,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            })]);
+        let err = agent
+            .run(Message::user("go"), ctx)
+            .await
+            .expect_err("pre-pass cancel must abort the run");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+        }
+        assert!(matches!(err, CoreError::Cancelled), "got {err:?}");
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "cancelled pre-pass must never reach the executor"
+        );
+        for id in ["c1", "c2"] {
+            let n = agent
+                .messages()
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter(|b| matches!(b, ContentBlock::ToolResult { id: i, .. } if i.as_str() == id))
+                .count();
+            assert_eq!(n, 1, "tool {id} must have exactly one ToolResult message");
+        }
     }
 }
