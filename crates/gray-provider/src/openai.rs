@@ -857,9 +857,11 @@ pub(crate) struct ResponsesRequest {
     include: Option<Vec<String>>,
     /// Resume a previously started response after a retryable mid-stream
     /// failure (Codex parity): the server continues the prefix instead of
-    /// gray replaying the turn. Assumes the backend honors this with
-    /// `store: false`; if it requires `store: true` for chaining the field
-    /// is ignored harmlessly and the retry degrades to a full replay.
+    /// gray replaying the turn. KNOWN RISK alongside `store: false` below: a
+    /// strict backend may 400 on the unknown id (terminal `BadRequest`,
+    /// recovery lost) or ignore the id and replay from scratch (duplicating
+    /// already-yielded text). Follow-up (not this change): set `store: true`
+    /// on the resumed POST, or strip a rejected id and replay once.
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
 }
@@ -1342,6 +1344,11 @@ enum StreamState {
         request_max_retries: usize,
         stream_max_retries: usize,
         stream_attempt: usize,
+        // Tool-arg prefix inherited from the interrupted stream: carried into
+        // the fresh `ResponsesStreaming` on POST success so suffix deltas
+        // append (empty on fresh turns and `None`-id full replays).
+        tools_by_call_id: BTreeMap<String, (usize, String, String)>,
+        index_to_call_id: BTreeMap<usize, String>,
         stream_idle_timeout: Option<Duration>,
     },
     Streaming {
@@ -1463,6 +1470,36 @@ fn emit_responses_tool_calls_and_completion(
     Ok(())
 }
 
+/// Accumulated Responses tool-call fragments, keyed by call id.
+/// (Type alias: keeps the resume helper's signature under clippy's
+/// complexity threshold.)
+type ResponsesToolsByCallId = BTreeMap<String, (usize, String, String)>;
+/// Index → call id ordering for the accumulated fragments.
+type ResponsesIndexToCallId = BTreeMap<usize, String>;
+
+/// Resume rebuild (pure): stamp `previous_response_id` on the body and decide
+/// the tool-arg prefix's fate. `Some(id)` continues the server-side prefix —
+/// the server will NOT re-emit prefix deltas, so the maps are carried for
+/// suffix appends. `None` is a true full replay — stale prefix is dropped.
+fn resume_body_and_tool_prefix(
+    mut body: ResponsesRequest,
+    tools_by_call_id: ResponsesToolsByCallId,
+    index_to_call_id: ResponsesIndexToCallId,
+    last_response_id: Option<String>,
+) -> (
+    ResponsesRequest,
+    ResponsesToolsByCallId,
+    ResponsesIndexToCallId,
+) {
+    let continuing = last_response_id.is_some();
+    body.previous_response_id = last_response_id;
+    if continuing {
+        (body, tools_by_call_id, index_to_call_id)
+    } else {
+        (body, BTreeMap::new(), BTreeMap::new())
+    }
+}
+
 fn stream_unfold_step(
     mut state: StreamState,
 ) -> futures::future::BoxFuture<'static, Option<(Result<StreamEvent, ProviderError>, StreamState)>>
@@ -1580,6 +1617,8 @@ fn stream_unfold_step(
                     request_max_retries,
                     stream_max_retries,
                     stream_attempt,
+                    tools_by_call_id,
+                    index_to_call_id,
                     stream_idle_timeout,
                 } => {
                     if attempt > 1 {
@@ -1603,8 +1642,8 @@ fn stream_unfold_step(
                             let last_response_id = body.previous_response_id.clone();
                             state = StreamState::ResponsesStreaming {
                                 event_stream,
-                                tools_by_call_id: BTreeMap::new(),
-                                index_to_call_id: BTreeMap::new(),
+                                tools_by_call_id,
+                                index_to_call_id,
                                 last_usage: None,
                                 pending_events: VecDeque::new(),
                                 completed: false,
@@ -1645,6 +1684,8 @@ fn stream_unfold_step(
                                     request_max_retries,
                                     stream_max_retries,
                                     stream_attempt,
+                                    tools_by_call_id,
+                                    index_to_call_id,
                                     stream_idle_timeout,
                                 };
                                 continue;
@@ -1662,6 +1703,8 @@ fn stream_unfold_step(
                                     request_max_retries,
                                     stream_max_retries,
                                     stream_attempt,
+                                    tools_by_call_id,
+                                    index_to_call_id,
                                     stream_idle_timeout,
                                 };
                                 // One notice per burst (see Init above).
@@ -1924,8 +1967,21 @@ fn stream_unfold_step(
                             Err(_) => {
                                 if stream_attempt < stream_max_retries {
                                     log::warn!(target: "gray_provider", "responses stream stalled, resuming (stream attempt {stream_attempt})");
-                                    let mut resumed = body;
-                                    resumed.previous_response_id = last_response_id.clone();
+                                    // Throttle the re-POST like pre-stream
+                                    // retries (no Retry-After on a stall).
+                                    tokio::time::sleep(backoff_delay(
+                                        initial_backoff,
+                                        stream_attempt,
+                                        None,
+                                    ))
+                                    .await;
+                                    let (resumed, resume_tools, resume_index) =
+                                        resume_body_and_tool_prefix(
+                                            body,
+                                            tools_by_call_id,
+                                            index_to_call_id,
+                                            last_response_id,
+                                        );
                                     state = StreamState::ResponsesInit {
                                         client,
                                         url,
@@ -1937,6 +1993,8 @@ fn stream_unfold_step(
                                         request_max_retries,
                                         stream_max_retries,
                                         stream_attempt: stream_attempt + 1,
+                                        tools_by_call_id: resume_tools,
+                                        index_to_call_id: resume_index,
                                         stream_idle_timeout,
                                     };
                                     continue;
@@ -2263,14 +2321,28 @@ fn stream_unfold_step(
                         Some(Err(err)) => {
                             // Retryable transport failure: re-POST with
                             // `previous_response_id = last_response_id`
-                            // (`None` degrades to today's full replay).
-                            // Per-response accumulation restarts empty as for
-                            // a fresh stream; already-yielded deltas stay out
-                            // and the server continues the prefix.
+                            // (`None` degrades to today's full replay). The
+                            // tool-arg prefix rides along on `Some(id)` so
+                            // suffix deltas append; already-yielded deltas
+                            // stay out and the server continues the prefix.
                             if stream_attempt < stream_max_retries {
                                 log::warn!(target: "gray_provider", "responses stream error, resuming (stream attempt {stream_attempt}): {err}");
-                                let mut resumed = body;
-                                resumed.previous_response_id = last_response_id.clone();
+                                // Throttle the re-POST like pre-stream
+                                // retries (transport errors carry no
+                                // Retry-After).
+                                tokio::time::sleep(backoff_delay(
+                                    initial_backoff,
+                                    stream_attempt,
+                                    None,
+                                ))
+                                .await;
+                                let (resumed, resume_tools, resume_index) =
+                                    resume_body_and_tool_prefix(
+                                        body,
+                                        tools_by_call_id,
+                                        index_to_call_id,
+                                        last_response_id,
+                                    );
                                 state = StreamState::ResponsesInit {
                                     client,
                                     url,
@@ -2282,6 +2354,8 @@ fn stream_unfold_step(
                                     request_max_retries,
                                     stream_max_retries,
                                     stream_attempt: stream_attempt + 1,
+                                    tools_by_call_id: resume_tools,
+                                    index_to_call_id: resume_index,
                                     stream_idle_timeout,
                                 };
                                 continue;
@@ -2378,6 +2452,8 @@ impl Provider for OpenAiProvider {
                 request_max_retries: self.request_max_retries,
                 stream_max_retries: self.stream_max_retries,
                 stream_attempt: 1,
+                tools_by_call_id: BTreeMap::new(),
+                index_to_call_id: BTreeMap::new(),
                 stream_idle_timeout: self.stream_idle_timeout,
             };
             return stream::unfold(init_state, stream_unfold_step).boxed();
@@ -2694,7 +2770,6 @@ mod tests {
         assert!(v.get("include").is_none());
         assert!(v.get("reasoning").is_none());
     }
-
     #[test]
     fn previous_response_id_serializes_only_when_set() {
         let body = map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), Some("high"));
@@ -2711,6 +2786,51 @@ mod tests {
             Some("resp_123"),
             "present when set: {v2}"
         );
+    }
+
+    #[test]
+    fn resume_carries_tool_prefix_on_id_drops_on_none() {
+        // Simulated mid-tool interruption: `{"q":"x"` arrived, suffix pending.
+        let prefix = || {
+            let mut tools: BTreeMap<String, (usize, String, String)> = BTreeMap::new();
+            tools.insert(
+                "call_1".to_string(),
+                (0, "lookup".to_string(), "{\"q\":\"x\"".to_string()),
+            );
+            let mut index: BTreeMap<usize, String> = BTreeMap::new();
+            index.insert(0, "call_1".to_string());
+            (tools, index)
+        };
+        // Some(id): continuation — prefix carried for suffix appends, id stamped.
+        let (tools, index) = prefix();
+        let (body, kept_tools, kept_index) = resume_body_and_tool_prefix(
+            map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), Some("high")),
+            tools,
+            index,
+            Some("resp_9".to_string()),
+        );
+        assert_eq!(body.previous_response_id.as_deref(), Some("resp_9"));
+        assert_eq!(
+            kept_tools.get("call_1").map(|e| e.2.as_str()),
+            Some("{\"q\":\"x\""),
+            "prefix args survive for suffix append"
+        );
+        assert_eq!(kept_index.get(&0).map(String::as_str), Some("call_1"));
+        let v = serde_json::to_value(&body).expect("serializes");
+        assert_eq!(
+            v.get("previous_response_id").and_then(|s| s.as_str()),
+            Some("resp_9")
+        );
+        // None: true full replay — stale prefix dropped, no id sent.
+        let (tools, index) = prefix();
+        let (body, dropped_tools, dropped_index) = resume_body_and_tool_prefix(
+            map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), Some("high")),
+            tools,
+            index,
+            None,
+        );
+        assert!(body.previous_response_id.is_none());
+        assert!(dropped_tools.is_empty() && dropped_index.is_empty());
     }
 
     #[test]
