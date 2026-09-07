@@ -27,7 +27,7 @@ pub use context::{
 pub mod ui;
 pub use ui::{BackgroundSnapshot, dim_color, dim_line, dim_style, render_dimmed_background};
 pub mod icons;
-pub use icons::{has_nerd_font, icon, init_nerd_font, set_nerd_font};
+pub use icons::{has_nerd_font, icon};
 
 mod acp_modal;
 mod context_modal;
