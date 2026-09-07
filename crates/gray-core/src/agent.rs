@@ -289,6 +289,7 @@ pub struct Agent {
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
     pub(crate) turn_state: crate::turn_queue::TurnState,
     pub(crate) next_turn_id: u64,
+    pub(crate) context_window: Option<usize>,
 }
 
 impl Agent {
@@ -306,6 +307,7 @@ impl Agent {
             hooks: Vec::new(),
             turn_state: crate::turn_queue::TurnState::Idle,
             next_turn_id: 1,
+            context_window: None,
         }
     }
 
@@ -350,6 +352,25 @@ impl Agent {
     pub fn with_tool_timeout(mut self, timeout: Duration) -> Self {
         self.tool_timeout = timeout;
         self
+    }
+
+    /// Known model context window in tokens (`None` = unknown: only
+    /// overflow-recovery compaction runs). Set via
+    /// [`with_context_window`](Self::with_context_window) from
+    /// `resolve_model_context_length` at build surfaces.
+    pub fn with_context_window(mut self, window: Option<usize>) -> Self {
+        self.context_window = window;
+        self
+    }
+
+    /// Rough transcript size in tokens (bytes/4 — same approximation as
+    /// `gray_tools::stats::est_tokens`, reimplemented here to keep core
+    /// dependency-free).
+    pub(crate) fn estimate_tokens(&self) -> usize {
+        self.messages
+            .iter()
+            .map(|m| m.context_text().len() / 4)
+            .sum()
     }
 
     /// Queues a steering note for the running turn. Drained before the next
@@ -1368,6 +1389,14 @@ mod agent_tests {
         let mut agent = Agent::new(
             Box::new(provider),
             Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
+        )
+        // Budgeted compaction keeps a 20k-token verbatim tail: seed enough
+        // history that a summarizable head exists (a lone short message now
+        // correctly reports "nothing to gain" and surfaces the error).
+        .with_messages(
+            (0..25)
+                .map(|i| Message::user(format!("bulk{i}:{}", "x".repeat(3990))))
+                .collect(),
         );
 
         let events = agent
