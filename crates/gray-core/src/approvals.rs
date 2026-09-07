@@ -70,14 +70,212 @@ impl ApprovalCache {
     }
 
     pub fn remember_command(&self, command: String) {
-        self.commands.lock().map(|mut g| g.insert(command)).ok();
+        self.commands
+            .lock()
+            .map(|mut g| g.insert(canonicalize_command(&command)))
+            .ok();
     }
 
     pub fn remembered_command(&self, command: &str) -> bool {
         self.commands
             .lock()
-            .map(|g| g.contains(command))
+            .map(|g| g.contains(&canonicalize_command(command)))
             .unwrap_or(false)
+    }
+}
+
+/// Canonical command identity for approval-cache keys (NOT for execution —
+/// the raw string always runs). Trim → split top-level chains → collapse
+/// whitespace → strip one `sh -c`/`bash -lc` wrapper layer per segment →
+/// rejoin operators in canonical spaced form (`;` becomes `\n`).
+///
+/// Fail-safe direction: any uncertainty returns a *more specific* key
+/// (usually the whole input), which degrades to a cache miss = re-ask.
+/// A canonicalizer can never widen an allow.
+pub fn canonicalize_command(cmd: &str) -> String {
+    let t = cmd.trim();
+    if t.is_empty() {
+        return String::from("(empty)");
+    }
+    let (segs, seps) = split_top_level(t);
+    let mut out = String::new();
+    for (i, seg) in segs.iter().enumerate() {
+        if i > 0 {
+            out.push_str(seps[i - 1]);
+        }
+        out.push_str(&unwrap_shell_wrapper(&collapse_ws(seg)));
+    }
+    if out.trim().is_empty() {
+        t.to_string()
+    } else {
+        out
+    }
+}
+
+/// Minimal top-level splitter for cache keys only: splits on `&&`, `||`,
+/// `;`, `|` outside single/double quotes, returning `(segments, separators)`
+/// where `separators[i]` is the canonical form of the operator between
+/// `segments[i]` and `segments[i + 1]` (`" && "`, `" || "`, `" | "`, or
+/// `"\n"` for `;`). A lone `&` (background) is not a separator — it stays
+/// verbatim in its segment (safe miss, never false allow). Subshells/
+/// heredocs are NOT understood (kept verbatim in their segment — safe miss,
+/// never false allow). No escape processing beyond backslash-skip inside
+/// double quotes (documented limit; worst case is a safe miss).
+fn split_top_level(cmd: &str) -> (Vec<String>, Vec<&'static str>) {
+    let mut segs = Vec::new();
+    let mut seps = Vec::new();
+    let mut cur = String::new();
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut i = 0;
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            cur.push(c);
+            if q == '"' && c == '\\' && i + 1 < chars.len() {
+                cur.push(chars[i + 1]);
+                i += 1;
+            } else if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                cur.push(c);
+                i += 1;
+            }
+            '&' if i + 1 < chars.len() && chars[i + 1] == '&' => {
+                segs.push(std::mem::take(&mut cur));
+                seps.push(" && ");
+                i += 2;
+            }
+            '|' if i + 1 < chars.len() && chars[i + 1] == '|' => {
+                segs.push(std::mem::take(&mut cur));
+                seps.push(" || ");
+                i += 2;
+            }
+            ';' => {
+                segs.push(std::mem::take(&mut cur));
+                seps.push("\n");
+                i += 1;
+            }
+            '|' => {
+                segs.push(std::mem::take(&mut cur));
+                seps.push(" | ");
+                i += 1;
+            }
+            _ => {
+                cur.push(c);
+                i += 1;
+            }
+        }
+    }
+    segs.push(cur);
+    (segs, seps)
+}
+
+/// Collapse every whitespace run to one space.
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Strip one `sh -c` / `bash -lc` / `/bin/sh -c` wrapper layer. Returns the
+/// input unchanged unless it is exactly `shell [-lc]+ <single-quoted|double-quoted|bare-tail>`.
+fn unwrap_shell_wrapper(seg: &str) -> String {
+    // Quote-aware split into (shell, flags, rest); the rest is the verbatim
+    // remainder after the flags (covers the bare-tail form `sh -c echo hi`).
+    // No escape processing beyond backslash-skip inside double quotes
+    // (documented limit; worst case is a safe miss).
+    let mut tokens: Vec<&str> = Vec::new();
+    let mut rest_start = seg.len();
+    let mut tok_start: Option<usize> = None;
+    let mut quote: Option<char> = None;
+    let mut prev_was_backslash = false;
+    for (idx, c) in seg.char_indices() {
+        if tokens.len() == 2 {
+            rest_start = idx;
+            break;
+        }
+        if let Some(q) = quote {
+            if q == '"' && c == '\\' {
+                prev_was_backslash = !prev_was_backslash;
+            } else {
+                if c == q && !prev_was_backslash {
+                    quote = None;
+                }
+                prev_was_backslash = false;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                if tok_start.is_none() {
+                    tok_start = Some(idx);
+                }
+            }
+            c if c.is_whitespace() => {
+                if let Some(s) = tok_start {
+                    tokens.push(&seg[s..idx]);
+                    tok_start = None;
+                }
+            }
+            _ => {
+                if tok_start.is_none() {
+                    tok_start = Some(idx);
+                }
+            }
+        }
+    }
+    if tokens.len() < 2
+        && let Some(s) = tok_start
+    {
+        tokens.push(&seg[s..]);
+    }
+    if tokens.len() != 2 {
+        return seg.to_string();
+    }
+    let rest = seg[rest_start..].trim_start();
+    if rest.is_empty() {
+        return seg.to_string();
+    }
+    let mut shell = tokens[0];
+    if let Some(s) = shell.strip_prefix("/bin/") {
+        shell = s;
+    }
+    if shell != "sh" && shell != "bash" {
+        return seg.to_string();
+    }
+    let flags = tokens[1];
+    if flags.is_empty()
+        || !flags.contains('c')
+        || !flags.chars().all(|c| c == 'l' || c == 'c' || c == '-')
+    {
+        return seg.to_string();
+    }
+    // Strip ONE layer of surrounding matching quotes; unbalanced quotes
+    // return the input unchanged.
+    let b = rest.as_bytes();
+    if rest.len() >= 2 && (b[0] == b'\'' || b[0] == b'"') && b[0] == b[rest.len() - 1] {
+        return rest[1..rest.len() - 1].to_string();
+    }
+    if rest.starts_with('\'') || rest.starts_with('"') {
+        return seg.to_string();
+    }
+    rest.to_string()
+}
+
+/// Session prefix rule identity: first two whitespace tokens (the binary +
+/// subcommand, e.g. `cargo test`). Single-token commands are their own prefix.
+pub fn command_prefix(canonical: &str) -> String {
+    let mut it = canonical.split_whitespace();
+    match (it.next(), it.next()) {
+        (Some(a), Some(b)) => format!("{a} {b}"),
+        (Some(a), None) => a.to_string(),
+        _ => canonical.to_string(),
     }
 }
 
@@ -459,6 +657,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_spellings_collide() {
+        assert_eq!(canonicalize_command("/bin/bash -lc 'echo hi'"), "echo hi");
+        assert_eq!(canonicalize_command("bash  -lc  \"echo hi\""), "echo hi");
+        assert_eq!(canonicalize_command("  echo hi  "), "echo hi");
+        assert_eq!(
+            canonicalize_command("sh -c 'echo a  &&  echo b'"),
+            "echo a && echo b"
+        );
+        assert_eq!(canonicalize_command("echo a && echo b"), "echo a && echo b");
+    }
+    #[test]
+    fn canonical_never_empties_and_never_panics() {
+        for cmd in [
+            "",
+            "   ",
+            "sh -c",
+            "bash -lc '",
+            "echo 'unbalanced",
+            "sudo\nrm -rf /",
+        ] {
+            let c = canonicalize_command(cmd);
+            assert!(!c.is_empty(), "{cmd:?} must degrade to *something* askable");
+        }
+    }
+    #[test]
+    fn prefix_takes_two_tokens() {
+        assert_eq!(command_prefix("cargo test --lib"), "cargo test");
+        assert_eq!(command_prefix("ls"), "ls");
+        assert_eq!(command_prefix("git commit -m x"), "git commit");
+    }
+    #[test]
+    fn session_cache_hits_across_spellings() {
+        let gate = ApprovalGate::new("auto");
+        gate.cache
+            .remember_command("bash -lc 'echo hi'".to_string());
+        assert!(gate.cache.remembered_command("/bin/bash -lc \"echo hi\""));
+        assert!(!gate.cache.remembered_command("echo bye"));
+    }
     #[tokio::test]
     async fn no_bridge_denies_without_asking() {
         let gate = ApprovalGate::new("auto");
