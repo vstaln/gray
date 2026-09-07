@@ -264,11 +264,15 @@ async fn pump_main(
     let mut mem = MemView::new();
     let mut total: u64 = 0;
     while let Some(chunk) = rx.recv().await {
-        mem.push(&chunk);
-        total += chunk.len() as u64;
+        // Durable transcript: secrets/paths never reach the tN.log file.
+        // One redaction serves both sides (memory + file) so byte counts
+        // and offsets stay consistent; binary chunks pass through untouched.
+        let redacted = gray_core::redaction::redact_bytes_for_log(&chunk);
+        mem.push(&redacted);
+        total += redacted.len() as u64;
         let flushed = match log.as_mut() {
             None => false,
-            Some(f) => f.write_all(&chunk).await.is_ok() && f.flush().await.is_ok(),
+            Some(f) => f.write_all(&redacted).await.is_ok() && f.flush().await.is_ok(),
         };
         if !flushed && !log_failed {
             log::warn!(
@@ -680,6 +684,24 @@ mod tests {
         assert!(wake_rx.try_recv().is_err()); // 6th match suppressed: 5 wakes + 1 disable, nothing more
         let file = std::fs::read(&log).unwrap();
         assert!(String::from_utf8_lossy(&file).contains(NOTIFY_DISABLED_NOTE));
+        assert_eq!(s.total_bytes, file.len() as u64);
+        let _ = std::fs::remove_file(&log);
+    }
+
+    #[tokio::test]
+    async fn pump_redacts_secrets_before_the_log_write() {
+        let (mut child, out, err) = spawn_sh("printf 'ZAI_API_KEY=supersecretvalue12345\\n'");
+        drop(err);
+        let log = tmp_log("redact");
+        let (bytes_tx, _rx) = watch::channel(0u64);
+        let h = Pump::start(TaskId(11), out, None, log.clone(), bytes_tx, None, None);
+        assert!(child.wait().await.unwrap().success());
+        let s = h.await.unwrap();
+        let file = std::fs::read(&log).unwrap();
+        let text = String::from_utf8_lossy(&file);
+        assert!(!text.contains("supersecretvalue12345"), "{text}");
+        assert!(text.contains("<redacted>"), "{text}");
+        // Memory view and file agree (both sides see the redacted bytes).
         assert_eq!(s.total_bytes, file.len() as u64);
         let _ = std::fs::remove_file(&log);
     }
