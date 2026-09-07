@@ -44,8 +44,8 @@ pub fn truncate_output(text: &str) -> String {
         let dropped_bytes = body.len() - MAX_BYTES;
         notes.push(format!("{dropped_bytes} bytes"));
         let half = MAX_BYTES / 2;
-        let head_end = floor_char_boundary(&body, half);
-        let tail_start = ceil_char_boundary(&body, body.len() - half);
+        let head_end = body.floor_char_boundary(half);
+        let tail_start = body.ceil_char_boundary(body.len() - half);
         format!(
             "{}\n{}\n{}",
             &body[..head_end],
@@ -75,7 +75,7 @@ pub fn truncate_output(text: &str) -> String {
 pub fn truncate_error(text: &str) -> String {
     let truncated = truncate_output(text);
     if truncated.len() > MAX_ERROR_BYTES {
-        let cut = floor_char_boundary(&truncated, MAX_ERROR_BYTES);
+        let cut = truncated.floor_char_boundary(MAX_ERROR_BYTES);
         format!("{}\n[error truncated to 2KiB]", &truncated[..cut])
     } else {
         truncated
@@ -94,28 +94,6 @@ pub fn fail(raw: String) -> ToolOutput {
 
 fn annotation(notes: &[String]) -> String {
     format!("[truncated {}]", notes.join(" / "))
-}
-
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-fn ceil_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
 }
 
 /// Required string argument.

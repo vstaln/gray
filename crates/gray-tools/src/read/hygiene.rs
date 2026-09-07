@@ -68,32 +68,6 @@ pub fn prepare(data: &[u8], display: &str) -> Result<String, String> {
     Ok(normalize_newlines(&String::from_utf8_lossy(bytes)))
 }
 
-/// Byte index moved down to a UTF-8 char boundary (for byte truncation).
-/// Lives here per the T1.4 spec; the copies in `gray-core/src/tool_out.rs`
-/// stay untouched (shared-file freeze — the integrator dedups them).
-pub fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-/// Byte index moved up to a UTF-8 char boundary (see [`floor_char_boundary`]).
-pub fn ceil_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,17 +171,17 @@ mod tests {
     fn boundaries_never_split_a_codepoint() {
         let s = "a\u{1F600}b"; // a + 😀 (4 bytes) + b
         for i in 0..=s.len() {
-            let f = floor_char_boundary(s, i);
-            let c = ceil_char_boundary(s, i);
+            let f = s.floor_char_boundary(i);
+            let c = s.ceil_char_boundary(i);
             assert!(s.is_char_boundary(f), "floor {i} -> {f}");
             assert!(s.is_char_boundary(c), "ceil {i} -> {c}");
             assert!(f <= i && i <= c, "floor/ceil bracket {i}");
             let _ = &s[..f];
             let _ = &s[c..];
         }
-        assert_eq!(floor_char_boundary(s, 2), 1);
-        assert_eq!(ceil_char_boundary(s, 2), 5);
-        assert_eq!(floor_char_boundary(s, 999), s.len());
-        assert_eq!(ceil_char_boundary(s, 999), s.len());
+        assert_eq!(s.floor_char_boundary(2), 1);
+        assert_eq!(s.ceil_char_boundary(2), 5);
+        assert_eq!(s.floor_char_boundary(999), s.len());
+        assert_eq!(s.ceil_char_boundary(999), s.len());
     }
 }

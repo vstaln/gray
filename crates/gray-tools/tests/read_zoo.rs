@@ -3,141 +3,14 @@
 //! Self-contained until T1.1 wires `src/read/testkit.rs` into the crate and
 //! dedups the builders (that module uses `crate::` paths, this file `gray_tools::`).
 
-use std::io::{Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use gray_core::agent::{ToolContext, ToolOutput};
+use gray_tools::read::testkit::{SPARSE_BYTES, Zoo, assert_golden, big_enabled, make_sparse};
 use gray_tools::{ReadTool, Tool};
 use serde_json::Value;
 use tempfile::TempDir;
-
-const SPARSE_BYTES: u64 = 200 * 1024 * 1024;
-
-fn big_enabled() -> bool {
-    std::env::var("GRAY_ZOO_BIG").as_deref() == Ok("1")
-}
-
-struct Zoo {
-    dir: TempDir,
-}
-
-impl Zoo {
-    fn build() -> std::io::Result<Self> {
-        let dir = TempDir::new()?;
-        write_fixtures(dir.path(), big_enabled())?;
-        Ok(Self { dir })
-    }
-
-    fn root(&self) -> PathBuf {
-        self.dir.path().to_path_buf()
-    }
-
-    async fn read(&self, path: &str, offset: Option<u64>, limit: Option<u64>) -> ToolOutput {
-        let mut map = serde_json::Map::new();
-        map.insert("path".to_string(), Value::String(path.to_string()));
-        if let Some(o) = offset {
-            map.insert("offset".to_string(), Value::from(o));
-        }
-        if let Some(l) = limit {
-            map.insert("limit".to_string(), Value::from(l));
-        }
-        let ctx = ToolContext {
-            cwd: self.root(),
-            ..ToolContext::default()
-        };
-        ReadTool::default().execute(&ctx, Value::Object(map)).await
-    }
-}
-
-fn write_fixtures(root: &Path, big: bool) -> std::io::Result<()> {
-    let long: Vec<String> = (1..=3000).map(|i| format!("line {i:04}")).collect();
-    std::fs::write(root.join("long.txt"), long.join("\n") + "\n")?;
-
-    let lock: Vec<String> = (1..=80_000)
-        .map(|i| format!("lock entry {i:06} sha=abcdef"))
-        .collect();
-    std::fs::write(root.join("lockfile.txt"), lock.join("\n") + "\n")?;
-
-    let head = "!function(e){var t={};";
-    let first = format!("{head}{}", "x".repeat(3900 - head.len()));
-    assert_eq!(first.len(), 3900);
-    std::fs::write(
-        root.join("minified.js"),
-        format!("{first}\n//# sourceMappingURL=app.js.map\nconsole.log(\"ok\");\nconst x = 1;\n"),
-    )?;
-
-    let wide: Vec<String> = (1..=500)
-        .map(|i| format!("{:<300}", format!("log line {i:04} ")))
-        .collect();
-    std::fs::write(root.join("wide.log"), wide.join("\n") + "\n")?;
-
-    std::fs::write(root.join("empty.txt"), b"")?;
-    std::fs::write(root.join("crlf.txt"), b"alpha\r\nbeta\r\ngamma\r\n")?;
-    std::fs::write(
-        root.join("bom.txt"),
-        "\u{FEFF}fn main() {}\nprintln!(\"hi\");\n",
-    )?;
-
-    let emoji: Vec<String> = (1..=200).map(|_| "\u{1F600}".repeat(100)).collect();
-    std::fs::write(root.join("emoji.txt"), emoji.join("\n") + "\n")?;
-
-    std::fs::write(
-        root.join("fake.png"),
-        "this is plain text wearing a .png extension\nsecond line\n",
-    )?;
-
-    let mut real = b"\x89PNG\r\n\x1a\n".to_vec();
-    real.extend((0..1024).map(|i| (i % 256) as u8));
-    std::fs::write(root.join("real.png"), real)?;
-
-    let nul: Vec<u8> = (0..4096)
-        .map(|i| if i % 8 == 7 { 0 } else { b'A' + (i % 26) as u8 })
-        .collect();
-    std::fs::write(root.join("nul.bin"), nul)?;
-
-    std::fs::write(
-        root.join("Screenshot 3.04\u{202F}PM.png"),
-        "screenshot bytes stand-in\n",
-    )?;
-    std::fs::write(root.join("cafe\u{301}.txt"), "nfd spelling\n")?;
-    std::fs::write(root.join("caf\u{e9}.txt"), "nfc spelling\n")?;
-    std::fs::write(root.join("AGENTS.md"), "# Agents\n\nRead this first.\n")?;
-
-    if big {
-        make_sparse(&root.join("sparse.txt"))?;
-    }
-    Ok(())
-}
-
-fn make_sparse(path: &Path) -> std::io::Result<()> {
-    let mut f = std::fs::File::create(path)?;
-    f.seek(SeekFrom::Start(SPARSE_BYTES - 1))?;
-    f.write_all(b"x")?;
-    Ok(())
-}
-
-fn assert_golden(actual: &str, expected: &str) {
-    if actual == expected {
-        return;
-    }
-    let mut out = String::from("--- expected\n+++ actual\n");
-    let exp: Vec<&str> = expected.lines().collect();
-    let act: Vec<&str> = actual.lines().collect();
-    for (i, (e, a)) in exp.iter().zip(act.iter()).enumerate() {
-        if e != a {
-            out.push_str(&format!("@@ line {} @@\n- {e}\n+ {a}\n", i + 1));
-        }
-    }
-    let n = exp.len().min(act.len());
-    for line in &exp[n..] {
-        out.push_str(&format!("- {line}\n"));
-    }
-    for line in &act[n..] {
-        out.push_str(&format!("+ {line}\n"));
-    }
-    panic!("golden mismatch:\n{out}");
-}
 
 fn read_file(root: &Path, name: &str) -> Vec<u8> {
     std::fs::read(root.join(name)).unwrap_or_else(|e| panic!("fixture {name} missing: {e}"))

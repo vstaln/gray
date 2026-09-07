@@ -16,7 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::buffers::{
     CodeBlockMeta, Highlight, LinkTarget, MarkdownBuffers, Replace, StyledCell, TableHyperlink,
-    TableReplace, TableState, Transform, floor_char_boundary, unicode_display_width,
+    TableReplace, TableState, Transform, unicode_display_width,
 };
 use crate::checkpoint::CheckpointKind;
 use crate::colors::StyleInto;
@@ -1867,10 +1867,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                         // whitespace textwrap ate cannot make `.find`
                         // re-match an earlier overlapping occurrence of
                         // this fragment.
-                        let cursor = floor_char_boundary(
-                            &full_text,
-                            source_cursors.get(i).copied().unwrap_or(0),
-                        );
+                        let cursor = full_text
+                            .floor_char_boundary(source_cursors.get(i).copied().unwrap_or(0));
                         let line_start = full_text
                             .get(cursor..)
                             .and_then(|rest| rest.find(cell_line_text))
