@@ -28,10 +28,12 @@ pub mod ui;
 pub use ui::{BackgroundSnapshot, dim_color, dim_line, dim_style, render_dimmed_background};
 pub mod icons;
 pub use icons::{has_nerd_font, icon, init_nerd_font, set_nerd_font};
+pub mod tabs;
 
 mod acp_modal;
 mod context_modal;
 mod effort;
+mod marketplace_modal;
 mod model_modal;
 mod permissions_modal;
 mod plugins_modal;
@@ -45,6 +47,7 @@ mod connect_models;
 pub use acp_modal::run_acp_modal;
 pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
+pub use marketplace_modal::run_marketplace_modal;
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 pub use permissions_modal::run_permissions_modal;
 pub use plugins_modal::run_plugins_modal;
@@ -82,13 +85,6 @@ pub async fn run_provider_menu(
     bg: Option<&BackgroundSnapshot>,
 ) -> anyhow::Result<bool> {
     run_connect_modal(config, bg)
-}
-
-pub async fn run_skills_picker(
-    cwd: &std::path::Path,
-    bg: Option<&BackgroundSnapshot>,
-) -> anyhow::Result<Option<(crate::skills::Skill, String)>> {
-    run_skills_modal(cwd, bg)
 }
 
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
