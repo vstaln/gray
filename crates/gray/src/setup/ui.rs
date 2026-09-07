@@ -107,14 +107,21 @@ pub(crate) const BACKDROP_BG: ratatui::style::Color = ratatui::style::Color::Res
 
 pub fn dim_style(style: ratatui::style::Style) -> ratatui::style::Style {
     use ratatui::style::{Color, Modifier, Style};
-    let mut s = Style::default().add_modifier(Modifier::DIM).bg(BACKDROP_BG);
+    let mut s = Style::default().add_modifier(Modifier::DIM);
     if let Some(fg) = style.fg {
         s = s.fg(dim_color(fg));
     } else {
         s = s.fg(Color::Rgb(70, 70, 70));
     }
     if let Some(bg) = style.bg {
-        s = s.bg(dim_color(bg));
+        // Composer gray: user prompt cards and the input box share Rgb(22, 22, 22).
+        // Preserving this background ensures user message cards retain their
+        // visible card box ("overlay") behind modals instead of crushing to near-black.
+        if bg == Color::Rgb(22, 22, 22) {
+            s = s.bg(bg);
+        } else {
+            s = s.bg(dim_color(bg));
+        }
     }
     s
 }
@@ -183,13 +190,13 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     let footer_model_color = Color::Rgb(58, 58, 58);
 
     let arrow_span = Span::styled(
-        "❯ ",
+        " ❯ ",
         Style::default()
             .fg(prompt_arrow_color)
             .add_modifier(Modifier::DIM)
             .bg(box_bg),
     );
-    let cont_span = Span::styled("  ", Style::default().bg(box_bg));
+    let cont_span = Span::styled("   ", Style::default().bg(box_bg));
     // Mirror the composer input box: wrap the live prompt so a long /
     // multi-line draft grows the box instead of breaking a single row.
     let content_w = w.saturating_sub(4).max(1);
@@ -302,37 +309,49 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     ])
     .style(Style::default().bg(BACKDROP_BG));
 
-    // Dynamic: the box grows with wrapped prompt rows (fixed 4 was the
-    // old blank+prompt+blank+footer); reserving fewer rows than pushed made
-    // truncate() eat the footer + box bottom behind modals.
-    let composer_h = bottom_box_lines.len() + 1;
+    let transcript = bg.rebuild_transcript(w);
+
+    // Live TUI parity: ensure breathing room (a gap row) between transcript and
+    // composer input box whenever transcript does not already end blank.
+    let transcript_ends_blank = transcript.last().is_some_and(|l| {
+        (l.style.bg.is_none() || l.style.bg == Some(BACKDROP_BG))
+            && l.spans.iter().all(|s| {
+                (s.style.bg.is_none() || s.style.bg == Some(BACKDROP_BG))
+                    && s.content.trim().is_empty()
+            })
+    });
+    let needs_gap = !transcript.is_empty() && !transcript_ends_blank;
+    let gap_h: usize = if needs_gap { 1 } else { 0 };
+
+    let composer_h = bottom_box_lines.len() + 1 + gap_h;
     let transcript_avail_h = h.saturating_sub(composer_h);
 
-    let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
-
-    // Live TUI: the inline viewport owns the bottom edge of the screen
-    // (composer input box + footer), while transcript fills upward into
-    // scrollback. When the transcript is shorter than transcript_avail_h,
-    // any empty filler belongs at the TOP of the screen, anchoring the
-    // composer and footer to the bottom.
-    let transcript = bg.rebuild_transcript(w);
     let tail: &[Line<'static>] = if transcript.len() <= transcript_avail_h {
         &transcript
     } else {
         &transcript[transcript.len() - transcript_avail_h..]
     };
-    let top_pad = transcript_avail_h.saturating_sub(tail.len());
-    for _ in 0..top_pad {
-        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
-    }
+
+    let mut full_screen_lines: Vec<Line<'static>> = Vec::with_capacity(h);
+
+    // Live TUI: the transcript starts at the top of the terminal,
+    // followed by the gap, composer input box, and footer, with empty filler
+    // at the bottom of the screen. Anchoring filler at the top (top_pad)
+    // caused the whole UI to jump down to the bottom of the screen.
     for l in tail {
         full_screen_lines.push(pad_backdrop_line(dim_line(l), w));
+    }
+    if needs_gap {
+        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
     }
     for l in bottom_box_lines {
         full_screen_lines.push(pad_backdrop_line(l, w));
     }
     full_screen_lines.push(pad_backdrop_line(footer_line, w));
 
+    while full_screen_lines.len() < h {
+        full_screen_lines.push(pad_backdrop_line(Line::from(""), w));
+    }
     full_screen_lines.truncate(h);
 
     // Row-by-row (composer `draw.rs` parity): a single multi-line Paragraph
@@ -359,8 +378,8 @@ mod tests {
 
     #[test]
     fn backdrop_mirrors_live_layout_with_multiline_prompt() {
-        // Live TUI: the composer input box and footer are anchored to the
-        // bottom edge of the terminal, with empty space / transcript above.
+        // Live TUI: the composer input box and footer start below any transcript,
+        // followed by empty filler space at the bottom of the screen.
         let backend = ratatui::backend::TestBackend::new(40, 10);
         let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
         let bg = BackgroundSnapshot {
@@ -374,24 +393,61 @@ mod tests {
             .expect("draw");
         let rows = buffer_rows(terminal.backend(), 40, 10);
         // 4 wrapped prompt rows + top/bottom blank = 6 box rows, 1 footer row = 7 rows total.
-        // In a 10-row viewport with 0 transcript rows, rows 0..3 are top filler.
+        // In a 10-row viewport with 0 transcript rows, the box starts at row 0,
+        // footer is at row 6, and rows 7..10 are trailing filler.
         assert!(
-            rows[0..3].iter().all(|r| r.trim().is_empty()),
-            "filler before transcript/box: {rows:?}"
+            rows[1].contains("❯"),
+            "prompt box starts at top: {rows:?}"
         );
         assert!(
-            rows[4].contains("❯"),
-            "prompt box starts right after top filler: {rows:?}"
+            rows[6].contains("cache"),
+            "footer follows the box: {rows:?}"
         );
         assert!(
-            rows[9].contains("cache"),
-            "footer anchored at the bottom: {rows:?}"
+            rows[7..].iter().all(|r| r.trim().is_empty()),
+            "trailing filler after footer: {rows:?}"
         );
-        let box_bg = terminal.backend().buffer()[(0, 4)].bg;
+        let box_bg = terminal.backend().buffer()[(0, 1)].bg;
         assert_eq!(
             box_bg,
             ratatui::style::Color::Rgb(22, 22, 22),
             "box matches composer gray"
+        );
+    }
+
+    #[test]
+    fn backdrop_preserves_card_box_and_inserts_gap_before_input() {
+        let backend = ratatui::backend::TestBackend::new(40, 15);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        let bg = BackgroundSnapshot {
+            history_entries: vec![crate::composer::TranscriptEntry::UserPrompt(
+                "/thinking".to_string(),
+                Vec::new(),
+            )],
+            ..Default::default()
+        };
+        terminal
+            .draw(|frame| render_dimmed_background(frame, &bg))
+            .expect("draw");
+        let rows = buffer_rows(terminal.backend(), 40, 15);
+        // Prompt card: 3 rows (margin, ' ❯ /thinking', margin)
+        assert!(rows[1].contains("/thinking"), "card contains command: {rows:?}");
+        // Card background is preserved (not crushed to near-black)
+        let card_bg = terminal.backend().buffer()[(0, 1)].bg;
+        assert_eq!(
+            card_bg,
+            ratatui::style::Color::Rgb(22, 22, 22),
+            "card matches composer gray overlay"
+        );
+        // Row 3 is the gap row between card and input box
+        assert!(
+            rows[3].trim().is_empty(),
+            "gap row between sent text and input box: {rows:?}"
+        );
+        // Row 4 is top margin of input box, row 5 is input prompt arrow
+        assert!(
+            rows[5].contains("❯"),
+            "input box arrow follows gap row: {rows:?}"
         );
     }
 }

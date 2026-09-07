@@ -37,7 +37,11 @@ pub(crate) fn expand_skill_command(
             }
         };
         let Some((skill, picked_args)) = picked else {
-            // Esc — picker cancelled; viewport already restored
+            // Esc — picker cancelled; viewport already restored. The slash
+            // card has no feedback, so leave the trailing gap.
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").ensure_gap(1);
+            }
             return ReplCommand::Empty;
         };
         // load skill body and optionally append args part from query
@@ -298,6 +302,7 @@ pub(crate) async fn handle_model(
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
             t.push_action("Model set to", Some(&m));
+            t.ensure_gap(1);
         } else {
             println!("✓ Model set to {m}");
         }
@@ -323,6 +328,7 @@ pub(crate) async fn handle_model(
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
                     t.push_action("Model set to", Some(m));
+                    t.ensure_gap(1);
                 }
                 let _ = t.draw();
             }
@@ -348,15 +354,17 @@ pub(crate) async fn handle_model(
                 t.draft.clear();
                 t.attachments.clear();
                 t.pending_pastes.clear();
+                // Dismissed picker leaves the slash card with no feedback:
+                // gap so it doesn't jam the input box.
+                t.ensure_gap(1);
                 let _ = t.draw();
             }
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(format!("└ error: {e}"));
+                let mut t = shared.lock().expect("tui lock");
+                t.push_dim(format!("└ error: {e}"));
+                t.ensure_gap(1);
             } else {
                 println!("model error: {e}");
             }
@@ -393,6 +401,7 @@ pub(crate) async fn handle_thinking(
                 t.set_thinking_effort(eff_clean.clone());
                 t.set_hide_thinking(*hide_thinking);
                 t.push_action("Thinking effort set to", Some(&eff_clean));
+                t.ensure_gap(1);
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
             }
@@ -403,10 +412,9 @@ pub(crate) async fn handle_thinking(
             "unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max"
         );
         if let Some(shared) = tui {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_dim(format!("└ {msg}"));
+            let mut t = shared.lock().expect("tui lock");
+            t.push_dim(format!("└ {msg}"));
+            t.ensure_gap(1);
         } else {
             println!("{msg}");
         }
@@ -425,6 +433,7 @@ pub(crate) async fn handle_thinking(
                     *hide_thinking = config.reasoning_hidden();
                     t.set_hide_thinking(*hide_thinking);
                     t.push_action("Thinking effort set to", Some(eff));
+                    t.ensure_gap(1);
                 }
                 let _ = t.draw();
             }
@@ -450,6 +459,7 @@ pub(crate) async fn handle_thinking(
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(*hide_thinking);
                     t.push_dim(format!("└ {msg}"));
+                    t.ensure_gap(1);
                 } else {
                     println!("{msg}");
                 }
@@ -462,6 +472,9 @@ pub(crate) async fn handle_thinking(
                 t.draft.clear();
                 t.attachments.clear();
                 t.pending_pastes.clear();
+                // Dismissed picker leaves the slash card with no feedback:
+                // gap so it doesn't jam the input box.
+                t.ensure_gap(1);
                 let _ = t.draw();
             }
         }
