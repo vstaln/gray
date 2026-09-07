@@ -6,6 +6,7 @@ pub mod approvals;
 pub mod error;
 pub mod event;
 pub mod message;
+pub mod parallel;
 pub mod questions;
 pub mod redaction;
 pub mod tool_out;
