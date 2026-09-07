@@ -17,6 +17,8 @@ tokio-util = { workspace = true }
 tempfile = { workspace = true }
 uuid = { workspace = true }
 libc = { workspace = true }
+ignore = { workspace = true }
+globset = { workspace = true }
 infer = "0.19"
 regex = "1"
 
