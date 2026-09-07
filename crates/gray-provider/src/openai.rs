@@ -32,7 +32,8 @@ pub struct OpenAiProvider {
     initial_backoff: Duration,
     reasoning_effort: Option<String>,
     /// Stable per-process id sent as `prompt_cache_key` (Responses API) so the
-    /// gateway pins one cache shard for prompt caching.
+    /// gateway pins one cache shard for prompt caching. Also sent as the
+    /// `x-opencode-session` header (Console Go routes on it; required).
     session_id: Option<String>,
     /// Pre-stream POST retry bound (replaces the single `MAX_ATTEMPTS` gate in
     /// `Init`/`ResponsesInit`). Default 3 reproduces today's behavior.
@@ -1265,6 +1266,7 @@ async fn send_json_once(
     api_key: &str,
     body: &Value,
     attempt: usize,
+    session_id: Option<&str>,
 ) -> Result<reqwest::Response, (ProviderError, Option<Duration>, u16)> {
     let base = if api_key.is_empty() {
         client.post(url.clone())
@@ -1272,6 +1274,12 @@ async fn send_json_once(
         client
             .post(url.clone())
             .header("Authorization", format!("Bearer {api_key}"))
+    };
+    // Console Go (opencode.ai/zen) routes on this; without it inference
+    // 400s MissingSessionID. Unknown `x-` headers are ignored elsewhere.
+    let base = match session_id.filter(|s| !s.is_empty()) {
+        Some(sid) => base.header("x-opencode-session", sid),
+        None => base,
     };
     let req = base.header("Content-Type", "application/json").json(body);
     let res_result = req.send().await;
@@ -1327,6 +1335,7 @@ enum StreamState {
         url: Url,
         api_key: String,
         body: OpenAiChatRequest,
+        session_id: Option<String>,
         initial_backoff: Duration,
         attempt: usize,
         retry_after: Option<Duration>,
@@ -1512,6 +1521,7 @@ fn stream_unfold_step(
                     url,
                     api_key,
                     body,
+                    session_id,
                     initial_backoff,
                     attempt,
                     retry_after,
@@ -1531,7 +1541,16 @@ fn stream_unfold_step(
                     }
                     let body_value =
                         serde_json::to_value(&body).expect("OpenAiChatRequest serialization");
-                    match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
+                    match send_json_once(
+                        &client,
+                        &url,
+                        &api_key,
+                        &body_value,
+                        attempt,
+                        session_id.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(response) => {
                             let event_stream: BoxedEventStream =
                                 response.bytes_stream().eventsource().boxed();
@@ -1567,6 +1586,7 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body: stripped,
+                                    session_id,
                                     initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
@@ -1582,6 +1602,7 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body,
+                                    session_id,
                                     initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
@@ -1631,7 +1652,16 @@ fn stream_unfold_step(
                     }
                     let body_value =
                         serde_json::to_value(&body).expect("ResponsesRequest serialization");
-                    match send_json_once(&client, &url, &api_key, &body_value, attempt).await {
+                    match send_json_once(
+                        &client,
+                        &url,
+                        &api_key,
+                        &body_value,
+                        attempt,
+                        body.prompt_cache_key.as_deref(),
+                    )
+                    .await
+                    {
                         Ok(response) => {
                             let event_stream: BoxedEventStream =
                                 response.bytes_stream().eventsource().boxed();
@@ -2469,6 +2499,7 @@ impl Provider for OpenAiProvider {
             url,
             api_key: self.api_key.clone(),
             body,
+            session_id: self.session_id.clone(),
             initial_backoff: self.initial_backoff,
             attempt: 1,
             retry_after: None,
@@ -2644,6 +2675,37 @@ mod tests {
             matches!(events.last(), Some(Err(_))),
             "burst ends with terminal error: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn session_header_sent_on_chat_post() {
+        // Console Go 400s without `x-opencode-session`: the one POST must
+        // carry the configured session id (500 stub still records it).
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::any())
+            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+        let provider = OpenAiProvider::builder("key", "test-model")
+            .base_url(server.uri())
+            .session_id("sess-123")
+            .initial_backoff(Duration::from_millis(1))
+            .request_max_retries(1)
+            .build()
+            .expect("provider builds");
+        let req = ChatRequest {
+            system: None,
+            messages: Vec::new(),
+            tools: Vec::new(),
+        };
+        let _events: Vec<_> = provider.stream(req).collect().await;
+        let received = server.received_requests().await.expect("requests recorded");
+        assert_eq!(received.len(), 1, "one POST attempt");
+        let got = received[0]
+            .headers
+            .get("x-opencode-session")
+            .expect("session header sent");
+        assert_eq!(got.to_str().expect("header ascii"), "sess-123");
     }
 
     #[tokio::test]
