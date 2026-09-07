@@ -1,16 +1,9 @@
-//! shell/contract.rs — V2 frozen contract (Phase 0, brief 0).
+//! shell/contract.rs — shared shell-task types (Phase 0, brief 0).
 //!
-//! Every public type + signature the later briefs fill in. Bodies are
-//! `todo!()` until the owning brief lands. Parallel implementers may add
-//! private items freely; changing a `pub` signature requires a message back
-//! to the orchestrator, never a silent edit.
-//!
-//! Status: NOT wired into the crate yet (`pub mod shell` + `bash.rs`
-//! shrink land with brief 1D). This file is the compile target, not yet
-//! part of the build. Plan source: `/tmp/opencode/read-eff/src/data/`.
-//!
-//! Owners: exit→1A, view/header→1B, fence→1B, pump→1C, spawn→1D,
-//! registry→2A, kill→2D, wake/sleep→3A–3C.
+//! Every public type the shell briefs share. Behavior lives with the
+//! owners: exit→exit.rs, view/header→view.rs, fence→fence.rs,
+//! pump→pump.rs, spawn→spawn.rs, registry→registry.rs, kill→kill.rs,
+//! wake/sleep→wake.rs.
 
 #![allow(dead_code, unused_variables)]
 
