@@ -30,14 +30,6 @@ impl TableBorders {
         chars: ['─', '│', '┌', '┐', '└', '┘', '┬', '┴', '├', '┤', '┼'],
     };
 
-    pub const ASCII: Self = Self {
-        chars: ['-', '|', '+', '+', '+', '+', '+', '+', '+', '+', '+'],
-    };
-
-    pub const DOUBLE: Self = Self {
-        chars: ['═', '║', '╔', '╗', '╚', '╝', '╦', '╩', '╠', '╣', '╬'],
-    };
-
     pub const fn new(chars: [char; 11]) -> Self {
         Self { chars }
     }
@@ -74,41 +66,6 @@ impl TableBorders {
         self.chars[Self::T_R]
     }
     pub const fn x(&self) -> char {
-        self.chars[Self::X]
-    }
-
-    // Long names (for readability)
-    pub const fn horizontal(&self) -> char {
-        self.chars[Self::H]
-    }
-    pub const fn vertical(&self) -> char {
-        self.chars[Self::V]
-    }
-    pub const fn top_left(&self) -> char {
-        self.chars[Self::TL]
-    }
-    pub const fn top_right(&self) -> char {
-        self.chars[Self::TR]
-    }
-    pub const fn bottom_left(&self) -> char {
-        self.chars[Self::BL]
-    }
-    pub const fn bottom_right(&self) -> char {
-        self.chars[Self::BR]
-    }
-    pub const fn t_top(&self) -> char {
-        self.chars[Self::T_T]
-    }
-    pub const fn t_bottom(&self) -> char {
-        self.chars[Self::T_B]
-    }
-    pub const fn t_left(&self) -> char {
-        self.chars[Self::T_L]
-    }
-    pub const fn t_right(&self) -> char {
-        self.chars[Self::T_R]
-    }
-    pub const fn cross(&self) -> char {
         self.chars[Self::X]
     }
 }
