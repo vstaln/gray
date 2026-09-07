@@ -149,6 +149,7 @@ When usage nears the limit (`tokens > window − 16k` reserve, pi parity), gray 
 | `GRAY_INSTALL_DIR` | installer destination dir (overrides default `~/.local/bin`; `--system` installs system-wide) |
 | `GRAY_GUARD_BYPASS=1` | disable the destructive-command guard entirely (CI/piped mode) |
 | `GRAY_PERMISSION` | tool permission: `ask` (prompt before risky commands, default) or `auto` (no prompts; default in `-p` print mode) |
+| `GRAY_PARALLEL_READS` | tool parallelism: `0` runs every tool sequentially (default runs read-only tools concurrently, input order preserved) |
 | `GRAY_ACP_AUTO_APPROVE=1` | auto-approve ACP permission requests (same as `/acp <agent> --yolo`) |
 | `GRAY_ACP_ALLOW_ANY_PATH=1` | allow ACP `fs/*` handlers outside the workspace (default: workspace only) |
 | `GRAY_READ_DEDUP=0` | disable the read dedup stub (repeat reads always return full content) |
