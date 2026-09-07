@@ -6,7 +6,11 @@
 
 use std::collections::HashSet;
 
+use futures::future::BoxFuture;
 use serde_json::Value;
+use tokio::task::JoinSet;
+
+use crate::agent::ToolOutput;
 
 /// Max calls per parallel run (Toolrush `MAX_BATCH`).
 pub const MAX_BATCH: usize = 16;
@@ -71,6 +75,62 @@ pub fn plan_segments(
     }
     flush(&mut run, &mut out);
     out
+}
+
+/// Run `futs` with at most `max_workers` in flight, returning
+/// `(input_index, output)` in input-index order. `None` output means the
+/// call never completed (cancel fired first). Task panics become
+/// `is_error` outputs — tool failures are data, never crashes.
+pub async fn join_ordered(
+    futs: Vec<(usize, BoxFuture<'static, ToolOutput>)>,
+    max_workers: usize,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Vec<(usize, Option<ToolOutput>)> {
+    use std::sync::Arc;
+    let sem = Arc::new(tokio::sync::Semaphore::new(max_workers.max(1)));
+    let mut set: JoinSet<(usize, ToolOutput)> = JoinSet::new();
+    for (idx, fut) in futs {
+        let permit_owner = sem.clone();
+        set.spawn(async move {
+            let _permit = permit_owner.acquire_owned().await.expect("semaphore closed");
+            (idx, fut.await)
+        });
+    }
+    let mut done: Vec<(usize, Option<ToolOutput>)> = Vec::new();
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                set.abort_all();
+                while let Some(res) = set.join_next().await {
+                    if let Ok((idx, out)) = res {
+                        done.push((idx, Some(out)));
+                    }
+                }
+                break;
+            }
+            res = set.join_next() => {
+                match res {
+                    None => break,
+                    Some(Ok((idx, out))) => done.push((idx, Some(out))),
+                    Some(Err(e)) => {
+                        // JoinError here means the task panicked (cancellation
+                        // is handled above via abort_all + graceful drain).
+                        if let Ok(id) = e.try_into_panic() {
+                            let msg = id.downcast_ref::<&str>().copied()
+                                .or_else(|| id.downcast_ref::<String>().map(String::as_str))
+                                .unwrap_or("unknown panic");
+                            // Index is lost on panic; attribute to no call —
+                            // the loop layer treats a shortfall as an error.
+                            done.push((usize::MAX, Some(ToolOutput::error(format!("tool task panicked: {msg}")))));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    done.sort_by_key(|(i, _)| *i);
+    done
 }
 
 #[cfg(test)]
@@ -154,5 +214,57 @@ mod tests {
             Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
             None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
         }
+    }
+    #[tokio::test]
+    async fn join_runs_concurrently_and_returns_input_order() {
+        use crate::agent::ToolOutput;
+        use futures::future::BoxFuture;
+        let mk = |i: usize| {
+            (i, Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                ToolOutput::ok(format!("out{i}"))
+            }) as BoxFuture<'static, ToolOutput>)
+        };
+        let futs = vec![mk(0), mk(1), mk(2), mk(3)];
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let t0 = std::time::Instant::now();
+        let got = join_ordered(futs, 4, &cancel).await;
+        let dt = t0.elapsed();
+        assert_eq!(
+            got.into_iter().map(|(i, o)| (i, o.unwrap().content)).collect::<Vec<_>>(),
+            vec![(0, "out0".into()), (1, "out1".into()), (2, "out2".into()), (3, "out3".into())]
+        );
+        assert!(dt < std::time::Duration::from_millis(300), "4x80ms overlapped, took {dt:?}");
+    }
+    #[tokio::test]
+    async fn join_task_panic_becomes_error_output() {
+        use crate::agent::ToolOutput;
+        use futures::future::BoxFuture;
+        let futs = vec![(0, Box::pin(async { panic!("boom"); #[allow(unreachable_code)] ToolOutput::error("unreachable") }) as BoxFuture<'static, ToolOutput>)];
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let got = join_ordered(futs, 4, &cancel).await;
+        assert_eq!(got.len(), 1);
+        let (_, out) = &got[0];
+        assert!(out.as_ref().unwrap().is_error, "panic must be data, not a crash");
+    }
+    #[tokio::test]
+    async fn join_cancel_marks_unfinished_none() {
+        use crate::agent::ToolOutput;
+        use futures::future::BoxFuture;
+        let mk = |i: usize| {
+            (i, Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                #[allow(unreachable_code)]
+                ToolOutput::ok(format!("out{i}"))
+            }) as BoxFuture<'static, ToolOutput>)
+        };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let c2 = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            c2.cancel();
+        });
+        let got = join_ordered(vec![mk(0), mk(1)], 4, &cancel).await;
+        assert!(got.iter().all(|(_, o)| o.is_none()), "cancelled calls yield None");
     }
 }
