@@ -14,16 +14,11 @@
 
 #![allow(dead_code, unused_variables)]
 
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 // NOTE: `regex` backs `NotifyPattern` (brief 3C, 1 MiB size limit).
-// `tokio` sync/task/process come from the existing workspace dep.
-use gray_core::agent::ToolContext;
-use tokio::process::{Child, ChildStderr, ChildStdout};
-use tokio::sync::{broadcast, watch};
-use tokio::task::JoinHandle;
+use tokio::process::Child;
 
 // ── budgets & limits ──────────────────────────────────────────────
 
@@ -143,50 +138,6 @@ pub enum KillMethod {
     AlreadyExited,
 }
 
-// exit.rs (brief 1A)
-pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitReport {
-    todo!()
-}
-
-// view.rs (brief 1B)
-pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_offset: u64) -> View {
-    todo!()
-}
-pub fn header(
-    task: &TaskInfo,
-    report: Option<&ExitReport>,
-    view: Option<&View>,
-    elapsed: Duration,
-) -> String {
-    todo!()
-}
-pub fn resume_hint(task: TaskId, view: &View) -> String {
-    todo!()
-}
-
-// fence.rs (brief 1B)
-pub fn fence(task: TaskId, body: &str) -> String {
-    // escapes "</untrusted-output" inside body
-    todo!()
-}
-
-// pump.rs (brief 1C, as amended by P1D rulings: `id` first — the contract
-// signature has no source for `PatternMatched{id, ..}`; `NotifyPattern`
-// stub until 3C; `log_write_failed` required by the brief's tests)
-pub struct Pump;
-impl Pump {
-    pub fn start(
-        id: TaskId,
-        stdout: Option<ChildStdout>,
-        stderr: Option<ChildStderr>,
-        log_path: PathBuf,
-        bytes_tx: watch::Sender<u64>,
-        pattern: Option<NotifyPattern>,
-        wake: Option<broadcast::Sender<WakeEvent>>,
-    ) -> JoinHandle<PumpSummary> {
-        todo!()
-    }
-}
 pub struct PumpSummary {
     pub total_bytes: u64,
     pub total_lines: usize,
@@ -197,54 +148,6 @@ pub struct PumpSummary {
     pub log_write_failed: bool,
 }
 
-// registry.rs (brief 2A)
-pub struct ProcessRegistry;
-pub fn registry() -> &'static ProcessRegistry {
-    todo!()
-}
-impl ProcessRegistry {
-    pub fn register(
-        &self,
-        session: &str,
-        child: &Child,
-        command: &str,
-        log_path: PathBuf,
-    ) -> TaskId {
-        todo!()
-    }
-    pub fn get(&self, session: &str, id: TaskId) -> Option<TaskInfo> {
-        todo!()
-    }
-    pub fn list(&self, session: &str) -> Vec<TaskInfo> {
-        todo!()
-    }
-    pub fn mark_exited(&self, session: &str, id: TaskId, report: ExitReport) {
-        todo!()
-    }
-    pub fn bytes_rx(&self, session: &str, id: TaskId) -> Option<watch::Receiver<u64>> {
-        todo!()
-    }
-    pub fn exit_rx(
-        &self,
-        session: &str,
-        id: TaskId,
-    ) -> Option<watch::Receiver<Option<ExitReport>>> {
-        todo!()
-    }
-    pub fn wake_tx(&self) -> broadcast::Sender<WakeEvent> {
-        todo!()
-    }
-    pub fn notify_user_input(&self) {
-        todo!()
-    }
-    pub fn gc(&self, session: &str) {
-        todo!()
-    }
-    pub async fn shutdown_session(&self, session: &str) {
-        todo!()
-    }
-}
-
 // spawn.rs (brief 1D; P1D ruling: `task` param added — the 2-arg form
 // cannot set the brief-mandated `GRAY_TASK_ID` env on the child)
 pub struct Spawned {
@@ -252,22 +155,4 @@ pub struct Spawned {
     pub pid: u32,
     pub pgid: i32,
     pub start_ticks: Option<u64>,
-}
-pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
-    todo!()
-}
-
-// kill.rs (brief 2D)
-pub async fn kill(
-    target: KillTarget,
-    session: &str,
-    ctx: &ToolContext,
-) -> Result<KillReport, String> {
-    todo!()
-}
-pub fn pid_for_port(port: u16) -> io::Result<Option<(u32, String)>> {
-    todo!()
-}
-pub fn still_same_process(pid: u32, start_ticks: Option<u64>) -> bool {
-    todo!()
 }
