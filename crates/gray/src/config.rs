@@ -101,7 +101,12 @@ impl Config {
             })
             .or(saved.context_keep);
 
-        let permissions = nonempty(env("GRAY_PERMISSIONS").as_deref()).or(saved.permissions);
+        // Canonical env is `GRAY_PERMISSION` (singular, the name the guard
+        // reads); `GRAY_PERMISSIONS` stays accepted as an alias. Explicit
+        // env wins over the saved file.
+        let permissions = nonempty(env("GRAY_PERMISSION").as_deref())
+            .or_else(|| nonempty(env("GRAY_PERMISSIONS").as_deref()))
+            .or(saved.permissions);
 
         let config = Self {
             model,

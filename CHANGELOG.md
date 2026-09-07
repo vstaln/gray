@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-07
+
 ### Added
 - Verified installs: SHA256SUMS published per release, checked by install.sh (S1)
 - `GRAY_NO_UPDATE_CHECK=1` and 24h update-check cache (L4)

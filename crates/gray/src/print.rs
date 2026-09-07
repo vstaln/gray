@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use gray_core::agent::{PermissionMode, ToolContext};
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
+use gray_core::redaction::{redact_for_disclosure, redact_message};
 use gray_session::{JsonlSessionStore, SessionId, SessionMeta};
 
 use crate::build_agent;
@@ -85,6 +86,9 @@ pub fn render_event_with_context<W: Write>(
         AgentEvent::StepUsage { .. } => Ok(()),
         // Codex steal: retry notices go to the same stream, dim, never fatal.
         AgentEvent::StreamError { message, details } => {
+            // Provider retry notices can echo request details: scrub first.
+            let message = scrub_error_text(message);
+            let details = scrub_error_text(details);
             if details.is_empty() {
                 writeln!(w, "\n\x1b[2m⚠ {message}\x1b[0m")?;
             } else {
@@ -143,17 +147,24 @@ pub async fn run_print_mode_with_session(
     };
     let initial_count = history.len();
     let cancel = tokio_util::sync::CancellationToken::new();
-    let permissions = crate::setup::load_saved_config_at(
-        &crate::setup::saved_config_path()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/dev/null")),
-    )
-    .permissions;
+    // Unified with Config::resolve: explicit env (canonical
+    // `GRAY_PERMISSION`, alias `GRAY_PERMISSIONS`) wins via
+    // config.permissions; saved file is the fallback.
+    let permissions = config.permissions.clone().or_else(|| {
+        crate::setup::load_saved_config_at(
+            &crate::setup::saved_config_path()
+                .unwrap_or_else(|_| std::path::PathBuf::from("/dev/null")),
+        )
+        .permissions
+    });
     let ctx = ToolContext {
         cwd: cwd.clone(),
         cancel,
         questions: None,
         session_id: None, // one-shot print mode has no session
         permission: PermissionMode::resolve(true), // auto for -p unless GRAY_PERMISSION=ask
+        // (guard Prompt verdicts fail closed at the tool seam in this mode —
+        // no TTY to ask on, so risky commands deny instead of auto-running).
         approvals: Some(gray_core::approvals::ApprovalGate::new(
             permissions
                 .as_deref()
@@ -186,7 +197,7 @@ pub async fn run_print_mode_with_session(
             .await
             .map_err(|e| {
                 let msg = crate::repl::format_core_error(&e, &config.base_url);
-                anyhow::anyhow!(msg)
+                anyhow::anyhow!(scrub_error_text(&msg))
             })?
     };
     drop(result);
@@ -217,6 +228,11 @@ pub async fn run_print_mode_with_session(
     Ok(())
 }
 
+/// Scrub provider/error text before it reaches stderr or a receipt.
+pub(crate) fn scrub_error_text(s: &str) -> String {
+    redact_for_disclosure(s).into_text()
+}
+
 /// Appends only messages at index `prior_count..` to an existing session
 /// (print-mode `--session`/`-c` continuation in place — never a new file).
 pub async fn append_new_messages(
@@ -226,8 +242,11 @@ pub async fn append_new_messages(
     messages: &[Message],
 ) -> anyhow::Result<()> {
     for msg in &messages[prior_count.min(messages.len())..] {
+        // Durable JSONL: persist the redacted copy (secrets/paths never land
+        // in the session file); the live turn keeps the raw text.
+        let redacted = redact_message(msg);
         store
-            .append(sid, msg)
+            .append(sid, &redacted)
             .await
             .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
     }
@@ -256,8 +275,10 @@ pub async fn save_session(
     store.create(meta).await?;
 
     for msg in messages {
+        // Durable JSONL: persist the redacted copy (see append_new_messages).
+        let redacted = redact_message(msg);
         store
-            .append(&session_id, msg)
+            .append(&session_id, &redacted)
             .await
             .map_err(|e| anyhow::anyhow!("failed to append message to session: {e}"))?;
     }
@@ -301,5 +322,40 @@ mod tests {
                 .contains("failed to append message to session"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn saved_sessions_redact_secrets_and_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let sid = save_session(
+            &store,
+            "m",
+            dir.path(),
+            &[
+                Message::user(
+                    "read /Users/hunter/src/app/main.rs with ZAI_API_KEY=supersecretvalue12345",
+                ),
+                // Secret-free: persists verbatim (resume fidelity).
+                Message::user("read crates/foo/src/main.rs"),
+            ],
+        )
+        .await
+        .unwrap();
+        let (_, entries) = store.load(&sid).await.unwrap();
+        let text = entries[0].message.text_content();
+        assert!(!text.contains("/Users/hunter"), "{text}");
+        assert!(!text.contains("supersecretvalue12345"), "{text}");
+        assert_eq!(
+            entries[1].message.text_content(),
+            "read crates/foo/src/main.rs"
+        );
+    }
+
+    #[test]
+    fn error_surfaces_are_scrubbed_before_display() {
+        let scrubbed = scrub_error_text("auth failed: ZAI_API_KEY=supersecretvalue12345");
+        assert!(!scrubbed.contains("supersecretvalue12345"), "{scrubbed}");
+        assert!(scrubbed.contains("<redacted>"), "{scrubbed}");
     }
 }

@@ -13,8 +13,8 @@
 //! execpolicy engine: **Accept** (run once), **AcceptForSession** (remember
 //! this call this session), **Decline** (skip, the turn continues), **Cancel**
 //! (skip and stop listening — Esc always cancels, like codex).
-//! "Always" (codex's `AcceptWithExecpolicyAmendment`) remembers the command
-//! *prefix* (binary + subcommand, canonicalized) for the rest of the session —
+//! "Always" remembers the FULL canonical command for the rest of the session —
+//! never a command prefix (a prefix allow would bless untested siblings) and
 //! never a global mode flip.
 //!
 //! The gate lives in gray-core so both the interactive REPL and headless
@@ -477,15 +477,16 @@ impl ApprovalGate {
                         Ok(())
                     }
                     Decision::AcceptAlways => {
-                        // Bash "always" remembers the command *prefix* for this
-                        // session (codex's prefix-rule meaning). Non-bash
-                        // AcceptAlways keeps the existing session-scoped
-                        // `remember()` path (paths); neither flips global mode.
+                        // Bash "always" remembers the FULL canonical command
+                        // for this session. Never the 2-token prefix: a prefix
+                        // allow lets `cargo test --lib` bless `cargo rm -rf`
+                        // siblings. Non-bash AcceptAlways keeps the existing
+                        // session-scoped `remember()` path (paths); neither
+                        // flips global mode.
                         if tool == "bash"
                             && let Some(cmd) = args.get("command").and_then(|v| v.as_str())
                         {
-                            self.cache
-                                .remember_prefix(command_prefix(&canonicalize_command(cmd)));
+                            self.cache.remember_command(cmd.to_string());
                         } else {
                             self.remember(tool, args, cwd);
                         }
@@ -761,10 +762,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_always_records_prefix_not_full_mode() {
+    async fn accept_always_records_full_command_not_prefix() {
         use crate::questions::QuestionBridge;
-        // Scripted with the legacy "always" label so the RED run exercises the
-        // old AcceptAlways path (which flipped global mode to full).
+        // Scripted with the legacy "always" label so the run exercises the
+        // AcceptAlways path (which used to cache a 2-token prefix).
         let bridge = QuestionBridge::scripted(vec!["Yes, always (don't ask again)".to_string()]);
         let gate = ApprovalGate::new("auto");
         let out = gate
@@ -782,19 +783,32 @@ mod tests {
             "auto",
             "AcceptAlways must NOT flip global mode anymore"
         );
-        // Second call, different spelling, no bridge → Ok via prefix rule:
+        // Same command, different spelling, no bridge → Ok via full-command rule:
         let out2 = gate
             .check(
                 "bash",
-                &json!({"command": "/bin/bash -lc 'cargo test --doc'"}),
+                &json!({"command": "/bin/bash -lc 'cargo test --lib'"}),
                 &cwd(),
                 "x",
                 None,
             )
             .await;
-        assert!(out2.is_ok(), "same prefix, canonicalized");
-        // Different prefix, no bridge → still asks (Err without a user):
+        assert!(out2.is_ok(), "same full command, canonicalized");
+        // Same 2-token prefix but DIFFERENT args → must re-ask (Err without
+        // a user). A prefix allow would let `cargo test --lib` bless
+        // `cargo publish --dry-run`-style siblings.
         let out3 = gate
+            .check(
+                "bash",
+                &json!({"command": "cargo test --doc"}),
+                &cwd(),
+                "x",
+                None,
+            )
+            .await;
+        assert!(out3.is_err(), "different args must not ride a prefix allow");
+        // Unrelated command → still asks (Err without a user):
+        let out4 = gate
             .check(
                 "bash",
                 &json!({"command": "rm -rf /tmp/x"}),
@@ -803,7 +817,7 @@ mod tests {
                 None,
             )
             .await;
-        assert!(out3.is_err());
+        assert!(out4.is_err());
     }
 
     #[tokio::test]

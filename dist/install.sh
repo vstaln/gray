@@ -11,7 +11,7 @@ case "${1:-}" in
     *) echo "unknown channel '$1' (use: stable | beta)"; exit 1 ;;
 esac
 
-REPO_URL="https://gray.alignment.id/dl"
+REPO_URL="${GRAY_CDN_URL:-https://gray.alignment.id/dl}"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 

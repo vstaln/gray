@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthenticateRequest, CancelNotification, ContentBlock, InitializeRequest, LoadSessionRequest,
+    AuthenticateRequest, CancelNotification, InitializeRequest, LoadSessionRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification, TextContent,
+    SelectedPermissionOutcome, SessionId, SessionNotification,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
@@ -308,72 +308,6 @@ async fn open_session(
     }
 }
 
-#[allow(dead_code)]
-async fn drain_turn(
-    session: &mut ActiveSession<'static, agent_client_protocol::Agent>,
-    on_event: &mut dyn FnMut(&gray_core::event::AgentEvent),
-) -> Result<gray_core::event::StopReason, AcpError> {
-    let mapper = EventMapper::new();
-    for ev in EventMapper::new().begin() {
-        on_event(&ev);
-    }
-    loop {
-        let msg = session.read_update().await.map_err(|e| AcpError::Request {
-            method: "session/prompt",
-            message: e.to_string(),
-        })?;
-        match msg {
-            SessionMessage::SessionMessage(dispatch) => {
-                let mut text = String::new();
-                let mut thinking = String::new();
-                let mut tool_events: Vec<gray_core::event::AgentEvent> = Vec::new();
-                {
-                    let mut mapper = EventMapper::new();
-                    MatchDispatch::new(dispatch)
-                        .if_notification(async |n: SessionNotification| {
-                            for ev in mapper.map_update(&n.update) {
-                                match ev {
-                                    gray_core::event::AgentEvent::TextDelta { delta } => {
-                                        text.push_str(&delta)
-                                    }
-                                    gray_core::event::AgentEvent::ThinkingDelta { delta } => {
-                                        thinking.push_str(&delta)
-                                    }
-                                    other => tool_events.push(other),
-                                }
-                            }
-                            Ok(())
-                        })
-                        .await
-                        .otherwise_ignore()
-                        .map_err(|e| AcpError::Request {
-                            method: "session/update",
-                            message: e.to_string(),
-                        })?;
-                }
-                if !thinking.is_empty() {
-                    on_event(&gray_core::event::AgentEvent::ThinkingDelta { delta: thinking });
-                }
-                if !text.is_empty() {
-                    on_event(&gray_core::event::AgentEvent::TextDelta { delta: text });
-                }
-                for ev in tool_events {
-                    on_event(&ev);
-                }
-            }
-            SessionMessage::StopReason(stop) => {
-                let reason = mapper.map_stop(&stop);
-                on_event(&gray_core::event::AgentEvent::TurnEnd {
-                    stop_reason: reason,
-                    usage: gray_core::event::Usage::default(),
-                });
-                return Ok(reason);
-            }
-            _ => {}
-        }
-    }
-}
-
 pub struct AcpSession {
     spec: AgentSpec,
     display: String,
@@ -627,19 +561,30 @@ impl AcpSession {
     pub async fn shutdown(self) {}
 }
 
-#[allow(dead_code)]
-fn _keep_content_imports(block: ContentBlock, text: TextContent) {
-    let _ = ContentBlock::Text(text);
-    let _ = block;
-}
-
 #[cfg(test)]
 mod tests {
-    use super::auto_approve_label;
+    use super::*;
 
     #[test]
     fn auto_approve_label_renders_on_off() {
         assert_eq!(auto_approve_label(true), "on");
         assert_eq!(auto_approve_label(false), "off");
+    }
+
+    #[test]
+    fn guard_path_keeps_paths_inside_workspace() {
+        use std::path::PathBuf;
+        let cwd = std::env::temp_dir()
+            .canonicalize()
+            .unwrap_or_else(|_| std::env::temp_dir());
+        let inside = cwd.join("sub").join("file.txt");
+        assert_eq!(guard_path(&cwd, &inside), Ok(inside));
+        if let Some(parent) = cwd.parent() {
+            let outside: PathBuf = parent.join("definitely-outside-gray-workspace-xyz");
+            assert!(
+                guard_path(&cwd, &outside).is_err(),
+                "sibling of cwd must be rejected"
+            );
+        }
     }
 }

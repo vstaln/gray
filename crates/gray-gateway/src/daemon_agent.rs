@@ -32,6 +32,7 @@ impl GatewayRunner {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let host_handler = cron_host_handler(cwd.clone());
         let denied = self.config.denied_tools.clone();
+        let workspace = cwd.clone();
         let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
             model,
             api_key: api_key.unwrap_or_default(),
@@ -50,7 +51,7 @@ impl GatewayRunner {
             // model gets the gate's accurate reason instead of "does not exist".
             wrap_executor: Some(Box::new(
                 move |inner: std::sync::Arc<dyn gray_core::agent::ToolExecutor>| {
-                    std::sync::Arc::new(GatedExecutor::new(inner, denied))
+                    std::sync::Arc::new(GatedExecutor::new(inner, denied, workspace))
                         as std::sync::Arc<dyn gray_core::agent::ToolExecutor>
                 },
             )),
@@ -103,7 +104,7 @@ impl GatewayRunner {
         let token = tokio_util::sync::CancellationToken::new();
         self.cancel_tokens
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(key.to_string(), token.clone());
         let ctx = ToolContext {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
@@ -136,7 +137,10 @@ impl GatewayRunner {
             .run_streaming(Message::user(text.to_string()), ctx, &mut on_event)
             .await
             .map_err(|e| anyhow::anyhow!("agent run: {e}"));
-        self.cancel_tokens.lock().unwrap().remove(key);
+        self.cancel_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(key);
 
         // Persist whatever the agent produced (also on cancel — partial turns are still history).
         for m in agent.messages().iter().skip(prior_len) {

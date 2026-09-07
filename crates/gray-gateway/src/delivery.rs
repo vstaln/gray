@@ -200,7 +200,7 @@ impl DeliveryLedger {
     ) -> String {
         let id = obligation_id(session_key, message_ref, text);
         {
-            let mut map = self.lock.lock().unwrap();
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             map.entry(id.clone()).or_insert_with(|| DeliveryObligation {
                 id: id.clone(),
                 session_key: session_key.to_string(),
@@ -219,12 +219,16 @@ impl DeliveryLedger {
     }
 
     pub fn get(&self, id: &str) -> Option<DeliveryObligation> {
-        self.lock.lock().unwrap().get(id).cloned()
+        self.lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(id)
+            .cloned()
     }
 
     pub fn mark_delivered(&self, id: &str) {
         {
-            let mut map = self.lock.lock().unwrap();
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(o) = map.get_mut(id) {
                 o.status = ObligationStatus::Delivered;
                 o.updated_at = now_ts();
@@ -238,7 +242,7 @@ impl DeliveryLedger {
     /// replay gate. `attempts` is clamped at [`MAX_DELIVERY_ATTEMPTS`].
     pub fn mark_failed(&self, id: &str, error: &str, retryable: bool) {
         {
-            let mut map = self.lock.lock().unwrap();
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(o) = map.get_mut(id) {
                 o.attempts = (o.attempts + 1).min(MAX_DELIVERY_ATTEMPTS);
                 o.retryable = retryable;
@@ -261,7 +265,7 @@ impl DeliveryLedger {
     pub fn sweep(&self) -> Vec<DeliveryObligation> {
         self.lock
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .values()
             .filter(|o| {
                 o.status == ObligationStatus::Pending
@@ -359,12 +363,15 @@ impl DeadTargets {
     }
 
     pub fn is_dead(&self, key: &str) -> bool {
-        self.lock.lock().unwrap().contains_key(key)
+        self.lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(key)
     }
 
     pub fn mark(&self, key: &str, reason: &str) {
         {
-            let mut map = self.lock.lock().unwrap();
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             map.insert(
                 key.to_string(),
                 DeadEntry {
@@ -378,7 +385,10 @@ impl DeadTargets {
 
     pub fn clear(&self, key: &str) {
         {
-            self.lock.lock().unwrap().remove(key);
+            self.lock
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(key);
         }
         self.persist();
     }

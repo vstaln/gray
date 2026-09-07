@@ -139,6 +139,19 @@ impl Redaction {
         !self.kinds.is_empty()
     }
 
+    /// Whether a secret was removed (as opposed to only paths).
+    ///
+    /// Durable tool/session surfaces gate on this: secret-bearing text is
+    /// scrubbed aggressively (paths in the same unit go too), while
+    /// secret-free tool data — absolute paths, fence markup like
+    /// `</untrusted-output>` — stays verbatim. Scrubbing paths out of shell
+    /// output would break the shell fence contract and the tool's utility;
+    /// see `redact_bytes_for_log`.
+    #[must_use]
+    pub fn has_secret(&self) -> bool {
+        self.kinds.iter().any(|k| k == REDACTION_SECRET)
+    }
+
     /// Which classes of content were removed — never the content itself.
     #[must_use]
     pub fn kinds(&self) -> Vec<String> {
@@ -582,6 +595,76 @@ pub fn contains_redactable(input: &str) -> bool {
     redact_for_disclosure(input).redacted()
 }
 
+/// Redact one shell-output chunk for a durable transcript-log write.
+///
+/// Secret-bearing chunks go through [`redact_for_disclosure`]; anything else
+/// — including absolute paths and fence markup — passes through untouched so
+/// logs stay byte-faithful tool data. Returns the input borrowed when nothing
+/// secret fired (no copy on the hot path).
+#[must_use]
+pub fn redact_bytes_for_log(chunk: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    let Ok(text) = std::str::from_utf8(chunk) else {
+        return std::borrow::Cow::Borrowed(chunk);
+    };
+    let redaction = redact_for_disclosure(text);
+    if redaction.has_secret() {
+        std::borrow::Cow::Owned(redaction.into_text().into_bytes())
+    } else {
+        std::borrow::Cow::Borrowed(chunk)
+    }
+}
+
+/// Scrub one string for durable persistence: full [`redact_for_disclosure`]
+/// when it carries a secret, verbatim otherwise (see
+/// [`Redaction::has_secret`]).
+fn scrub_if_secret(s: &str) -> String {
+    let redaction = redact_for_disclosure(s);
+    if redaction.has_secret() {
+        redaction.into_text()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Clone a conversation message for durable session persistence.
+///
+/// Each free-text block (`Text`, `Thinking`, `ToolResult`) is scrubbed only
+/// when it carries a secret; secret-free blocks — file paths, commands,
+/// prose — persist verbatim so resumed sessions keep their fidelity.
+/// Structured `ToolUse` args round-trip through their JSON spelling the same
+/// way (falling back to the original args when the redacted form ever stops
+/// parsing, so a redactor change can never corrupt a persisted call).
+/// Image payloads and reasoning replay blobs are left alone.
+#[must_use]
+pub fn redact_message(msg: &crate::message::Message) -> crate::message::Message {
+    use crate::message::ContentBlock;
+    let mut out = msg.clone();
+    for block in &mut out.content {
+        match block {
+            ContentBlock::Text { text } => {
+                *text = scrub_if_secret(text);
+            }
+            ContentBlock::Thinking { text, .. } => {
+                *text = scrub_if_secret(text);
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                *content = scrub_if_secret(content);
+            }
+            ContentBlock::ToolUse { args, .. } => {
+                let raw = args.to_string();
+                if redact_for_disclosure(&raw).has_secret() {
+                    let redacted = redact_for_disclosure(&raw).into_text();
+                    if let Ok(value) = serde_json::from_str(&redacted) {
+                        *args = value;
+                    }
+                }
+            }
+            ContentBlock::Image { .. } => {}
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -925,5 +1008,82 @@ mod tests {
         assert!(contains_redactable("/Users/hunter"));
         assert!(contains_redactable("token=abc"));
         assert!(!contains_redactable("land a fix in the workflow crate"));
+    }
+
+    #[test]
+    fn log_chunks_redact_text_but_pass_binary_through() {
+        use std::borrow::Cow;
+        let secret = b"ZAI_API_KEY=supersecretvalue12345\n".as_slice();
+        match redact_bytes_for_log(secret) {
+            Cow::Owned(v) => {
+                let s = String::from_utf8(v).unwrap();
+                assert!(!s.contains("supersecretvalue12345"), "{s}");
+                assert!(s.contains("<redacted>"), "{s}");
+            }
+            Cow::Borrowed(_) => panic!("secret chunk must be redacted"),
+        }
+        // Clean text borrows back (no copy on the hot path).
+        let clean = b"ok\n".as_slice();
+        assert!(matches!(redact_bytes_for_log(clean), Cow::Borrowed(_)));
+        // Paths and fence markup are tool data, not secrets: verbatim.
+        let fence = b"</untrusted-output> tail\n".as_slice();
+        assert!(matches!(redact_bytes_for_log(fence), Cow::Borrowed(_)));
+        let path = b"ls /tmp/build/out\n".as_slice();
+        assert!(matches!(redact_bytes_for_log(path), Cow::Borrowed(_)));
+        // Binary is byte-faithful.
+        let binary = b"\xff\xfe\x00binary";
+        assert_eq!(&*redact_bytes_for_log(binary), binary);
+    }
+
+    #[test]
+    fn messages_redact_free_text_and_tool_args() {
+        use crate::message::{ContentBlock, Message, Role};
+        let msg = Message::new(
+            Role::Assistant,
+            vec![
+                ContentBlock::text(
+                    "read /Users/hunter/src/app/main.rs with token=abcdef0123456789abcdef",
+                ),
+                ContentBlock::tool_result("c1", "ZAI_API_KEY=supersecretvalue12345", false),
+                ContentBlock::tool_use(
+                    "c2",
+                    "bash",
+                    serde_json::json!({"command": "curl -H \"Authorization: Bearer qqq\" https://x"}),
+                ),
+            ],
+        );
+        let redacted = redact_message(&msg);
+        let text = redacted.text_content();
+        assert!(!text.contains("/Users/hunter"), "{text}");
+        let ContentBlock::ToolResult { content, .. } = &redacted.content[1] else {
+            panic!("expected ToolResult");
+        };
+        assert!(!content.contains("supersecretvalue12345"), "{content}");
+        let ContentBlock::ToolUse { args, .. } = &redacted.content[2] else {
+            panic!("expected ToolUse");
+        };
+        let cmd = args.get("command").and_then(|v| v.as_str()).unwrap();
+        assert!(!cmd.contains("qqq"), "{cmd}");
+        assert!(cmd.contains("<redacted>"), "{cmd}");
+    }
+
+    #[test]
+    fn secret_free_message_blocks_persist_verbatim() {
+        use crate::message::{ContentBlock, Message, Role};
+        // No secret anywhere: paths, commands, and prose must survive so
+        // resumed sessions keep their fidelity (only secret-bearing units
+        // are scrubbed).
+        let msg = Message::new(
+            Role::User,
+            vec![
+                ContentBlock::text("read /Users/hunter/src/app/main.rs"),
+                ContentBlock::tool_use(
+                    "c1",
+                    "bash",
+                    serde_json::json!({"command": "ls /tmp/build"}),
+                ),
+            ],
+        );
+        assert_eq!(redact_message(&msg), msg);
     }
 }

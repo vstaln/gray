@@ -564,14 +564,9 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("permissions") => ReplCommand::Permissions(opt(rest)),
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
-        // Bare connect aliases exact; only `/key ...` carries args (legacy edge).
-        Some("connect") => {
-            if rest.is_empty() || lower_cmd == "/key" {
-                ReplCommand::Provider
-            } else {
-                ReplCommand::Unknown(t.to_string())
-            }
-        }
+        // Every connect alias accepts optional args like `/key openrouter`
+        // (args are advisory; the provider menu always opens).
+        Some("connect") => ReplCommand::Provider,
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
         Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
@@ -855,15 +850,20 @@ mod tests {
             parse_command("/gateway status"),
             ReplCommand::Unknown(_)
         ));
-        assert!(matches!(
-            parse_command("/keys foo"),
-            ReplCommand::Unknown(_)
-        ));
+        assert!(matches!(parse_command("/keys foo"), ReplCommand::Provider));
         assert!(matches!(
             parse_command("/connect foo"),
-            ReplCommand::Unknown(_)
+            ReplCommand::Provider
         ));
         assert!(matches!(parse_command("/key foo"), ReplCommand::Provider));
+        assert!(matches!(
+            parse_command("/provider openrouter"),
+            ReplCommand::Provider
+        ));
+        assert!(matches!(
+            parse_command("/login openrouter"),
+            ReplCommand::Provider
+        ));
         assert!(matches!(
             parse_command("/skills foo"),
             ReplCommand::Unknown(_)
