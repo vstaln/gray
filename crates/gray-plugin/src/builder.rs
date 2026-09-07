@@ -551,7 +551,7 @@ pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
 
 /// Wraps the profile-built registry executor (gateway: `GatedExecutor`;
 /// `None` = plain registry).
-pub type ExecutorWrap = Box<dyn FnOnce(Box<dyn ToolExecutor>) -> Box<dyn ToolExecutor> + Send>;
+pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 
 pub struct BuilderOptions {
     pub model: String,
@@ -615,9 +615,9 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
 
     let tool_defs = registry.defs();
-    let executor: Box<dyn ToolExecutor> = match wrap_executor {
-        Some(wrap) => wrap(Box::new(registry)),
-        None => Box::new(registry),
+    let executor: Arc<dyn ToolExecutor> = match wrap_executor {
+        Some(wrap) => wrap(Arc::new(registry)),
+        None => Arc::new(registry),
     };
     let hooks = PluginHookAdapter::for_plugins(&plugins, &cwd.to_string_lossy());
     Ok(Agent::new(Box::new(provider), executor)
