@@ -41,6 +41,7 @@ percent-encoding = { workspace = true }
 arboard = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 tempfile = { workspace = true }
+base64 = { workspace = true }
 async-trait = { workspace = true }
 # Phase 1 scope cut: platform adapters are opt-in (default build is the
 # harness core with gateway config/status only, no twilight/teloxide/slack).
