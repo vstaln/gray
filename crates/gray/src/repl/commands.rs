@@ -202,7 +202,7 @@ pub(crate) fn completion_matches_dyn(
     if let Some(inner) = cur_text.strip_prefix('/') {
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);
-            if cmd.contains(':') {
+            if cmd.is_empty() || cmd.contains(':') {
                 return Vec::new();
             }
             // Everything after `<cmd>`, leading spaces trimmed, trailing kept
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn resume_and_agentsmd_arg_completion() {
-        use super::{complete_command_args, completion_matches_dyn};
+        use super::complete_command_args;
         use std::path::Path;
         let cwd = Path::new(".");
         let r = complete_command_args("resume", "", cwd);
