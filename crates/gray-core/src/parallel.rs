@@ -17,6 +17,12 @@ pub const MAX_BATCH: usize = 16;
 /// Max concurrent in-flight tool executions (Toolrush `MAX_WORKERS`).
 pub const MAX_WORKERS: usize = 4;
 
+/// Shared env-var guard for tests that flip `GRAY_PARALLEL_READS`. Lives at
+/// module scope (not inside `mod tests`) so the `agent.rs` lane tests reuse
+/// the same lock — env is process-global.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Default-deny batchable set: statically `Allow` in every approval mode
 /// (see test), never prompts, never mutates. Everything else is a barrier.
 pub fn is_batchable(name: &str) -> bool {
@@ -96,7 +102,10 @@ pub async fn join_ordered(
     for (idx, fut) in futs {
         let permit_owner = sem.clone();
         set.spawn(async move {
-            let _permit = permit_owner.acquire_owned().await.expect("semaphore closed");
+            let _permit = permit_owner
+                .acquire_owned()
+                .await
+                .expect("semaphore closed");
             // Panics are data: catch inside the wrapper so the real input
             // index survives — no sentinel, Task 4 reconciles by index.
             match AssertUnwindSafe(fut).catch_unwind().await {
@@ -107,10 +116,7 @@ pub async fn join_ordered(
                         .copied()
                         .or_else(|| id.downcast_ref::<String>().map(String::as_str))
                         .unwrap_or("unknown panic");
-                    (
-                        idx,
-                        ToolOutput::error(format!("tool task panicked: {msg}")),
-                    )
+                    (idx, ToolOutput::error(format!("tool task panicked: {msg}")))
                 }
             }
         });
@@ -158,8 +164,6 @@ mod tests {
     use serde_json::json;
     use std::collections::HashSet;
 
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn whole_case() -> Vec<(String, String, serde_json::Value)> {
         vec![
             ("a".into(), "read".into(), json!({"path": "x.rs"})),
@@ -193,6 +197,17 @@ mod tests {
     fn singleton_batchable_demotes_to_single() {
         let u = vec![("a".into(), "read".into(), json!({"path": "x"}))];
         assert_eq!(plan_segments(&u, &known()), vec![Segment::Single(0)]);
+    }
+    #[test]
+    fn seventeen_batchable_splits_at_max_batch() {
+        let u: Vec<(String, String, Value)> = (0..17)
+            .map(|i| (format!("c{i}"), "read".into(), json!({"path": "x"})))
+            .collect();
+        let k: HashSet<String> = ["read"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            plan_segments(&u, &k),
+            vec![Segment::Parallel((0..16).collect()), Segment::Single(16)]
+        );
     }
     #[test]
     fn batchable_set_is_statically_allowed_in_every_mode() {
@@ -239,10 +254,13 @@ mod tests {
         use crate::agent::ToolOutput;
         use futures::future::BoxFuture;
         let mk = |i: usize| {
-            (i, Box::pin(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-                ToolOutput::ok(format!("out{i}"))
-            }) as BoxFuture<'static, ToolOutput>)
+            (
+                i,
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                    ToolOutput::ok(format!("out{i}"))
+                }) as BoxFuture<'static, ToolOutput>,
+            )
         };
         let futs = vec![mk(0), mk(1), mk(2), mk(3)];
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -250,33 +268,56 @@ mod tests {
         let got = join_ordered(futs, 4, &cancel).await;
         let dt = t0.elapsed();
         assert_eq!(
-            got.into_iter().map(|(i, o)| (i, o.unwrap().content)).collect::<Vec<_>>(),
-            vec![(0, "out0".into()), (1, "out1".into()), (2, "out2".into()), (3, "out3".into())]
+            got.into_iter()
+                .map(|(i, o)| (i, o.unwrap().content))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "out0".into()),
+                (1, "out1".into()),
+                (2, "out2".into()),
+                (3, "out3".into())
+            ]
         );
-        assert!(dt < std::time::Duration::from_millis(300), "4x80ms overlapped, took {dt:?}");
+        assert!(
+            dt < std::time::Duration::from_millis(300),
+            "4x80ms overlapped, took {dt:?}"
+        );
     }
     #[tokio::test]
     async fn join_task_panic_becomes_error_output() {
         use crate::agent::ToolOutput;
         use futures::future::BoxFuture;
-        let futs = vec![(0, Box::pin(async { panic!("boom"); #[allow(unreachable_code)] ToolOutput::error("unreachable") }) as BoxFuture<'static, ToolOutput>)];
+        let futs = vec![(
+            0,
+            Box::pin(async {
+                panic!("boom");
+                #[allow(unreachable_code)]
+                ToolOutput::error("unreachable")
+            }) as BoxFuture<'static, ToolOutput>,
+        )];
         let cancel = tokio_util::sync::CancellationToken::new();
         let got = join_ordered(futs, 4, &cancel).await;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, 0, "panic keeps its real input index");
         let (_, out) = &got[0];
-        assert!(out.as_ref().unwrap().is_error, "panic must be data, not a crash");
+        assert!(
+            out.as_ref().unwrap().is_error,
+            "panic must be data, not a crash"
+        );
     }
     #[tokio::test]
     async fn join_cancel_marks_unfinished_none() {
         use crate::agent::ToolOutput;
         use futures::future::BoxFuture;
         let mk = |i: usize| {
-            (i, Box::pin(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                #[allow(unreachable_code)]
-                ToolOutput::ok(format!("out{i}"))
-            }) as BoxFuture<'static, ToolOutput>)
+            (
+                i,
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    #[allow(unreachable_code)]
+                    ToolOutput::ok(format!("out{i}"))
+                }) as BoxFuture<'static, ToolOutput>,
+            )
         };
         let cancel = tokio_util::sync::CancellationToken::new();
         let c2 = cancel.clone();
@@ -285,8 +326,15 @@ mod tests {
             c2.cancel();
         });
         let got = join_ordered(vec![mk(0), mk(1)], 4, &cancel).await;
-        assert_eq!(got.len(), 2, "every input yields an entry, even when cancelled");
+        assert_eq!(
+            got.len(),
+            2,
+            "every input yields an entry, even when cancelled"
+        );
         assert_eq!(got.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![0, 1]);
-        assert!(got.iter().all(|(_, o)| o.is_none()), "cancelled calls yield None");
+        assert!(
+            got.iter().all(|(_, o)| o.is_none()),
+            "cancelled calls yield None"
+        );
     }
 }
