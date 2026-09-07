@@ -110,7 +110,7 @@ fn gray_agent_dir() -> PathBuf {
     PathBuf::from(".gray")
 }
 
-fn find_git_root(start: &Path) -> Option<PathBuf> {
+pub(crate) fn find_git_root(start: &Path) -> Option<PathBuf> {
     let mut cur = if start.is_file() {
         start.parent().map(PathBuf::from)
     } else {
