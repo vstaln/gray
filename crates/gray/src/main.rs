@@ -173,7 +173,11 @@ async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
                         .map(|h| std::path::PathBuf::from(h).join(".gray"))
                         .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"))
                 });
-            let h = gray_supervise::health::probe(&home);
+            let h = gray_supervise::health::probe_full(
+                &home,
+                gray_gateway::status::read_board_healthy(&home),
+                gray_gateway::status::gateway_config_parses(&home),
+            );
             println!("{}", h.reason);
             if !h.healthy {
                 std::process::exit(1);

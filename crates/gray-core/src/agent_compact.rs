@@ -5,7 +5,7 @@
 //! history into that shape via [`Agent::complete_prompt`].
 
 use crate::agent::Agent;
-use crate::compact_v2::{
+use crate::compact::{
     RETAINED_MESSAGE_TOKEN_BUDGET, build_retained, run_compaction_call, trim_tool_results_to_fit,
 };
 use crate::error::CoreError;
@@ -77,7 +77,7 @@ fn est_token(m: &Message) -> usize {
 
 /// Shared transcript estimate: the shrink comparison above uses this, as do
 /// `Agent::estimate_tokens` (agent.rs) and the compaction-v2 port
-/// (`compact_v2::message_tokens`) — single owner, no mirrors.
+/// (`compact::message_tokens`) — single owner, no mirrors.
 pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
     msgs.iter().map(est_token).sum()
 }
@@ -214,7 +214,7 @@ mod compact_tests {
         assert!(
             msgs.iter().all(|m| !m
                 .text_content()
-                .contains(crate::compact_v2::COMPACTION_TRIGGER)),
+                .contains(crate::compact::COMPACTION_TRIGGER)),
             "trigger must never leak into history"
         );
     }

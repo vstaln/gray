@@ -284,9 +284,13 @@ pub async fn run_repl_mode(
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     // auto-fetch provider context window in background if not yet cached and no user override
+    // models.dev doubles as the reasoning-effort source for the thinking
+    // picker, so it fetches unconditionally — gating it on the context
+    // override starved the picker (unknown families fell back to the full
+    // catalog, offering efforts the model rejects).
+    tokio::spawn(crate::setup::fetch_models_dev_context());
     if crate::setup::get_user_context_window().is_none() {
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
-        tokio::spawn(crate::setup::fetch_models_dev_context());
         tokio::spawn(crate::setup::fetch_openrouter_rates());
         if let Some(m) = config.model.clone()
             && crate::setup::get_cached_model_context(&m).is_none()
@@ -321,9 +325,9 @@ pub async fn run_repl_mode(
         crate::setup::set_user_context_window(config.context_window);
         crate::setup::set_user_reserve_tokens(config.context_reserve);
         crate::setup::set_user_keep_recent_tokens(config.context_keep);
+        // reasoning efforts already fetched unconditionally at boot (see above).
         if crate::setup::get_user_context_window().is_none() {
             tokio::spawn(crate::setup::fetch_litellm_context_windows());
-            tokio::spawn(crate::setup::fetch_models_dev_context());
             if let Some(m) = config.model.clone()
                 && crate::setup::get_cached_model_context(&m).is_none()
             {
