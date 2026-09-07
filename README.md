@@ -55,11 +55,15 @@ Any OpenAI-compatible endpoint works out of the box: **OpenRouter, DeepSeek, Gro
 | `/key [provider]` | add or rotate a key without leaving the chat |
 | `/compact [instructions]` | summarize context (auto-compacts when near limit) |
 | `/usage` | session tokens & cost |
-| `/permissions [mode]` | choose what gray is allowed to do — read-only · auto · full (Shift+Tab cycles read-only ↔ auto) |
+| `/permissions [mode]` | choose what gray is allowed to do — read-only · auto · full (Shift+Tab cycles auto → read-only → full) |
 | `/feedback <text>` | save feedback locally + open a prefilled GitHub issue |
 | `/context [tokens\|auto]` | inspect or set window — e.g. `128k`, `1m`, `auto` to clear |
 | `/agentsmd` | edit the system prompt in `$EDITOR` (`show`, `reset` too) |
 | `/acp [agent] [prompt]` | run as an external ACP agent (claude, codex, cursor, opencode…) |
+| `/thinking [level]` | reasoning effort |
+| `/resume [id\|--last\|--all]` | resume a previous conversation |
+| `/skills` | list skills (`/skills:<name> [args]` to run one) |
+| `/plugin <subcommand>` | manage plugins (`list`, `search`, `install`, `remove`, `update`, `enable`, `disable`, `check`) |
 | `/help`, `/quit` | you know these |
 
 Slash commands autocomplete: <kbd>Enter</kbd> completes and fires, <kbd>Tab</kbd> inserts for editing. Suffixes too — e.g. `/context r` suggests `reserve`.
@@ -79,8 +83,8 @@ run gray in a container/VM for untrusted work.
 | subcommand | what it does |
 |---|---|
 | `gray resume [--last] [--all] [SESSION_ID]` | resume a previous conversation (picker, most-recent, or by id/prefix) |
-| `gray proxy start\|status\|providers` | share Codex/Grok/OpenRouter auth via `http://127.0.0.1:8645/v1` (any bearer forwarded) |
 | `gray gateway run\|status\|install\|uninstall\|invite\|pairing` | messaging gateway daemon — `run` (foreground), `status`, `install`/`uninstall` (systemd user service, Linux-only), `invite` (OAuth2 invite URL), `pairing approve\|list\|revoke` (bind the owner without editing `gateway.yaml`) |
+| `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
 | `gray update` | update gray to the latest release |
 
 Global flags: `-p/--print` (one-shot prompt mode), `-c/--continue` (reopen latest session), `--session <ID>` (resume by id), `--acp <AGENT>` (run as an external ACP agent, works with `-p`), `--context-window <TOKENS>` (e.g. `128000`, `128k`), `--context-reserve`, `--context-keep`, `--dump-manifest` (print merged plugin manifest as JSON and exit).
@@ -103,6 +107,7 @@ crates/
 
 - Plugin wire spec (methods, TTLs, manifest gates, host-emission audit): [docs/protocol-v1.md](docs/protocol-v1.md).
 - Read-tool token bench (before/after, `est_tokens = bytes/4`): [docs/read-tool-bench.md](docs/read-tool-bench.md).
+- Make gray yours (skills, plugins, providers, config): [docs/customize.md](docs/customize.md).
 
 - **Streaming first** — text deltas, tool calls, and usage arrive as typed events over SSE.
 - **Sessions persist** to `~/.gray/sessions/*.jsonl`; `-c` reopens the latest.

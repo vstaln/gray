@@ -28,3 +28,29 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  installer-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh end-to-end against a local repo (no network)
+        shell: bash
+        run: |
+          FAKE=$RUNNER_TEMP/fakerepo; BIN=$RUNNER_TEMP/bin; mkdir -p "$FAKE" "$BIN"
+          printf '#!/bin/sh\necho "gray 0.0.0-test"\n' > "$FAKE/gray"
+          chmod +x "$FAKE/gray"
+          (cd "$FAKE" && tar czf gray-stable-x86_64-linux.tar.gz gray && sha256sum gray-*.tar.gz > SHA256SUMS)
+          GRAY_CDN_URL="file://$FAKE" GRAY_INSTALL_DIR="$BIN" sh dist/install.sh
+          "$BIN/gray" --version
+
+  windows-check:
+    # Baseline only: native Windows port is unproven (unix-only cfg sites in
+    # gray-tools/gray) and no Windows tarballs are published yet. Enforce
+    # (drop continue-on-error) once this is green + install.ps1 goes native.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p gray

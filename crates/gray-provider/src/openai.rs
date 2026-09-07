@@ -461,7 +461,7 @@ fn map_chat_request(
     req: ChatRequest,
     model: &str,
     reasoning_effort: Option<&str>,
-) -> OpenAiChatRequest {
+) -> Result<OpenAiChatRequest, ProviderError> {
     let mut messages = Vec::new();
 
     // 1. Map system prompt
@@ -567,7 +567,14 @@ fn map_chat_request(
                 let role_str = match msg.role {
                     Role::User => "user",
                     Role::System => "system",
-                    Role::Assistant => unreachable!(),
+                    // A novel wire role landing in this arm (outer pattern
+                    // extended without updating this map) errors instead of
+                    // panicking the turn.
+                    other => {
+                        return Err(ProviderError::BadRequest(format!(
+                            "unsupported message role for chat completions: {other}"
+                        )));
+                    }
                 };
 
                 let mut text_parts = Vec::new();
@@ -728,7 +735,7 @@ fn map_chat_request(
         None => (None, None, None),
     };
 
-    OpenAiChatRequest {
+    Ok(OpenAiChatRequest {
         model: model.to_string(),
         stream: true,
         stream_options: Some(OpenAiStreamOptions {
@@ -739,7 +746,14 @@ fn map_chat_request(
         thinking: thinking_val,
         messages,
         tools,
-    }
+    })
+}
+
+/// `serde_json::to_value` on the send hot path: a failure is a client-side
+/// bug, surfaced as `BadRequest` instead of panicking the turn.
+fn serialize_body<T: Serialize>(body: &T, what: &'static str) -> Result<Value, ProviderError> {
+    serde_json::to_value(body)
+        .map_err(|e| ProviderError::BadRequest(format!("failed to serialize {what}: {e}")))
 }
 
 fn map_finish_reason(reason: &str) -> Option<StopReason> {
@@ -1539,8 +1553,13 @@ fn stream_unfold_step(
                         ))
                         .await;
                     }
-                    let body_value =
-                        serde_json::to_value(&body).expect("OpenAiChatRequest serialization");
+                    let body_value = match serialize_body(&body, "chat request") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            log::error!(target: "gray_provider", "dropping unsendable chat request: {err}");
+                            return Some((Err(err), StreamState::Done));
+                        }
+                    };
                     match send_json_once(
                         &client,
                         &url,
@@ -1650,8 +1669,13 @@ fn stream_unfold_step(
                         ))
                         .await;
                     }
-                    let body_value =
-                        serde_json::to_value(&body).expect("ResponsesRequest serialization");
+                    let body_value = match serialize_body(&body, "responses request") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            log::error!(target: "gray_provider", "dropping unsendable responses request: {err}");
+                            return Some((Err(err), StreamState::Done));
+                        }
+                    };
                     match send_json_once(
                         &client,
                         &url,
@@ -2493,7 +2517,10 @@ impl Provider for OpenAiProvider {
             Err(e) => return stream::once(async move { Err(e) }).boxed(),
         };
 
-        let body = map_chat_request(req, &self.model, self.reasoning_effort.as_deref());
+        let body = match map_chat_request(req, &self.model, self.reasoning_effort.as_deref()) {
+            Ok(b) => b,
+            Err(e) => return stream::once(async move { Err(e) }).boxed(),
+        };
         let init_state = StreamState::Init {
             client: self.http.clone(),
             url,
@@ -3043,7 +3070,7 @@ mod tests {
 
     #[test]
     fn chat_mapping_off_sends_thinking_disabled_only() {
-        let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("off"));
+        let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("off")).expect("maps");
         let v = serde_json::to_value(&body).expect("serializes");
         assert!(
             v.get("reasoning_effort").is_none(),
@@ -3059,7 +3086,7 @@ mod tests {
 
     #[test]
     fn chat_mapping_low_sends_all_three_reasoning_params() {
-        let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low"));
+        let body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low")).expect("maps");
         let v = serde_json::to_value(&body).expect("serializes");
         assert_eq!(
             v.get("reasoning_effort").and_then(|s| s.as_str()),
@@ -3160,7 +3187,8 @@ mod tests {
 
     #[test]
     fn strip_chat_reasoning_omits_all_three_wire_fields() {
-        let mut body = map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low"));
+        let mut body =
+            map_chat_request(empty_chat_req(), "zai/glm-5.2", Some("low")).expect("maps");
         assert!(
             chat_has_reasoning_params(&body),
             "precondition: low sends params"
@@ -3182,5 +3210,38 @@ mod tests {
         assert!(msg.contains("zai/glm-5.2"), "names model: {msg}");
         assert!(msg.contains("reasoning"), "names conflict: {msg}");
         assert!(msg.contains("/thinking"), "actionable hint: {msg}");
+    }
+
+    #[test]
+    fn chat_mapping_user_and_system_roles_map_without_panic() {
+        // Wave 5: the old `unreachable!()` on a novel role is now a
+        // `BadRequest` error; user/system roles keep mapping.
+        let req = gray_core::message::ChatRequest {
+            system: None,
+            messages: vec![
+                gray_core::message::Message::user("hi"),
+                gray_core::message::Message::system("be nice"),
+            ],
+            tools: Vec::new(),
+        };
+        let body = map_chat_request(req, "test-model", None).expect("user/system roles map");
+        let roles: Vec<&str> = body.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, vec!["user", "system"]);
+    }
+
+    #[test]
+    fn serialize_body_maps_failure_to_bad_request() {
+        // Wave 5: the old `to_value().expect()` on the send hot path is now
+        // an `Err`; prove the mapping with a value JSON cannot represent.
+        let bad: std::collections::BTreeMap<(), u8> = [((), 1)].into_iter().collect();
+        let err = serialize_body(&bad, "test body").expect_err("unit keys must fail");
+        assert!(matches!(err, ProviderError::BadRequest(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn serialize_body_round_trips_chat_request() {
+        let body = map_chat_request(empty_chat_req(), "test-model", None).expect("maps");
+        let v = serialize_body(&body, "chat request").expect("serializes");
+        assert_eq!(v.get("model").and_then(|m| m.as_str()), Some("test-model"));
     }
 }

@@ -7,6 +7,17 @@ name: release
 #
 # Matrix mirrors codex-rs: macos runner builds both darwin targets,
 # linux x86_64 via musl-tools, linux aarch64 via cross (docker).
+#
+# Atomic CDN deploy: each matrix leg uploads its tarball to a STAGING prefix
+# (dl/.staging/<channel>/). The finalize job below moves the full set live and
+# rewrites the latest-<channel>.txt manifest pointers LAST, then verifies every
+# tarball + manifest over HTTP — readers never see a manifest pointing at a
+# half-published set.
+#
+# Rollback: re-point the manifest at the previous set. Old tarballs are never
+# deleted by deploy, so: echo '<prev-ver>' | ssh <host> "sudo tee
+# /var/www/gray/dl/latest-<channel>.txt". scripts/deploy.sh (manual single-leg
+# path) is NOT atomic — re-run the finalize job after any manual upload.
 
 on:
   push:
@@ -105,7 +116,7 @@ jobs:
             gray-*.tar.gz
             SHA256SUMS-*
 
-      - name: deploy to gray.alignment.id
+      - name: stage tarball on gray.alignment.id (manifest swaps last, in finalize)
         env:
           DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         shell: bash
@@ -115,7 +126,12 @@ jobs:
           install -m 600 /dev/null ~/.config/gray-deploy/key
           printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
           cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
-          DEPLOY_KEY=~/.config/gray-deploy/key scripts/deploy.sh "$TAR"
+          CHANNEL="${{ steps.meta.outputs.channel }}"
+          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" opc@168.110.210.65:/tmp/
+          $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL \
+            && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/$TAR \
+            && rm -f /tmp/$TAR"
 
       - name: sync installers to gray.alignment.id (once)
         if: matrix.plat == 'x86_64-linux'
@@ -130,6 +146,44 @@ jobs:
           cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
           ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
+
+  finalize:
+    needs: build-deploy
+    # No tag gate: beta (every main push) needs the manifest swap too.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: resolve channel
+        id: meta
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME#v}"
+            case "$TAG" in *-*) echo "channel=beta" ;; *) echo "channel=stable" ;; esac >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+          fi
+      - name: promote staged set live, swap manifest last
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+        shell: bash
+        run: |
+          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
+          mkdir -p ~/.ssh ~/.config/gray-deploy
+          install -m 600 /dev/null ~/.config/gray-deploy/key
+          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
+          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
+          CHANNEL="${{ steps.meta.outputs.channel }}"
+          VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
+          $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/"
+          echo "$VER" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
+          echo "✓ latest-$CHANNEL.txt = $VER"
+          for f in gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz latest-$CHANNEL.txt; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://gray.alignment.id/dl/$f")
+            [ "$code" = "200" ] || { echo "deploy check failed: $f returned $code"; exit 1; }
+          done
+          echo "✓ live: https://gray.alignment.id/dl/latest-$CHANNEL.txt"
 
   publish:
     needs: build-deploy
@@ -148,7 +202,8 @@ jobs:
         run: |
           cat dist-all/SHA256SUMS-* > dist-all/SHA256SUMS
           (cd dist-all && sha256sum -c SHA256SUMS)
-          awk '/^## \[/{if (++n==2) exit} n==1' CHANGELOG.md | sed '1d' > dist-all/NOTES.md
+          TAG="${GITHUB_REF_NAME#v}"
+          awk -v tag="$TAG" '/^## \[/{f=($0 ~ "^## \\[" tag "\\]")} f' CHANGELOG.md | sed '1d' > dist-all/NOTES.md
           [ -s dist-all/NOTES.md ] || { echo "::error::no CHANGELOG entry for $GITHUB_REF_NAME"; exit 1; }
       - name: create release once
         env:

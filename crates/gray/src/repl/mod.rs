@@ -308,7 +308,8 @@ pub async fn run_repl_mode(
     let _shell_drain = crate::shell_drain::spawn_shell_drain();
 
     let mut unconfigured = config.model.is_none();
-    if unconfigured {
+    // Piped first-run skips onboarding like `-p` (never blocks on a picker).
+    if unconfigured && interactive {
         let ready = crate::setup::run_onboarding(config).await?;
         if !ready {
             print!(

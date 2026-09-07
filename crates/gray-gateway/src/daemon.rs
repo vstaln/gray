@@ -139,7 +139,7 @@ impl GatewayRunner {
         Self::from_config_with(
             config,
             shared_store(),
-            Arc::new(PairingStore::open_default()),
+            Arc::new(PairingStore::open_default()?),
         )
     }
 
@@ -299,7 +299,11 @@ impl GatewayRunner {
                 }
                 SlashCommand::Status => {
                     let sid = self.store.get(&key).unwrap_or_else(|| "(none yet)".into());
-                    let running = self.cancel_tokens.lock().unwrap().contains_key(&key);
+                    let running = self
+                        .cancel_tokens
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains_key(&key);
                     format!(
                         "session {sid}\nkey {key}\nmodel {}\nrunning {running}\nstreaming {}\ngroup_per_user={} thread_per_user={}",
                         self.resolve_model()
@@ -412,7 +416,7 @@ impl GatewayRunner {
     fn cancel_key(&self, key: &str) -> bool {
         self.cancel_tokens
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(key)
             .map(|t| t.cancel())
             .is_some()
@@ -420,7 +424,13 @@ impl GatewayRunner {
 
     async fn wait_idle(&self, key: &str, max: Duration) {
         let start = Instant::now();
-        while self.cancel_tokens.lock().unwrap().contains_key(key) && start.elapsed() < max {
+        while self
+            .cancel_tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(key)
+            && start.elapsed() < max
+        {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -670,6 +680,9 @@ mod tests {
     }
 
     #[tokio::test]
+    // Test-only std mutex held across await: serializes process-global env
+    // mutation against sibling tests (no async mutex available here).
+    #[allow(clippy::await_holding_lock)]
     async fn agent_path_without_model_reports_error_not_panic() {
         let pc = PlatformConfig {
             allowed_users: vec!["42".into()],
@@ -677,8 +690,8 @@ mod tests {
         };
         let (d, runner) = runner_with(pc, Platform::Telegram);
         // Point config lookups at an empty home so no real model/API key leaks in.
-        // SAFETY: tests in this crate that touch GRAY_HOME are serialized by cargo's
-        // per-test-binary process; other tests do not depend on this variable.
+        // SAFETY: guarded by GRAY_HOME_TEST_LOCK; restored below.
+        let _guard = crate::config::GRAY_HOME_TEST_LOCK.lock().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", d.path()) };
         unsafe { std::env::remove_var("GRAY_MODEL") };
         let r = runner
@@ -758,7 +771,11 @@ mod tests {
                 Box::pin(async { ToolOutput::ok("must not reach inner") })
             }
         }
-        let ex = GatedExecutor::new(Arc::new(Inner), vec!["write".to_string()]);
+        let ex = GatedExecutor::new(
+            Arc::new(Inner),
+            vec!["write".to_string()],
+            std::path::PathBuf::from("."),
+        );
         let ctx = ToolContext {
             cwd: std::path::PathBuf::from("."),
             cancel: tokio_util::sync::CancellationToken::new(),
