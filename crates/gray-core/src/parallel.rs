@@ -79,6 +79,8 @@ mod tests {
     use serde_json::json;
     use std::collections::HashSet;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn whole_case() -> Vec<(String, String, serde_json::Value)> {
         vec![
             ("a".into(), "read".into(), json!({"path": "x.rs"})),
@@ -132,8 +134,7 @@ mod tests {
     }
     #[test]
     fn kill_switch_parses() {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap();
+        let _g = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("GRAY_PARALLEL_READS").ok();
         for (val, want) in [
             ("0", false),
