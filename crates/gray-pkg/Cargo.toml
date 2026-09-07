@@ -9,6 +9,7 @@ default = ["adapter-gray-native"]
 adapter-gray-native = []
 
 [dependencies]
+base64 = { workspace = true }
 reqwest = { workspace = true }
 sha2 = { workspace = true }
 serde = { workspace = true }
