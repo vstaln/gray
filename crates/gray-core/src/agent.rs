@@ -287,6 +287,8 @@ pub struct Agent {
     pub(crate) tool_timeout: Duration,
     pub(crate) pending_steer: Vec<String>,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
+    pub(crate) turn_state: crate::turn_queue::TurnState,
+    pub(crate) next_turn_id: u64,
 }
 
 impl Agent {
@@ -302,6 +304,8 @@ impl Agent {
             tool_timeout: Duration::from_secs(120),
             pending_steer: Vec::new(),
             hooks: Vec::new(),
+            turn_state: crate::turn_queue::TurnState::Idle,
+            next_turn_id: 1,
         }
     }
 
@@ -354,6 +358,41 @@ impl Agent {
     /// cancelling the [`ToolContext`] token, then calling this.
     pub fn steer(&mut self, s: String) {
         self.pending_steer.push(s);
+    }
+
+    /// Admit one input WITHOUT executing. Rejections mutate nothing.
+    pub fn submit(
+        &mut self,
+        input: Message,
+        mode: crate::turn_queue::SubmitMode,
+    ) -> crate::turn_queue::Submission {
+        use crate::turn_queue::{RejectReason, Submission, SubmitMode, TurnState, is_empty_input};
+        if is_empty_input(&input) {
+            return Submission::NotSubmitted(RejectReason::EmptyInput);
+        }
+        match (mode, self.turn_state) {
+            (_, TurnState::Idle) => {
+                let turn_id = self.next_turn_id;
+                self.next_turn_id += 1;
+                self.messages.push(input);
+                Submission::Started { turn_id }
+            }
+            (SubmitMode::StartOrSteer, TurnState::Busy { turn_id }) => {
+                self.pending_steer.push(input.context_text());
+                Submission::Steered { turn_id }
+            }
+            (SubmitMode::StartIfIdle, TurnState::Busy { turn_id }) => {
+                Submission::NotSubmitted(RejectReason::NotIdle { turn_id })
+            }
+        }
+    }
+
+    /// Live turn id, if a turn is executing.
+    pub fn current_turn(&self) -> Option<u64> {
+        match self.turn_state {
+            crate::turn_queue::TurnState::Idle => None,
+            crate::turn_queue::TurnState::Busy { turn_id } => Some(turn_id),
+        }
     }
 
     /// Read-only view of the accumulated conversation so far.
