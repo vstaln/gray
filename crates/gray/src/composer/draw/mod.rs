@@ -14,6 +14,22 @@ pub(crate) use widgets::{
     transcript_ends_blank,
 };
 
+/// Blank rows inserted between the status/queued rows and the input so the
+/// input + panel + footer sit flush at the viewport bottom. Without this the
+/// fixed-height inline viewport leaves the unused rows below the footer.
+pub(crate) fn filler_rows(
+    area_h: u16,
+    status_h: u16,
+    queued_h: u16,
+    box_rows: u16,
+    attach_h: u16,
+    panel_h: u16,
+) -> u16 {
+    area_h
+        .saturating_sub(status_h + queued_h + box_rows + attach_h + 1)
+        .saturating_sub(panel_h)
+}
+
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
@@ -61,9 +77,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             queued_preview_lines(&tui.queued_inputs, w)
         };
         let queued_h = queued_preview.len() as u16;
-        let box_y = status_y + status_h + queued_h;
-        // No gap between the input band and the footer: the footer sits directly
-        // below the band.
+        // Space left for the completion/question panel once the fixed rows
+        // (status, queued, input, attachments, footer) are placed.
         let avail = area.height.saturating_sub(
             status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1,
         );
@@ -93,15 +108,28 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             tui.matches.len().min(panel_cap as usize)
         };
         let panel_h = visible_count as u16;
+        // Bottom-anchor the composer: unused viewport rows go ABOVE the input
+        // as a blank gap, so the input + footer sit flush at the viewport
+        // bottom instead of floating with a huge cleared area below them.
+        let box_rows = if question_active { 0 } else { box_h };
+        let filler = filler_rows(area.height, status_h, queued_h, box_rows, attach_h, panel_h);
+        debug_assert_eq!(filler, avail.saturating_sub(panel_h));
+        let box_y = status_y + status_h + queued_h + filler;
         // Codex parity: while a question is active the question surface REPLACES
         // the composer — no input box, the panel occupies its slot.
         let panel_y = if question_active {
             box_y
         } else {
-            box_y + box_h
+            box_y + box_rows
         };
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
+        if filler > 0 {
+            frame.render_widget(
+                ratatui::widgets::Clear,
+                Rect::new(area.x, status_y + status_h + queued_h, area.width, filler),
+            );
+        }
 
         if let Some((started, label)) = &tui.status
             && !question_active
@@ -431,6 +459,21 @@ mod tests {
         // card / code padding rows carry a bg: they are edges, not gaps
         let bg = Style::default().bg(Color::Rgb(22, 22, 22));
         assert!(!transcript_ends_blank(&[Line::from("").style(bg)]));
+    }
+
+    #[test]
+    fn filler_bottom_anchors_footer() {
+        // Screenshot repro: 14-row inline viewport, status dock 3 + input 3,
+        // no panel/matches -> footer must sit on the last viewport row, with
+        // the slack above the input instead of below the footer.
+        let filler = filler_rows(14, 3, 0, 3, 0, 0);
+        assert_eq!(filler, 7);
+        // status(3) + filler(7) + box(3) + footer(1) fills the viewport.
+        assert_eq!(3 + filler + 3 + 1, 14);
+        // Full panel consumes the slack: no gap below the footer either.
+        assert_eq!(filler_rows(14, 3, 0, 3, 0, 6), 1);
+        // Overflow saturates instead of underflowing.
+        assert_eq!(filler_rows(5, 3, 0, 3, 0, 0), 0);
     }
 
     #[test]

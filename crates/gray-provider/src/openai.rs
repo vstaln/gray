@@ -1066,12 +1066,14 @@ fn map_chat_to_responses(
 
 /// `reasoning: {effort, summary: "auto"}` for the Responses API.
 /// `None`/missing effort omits the field (backend default); `"off"` omits it
-/// too (display is suppressed separately via hide_thinking). `"max"` is not a
-/// Responses-API value — closest is `"xhigh"`.
+/// too (display is suppressed separately via hide_thinking). `max` is a
+/// documented Responses-API value on newer models (e.g. GPT-5.6) — forward it
+/// verbatim; a model that rejects it 400s and the strip-and-retry path drops
+/// reasoning.
+/// https://developers.openai.com/api/docs/guides/reasoning
 fn map_responses_reasoning(reasoning_effort: Option<&str>) -> Option<Value> {
     match reasoning_effort {
         None | Some("off") => None,
-        Some("max") => Some(serde_json::json!({"effort": "xhigh", "summary": "auto"})),
         Some(eff) => Some(serde_json::json!({"effort": eff, "summary": "auto"})),
     }
 }
@@ -1269,6 +1271,28 @@ fn backoff_delay(initial: Duration, attempt: usize, retry_after: Option<Duration
     };
     let base = Duration::from_millis(backoff_ms + jitter_ms);
     retry_after.map(|floor| base.max(floor)).unwrap_or(base)
+}
+
+/// 429 floor when the server sends no `Retry-After`: re-hitting an exhausted
+/// quota ~1s later re-burns the full request body against zero quota.
+/// Floor of several seconds with exponential growth per failed attempt; a
+/// present `Retry-After` still wins via `backoff_delay`'s max.
+fn rate_limit_floor(failed_attempt: usize) -> Duration {
+    Duration::from_secs(5 * (1u64 << failed_attempt.saturating_sub(1).min(6)))
+}
+
+/// 429-aware retry floor: keep the server's `Retry-After` when present, else
+/// synthesize the escalating 429 floor. Non-429 errors pass through untouched
+/// (their ~50ms+jitter backoff is correct for blips).
+fn retry_floor(
+    err: &ProviderError,
+    floor: Option<Duration>,
+    failed_attempt: usize,
+) -> Option<Duration> {
+    if floor.is_none() && matches!(err, ProviderError::RateLimited(_)) {
+        return Some(rate_limit_floor(failed_attempt));
+    }
+    floor
 }
 
 /// Single POST attempt (no retry). Retry + `Reconnecting...` notices live in
@@ -1624,7 +1648,7 @@ fn stream_unfold_step(
                                     session_id,
                                     initial_backoff,
                                     attempt: attempt + 1,
-                                    retry_after: floor,
+                                    retry_after: retry_floor(&err, floor, attempt),
                                     request_max_retries,
                                     stream_idle_timeout,
                                 };
@@ -1753,7 +1777,7 @@ fn stream_unfold_step(
                                     body,
                                     initial_backoff,
                                     attempt: attempt + 1,
-                                    retry_after: floor,
+                                    retry_after: retry_floor(&err, floor, attempt),
                                     request_max_retries,
                                     stream_max_retries,
                                     stream_attempt,
@@ -3117,11 +3141,11 @@ mod tests {
     }
 
     #[test]
-    fn responses_reasoning_maps_max_to_xhigh_and_off_to_none() {
+    fn responses_reasoning_forwards_max_and_off_to_none() {
         assert!(map_responses_reasoning(None).is_none());
         assert!(map_responses_reasoning(Some("off")).is_none());
         let max = map_responses_reasoning(Some("max")).expect("max maps");
-        assert_eq!(max.get("effort").and_then(|s| s.as_str()), Some("xhigh"));
+        assert_eq!(max.get("effort").and_then(|s| s.as_str()), Some("max"));
         assert_eq!(max.get("summary").and_then(|s| s.as_str()), Some("auto"));
         let high = map_responses_reasoning(Some("high")).expect("high maps");
         assert_eq!(high.get("effort").and_then(|s| s.as_str()), Some("high"));

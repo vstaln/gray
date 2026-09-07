@@ -52,6 +52,7 @@ pub fn render_event_with_context<W: Write>(
             });
             Ok(())
         }
+        AgentEvent::ToolCallProgress { .. } => Ok(()),
         AgentEvent::ToolCallEnd { args, .. } => {
             let name = current_tool
                 .as_ref()
