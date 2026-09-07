@@ -11,6 +11,7 @@
 //! 5. **deliver** — reply to the originating chat/thread, chunked to the
 //!    platform limit. Cron output goes to each platform's `home_channel`.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,7 @@ pub struct GatewayRunner {
     pub dead: Arc<DeadTargets>,
     /// Per-session cancellation for /stop and message interrupts.
     pub(crate) cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    draining: AtomicBool,
 }
 
 /// Restart ping-back marker.
@@ -162,7 +164,7 @@ impl GatewayRunner {
             adapters.insert(*plat, adapter);
         }
         let authz = Authorizer::new(config.clone(), Arc::clone(&pairing));
-        let dead = Arc::new(DeadTargets::in_memory());
+        let dead = Arc::new(DeadTargets::open_default());
         let router = DeliveryRouter::new(config.clone(), adapters.clone())
             .with_dead_targets(Arc::clone(&dead));
         Ok(Self {
@@ -173,9 +175,10 @@ impl GatewayRunner {
             authz,
             router,
             dedup: InboundDedup::new(),
-            ledger: DeliveryLedger::in_memory(),
+            ledger: DeliveryLedger::open_default(),
             dead,
             cancel_tokens: Mutex::new(HashMap::new()),
+            draining: AtomicBool::new(false),
         })
     }
 
@@ -191,6 +194,22 @@ impl GatewayRunner {
         self.router.sweep_ledger(&self.ledger).await
     }
 
+    pub fn set_draining(&self, v: bool) {
+        self.draining.store(v, Ordering::SeqCst);
+    }
+
+    pub fn draining(&self) -> bool {
+        self.draining.load(Ordering::SeqCst)
+    }
+
+    /// Cancel every in-flight agent turn (shutdown drain path).
+    pub fn cancel_all(&self) {
+        let mut map = self.cancel_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, tok) in map.drain() {
+            tok.cancel();
+        }
+    }
+
     fn reply_opts(ev: &MessageEvent) -> SendOptions {
         SendOptions {
             reply_to: ev.message_id.clone(),
@@ -198,16 +217,24 @@ impl GatewayRunner {
         }
     }
 
-    async fn reply(&self, ev: &MessageEvent, text: &str) -> SendResult {
+    async fn reply(&self, key: &str, ev: &MessageEvent, text: &str) -> SendResult {
         let target = DeliveryTarget {
             platform: ev.source.platform,
             chat_id: Some(ev.source.chat_id.clone()),
             thread_id: ev.source.thread_id.clone(),
             is_origin: true,
         };
-        let res = self
+        let message_ref = ev.message_id.as_deref().unwrap_or("");
+        let (_id, res) = self
             .router
-            .deliver(&target, text, ev.message_id.as_deref())
+            .deliver_recorded(
+                &self.ledger,
+                key,
+                message_ref,
+                &target,
+                text,
+                ev.message_id.as_deref(),
+            )
             .await;
         if !res.success {
             log::warn!("gateway send failed: {:?}", res.error);
@@ -221,8 +248,19 @@ impl GatewayRunner {
         if self.dedup.is_duplicate_event(&ev) {
             return Ok(SendResult::fail("duplicate", false));
         }
+        if self.draining.load(Ordering::SeqCst) {
+            return Ok(SendResult::fail(
+                "gateway is draining for shutdown; try again shortly",
+                false,
+            ));
+        }
         let platform = ev.source.platform;
         let chat_id = ev.source.chat_id.clone();
+        let key = build_session_key(
+            &ev.source,
+            self.config.group_per_user,
+            self.config.thread_per_user,
+        );
 
         // 1. Authorization gate — nothing below runs for unknown senders.
         match self.authz.check(&ev.source) {
@@ -244,20 +282,14 @@ impl GatewayRunner {
                     ev.user_name.as_deref().unwrap_or(""),
                 );
                 return Ok(match offer {
-                    PairingOffer::Code(code) => self.reply(&ev, &pairing_prompt(platform, &code)).await,
+                    PairingOffer::Code(code) => self.reply(&key, &ev, &pairing_prompt(platform, &code)).await,
                     PairingOffer::RateLimited => SendResult::fail("pairing rate-limited", false),
                     PairingOffer::Unavailable => {
-                        self.reply(&ev, "Pairing is temporarily unavailable (too many pending requests). Try again later.").await
+                        self.reply(&key, &ev, "Pairing is temporarily unavailable (too many pending requests). Try again later.").await
                     }
                 });
             }
         }
-
-        let key = build_session_key(
-            &ev.source,
-            self.config.group_per_user,
-            self.config.thread_per_user,
-        );
         log::info!(
             "gateway inbound {platform} chat={chat_id} key={key} text={:?}",
             preview_80(&ev.text)
@@ -349,7 +381,7 @@ impl GatewayRunner {
                 ),
                 SlashCommand::Help => help_text(),
             };
-            return Ok(self.reply(&ev, &text).await);
+            return Ok(self.reply(&key, &ev, &text).await);
         }
 
         // 3. Interrupt: a new message while this session is busy replaces the run.
@@ -405,9 +437,9 @@ impl GatewayRunner {
         let res = match progress {
             Some(p) => {
                 let final_text = p.finish(reply_text).await;
-                self.reply(&ev, &final_text).await
+                self.reply(&key, &ev, &final_text).await
             }
-            None => self.reply(&ev, &reply_text).await,
+            None => self.reply(&key, &ev, &reply_text).await,
         };
         Ok(res)
     }
@@ -490,7 +522,11 @@ mod tests {
             platforms,
             ..Default::default()
         };
-        let r = GatewayRunner::from_config_with(cfg, store, pairing).unwrap();
+        let mut r = GatewayRunner::from_config_with(cfg, store, pairing).unwrap();
+        // Hermetic ledger: from_config_with wires the production default path
+        // (Task 1); tests must not share ~/.gray/delivery_ledger.json across
+        // tests or runs, or sweep counts see unrelated rows.
+        r.ledger = DeliveryLedger::new(dir.path().join("delivery_ledger.json"));
         (dir, r)
     }
 
@@ -927,6 +963,23 @@ mod tests {
         let r2 = runner.handle_inbound(ev).await.unwrap();
         assert!(!r2.success);
         assert_eq!(r2.error.as_deref(), Some("duplicate"));
+    }
+
+    #[tokio::test]
+    async fn draining_refuses_new_turns() {
+        let pc = PlatformConfig {
+            allowed_users: vec!["42".into()],
+            ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")
+        };
+        let (_d, runner) = runner_with(pc, Platform::Telegram);
+        runner.set_draining(true);
+        assert!(runner.draining());
+        let res = runner
+            .handle_inbound(tg_event("42", "/status", "dm"))
+            .await
+            .unwrap();
+        assert!(!res.success);
+        assert!(res.error.unwrap_or_default().contains("draining"));
     }
 
     #[tokio::test]

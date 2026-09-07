@@ -181,9 +181,12 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         area,
     );
 
-    // Composer gray: the live input box and every modal use (22,22,22);
-    // near-black here read as "no overlay" behind modals.
+    // Composer gray: the live input box and every modal use (22,22,22).
+    // The backdrop's copy of the INPUT BOX is chrome, not content: paint it
+    // dimmed so the textarea visibly drops behind modals. Transcript user
+    // cards keep full gray via dim_style's preservation branch below.
     let box_bg = Color::Rgb(22, 22, 22);
+    let input_bg = dim_color(box_bg);
     let prompt_arrow_color = Color::Rgb(70, 70, 70);
     let text_dimmed_color = Color::Rgb(85, 85, 85);
     let footer_cwd_color = Color::Rgb(48, 48, 48);
@@ -194,15 +197,15 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
         Style::default()
             .fg(prompt_arrow_color)
             .add_modifier(Modifier::DIM)
-            .bg(box_bg),
+            .bg(input_bg),
     );
-    let cont_span = Span::styled("   ", Style::default().bg(box_bg));
+    let cont_span = Span::styled("   ", Style::default().bg(input_bg));
     // Mirror the composer input box: wrap the live prompt so a long /
     // multi-line draft grows the box instead of breaking a single row.
     let content_w = w.saturating_sub(4).max(1);
     let mut prompt_rows: Vec<Line<'static>> = Vec::new();
     if bg.prompt_text.is_empty() {
-        prompt_rows.push(Line::from(vec![arrow_span]).style(Style::default().bg(box_bg)));
+        prompt_rows.push(Line::from(vec![arrow_span]).style(Style::default().bg(input_bg)));
     } else {
         for (li, logical) in bg.prompt_text.split('\n').enumerate() {
             let prefix = if li == 0 {
@@ -211,7 +214,7 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
                 cont_span.clone()
             };
             if logical.is_empty() {
-                prompt_rows.push(Line::from(vec![prefix]).style(Style::default().bg(box_bg)));
+                prompt_rows.push(Line::from(vec![prefix]).style(Style::default().bg(input_bg)));
                 continue;
             }
             let chars: Vec<char> = logical.chars().collect();
@@ -230,18 +233,18 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
                             Style::default()
                                 .fg(text_dimmed_color)
                                 .add_modifier(Modifier::DIM)
-                                .bg(box_bg),
+                                .bg(input_bg),
                         ),
                     ])
-                    .style(Style::default().bg(box_bg)),
+                    .style(Style::default().bg(input_bg)),
                 );
             }
         }
     }
 
-    let mut bottom_box_lines = vec![Line::from("").style(Style::default().bg(box_bg))];
+    let mut bottom_box_lines = vec![Line::from("").style(Style::default().bg(input_bg))];
     bottom_box_lines.extend(prompt_rows);
-    bottom_box_lines.push(Line::from("").style(Style::default().bg(box_bg)));
+    bottom_box_lines.push(Line::from("").style(Style::default().bg(input_bg)));
 
     let (_, max_label) = model_context_info(&bg.model_name);
     let ctx_display = format!("{}/{}", format_context_length(bg.used_tokens), max_label);
@@ -395,10 +398,7 @@ mod tests {
         // 4 wrapped prompt rows + top/bottom blank = 6 box rows, 1 footer row = 7 rows total.
         // In a 10-row viewport with 0 transcript rows, the box starts at row 0,
         // footer is at row 6, and rows 7..10 are trailing filler.
-        assert!(
-            rows[1].contains("❯"),
-            "prompt box starts at top: {rows:?}"
-        );
+        assert!(rows[1].contains("❯"), "prompt box starts at top: {rows:?}");
         assert!(
             rows[6].contains("cache"),
             "footer follows the box: {rows:?}"
@@ -410,8 +410,10 @@ mod tests {
         let box_bg = terminal.backend().buffer()[(0, 1)].bg;
         assert_eq!(
             box_bg,
-            ratatui::style::Color::Rgb(22, 22, 22),
-            "box matches composer gray"
+            // NOTE: updated with the input-box dim fix; UNRUN (cargo test
+            // banned under X) — verify in TTY/CI. dim_color((22,22,22)).
+            ratatui::style::Color::Rgb(8, 8, 8),
+            "backdrop input box is dimmed composer gray"
         );
     }
 
@@ -431,7 +433,10 @@ mod tests {
             .expect("draw");
         let rows = buffer_rows(terminal.backend(), 40, 15);
         // Prompt card: 3 rows (margin, ' ❯ /thinking', margin)
-        assert!(rows[1].contains("/thinking"), "card contains command: {rows:?}");
+        assert!(
+            rows[1].contains("/thinking"),
+            "card contains command: {rows:?}"
+        );
         // Card background is preserved (not crushed to near-black)
         let card_bg = terminal.backend().buffer()[(0, 1)].bg;
         assert_eq!(

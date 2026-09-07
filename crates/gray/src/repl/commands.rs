@@ -245,12 +245,17 @@ pub(crate) fn completion_fill(name: &str) -> String {
 /// after it with leading spaces trimmed (trailing space preserved to detect
 /// `/cmd sub ` vs `/cmd sub`). Returns full `cmd + args` names (no slash)
 /// so the existing `/{name} ` fill just works. Add new commands here.
+///
+/// First page (`/cmd ` with an empty arg box) leads with the bare command
+/// itself, so Enter runs it instead of forcing a suffix. Filtered and L2
+/// pages list suffixes only — a bare row there would wipe the typed args
+/// on fill.
 pub(crate) fn complete_command_args(
     cmd: &str,
     arg_text: &str,
     cwd: &std::path::Path,
 ) -> Vec<(String, String)> {
-    match cmd {
+    let mut out = match cmd {
         "context" => complete_context_args(arg_text),
         "acp" => complete_acp_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
@@ -260,7 +265,13 @@ pub(crate) fn complete_command_args(
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
+    };
+    if arg_text.trim().is_empty()
+        && let Some(d) = resolve(cmd)
+    {
+        out.insert(0, (cmd.to_string(), d.desc.to_string()));
     }
+    out
 }
 
 /// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): levels from
@@ -815,7 +826,7 @@ mod tests {
                 "completion {alias} -> {target}"
             );
         }
-        // `/plug` surfaces `plugin`; bare `/plugin ` offers all 8 subcommands.
+        // `/plug` surfaces `plugin`; bare `/plugin ` leads with itself + all 8 subcommands.
         use std::path::Path;
         let cwd = Path::new(".");
         assert!(
@@ -823,7 +834,9 @@ mod tests {
                 .iter()
                 .any(|(n, _)| n == "plugin")
         );
-        assert_eq!(super::complete_command_args("plugin", "", cwd).len(), 8);
+        let plugin_all = super::complete_command_args("plugin", "", cwd);
+        assert_eq!(plugin_all.len(), 9);
+        assert_eq!(plugin_all[0].0, "plugin");
     }
 
     #[test]
@@ -916,20 +929,24 @@ mod tests {
         use super::{complete_command_args, completion_matches_dyn};
         use std::path::Path;
         let cwd = Path::new(".");
-        // bare suffix lists everything
+        // bare suffix lists everything, led by the command itself
         let all = complete_command_args("context", "", cwd);
+        assert_eq!(all[0].0, "context");
         assert!(all.iter().any(|(n, _)| n == "context reserve"));
         assert!(all.iter().any(|(n, _)| n == "context auto"));
-        // filtered L1
+        // filtered L1 and L2 pages list suffixes only (bare row would wipe args on fill)
         let r = complete_command_args("context", "r", cwd);
+        assert!(!r.iter().any(|(n, _)| n == "context"));
         assert!(r.iter().any(|(n, _)| n == "context reserve"));
         // L2 after `reserve `
         let r2 = complete_command_args("context", "reserve ", cwd);
+        assert!(!r2.iter().any(|(n, _)| n == "context"));
         assert!(r2.iter().any(|(n, _)| n == "context reserve 16k"));
         // unknown command has no suffixes (universal hook default)
         assert!(complete_command_args("boguscmd", "", cwd).is_empty());
         // dyn dispatch through the composer entry point
         let dyn_all = completion_matches_dyn("/context ", cwd);
+        assert_eq!(dyn_all[0].0, "context");
         assert!(dyn_all.iter().any(|(n, _)| n == "context reserve"));
         // command-name path unaffected
         assert!(

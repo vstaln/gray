@@ -275,6 +275,19 @@ impl Agent {
                                 emit!(AgentEvent::tool_call_start(live_id, live_name));
                                 pending_emitted_start[index] = true;
                             }
+                            // pi `updateArgs`: keep streaming partial args so the
+                            // TUI can render the tool call live instead of
+                            // popping it in only at ToolCallEnd/ToolResult.
+                            if pending_emitted_start[index] && !arguments_delta.is_empty() {
+                                let live_id =
+                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
+                                let live_name = slot.name.clone().unwrap_or_default();
+                                emit!(AgentEvent::tool_call_progress(
+                                    live_id,
+                                    live_name,
+                                    slot.arguments.clone(),
+                                ));
+                            }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
                             break (

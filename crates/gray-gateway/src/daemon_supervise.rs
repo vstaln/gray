@@ -6,12 +6,14 @@
 //! [`MAX_FAST_FAILURES`] fast failures. [`connect_adapter_with_retry`]
 //! drives one adapter through the ladder and replays the delivery ledger.
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::Platform;
-use crate::daemon::Adapter;
+use crate::daemon::{Adapter, GatewayRunner};
 use crate::delivery::{DeliveryLedger, DeliveryRouter};
-use crate::status::GatewayStatusBoard;
+use crate::status::{GatewayStatusBoard, PlatformConnState};
 
 // ---------------------------------------------------------------------------
 // Supervised reconnect ladder
@@ -86,6 +88,16 @@ pub fn classify_shard_end() -> Fatal {
 /// Crash-loop guard: true once fast failures hit the limit.
 pub fn crash_loop_tripped(consecutive_fast_failures: u32) -> bool {
     consecutive_fast_failures >= MAX_FAST_FAILURES
+}
+
+/// Steady-state reconnect delay: 30s, 60s, 120s, 240s, then capped at 300s
+/// (hermes: `30*2^(n-1)`, cap 300). NOTE: the plan draft used
+/// `attempt.min(4)`, which tops out at 240s and never reaches the cap —
+/// `min(5)` is the smallest bound whose schedule actually hits 300s.
+pub fn supervise_backoff(attempt: u32) -> std::time::Duration {
+    std::time::Duration::from_secs(
+        (30u64.saturating_mul(1u64 << attempt.min(5).saturating_sub(1))).min(300),
+    )
 }
 
 /// Supervised `connect()` for one adapter: timeout-bounded attempts through
@@ -165,5 +177,108 @@ pub(crate) async fn connect_adapter_with_retry(
                 }
             },
         }
+    }
+}
+
+/// Steady-state supervisor (spawned by `daemon_boot` after boot, on the main
+/// runtime): every 30s, each adapter that lost liveness (`!is_alive()`) or is
+/// still board-`Failed` from boot re-enters [`connect_adapter_with_retry`]
+/// with [`MAX_RECONNECT_ATTEMPTS`]. Reconnect rounds per adapter are spaced
+/// by [`supervise_backoff`] so a persistently dead platform backs off to one
+/// ladder per 5 minutes (and self-heals when the operator fixes the token —
+/// no restart needed). When every tracked adapter is terminally `Failed` and
+/// the delivery queue is empty, the process exits 75 so systemd revives it
+/// fresh (obligations survive in the persistent ledger and replay at boot).
+pub(crate) async fn supervise_adapters(
+    runner: Arc<GatewayRunner>,
+    board: GatewayStatusBoard,
+    home: std::path::PathBuf,
+) {
+    const TICK: Duration = Duration::from_secs(30);
+    // Consecutive dead rounds + last ladder-entry per platform (backoff spacing).
+    let mut state: HashMap<Platform, (u32, Instant)> = HashMap::new();
+    loop {
+        tokio::time::sleep(TICK).await;
+        let snap = board.snapshot();
+        for (plat, adapter) in runner.adapters.iter() {
+            let row = snap.iter().find(|(p, _)| p == plat).map(|(_, s)| s);
+            let failed = matches!(row, Some(PlatformConnState::Failed(_)));
+            if adapter.is_alive() && !failed {
+                state.remove(plat);
+                // Boot used no board in `gateway run`: a live adapter stuck on
+                // `Connecting` really is connected — record it. Failed rows
+                // are never touched here; only the ladder rewrites them.
+                if matches!(row, Some(PlatformConnState::Connecting { .. })) {
+                    board.mark_connected(*plat, adapter.bot_identity());
+                }
+                continue;
+            }
+            let round = state.get(plat).map(|(n, _)| n + 1).unwrap_or(1);
+            let due = state
+                .get(plat)
+                .map(|(_, t)| t.elapsed() >= supervise_backoff(round))
+                .unwrap_or(true);
+            if !due {
+                continue;
+            }
+            state.insert(*plat, (round, Instant::now()));
+            log::warn!("gateway {plat} not alive (round {round}): re-entering connect ladder");
+            connect_adapter_with_retry(
+                adapter,
+                *plat,
+                Some(&board),
+                &runner.router,
+                &runner.ledger,
+                MAX_RECONNECT_ATTEMPTS,
+            )
+            .await;
+            if adapter.is_alive() && !board_shows_failed(&board, *plat) {
+                state.remove(plat);
+                log::info!("gateway {plat} recovered in steady state");
+            }
+        }
+        board.save_snapshot(&home);
+        if all_adapters_failed(&runner, &board) && runner.ledger.sweep().is_empty() {
+            log::error!(
+                "gateway: all adapters terminally failed, queue empty; exiting 75 for systemd restart"
+            );
+            std::process::exit(gray_supervise::exit::EXIT_RESTART);
+        }
+    }
+}
+
+fn board_shows_failed(board: &GatewayStatusBoard, plat: Platform) -> bool {
+    board
+        .snapshot()
+        .into_iter()
+        .any(|(p, s)| p == plat && matches!(s, PlatformConnState::Failed(_)))
+}
+
+fn all_adapters_failed(runner: &GatewayRunner, board: &GatewayStatusBoard) -> bool {
+    !runner.adapters.is_empty()
+        && runner
+            .adapters
+            .keys()
+            .all(|p| board_shows_failed(board, *p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_schedule_caps_at_five_minutes() {
+        assert_eq!(supervise_backoff(1).as_secs(), 30);
+        assert_eq!(supervise_backoff(2).as_secs(), 60);
+        assert_eq!(supervise_backoff(10).as_secs(), 300);
+    }
+
+    #[test]
+    fn backoff_ramps_then_holds_cap() {
+        assert_eq!(supervise_backoff(0).as_secs(), 30);
+        assert_eq!(supervise_backoff(3).as_secs(), 120);
+        assert_eq!(supervise_backoff(4).as_secs(), 240);
+        assert_eq!(supervise_backoff(5).as_secs(), 300);
+        assert_eq!(supervise_backoff(100).as_secs(), 300);
     }
 }
