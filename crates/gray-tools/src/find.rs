@@ -250,7 +250,6 @@ async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Op
     Some(finish(output))
 }
 
-
 /// Fallback when `fd` is missing: recursive walk via the `ignore` crate
 /// (real .gitignore handling) + `globset` matching with fd `--glob`
 /// semantics (no `/` in pattern = basename match, else rel-path match).
