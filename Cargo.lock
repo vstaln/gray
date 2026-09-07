@@ -1652,6 +1652,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "flate2",
  "log",
  "reqwest",
@@ -1732,7 +1733,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "globset",
  "gray-core",
+ "ignore",
  "infer",
  "libc",
  "log",
