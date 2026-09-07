@@ -76,8 +76,15 @@ fn restart_notify_path_in(home: &std::path::Path) -> std::path::PathBuf {
     home.join(".restart_notify.json")
 }
 
-fn write_restart_marker_in(home: &std::path::Path, platform: Platform, chat_id: &str) -> anyhow::Result<()> {
-    let data = RestartNotify { platform: platform.to_string(), chat_id: chat_id.to_string() };
+fn write_restart_marker_in(
+    home: &std::path::Path,
+    platform: Platform,
+    chat_id: &str,
+) -> anyhow::Result<()> {
+    let data = RestartNotify {
+        platform: platform.to_string(),
+        chat_id: chat_id.to_string(),
+    };
     std::fs::write(restart_notify_path_in(home), serde_json::to_string(&data)?)?;
     Ok(())
 }
@@ -89,7 +96,9 @@ pub(crate) fn take_restart_marker_in(home: &std::path::Path) -> Option<RestartNo
     if !path.exists() {
         return None;
     }
-    let data = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok());
+    let data = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
     let _ = std::fs::remove_file(&path);
     data
 }
@@ -490,7 +499,9 @@ impl GatewayRunner {
 }
 
 fn save_cron_output(job_id: &str, name: &str, output: &str) {
-    let Ok(home) = crate::config::gray_home_dir() else { return };
+    let Ok(home) = crate::config::gray_home_dir() else {
+        return;
+    };
     let dir = home.join("cron").join("output");
     if std::fs::create_dir_all(&dir).is_err() {
         return;
@@ -556,8 +567,22 @@ impl Streamer {
                 }
                 last_edit = Instant::now();
             }
-            let text = final_text.unwrap_or_else(|| if buf.is_empty() { "(no reply)".into() } else { buf.clone() });
-            finalize_stream(adapter.as_ref(), &chat, &opts, msg_id.as_deref(), &text, max).await
+            let text = final_text.unwrap_or_else(|| {
+                if buf.is_empty() {
+                    "(no reply)".into()
+                } else {
+                    buf.clone()
+                }
+            });
+            finalize_stream(
+                adapter.as_ref(),
+                &chat,
+                &opts,
+                msg_id.as_deref(),
+                &text,
+                max,
+            )
+            .await
         });
         Self { tx, task }
     }
@@ -575,7 +600,14 @@ impl Streamer {
 /// Final delivery for a streamed reply: overwrite the placeholder with the first
 /// chunk, then send any remaining chunks as normal messages. Falls back to a
 /// plain send if the edit fails (e.g. placeholder deleted).
-async fn finalize_stream(adapter: &dyn BasePlatformAdapter, chat: &str, opts: &SendOptions, msg_id: Option<&str>, text: &str, max: usize) -> SendResult {
+async fn finalize_stream(
+    adapter: &dyn BasePlatformAdapter,
+    chat: &str,
+    opts: &SendOptions,
+    msg_id: Option<&str>,
+    text: &str,
+    max: usize,
+) -> SendResult {
     let chunks = split_message_smart(text, max);
     let Some(first) = chunks.first() else {
         return SendResult::ok(msg_id.map(str::to_string));
@@ -591,7 +623,14 @@ async fn finalize_stream(adapter: &dyn BasePlatformAdapter, chat: &str, opts: &S
     }
     for (i, chunk) in chunks.iter().enumerate().skip(rest_start) {
         // Only the very first message replies to the origin.
-        let o = if i == 0 { opts.clone() } else { SendOptions { reply_to: None, thread_id: opts.thread_id.clone() } };
+        let o = if i == 0 {
+            opts.clone()
+        } else {
+            SendOptions {
+                reply_to: None,
+                thread_id: opts.thread_id.clone(),
+            }
+        };
         last = adapter.send_ext(chat, chunk, &o).await;
         if !last.success {
             return last;

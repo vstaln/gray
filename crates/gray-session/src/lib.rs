@@ -1062,9 +1062,17 @@ mod tests {
     async fn persists_turn_duration_ms() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await.unwrap();
+        let id = store
+            .create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test"))
+            .await
+            .unwrap();
         store
-            .append_with_usage_and_duration(&id, &Message::user("hi"), Some(gray_core::event::Usage::new(10, 5)), Some(6250))
+            .append_with_usage_and_duration(
+                &id,
+                &Message::user("hi"),
+                Some(gray_core::event::Usage::new(10, 5)),
+                Some(6250),
+            )
             .await
             .unwrap();
         let (_, entries) = store.load(&id).await.unwrap();
@@ -1076,7 +1084,10 @@ mod tests {
     async fn legacy_entry_without_duration_loads_as_none() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
-        let id = store.create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test")).await.unwrap();
+        let id = store
+            .create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test"))
+            .await
+            .unwrap();
         let path = store.session_path(&id);
         let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
         // Legacy entry shape: no duration_ms field.
