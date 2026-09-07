@@ -81,6 +81,7 @@ pub struct Tui {
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
+    pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
     // request_user_input overlay (codex port) + late non-blocking answers
     pub(crate) active_question: Option<question::QuestionSession>,
     pub pending_question_answers: Vec<String>,
@@ -220,6 +221,7 @@ impl Tui {
             committed_markdown_lines: 0,
             pending_resize: None,
             live_streamed_tokens: 0,
+            tool_progress_lens: std::collections::HashMap::new(),
             active_question: None,
             pending_question_answers: Vec::new(),
         })
@@ -367,12 +369,14 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.live_streamed_tokens = 0;
+        self.tool_progress_lens.clear();
         self.cumulative_usage = Some(usage);
     }
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
         self.cumulative_usage = None;
         self.live_streamed_tokens = 0;
+        self.tool_progress_lens.clear();
     }
 
     pub(crate) fn width(&self) -> usize {
@@ -414,6 +418,7 @@ impl Tui {
             self.turn_had_thinking = false;
         }
         self.live_streamed_tokens = 0;
+        self.tool_progress_lens.clear();
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
@@ -482,6 +487,7 @@ impl Tui {
         self.status = None;
         self.sleep_until = None;
         self.live_streamed_tokens = 0;
+        self.tool_progress_lens.clear();
         if self.thinking {
             self.end_thinking_run(true);
         }
@@ -528,6 +534,19 @@ impl Tui {
 
     pub fn push_usage(&mut self, tok_line: String) {
         self.pending_tokens = Some(tok_line);
+    }
+
+    /// pi `updateArgs` token accounting: `args_so_far` is the cumulative
+    /// buffer, so only the delta since the last call counts toward the
+    /// live `· N tok` counter.
+    pub fn live_progress_tokens(&mut self, id: &str, args_so_far: &str) {
+        let prev = self.tool_progress_lens.get(id).copied().unwrap_or(0);
+        let cur = args_so_far.len();
+        if cur > prev {
+            let delta_chars = cur - prev;
+            self.live_streamed_tokens += (delta_chars.div_ceil(4)).max(1);
+            self.tool_progress_lens.insert(id.to_string(), cur);
+        }
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {

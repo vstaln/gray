@@ -79,7 +79,14 @@ pub(crate) async fn handle_resume(
         let result = with_modal(tui, crate::resume::run_resume_picker(args.all, bg.as_ref())).await;
         match result {
             Ok(Some(id)) => Some(id),
-            Ok(None) => return,
+            Ok(None) => {
+                // Dismissed picker leaves the slash card with no feedback:
+                // gap so it doesn't jam the input box.
+                if let Some(shared) = &tui {
+                    shared.lock().expect("tui lock").ensure_gap(1);
+                }
+                return;
+            }
             Err(e) => {
                 if let Some(shared) = &tui {
                     shared
@@ -281,13 +288,58 @@ pub(crate) fn dispatch_agent_event(
                 t.flush_markdown();
                 t.end_thinking();
                 pending_tools.insert(id.clone(), (name.clone(), None));
+                // pi `ToolExecutionComponent` appears immediately (partial):
+                // surface the tool on the status dock instead of leaving
+                // "Thinking…" frozen while args stream in.
+                t.set_status(Some(&format!("Preparing tool: {name}")));
+            }
+            AgentEvent::ToolCallProgress {
+                id,
+                name,
+                args_so_far,
+            } => {
+                // Live args streaming: count tokens so the `· N tok`
+                // counter grows, and show a truncated preview on status.
+                // ponytail: status-line preview only, no in-place box update.
+                let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
+                let preview = crate::repl::format::truncate_chars(&preview, 60);
+                t.live_progress_tokens(id, args_so_far);
+                pending_tools.insert(id.clone(), (name.clone(), None));
+                if preview.is_empty() {
+                    t.set_status(Some(&format!("Preparing tool: {name}")));
+                } else {
+                    t.set_status(Some(&format!("Preparing tool: {name} {preview}")));
+                }
             }
             AgentEvent::ToolCallEnd { id, args } => {
                 t.end_thinking();
+                let name = pending_tools
+                    .get(id)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_default();
                 pending_tools
                     .entry(id.clone())
-                    .and_modify(|e| e.1 = Some(args.clone()))
-                    .or_insert((String::new(), Some(args.clone())));
+                    .and_modify(|e| {
+                        if e.0.is_empty() {
+                            e.0 = name.clone();
+                        }
+                        e.1 = Some(args.clone());
+                    })
+                    .or_insert((name.clone(), Some(args.clone())));
+                // Live header: show the tool call the moment args are
+                // complete (before execution), not only at ToolResult.
+                // The result box below repeats this header canonically;
+                // the live line is the streaming signal (pi partial box).
+                let live_name = pending_tools
+                    .get(id)
+                    .map(|(n, _)| n.clone())
+                    .unwrap_or_default();
+                if !live_name.is_empty() && live_name != "request_user_input" {
+                    let header =
+                        crate::tool_fmt::format_tool_call_header(&live_name, args, Some(cwd));
+                    t.push_line_spans(header);
+                }
+                t.set_status(Some("Working"));
                 // Brief 3B: `sleep` shows its countdown until its result lands.
                 if pending_tools.get(id).is_some_and(|(n, _)| n == "sleep") {
                     let secs = args.get("seconds").and_then(|s| s.as_u64()).unwrap_or(0);

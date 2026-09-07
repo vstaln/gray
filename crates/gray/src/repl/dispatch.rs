@@ -78,10 +78,9 @@ pub(crate) async fn dispatch_command(
                         out.push_str(&format!("  /{n:<10} {d}\n"));
                     }
                 }
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(out.trim_end().to_string());
+                let mut t = shared.lock().expect("tui lock");
+                t.push_dim(out.trim_end().to_string());
+                t.ensure_gap(1);
             } else {
                 println!("{}", crate::rule("commands"));
                 for d in REGISTRY {
@@ -168,6 +167,7 @@ pub(crate) async fn dispatch_command(
                     None
                 };
                 t.push_action("New conversation started", detail.as_deref());
+                t.ensure_gap(1);
             } else {
                 if !short_id.is_empty() {
                     println!("✓ New conversation started ({short_id})");
@@ -256,6 +256,7 @@ pub(crate) async fn dispatch_command(
                             .map(|p| p.name.as_str())
                             .unwrap_or("provider");
                         t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
+                        t.ensure_gap(1);
                         let _ = t.draw();
                     }
                     reload_agent(
@@ -276,6 +277,9 @@ pub(crate) async fn dispatch_command(
                         t.draft.clear();
                         t.attachments.clear();
                         t.pending_pastes.clear();
+                        // Dismissed picker leaves the slash card with no
+                        // feedback: gap so it doesn't jam the input box.
+                        t.ensure_gap(1);
                         let _ = t.draw();
                     }
                 }
