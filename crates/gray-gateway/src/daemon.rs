@@ -758,7 +758,7 @@ mod tests {
                 Box::pin(async { ToolOutput::ok("must not reach inner") })
             }
         }
-        let ex = GatedExecutor::new(Box::new(Inner), vec!["write".to_string()]);
+        let ex = GatedExecutor::new(Arc::new(Inner), vec!["write".to_string()]);
         let ctx = ToolContext {
             cwd: std::path::PathBuf::from("."),
             cancel: tokio_util::sync::CancellationToken::new(),

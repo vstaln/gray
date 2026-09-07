@@ -15,6 +15,7 @@
 //! Group senders never get a pairing prompt (silently ignored) so a bot
 //! added to a public group can't be used to spam codes.
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::config::{DmPolicy, GatewayConfig, Platform, PlatformConfig};
 use crate::pairing::{PairingStore, normalize_user_id};
@@ -247,12 +248,12 @@ pub fn tool_call_allowed(
 /// before delegating. Denials are returned as tool errors (data for the model,
 /// not a crash), so the agent can explain and continue.
 pub struct GatedExecutor {
-    inner: Box<dyn gray_core::agent::ToolExecutor>,
+    inner: Arc<dyn gray_core::agent::ToolExecutor>,
     denied_tools: Vec<String>,
 }
 
 impl GatedExecutor {
-    pub fn new(inner: Box<dyn gray_core::agent::ToolExecutor>, denied_tools: Vec<String>) -> Self {
+    pub fn new(inner: Arc<dyn gray_core::agent::ToolExecutor>, denied_tools: Vec<String>) -> Self {
         Self {
             inner,
             denied_tools,
