@@ -174,14 +174,6 @@ pub fn get_color_level() -> ColorLevel {
     detect_color_level().min(color_level_cap())
 }
 
-/// Override the color level (useful for testing or user preference).
-///
-/// Returns `Err` if the color level was already set.
-#[allow(dead_code)]
-pub fn set_color_level(level: ColorLevel) -> Result<(), ColorLevel> {
-    COLOR_LEVEL.set(level)
-}
-
 /// Convert an `anstyle::Color` to the appropriate level based on terminal support.
 ///
 /// This will downgrade colors as needed:

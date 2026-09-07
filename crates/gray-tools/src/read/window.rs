@@ -41,31 +41,28 @@ pub const MAX_LINE_CHARS: usize = 2000;
 pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;
 
-/// Env override `GRAY_READ_MAX_LINE_CHARS` (positive ints only, else default).
-pub fn max_line_chars() -> usize {
-    std::env::var("GRAY_READ_MAX_LINE_CHARS")
+/// Positive-int env override, else `default`.
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|n| *n > 0)
-        .unwrap_or(MAX_LINE_CHARS)
+        .unwrap_or(default)
+}
+
+/// Env override `GRAY_READ_MAX_LINE_CHARS` (positive ints only, else default).
+pub fn max_line_chars() -> usize {
+    env_usize("GRAY_READ_MAX_LINE_CHARS", MAX_LINE_CHARS)
 }
 
 /// Env override `GRAY_READ_MAX_LINES` (positive ints only, else default).
 pub fn max_lines() -> usize {
-    std::env::var("GRAY_READ_MAX_LINES")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(MAX_LINES)
+    env_usize("GRAY_READ_MAX_LINES", MAX_LINES)
 }
 
 /// Env override `GRAY_READ_MAX_BYTES` (positive ints only, else default).
 pub fn max_bytes() -> usize {
-    std::env::var("GRAY_READ_MAX_BYTES")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(MAX_BYTES)
+    env_usize("GRAY_READ_MAX_BYTES", MAX_BYTES)
 }
 
 /// Which ceiling cut the window (T1.1 `Cut{Lines|Bytes}`).

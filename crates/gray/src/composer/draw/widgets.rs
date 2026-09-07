@@ -208,6 +208,30 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     }
 }
 
+/// Exact-fit viewport height: status dock + queued preview + composer box +
+/// popup panel + attachments + the 1-row context footer. The inline viewport
+/// tracks this every frame so no cleared slack rows sit under the footer.
+pub(crate) fn composer_content_h(
+    status_h: u16,
+    queued_h: u16,
+    box_h: u16,
+    panel_h: u16,
+    attach_h: u16,
+) -> u16 {
+    status_h + queued_h + box_h + panel_h + attach_h + 1
+}
+
+/// Rows `queued_preview_lines` emits for `queued_len` entries (header + up to
+/// 3 entries + an overflow row). Hoisted so the viewport can be sized before
+/// the lines are built.
+pub(crate) fn queued_preview_h(queued_len: usize) -> u16 {
+    if queued_len == 0 {
+        return 0;
+    }
+    let max_show = 3usize;
+    1 + queued_len.min(max_show) as u16 + u16::from(queued_len > max_show)
+}
+
 /// True when the last scrollback row is a bare blank (no bg, no glyphs):
 /// the transcript already left breathing room above the viewport (a
 /// paragraph separator, `ensure_gap`, …). Same predicate `ensure_gap` uses.
@@ -319,5 +343,29 @@ mod tests {
         let rows = row_texts(&ibox);
         assert!(rows.iter().any(|r| r.contains("ok ")), "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
+    }
+
+    #[test]
+    fn content_h_exact_fit() {
+        // dock 0 + preview 0 + box 3 (pads + ❯) + panel 0 + attach 0 + footer 1
+        assert_eq!(composer_content_h(0, 0, 3, 0, 0), 4);
+        assert_eq!(composer_content_h(3, 0, 3, 0, 0), 7);
+        assert_eq!(composer_content_h(0, 2, 3, 6, 1), 13);
+    }
+
+    #[test]
+    fn preview_h_matches_preview_lines() {
+        use std::collections::VecDeque;
+        for n in 0..6usize {
+            let mut q: VecDeque<(String, Vec<std::path::PathBuf>)> = VecDeque::new();
+            for i in 0..n {
+                q.push_back((format!("msg {i}"), vec![]));
+            }
+            assert_eq!(
+                queued_preview_h(n),
+                queued_preview_lines(&q, 80).len() as u16,
+                "n={n}"
+            );
+        }
     }
 }

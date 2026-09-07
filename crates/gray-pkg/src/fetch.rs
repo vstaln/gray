@@ -64,52 +64,17 @@ pub(crate) fn check_url(url: &str) -> anyhow::Result<()> {
     anyhow::bail!("refusing non-https plugin URL: {}", redacted());
 }
 
-fn b64_val(c: u8) -> Option<u32> {
-    match c {
-        b'A'..=b'Z' => Some(u32::from(c - b'A')),
-        b'a'..=b'z' => Some(u32::from(c - b'a') + 26),
-        b'0'..=b'9' => Some(u32::from(c - b'0') + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
-}
-
-/// Decode standard base64 (npm `integrity` payloads). Hand-rolled: the
-/// workspace has `base64` but `gray-pkg` takes no new deps by design.
+/// Decode standard base64 (npm `integrity` payloads) via the workspace
+/// `base64` crate. Empty input is rejected explicitly: the crate decodes
+/// `""` to empty, but an empty digest must never verify.
 fn b64_decode(s: &str) -> anyhow::Result<Vec<u8>> {
-    let b = s.as_bytes();
-    if b.is_empty() || !b.len().is_multiple_of(4) {
+    use base64::Engine as _;
+    if s.is_empty() {
         anyhow::bail!("invalid base64 hash");
     }
-    let mut out = Vec::with_capacity(b.len() / 4 * 3);
-    for (qi, quad) in b.chunks(4).enumerate() {
-        let last = qi == b.len() / 4 - 1;
-        let mut n: u32 = 0;
-        let mut pad = 0;
-        for &c in quad {
-            if c == b'=' {
-                pad += 1;
-                n <<= 6;
-            } else {
-                if pad > 0 {
-                    anyhow::bail!("invalid base64 hash");
-                }
-                n = (n << 6) | b64_val(c).ok_or_else(|| anyhow::anyhow!("invalid base64 hash"))?;
-            }
-        }
-        if pad > 2 || (pad > 0 && !last) {
-            anyhow::bail!("invalid base64 hash");
-        }
-        out.push((n >> 16) as u8);
-        if pad < 2 {
-            out.push((n >> 8) as u8);
-        }
-        if pad == 0 {
-            out.push(n as u8);
-        }
-    }
-    Ok(out)
+    base64::engine::general_purpose::STANDARD
+        .decode(s)
+        .map_err(|_| anyhow::anyhow!("invalid base64 hash"))
 }
 
 /// Stream `url` to `$GRAY_HOME/plugins/tmp/`, enforcing the 64 MiB cap and
@@ -330,6 +295,7 @@ pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     #[test]
     fn redact_strips_secrets() {
@@ -345,27 +311,7 @@ mod tests {
         assert_eq!(b64_decode("Zm9vYmFy").unwrap(), b"foobar");
         // 64-byte digest shape (sha512 length) round-trips.
         let raw: Vec<u8> = (0..64).collect();
-        let mut enc = String::new();
-        const ALPH: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        for ch in raw.chunks(3) {
-            let mut n: u32 = 0;
-            for &b in ch {
-                n = (n << 8) | u32::from(b);
-            }
-            n <<= 8 * (3 - ch.len());
-            enc.push(ALPH[((n >> 18) & 63) as usize] as char);
-            enc.push(ALPH[((n >> 12) & 63) as usize] as char);
-            enc.push(if ch.len() > 1 {
-                ALPH[((n >> 6) & 63) as usize] as char
-            } else {
-                '='
-            });
-            enc.push(if ch.len() > 2 {
-                ALPH[(n & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
+        let enc = base64::engine::general_purpose::STANDARD.encode(&raw);
         assert_eq!(b64_decode(&enc).unwrap(), raw);
     }
 

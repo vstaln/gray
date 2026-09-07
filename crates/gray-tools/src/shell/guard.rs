@@ -196,7 +196,7 @@ fn preview(seg: &str) -> String {
 }
 
 /// Strips wrapper prefixes agents prepend: repeated `sudo`/`command`/`env K=V`, `\cmd` escapes.
-fn normalize_guard_head(command: &str) -> String {
+pub(crate) fn normalize_guard_head(command: &str) -> String {
     let mut rest = command.trim_start().to_string();
     loop {
         let t = rest.trim_start();

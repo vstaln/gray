@@ -79,14 +79,6 @@ pub(crate) fn text_clipboard_candidates() -> Vec<(String, Vec<String>)> {
     }
 }
 
-/// True when `cmd` resolves inside `paths` (a `PATH`-shaped list) to an
-/// existing file. Absolute/relative paths are checked directly.
-// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
-#[allow(dead_code)]
-pub(crate) fn have_in(cmd: &str, paths: &str) -> bool {
-    resolve_in(cmd, paths).is_some()
-}
-
 /// Full path of `cmd` inside `paths`, or `None` when absent.
 /// Absolute/relative paths are checked directly.
 pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
@@ -106,41 +98,6 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
         let p = std::path::Path::new(dir).join(cmd);
         p.is_file().then_some(p)
     })
-}
-
-/// Runs one clipboard helper; `None` on spawn failure, non-zero exit, or
-/// empty/whitespace-only output (opencode treats those as "no text").
-/// The `probe` gate decides whether the helper may run at all: production
-/// passes [`have_in`] against the real PATH, tests inject shims (a real
-/// `xclip` on PATH must not shadow the shim under test).
-// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
-#[allow(dead_code)]
-pub(crate) fn run_candidate_with_probe(
-    cmd: &str,
-    args: &[String],
-    probe: impl Fn(&str) -> bool,
-) -> Option<String> {
-    if !probe(cmd) {
-        return None;
-    }
-    let out = std::process::Command::new(cmd).args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    if text.trim().is_empty() {
-        return None;
-    }
-    Some(text)
-}
-
-/// Production runner: a helper runs only when found on the real PATH.
-// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
-#[allow(dead_code)]
-pub(crate) fn run_candidate(cmd: &str, args: &[String]) -> Option<String> {
-    let paths = std::env::var_os("PATH").unwrap_or_default();
-    let paths = paths.to_string_lossy().into_owned();
-    run_candidate_with_probe(cmd, args, |c| have_in(c, &paths))
 }
 
 #[cfg(feature = "clipboard")]
@@ -217,31 +174,6 @@ mod tests {
         assert_eq!(normalize_paste("a\r\nb\rc\nd"), "a\nb\nc\nd");
         assert_eq!(normalize_paste("plain\ntext"), "plain\ntext");
         assert_eq!(normalize_paste(""), "");
-    }
-
-    #[test]
-    fn have_in_finds_shims_and_rejects_missing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let shim = dir.path().join("xclip");
-        std::fs::write(&shim, "#!/bin/sh\necho hi\n").expect("write shim");
-        let paths = dir.path().to_string_lossy().into_owned();
-        assert!(have_in("xclip", &paths));
-        assert!(!have_in("wl-paste", &paths));
-        assert!(!have_in("xclip", ""));
-        // absolute path form
-        assert!(have_in(&shim.to_string_lossy(), &paths));
-        assert!(!have_in("/nonexistent-probe-xyz", &paths));
-    }
-
-    #[test]
-    fn run_candidate_accepts_output_rejects_failures() {
-        assert_eq!(
-            run_candidate("printf", &["hi".to_string()]),
-            Some("hi".to_string())
-        );
-        assert_eq!(run_candidate("false", &[]), None);
-        assert_eq!(run_candidate("printf", &["   \n ".to_string()]), None);
-        assert_eq!(run_candidate("gray-definitely-not-a-binary", &[]), None);
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

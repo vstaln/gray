@@ -25,9 +25,10 @@
 //!    [`MISSING_INPUT_MESSAGE`], [`no_files_matched`]) moved here verbatim;
 //!    those modules keep thin delegates so their unit tests still pin the
 //!    strings. One owner per string: no `[read:` literal lives outside this
-//!    file (image/notebook stay staged — unwired units with no caller yet).
+//!    file.
 //! 3. Remaining: `write.rs`/`edit.rs` resolve-retry + device-guard reuse,
-//!    `ignore`-crate walk upgrade, T4.2 did-you-mean, pixel/vision ops.
+//!    T4.2 did-you-mean, pixel/vision ops. (`find.rs` fallback already walks
+//!    via the `ignore` crate.)
 
 use crate::truncate::format_size;
 

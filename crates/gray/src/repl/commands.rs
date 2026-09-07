@@ -3,7 +3,6 @@ pub(crate) struct CmdDef {
     pub(crate) name: &'static str,
     pub(crate) desc: &'static str,
     pub(crate) aliases: &'static [&'static str],
-    #[allow(dead_code)] // reserved for future per-command hints; empty keeps /help byte-identical
     pub(crate) args_hint: &'static str,
 }
 
@@ -208,7 +207,7 @@ pub(crate) fn completion_matches_dyn(
     if let Some(inner) = cur_text.strip_prefix('/') {
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);
-            if cmd.contains(':') {
+            if cmd.is_empty() || cmd.contains(':') {
                 return Vec::new();
             }
             // Everything after `<cmd>`, leading spaces trimmed, trailing kept
@@ -713,6 +712,23 @@ mod tests {
             super::completion_matches("reasoning")
                 .iter()
                 .any(|(n, _)| *n == "thinking")
+        );
+    }
+
+    #[test]
+    fn empty_prompt_hides_slash_popup_like_codex() {
+        // codex `command_under_cursor`: empty text / no leading slash / cursor
+        // past the command name → no popup. Deleting `/` must close it, not
+        // strand stale matches (ghost popup + double footer + scrollback growth).
+        use std::path::Path;
+        let cwd = Path::new(".");
+        assert!(super::completion_matches_dyn("", cwd).is_empty());
+        assert!(super::completion_matches_dyn("hello", cwd).is_empty());
+        assert!(super::completion_matches_dyn("/ ", cwd).is_empty());
+        // bare `/` opens the popup with every command.
+        assert_eq!(
+            super::completion_matches_dyn("/", cwd).len(),
+            super::REGISTRY.len()
         );
     }
 

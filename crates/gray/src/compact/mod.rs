@@ -142,10 +142,9 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 pub mod policy;
 
 pub use policy::{
-    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, calculate_context_tokens, compaction_settings,
-    compaction_settings_for, estimate_context_tokens, estimate_tokens, init_auto_compact_from_env,
-    is_auto_compact_enabled, is_context_overflow_error, set_auto_compact_enabled, should_compact,
-    tail_messages,
+    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, compaction_settings, compaction_settings_for,
+    estimate_context_tokens, estimate_tokens, init_auto_compact_from_env, is_auto_compact_enabled,
+    is_context_overflow_error, set_auto_compact_enabled, should_compact, tail_messages,
 };
 /// Reusable auto-compact helper that mirrors manual `/compact` flow.
 ///

@@ -8,17 +8,13 @@ pub(crate) fn thinking_style() -> Style {
         .add_modifier(Modifier::ITALIC)
 }
 
-/// Left padding, omp-style: routed through the global tight flag.
+/// Left padding, omp-style: one space.
 pub(crate) fn left_pad() -> Span<'static> {
-    Span::raw(" ".repeat(crate::tui::padding_x(1)))
+    Span::raw(" ")
 }
 
 pub(crate) fn strip_ansi(s: &str) -> String {
     crate::tui::strip_ansi(s)
-}
-
-fn str_display_width(s: &str) -> usize {
-    crate::tui::visible_width(s)
 }
 
 /// Redact secrets from slash-command echo cards: `/gateway connect <platform> <token>`
@@ -141,7 +137,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
 
     let (content_start, cont_gutter_str, gutter_style, eff_max_w) =
         if let Some((g_end, ref c_str, g_style)) = gutter_info {
-            let g_width = str_display_width(&flat[..g_end]);
+            let g_width = crate::tui::visible_width(&flat[..g_end]);
             let avail = max_w.saturating_sub(g_width).max(10);
             (g_end, Some(c_str.clone()), Some(g_style), avail)
         } else {
@@ -184,7 +180,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
     let mut cur_w: usize = 0;
     for w_range in words {
         let word_str = &flat[w_range.clone()];
-        let word_w = str_display_width(word_str);
+        let word_w = crate::tui::visible_width(word_str);
         if word_w > eff_max_w {
             if let Some(s) = cur_start.take() {
                 out_ranges.push(s..cur_end);
