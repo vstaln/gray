@@ -7,7 +7,6 @@ pub mod error;
 pub mod event;
 pub mod message;
 pub mod questions;
-pub mod redaction;
 pub mod tool_out;
 
 pub use agent::{
