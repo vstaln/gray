@@ -9,9 +9,9 @@ pub mod notices;
 mod resolve;
 pub mod stream;
 mod tail;
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) mod testkit;
+/// Fixture zoo shared with `tests/read_zoo.rs` (hidden: test-only surface).
+#[doc(hidden)]
+pub mod testkit;
 pub mod window;
 
 use std::sync::Arc;
