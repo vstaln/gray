@@ -60,7 +60,7 @@ impl Default for Syntect {
 /// Get a shared, static Syntect instance.
 ///
 /// Uses the bundled Tokyo Night theme so production rendering matches the
-/// `test_syntect()` theme used across markdown tests. Previously this used
+/// theme used across markdown tests. Previously this used
 /// `Syntect::default()` (base16-ocean.dark), so code colors differed between
 /// tests and the live TUI.
 pub fn get_syntect() -> &'static Syntect {
@@ -235,16 +235,4 @@ pub(crate) fn syntax_highlight_raw(
         );
     }
     Some(lines)
-}
-
-/// Get a shared Syntect instance for tests.
-///
-/// This loads the tokyo-night theme bundled with the crate.
-/// Uses a static OnceLock for efficiency in test runs.
-#[cfg(any(test, fuzzing))]
-#[allow(dead_code)]
-pub fn test_syntect() -> &'static Syntect {
-    use std::sync::OnceLock;
-    static TEST_SYNTECT: OnceLock<Syntect> = OnceLock::new();
-    TEST_SYNTECT.get_or_init(|| Syntect::new(include_bytes!("../assets/tokyo-night.tmTheme")))
 }

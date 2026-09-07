@@ -95,14 +95,6 @@ pub fn tail_messages(messages: &[Message], keep_tokens: usize) -> Vec<Message> {
     kept
 }
 
-pub fn calculate_context_tokens(u: &Usage) -> usize {
-    if u.total() > 0 {
-        u.total()
-    } else {
-        u.input_tokens + u.output_tokens
-    }
-}
-
 pub fn estimate_tokens(msg: &Message) -> usize {
     // Must measure billable context, not displayable prose: a message whose
     // only block is a 50 KiB tool result is ~12.8k tokens, not 0. See
