@@ -98,13 +98,8 @@ impl Tool for LsTool {
             };
             results.push(format!("{name}{suffix}"));
         }
-        // If we broke due to limit but there were more entries, mark reached
-        if !entry_limit_reached && results.len() >= effective_limit && entries.len() > results.len()
-        {
-            entry_limit_reached = true;
-        }
-        // More precise: if total entries exceeds limit, mark reached
-        if entries.len() > effective_limit && !entry_limit_reached {
+        // Total entries beyond the limit means the cap cut the list.
+        if entries.len() > effective_limit {
             entry_limit_reached = true;
         }
 
