@@ -14,6 +14,7 @@ use std::os::unix::process::ExitStatusExt;
 use super::contract::ExitReport;
 // Shared quote-aware `|` splitter (4B dedupes the NOTE(1A) local copy:
 // `||` stays literal, quotes/backslashes/$(…)/heredocs respected).
+use super::guard::normalize_guard_head;
 use super::split::split_pipeline;
 
 /// Build an honest [`ExitReport`] from a wait status and the command that
@@ -114,39 +115,6 @@ fn command_head(normalized: &str, raw: &str) -> String {
 fn base_head(cmd: &str) -> &str {
     let head = cmd.split_whitespace().next().unwrap_or("");
     head.rsplit('/').next().unwrap_or(head)
-}
-
-// NOTE(1A): copy of guard::normalize_guard_head (private there, verbatim
-// logic); dedupe with shell/split.rs when 4B lands.
-/// Strips wrapper prefixes agents prepend: repeated `sudo`/`command`/`env K=V`, `\cmd` escapes.
-fn normalize_guard_head(command: &str) -> String {
-    let mut rest = command.trim_start().to_string();
-    loop {
-        let t = rest.trim_start();
-        if let Some(after) = t.strip_prefix("sudo ") {
-            rest = after.to_string();
-        } else if let Some(after) = t.strip_prefix("command ") {
-            rest = after.to_string();
-        } else if let Some(after) = t.strip_prefix("env ") {
-            // drop KEY=VAL pairs following env
-            let mut parts = after.split_whitespace();
-            let mut idx = 0usize;
-            let mut cut = after.len();
-            for part in parts.by_ref() {
-                if part.contains('=') {
-                    idx += part.len() + 1;
-                } else {
-                    cut = idx;
-                    break;
-                }
-            }
-            rest = after[cut.min(after.len())..].to_string();
-        } else if let Some(after) = t.strip_prefix('\\') {
-            rest = after.to_string();
-        } else {
-            return t.to_string();
-        }
-    }
 }
 
 /// Pipeline note when the tail command's status masks the real one.
