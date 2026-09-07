@@ -5,7 +5,6 @@
 //! 2000 lines / 50 KiB, keeping head + tail with a `[truncated ...]`
 //! annotation; error outputs are additionally hard-capped at 2 KiB.
 
-pub mod bash;
 pub mod edit;
 pub mod edit_diff;
 pub mod find;
@@ -31,7 +30,7 @@ pub(crate) use gray_core::tool_out::{
 };
 use serde_json::Value;
 
-pub use bash::BashTool;
+pub use shell::tools::bash::BashTool;
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
