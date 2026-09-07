@@ -135,6 +135,14 @@ pub enum AgentEvent {
     },
     /// Notification that a tool call invocation has begun.
     ToolCallStart { id: String, name: String },
+    /// Live partial args while the model streams them (pi
+    /// `ToolExecutionComponent.updateArgs`): `args_so_far` is the raw
+    /// concatenated arguments delta buffer, usually partial JSON.
+    ToolCallProgress {
+        id: String,
+        name: String,
+        args_so_far: String,
+    },
     /// Complete tool call argument accumulation finished.
     ToolCallEnd { id: String, args: serde_json::Value },
     /// Result returned after executing a tool call.
@@ -182,6 +190,19 @@ impl AgentEvent {
         Self::ToolCallStart {
             id: id.into(),
             name: name.into(),
+        }
+    }
+
+    /// Creates a live tool-call progress event (partial streamed args).
+    pub fn tool_call_progress(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        args_so_far: impl Into<String>,
+    ) -> Self {
+        Self::ToolCallProgress {
+            id: id.into(),
+            name: name.into(),
+            args_so_far: args_so_far.into(),
         }
     }
 

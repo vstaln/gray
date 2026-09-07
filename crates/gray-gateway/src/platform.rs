@@ -64,6 +64,17 @@ pub trait BasePlatformAdapter: Send + Sync {
     fn bot_identity(&self) -> Option<String> {
         None
     }
+    /// Steady-state liveness for the reconnect supervisor: false means the
+    /// connection dropped and `connect()` must run again. Default `true`
+    /// (no observable handle here — do not invent one).
+    /// Intended overrides (adapter files, follow-up):
+    /// - telegram: poller task over (`poller` None or `is_finished()`);
+    /// - discord: shard task over (`has_shard` + `is_finished()`);
+    /// - slack: listener task over (`listener` None/`is_finished()`, except
+    ///   `app_token: None` send-only-by-config which must stay `true`).
+    fn is_alive(&self) -> bool {
+        true
+    }
     async fn send(&self, chat: &str, text: &str) -> SendResult;
 
     /// Send with reply/thread hints. Default ignores the hints.

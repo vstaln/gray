@@ -60,7 +60,10 @@ pub(crate) async fn run_prompt_turn(
                 }
                 Ok(false) => {
                     if let Some((shared, _)) = tui {
-                        let _ = shared.lock().expect("tui lock").draw();
+                        let mut t = shared.lock().expect("tui lock");
+                        // Dismissed picker: gap so the card doesn't jam the input box.
+                        t.ensure_gap(1);
+                        let _ = t.draw();
                     }
                     return Ok(());
                 }

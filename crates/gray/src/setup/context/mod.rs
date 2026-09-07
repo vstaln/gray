@@ -474,12 +474,62 @@ mod tests {
             .iter()
             .map(|(l, _)| *l)
             .collect();
-        assert_eq!(grok, vec!["off", "low", "high"]);
+        assert_eq!(grok, vec!["off", "low", "medium", "high"]);
         let claude: Vec<&str> = supported_thinking_levels("anthropic/claude-opus-4-6")
             .iter()
             .map(|(l, _)| *l)
             .collect();
         assert_eq!(claude, vec!["off", "low", "medium", "high", "max"]);
+        // Modern Claude takes xhigh; GPT-5.6 additionally takes max.
+        let opus47: Vec<&str> = supported_thinking_levels("anthropic/claude-opus-4-7")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(opus47, vec!["off", "low", "medium", "high", "xhigh", "max"]);
+        let gpt56: Vec<&str> = supported_thinking_levels("openai/gpt-5.6-sol")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(gpt56, vec!["off", "low", "medium", "high", "xhigh", "max"]);
+        let gemini: Vec<&str> = supported_thinking_levels("google/gemini-3.6-flash")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(gemini, vec!["off", "minimal", "low", "medium", "high"]);
+        // Future GPT family (e.g. gpt-6-astra) gets the generous modern set.
+        let gpt6: Vec<&str> = supported_thinking_levels("openai/gpt-6-astra")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(gpt6, vec!["off", "low", "medium", "high", "xhigh"]);
+        // models.dev `reasoning_options` drive levels automatically — no
+        // family table entry needed for unknown families ...
+        let v2: serde_json::Value = serde_json::json!({
+            "testprov": {"models": {
+                "test-effort-auto": {
+                    "reasoning": true,
+                    "limit": {"context": 200000},
+                    "reasoning_options": [{"type": "effort", "values": [null, "low", "medium", "high", "xhigh", "max"]}],
+                },
+                "test-grok-future": {
+                    "reasoning": true,
+                    "limit": {"context": 128000},
+                    "reasoning_options": [{"type": "effort", "values": ["low", "medium", "high", "max"]}],
+                },
+            }},
+        });
+        parse_models_dev_json(&v2);
+        let auto: Vec<&str> = supported_thinking_levels("testprov/test-effort-auto")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(auto, vec!["off", "low", "medium", "high", "xhigh", "max"]);
+        // ... and beat the family table where it disagrees (grok has no max).
+        let grok_future: Vec<&str> = supported_thinking_levels("xai/test-grok-future")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(grok_future, vec!["off", "low", "medium", "high", "max"]);
     }
 
     #[test]
