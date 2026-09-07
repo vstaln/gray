@@ -30,7 +30,6 @@ pub(crate) use gray_core::tool_out::{
 };
 use serde_json::Value;
 
-pub use shell::tools::bash::BashTool;
 pub use edit::EditTool;
 pub use find::FindTool;
 pub use grep::GrepTool;
@@ -40,6 +39,7 @@ pub use read::ReadTool;
 pub use request_user_input::{
     REQUEST_USER_INPUT_TOOL_NAME, RequestUserInputTool, StdinQuestionAsker,
 };
+pub use shell::tools::bash::BashTool;
 pub use write::WriteTool;
 
 /// Ordered collection of tools with name lookup, wired into the agent loop
