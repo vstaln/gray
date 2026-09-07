@@ -2089,4 +2089,66 @@ mod agent_tests {
             "lane off must match lane on event-for-event"
         );
     }
+
+    /// Cancels the run's token inside the first `tool_before` verdict, so the
+    /// parallel pre-pass observes cancellation at the SECOND index — past the
+    /// first ready item.
+    struct CancelOnFirstBefore {
+        token: tokio_util::sync::CancellationToken,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait]
+    impl PluginHooks for CancelOnFirstBefore {
+        async fn tool_before(&self, _name: &str, _args: &serde_json::Value) -> ToolBefore {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                self.token.cancel();
+            }
+            ToolBefore::Allow
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // ENV_LOCK is test-only env serialization; holding it across await is its job
+    async fn parallel_prepass_cancel_backfills_whole_run_exactly_once() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var("GRAY_PARALLEL_READS").ok();
+        unsafe { std::env::remove_var("GRAY_PARALLEL_READS") };
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let provider = FakeProvider::new(vec![two_read_script(), end_script()]);
+        let executor = FakeExecutor::new(ToolOutput::ok("x"));
+        let call_log = executor.calls.clone();
+        let ctx = ToolContext {
+            cancel: cancel.clone(),
+            ..ToolContext::default()
+        };
+        let mut agent = Agent::new(Box::new(provider), Arc::new(executor))
+            .with_tools(vec![read_tool()])
+            .with_hooks(vec![Arc::new(CancelOnFirstBefore {
+                token: cancel,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            })]);
+        let err = agent
+            .run(Message::user("go"), ctx)
+            .await
+            .expect_err("pre-pass cancel must abort the run");
+        match prev {
+            Some(v) => unsafe { std::env::set_var("GRAY_PARALLEL_READS", v) },
+            None => unsafe { std::env::remove_var("GRAY_PARALLEL_READS") },
+        }
+        assert!(matches!(err, CoreError::Cancelled), "got {err:?}");
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "cancelled pre-pass must never reach the executor"
+        );
+        for id in ["c1", "c2"] {
+            let n = agent
+                .messages()
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter(|b| matches!(b, ContentBlock::ToolResult { id: i, .. } if i.as_str() == id))
+                .count();
+            assert_eq!(n, 1, "tool {id} must have exactly one ToolResult message");
+        }
+    }
 }
