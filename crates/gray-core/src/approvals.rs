@@ -13,9 +13,9 @@
 //! execpolicy engine: **Accept** (run once), **AcceptForSession** (remember
 //! this call this session), **Decline** (skip, the turn continues), **Cancel**
 //! (skip and stop listening — Esc always cancels, like codex).
-//! "Accept always for this prefix" (codex's `AcceptWithExecpolicyAmendment`)
-//! is intentionally not implemented: gray has no prefix-rule engine to apply
-//! it to, so offering it would be a lie.
+//! "Always" (codex's `AcceptWithExecpolicyAmendment`) remembers the command
+//! *prefix* (binary + subcommand, canonicalized) for the rest of the session —
+//! never a global mode flip.
 //!
 //! The gate lives in gray-core so both the interactive REPL and headless
 //! surfaces (gateway daemon, print mode) enforce the same policy. Session
@@ -58,6 +58,7 @@ pub enum Decision {
 pub struct ApprovalCache {
     paths: Mutex<HashSet<PathBuf>>,
     commands: Mutex<HashSet<String>>,
+    prefixes: Mutex<HashSet<String>>,
 }
 
 impl ApprovalCache {
@@ -80,6 +81,20 @@ impl ApprovalCache {
         self.commands
             .lock()
             .map(|g| g.contains(&canonicalize_command(command)))
+            .unwrap_or(false)
+    }
+
+    pub fn remember_prefix(&self, prefix: String) {
+        self.prefixes
+            .lock()
+            .map(|mut g| g.insert(canonicalize_command(&prefix)))
+            .ok();
+    }
+
+    pub fn matched_prefix(&self, command: &str) -> bool {
+        self.prefixes
+            .lock()
+            .map(|g| g.contains(&command_prefix(&canonicalize_command(command))))
             .unwrap_or(false)
     }
 }
@@ -449,6 +464,12 @@ impl ApprovalGate {
                 {
                     return Ok(());
                 }
+                if tool == "bash"
+                    && let Some(cmd) = args.get("command").and_then(|v| v.as_str())
+                    && self.cache.matched_prefix(cmd)
+                {
+                    return Ok(());
+                }
                 match ask_user(tool, label, questions).await {
                     Decision::Accept => Ok(()),
                     Decision::AcceptForSession => {
@@ -456,7 +477,18 @@ impl ApprovalGate {
                         Ok(())
                     }
                     Decision::AcceptAlways => {
-                        self.set_mode(MODE_FULL);
+                        // Bash "always" remembers the command *prefix* for this
+                        // session (codex's prefix-rule meaning). Non-bash
+                        // AcceptAlways keeps the existing session-scoped
+                        // `remember()` path (paths); neither flips global mode.
+                        if tool == "bash"
+                            && let Some(cmd) = args.get("command").and_then(|v| v.as_str())
+                        {
+                            self.cache
+                                .remember_prefix(command_prefix(&canonicalize_command(cmd)));
+                        } else {
+                            self.remember(tool, args, cwd);
+                        }
                         Ok(())
                     }
                     Decision::Decline => Err(format!(
@@ -509,8 +541,9 @@ pub async fn ask_user(tool: &str, label: &str, questions: Option<&QuestionBridge
                 description: "Run this and remember for the rest of the session.".to_string(),
             },
             UserOption {
-                label: "Yes, always (don't ask again)".to_string(),
-                description: "Run this and allow all future tools (YOLO mode).".to_string(),
+                label: "Yes, for this prefix".to_string(),
+                description: "Remember this command prefix for the rest of the session."
+                    .to_string(),
             },
             UserOption {
                 label: "No".to_string(),
@@ -526,7 +559,10 @@ pub async fn ask_user(tool: &str, label: &str, questions: Option<&QuestionBridge
                 .flat_map(|a| a.answers.iter().map(String::as_str))
                 .collect();
             if picked.iter().any(|s| {
-                s.contains("always") || s.contains("YOLO") || s.contains("don't ask again")
+                s.contains("for this prefix")
+                    || s.contains("always")
+                    || s.contains("YOLO")
+                    || s.contains("don't ask again")
             }) {
                 Decision::AcceptAlways
             } else if picked.contains(&"Yes, for session") {
@@ -722,5 +758,61 @@ mod tests {
         assert!(err.contains("do NOT re-attempt"), "{err}");
         assert!(err.contains("write/edit/bash"), "{err}");
         assert!(err.contains("ask the user instead"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn accept_always_records_prefix_not_full_mode() {
+        use crate::questions::QuestionBridge;
+        // Scripted with the legacy "always" label so the RED run exercises the
+        // old AcceptAlways path (which flipped global mode to full).
+        let bridge = QuestionBridge::scripted(vec!["Yes, always (don't ask again)".to_string()]);
+        let gate = ApprovalGate::new("auto");
+        let out = gate
+            .check(
+                "bash",
+                &json!({"command": "cargo test --lib"}),
+                &cwd(),
+                "cargo test --lib",
+                Some(&bridge),
+            )
+            .await;
+        assert!(out.is_ok());
+        assert_eq!(
+            gate.mode(),
+            "auto",
+            "AcceptAlways must NOT flip global mode anymore"
+        );
+        // Second call, different spelling, no bridge → Ok via prefix rule:
+        let out2 = gate
+            .check(
+                "bash",
+                &json!({"command": "/bin/bash -lc 'cargo test --doc'"}),
+                &cwd(),
+                "x",
+                None,
+            )
+            .await;
+        assert!(out2.is_ok(), "same prefix, canonicalized");
+        // Different prefix, no bridge → still asks (Err without a user):
+        let out3 = gate
+            .check(
+                "bash",
+                &json!({"command": "rm -rf /tmp/x"}),
+                &cwd(),
+                "x",
+                None,
+            )
+            .await;
+        assert!(out3.is_err());
+    }
+
+    #[tokio::test]
+    async fn ask_user_maps_prefix_label_to_accept_always() {
+        use crate::questions::QuestionBridge;
+        let bridge = QuestionBridge::scripted(vec!["Yes, for this prefix".to_string()]);
+        assert_eq!(
+            ask_user("bash", "cargo test", Some(&bridge)).await,
+            Decision::AcceptAlways
+        );
     }
 }
