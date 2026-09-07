@@ -17,6 +17,8 @@
 //! crate-level `dead_code` allow keeps `cargo clippy -- -D warnings` green.
 #![allow(dead_code)]
 
+use crate::agent::Agent;
+use crate::error::CoreError;
 use crate::message::{ContentBlock, Message, Role};
 
 /// Verbatim copy of codex's `CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE`
@@ -82,6 +84,35 @@ pub(crate) fn trim_tool_results_to_fit(
         }
     }
     (rewritten, initial.saturating_sub(estimated) as u64)
+}
+
+/// In-band compaction trigger: chat-shaped equivalent of codex v2's
+/// `ResponseItem::CompactionTrigger` + summary instruction, appended to the
+/// retained history for the summarization call only.
+pub(crate) const COMPACTION_TRIGGER: &str = "Compact this conversation for context compaction: reply with ONLY a concise summary preserving key facts, decisions, file states, and pending work. No tool calls.";
+
+/// One in-band summarization call over `history`: same system prompt + same
+/// tools as live turns, plus [`COMPACTION_TRIGGER`]. Identical request prefix
+/// → server prefix-cache hit on providers that support it. Takes `&[Message]`
+/// and builds the input locally — the caller's history is never mutated — and
+/// the trigger is popped from retained history after (mirroring v2's
+/// `prompt_input.pop()`), so it never pollutes the transcript.
+pub(crate) async fn run_compaction_call(
+    agent: &Agent,
+    history: &[Message],
+) -> Result<String, CoreError> {
+    let mut messages = history.to_vec();
+    messages.push(Message::user(COMPACTION_TRIGGER));
+    // Empty system maps to `None`, exactly like a live turn (`agent_loop.rs`):
+    // the trigger request then carries byte-identical prefix fields.
+    let system = agent.system_text();
+    agent
+        .complete_with_history(
+            (!system.is_empty()).then_some(system),
+            messages,
+            agent.tool_defs().to_vec(),
+        )
+        .await
 }
 
 /// Retained-history token budget, mirroring codex v2's
@@ -278,7 +309,12 @@ fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Role;
+    use crate::agent::{Agent, Provider, ProviderStream, ToolContext, ToolExecutor, ToolOutput};
+    use crate::event::{StopReason, StreamEvent};
+    use crate::message::{ChatRequest, Role, ToolDef};
+    use async_trait::async_trait;
+    use futures::future::BoxFuture;
+    use std::sync::{Arc, Mutex};
 
     fn tool_msgs() -> Vec<Message> {
         ["c1", "c2", "c3"]
@@ -419,6 +455,136 @@ mod tests {
         assert!(
             crate::agent_compact::est_tokens(&out) <= 1500,
             "truncated output fits budget"
+        );
+    }
+
+    // --- Task 3 (RED): in-band trigger call -------------------------------
+
+    /// Test fake mirroring `agent::agent_tests::FakeProvider`'s `Provider`
+    /// impl shape: records the `ChatRequest` it receives, replays one
+    /// scripted event list.
+    struct CapturingProvider {
+        script: Mutex<Vec<StreamEvent>>,
+        seen: Arc<Mutex<Vec<ChatRequest>>>,
+    }
+
+    impl CapturingProvider {
+        fn new(script: Vec<StreamEvent>, seen: Arc<Mutex<Vec<ChatRequest>>>) -> Self {
+            Self {
+                script: Mutex::new(script),
+                seen,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for CapturingProvider {
+        fn stream(&self, req: ChatRequest) -> ProviderStream {
+            self.seen.lock().expect("seen lock poisoned").push(req);
+            let script = std::mem::take(&mut *self.script.lock().expect("script lock poisoned"));
+            Box::pin(futures::stream::iter(script.into_iter().map(Ok)))
+        }
+    }
+
+    /// Executor that records calls instead of running them (the trigger-call
+    /// drain must never reach it).
+    struct RecordingExecutor {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ToolExecutor for RecordingExecutor {
+        fn execute(
+            &self,
+            _ctx: &ToolContext,
+            name: &str,
+            _args: serde_json::Value,
+        ) -> BoxFuture<'static, ToolOutput> {
+            self.calls
+                .lock()
+                .expect("calls lock poisoned")
+                .push(name.to_string());
+            Box::pin(async move { ToolOutput::ok("must-not-run") })
+        }
+    }
+
+    fn trigger_test_agent(
+        script: Vec<StreamEvent>,
+        seen: Arc<Mutex<Vec<ChatRequest>>>,
+        calls: Arc<Mutex<Vec<String>>>,
+        tools: Vec<ToolDef>,
+    ) -> Agent {
+        Agent::new(
+            Box::new(CapturingProvider::new(script, seen)),
+            Arc::new(RecordingExecutor { calls }),
+        )
+        .with_system("S")
+        .with_tools(tools)
+    }
+
+    #[tokio::test]
+    async fn compaction_call_reuses_system_tools_and_appends_trigger() {
+        let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+        let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+        let tools = vec![ToolDef::new(
+            "read",
+            "r",
+            serde_json::json!({"type": "object"}),
+        )];
+        let agent = trigger_test_agent(
+            vec![
+                StreamEvent::text_delta("SUMMARY"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+            seen.clone(),
+            calls,
+            tools.clone(),
+        );
+        let m1 = Message::user("m1");
+        let m2 = Message::assistant("m2");
+        let history = vec![m1.clone(), m2.clone()];
+
+        let out = run_compaction_call(&agent, &history).await.unwrap();
+
+        assert_eq!(out, "SUMMARY");
+        let reqs = seen.lock().expect("seen lock poisoned");
+        assert_eq!(reqs.len(), 1, "one trigger call, got {reqs:?}");
+        let req = &reqs[0];
+        assert_eq!(req.system, Some("S".to_string()));
+        assert_eq!(req.tools, tools);
+        let mut expected = history.clone();
+        expected.push(Message::user(COMPACTION_TRIGGER));
+        assert_eq!(req.messages, expected);
+        assert_eq!(
+            history,
+            vec![m1, m2],
+            "trigger must not leak into caller history"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_call_drops_tool_use_blocks_from_reply() {
+        let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+        let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+        let agent = trigger_test_agent(
+            vec![
+                StreamEvent::text_delta("S"),
+                StreamEvent::tool_call_delta(0, Some("c1".into()), Some("read".into()), "{}"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+            seen,
+            calls.clone(),
+            Vec::new(),
+        );
+
+        let out = run_compaction_call(&agent, &[Message::user("hi")])
+            .await
+            .unwrap();
+
+        assert_eq!(out, "S");
+        assert!(
+            calls.lock().expect("calls lock poisoned").is_empty(),
+            "no tool execution attempted"
         );
     }
 

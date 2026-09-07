@@ -433,27 +433,47 @@ impl Agent {
         &*self.provider
     }
 
+    /// System prompt sent with every request. `pub(crate)` because the
+    /// compaction-v2 trigger call (sibling module `compact_v2`) reuses it
+    /// verbatim: private fields are visible only in the defining module, so
+    /// the sibling cannot read `self.system` directly.
+    pub(crate) fn system_text(&self) -> &str {
+        &self.system
+    }
+
+    /// Tools advertised to the model. `pub(crate)` for the same reason as
+    /// [`system_text`](Self::system_text): the compaction-v2 trigger call
+    /// reuses them verbatim.
+    pub(crate) fn tool_defs(&self) -> &[ToolDef] {
+        &self.tools
+    }
+
     /// Single-turn text completion with optional system prompt (used for compaction & summarization).
     pub async fn complete_prompt(
         &self,
         prompt: &str,
         system: Option<&str>,
     ) -> Result<String, CoreError> {
+        self.complete_with_history(system, vec![Message::user(prompt)], Vec::new())
+            .await
+    }
+
+    /// [`complete_prompt`](Self::complete_prompt) generalized over history +
+    /// tools: streams one assistant reply and returns its prose. The
+    /// compaction-v2 in-band trigger call passes the live system + tools so
+    /// the request prefix stays cache-hot.
+    pub async fn complete_with_history(
+        &self,
+        system: Option<&str>,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+    ) -> Result<String, CoreError> {
         let req = ChatRequest {
             system: system.map(|s| s.to_string()),
-            messages: vec![Message::user(prompt)],
-            tools: Vec::new(),
+            messages,
+            tools,
         };
-        let mut stream = self.provider.stream(req);
-        let mut result = String::new();
-        while let Some(event) = stream.next().await {
-            match event? {
-                StreamEvent::TextDelta { delta } => result.push_str(&delta),
-                StreamEvent::MessageComplete { .. } => break,
-                _ => {}
-            }
-        }
-        Ok(result)
+        drain_reply_text(self.provider.stream(req)).await
     }
 
     /// Drains queued [`steer`](Self::steer) text into history before the next
@@ -473,6 +493,24 @@ impl Agent {
             self.messages.push(Message::user(joined));
         }
     }
+}
+
+/// Shared single-turn reply drain behind [`Agent::complete_prompt`] and
+/// [`Agent::complete_with_history`]: collects `Text`/`Thinking` prose only
+/// and drops tool calls — the compaction trigger reply must never execute
+/// tools (codex v2 likewise collects only the compaction output item).
+async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreError> {
+    let mut result = String::new();
+    while let Some(event) = stream.next().await {
+        match event? {
+            StreamEvent::TextDelta { delta } | StreamEvent::ThinkingDelta { delta } => {
+                result.push_str(&delta);
+            }
+            StreamEvent::MessageComplete { .. } => break,
+            _ => {}
+        }
+    }
+    Ok(result)
 }
 
 /// Newest tool-result content in history, for [`Agent::steer`] injection.
