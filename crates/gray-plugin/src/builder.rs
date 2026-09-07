@@ -558,6 +558,9 @@ pub struct BuilderOptions {
     pub api_key: String,
     pub base_url: String,
     pub reasoning_effort: Option<String>,
+    /// Known model context window in tokens (`None` = unknown: only
+    /// overflow-recovery compaction runs).
+    pub context_window: Option<usize>,
     /// Pins the Responses cache shard; gateway threads its session id so
     /// daemon sessions don't all collide on the per-process fallback key.
     pub session_id: Option<String>,
@@ -582,6 +585,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         api_key,
         base_url,
         reasoning_effort,
+        context_window,
         session_id,
         cwd,
         system_prompt,
@@ -623,6 +627,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     Ok(Agent::new(Box::new(provider), executor)
         .with_system(system)
         .with_tools(tool_defs)
+        .with_context_window(context_window)
         .with_hooks(hooks))
 }
 

@@ -37,6 +37,8 @@ impl GatewayRunner {
             api_key: api_key.unwrap_or_default(),
             base_url: base_url.unwrap_or_else(|| "https://openrouter.ai/api/v1".to_string()),
             reasoning_effort: None,
+            // Window unknown outside the gray crate; overflow recovery still guards.
+            context_window: None,
             session_id: session_id.map(str::to_string),
             cwd,
             system_prompt: gray_plugin::builder::SystemPrompt::Literal(load_system_prompt()),

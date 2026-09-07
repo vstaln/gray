@@ -10,6 +10,7 @@ use futures::StreamExt as _;
 use crate::agent::{
     Agent, ToolBefore, ToolContext, ToolOutput, salvage_partial_text, thinking_block,
 };
+use crate::agent_compact::{KEEP_TAIL_TOKENS, needs_pre_turn_compact};
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
@@ -118,7 +119,6 @@ impl Agent {
         let mut round: u32 = 0;
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
-        let mut compact_attempted = false;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
         let mut empty_nudge_sent = false;
 
@@ -148,6 +148,18 @@ impl Agent {
             }
             round += 1;
             self.drain_steer(round == 1);
+
+            // Pre-turn budget: compact before the provider ever sees an overflow.
+            if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                // False = nothing to gain (all tail): fall through; the provider's
+                // own overflow path remains the backstop. Success strictly shrinks
+                // history, so re-check without looping forever.
+                while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                    if !self.try_compact_budgeted(KEEP_TAIL_TOKENS).await? {
+                        break;
+                    }
+                }
+            }
 
             // Protocol v1 `prompt/context`: every hook's reply concatenates
             // onto this turn's system prompt, in hook order. No hooks (or no
@@ -277,11 +289,10 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
-                            // Context overflow: compact once via complete_prompt,
+                            // Context overflow: compact via budgeted complete_prompt,
                             // then retry the turn; otherwise surface the error.
-                            if e.should_compress() && !compact_attempted {
-                                compact_attempted = true;
-                                match self.try_compact_once().await {
+                            if e.should_compress() {
+                                match self.try_compact_budgeted(KEEP_TAIL_TOKENS).await {
                                     Ok(true) => continue 'turn,
                                     _ => {
                                         let err = CoreError::from(e);
