@@ -207,7 +207,14 @@ pub(crate) async fn handle_acp_command(
         let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
         match super::with_modal_sync(tui, || crate::setup::run_acp_modal(bg.as_ref())) {
             Ok(Some(cmd)) => parse_acp_args(&cmd),
-            _ => return,
+            _ => {
+                // Dismissed modal leaves the slash card with no feedback:
+                // gap so it doesn't jam the input box.
+                if let Some(shared) = tui {
+                    shared.lock().expect("tui lock").ensure_gap(1);
+                }
+                return;
+            }
         }
     } else {
         parse_acp_args(raw)

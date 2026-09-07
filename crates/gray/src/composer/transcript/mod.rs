@@ -179,8 +179,9 @@ impl Tui {
 
     /// Echoes a submitted prompt as a card. `trailing_gap` leaves one blank
     /// below the card for the breathing room before the next prompt; slash
-    /// commands pass false so their `say()` feedback hugs the card instead
-    /// (dismissed-modal breathing room is restored by `restore_viewport`).
+    /// commands pass false so their `say()` feedback hugs the card instead.
+    /// Cancelled pickers (dismissed modals) print no feedback, so each of
+    /// their `Ok(false)`/`Ok(None)` arms restores the gap via `ensure_gap`.
     pub fn push_user_prompt(
         &mut self,
         text: &str,
@@ -208,7 +209,7 @@ impl Tui {
         // handlers that print nothing (dismissed modal) still leave breathing
         // room before the next prompt instead of jamming against the card.
         // Slash-command cards skip it (trailing_gap=false): their feedback
-        // hugs the card, and restore_viewport() covers the dismissed modal.
+        // hugs the card, and each dismissed-modal arm adds the gap itself.
         if trailing_gap {
             self.ensure_gap(1);
         }
