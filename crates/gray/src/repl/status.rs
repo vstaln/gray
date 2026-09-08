@@ -120,6 +120,7 @@ pub(crate) fn handle_usage(
             t.push_dim(time.clone());
         }
         t.push_dim(cost_line);
+        t.ensure_gap(1);
     } else {
         println!("✓ Session usage — {header}\n  {body}");
         if let Some(time) = &time_line {
@@ -146,6 +147,7 @@ pub(crate) async fn handle_context_window(
                     t.push_dim(format!("└ {line}"));
                 }
             }
+            t.ensure_gap(1);
             let _ = t.draw();
         } else if ok {
             println!("✓ Context updated: {msg}");
@@ -259,7 +261,13 @@ pub(crate) async fn handle_context_window(
             });
             match res {
                 Ok(Some(summary)) => emit(summary, tui, true),
-                Ok(None) => {}
+                Ok(None) => {
+                    // Dismissed modal leaves the slash card with no feedback:
+                    // gap so it doesn't jam the input box.
+                    if let Some(shared) = tui {
+                        shared.lock().expect("tui lock").ensure_gap(1);
+                    }
+                }
                 Err(e) => emit(format!("context error: {e}"), tui, false),
             }
         } else {
@@ -427,6 +435,7 @@ pub(crate) async fn handle_compact(
             config,
             cwd,
             session_state.as_ref().map(|s| s.session_id.as_str()),
+            tui,
         )
         .await;
     }

@@ -4,6 +4,7 @@ members = [
     "crates/gray",
     "crates/gray-acp",
     "crates/gray-core",
+    "crates/gray-cron",
     "crates/gray-extras",
     "crates/gray-gateway",
     "crates/gray-markdown",
@@ -81,5 +82,6 @@ base64 = "0.22"
 percent-encoding = "2.3"
 unicode-width = "0.2"
 ignore = "0.4"
+globset = "0.4"
 libc = "0.2"
 

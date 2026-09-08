@@ -16,7 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::buffers::{
     CodeBlockMeta, Highlight, LinkTarget, MarkdownBuffers, Replace, StyledCell, TableHyperlink,
-    TableReplace, TableState, Transform, floor_char_boundary, unicode_display_width,
+    TableReplace, TableState, Transform, unicode_display_width,
 };
 use crate::checkpoint::CheckpointKind;
 use crate::colors::StyleInto;
@@ -37,15 +37,18 @@ fn find_substring(
     }
     if !allow_outside {
         if let CowStr::Borrowed(needle) = needle {
-            let (hp, np) = (haystack.as_ptr(), needle.as_ptr());
-            unsafe {
-                let (he, ne) = (hp.add(haystack.len()), np.add(needle.len()));
-                if np >= hp && ne <= he {
-                    let offset = np.offset_from(hp) as usize;
-                    let range = offset..(offset + needle.len());
-                    if cfg!(debug_assertions) {
-                        assert_eq!(&haystack.as_bytes()[range.clone()], needle.as_bytes());
-                    }
+            // Integer-address comparison: `<`/`<=` on raw pointers from
+            // potentially different allocations, and `offset_from` across
+            // allocations, are both UB (Strict Provenance). Addresses as
+            // `usize` carry no provenance, and the byte-equality guard turns
+            // a coincidental address overlap into `None`, never a bad range.
+            let hp = haystack.as_ptr().addr();
+            let np = needle.as_ptr().addr();
+            let (he, ne) = (hp + haystack.len(), np + needle.len());
+            if np >= hp && ne <= he {
+                let offset = np - hp;
+                let range = offset..(offset + needle.len());
+                if haystack.as_bytes().get(range.clone()) == Some(needle.as_bytes()) {
                     return Some(range);
                 }
             }
@@ -1867,10 +1870,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                         // whitespace textwrap ate cannot make `.find`
                         // re-match an earlier overlapping occurrence of
                         // this fragment.
-                        let cursor = floor_char_boundary(
-                            &full_text,
-                            source_cursors.get(i).copied().unwrap_or(0),
-                        );
+                        let cursor = full_text
+                            .floor_char_boundary(source_cursors.get(i).copied().unwrap_or(0));
                         let line_start = full_text
                             .get(cursor..)
                             .and_then(|rest| rest.find(cell_line_text))
@@ -2065,5 +2066,36 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             last_checkpoint,
             next_link_id,
         }
+    }
+}
+
+#[cfg(test)]
+mod find_substring_tests {
+    use super::find_substring;
+    use pulldown_cmark::CowStr;
+
+    #[test]
+    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
+    fn borrowed_subslice_resolves_to_its_range() {
+        let hay = String::from("hello [world](url)");
+        let sub: &str = &hay[6..13];
+        assert_eq!(
+            find_substring(&hay, &CowStr::Borrowed(sub), false, false),
+            Some(6..13)
+        );
+    }
+
+    #[test]
+    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
+    fn borrowed_str_from_other_allocation_never_matches() {
+        // Same bytes, different allocation: raw-pointer subtraction across
+        // allocations is UB and could yield a bogus range; address arithmetic
+        // plus the byte guard must return `None`.
+        let hay = String::from("hello [world](url)");
+        let other = String::from("[world](url)");
+        assert_eq!(
+            find_substring(&hay, &CowStr::Borrowed(other.as_str()), false, false),
+            None
+        );
     }
 }

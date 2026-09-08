@@ -28,6 +28,7 @@ fn manifest_names(plugins: &[Arc<dyn Plugin>]) -> Vec<String> {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // GUARD serializes process-global env/cwd for the whole test
 async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
     let _guard = GUARD.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
@@ -137,6 +138,7 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
 /// activates through the builder: enabled shows in the manifest, disable
 /// removes it, re-enable restores it — including the project overlay.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // GUARD serializes process-global env/cwd for the whole test
 async fn lock_install_dir_activates_and_respects_enabled_flag() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = GUARD.lock().unwrap();

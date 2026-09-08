@@ -142,10 +142,9 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 pub mod policy;
 
 pub use policy::{
-    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, calculate_context_tokens, compaction_settings,
-    compaction_settings_for, estimate_context_tokens, estimate_tokens, init_auto_compact_from_env,
-    is_auto_compact_enabled, is_context_overflow_error, set_auto_compact_enabled, should_compact,
-    tail_messages,
+    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, compaction_settings, compaction_settings_for,
+    estimate_context_tokens, estimate_tokens, init_auto_compact_from_env, is_auto_compact_enabled,
+    is_context_overflow_error, set_auto_compact_enabled, should_compact, tail_messages,
 };
 /// Reusable auto-compact helper that mirrors manual `/compact` flow.
 ///
@@ -412,6 +411,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // serializes against switch-flipping tests for the whole test
     async fn auto_compact_triggers_on_threshold() {
         let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
         use crate::config::Config;
@@ -528,6 +528,7 @@ mod tests {
     }
 
     mod switch_tests {
+        #![allow(clippy::await_holding_lock)] // serial guard must cover each whole test (global switch + env)
         use super::*;
         use crate::config::Config;
         use async_trait::async_trait;

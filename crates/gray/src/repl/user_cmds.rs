@@ -78,6 +78,7 @@ pub(crate) fn handle_permissions(
             let mut t = shared.lock().expect("tui lock");
             t.push_action("Permissions updated to", Some(label));
             t.push_dim(desc.to_string());
+            t.ensure_gap(1);
         } else {
             println!("✓ Permissions updated to {label}\n  {desc}");
         }
@@ -121,7 +122,13 @@ pub(crate) fn handle_permissions(
             persist(config);
             announce(&mode, tui);
         }
-        Ok(None) => {}
+        Ok(None) => {
+            // Dismissed picker leaves the slash card with no feedback:
+            // gap so it doesn't jam the input box.
+            if let Some(shared) = tui {
+                shared.lock().expect("tui lock").ensure_gap(1);
+            }
+        }
         Err(e) => say(tui, &format!("permissions error: {e}")),
     }
 }

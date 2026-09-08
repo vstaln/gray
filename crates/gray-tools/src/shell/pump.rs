@@ -36,6 +36,16 @@ const PATTERN_MIN_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(not(test))]
 const PATTERN_MIN_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_WAKE_LINE_CHARS: usize = 200;
+/// Shell transcript cap per tN.log: matches gray.log 10MiB. The 7-day sweep
+/// alone let real usage reach 208MB; the pump stops file writes past this
+/// (memory view + watch continue), the sweep catches pre-cap files.
+pub const SHELL_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Pure size check (unit-testable): stop file writes once the next chunk
+/// would push past the cap.
+fn log_capped(file_bytes: u64, incoming: u64) -> bool {
+    file_bytes.saturating_add(incoming) > SHELL_LOG_MAX_BYTES
+}
 
 /// Log line appended when the pattern fires for the 5th time (brief 1C wording).
 pub const NOTIFY_DISABLED_NOTE: &str = "[gray: notify_on disabled after 5 matches]";
@@ -263,6 +273,11 @@ async fn pump_main(
 
     let mut mem = MemView::new();
     let mut total: u64 = 0;
+    let mut log_bytes: u64 = tokio::fs::metadata(&log_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut log_truncated = false;
     while let Some(chunk) = rx.recv().await {
         // Durable transcript: secrets/paths never reach the tN.log file.
         // One redaction serves both sides (memory + file) so byte counts
@@ -270,11 +285,31 @@ async fn pump_main(
         let redacted = gray_core::redaction::redact_bytes_for_log(&chunk);
         mem.push(&redacted);
         total += redacted.len() as u64;
+        // Size cap: one truncation note, then file writes stop (memory +
+        // watch stay alive). Not a failure: `log_write_failed` stays false.
+        if !log_truncated && log.is_some() && log_capped(log_bytes, redacted.len() as u64) {
+            if let Some(f) = log.as_mut() {
+                let _ = f
+                    .write_all(b"\n[gray: shell log truncated at 10MiB; memory view continues]\n")
+                    .await;
+                let _ = f.flush().await;
+            }
+            log = None;
+            log_truncated = true;
+            let _ = bytes_tx.send(total);
+            continue;
+        }
         let flushed = match log.as_mut() {
             None => false,
-            Some(f) => f.write_all(&redacted).await.is_ok() && f.flush().await.is_ok(),
+            Some(f) => {
+                let ok = f.write_all(&redacted).await.is_ok() && f.flush().await.is_ok();
+                if ok {
+                    log_bytes += redacted.len() as u64;
+                }
+                ok
+            }
         };
-        if !flushed && !log_failed {
+        if !flushed && !log_failed && !log_truncated && log.is_some() {
             log::warn!(
                 "shell pump: log write failed for {}; memory view continues",
                 log_path.display()
@@ -465,6 +500,16 @@ mod tests {
         assert_eq!(take_complete_lines(&mut pending), vec!["a", "b"]);
         assert_eq!(pending, "partial");
         assert!(take_complete_lines(&mut pending).is_empty());
+    }
+
+    // UNRUN (cargo test banned under X per AGENTS.md; verify in TTY/CI).
+    #[test]
+    fn shell_log_cap_trips_past_10mib() {
+        assert!(!log_capped(0, 1));
+        assert!(!log_capped(0, SHELL_LOG_MAX_BYTES));
+        assert!(log_capped(0, SHELL_LOG_MAX_BYTES + 1));
+        assert!(log_capped(SHELL_LOG_MAX_BYTES, 1));
+        assert!(!log_capped(SHELL_LOG_MAX_BYTES - 2, 1));
     }
 
     #[test]

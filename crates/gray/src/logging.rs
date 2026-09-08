@@ -8,6 +8,13 @@ use log::{LevelFilter, Log, Metadata, Record};
 
 struct FileLogger {
     file: Mutex<std::fs::File>,
+    path: std::path::PathBuf,
+}
+
+/// Runtime size check: `rotate_if_needed` at boot covers restarts only, so
+/// the live logger must cap itself past 10MiB too.
+fn should_rotate(len: u64) -> bool {
+    len > gray_supervise::rotation::LOG_MAX_BYTES
 }
 
 static INIT: OnceLock<()> = OnceLock::new();
@@ -35,6 +42,23 @@ impl Log for FileLogger {
             redact(&record.args().to_string())
         );
         let _ = file.flush();
+        // Runtime cap: boot rotation alone lets a long-lived process grow
+        // gray.log unbounded. Mirrors rotation::rotate_if_needed, but the
+        // handle is open, so rename then swap in a fresh file (best-effort).
+        if !should_rotate(file.metadata().map(|m| m.len()).unwrap_or(0)) {
+            return;
+        }
+        let _ = std::fs::remove_file(self.path.with_extension("log.2"));
+        let _ = std::fs::rename(
+            self.path.with_extension("log.1"),
+            self.path.with_extension("log.2"),
+        );
+        let _ = std::fs::rename(&self.path, self.path.with_extension("log.1"));
+        if let Ok(fresh) = std::fs::File::create(&self.path) {
+            *file = fresh;
+        } else {
+            let _ = file.set_len(0);
+        }
     }
 
     fn flush(&self) {}
@@ -126,12 +150,14 @@ pub fn init() {
             return;
         };
         let path = home.join("logs").join("gray.log");
+        gray_supervise::rotation::rotate_if_needed(&path);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path)
             && log::set_boxed_logger(Box::new(FileLogger {
                 file: Mutex::new(file),
+                path: path.clone(),
             }))
             .is_ok()
         {
@@ -174,5 +200,22 @@ mod tests {
     fn redact_leaves_plain_text_alone() {
         assert_eq!(redact("hello world, no secrets"), "hello world, no secrets");
         assert_eq!(redact("my x-api-key is secret"), "my x-api-key is secret");
+    }
+
+    #[test]
+    fn rotation_helper_caps_log_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("gray.log");
+        std::fs::write(&log, vec![b'x'; (10 * 1024 * 1024 + 1) as usize]).unwrap();
+        gray_supervise::rotation::rotate_if_needed(&log);
+        assert!(std::fs::metadata(&log).unwrap().len() < 10 * 1024 * 1024);
+    }
+
+    // UNRUN (cargo test banned under X per AGENTS.md; verify in TTY/CI).
+    #[test]
+    fn runtime_rotation_threshold_matches_boot_cap() {
+        assert!(!should_rotate(0));
+        assert!(!should_rotate(gray_supervise::rotation::LOG_MAX_BYTES));
+        assert!(should_rotate(gray_supervise::rotation::LOG_MAX_BYTES + 1));
     }
 }

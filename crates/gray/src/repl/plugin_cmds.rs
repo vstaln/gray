@@ -63,17 +63,33 @@ pub(crate) fn is_bare_plugin_cmd(raw: &str) -> bool {
     matches!(cmd.to_ascii_lowercase().as_str(), "plugin" | "plugins")
 }
 
-pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::composer::SharedTui>) {
-    // Bare `/plugin` or `/plugins` with a TTY opens the interactive picker;
-    // explicit subcommands and headless runs keep the text output below.
-    if is_bare_plugin_cmd(raw) && tui.is_some() {
+/// Bare `/marketplace` (no args, case-insensitive): same bare-token shape
+/// as [`is_bare_plugin_cmd`]; anything else is usage, not the store.
+pub(crate) fn is_bare_marketplace_cmd(raw: &str) -> bool {
+    let toks: Vec<&str> = raw.split_whitespace().collect();
+    if toks.len() != 1 {
+        return false;
+    }
+    let Some(cmd) = toks[0].strip_prefix('/') else {
+        return false;
+    };
+    cmd.eq_ignore_ascii_case("marketplace")
+}
+
+/// Bare `/marketplace` opens the store modal (TTY only); headless prints
+/// a TTY note, non-bare prints usage (the store has no subcommands).
+pub(crate) async fn handle_marketplace_command(
+    raw: &str,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    if is_bare_marketplace_cmd(raw) && tui.is_some() {
         let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
-        let result = with_modal_sync(tui, || crate::setup::run_plugins_modal(bg.as_ref()));
+        let result = with_modal_sync(tui, || crate::setup::run_marketplace_modal(bg.as_ref()));
         match result {
             Ok(true) => {
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
-                    t.push_action("Plugins updated", None);
+                    t.push_action("Marketplace updated", None);
                     let _ = t.draw();
                 }
             }
@@ -87,6 +103,55 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                     t.draft.clear();
                     t.attachments.clear();
                     t.pending_pastes.clear();
+                    let _ = t.draw();
+                }
+            }
+            Err(e) => {
+                if let Some(shared) = tui {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .push_dim(format!("└ error: {e}"));
+                }
+            }
+        }
+        return;
+    }
+    if is_bare_marketplace_cmd(raw) {
+        say(tui, "marketplace needs an interactive terminal");
+        return;
+    }
+    say(tui, "usage: /marketplace");
+}
+
+pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::composer::SharedTui>) {
+    // Bare `/plugin` or `/plugins` with a TTY opens the interactive picker;
+    // explicit subcommands and headless runs keep the text output below.
+    if is_bare_plugin_cmd(raw) && tui.is_some() {
+        let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
+        let result = with_modal_sync(tui, || crate::setup::run_plugins_modal(bg.as_ref()));
+        match result {
+            Ok(true) => {
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.push_action("Plugins updated", None);
+                    t.ensure_gap(1);
+                    let _ = t.draw();
+                }
+            }
+            Ok(false) => {
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.textarea.set_text("");
+                    t.matches.clear();
+                    t.sel = 0;
+                    t.history_idx = None;
+                    t.draft.clear();
+                    t.attachments.clear();
+                    t.pending_pastes.clear();
+                    // Dismissed picker leaves the slash card with no feedback:
+                    // restore the trailing gap so it doesn't jam the input box.
+                    t.ensure_gap(1);
                     let _ = t.draw();
                 }
             }
@@ -121,7 +186,12 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
         },
         PluginAction::Search(query) => match ops::search_all(&query).await {
             Ok(out) => {
-                if out.hits.is_empty() && !out.pi_unreachable && !out.gray_unreachable {
+                if out.hits.is_empty()
+                    && !out.pi_unreachable
+                    && !out.gray_unreachable
+                    && !out.clawhub_unreachable
+                    && !out.claude_unreachable
+                {
                     say(
                         tui,
                         &format!("not in index: {query} (try /plugin install <https-url>)"),
@@ -135,6 +205,12 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
                     }
                     if out.pi_unreachable {
                         say(tui, ops::PI_UNREACHABLE_LINE);
+                    }
+                    if out.clawhub_unreachable {
+                        say(tui, ops::CLAWHUB_UNREACHABLE_LINE);
+                    }
+                    if out.claude_unreachable {
+                        say(tui, ops::CLAUDE_UNREACHABLE_LINE);
                     }
                 }
             }
@@ -181,7 +257,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
 #[cfg(test)]
 mod tests {
     use super::dispatch::{Flow, dispatch_command};
-    use super::{PluginAction, is_bare_plugin_cmd, parse_plugin_args};
+    use super::{PluginAction, is_bare_marketplace_cmd, is_bare_plugin_cmd, parse_plugin_args};
 
     #[test]
     fn bare_detection_covers_case_and_trailing_space() {
@@ -192,6 +268,16 @@ mod tests {
         assert!(!is_bare_plugin_cmd("/plugin list foo"));
         assert!(!is_bare_plugin_cmd("/plugin install foo"));
         assert!(!is_bare_plugin_cmd("/plugin enable foo"));
+    }
+
+    #[test]
+    fn marketplace_bare_detection_covers_case_and_trailing_space() {
+        assert!(is_bare_marketplace_cmd("/marketplace"));
+        assert!(is_bare_marketplace_cmd("/MARKETPLACE"));
+        assert!(is_bare_marketplace_cmd("/marketplace  "));
+        assert!(!is_bare_marketplace_cmd("/marketplace foo"));
+        assert!(!is_bare_marketplace_cmd("/plugin"));
+        assert!(!is_bare_marketplace_cmd("/marketplaces"));
     }
 
     #[test]

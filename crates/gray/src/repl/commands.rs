@@ -3,8 +3,6 @@ pub(crate) struct CmdDef {
     pub(crate) name: &'static str,
     pub(crate) desc: &'static str,
     pub(crate) aliases: &'static [&'static str],
-    #[allow(dead_code)] // reserved for future per-command hints; empty keeps /help byte-identical
-    pub(crate) args_hint: &'static str,
 }
 
 pub(crate) const REGISTRY: &[CmdDef] = &[
@@ -12,97 +10,86 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "connect",
         desc: "setup provider & API key",
         aliases: &["keys", "key", "providers", "provider", "login"],
-        args_hint: "",
     },
     CmdDef {
         name: "model",
         desc: "switch model",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "thinking",
         desc: "reasoning effort",
         aliases: &["effort", "reasoning"],
-        args_hint: "",
     },
     CmdDef {
         name: "context",
         desc: "set context window",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "resume",
         desc: "resume conversation",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "new",
         desc: "new conversation",
         aliases: &["clear", "reset"],
-        args_hint: "",
     },
     CmdDef {
         name: "compact",
         desc: "summarize context",
         aliases: &["compress"],
-        args_hint: "",
     },
     CmdDef {
         name: "usage",
         desc: "session tokens & cost",
         aliases: &["cost"],
-        args_hint: "",
     },
     CmdDef {
         name: "permissions",
         desc: "choose what gray is allowed to do",
         aliases: &["perms", "access"],
-        args_hint: "",
     },
     CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "acp",
         desc: "run as an external ACP agent (claude, codex, cursor…)",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "agentsmd",
         desc: "edit system prompt",
         aliases: &["sys"],
-        args_hint: "",
     },
     CmdDef {
         name: "skills",
-        desc: "list skills (/skills:<name> [args] to run one)",
+        desc: "manage installed skills (/skill <name> [args] or /skills:<name> [args] to run one)",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "plugin",
         desc: "manage plugins",
         aliases: &["plugins"],
-        args_hint: "",
+    },
+    CmdDef {
+        name: "marketplace",
+        desc: "browse and install plugins/skills",
+        aliases: &[],
     },
     CmdDef {
         name: "help",
         desc: "show commands",
         aliases: &[],
-        args_hint: "",
     },
     CmdDef {
         name: "quit",
         desc: "exit",
         aliases: &["exit"],
-        args_hint: "",
     },
 ];
 
@@ -184,7 +171,7 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 }
 
 /// Completion for the composer prompt: static commands, skill names after
-/// `/skills:`, or per-command suffixes after `/cmd ` (Minecraft-style).
+/// `/skills:` or `/skill `, or per-command suffixes after `/cmd ` (Minecraft-style).
 /// Owned here so every read_loop call site stays in sync.
 pub(crate) fn completion_matches_dyn(
     cur_text: &str,
@@ -202,7 +189,7 @@ pub(crate) fn completion_matches_dyn(
     if let Some(inner) = cur_text.strip_prefix('/') {
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);
-            if cmd.contains(':') {
+            if cmd.is_empty() || cmd.contains(':') {
                 return Vec::new();
             }
             // Everything after `<cmd>`, leading spaces trimmed, trailing kept
@@ -245,22 +232,34 @@ pub(crate) fn completion_fill(name: &str) -> String {
 /// after it with leading spaces trimmed (trailing space preserved to detect
 /// `/cmd sub ` vs `/cmd sub`). Returns full `cmd + args` names (no slash)
 /// so the existing `/{name} ` fill just works. Add new commands here.
+///
+/// First page (`/cmd ` with an empty arg box) leads with the bare command
+/// itself, so Enter runs it instead of forcing a suffix. Filtered and L2
+/// pages list suffixes only — a bare row there would wipe the typed args
+/// on fill.
 pub(crate) fn complete_command_args(
     cmd: &str,
     arg_text: &str,
     cwd: &std::path::Path,
 ) -> Vec<(String, String)> {
-    match cmd {
+    let mut out = match cmd {
         "context" => complete_context_args(arg_text),
         "acp" => complete_acp_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
         "permissions" | "perms" | "access" => complete_permissions_args(cmd, arg_text),
         "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
         "resume" => complete_resume_args(cmd, arg_text),
+        "skill" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
+    };
+    if arg_text.trim().is_empty()
+        && let Some(d) = resolve(cmd)
+    {
+        out.insert(0, (cmd.to_string(), d.desc.to_string()));
     }
+    out
 }
 
 /// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): levels from
@@ -285,6 +284,18 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         .iter()
         .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
         .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
+        .collect()
+}
+
+/// Suffixes for `/skill`: installed skill names (space-separated alias for
+/// the `/skills:<name>` prefix form; rows fill `/skill <name> `).
+fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
+    let f = arg_text.trim().to_lowercase();
+    crate::skills::discover_skills(cwd)
+        .skills
+        .iter()
+        .filter(|s| f.is_empty() || s.name.contains(f.as_str()))
+        .map(|s| (format!("{cmd} {}", s.name), s.description.clone()))
         .collect()
 }
 
@@ -467,7 +478,9 @@ pub enum ReplCommand {
     /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
     /// `/plugins` is an alias.
     Plugin(String),
-    /// Skills: /skills lists; /skills:<name> [args] runs a skill
+    /// Store: /marketplace browses+installs plugins/skills.
+    Marketplace(String),
+    /// Skills: /skills manages installed; /skills:<name> [args] or /skill <name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
@@ -530,15 +543,16 @@ pub fn parse_command(line: &str) -> ReplCommand {
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
     let lower_t = t.to_lowercase();
     let lower_cmd = cmd.to_lowercase();
-    let canon: Option<&str> = if lower_cmd == "/skills" || lower_t.starts_with("/skills:") {
-        Some("skills")
-    } else if let Some(d) = resolve(cmd) {
-        Some(d.name)
-    } else if lower_t.starts_with("/model") {
-        Some("model")
-    } else {
-        None
-    };
+    let canon: Option<&str> =
+        if lower_cmd == "/skills" || lower_cmd == "/skill" || lower_t.starts_with("/skills:") {
+            Some("skills")
+        } else if let Some(d) = resolve(cmd) {
+            Some(d.name)
+        } else if lower_t.starts_with("/model") {
+            Some("model")
+        } else {
+            None
+        };
     match canon {
         Some("quit") => ReplCommand::Quit,
         Some("resume") => ReplCommand::Resume(if rest.is_empty() {
@@ -570,11 +584,16 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
         Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
+        Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
-            if lower_t == "/skills" {
+            if lower_t == "/skills" || lower_t == "/skill" {
                 ReplCommand::Skill(None)
             } else if lower_t.starts_with("/skills:") {
                 ReplCommand::Skill(Some(t[8..].to_string()))
+            } else if lower_cmd == "/skill" {
+                // Singular space-separated alias: identical payload shape as
+                // `/skills:<name> [args]` so expansion/validation match exactly.
+                ReplCommand::Skill(Some(rest.to_string()))
             } else {
                 ReplCommand::Unknown(t.to_string())
             }
@@ -679,6 +698,23 @@ mod tests {
     }
 
     #[test]
+    fn empty_prompt_hides_slash_popup_like_codex() {
+        // codex `command_under_cursor`: empty text / no leading slash / cursor
+        // past the command name → no popup. Deleting `/` must close it, not
+        // strand stale matches (ghost popup + double footer + scrollback growth).
+        use std::path::Path;
+        let cwd = Path::new(".");
+        assert!(super::completion_matches_dyn("", cwd).is_empty());
+        assert!(super::completion_matches_dyn("hello", cwd).is_empty());
+        assert!(super::completion_matches_dyn("/ ", cwd).is_empty());
+        // bare `/` opens the popup with every command.
+        assert_eq!(
+            super::completion_matches_dyn("/", cwd).len(),
+            super::REGISTRY.len()
+        );
+    }
+
+    #[test]
     fn registry_resolve_canonical_and_aliases() {
         for name in [
             "connect",
@@ -695,6 +731,7 @@ mod tests {
             "agentsmd",
             "skills",
             "plugin",
+            "marketplace",
             "help",
             "quit",
         ] {
@@ -730,39 +767,6 @@ mod tests {
         assert!(super::resolve("/boguscmd").is_none());
         assert!(super::resolve("").is_none());
         assert!(super::resolve("/").is_none());
-    }
-
-    #[test]
-    fn registry_help_covers_all_commands() {
-        let names: Vec<_> = super::REGISTRY.iter().map(|d| d.name).collect();
-        for expected in [
-            "connect",
-            "model",
-            "thinking",
-            "context",
-            "resume",
-            "new",
-            "compact",
-            "usage",
-            "permissions",
-            "feedback",
-            "acp",
-            "agentsmd",
-            "skills",
-            "plugin",
-            "help",
-            "quit",
-        ] {
-            assert!(names.contains(&expected), "help missing {expected}");
-        }
-        assert_eq!(super::REGISTRY.len(), 16);
-        // args_hint reserved for future per-command hints; empty keeps /help byte-identical.
-        assert!(super::REGISTRY.iter().all(|d| d.args_hint.is_empty()));
-        let all = super::completion_matches("");
-        assert_eq!(all.len(), 16);
-        for expected in names {
-            assert!(all.iter().any(|(n, _)| *n == expected));
-        }
     }
 
     #[test]
@@ -815,7 +819,7 @@ mod tests {
                 "completion {alias} -> {target}"
             );
         }
-        // `/plug` surfaces `plugin`; bare `/plugin ` offers all 8 subcommands.
+        // `/plug` surfaces `plugin`; bare `/plugin ` leads with itself + all 8 subcommands.
         use std::path::Path;
         let cwd = Path::new(".");
         assert!(
@@ -823,7 +827,9 @@ mod tests {
                 .iter()
                 .any(|(n, _)| n == "plugin")
         );
-        assert_eq!(super::complete_command_args("plugin", "", cwd).len(), 8);
+        let plugin_all = super::complete_command_args("plugin", "", cwd);
+        assert_eq!(plugin_all.len(), 9);
+        assert_eq!(plugin_all[0].0, "plugin");
     }
 
     #[test]
@@ -841,6 +847,10 @@ mod tests {
         assert!(matches!(
             parse_command("/PLUGIN list"),
             ReplCommand::Plugin(_)
+        ));
+        assert!(matches!(
+            parse_command("/marketplace"),
+            ReplCommand::Marketplace(_)
         ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
         // gateway left the TUI: /gateway and /gw are unknown (the `gray
@@ -916,20 +926,24 @@ mod tests {
         use super::{complete_command_args, completion_matches_dyn};
         use std::path::Path;
         let cwd = Path::new(".");
-        // bare suffix lists everything
+        // bare suffix lists everything, led by the command itself
         let all = complete_command_args("context", "", cwd);
+        assert_eq!(all[0].0, "context");
         assert!(all.iter().any(|(n, _)| n == "context reserve"));
         assert!(all.iter().any(|(n, _)| n == "context auto"));
-        // filtered L1
+        // filtered L1 and L2 pages list suffixes only (bare row would wipe args on fill)
         let r = complete_command_args("context", "r", cwd);
+        assert!(!r.iter().any(|(n, _)| n == "context"));
         assert!(r.iter().any(|(n, _)| n == "context reserve"));
         // L2 after `reserve `
         let r2 = complete_command_args("context", "reserve ", cwd);
+        assert!(!r2.iter().any(|(n, _)| n == "context"));
         assert!(r2.iter().any(|(n, _)| n == "context reserve 16k"));
         // unknown command has no suffixes (universal hook default)
         assert!(complete_command_args("boguscmd", "", cwd).is_empty());
         // dyn dispatch through the composer entry point
         let dyn_all = completion_matches_dyn("/context ", cwd);
+        assert_eq!(dyn_all[0].0, "context");
         assert!(dyn_all.iter().any(|(n, _)| n == "context reserve"));
         // command-name path unaffected
         assert!(
@@ -998,7 +1012,7 @@ mod tests {
 
     #[test]
     fn resume_and_agentsmd_arg_completion() {
-        use super::{complete_command_args, completion_matches_dyn};
+        use super::complete_command_args;
         use std::path::Path;
         let cwd = Path::new(".");
         let r = complete_command_args("resume", "", cwd);
@@ -1032,5 +1046,61 @@ mod tests {
         // an impossible filter still yields nothing (deterministic even
         // when other tests pollute the process-global cache)
         assert!(complete_command_args("model", "no-such-model-xyz-123", cwd).is_empty());
+    }
+
+    #[test]
+    fn skill_singular_is_alias_for_skills_colon() {
+        use super::super::handlers::expand_skill_command;
+        use super::completion_matches_dyn;
+        let dir = temp_skill_cwd("commit");
+        let cwd = dir.path();
+        // Parse parity: identical payloads.
+        assert_eq!(
+            parse_command("/skill commit"),
+            parse_command("/skills:commit")
+        );
+        assert_eq!(
+            parse_command("/skill commit extra"),
+            parse_command("/skills:commit extra")
+        );
+        assert_eq!(parse_command("/skill"), parse_command("/skills"));
+        assert_eq!(parse_command("/SKILL"), parse_command("/skills"));
+        assert_eq!(
+            parse_command("/SKILL commit"),
+            parse_command("/skills:commit")
+        );
+        // Expansion parity: same Prompt out.
+        let a = expand_skill_command(parse_command("/skill commit"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills:commit"), cwd, None, false);
+        assert!(matches!(a, ReplCommand::Prompt(_)));
+        assert_eq!(a, b);
+        // Bad args fail identically (skill takes no args): both expand to Empty.
+        let a = expand_skill_command(parse_command("/skill commit bogus-arg"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills:commit bogus-arg"), cwd, None, false);
+        assert_eq!(a, ReplCommand::Empty);
+        assert_eq!(a, b);
+        // Unknown skill fails identically.
+        let a = expand_skill_command(parse_command("/skill nope"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills:nope"), cwd, None, false);
+        assert_eq!(a, ReplCommand::Empty);
+        assert_eq!(a, b);
+        // `/skill <partial>` completes installed skill names…
+        let rows = completion_matches_dyn("/skill com", cwd);
+        assert!(
+            rows.iter().any(|(n, _)| n == "skill commit"),
+            "skill must complete under /skill : {rows:?}"
+        );
+        let rows = completion_matches_dyn("/skill ", cwd);
+        assert!(rows.iter().any(|(n, _)| n == "skill commit"));
+        // …while `/skills foo` (plural + space) stays unknown, as before.
+        assert!(matches!(
+            parse_command("/skills foo"),
+            ReplCommand::Unknown(_)
+        ));
+        // Help line documents the singular form.
+        assert!(
+            super::format_help_all().contains("/skill <name>"),
+            "help must mention /skill <name>"
+        );
     }
 }
