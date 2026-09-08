@@ -404,8 +404,9 @@ mod tests {
     // evicts oldest-first, mirroring the transcript >1000/drain-100 guard.
     #[test]
     fn history_entries_cap_evicts_oldest_first_unrun() {
-        let mut entries: Vec<crate::composer::TranscriptEntry> =
-            (0..1001).map(crate::composer::TranscriptEntry::Gap).collect();
+        let mut entries: Vec<crate::composer::TranscriptEntry> = (0..1001)
+            .map(crate::composer::TranscriptEntry::Gap)
+            .collect();
         cap_history_entries(&mut entries);
         assert_eq!(entries.len(), 901);
         match &entries[0] {
@@ -417,8 +418,9 @@ mod tests {
     // UNRUN (cargo test banned in X session; run in TTY/CI): at-cap is a no-op.
     #[test]
     fn history_entries_cap_keeps_at_most_1000_unrun() {
-        let mut entries: Vec<crate::composer::TranscriptEntry> =
-            (0..1000).map(crate::composer::TranscriptEntry::Gap).collect();
+        let mut entries: Vec<crate::composer::TranscriptEntry> = (0..1000)
+            .map(crate::composer::TranscriptEntry::Gap)
+            .collect();
         cap_history_entries(&mut entries);
         assert_eq!(entries.len(), 1000);
     }

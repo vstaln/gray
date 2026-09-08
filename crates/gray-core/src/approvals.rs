@@ -413,11 +413,15 @@ pub fn verdict(mode: &str, tool: &str, args: &serde_json::Value, cwd: &Path) -> 
     match normalize_mode(mode).unwrap_or(MODE_AUTO) {
         MODE_FULL => Verdict::Allow,
         MODE_READ_ONLY => match tool {
-            "read" | "ls" | "find" | "glob" | "grep" | "skill" | "request_user_input" => Verdict::Allow,
+            "read" | "ls" | "find" | "glob" | "grep" | "skill" | "request_user_input" => {
+                Verdict::Allow
+            }
             _ => Verdict::Deny("read-only mode: mutating tools are disabled"),
         },
         _ => match tool {
-            "read" | "ls" | "find" | "glob" | "grep" | "skill" | "request_user_input" => Verdict::Allow,
+            "read" | "ls" | "find" | "glob" | "grep" | "skill" | "request_user_input" => {
+                Verdict::Allow
+            }
             "write" | "edit" => match tool_path(args) {
                 Some(p) if path_in_cwd(cwd, &p) => Verdict::Allow,
                 Some(_) => Verdict::Ask,
