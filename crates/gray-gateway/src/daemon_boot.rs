@@ -209,6 +209,9 @@ async fn run_gateway_inner(
                 .build()
                 .expect("gateway runtime");
             rt.block_on(tokio::task::LocalSet::new().run_until(async move {
+                // Cron ticker shares the worker LocalSet (agent futures are
+                // !Send); it dies with the set on shutdown.
+                crate::daemon::spawn_cron_ticker(Arc::clone(&runner));
                 loop {
                     tokio::select! {
                         ev = rx.recv() => match ev {

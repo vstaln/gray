@@ -290,6 +290,54 @@ pub enum Commands {
     /// Update gray to the latest release
     #[command(visible_alias = "upgrade")]
     Update,
+    /// Cron jobs: list/add/remove/show (file-only over $GRAY_HOME/cron, no daemon needed)
+    Cron {
+        #[command(subcommand)]
+        cmd: CronCmd,
+    },
+    /// Send a one-shot chat message (no daemon needed; uses the gateway.yaml token)
+    Send {
+        /// Delivery target: <platform>[:chat[:thread]] (e.g. telegram:123)
+        target: String,
+        /// Message text (words are joined with spaces)
+        text: Vec<String>,
+    },
+}
+
+/// `gray cron ...` — recurring/one-shot job management.
+///
+/// Thin CLI over `gray-cron::CronStore`: `add` runs the store's validation
+/// (schedule shape, lifecycle-reject) inline, so no daemon round-trip.
+#[derive(Parser, Debug, Clone)]
+pub enum CronCmd {
+    /// List jobs (id, name, schedule, next run, last status)
+    List,
+    /// Add a job: schedule ("every 1h" / "30m" / "in 10m" / RFC3339 / "0 9 * * *") + prompt
+    Add {
+        /// Schedule expression
+        schedule: String,
+        /// Prompt the daemon runs at fire time
+        prompt: String,
+        /// Delivery target (default `local` = save-only): origin | local | <platform>[:chat[:thread]]
+        #[arg(long)]
+        deliver: Option<String>,
+        /// Job name (default: prompt's first line, truncated)
+        #[arg(long)]
+        name: Option<String>,
+        /// Working dir the job runs in (must be absolute + existing)
+        #[arg(long = "in", value_name = "DIR")]
+        workdir: Option<PathBuf>,
+    },
+    /// Show one job's full record (id or name)
+    Show {
+        /// Job id or name
+        id: String,
+    },
+    /// Remove a job (id or name)
+    Remove {
+        /// Job id or name
+        id: String,
+    },
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -390,6 +438,79 @@ pub enum PairingCmd {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+
+    #[test]
+    fn cron_cli_parses_add_shapes() {
+        // `add` takes schedule + prompt positionally (`--` separates a
+        // dash-leading prompt); flags are optional.
+        let cli = Cli::try_parse_from([
+            "gray",
+            "cron",
+            "add",
+            "every 1h",
+            "--",
+            "check CI and report",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Cron(CronCmd::Add { .. }))
+        ));
+
+        let cli = Cli::try_parse_from([
+            "gray",
+            "cron",
+            "add",
+            "0 9 * * *",
+            "--deliver",
+            "telegram:123",
+            "--name",
+            "morn",
+            "--in",
+            "/tmp",
+            "ping",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Cron(CronCmd::Add {
+                schedule,
+                prompt,
+                deliver,
+                name,
+                workdir,
+            })) => {
+                assert_eq!(schedule, "0 9 * * *");
+                assert_eq!(prompt, "ping");
+                assert_eq!(deliver.as_deref(), Some("telegram:123"));
+                assert_eq!(name.as_deref(), Some("morn"));
+                assert_eq!(workdir, Some(PathBuf::from("/tmp")));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["gray", "cron", "list"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Cron(CronCmd::List))));
+        let cli = Cli::try_parse_from(["gray", "cron", "show", "abc123"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Cron(CronCmd::Show { .. }))
+        ));
+        let cli = Cli::try_parse_from(["gray", "cron", "remove", "abc123"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Cron(CronCmd::Remove { .. }))
+        ));
+
+        let cli = Cli::try_parse_from(["gray", "send", "telegram:123", "hello", "world"]).unwrap();
+        match cli.command {
+            Some(Commands::Send { target, text }) => {
+                assert_eq!(target, "telegram:123");
+                assert_eq!(text, vec!["hello".to_string(), "world".to_string()]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 
     #[test]
     fn cache_key_prefers_session_id() {
