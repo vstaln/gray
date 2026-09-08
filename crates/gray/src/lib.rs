@@ -455,7 +455,9 @@ mod tests {
         .unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Cron(CronCmd::Add { .. }))
+            Some(Commands::Cron {
+                cmd: CronCmd::Add { .. },
+            })
         ));
 
         let cli = Cli::try_parse_from([
@@ -473,13 +475,16 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Cron(CronCmd::Add {
-                schedule,
-                prompt,
-                deliver,
-                name,
-                workdir,
-            })) => {
+            Some(Commands::Cron {
+                cmd:
+                    CronCmd::Add {
+                        schedule,
+                        prompt,
+                        deliver,
+                        name,
+                        workdir,
+                    },
+            }) => {
                 assert_eq!(schedule, "0 9 * * *");
                 assert_eq!(prompt, "ping");
                 assert_eq!(deliver.as_deref(), Some("telegram:123"));
@@ -490,16 +495,23 @@ mod tests {
         }
 
         let cli = Cli::try_parse_from(["gray", "cron", "list"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Cron(CronCmd::List))));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Cron { cmd: CronCmd::List })
+        ));
         let cli = Cli::try_parse_from(["gray", "cron", "show", "abc123"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Cron(CronCmd::Show { .. }))
+            Some(Commands::Cron {
+                cmd: CronCmd::Show { .. },
+            })
         ));
         let cli = Cli::try_parse_from(["gray", "cron", "remove", "abc123"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Cron(CronCmd::Remove { .. }))
+            Some(Commands::Cron {
+                cmd: CronCmd::Remove { .. },
+            })
         ));
 
         let cli = Cli::try_parse_from(["gray", "send", "telegram:123", "hello", "world"]).unwrap();

@@ -266,7 +266,10 @@ mod tests {
         }
         assert_eq!(q.len(), WAKE_QUEUE_CAP);
         assert_eq!(q.first().unwrap(), "m5");
-        assert_eq!(q.last().unwrap(), format!("m{}", WAKE_QUEUE_CAP + 4));
+        assert_eq!(
+            q.last().unwrap().as_str(),
+            format!("m{}", WAKE_QUEUE_CAP + 4).as_str()
+        );
     }
 
     #[test]
