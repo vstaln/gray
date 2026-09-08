@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::config::{Platform, load_gateway_config};
 use crate::daemon::{GatewayRunner, take_restart_marker_in};
-use crate::daemon_supervise::{BOOT_MAX_ATTEMPTS, connect_adapter_with_retry};
+use crate::daemon_supervise::{BOOT_MAX_ATTEMPTS, connect_adapter_with_retry, supervise_adapters};
 use crate::delivery::{DeliveryRouter, DeliveryTarget};
 use crate::platform::MessageEvent;
 use crate::status::GatewayStatusBoard;
@@ -182,17 +182,36 @@ async fn run_gateway_inner(
     }
 
     let runner = Arc::new(runner);
+    // Steady-state supervisor: dead adapters re-enter the connect ladder
+    // (bounded by MAX_RECONNECT_ATTEMPTS, spaced by supervise_backoff);
+    // all-dead + empty queue exits 75 for systemd. Reuse the REPL's board
+    // when present, else track internally. Snapshot now so the probe sees
+    // boot results before the first 30s tick.
+    {
+        let plats: Vec<Platform> = runner.adapters.keys().copied().collect();
+        let board = board
+            .clone()
+            .unwrap_or_else(|| GatewayStatusBoard::new(&plats));
+        board.save_snapshot(&home);
+        tokio::spawn(supervise_adapters(Arc::clone(&runner), board, home.clone()));
+    }
     // Agent futures are !Send (gray-core run_streaming sink), so handle events on a
     // dedicated LocalSet thread; spawn_local per event keeps /stop responsive mid-run.
     // The thread exits when `token` cancels, dropping adapters (closing connections).
-    let _worker = {
+    // Keep the JoinHandle: shutdown joins it under SHUTDOWN_DRAIN_SECS.
+    let worker = {
         let token = token.clone();
+        let worker_runner = Arc::clone(&runner);
         std::thread::spawn(move || {
+            let runner = worker_runner;
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("gateway runtime");
             rt.block_on(tokio::task::LocalSet::new().run_until(async move {
+                // Cron ticker shares the worker LocalSet (agent futures are
+                // !Send); it dies with the set on shutdown.
+                crate::daemon::spawn_cron_ticker(Arc::clone(&runner));
                 loop {
                     tokio::select! {
                         ev = rx.recv() => match ev {
@@ -212,31 +231,51 @@ async fn run_gateway_inner(
     };
 
     #[cfg(unix)]
-    {
+    let drained = {
         let mut sigterm =
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
         tokio::select! {
             _ = token.cancelled() => {},
-            _ = sigterm.recv() => {
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(gray_supervise::watchdog::SHUTDOWN_DRAIN_SECS),
-                    token.cancelled(),
-                )
-                .await;
-            },
+            _ = sigterm.recv() => {},
             _ = sigint.recv() => {},
         }
-    }
+        runner.set_draining(true);
+        runner.cancel_all();
+        token.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(gray_supervise::watchdog::SHUTDOWN_DRAIN_SECS),
+            tokio::task::spawn_blocking(move || {
+                let _ = worker.join();
+            }),
+        )
+        .await
+        .is_ok()
+    };
     #[cfg(not(unix))]
-    {
+    let drained = {
         tokio::select! {
             _ = token.cancelled() => {},
             _ = tokio::signal::ctrl_c() => {},
         }
-    }
-    if let Ok(home) = crate::config::gray_home_dir() {
-        let _ = gray_supervise::lifecycle::Lifecycle::mark_clean(&home);
+        runner.set_draining(true);
+        runner.cancel_all();
+        token.cancel();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(gray_supervise::watchdog::SHUTDOWN_DRAIN_SECS),
+            tokio::task::spawn_blocking(move || {
+                let _ = worker.join();
+            }),
+        )
+        .await
+        .is_ok()
+    };
+    if drained {
+        if let Ok(home) = crate::config::gray_home_dir() {
+            let _ = gray_supervise::lifecycle::Lifecycle::mark_clean(&home);
+        }
+    } else {
+        log::warn!("shutdown: in-flight work did not drain; leaving lifecycle unclean");
     }
     Ok(())
 }

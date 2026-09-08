@@ -789,6 +789,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cron"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f8c3e73077b4b4a6ab1ea5047c37c57aee77657bc8ecd6f29b0af082d0b0c07"
+dependencies = [
+ "chrono",
+ "nom",
+ "once_cell",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1508,6 +1519,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "crossterm",
@@ -1515,6 +1527,7 @@ dependencies = [
  "futures",
  "gray-acp",
  "gray-core",
+ "gray-cron",
  "gray-gateway",
  "gray-markdown",
  "gray-pkg",
@@ -1544,7 +1557,6 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
- "futures",
  "gray-core",
  "log",
  "serde",
@@ -1559,7 +1571,6 @@ dependencies = [
 name = "gray-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "futures",
  "log",
@@ -1568,6 +1579,21 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "gray-cron"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "cron",
+ "fs2",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -1581,6 +1607,7 @@ dependencies = [
  "chrono",
  "clap",
  "gray",
+ "gray-core",
  "log",
  "percent-encoding",
  "reqwest",
@@ -1605,6 +1632,7 @@ dependencies = [
  "fs2",
  "futures",
  "gray-core",
+ "gray-cron",
  "gray-plugin",
  "gray-provider",
  "gray-session",
@@ -1654,9 +1682,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64 0.22.1",
  "flate2",
- "gray-core",
- "gray-plugin",
  "log",
  "reqwest",
  "serde",
@@ -1706,7 +1733,6 @@ dependencies = [
 name = "gray-session"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "gray-core",
  "log",
  "serde",
@@ -1737,7 +1763,9 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "globset",
  "gray-core",
+ "ignore",
  "infer",
  "libc",
  "log",

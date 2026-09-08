@@ -30,11 +30,24 @@ impl Report {
 /// Resolve the spawn argv for a plugin dir: the dir itself when
 /// executable, else `plugin.sh`, else the single executable inside.
 fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     let is_exec = |p: &Path| {
-        std::fs::metadata(p)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+        let Ok(m) = std::fs::metadata(p) else {
+            return false;
+        };
+        if !m.is_file() {
+            return false;
+        }
+        // Executable bit is unix-only; on Windows any file qualifies.
+        #[cfg(unix)]
+        {
+            m.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
     };
     if is_exec(dir) {
         return Ok(vec![dir.to_string_lossy().into_owned()]);

@@ -11,6 +11,7 @@
 //! 5. **deliver** — reply to the originating chat/thread, chunked to the
 //!    platform limit. Cron output goes to each platform's `home_channel`.
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -52,6 +53,11 @@ pub struct GatewayRunner {
     pub dead: Arc<DeadTargets>,
     /// Per-session cancellation for /stop and message interrupts.
     pub(crate) cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    draining: AtomicBool,
+    /// Fresh uuid per process boot: `pid:boot_id` stamps cron fire-claims, so a
+    /// dead process never reuses its owner id (no pid-start-time helper in gray).
+    /// Also reserved for the plan-A storm-guard.
+    boot_id: String,
 }
 
 /// Restart ping-back marker.
@@ -162,7 +168,7 @@ impl GatewayRunner {
             adapters.insert(*plat, adapter);
         }
         let authz = Authorizer::new(config.clone(), Arc::clone(&pairing));
-        let dead = Arc::new(DeadTargets::in_memory());
+        let dead = Arc::new(DeadTargets::open_default());
         let router = DeliveryRouter::new(config.clone(), adapters.clone())
             .with_dead_targets(Arc::clone(&dead));
         Ok(Self {
@@ -173,9 +179,11 @@ impl GatewayRunner {
             authz,
             router,
             dedup: InboundDedup::new(),
-            ledger: DeliveryLedger::in_memory(),
+            ledger: DeliveryLedger::open_default(),
             dead,
             cancel_tokens: Mutex::new(HashMap::new()),
+            draining: AtomicBool::new(false),
+            boot_id: uuid::Uuid::new_v4().to_string(),
         })
     }
 
@@ -191,6 +199,27 @@ impl GatewayRunner {
         self.router.sweep_ledger(&self.ledger).await
     }
 
+    pub fn set_draining(&self, v: bool) {
+        self.draining.store(v, Ordering::SeqCst);
+    }
+
+    pub fn draining(&self) -> bool {
+        self.draining.load(Ordering::SeqCst)
+    }
+
+    /// Cancel every in-flight agent turn (shutdown drain path).
+    pub fn cancel_all(&self) {
+        let mut map = self.cancel_tokens.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, tok) in map.drain() {
+            tok.cancel();
+        }
+    }
+
+    /// Owner stamp for cron fire-claims (`pid:boot_id`).
+    pub(crate) fn boot_id(&self) -> &str {
+        &self.boot_id
+    }
+
     fn reply_opts(ev: &MessageEvent) -> SendOptions {
         SendOptions {
             reply_to: ev.message_id.clone(),
@@ -198,16 +227,24 @@ impl GatewayRunner {
         }
     }
 
-    async fn reply(&self, ev: &MessageEvent, text: &str) -> SendResult {
+    async fn reply(&self, key: &str, ev: &MessageEvent, text: &str) -> SendResult {
         let target = DeliveryTarget {
             platform: ev.source.platform,
             chat_id: Some(ev.source.chat_id.clone()),
             thread_id: ev.source.thread_id.clone(),
             is_origin: true,
         };
-        let res = self
+        let message_ref = ev.message_id.as_deref().unwrap_or("");
+        let (_id, res) = self
             .router
-            .deliver(&target, text, ev.message_id.as_deref())
+            .deliver_recorded(
+                &self.ledger,
+                key,
+                message_ref,
+                &target,
+                text,
+                ev.message_id.as_deref(),
+            )
             .await;
         if !res.success {
             log::warn!("gateway send failed: {:?}", res.error);
@@ -221,8 +258,19 @@ impl GatewayRunner {
         if self.dedup.is_duplicate_event(&ev) {
             return Ok(SendResult::fail("duplicate", false));
         }
+        if self.draining.load(Ordering::SeqCst) {
+            return Ok(SendResult::fail(
+                "gateway is draining for shutdown; try again shortly",
+                false,
+            ));
+        }
         let platform = ev.source.platform;
         let chat_id = ev.source.chat_id.clone();
+        let key = build_session_key(
+            &ev.source,
+            self.config.group_per_user,
+            self.config.thread_per_user,
+        );
 
         // 1. Authorization gate — nothing below runs for unknown senders.
         match self.authz.check(&ev.source) {
@@ -244,20 +292,14 @@ impl GatewayRunner {
                     ev.user_name.as_deref().unwrap_or(""),
                 );
                 return Ok(match offer {
-                    PairingOffer::Code(code) => self.reply(&ev, &pairing_prompt(platform, &code)).await,
+                    PairingOffer::Code(code) => self.reply(&key, &ev, &pairing_prompt(platform, &code)).await,
                     PairingOffer::RateLimited => SendResult::fail("pairing rate-limited", false),
                     PairingOffer::Unavailable => {
-                        self.reply(&ev, "Pairing is temporarily unavailable (too many pending requests). Try again later.").await
+                        self.reply(&key, &ev, "Pairing is temporarily unavailable (too many pending requests). Try again later.").await
                     }
                 });
             }
         }
-
-        let key = build_session_key(
-            &ev.source,
-            self.config.group_per_user,
-            self.config.thread_per_user,
-        );
         log::info!(
             "gateway inbound {platform} chat={chat_id} key={key} text={:?}",
             preview_80(&ev.text)
@@ -349,7 +391,7 @@ impl GatewayRunner {
                 ),
                 SlashCommand::Help => help_text(),
             };
-            return Ok(self.reply(&ev, &text).await);
+            return Ok(self.reply(&key, &ev, &text).await);
         }
 
         // 3. Interrupt: a new message while this session is busy replaces the run.
@@ -405,9 +447,9 @@ impl GatewayRunner {
         let res = match progress {
             Some(p) => {
                 let final_text = p.finish(reply_text).await;
-                self.reply(&ev, &final_text).await
+                self.reply(&key, &ev, &final_text).await
             }
-            None => self.reply(&ev, &reply_text).await,
+            None => self.reply(&key, &ev, &reply_text).await,
         };
         Ok(res)
     }
@@ -458,6 +500,403 @@ impl GatewayRunner {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cron ticker + in-process fire (plan Task 3).
+//
+// Gray adaptation, differs from the deleted sidecar AND from hermes: NO child
+// process, NO `host/run` reap — a due job runs `run_agent` on the worker
+// `LocalSet` exactly like a chat turn (sink: None, fresh `cron-<id>-<ts>`
+// session, never mirrored into a gateway transcript). Wall-clock 600s budget
+// (hermes used an inactivity watchdog; gray-minimal kills wedged turns like
+// any wedged turn). Delivery lands in Task 4 (`deliver_cron_outcome` hook
+// below); the save + `mark_done` here are delivery-independent.
+
+/// Seconds between cron ticks (hermes number).
+pub(crate) const CRON_TICK_SECS: u64 = 60;
+/// Wall-clock budget per cron fire (tool timeout inside is 610s).
+pub(crate) const CRON_RUN_BUDGET_SECS: u64 = 600;
+/// Run docs kept under `<home>/cron/output` (newest win).
+pub(crate) const CRON_OUTPUT_KEEP: usize = 50;
+
+/// Output filename: `<job>-<ts>.md` with epoch seconds.
+pub(crate) fn cron_output_name(job_id: &str, ts: i64) -> String {
+    format!("{job_id}-{ts}.md")
+}
+
+/// `[SILENT]` as the whole output or its first/last line suppresses delivery
+/// only — the run doc is always saved.
+pub(crate) fn is_silent(output: &str) -> bool {
+    let mut lines = output.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    let mut last = first;
+    for l in lines {
+        last = l;
+    }
+    first == "[SILENT]" || last == "[SILENT]"
+}
+
+// ---------------------------------------------------------------------------
+// Cron delivery (plan Task 4).
+//
+// Contract (hermes parity, gray-minimal): a finished job delivers to
+// `origin | local | <platform>[:chat[:thread]]`, wrapped with a footer by
+// default. No `all`, no per-job model overrides (follow-ups). Deliveries go
+// to the chat as new messages in the cron's own right — never appended to
+// any gateway session transcript (no mirror). Run failures and send breakage
+// stay distinct (`error` vs `delivery_failed`, i.e. hermes's `last_error` vs
+// `last_delivery_error` columns).
+
+/// Parsed cron delivery target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CronTarget {
+    Origin,
+    Local,
+    Home(Platform),
+    Explicit {
+        platform: Platform,
+        chat: String,
+        thread: Option<String>,
+    },
+}
+
+/// Parse the string half of a cron target (`Deliver::Target`). Case- and
+/// whitespace-tolerant. Unknown shapes fail SAFE to `Local` (save-only, with
+/// a warn) — never misdeliver to a wrong chat.
+pub(crate) fn parse_cron_target(input: &str) -> CronTarget {
+    let t = input.trim();
+    if t.eq_ignore_ascii_case("origin") {
+        return CronTarget::Origin;
+    }
+    if t.eq_ignore_ascii_case("local") || t.is_empty() {
+        return CronTarget::Local;
+    }
+    let mut parts = t.splitn(3, ':');
+    let plat = parts.next().unwrap_or_default().trim();
+    match plat.parse::<Platform>() {
+        Err(_) => {
+            log::warn!("cron: unknown delivery target {input:?}; saving locally");
+            CronTarget::Local
+        }
+        Ok(platform) => {
+            let chat = parts
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let thread = parts
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            match chat {
+                None => CronTarget::Home(platform),
+                Some(chat) => CronTarget::Explicit {
+                    platform,
+                    chat,
+                    thread,
+                },
+            }
+        }
+    }
+}
+
+/// Default delivery wrapper (always on): header + body + plain-text manage hint.
+pub(crate) fn wrap_cron_delivery(name: &str, id: &str, content: &str) -> String {
+    format!(
+        "Cronjob: {name} ({id})\n---\n{content}\n---\nManage: send \"cron list\" / \"cron remove {id}\" (plain-text hint for now; /cron lands in Task 6)"
+    )
+}
+
+/// Delivery body: the default wrapper, with run failures riding the same
+/// target under an `ERROR:` prefix (never doubled).
+pub(crate) fn cron_deliver_text(name: &str, id: &str, body: &str, run_failed: bool) -> String {
+    let content = if run_failed && !body.starts_with("ERROR:") {
+        format!("ERROR: {body}")
+    } else {
+        body.to_string()
+    };
+    wrap_cron_delivery(name, id, &content)
+}
+
+/// Spawn the 60s ticker on this `LocalSet` (call once from the worker thread;
+/// it dies with the set on shutdown). Non-blocking tick flock: the loser
+/// process returns, so two gateways never double-claim.
+pub(crate) fn spawn_cron_ticker(runner: Arc<GatewayRunner>) {
+    tokio::task::spawn_local(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(CRON_TICK_SECS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            cron_tick(&runner).await;
+        }
+    });
+}
+
+async fn cron_tick(runner: &Arc<GatewayRunner>) {
+    let home = match crate::config::gray_home_dir() {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    // Same flock mechanism as `lock.rs` (reused, not copied): held only for
+    // the claim pass, released before any agent turn starts.
+    let _tick_lock =
+        match crate::lock::try_acquire_gateway_lock_at(&home.join("cron").join(".tick.lock")) {
+            Some(l) => l,
+            None => return,
+        };
+    let store = match gray_cron::CronStore::open(home.join("cron")) {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("cron tick: store open failed: {e}");
+            return;
+        }
+    };
+    let owner = format!("{}:{}", std::process::id(), runner.boot_id());
+    let due = match store.claim_due(gray_cron::now_secs(), &owner) {
+        Ok(d) => d,
+        Err(e) => {
+            log::warn!("cron tick: claim failed: {e}");
+            return;
+        }
+    };
+    for job in due {
+        let r = Arc::clone(runner);
+        tokio::task::spawn_local(async move { r.run_cron_job(job).await });
+    }
+}
+
+fn save_cron_run_output(home: &std::path::Path, job: &gray_cron::CronJob, ts: i64, body: &str) {
+    let dir = home.join("cron").join("output");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let _ = std::fs::write(
+        dir.join(cron_output_name(&job.id, ts)),
+        format!("# {} ({})\n\n{body}\n", job.name, job.id),
+    );
+    // Prune oldest beyond the keep window (mtime order; failures just skip).
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let mtime = e.metadata().ok()?.modified().ok()?;
+            Some((mtime, e.path()))
+        })
+        .collect();
+    entries.sort_by_key(|(m, _)| *m);
+    for (_, path) in entries
+        .iter()
+        .take(entries.len().saturating_sub(CRON_OUTPUT_KEEP))
+    {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+impl GatewayRunner {
+    /// Fire one claimed job: fresh session, 600s budget, save + `mark_done`,
+    /// then the Task 4 delivery hook. Cron turns run with the gateway's
+    /// steer-only asker (blocking asks fail closed) under their own session
+    /// id — `questions: None` in the plan's sense: no user is ever prompted,
+    /// nothing is mirrored into a gateway transcript.
+    async fn run_cron_job(&self, job: gray_cron::CronJob) {
+        let now = gray_cron::now_secs();
+        let sid = format!("cron-{}-{now}", job.id);
+        log::info!("cron fire {} ({})", job.id, job.name);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(CRON_RUN_BUDGET_SECS),
+            self.run_agent(&sid, &sid, &job.prompt, None),
+        )
+        .await;
+        let (body, status, err) = match outcome {
+            Ok(Ok(text)) => (text, gray_cron::RunStatus::Ok, None),
+            Ok(Err(e)) => (
+                format!("error: {e}"),
+                gray_cron::RunStatus::Error,
+                Some(e.to_string()),
+            ),
+            Err(_) => {
+                // Timeout drops the run_agent future, which skips its own
+                // token cleanup — reap the entry so /status stops showing it.
+                self.cancel_tokens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&sid);
+                (
+                    format!("error: cron run exceeded {CRON_RUN_BUDGET_SECS}s budget"),
+                    gray_cron::RunStatus::Error,
+                    Some("run budget exceeded".to_string()),
+                )
+            }
+        };
+        let delivered = if let Ok(home) = crate::config::gray_home_dir() {
+            save_cron_run_output(&home, &job, now, &body);
+            // Delivery (Task 4) resolves the target and returns the final
+            // outcome for `mark_done`: run failures stay `error`, send
+            // breakage becomes `delivery_failed`. The run doc above is saved
+            // regardless.
+            let (final_status, final_err) = self
+                .deliver_cron_outcome(&job, &sid, now, &body, status, err.as_deref())
+                .await;
+            if let Ok(store) = gray_cron::CronStore::open(home.join("cron"))
+                && let Err(e) = store.mark_done(&job.id, final_status, final_err.as_deref())
+            {
+                log::warn!("cron {}: mark_done failed: {e}", job.id);
+            }
+            (final_status, is_silent(&body))
+        } else {
+            (status, is_silent(&body))
+        };
+        let (final_status, silent) = delivered;
+        log::info!(
+            "cron done {} status={final_status:?} silent={silent}",
+            job.id
+        );
+    }
+
+    /// Deliver one finished cron fire to its target and return the final
+    /// `(status, err)` for `mark_done`.
+    ///
+    /// Save-side effects (run doc) happen in the caller and are never skipped:
+    /// `[SILENT]` and `Local` only suppress the send.
+    async fn deliver_cron_outcome(
+        &self,
+        job: &gray_cron::CronJob,
+        sid: &str,
+        ts: i64,
+        body: &str,
+        run_status: gray_cron::RunStatus,
+        run_err: Option<&str>,
+    ) -> (gray_cron::RunStatus, Option<String>) {
+        use gray_cron::{Deliver, RunStatus};
+        if is_silent(body) {
+            return (run_status, run_err.map(str::to_string));
+        }
+        let target = match &job.deliver {
+            Deliver::Local => CronTarget::Local,
+            Deliver::Origin => CronTarget::Origin,
+            Deliver::Target(s) => parse_cron_target(s),
+        };
+        // Resolve to concrete send targets. `Origin` without a creating chat
+        // (CLI-made job) falls back to every configured home channel.
+        let save_only = matches!(target, CronTarget::Local);
+        let targets: Vec<DeliveryTarget> = match target {
+            CronTarget::Local => Vec::new(),
+            CronTarget::Origin => match &job.origin {
+                Some(o) => match o.platform.parse::<Platform>() {
+                    Ok(platform) => vec![DeliveryTarget {
+                        platform,
+                        chat_id: Some(o.chat.clone()),
+                        thread_id: o.thread.clone(),
+                        // Resolved, not `is_origin`: the ledger then stores a
+                        // replay-safe `platform:chat` string (sweep parses
+                        // without an originating message).
+                        is_origin: false,
+                    }],
+                    Err(_) => {
+                        let delivery_err = format!("unknown origin platform {:?}", o.platform);
+                        let err = match run_err {
+                            Some(r) => format!("{delivery_err} (run also failed: {r})"),
+                            None => delivery_err,
+                        };
+                        return (RunStatus::DeliveryFailed, Some(err));
+                    }
+                },
+                None => Platform::ALL
+                    .iter()
+                    .filter(|p| self.router.home_channel(**p).is_some())
+                    .map(|p| DeliveryTarget {
+                        platform: *p,
+                        chat_id: None,
+                        thread_id: None,
+                        is_origin: false,
+                    })
+                    .collect(),
+            },
+            CronTarget::Home(platform) => vec![DeliveryTarget {
+                platform,
+                chat_id: None,
+                thread_id: None,
+                is_origin: false,
+            }],
+            CronTarget::Explicit {
+                platform,
+                chat,
+                thread,
+            } => vec![DeliveryTarget {
+                platform,
+                chat_id: Some(chat),
+                thread_id: thread,
+                is_origin: false,
+            }],
+        };
+        if targets.is_empty() {
+            if save_only {
+                return (run_status, run_err.map(str::to_string));
+            }
+            let delivery_err =
+                "no origin chat and no home_channel configured; output saved under cron/output"
+                    .to_string();
+            let err = match run_err {
+                Some(r) => format!("{delivery_err} (run also failed: {r})"),
+                None => delivery_err,
+            };
+            return (RunStatus::DeliveryFailed, Some(err));
+        }
+        let text = cron_deliver_text(
+            &job.name,
+            &job.id,
+            body,
+            matches!(run_status, RunStatus::Error),
+        );
+        // Stable ref per (job, fire): a crash between record and send replays
+        // instead of duplicating (sweep skips terminal obligations).
+        let message_ref = format!("cron:{}:{ts}", job.id);
+        let mut errors = Vec::new();
+        let mut sent = 0u32;
+        for dt in &targets {
+            let mr = if targets.len() == 1 {
+                message_ref.clone()
+            } else {
+                format!("{message_ref}:{}", dt.platform)
+            };
+            let (_obligation, res) = self
+                .router
+                .deliver_recorded(&self.ledger, sid, &mr, dt, &text, None)
+                .await;
+            if res.success {
+                sent += 1;
+            } else {
+                errors.push(format!(
+                    "{}: {}",
+                    dt.to_target_string(),
+                    res.error.as_deref().unwrap_or("unknown error")
+                ));
+            }
+        }
+        if sent == 0 {
+            let delivery_err = format!("cron delivery failed: {}", errors.join("; "));
+            let err = match run_err {
+                Some(r) => format!("{delivery_err} (run also failed: {r})"),
+                None => delivery_err,
+            };
+            return (RunStatus::DeliveryFailed, Some(err));
+        }
+        if !errors.is_empty() {
+            log::warn!(
+                "cron {}: partial home-channel fan-out: {}",
+                job.id,
+                errors.join("; ")
+            );
+        }
+        (run_status, run_err.map(str::to_string))
+    }
+}
+
+// ---------------------------------------------------------------------------
+
 fn load_saved_config() -> Option<SavedConfig> {
     let path = crate::config::gray_home_dir().ok()?.join("config.json");
     std::fs::read_to_string(&path)
@@ -490,7 +929,11 @@ mod tests {
             platforms,
             ..Default::default()
         };
-        let r = GatewayRunner::from_config_with(cfg, store, pairing).unwrap();
+        let mut r = GatewayRunner::from_config_with(cfg, store, pairing).unwrap();
+        // Hermetic ledger: from_config_with wires the production default path
+        // (Task 1); tests must not share ~/.gray/delivery_ledger.json across
+        // tests or runs, or sweep counts see unrelated rows.
+        r.ledger = DeliveryLedger::new(dir.path().join("delivery_ledger.json"));
         (dir, r)
     }
 
@@ -546,7 +989,7 @@ mod tests {
         );
         platforms.insert(
             Platform::Discord,
-            PlatformConfig::with_token(&"d".repeat(40)),
+            PlatformConfig::with_token("d".repeat(40)),
         );
         platforms.insert(
             Platform::Slack,
@@ -809,6 +1252,64 @@ mod tests {
         assert_eq!(crate::platform::truncate_message("hello", 10), "hello");
     }
 
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn cron_output_filename_shape() {
+        let name = cron_output_name("abc123", 1_700_000_000);
+        assert_eq!(name, "abc123-1700000000.md");
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn silent_flag_parsing() {
+        assert!(is_silent("[SILENT]\nhello"));
+        assert!(is_silent("hello\n[SILENT]"));
+        assert!(is_silent("[SILENT]"));
+        assert!(!is_silent("hello"));
+        assert!(!is_silent("hello\n[SILENT]\nworld"));
+        assert!(!is_silent(""));
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn wrap_shapes_delivery() {
+        let out = wrap_cron_delivery("ping", "abc123", "pong");
+        assert!(out.starts_with("Cronjob: ping (abc123)"));
+        assert!(out.contains("pong"));
+        assert!(out.contains("cron remove abc123"));
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn target_parse_covers_shapes() {
+        assert!(matches!(parse_cron_target("origin"), CronTarget::Origin));
+        assert!(matches!(parse_cron_target("local"), CronTarget::Local));
+        assert!(matches!(parse_cron_target("telegram"), CronTarget::Home(_)));
+        assert!(matches!(
+            parse_cron_target("telegram:123"),
+            CronTarget::Explicit { .. }
+        ));
+        assert!(matches!(
+            parse_cron_target("slack:C1:T2"),
+            CronTarget::Explicit { .. }
+        ));
+        // Unknown shapes fail safe to save-only, never misdeliver.
+        assert!(matches!(parse_cron_target("pigeon"), CronTarget::Local));
+        assert!(matches!(parse_cron_target(""), CronTarget::Local));
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn error_body_gets_prefix_once() {
+        let out = cron_deliver_text("ping", "abc123", "boom", true);
+        assert!(out.contains("ERROR: boom"));
+        assert!(out.starts_with("Cronjob: ping (abc123)"));
+        let already = cron_deliver_text("ping", "abc123", "ERROR: boom", true);
+        assert!(!already.contains("ERROR: ERROR:"));
+        let ok = cron_deliver_text("ping", "abc123", "boom", false);
+        assert!(!ok.contains("ERROR:"));
+    }
+
     #[test]
     fn terminal_auth_failure_stops_ladder() {
         for msg in [
@@ -910,6 +1411,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn boot_cap_is_lower_than_steady_state() {
         assert!(BOOT_MAX_ATTEMPTS >= 1);
         assert!(BOOT_MAX_ATTEMPTS < MAX_RECONNECT_ATTEMPTS);
@@ -927,6 +1429,23 @@ mod tests {
         let r2 = runner.handle_inbound(ev).await.unwrap();
         assert!(!r2.success);
         assert_eq!(r2.error.as_deref(), Some("duplicate"));
+    }
+
+    #[tokio::test]
+    async fn draining_refuses_new_turns() {
+        let pc = PlatformConfig {
+            allowed_users: vec!["42".into()],
+            ..PlatformConfig::with_token("123456:ABCDEFGHIJ1234567890")
+        };
+        let (_d, runner) = runner_with(pc, Platform::Telegram);
+        runner.set_draining(true);
+        assert!(runner.draining());
+        let res = runner
+            .handle_inbound(tg_event("42", "/status", "dm"))
+            .await
+            .unwrap();
+        assert!(!res.success);
+        assert!(res.error.unwrap_or_default().contains("draining"));
     }
 
     #[tokio::test]

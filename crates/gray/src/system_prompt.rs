@@ -18,21 +18,6 @@ use crate::skills::{Skill, format_skills_for_prompt};
 // AGENTS.md / CLAUDE.md discovery — walk up to git root
 // ---------------------------------------------------------------------------
 
-fn find_git_root(start: &Path) -> Option<PathBuf> {
-    let mut cur = if start.is_file() {
-        start.parent().map(PathBuf::from)
-    } else {
-        Some(start.to_path_buf())
-    };
-    while let Some(dir) = cur {
-        if dir.join(".git").exists() {
-            return Some(dir);
-        }
-        cur = dir.parent().map(|p| p.to_path_buf());
-    }
-    None
-}
-
 /// Context files discovered by walking `cwd` up to git root (or filesystem root).
 /// Looks for `AGENTS.md` and `CLAUDE.md` at each ancestor.
 #[derive(Debug, Clone)]
@@ -42,7 +27,7 @@ pub struct ContextFile {
 }
 
 pub fn discover_context_files(cwd: &Path) -> Vec<ContextFile> {
-    let git_root = find_git_root(cwd);
+    let git_root = crate::skills::find_git_root(cwd);
     let mut out = Vec::new();
     let mut seen: HashSet<PathBuf> = HashSet::new();
     let mut cur = Some(cwd.to_path_buf());

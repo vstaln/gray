@@ -1,11 +1,16 @@
-//! Interactive `/plugins` manager modal: toggle installed plugins on/off.
+//! Interactive `/plugins` manager modal: toggle/uninstall installed plugins,
+//! plus a read-only Errors tab fed by `gray_pkg::errors`.
 //!
 //! Sync modal returning whether anything changed, mirroring the
 //! `permissions_modal` chrome with the effort-modal toggle-stays-open
 //! pattern (Enter/Space flips `enabled` via `gray_pkg::ops` and re-reads).
+//! Tab rendering goes through the shared [`super::tabs`] scaffolding so the
+//! Task 6 store reuses the same code path.
 
+use super::tabs::{Tab, tab_segments};
 use super::*;
 
+use gray_pkg::errors::ErrorEntry;
 use gray_pkg::ops::LockEntry;
 
 /// Display label for a lockfile ecosystem: known sources get friendly
@@ -35,8 +40,14 @@ pub(crate) fn format_plugin_row(name: &str, entry: &LockEntry) -> String {
     }
 }
 
+/// Pure row renderer for the Errors tab: `<source> <item>: <message>`.
+pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
+    format!("{} {}: {}", entry.source, entry.item, entry.message)
+}
+
 /// Bare `/plugin` picker: navigate installed plugins, Enter/Space toggles
-/// `enabled` and stays open. Returns true when anything was toggled.
+/// `enabled` and stays open. Returns true when anything changed (toggle,
+/// uninstall, or errors cleared).
 pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use crossterm::terminal::{
@@ -53,9 +64,14 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
 
     let mut entries = gray_pkg::ops::list().unwrap_or_default();
     let mut names: Vec<String> = entries.keys().cloned().collect();
+    let mut error_entries = gray_pkg::errors::list();
+    let mut tab = Tab::Installed;
     let mut sel = 0usize;
     let mut changed = false;
     let mut toggle_err: Option<String> = None;
+    // Armed uninstall confirm: first `u` arms, second `u` on the same entry
+    // removes it.
+    let mut pending_remove: Option<String> = None;
 
     let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
     if !was_raw {
@@ -112,8 +128,13 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     .min(area.width);
                 let pad_x = 3u16;
                 let inner_w = modal_w.saturating_sub(pad_x * 2);
-                let rows = names.len().max(1) as u16;
-                // header(1) + gap(1) + rows + gap(1) + footer(1)
+                // Row count of the active tab (empty states render one line).
+                let tab_count = match tab {
+                    Tab::Installed => names.len(),
+                    Tab::Errors => error_entries.len(),
+                };
+                let rows = tab_count.max(1) as u16;
+                // header(1) + tabs(1) + rows + gap(1) + footer(1)
                 // + 2 for modal top/bottom padding.
                 let needed_h = rows + 6;
                 let modal_h = needed_h
@@ -149,18 +170,84 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     Paragraph::new(header_line),
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
+                // Tab bar on the line below the header (shared scaffolding;
+                // same code path renders both tabs).
+                {
+                    let tabs = [
+                        ("Installed", None),
+                        (
+                            "Errors",
+                            if error_entries.is_empty() {
+                                None
+                            } else {
+                                Some(error_entries.len())
+                            },
+                        ),
+                    ];
+                    let segs = tab_segments(&tabs, tab.index());
+                    let mut spans = Vec::with_capacity(segs.len() * 2 + 1);
+                    let mut used = 0usize;
+                    for (i, seg) in segs.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::styled(
+                                " | ",
+                                Style::default().fg(text_dim).bg(box_bg),
+                            ));
+                            used += 3;
+                        }
+                        let style = if seg.active {
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg)
+                        } else {
+                            Style::default().fg(text_dim).bg(box_bg)
+                        };
+                        used += seg.text.chars().count();
+                        spans.push(Span::styled(seg.text.clone(), style));
+                    }
+                    let fill = (inner.width as usize).saturating_sub(used);
+                    spans.push(Span::styled(" ".repeat(fill), Style::default().bg(box_bg)));
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)),
+                        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+                    );
+                }
                 let mut cur_y = inner.y + 2;
                 let bottom = inner.y + inner_h;
                 let footer_y = (inner.y + inner_h).saturating_sub(1);
-                // Reserve the line above the footer for a toggle error, if any.
-                let rows_cap = if toggle_err.is_some() {
+                // Reserve the line above the footer for a toggle error or an
+                // armed uninstall confirm, if any.
+                let rows_cap = if toggle_err.is_some() || pending_remove.is_some() {
                     footer_y.saturating_sub(1).max(inner.y + 2)
                 } else {
                     bottom
                 };
-                if names.is_empty() {
+                // Row texts + lit flag (installed rows dim when disabled)
+                // for the active tab; one shared render loop below.
+                let tab_rows: Vec<(String, bool)> = match tab {
+                    Tab::Installed => names
+                        .iter()
+                        .map(|name| {
+                            let text = entries
+                                .get(name)
+                                .map(|e| format_plugin_row(name, e))
+                                .unwrap_or_else(|| name.clone());
+                            let lit = entries.get(name).map(|e| e.enabled).unwrap_or(true);
+                            (text, lit)
+                        })
+                        .collect(),
+                    Tab::Errors => error_entries
+                        .iter()
+                        .map(|e| (format_error_row(e), true))
+                        .collect(),
+                };
+                if tab_rows.is_empty() {
                     if cur_y < rows_cap {
-                        let text = "no plugins installed — /plugin install <spec>";
+                        let text = match tab {
+                            Tab::Installed => "no plugins installed — /plugin install <spec>",
+                            Tab::Errors => "no errors recorded",
+                        };
                         let fill = (inner.width as usize).saturating_sub(text.chars().count());
                         frame.render_widget(
                             Paragraph::new(Line::from(vec![
@@ -171,15 +258,11 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                         );
                     }
                 } else {
-                    for (idx, name) in names.iter().enumerate() {
+                    for (idx, (row, lit)) in tab_rows.iter().enumerate() {
                         if cur_y >= rows_cap {
                             break;
                         }
                         let is_selected = idx == sel;
-                        let row = entries
-                            .get(name)
-                            .map(|e| format_plugin_row(name, e))
-                            .unwrap_or_else(|| name.clone());
                         // Truncate to the inner width so long rows never wrap.
                         let row: String = row.chars().take(inner.width as usize).collect();
                         let fill = (inner.width as usize).saturating_sub(row.chars().count());
@@ -193,8 +276,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                                     .add_modifier(Modifier::BOLD),
                             ))
                         } else {
-                            let enabled = entries.get(name).map(|e| e.enabled).unwrap_or(true);
-                            let fg = if enabled { Color::White } else { text_dim };
+                            let fg = if *lit { Color::White } else { text_dim };
                             Line::from(vec![
                                 Span::styled(row, Style::default().fg(fg).bg(row_bg)),
                                 Span::styled(" ".repeat(fill), Style::default().bg(row_bg)),
@@ -229,33 +311,107 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                             Rect::new(inner.x, err_y, inner.width, 1),
                         );
                     }
+                } else if let Some(name) = pending_remove.as_deref() {
+                    let confirm_y = footer_y.saturating_sub(1);
+                    if confirm_y > inner.y + 1 {
+                        let text: String = format!("really remove {name}? (u again)")
+                            .chars()
+                            .take(inner.width as usize)
+                            .collect();
+                        let fill = (inner.width as usize).saturating_sub(text.chars().count());
+                        frame.render_widget(
+                            Paragraph::new(Line::from(vec![
+                                Span::styled(
+                                    text,
+                                    Style::default()
+                                        .fg(accent_peach)
+                                        .add_modifier(Modifier::BOLD)
+                                        .bg(box_bg),
+                                ),
+                                Span::styled(" ".repeat(fill), Style::default().bg(box_bg)),
+                            ])),
+                            Rect::new(inner.x, confirm_y, inner.width, 1),
+                        );
+                    }
                 }
-                let footer_line = Line::from(vec![
-                    Span::styled(
-                        "↑↓ ",
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled("navigate · ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled(
-                        "Enter/Space ",
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled("toggle · ", Style::default().fg(text_dim).bg(box_bg)),
-                    Span::styled(
-                        "Esc ",
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD)
-                            .bg(box_bg),
-                    ),
-                    Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
-                ]);
+                let footer_line = match tab {
+                    Tab::Installed => Line::from(vec![
+                        Span::styled(
+                            "↑↓ ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("nav · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Enter ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("toggle · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "u ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("remove · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Tab ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("· ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Esc ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
+                    ]),
+                    Tab::Errors => Line::from(vec![
+                        Span::styled(
+                            "↑↓ ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("nav · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "c ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("clear · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Tab ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("· ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Esc ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
+                    ]),
+                };
                 frame.render_widget(
                     Paragraph::new(footer_line),
                     Rect::new(inner.x, footer_y, inner.width, 1),
@@ -273,36 +429,107 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                 }) if modifiers.contains(KeyModifiers::CONTROL) => return Ok(changed),
                 Event::Key(KeyEvent {
                     code,
+                    modifiers,
                     kind: KeyEventKind::Press,
                     ..
                 }) => match code {
-                    KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+                    KeyCode::Tab => {
+                        tab = tab.next();
+                        error_entries = gray_pkg::errors::list();
+                        sel = 0;
+                        pending_remove = None;
+                    }
+                    KeyCode::BackTab => {
+                        tab = tab.prev();
+                        error_entries = gray_pkg::errors::list();
+                        sel = 0;
+                        pending_remove = None;
+                    }
+                    KeyCode::Char('n') | KeyCode::Char('p')
+                        if modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        tab = if code == KeyCode::Char('n') {
+                            tab.next()
+                        } else {
+                            tab.prev()
+                        };
+                        error_entries = gray_pkg::errors::list();
+                        sel = 0;
+                        pending_remove = None;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        pending_remove = None;
+                        sel = sel.saturating_sub(1);
+                    }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        sel = (sel + 1).min(names.len().saturating_sub(1))
+                        pending_remove = None;
+                        let max = match tab {
+                            Tab::Installed => names.len(),
+                            Tab::Errors => error_entries.len(),
+                        }
+                        .saturating_sub(1);
+                        sel = (sel + 1).min(max);
                     }
                     KeyCode::Esc => return Ok(changed),
                     KeyCode::Enter | KeyCode::Char(' ') => {
-                        if names.is_empty() {
-                            return Ok(changed);
-                        }
-                        let name = names[sel].clone();
-                        let enabled = entries.get(&name).map(|e| e.enabled).unwrap_or(true);
-                        match gray_pkg::ops::set_enabled(&name, !enabled) {
-                            Ok(()) => {
-                                changed = true;
-                                toggle_err = None;
-                                // Re-read and stay open (toggle-stays-open pattern);
-                                // entries only ever come from a fresh list().
-                                if let Ok(fresh) = gray_pkg::ops::list() {
-                                    entries = fresh;
-                                    names = entries.keys().cloned().collect();
+                        pending_remove = None;
+                        if tab != Tab::Installed {
+                            // Errors tab is read-only.
+                        } else {
+                            if names.is_empty() {
+                                return Ok(changed);
+                            }
+                            let name = names[sel].clone();
+                            let enabled = entries.get(&name).map(|e| e.enabled).unwrap_or(true);
+                            match gray_pkg::ops::set_enabled(&name, !enabled) {
+                                Ok(()) => {
+                                    changed = true;
+                                    toggle_err = None;
+                                    // Re-read and stay open (toggle-stays-open pattern);
+                                    // entries only ever come from a fresh list().
+                                    if let Ok(fresh) = gray_pkg::ops::list() {
+                                        entries = fresh;
+                                        names = entries.keys().cloned().collect();
+                                    }
+                                }
+                                Err(e) => {
+                                    toggle_err = Some(format!("{e:#}"));
                                 }
                             }
-                            Err(e) => {
-                                toggle_err = Some(format!("{e:#}"));
+                            sel = sel.min(names.len().saturating_sub(1));
+                        }
+                    }
+                    KeyCode::Char('u') | KeyCode::Delete => {
+                        if tab == Tab::Installed && !names.is_empty() {
+                            let name = names[sel].clone();
+                            if pending_remove.as_deref() == Some(name.as_str()) {
+                                match gray_pkg::ops::remove(&name) {
+                                    Ok(()) => {
+                                        changed = true;
+                                        toggle_err = None;
+                                        pending_remove = None;
+                                        if let Ok(fresh) = gray_pkg::ops::list() {
+                                            entries = fresh;
+                                            names = entries.keys().cloned().collect();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        toggle_err = Some(format!("{e:#}"));
+                                        pending_remove = None;
+                                    }
+                                }
+                                sel = sel.min(names.len().saturating_sub(1));
+                            } else {
+                                toggle_err = None;
+                                pending_remove = Some(name);
                             }
                         }
-                        sel = sel.min(names.len().saturating_sub(1));
+                    }
+                    KeyCode::Char('c') if tab == Tab::Errors => {
+                        gray_pkg::errors::clear();
+                        error_entries = gray_pkg::errors::list();
+                        sel = 0;
+                        changed = true;
                     }
                     _ => {}
                 },
@@ -328,7 +555,8 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
 
 #[cfg(test)]
 mod tests {
-    use super::format_plugin_row;
+    use super::{format_error_row, format_plugin_row};
+    use gray_pkg::errors::ErrorEntry;
     use gray_pkg::ops::LockEntry;
 
     fn entry(ecosystem: &str, enabled: bool) -> LockEntry {
@@ -365,5 +593,16 @@ mod tests {
     fn unknown_ecosystem_uses_raw_string() {
         let row = format_plugin_row("demo", &entry("url", true));
         assert!(row.contains("[url]"), "raw ecosystem: {row:?}");
+    }
+
+    #[test]
+    fn error_row_shows_source_item_and_message() {
+        let row = format_error_row(&ErrorEntry {
+            ts_secs: 0,
+            source: "index".to_string(),
+            item: "demo".to_string(),
+            message: "boom".to_string(),
+        });
+        assert_eq!(row, "index demo: boom");
     }
 }

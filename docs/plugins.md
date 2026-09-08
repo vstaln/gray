@@ -158,22 +158,22 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 - Official plugins (the Gray Index seed,
   [`plugins/official.json`](../plugins/official.json)): `gateway` (source
   `plugins/gateway`). (`echo` stays a protocol reference only — see the top
-  of this file — not an official plugin.) `cron` is now an external plugin.
+  of this file — not an official plugin.)
 - Gateway sidecar ([`plugins/gateway/gateway.sh`](../plugins/gateway/gateway.sh)):
   answers `/gateway` over `command/run` by delegating argv to the
   `gray gateway …` CLI (`status|install|uninstall|pairing|invite`),
   manifest `commands:["/gateway"]` + `capabilities:["exec"]`.
-- Cron ([`plugins/cron/cron.sh`](../plugins/cron/cron.sh), exec wrapper
-  over the `gray-cron-sidecar` binary): the scheduler lives in the
-  sidecar — same store/parser as in-process `gray-cron` (no
-  reimplementation), manifest `capabilities:["session"]` +
-  `subcommands:["/cron"]`, real `cron.add`/`cron.list`/`cron.remove` +
-  `/cron` argv, due jobs fire via `host/run` and report via `host/say`
-  (first scan waits a full 60 s tick so `plugin check`/`-p`/manifest
-  dumps exit clean). The gateway keeps its claim-guarded in-process
-  ticker until the sidecar goes persistent (owed); every ticker claims
-  atomically (`store::claim_job_run`), so concurrent firers never
-  double-run.
+- Cron (in-process scheduler, not a sidecar): `gray-cron` holds the job
+  store (`$GRAY_HOME/cron/jobs.json`) + schedule math; the gateway daemon
+  fires due jobs on its 60 s claim-guarded ticker (`claim_due` is atomic,
+  so concurrent tickers never double-run) and delivers back to chat
+  wrapped (`Cronjob: …` + manage hint). Manage it with no daemon running:
+  `gray cron list|add|remove|show` (`add "every 1h" "prompt"
+  [--deliver telegram[:chat]] [--name x] [--in /work/dir]`), one-shot
+  sends via `gray send <platform[:chat[:thread]]> <text>`. Schedule kinds:
+  `every 1h` / bare `30m` / `in 10m` / RFC3339 one-shots / 5-field cron
+  (all ≥60 s). Agent self-scheduling unlocks in phase 3; until then
+  scheduling is human-driven (CLI) only.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
 - Gateway (chat delivery, shares the agent builder): `crates/gray-gateway/`.
 - Pi Gallery (preview): the pi skill source (see `Pi Gallery (preview)`

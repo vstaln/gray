@@ -23,6 +23,9 @@ gray-tools = { workspace = true }
 gray-session = { workspace = true }
 gray-supervise = { workspace = true }
 gray-markdown = { workspace = true }
+# Direct path dep: workspace table has no gray-cron entry (workspace Cargo.toml
+# is owned elsewhere); same version as workspace.package.
+gray-cron = { version = "0.1.0", path = "../gray-cron" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
@@ -41,6 +44,7 @@ percent-encoding = { workspace = true }
 arboard = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 tempfile = { workspace = true }
+base64 = { workspace = true }
 async-trait = { workspace = true }
 # Phase 1 scope cut: platform adapters are opt-in (default build is the
 # harness core with gateway config/status only, no twilight/teloxide/slack).

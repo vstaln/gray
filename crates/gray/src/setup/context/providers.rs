@@ -59,6 +59,52 @@ pub fn cache_model_reasoning(model_id: &str, reasoning: bool) {
     }
 }
 
+/// Per-model effort values from models.dev `reasoning_options` (the automatic
+/// source opencode derives variants from via `reasoningVariants`). Same keying
+/// as the reasoning cache. `None` = no source has spoken for this model.
+static MODEL_EFFORTS: std::sync::OnceLock<
+    std::sync::RwLock<std::collections::HashMap<String, Vec<String>>>,
+> = std::sync::OnceLock::new();
+
+fn model_efforts_cell() -> &'static std::sync::RwLock<std::collections::HashMap<String, Vec<String>>>
+{
+    MODEL_EFFORTS.get_or_init(|| std::sync::RwLock::new(std::collections::HashMap::new()))
+}
+
+fn cache_model_efforts(model_id: &str, efforts: Vec<String>) {
+    if let Ok(mut g) = model_efforts_cell().write() {
+        g.insert(model_id.to_string(), efforts.clone());
+        let lower = model_id.to_lowercase();
+        if lower != model_id {
+            g.insert(lower, efforts.clone());
+        }
+        if let Some((_, suffix)) = model_id.rsplit_once('/') {
+            g.insert(suffix.to_string(), efforts.clone());
+            g.insert(suffix.to_lowercase(), efforts);
+        }
+    }
+}
+
+fn model_efforts(model_id: &str) -> Option<Vec<String>> {
+    let g = model_efforts_cell().read().ok()?;
+    if let Some(v) = g.get(model_id).cloned() {
+        return Some(v);
+    }
+    let lower = model_id.to_lowercase();
+    if let Some(v) = g.get(&lower).cloned() {
+        return Some(v);
+    }
+    if let Some((_, suffix)) = model_id.rsplit_once('/') {
+        if let Some(v) = g.get(suffix).cloned() {
+            return Some(v);
+        }
+        if let Some(v) = g.get(&suffix.to_lowercase()).cloned() {
+            return Some(v);
+        }
+    }
+    None
+}
+
 /// `Some(true/false)` when a provider source advertised reasoning support,
 /// `None` when no source has spoken for this model.
 pub fn model_supports_reasoning(model_id: &str) -> Option<bool> {
@@ -81,20 +127,35 @@ pub fn model_supports_reasoning(model_id: &str) -> Option<bool> {
     None
 }
 
-/// Effort tiers a model family actually accepts, ported from opencode's
-/// `reasoningVariants` (transform.ts): xAI low/high, Gemini low/high,
-/// Anthropic adaptive low–max, OpenAI widely-supported low/medium/high.
-/// `None` = family unknown (offer the full catalog); empty = no reasoning.
+/// Effort tiers a model family actually accepts. Automatic source first:
+/// models.dev `reasoning_options` effort values cached by
+/// `parse_models_dev_json` (same derivation as opencode's `reasoningVariants`;
+/// `null` means `none`). Family tables below are the fallback for models
+/// with no cached options. Each branch cites the provider's own API docs —
+/// that is the source of truth; opencode is only the shape reference. Gray
+/// `off` covers OpenAI `none` (omit reasoning). `None` = family unknown
+/// (offer the full catalog); empty = no reasoning.
 pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
+    if let Some(cached) = model_efforts(model_id) {
+        let levels = super::super::THINKING_LEVELS;
+        let want: Vec<&'static str> = cached
+            .iter()
+            .filter_map(|v| {
+                let low = v.to_lowercase();
+                let label = if low == "none" { "off" } else { low.as_str() };
+                levels.iter().find(|(l, _)| *l == label).map(|(l, _)| *l)
+            })
+            .collect();
+        if !want.is_empty() {
+            return Some(want);
+        }
+    }
     let id = model_id.to_lowercase();
-    if id.contains("grok") || id.contains("xai") || id.contains("kimi") {
-        return Some(vec!["low", "high"]);
-    }
-    if id.contains("gemini") || id.contains("gemma") {
-        return Some(vec!["low", "high"]);
-    }
-    if id.contains("claude") || id.contains("anthropic") {
-        return Some(vec!["low", "medium", "high", "max"]);
+    // OpenAI: values are model-dependent —
+    // https://developers.openai.com/api/docs/guides/reasoning
+    // (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`).
+    if id.contains("deep-research") {
+        return Some(vec!["medium"]);
     }
     if id.contains("gpt")
         || id.starts_with("o1")
@@ -102,10 +163,123 @@ pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
         || id.starts_with("o4")
         || id.contains("deep-research")
     {
+        // Chat-only GPT-5 variant takes a single effort.
+        if id.contains("-chat") {
+            return Some(vec!["medium"]);
+        }
+        // Unversioned gpt-5-pro takes `high` only; versioned gpt-5.x-pro
+        // takes medium/high/xhigh.
+        if id.contains("pro") {
+            if ["5.1", "5.2", "5.3", "5.4", "5.5", "5.6"]
+                .iter()
+                .any(|v| id.contains(v))
+            {
+                return Some(vec!["medium", "high", "xhigh"]);
+            }
+            return Some(vec!["high"]);
+        }
+        // Codex variants: gpt-5.3+ takes none/low/medium/high/xhigh;
+        // codex-max and gpt-5.2 codex take low/medium/high/xhigh.
+        if id.contains("codex") {
+            if id.contains("codex-max")
+                || ["5.2", "5.3", "5.4", "5.5", "5.6"]
+                    .iter()
+                    .any(|v| id.contains(v))
+            {
+                let mut efforts = vec!["low", "medium", "high", "xhigh"];
+                if !id.contains("codex-max") && !id.contains("5.2") {
+                    efforts.insert(0, "off");
+                }
+                return Some(efforts);
+            }
+            return Some(vec!["low", "medium", "high"]);
+        }
+        // GPT-5.6 adds `max` (OpenAI GPT-5.6 model pages list it distinctly
+        // from `xhigh`).
+        if id.contains("5.6") {
+            return Some(vec!["off", "low", "medium", "high", "xhigh", "max"]);
+        }
+        // GPT-5.2–5.5 add `xhigh`; GPT-5.1 replaced `minimal` with `none`.
+        if ["5.2", "5.3", "5.4", "5.5"].iter().any(|v| id.contains(v)) {
+            return Some(vec!["off", "low", "medium", "high", "xhigh"]);
+        }
+        if id.contains("5.1") {
+            return Some(vec!["off", "low", "medium", "high"]);
+        }
+        // Unversioned gpt-5 keeps `minimal`.
+        if id.contains("gpt-5") {
+            return Some(vec!["off", "minimal", "low", "medium", "high"]);
+        }
+        // Unknown or future GPT-family models (e.g. gpt-6-astra): opencode's
+        // generic path offers none/low/medium/high/xhigh to post-2025-12-04
+        // models; mirror that — a model rejecting xhigh 400s and the
+        // strip-and-retry path drops reasoning.
+        return Some(vec!["off", "low", "medium", "high", "xhigh"]);
+    }
+    // Anthropic: availability is per-model —
+    // https://platform.claude.com/docs/en/build-with-claude/effort
+    // Modern models (Opus 4.7+, Sonnet 5, Fable, Mythos) take
+    // low/medium/high/xhigh/max; the 4.6 generation and older take
+    // low/medium/high/max (no xhigh).
+    if id.contains("claude") || id.contains("anthropic") {
+        if id.contains("4.7")
+            || id.contains("4-7")
+            || id.contains("4.8")
+            || id.contains("4-8")
+            || id.contains("sonnet-5")
+            || id.contains("sonnet_5")
+            || id.contains("opus-5")
+            || id.contains("opus_5")
+            || id.contains("fable")
+            || id.contains("mythos")
+        {
+            return Some(vec!["low", "medium", "high", "xhigh", "max"]);
+        }
+        return Some(vec!["low", "medium", "high", "max"]);
+    }
+    // Gemini: thinking levels per model —
+    // https://ai.google.dev/gemini-api/docs/thinking
+    if id.contains("gemini") || id.contains("gemma") {
+        // Pro image models reason at one level; flash image models take
+        // minimal/high; Gemini 3 flash takes minimal/low/medium/high.
+        if id.contains("pro-image") || id.contains("pro_image") {
+            return Some(vec!["high"]);
+        }
+        if id.contains("flash-image") || id.contains("flash_image") {
+            return Some(vec!["minimal", "high"]);
+        }
+        if id.contains("gemini-3") || id.contains("gemini_3") {
+            return Some(vec!["minimal", "low", "medium", "high"]);
+        }
+        return Some(vec!["low", "high"]);
+    }
+    // xAI: documented `--effort` levels (no off/minimal/xhigh on 4.5) —
+    // https://docs.x.ai/docs/guides/reasoning#control-how-hard-the-model-thinks
+    if id.contains("grok") || id.contains("xai") {
+        if id.contains("4.6") || id.contains("4-6") {
+            return Some(vec!["low", "medium", "high", "xhigh"]);
+        }
+        if id.contains("mini") {
+            return Some(vec!["low", "high"]);
+        }
         return Some(vec!["low", "medium", "high"]);
+    }
+    // Kimi's Anthropic-compatible transports implement adaptive thinking
+    // effort (opencode maps the family to low/medium/high/xhigh/max).
+    if id.contains("kimi") || id.contains("k2p") || id.contains("moonshot") {
+        return Some(vec!["low", "medium", "high", "xhigh", "max"]);
     }
     if id.contains("deepseek") && id.contains("reasoner") {
         return Some(vec!["low", "medium", "high"]);
+    }
+    // DeepSeek v4 on OpenAI-compatible transports additionally accepts max.
+    if id.contains("deepseek-v4") || id.contains("deepseek_v4") {
+        return Some(vec!["low", "medium", "high", "max"]);
+    }
+    // Muse Spark / Glimmer: effort values per models.dev reasoning_options —
+    // [minimal, low, medium, high, xhigh] (no `max`; the provider 400-rejects it).
+    if id.contains("muse") || id.contains("spark") || id.contains("glimmer") {
+        return Some(vec!["minimal", "low", "medium", "high", "xhigh"]);
     }
     None
 }
@@ -600,6 +774,34 @@ pub fn parse_models_dev_json(val: &serde_json::Value) -> usize {
             if let Some(r) = entry.get("reasoning").and_then(|v| v.as_bool()) {
                 cache_model_reasoning(key, r);
             }
+            // models.dev `reasoning_options` effort values — the automatic
+            // per-model source opencode derives variants from
+            // (`reasoningVariants`, transform.ts). `null` means `none`.
+            // Toggle/budget-only entries stay on family tables.
+            if let Some(values) = entry
+                .get("reasoning_options")
+                .and_then(|v| v.as_array())
+                .and_then(|opts| {
+                    opts.iter().find_map(|o| {
+                        (o.get("type").and_then(|t| t.as_str()) == Some("effort"))
+                            .then(|| o.get("values"))
+                            .flatten()
+                    })
+                })
+                .and_then(|v| v.as_array())
+            {
+                let efforts: Vec<String> = values
+                    .iter()
+                    .filter_map(|v| {
+                        v.as_str()
+                            .map(|s| s.to_string())
+                            .or_else(|| v.is_null().then(|| "none".to_string()))
+                    })
+                    .collect();
+                if !efforts.is_empty() {
+                    cache_model_efforts(key, efforts);
+                }
+            }
         }
     }
     n
@@ -745,21 +947,45 @@ pub fn load_models_cache_to_memory() -> usize {
     n
 }
 
+/// Merges in-memory entries over the disk map. `None` = nothing new (caller
+/// must skip the write so mtime stays stable and concurrent boots don't
+/// rewrite/race every fetch).
+fn merged_models_cache(
+    mut disk: std::collections::HashMap<String, usize>,
+    mem: impl IntoIterator<Item = (String, usize)>,
+) -> Option<std::collections::HashMap<String, usize>> {
+    let mut dirty = false;
+    for (k, v) in mem {
+        if disk.get(&k) != Some(&v) {
+            disk.insert(k, v);
+            dirty = true;
+        }
+    }
+    if dirty { Some(disk) } else { None }
+}
+
 /// Persists the in-memory cache to disk (read-modify-write, best-effort).
 /// Called after any successful fetch so cold boot beats the guess.
+/// Skips the write when memory adds nothing new; the write itself is atomic
+/// tmp-file + rename (delivery.rs precedent).
 pub fn save_models_cache_to_disk() {
     let Some(path) = models_cache_path() else {
         return;
     };
-    let mut map: std::collections::HashMap<String, usize> = std::fs::read_to_string(&path)
+    let mem: Vec<(String, usize)> = model_context_cache()
+        .read()
+        .map(|g| g.iter().map(|(k, v)| (k.clone(), *v)).collect())
+        .unwrap_or_default();
+    if mem.is_empty() {
+        return;
+    }
+    let disk: std::collections::HashMap<String, usize> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    if let Ok(g) = model_context_cache().read() {
-        for (k, v) in g.iter() {
-            map.insert(k.clone(), *v);
-        }
-    }
+    let Some(map) = merged_models_cache(disk, mem) else {
+        return;
+    };
     let Ok(s) = serde_json::to_string(&map) else {
         return;
     };
@@ -768,7 +994,11 @@ pub fn save_models_cache_to_disk() {
     {
         return;
     }
-    let _ = std::fs::write(path, s);
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, s).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, path);
 }
 
 /// One-shot cold-boot load so disk values are present before first resolve.
@@ -778,4 +1008,33 @@ pub(crate) fn ensure_disk_loaded() {
     ONCE.call_once(|| {
         let _ = load_models_cache_to_memory();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn merged_cache_skips_write_when_unchanged() {
+        let disk: std::collections::HashMap<String, usize> =
+            [("a".to_string(), 1)].into_iter().collect();
+        let mem = vec![("a".to_string(), 1)];
+        assert!(merged_models_cache(disk, mem).is_none());
+    }
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn merged_cache_returns_map_on_new_or_changed() {
+        let disk: std::collections::HashMap<String, usize> =
+            [("a".to_string(), 1)].into_iter().collect();
+        let out =
+            merged_models_cache(disk, vec![("b".to_string(), 2)]).expect("new key must dirty");
+        assert_eq!(out.get("b"), Some(&2));
+        let disk: std::collections::HashMap<String, usize> =
+            [("a".to_string(), 1)].into_iter().collect();
+        let out = merged_models_cache(disk, vec![("a".to_string(), 9)])
+            .expect("changed value must dirty");
+        assert_eq!(out.get("a"), Some(&9));
+    }
 }

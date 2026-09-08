@@ -8,7 +8,7 @@
 //! [`DeliveryRouter`] fans a message out through live adapters; [`send_once`]
 //! builds a throw-away send-only adapter for the `gray send` CLI.
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -98,12 +98,17 @@ pub fn obligation_id(session_key: &str, message_ref: &str, content: &str) -> Str
     format!("{:x}", h.finalize())
 }
 
+pub const RECOVERED_MARKER: &str =
+    "Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ObligationStatus {
     Pending,
+    Attempting,
     Delivered,
     Failed,
+    Abandoned,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -118,11 +123,44 @@ pub struct DeliveryObligation {
     pub retryable: bool,
     pub status: ObligationStatus,
     pub last_error: Option<String>,
+    /// When the obligation was first recorded. Defaults to 0 for ledgers
+    /// written before Task 2 so old files still load instead of wiping.
+    #[serde(default)]
+    pub created_at: i64,
     pub updated_at: i64,
 }
 
+/// Obligations older than this without delivery are abandoned on sweep.
+const STALE_AFTER_SECS: i64 = 24 * 3600;
+/// Terminal (delivered/abandoned) rows older than this are pruned.
+const PRUNE_AFTER_SECS: i64 = 7 * 24 * 3600;
+/// Hard cap on ledger rows; oldest terminal rows go first.
+const MAX_LEDGER_ROWS: usize = 500;
+
 fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+/// Whole-file JSON write via tmp-file + rename (atomic on the same fs),
+/// mode 0600 on unix (ledgers hold chat text). Best-effort: failures are
+/// swallowed so persistence never breaks the send path.
+pub(crate) fn atomic_write_json(path: &Path, value: &impl serde::Serialize) {
+    let Ok(s) = serde_json::to_string_pretty(value) else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, s).is_err() {
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    let _ = std::fs::rename(&tmp, path); // atomic on same fs; best-effort
 }
 
 /// Crash-safe outbox: record BEFORE send, mark after, replay via [`sweep`].
@@ -178,13 +216,8 @@ impl DeliveryLedger {
 
     fn persist(&self) {
         let Some(path) = &self.path else { return };
-        if let Ok(map) = self.lock.lock()
-            && let Ok(s) = serde_json::to_string_pretty(&*map)
-        {
-            if let Some(p) = path.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            let _ = std::fs::write(path, s);
+        if let Ok(map) = self.lock.lock() {
+            atomic_write_json(path, &*map);
         }
     }
 
@@ -201,20 +234,25 @@ impl DeliveryLedger {
         let id = obligation_id(session_key, message_ref, text);
         {
             let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-            map.entry(id.clone()).or_insert_with(|| DeliveryObligation {
-                id: id.clone(),
-                session_key: session_key.to_string(),
-                target: target.to_target_string(),
-                text: text.to_string(),
-                reply_to: reply_to.map(str::to_string),
-                attempts: 0,
-                retryable: true,
-                status: ObligationStatus::Pending,
-                last_error: None,
-                updated_at: now_ts(),
+            map.entry(id.clone()).or_insert_with(|| {
+                let now = now_ts();
+                DeliveryObligation {
+                    id: id.clone(),
+                    session_key: session_key.to_string(),
+                    target: target.to_target_string(),
+                    text: text.to_string(),
+                    reply_to: reply_to.map(str::to_string),
+                    attempts: 0,
+                    retryable: true,
+                    status: ObligationStatus::Pending,
+                    last_error: None,
+                    created_at: now,
+                    updated_at: now,
+                }
             });
         }
         self.persist();
+        self.prune();
         id
     }
 
@@ -231,6 +269,20 @@ impl DeliveryLedger {
             let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(o) = map.get_mut(id) {
                 o.status = ObligationStatus::Delivered;
+                o.updated_at = now_ts();
+            }
+        }
+        self.persist();
+    }
+
+    /// Mark an obligation as in-flight BETWEEN record and send. A crash here
+    /// leaves `Attempting`, which redelivers with [`RECOVERED_MARKER`] since
+    /// the platform MAY already have it (at-least-once).
+    pub fn mark_attempting(&self, id: &str) {
+        {
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(o) = map.get_mut(id) {
+                o.status = ObligationStatus::Attempting;
                 o.updated_at = now_ts();
             }
         }
@@ -274,6 +326,119 @@ impl DeliveryLedger {
             })
             .cloned()
             .collect()
+    }
+
+    /// Claimable rows: pending + attempting + failed-retryable with attempts
+    /// left. Over-attempt or stale (>24h old) rows are marked `Abandoned`
+    /// and excluded.
+    pub fn sweep_all_claimable(&self) -> Vec<DeliveryObligation> {
+        let now = now_ts();
+        let mut changed = false;
+        let out = {
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            for o in map.values_mut() {
+                let claimable_kind = matches!(
+                    o.status,
+                    ObligationStatus::Pending
+                        | ObligationStatus::Attempting
+                        | ObligationStatus::Failed
+                );
+                if !claimable_kind {
+                    continue;
+                }
+                let over_attempts = o.attempts >= MAX_DELIVERY_ATTEMPTS;
+                // `created_at == 0` = pre-Task-2 row; fall back to updated_at
+                // so upgrade doesn't mass-abandon the old ledger.
+                let age_base = if o.created_at > 0 {
+                    o.created_at
+                } else {
+                    o.updated_at
+                };
+                if over_attempts || now - age_base > STALE_AFTER_SECS {
+                    o.status = ObligationStatus::Abandoned;
+                    o.updated_at = now;
+                    changed = true;
+                }
+            }
+            map.values()
+                .filter(|o| {
+                    matches!(
+                        o.status,
+                        ObligationStatus::Pending
+                            | ObligationStatus::Attempting
+                            | ObligationStatus::Failed
+                    ) && o.retryable
+                        && o.attempts < MAX_DELIVERY_ATTEMPTS
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        if changed {
+            self.persist();
+        }
+        out
+    }
+
+    /// `(id, text_to_send)` with [`RECOVERED_MARKER`] prepended for every
+    /// non-pending row: a crash mid-await means the platform MAY have it.
+    pub fn sweep_marked(&self) -> Vec<(String, String)> {
+        self.sweep_all_claimable()
+            .into_iter()
+            .map(|o| {
+                let text = if o.status == ObligationStatus::Pending {
+                    o.text.clone()
+                } else {
+                    format!("{RECOVERED_MARKER}{}", o.text)
+                };
+                (o.id.clone(), text)
+            })
+            .collect()
+    }
+
+    /// Bound disk growth: drop delivered/abandoned older than 7d, then cap
+    /// at 500 rows evicting oldest terminal (delivered, then abandoned).
+    /// Pending/attempting/retryable rows are never evicted. Called at the
+    /// end of [`record`].
+    pub fn prune(&self) {
+        let now = now_ts();
+        let mut changed;
+        {
+            let mut map = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            let before = map.len();
+            map.retain(|_, o| {
+                !matches!(
+                    o.status,
+                    ObligationStatus::Delivered | ObligationStatus::Abandoned
+                ) || now - o.updated_at <= PRUNE_AFTER_SECS
+            });
+            changed = map.len() != before;
+            while map.len() > MAX_LEDGER_ROWS {
+                let oldest_terminal = map
+                    .iter()
+                    .filter(|(_, o)| {
+                        matches!(
+                            o.status,
+                            ObligationStatus::Delivered | ObligationStatus::Abandoned
+                        )
+                    })
+                    .min_by_key(|(_, o)| {
+                        (
+                            // Delivered evicted before abandoned on ties of age.
+                            matches!(o.status, ObligationStatus::Abandoned) as u8,
+                            o.updated_at,
+                        )
+                    })
+                    .map(|(id, _)| id.clone());
+                let Some(victim) = oldest_terminal else {
+                    break; // only live rows left; never evict those
+                };
+                map.remove(&victim);
+                changed = true;
+            }
+        }
+        if changed {
+            self.persist();
+        }
     }
 }
 
@@ -342,13 +507,8 @@ impl DeadTargets {
 
     fn persist(&self) {
         let Some(path) = &self.path else { return };
-        if let Ok(map) = self.lock.lock()
-            && let Ok(s) = serde_json::to_string_pretty(&*map)
-        {
-            if let Some(p) = path.parent() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            let _ = std::fs::write(path, s);
+        if let Ok(map) = self.lock.lock() {
+            atomic_write_json(path, &*map);
         }
     }
 
@@ -526,8 +686,8 @@ impl DeliveryRouter {
 
     /// Record-then-send: the obligation hits the ledger BEFORE the send so a
     /// crash between the two still replays via [`sweep_ledger`].
-    /// Skips non-Pending obligations (already Delivered/Failed) without
-    /// re-sending or bumping `attempts`.
+    /// Skips terminal obligations (already Delivered/Failed/Abandoned)
+    /// without re-sending or bumping `attempts`.
     pub async fn deliver_recorded(
         &self,
         ledger: &DeliveryLedger,
@@ -542,7 +702,10 @@ impl DeliveryRouter {
             if ob.status == ObligationStatus::Delivered {
                 return (id, SendResult::ok(None));
             }
-            if ob.status == ObligationStatus::Failed {
+            if matches!(
+                ob.status,
+                ObligationStatus::Failed | ObligationStatus::Abandoned
+            ) {
                 return (
                     id,
                     SendResult::fail(
@@ -552,6 +715,7 @@ impl DeliveryRouter {
                 );
             }
         }
+        ledger.mark_attempting(&id);
         let res = self.deliver(target, text, reply_to).await;
         if res.success {
             ledger.mark_delivered(&id);
@@ -565,12 +729,21 @@ impl DeliveryRouter {
         (id, res)
     }
 
-    /// Replay [`DeliveryLedger::sweep`] candidates (call on boot and after
-    /// adapter reconnect). Probes dead targets too — a reconnect may have
-    /// fixed the cause, and success self-heals via [`note_result`].
+    /// Replay [`DeliveryLedger::sweep_all_claimable`] candidates (call on boot
+    /// and after adapter reconnect). Attempting/failed rows resend with
+    /// [`RECOVERED_MARKER`] — a crash mid-await means the platform MAY have
+    /// them. Probes dead targets too — a reconnect may have fixed the cause,
+    /// and success self-heals via [`note_result`].
     pub async fn sweep_ledger(&self, ledger: &DeliveryLedger) -> Vec<(String, SendResult)> {
         let mut out = Vec::new();
-        for ob in ledger.sweep() {
+        for ob in ledger.sweep_all_claimable() {
+            // Pending never started → verbatim; anything else may have
+            // reached the platform before the crash → honest marker.
+            let text_to_send = if ob.status == ObligationStatus::Pending {
+                ob.text.clone()
+            } else {
+                format!("{RECOVERED_MARKER}{}", ob.text)
+            };
             let target = match DeliveryTarget::parse(&ob.target, None) {
                 Ok(t) => t,
                 Err(e) => {
@@ -603,7 +776,7 @@ impl DeliveryRouter {
                 adapter.as_ref(),
                 &target.to_target_string(),
                 &chat,
-                &ob.text,
+                &text_to_send,
                 &opts,
             )
             .await;
@@ -726,7 +899,7 @@ mod tests {
         );
         cfg.platforms.insert(
             Platform::Discord,
-            PlatformConfig::with_token(&"x".repeat(40)),
+            PlatformConfig::with_token("x".repeat(40)),
         );
         cfg
     }
@@ -866,19 +1039,24 @@ mod tests {
         );
         assert!(ledger.sweep().iter().all(|o| o.id != id2));
 
-        // Retryable failure stays pending and shows up in sweep.
+        // Retryable failure stays attempting (attempted once, still retryable)
+        // and shows up in the claimable sweep (with marker on redelivery).
         let (id3, res) = router
             .deliver_recorded(&ledger, "sess", "m3", &target, "hi", None)
             .await;
         assert!(!res.success);
         let ob = ledger.get(&id3).unwrap();
-        assert_eq!(ob.status, ObligationStatus::Pending);
+        assert_eq!(ob.status, ObligationStatus::Attempting);
         assert_eq!(ob.attempts, 1);
-        assert!(ledger.sweep().iter().any(|o| o.id == id3));
+        assert!(ledger.sweep().iter().all(|o| o.id != id3));
+        assert!(ledger.sweep_all_claimable().iter().any(|o| o.id == id3));
 
         // Attempts 2..3 → abandoned (failed) and gone from sweep.
         ledger.mark_failed(&id3, "timeout", true);
-        assert_eq!(ledger.get(&id3).unwrap().status, ObligationStatus::Pending);
+        assert_eq!(
+            ledger.get(&id3).unwrap().status,
+            ObligationStatus::Attempting
+        );
         ledger.mark_failed(&id3, "timeout", true);
         let ob = ledger.get(&id3).unwrap();
         assert_eq!(ob.status, ObligationStatus::Failed);
@@ -1038,5 +1216,68 @@ mod tests {
         assert!(dead2.is_dead("telegram:123"));
         dead2.clear("telegram:123");
         assert!(!dead2.is_dead("telegram:123"));
+    }
+
+    #[test]
+    fn ledger_survives_process_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delivery_ledger.json");
+        let target = DeliveryTarget {
+            platform: Platform::Telegram,
+            chat_id: Some("7".into()),
+            thread_id: None,
+            is_origin: true,
+        };
+        let ledger = DeliveryLedger::new(path.clone());
+        ledger.record("sess", "m1", &target, "hello", None);
+        drop(ledger);
+        // "Second process" loads the same file:
+        let ledger2 = DeliveryLedger::new(path);
+        let pending = ledger2.sweep();
+        assert_eq!(pending.len(), 1, "obligation must survive restart");
+        assert_eq!(pending[0].text, "hello");
+    }
+
+    #[test]
+    fn crashed_mid_send_redelivers_with_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = DeliveryLedger::new(dir.path().join("l.json"));
+        let target = DeliveryTarget {
+            platform: Platform::Telegram,
+            chat_id: Some("7".into()),
+            thread_id: None,
+            is_origin: true,
+        };
+        let id = ledger.record("sess", "m9", &target, "body", None);
+        ledger.mark_attempting(&id); // crash happens here; process dies
+        drop(ledger);
+        let ledger2 = DeliveryLedger::new(dir.path().join("l.json"));
+        let pending = ledger2.sweep_marked();
+        assert_eq!(pending.len(), 1);
+        assert!(
+            pending[0].1.starts_with(RECOVERED_MARKER),
+            "ambiguous send must be marked"
+        );
+    }
+
+    #[test]
+    fn ledger_write_is_atomic_and_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delivery_ledger.json");
+        let ledger = DeliveryLedger::new(path.clone());
+        let target = DeliveryTarget {
+            platform: Platform::Telegram,
+            chat_id: Some("7".into()),
+            thread_id: None,
+            is_origin: true,
+        };
+        ledger.record("sess", "m1", &target, "hi", None);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "ledger holds chat text, must be owner-only");
+        assert!(
+            !dir.path().join("delivery_ledger.json.tmp").exists(),
+            "no tmp residue"
+        );
     }
 }
