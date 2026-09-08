@@ -1171,7 +1171,7 @@ pub(crate) fn should_retry_without_previous_response(
         return false;
     }
     let lower = snippet.to_lowercase();
-    if !lower.contains("previous_response") {
+    if !lower.contains("previous_response") && !lower.contains("previous response") {
         return false;
     }
     const NOT_FOUND_HINTS: [&str; 7] = [
