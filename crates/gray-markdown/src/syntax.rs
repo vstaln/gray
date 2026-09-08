@@ -37,8 +37,8 @@ impl Syntect {
     /// ```
     pub fn new(theme_bytes: &[u8]) -> Self {
         let mut cursor = Cursor::new(theme_bytes);
-        let theme = ThemeSet::load_from_reader(&mut cursor)
-            .unwrap_or_else(|_| Self::default().theme);
+        let theme =
+            ThemeSet::load_from_reader(&mut cursor).unwrap_or_else(|_| Self::default().theme);
         // Use two-face's extended syntax set which includes 250+ languages from bat
         let syntax_set = two_face::syntax::extra_newlines();
         Self { theme, syntax_set }

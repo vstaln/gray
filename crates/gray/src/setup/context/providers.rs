@@ -1028,8 +1028,8 @@ mod tests {
     fn merged_cache_returns_map_on_new_or_changed() {
         let disk: std::collections::HashMap<String, usize> =
             [("a".to_string(), 1)].into_iter().collect();
-        let out = merged_models_cache(disk, vec![("b".to_string(), 2)])
-            .expect("new key must dirty");
+        let out =
+            merged_models_cache(disk, vec![("b".to_string(), 2)]).expect("new key must dirty");
         assert_eq!(out.get("b"), Some(&2));
         let disk: std::collections::HashMap<String, usize> =
             [("a".to_string(), 1)].into_iter().collect();

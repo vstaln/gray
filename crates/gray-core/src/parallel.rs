@@ -232,12 +232,7 @@ mod tests {
         assert!(is_batchable("glob"));
         for mode in ["read-only", "auto", "full"] {
             assert_eq!(
-                crate::approvals::verdict(
-                    mode,
-                    "glob",
-                    &json!({}),
-                    std::path::Path::new("/work")
-                ),
+                crate::approvals::verdict(mode, "glob", &json!({}), std::path::Path::new("/work")),
                 crate::approvals::Verdict::Allow,
                 "glob in {mode}"
             );
