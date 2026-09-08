@@ -32,6 +32,9 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
         (Some(n), _) => (n, format!("exit {n}")),
         (None, Some(s)) => {
             let eff = 128 + s;
+            // `mut` is dead on Windows (no core-dump push below); keep the
+            // single shape and silence the platform-specific warn.
+            #[allow(unused_mut)]
             let mut label = format!("exit {eff} ({})", signal_name(s));
             #[cfg(unix)]
             if status.core_dumped() {
