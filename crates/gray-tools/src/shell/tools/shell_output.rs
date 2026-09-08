@@ -801,8 +801,14 @@ mod tests {
 
         let session = sess("presub");
         let ctx = ctx_for(&session);
+        // `echo` makes the pump create the log file; `sleep` keeps the task
+        // alive for the wait below. (A bare `sleep` never produces output,
+        // so no log file ever appears and the open below cannot succeed.)
         let bg = BashTool
-            .execute(&ctx, json!({"command": "sleep 30", "background": true}))
+            .execute(
+                &ctx,
+                json!({"command": "echo ready && sleep 30", "background": true}),
+            )
             .await;
         assert!(!bg.is_error, "{}", bg.content);
         let n = task_n(&bg.content, "started t");
@@ -811,8 +817,9 @@ mod tests {
         let info = registry()
             .get(&session, TaskId(n))
             .expect("task just started");
-        // The pump creates the log file asynchronously; wait for it (CI
-        // runners are slow) so the append below can't lose a creation race.
+        // The pump creates the log file asynchronously; wait for the echo
+        // to land (CI runners are slow) so the append below can't lose a
+        // creation race.
         let mut waited = 0;
         while !info.log_path.exists() && waited < 100 {
             std::thread::sleep(Duration::from_millis(20));
