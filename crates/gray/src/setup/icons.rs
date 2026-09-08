@@ -54,16 +54,6 @@ pub fn has_nerd_font() -> bool {
     *NERD_FONT.get_or_init(|| env_override().unwrap_or_else(auto_detect))
 }
 
-/// Override the cache (tests/startup); no-op if already initialized.
-pub fn set_nerd_font(v: bool) {
-    let _ = NERD_FONT.set(v);
-}
-
-/// Initialize cache from env/auto-detect (call once at startup).
-pub fn init_nerd_font() {
-    set_nerd_font(env_override().unwrap_or_else(auto_detect));
-}
-
 /// Icon by name: hexagons when available, else pure ASCII.
 /// `cell` = used (tinted per category), `cell_free` = free (dim),
 /// `cell_buffer` = autocompact buffer (rose open-centre asterisk).

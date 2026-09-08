@@ -62,8 +62,11 @@ pub fn run_effort_modal(
         .iter()
         .position(|(l, _)| *l == current_level)
         .unwrap_or(levels.len().saturating_sub(1));
-    // Extra trailing row: reasoning-text display toggle (not an effort level).
-    let rows = levels.len() + 1;
+    // Trailing rows: a blank separator, then the reasoning-text display
+    // toggle (not an effort level). The gap groups the levels so the toggle
+    // reads as a separate action.
+    let gap_idx = levels.len();
+    let rows = levels.len() + 2;
     let max_sel = rows.saturating_sub(1);
 
     let result = (|| -> anyhow::Result<bool> {
@@ -90,7 +93,7 @@ pub fn run_effort_modal(
                 let box_block = Block::default().style(Style::default().bg(box_bg));
                 frame.render_widget(box_block, modal_rect);
 
-                let pad_x = 3u16;
+                let pad_x = 4u16;
                 let inner_w = modal_w.saturating_sub(pad_x * 2);
                 let inner = Rect::new(
                     modal_x + pad_x,
@@ -120,11 +123,23 @@ pub fn run_effort_modal(
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
 
-                // List of levels + display toggle
+                // List of levels + gap + display toggle
                 let list_y = inner.y + 2;
-                // rows = len+1: the last iteration renders the display-toggle row.
+                // rows = len+2: `gap_idx` renders a blank separator so the
+                // display toggle reads as a separate action; the last
+                // iteration renders the display-toggle row.
                 #[allow(clippy::needless_range_loop)]
                 for idx in 0..rows {
+                    if idx == gap_idx {
+                        frame.render_widget(
+                            Paragraph::new(Line::from(Span::styled(
+                                " ".repeat(inner.width as usize),
+                                Style::default().bg(box_bg),
+                            ))),
+                            Rect::new(inner.x, list_y + idx as u16, inner.width, 1),
+                        );
+                        continue;
+                    }
                     let (level, desc, is_current) = if idx < levels.len() {
                         let (l, d) = levels[idx];
                         (l, d, current_level == l)
@@ -230,8 +245,18 @@ pub fn run_effort_modal(
                     kind: KeyEventKind::Press,
                     ..
                 }) if modifiers.contains(KeyModifiers::CONTROL) => match code {
-                    KeyCode::Char('p') => sel = sel.saturating_sub(1),
-                    KeyCode::Char('n') => sel = (sel + 1).min(max_sel),
+                    KeyCode::Char('p') => {
+                        sel = sel.saturating_sub(1);
+                        if sel == gap_idx {
+                            sel = sel.saturating_sub(1);
+                        }
+                    }
+                    KeyCode::Char('n') => {
+                        sel = (sel + 1).min(max_sel);
+                        if sel == gap_idx {
+                            sel = (sel + 1).min(max_sel);
+                        }
+                    }
                     _ => {}
                 },
                 Event::Key(KeyEvent {
@@ -239,11 +264,24 @@ pub fn run_effort_modal(
                     kind: KeyEventKind::Press,
                     ..
                 }) => match code {
-                    KeyCode::Up => sel = sel.saturating_sub(1),
-                    KeyCode::Down => sel = (sel + 1).min(max_sel),
+                    KeyCode::Up => {
+                        sel = sel.saturating_sub(1);
+                        if sel == gap_idx {
+                            sel = sel.saturating_sub(1);
+                        }
+                    }
+                    KeyCode::Down => {
+                        sel = (sel + 1).min(max_sel);
+                        if sel == gap_idx {
+                            sel = (sel + 1).min(max_sel);
+                        }
+                    }
                     KeyCode::Esc => return Ok(false),
                     KeyCode::Enter => {
-                        if sel == levels.len() {
+                        if sel == gap_idx {
+                            continue;
+                        }
+                        if sel == max_sel {
                             // Display toggle: flip, persist, stay open.
                             let shown = !config.show_reasoning.unwrap_or(true);
                             config.show_reasoning = Some(shown);

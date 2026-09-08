@@ -413,11 +413,13 @@ pub fn verdict(mode: &str, tool: &str, args: &serde_json::Value, cwd: &Path) -> 
     match normalize_mode(mode).unwrap_or(MODE_AUTO) {
         MODE_FULL => Verdict::Allow,
         MODE_READ_ONLY => match tool {
-            "read" | "ls" | "find" | "grep" | "skill" | "request_user_input" => Verdict::Allow,
+            "read" | "ls" | "find" | "glob" | "grep" | "skill" | "request_user_input" => {
+                Verdict::Allow
+            }
             _ => Verdict::Deny("read-only mode: mutating tools are disabled"),
         },
         _ => match tool {
-            "read" | "ls" | "find" | "grep" | "skill" | "request_user_input" | "schedule_task" => {
+            "read" | "ls" | "find" | "glob" | "grep" | "skill" | "request_user_input" => {
                 Verdict::Allow
             }
             "write" | "edit" => match tool_path(args) {
@@ -426,7 +428,8 @@ pub fn verdict(mode: &str, tool: &str, args: &serde_json::Value, cwd: &Path) -> 
                 None => Verdict::Ask,
             },
             "bash" => Verdict::Ask,
-            _ => Verdict::Allow,
+            // Fail closed: unknown/sidecar tools prompt, never silent Allow.
+            _ => Verdict::Ask,
         },
     }
 }
@@ -656,10 +659,47 @@ mod tests {
             Verdict::Ask
         );
         assert_eq!(verdict("auto", "skill", &json!({}), &cwd()), Verdict::Allow);
+        // Dead `schedule_task` arm removed: no implementing tool, so it falls
+        // through to the fail-closed unknown-tool path (Ask, never Allow).
         assert_eq!(
             verdict("auto", "schedule_task", &json!({}), &cwd()),
-            Verdict::Allow
+            Verdict::Ask
         );
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn unknown_tools_fail_closed_in_auto() {
+        for tool in ["whatever", "sidecar_plugin_tool", "schedule_task", ""] {
+            assert_eq!(
+                verdict("auto", tool, &json!({}), &cwd()),
+                Verdict::Ask,
+                "{tool} must prompt, never silent Allow"
+            );
+        }
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[tokio::test]
+    async fn unknown_tool_denies_without_bridge() {
+        let gate = ApprovalGate::new("auto");
+        let err = gate
+            .check("sidecar_plugin_tool", &json!({}), &cwd(), "x", None)
+            .await
+            .expect_err("fail-closed without a user");
+        assert!(err.contains("declined"), "{err}");
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn glob_parity_with_find() {
+        for mode in ["read-only", "auto", "full"] {
+            assert_eq!(
+                verdict(mode, "glob", &json!({}), &cwd()),
+                Verdict::Allow,
+                "glob in {mode}"
+            );
+        }
     }
 
     #[test]

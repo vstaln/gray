@@ -6,14 +6,17 @@
 //! build. Assumes wiring as `shell::exit` with `super::contract::ExitReport`
 //! (same layout as `shell::guard`).
 //!
-//! Unix-only (`ExitStatusExt::signal`), like the rest of the shell module
-//! (setsid spawn, pgid kills — brief 2D non-goals Windows).
+//! Unix signals (`ExitStatusExt::signal`) where available; on Windows the
+//! signal is always `None`, so signal-derived labels/notes don't apply
+//! (plain exit codes still report honestly).
 
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
 use super::contract::ExitReport;
 // Shared quote-aware `|` splitter (4B dedupes the NOTE(1A) local copy:
 // `||` stays literal, quotes/backslashes/$(…)/heredocs respected).
+use super::guard::normalize_guard_head;
 use super::split::split_pipeline;
 
 /// Build an honest [`ExitReport`] from a wait status and the command that
@@ -21,12 +24,19 @@ use super::split::split_pipeline;
 /// otherwise misread (OOM, benign grep/diff, masked pipelines).
 pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitReport {
     let code = status.code();
-    let signal = status.signal();
+    #[cfg(unix)]
+    let signal: Option<i32> = status.signal();
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
     let (effective, label) = match (code, signal) {
         (Some(n), _) => (n, format!("exit {n}")),
         (None, Some(s)) => {
             let eff = 128 + s;
+            // `mut` is dead on Windows (no core-dump push below); keep the
+            // single shape and silence the platform-specific warn.
+            #[allow(unused_mut)]
             let mut label = format!("exit {eff} ({})", signal_name(s));
+            #[cfg(unix)]
             if status.core_dumped() {
                 label.push_str(" (core dumped)");
             }
@@ -116,39 +126,6 @@ fn base_head(cmd: &str) -> &str {
     head.rsplit('/').next().unwrap_or(head)
 }
 
-// NOTE(1A): copy of guard::normalize_guard_head (private there, verbatim
-// logic); dedupe with shell/split.rs when 4B lands.
-/// Strips wrapper prefixes agents prepend: repeated `sudo`/`command`/`env K=V`, `\cmd` escapes.
-fn normalize_guard_head(command: &str) -> String {
-    let mut rest = command.trim_start().to_string();
-    loop {
-        let t = rest.trim_start();
-        if let Some(after) = t.strip_prefix("sudo ") {
-            rest = after.to_string();
-        } else if let Some(after) = t.strip_prefix("command ") {
-            rest = after.to_string();
-        } else if let Some(after) = t.strip_prefix("env ") {
-            // drop KEY=VAL pairs following env
-            let mut parts = after.split_whitespace();
-            let mut idx = 0usize;
-            let mut cut = after.len();
-            for part in parts.by_ref() {
-                if part.contains('=') {
-                    idx += part.len() + 1;
-                } else {
-                    cut = idx;
-                    break;
-                }
-            }
-            rest = after[cut.min(after.len())..].to_string();
-        } else if let Some(after) = t.strip_prefix('\\') {
-            rest = after.to_string();
-        } else {
-            return t.to_string();
-        }
-    }
-}
-
 /// Pipeline note when the tail command's status masks the real one.
 fn masked_note(command: &str) -> Option<String> {
     const TAIL_CMDS: [&str; 8] = ["tail", "head", "grep", "tee", "sort", "wc", "less", "cat"];
@@ -167,7 +144,7 @@ fn masked_note(command: &str) -> Option<String> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))] // ExitStatusExt::from_raw is unix-only (T3 windows gate)
 mod exit_tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;

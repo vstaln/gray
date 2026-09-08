@@ -184,9 +184,12 @@ pub(crate) fn detect_file_paths_with_offset(
                     b = start_b + 1;
                     continue;
                 }
-                // Trim trailing punctuation . , ; : ! ? ) ] } ` ' " that is not part of path
+                // Trim trailing punctuation . , ; : ! ? ) ] } ` ' " that is not part of path.
+                // Inspect the char AT end_b (last char of the candidate): the
+                // span may continue past the path, so the span's last char is
+                // the wrong witness (and `end_b - 1` need not be a boundary).
                 while end_b > start_b {
-                    let last_char = span_text[end_b - 1..].chars().next_back().unwrap();
+                    let last_char = span_text[..end_b].chars().next_back().unwrap();
                     if matches!(
                         last_char,
                         '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '`'
@@ -313,4 +316,37 @@ pub(crate) fn patch_lines_with_link_style(
 
 pub(crate) fn apply_link_styling(lines: &mut [Line<'_>], hyperlinks: &[HyperlinkTarget]) {
     patch_lines_with_link_style(lines, hyperlinks, link_style());
+}
+
+#[cfg(test)]
+mod file_path_trim_tests {
+    use super::*;
+    use ratatui::text::Line;
+
+    fn single_path_targets(text: &str) -> Vec<HyperlinkTarget> {
+        let line = Line::from(text);
+        let (targets, _) = detect_file_paths(std::slice::from_ref(&line), &[], 0);
+        targets
+    }
+
+    #[test]
+    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
+    fn trailing_dot_trimmed_when_text_follows_in_span() {
+        // The trim must inspect the char AT end_b (the '.'), not the span's
+        // last char ('l'): previously the '.' survived whenever tail text
+        // followed the path in the same span.
+        let targets = single_path_targets("see /home/u/file. tail");
+        assert_eq!(targets.len(), 1, "got: {targets:?}");
+        assert_eq!(targets[0].url, "file:///home/u/file");
+        assert_eq!(targets[0].column_range, 4..16);
+    }
+
+    #[test]
+    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
+    fn trailing_dot_trimmed_at_span_end() {
+        let targets = single_path_targets("see /home/u/file.");
+        assert_eq!(targets.len(), 1, "got: {targets:?}");
+        assert_eq!(targets[0].url, "file:///home/u/file");
+        assert_eq!(targets[0].column_range, 4..16);
+    }
 }

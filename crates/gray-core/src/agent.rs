@@ -434,7 +434,7 @@ impl Agent {
     }
 
     /// System prompt sent with every request. `pub(crate)` because the
-    /// compaction-v2 trigger call (sibling module `compact_v2`) reuses it
+    /// compaction-v2 trigger call (sibling module `compact`) reuses it
     /// verbatim: private fields are visible only in the defining module, so
     /// the sibling cannot read `self.system` directly.
     pub(crate) fn system_text(&self) -> &str {
@@ -770,7 +770,7 @@ mod agent_tests {
                 0,
                 Some(id.to_string()),
                 Some("read".to_string()),
-                &format!(r#"{{"path":"{path}"}}"#),
+                format!(r#"{{"path":"{path}"}}"#),
             ),
             StreamEvent::message_complete(Some(StopReason::ToolUse), None),
         ]
@@ -868,6 +868,8 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_1", TOOL_NAME),
+                AgentEvent::tool_call_progress("call_1", TOOL_NAME, r#"{"q":"#),
+                AgentEvent::tool_call_progress("call_1", TOOL_NAME, r#"{"q":"x"}"#),
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
                 },
@@ -924,6 +926,8 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_err", TOOL_NAME),
+                AgentEvent::tool_call_progress("call_err", TOOL_NAME, r#"{"q":"#),
+                AgentEvent::tool_call_progress("call_err", TOOL_NAME, r#"{"q":"x"}"#),
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
                 },

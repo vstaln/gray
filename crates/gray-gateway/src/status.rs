@@ -137,6 +137,66 @@ impl GatewayStatusBoard {
             .map(|m| !m.is_empty() && m.values().all(|s| s.terminal()))
             .unwrap_or(false)
     }
+
+    /// Persist platform states for the probe (best-effort, never fails boot).
+    /// See [`status_snapshot_path`].
+    pub fn save_snapshot(&self, home: &std::path::Path) {
+        let map: std::collections::BTreeMap<String, String> = self
+            .snapshot()
+            .into_iter()
+            .map(|(p, s)| {
+                let v = match &s {
+                    PlatformConnState::Connected { .. } => "connected",
+                    PlatformConnState::Connecting { .. } => "connecting",
+                    PlatformConnState::Failed(_) => "failed",
+                };
+                (p.to_string(), v.to_string())
+            })
+            .collect();
+        crate::delivery::atomic_write_json(&status_snapshot_path(home), &map);
+    }
+}
+
+/// Snapshot file (`state/gateway.status.json`): platform →
+/// `connected` | `connecting` | `failed`. Written by the daemon supervisor,
+/// read cross-process by `gateway status --probe`. Failure reasons are
+/// deliberately omitted (they may name tokens; freshness + state suffice).
+fn status_snapshot_path(home: &std::path::Path) -> std::path::PathBuf {
+    home.join("state").join("gateway.status.json")
+}
+
+/// Probe verdict over a live board: healthy when any adapter is connected or
+/// still (re)trying; all-failed or empty means the process has nothing left
+/// to serve (hang-with-fresh-heartbeat now fails instead of lying healthy).
+pub fn probe_board_healthy(board: &GatewayStatusBoard) -> bool {
+    board.snapshot().into_iter().any(|(_, s)| {
+        matches!(
+            s,
+            PlatformConnState::Connected { .. } | PlatformConnState::Connecting { .. }
+        )
+    })
+}
+
+/// Cross-process read of [`GatewayStatusBoard::save_snapshot`]: `None` = no
+/// snapshot yet (old daemon / not booted) → the probe falls back to the
+/// heartbeat instead of failing closed on missing data.
+pub fn read_board_healthy(home: &std::path::Path) -> Option<bool> {
+    let text = std::fs::read_to_string(status_snapshot_path(home)).ok()?;
+    let map: std::collections::BTreeMap<String, String> = serde_json::from_str(&text).ok()?;
+    if map.is_empty() {
+        return None;
+    }
+    Some(map.values().any(|s| s == "connected" || s == "connecting"))
+}
+
+/// `gateway.yaml` parses into [`crate::config::GatewayConfig`]. An absent
+/// file counts as ok (it means defaults; `gateway run` reports that case).
+pub fn gateway_config_parses(home: &std::path::Path) -> bool {
+    let path = home.join("gateway.yaml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return true;
+    };
+    serde_yaml_ng::from_str::<crate::config::GatewayConfig>(&text).is_ok()
 }
 
 /// One boot-card row per platform: `  └─ Discord — connecting…` →
@@ -235,6 +295,52 @@ mod tests {
         assert!(b.snapshot().is_empty());
     }
 
+    #[test]
+    fn probe_fails_when_all_adapters_dead() {
+        let board = GatewayStatusBoard::new(&[Platform::Telegram]);
+        board.mark_failed(Platform::Telegram, "revoked");
+        assert!(!probe_board_healthy(&board));
+    }
+
+    #[test]
+    fn probe_passes_when_any_adapter_live_or_retrying() {
+        let board = GatewayStatusBoard::new(&[Platform::Telegram, Platform::Discord]);
+        assert!(probe_board_healthy(&board), "connecting counts as retrying");
+        board.mark_failed(Platform::Telegram, "revoked");
+        assert!(probe_board_healthy(&board), "one live adapter suffices");
+        board.mark_connected(Platform::Discord, None);
+        assert!(probe_board_healthy(&board));
+        board.mark_failed(Platform::Discord, "boom");
+        assert!(!probe_board_healthy(&board));
+    }
+
+    #[test]
+    fn probe_empty_board_is_not_healthy() {
+        assert!(!probe_board_healthy(&GatewayStatusBoard::default()));
+    }
+
+    #[test]
+    fn status_snapshot_roundtrip_for_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_board_healthy(dir.path()), None, "no snapshot yet");
+        let board = GatewayStatusBoard::new(&[Platform::Telegram]);
+        board.save_snapshot(dir.path());
+        assert_eq!(read_board_healthy(dir.path()), Some(true));
+        board.mark_failed(Platform::Telegram, "revoked");
+        board.save_snapshot(dir.path());
+        assert_eq!(read_board_healthy(dir.path()), Some(false));
+    }
+
+    #[test]
+    fn gateway_config_parses_accepts_missing_rejects_garbage() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            gateway_config_parses(dir.path()),
+            "absent file uses defaults"
+        );
+        std::fs::write(dir.path().join("gateway.yaml"), "not: [valid").unwrap();
+        assert!(!gateway_config_parses(dir.path()));
+    }
     #[test]
     fn connecting_carries_default_stage() {
         let b = GatewayStatusBoard::new(&[Platform::Discord]);

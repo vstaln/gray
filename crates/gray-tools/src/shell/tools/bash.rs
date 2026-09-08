@@ -293,6 +293,11 @@ fn shell_dir() -> PathBuf {
     gray_home().join("shell")
 }
 
+/// Bound for the pump drain after the child exits: a grandchild inheriting
+/// the pipes keeps the pump alive forever, so the task must never wait past
+/// this to reach Exited.
+const PUMP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Shared waiter: background starts and promoted timeouts differ only in
 /// who awaits. Reaps the child, drains the pump, marks the task exited.
 async fn waiter(
@@ -322,7 +327,14 @@ async fn waiter(
         }
     };
     // Drain the pump before marking so the log tail is complete for 2C reads.
-    let _ = pump.await;
+    // Watchdog: a grandchild holding the pipes keeps the pump alive forever —
+    // bound the drain so the task always reaches Exited.
+    if tokio::time::timeout(PUMP_DRAIN_TIMEOUT, pump)
+        .await
+        .is_err()
+    {
+        log::warn!("shell {id}: pump drain timed out; marking exited");
+    }
     registry().mark_exited(&session, id, exit_report(status, &command));
 }
 
@@ -397,6 +409,50 @@ fn promotion_string(id: TaskId, pid: u32, log_path: &Path, secs: u64) -> String 
         "shell_output(task_id=\"{id}\", from_offset={len}) for the rest · next_offset={len}"
     ));
     out
+}
+
+/// Last PROMOTION_TAIL_BYTES of the log + its total length (bounded seek —
+/// never read_to_string a possibly multi-GB log).
+fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = match std::fs::File::open(log_path) {
+        Ok(f) => f,
+        Err(_) => return (Vec::new(), 0),
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(PROMOTION_TAIL_BYTES as u64);
+    let mut buf = Vec::new();
+    if f.seek(SeekFrom::Start(start)).is_ok() {
+        let _ = f.take(PROMOTION_TAIL_BYTES as u64).read_to_end(&mut buf);
+    }
+    (buf, len)
+}
+
+/// Bounded view: the whole log read back from disk when it fits the byte
+/// budget (≤50 KiB read), else one middle-out pass over head ++ tail.
+/// `{{MARKER}}` is replaced only when bytes were actually omitted, so user
+/// text can never collide with the slot.
+fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
+    let raw: Vec<u8> = if summary.total_bytes <= VIEW_BUDGET_BYTES as u64 {
+        match std::fs::read(log_path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                let mut cat = summary.head.clone();
+                cat.extend_from_slice(&summary.tail);
+                cat
+            }
+        }
+    } else {
+        let mut cat = summary.head.clone();
+        cat.extend_from_slice(&summary.tail);
+        cat
+    };
+    let mut view = middle_out(&raw, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
+    if view.omitted_range.is_some() {
+        let hint = resume_hint(id, &view);
+        view.body = view.body.replace("{{MARKER}}", &hint);
+    }
+    view
 }
 
 #[cfg(test)]
@@ -544,48 +600,48 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-}
 
-/// Last PROMOTION_TAIL_BYTES of the log + its total length (bounded seek —
-/// never read_to_string a possibly multi-GB log).
-fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
-    use std::io::{Read, Seek, SeekFrom};
-    let mut f = match std::fs::File::open(log_path) {
-        Ok(f) => f,
-        Err(_) => return (Vec::new(), 0),
-    };
-    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(PROMOTION_TAIL_BYTES as u64);
-    let mut buf = Vec::new();
-    if f.seek(SeekFrom::Start(start)).is_ok() {
-        let _ = f.take(PROMOTION_TAIL_BYTES as u64).read_to_end(&mut buf);
-    }
-    (buf, len)
-}
-
-/// Bounded view: the whole log read back from disk when it fits the byte
-/// budget (≤50 KiB read), else one middle-out pass over head ++ tail.
-/// `{{MARKER}}` is replaced only when bytes were actually omitted, so user
-/// text can never collide with the slot.
-fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
-    let raw: Vec<u8> = if summary.total_bytes <= VIEW_BUDGET_BYTES as u64 {
-        match std::fs::read(log_path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                let mut cat = summary.head.clone();
-                cat.extend_from_slice(&summary.tail);
-                cat
+    // UNRUN (cargo test banned under X).
+    #[tokio::test]
+    async fn waiter_marks_exited_despite_hung_pump() {
+        // A backgrounded grandchild inherits the pipes, so the pump never
+        // sees EOF; the watchdog must still mark the task Exited.
+        let session = sess("pump-watchdog");
+        let ctx = ctx_for(&session);
+        let tool = BashTool;
+        let r = tool
+            .execute(&ctx, json!({"command": "sleep 30 &", "background": true}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        let n: u32 = r
+            .content
+            .lines()
+            .next()
+            .and_then(|h| h.split("started t").nth(1))
+            .and_then(|s| {
+                s.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+            .expect("t1 header");
+        // The shell exits at once; the pump hangs on the sleeper's pipes.
+        // The task must reach Exited well before the 30 s sleeper is done
+        // (the suite does not wait for the sleeper itself).
+        let t0 = Instant::now();
+        loop {
+            let done = registry()
+                .get(&session, TaskId(n))
+                .is_some_and(|t| matches!(t.state, TaskState::Exited { .. }));
+            if done {
+                break;
             }
+            assert!(
+                t0.elapsed() < Duration::from_secs(15),
+                "task t{n} stuck Running with a hung pump"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-    } else {
-        let mut cat = summary.head.clone();
-        cat.extend_from_slice(&summary.tail);
-        cat
-    };
-    let mut view = middle_out(&raw, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
-    if view.omitted_range.is_some() {
-        let hint = resume_hint(id, &view);
-        view.body = view.body.replace("{{MARKER}}", &hint);
     }
-    view
 }

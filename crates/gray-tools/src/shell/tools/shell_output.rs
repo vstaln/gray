@@ -8,8 +8,8 @@
 //! pattern as 1A/1B/1C before 1D).
 //!
 //! Reads use `File::seek` + a bounded `take` — never `read_to_string` a
-//! possibly multi-GB log. Waits park on the registry's watch channels only;
-//! no busy-wait. Offsets are file bytes; the `middle_out` marker's absolute
+//! possibly multi-GB log. Waits park on the registry's watch channels, with
+//! a log-length check for pre-subscribe writes; no busy-wait. Offsets are file bytes; the `middle_out` marker's absolute
 //! offsets are sanitized-space (same drift as 1D's `build_view` — clean ASCII
 //! logs are unaffected).
 
@@ -336,11 +336,21 @@ async fn wait_for_output(
         (Some(b), Some(e)) => (b, e),
         _ => return false,
     };
+    // Ground truth for the file: the pump writes the log before it sends the
+    // watch, so bytes may sit on disk while the watch is still stale.
+    let log_path = registry().get(session, id).map(|t| t.log_path);
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
         // Final borrow on the exit path: the waiter drains the pump before
         // marking, so an exited task's tail is already on disk.
         if *bytes_rx.borrow() > from || exit_rx.borrow().is_some() {
+            return false;
+        }
+        // Pre-subscribe writes: bytes already on disk satisfy the wait even
+        // when the watch hasn't published them yet.
+        if let Some(p) = log_path.as_ref()
+            && log_len(p) > from
+        {
             return false;
         }
         let now = Instant::now();
@@ -780,5 +790,64 @@ mod tests {
         let dt = t0.elapsed();
         assert!(dt < Duration::from_secs(5), "prompt return: {dt:?}");
         assert!(out.content.contains("cancelled"), "{}", out.content);
+    }
+
+    // UNRUN (cargo test banned under X).
+    #[tokio::test]
+    async fn wait_output_sees_pre_subscribe_file_bytes() {
+        // Bytes already on disk before we subscribe must satisfy wait=output
+        // at once, even when the watch hasn't published them yet.
+        use std::io::Write as _;
+
+        let session = sess("presub");
+        let ctx = ctx_for(&session);
+        // `echo` makes the pump create the log file; `sleep` keeps the task
+        // alive for the wait below. (A bare `sleep` never produces output,
+        // so no log file ever appears and the open below cannot succeed.)
+        let bg = BashTool
+            .execute(
+                &ctx,
+                json!({"command": "echo ready && sleep 30", "background": true}),
+            )
+            .await;
+        assert!(!bg.is_error, "{}", bg.content);
+        let n = task_n(&bg.content, "started t");
+        let id = format!("t{n}");
+        // A write that bypassed the pump's watch sender entirely.
+        let info = registry()
+            .get(&session, TaskId(n))
+            .expect("task just started");
+        // The pump creates the log file asynchronously; wait for the echo
+        // to land (CI runners are slow) so the append below can't lose a
+        // creation race. tokio sleep (not thread sleep): this suite runs on
+        // tokio's current_thread runtime, where blocking the thread would
+        // starve the very pump future we're waiting for.
+        let mut waited = 0;
+        while !info.log_path.exists() && waited < 100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            waited += 1;
+        }
+        assert!(info.log_path.exists(), "pump never created log file");
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&info.log_path)
+            .expect("open log")
+            .write_all(b"pre-subscribed\n")
+            .expect("append");
+        let t0 = Instant::now();
+        let out = ShellOutputTool
+            .execute(
+                &ctx,
+                json!({"task_id": id, "from_offset": 0, "wait": "output", "timeout": 10}),
+            )
+            .await;
+        let dt = t0.elapsed();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("pre-subscribed"), "{}", out.content);
+        assert!(
+            dt < Duration::from_secs(5),
+            "pre-subscribe bytes must not wait out the timeout: {dt:?}"
+        );
+        // The sleeper exits on its own in 30 s; the suite does not wait.
     }
 }

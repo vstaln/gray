@@ -28,6 +28,14 @@ pub const WAKE_COALESCE: Duration = Duration::from_millis(500);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(3);
 /// 2E startup sweep: logs older than 7 days go.
 const LOG_SWEEP_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
+/// Shell transcript cap per tN.log: matches pump + gray.log 10MiB. The
+/// age sweep alone let real usage reach 208MB; the sweep deletes oversized
+/// files too (pre-cap leftovers), the pump stops live writes past this.
+const SHELL_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+/// WAKE_QUEUE cap: the REPL drains each loop-top, but gateway/print may
+/// never drain, so an uncleared queue would grow unbounded. Past this the
+/// oldest entries drop (freshest wake wins).
+pub const WAKE_QUEUE_CAP: usize = 100;
 /// Bash + sleep self-bound at 600 s, so agents need headroom above that.
 pub const SHELL_TOOL_TIMEOUT: Duration = Duration::from_secs(610);
 
@@ -47,8 +55,25 @@ pub(crate) fn queue_shell_wake(text: String) {
         return;
     }
     if let Ok(mut q) = WAKE_QUEUE.lock() {
-        q.push(text);
+        capped_push(&mut q, text);
     }
+}
+
+/// Pure queue cap (unit-testable): push then drop oldest past the cap, so
+/// the freshest wake survives. Mirrors pump `MemView` drain style.
+fn capped_push(q: &mut Vec<String>, text: String) {
+    q.push(text);
+    let excess = q.len().saturating_sub(WAKE_QUEUE_CAP);
+    if excess > 0 {
+        // ponytail: drain is O(excess); never Vec::remove(0) in a loop.
+        q.drain(..excess);
+    }
+}
+
+/// Pure sweep check (unit-testable): age sweep plus size cap for pre-cap
+/// oversized logs.
+fn sweep_due(len: u64, age: Option<Duration>) -> bool {
+    len > SHELL_LOG_MAX_BYTES || age.is_some_and(|a| a > LOG_SWEEP_AGE)
 }
 
 /// Idle wake-ups start a turn when true (default). False in `-p`/gateway
@@ -190,7 +215,8 @@ pub async fn shutdown_shell_session(session: &str) -> usize {
     running
 }
 
-/// 2E startup sweep: delete `~/.gray/shell/*/t*.log` older than 7 days.
+/// 2E startup sweep: delete `~/.gray/shell/*/t*.log` older than 7 days or
+/// bigger than 10MiB (size catches pre-cap runaway logs the pump now stops).
 pub fn sweep_old_shell_logs() {
     let base = std::env::var("GRAY_HOME")
         .map(std::path::PathBuf::from)
@@ -214,15 +240,44 @@ pub fn sweep_old_shell_logs() {
             if !name.starts_with('t') || !name.ends_with(".log") {
                 continue;
             }
-            let old = f
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| now.duration_since(t).ok())
-                .is_some_and(|age| age > LOG_SWEEP_AGE);
-            if old {
+            let meta = f.metadata().ok();
+            let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            let age = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| now.duration_since(t).ok());
+            if sweep_due(len, age) {
                 let _ = std::fs::remove_file(&p);
             }
         }
+    }
+}
+
+// UNRUN (cargo test banned under X per AGENTS.md; verify in TTY/CI).
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wake_queue_drops_oldest_past_cap() {
+        let mut q = Vec::new();
+        for i in 0..WAKE_QUEUE_CAP + 5 {
+            capped_push(&mut q, format!("m{i}"));
+        }
+        assert_eq!(q.len(), WAKE_QUEUE_CAP);
+        assert_eq!(q.first().unwrap(), "m5");
+        assert_eq!(
+            q.last().unwrap().as_str(),
+            format!("m{}", WAKE_QUEUE_CAP + 4).as_str()
+        );
+    }
+
+    #[test]
+    fn sweep_due_covers_age_and_size() {
+        assert!(sweep_due(0, Some(LOG_SWEEP_AGE + Duration::from_secs(1))));
+        assert!(!sweep_due(0, Some(LOG_SWEEP_AGE)));
+        assert!(!sweep_due(0, None));
+        assert!(sweep_due(SHELL_LOG_MAX_BYTES + 1, None));
+        assert!(!sweep_due(SHELL_LOG_MAX_BYTES, None));
     }
 }

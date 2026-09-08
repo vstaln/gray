@@ -3,25 +3,10 @@
 pub const DEFAULT_MAX_LINES: usize = 2000;
 pub const DEFAULT_MAX_BYTES: usize = 50 * 1024;
 
-/// Which limit caused truncation.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum TruncatedBy {
-    Lines,
-    Bytes,
-}
-
 #[derive(Debug, Clone)]
 pub struct TruncationResult {
     pub content: String,
     pub truncated: bool,
-    pub truncated_by: Option<TruncatedBy>,
-    pub total_lines: usize,
-    pub total_bytes: usize,
-    pub output_lines: usize,
-    pub output_bytes: usize,
-    pub first_line_exceeds_limit: bool,
-    pub max_lines: usize,
-    pub max_bytes: usize,
 }
 
 /// Human-readable byte size (mirrors `formatSize` in pi).
@@ -65,14 +50,6 @@ pub fn truncate_head_with_limits(
         return TruncationResult {
             content: content.to_string(),
             truncated: false,
-            truncated_by: None,
-            total_lines,
-            total_bytes,
-            output_lines: total_lines,
-            output_bytes: total_bytes,
-            first_line_exceeds_limit: false,
-            max_lines,
-            max_bytes,
         };
     }
 
@@ -82,59 +59,29 @@ pub fn truncate_head_with_limits(
             return TruncationResult {
                 content: String::new(),
                 truncated: true,
-                truncated_by: Some(TruncatedBy::Bytes),
-                total_lines,
-                total_bytes,
-                output_lines: 0,
-                output_bytes: 0,
-                first_line_exceeds_limit: true,
-                max_lines,
-                max_bytes,
             };
         }
     }
 
     let mut output: Vec<&str> = Vec::new();
     let mut bytes_used: usize = 0;
-    let mut truncated_by = TruncatedBy::Lines;
 
     for line in lines.iter() {
         if output.len() >= max_lines {
-            truncated_by = TruncatedBy::Lines;
             break;
         }
         let line_bytes = line.len() + if output.is_empty() { 0 } else { 1 };
         if bytes_used + line_bytes > max_bytes {
-            truncated_by = TruncatedBy::Bytes;
             break;
         }
         output.push(line);
         bytes_used += line_bytes;
-
-        if output.len() >= max_lines {
-            truncated_by = TruncatedBy::Lines;
-        }
     }
 
     let out_content = output.join("\n");
-    let out_bytes = out_content.len();
-    let truncated_by = if output.len() < total_lines || out_bytes < total_bytes {
-        Some(truncated_by)
-    } else {
-        None
-    };
-    let truncated_by = truncated_by.or(Some(TruncatedBy::Lines));
 
     TruncationResult {
         content: out_content,
         truncated: true,
-        truncated_by,
-        total_lines,
-        total_bytes,
-        output_lines: output.len(),
-        output_bytes: out_bytes,
-        first_line_exceeds_limit: false,
-        max_lines,
-        max_bytes,
     }
 }

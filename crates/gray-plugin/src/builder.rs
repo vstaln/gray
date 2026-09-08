@@ -243,11 +243,24 @@ fn plugins_dir() -> Option<PathBuf> {
 /// must not depend on it). Keep the two in sync — do not invent a third
 /// resolution rule.
 fn resolve_install_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     let is_exec = |p: &Path| {
-        std::fs::metadata(p)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+        let Ok(m) = std::fs::metadata(p) else {
+            return false;
+        };
+        if !m.is_file() {
+            return false;
+        }
+        // Executable bit is unix-only; on Windows any file qualifies.
+        #[cfg(unix)]
+        {
+            m.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
     };
     if is_exec(dir) {
         return Ok(vec![dir.to_string_lossy().into_owned()]);

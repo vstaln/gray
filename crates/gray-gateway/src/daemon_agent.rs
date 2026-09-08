@@ -92,7 +92,12 @@ impl GatewayRunner {
                     .resolve_model()
                     .unwrap_or_else(|| "unknown".to_string());
                 let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let meta = SessionMeta::new(sid.clone(), now_millis(), cwd, model);
+                let meta = SessionMeta::new(
+                    sid.clone(),
+                    chrono::Utc::now().timestamp_millis() as u64,
+                    cwd,
+                    model,
+                );
                 let _ = store.create(meta).await;
                 Vec::new()
             }
@@ -246,11 +251,4 @@ Guidelines:
     format!(
         "{body}\n\n# Gateway mode\nYou are talking through a chat platform (Telegram/Discord/Slack), not a terminal.\n- Nobody can answer interactive prompts; destructive shell commands are auto-denied by policy — say so instead of retrying.\n- Keep replies short; long output is split into multiple messages.\n- Plain text or light markdown only; no ANSI escapes."
     )
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }

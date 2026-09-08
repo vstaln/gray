@@ -101,22 +101,6 @@ fn count_lines(s: &str) -> usize {
     if s.ends_with('\n') { nl } else { nl + 1 }
 }
 
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    idx = idx.min(s.len());
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
-
-fn ceil_char_boundary(s: &str, mut idx: usize) -> usize {
-    idx = idx.min(s.len());
-    while idx < s.len() && !s.is_char_boundary(idx) {
-        idx += 1;
-    }
-    idx
-}
-
 /// First `byte_budget` bytes, cut back to a line boundary (drop the partial
 /// last line); no newline in window -> byte-cut at the codepoint boundary
 /// (single-huge-line case). Then cap to the first `line_budget` lines.
@@ -124,7 +108,7 @@ fn take_head(s: &str, byte_budget: usize, line_budget: usize) -> String {
     if s.is_empty() || byte_budget == 0 || line_budget == 0 {
         return String::new();
     }
-    let mut end = floor_char_boundary(s, byte_budget.min(s.len()));
+    let mut end = s.floor_char_boundary(byte_budget.min(s.len()));
     if end < s.len()
         && let Some(nl) = s[..end].rfind('\n')
     {
@@ -146,7 +130,7 @@ fn take_tail(s: &str, byte_budget: usize, line_budget: usize) -> String {
     if s.is_empty() || byte_budget == 0 || line_budget == 0 {
         return String::new();
     }
-    let mut start = ceil_char_boundary(s, s.len().saturating_sub(byte_budget));
+    let mut start = s.ceil_char_boundary(s.len().saturating_sub(byte_budget));
     if start > 0 && start < s.len() {
         if let Some(nl) = s[start..].find('\n') {
             let after = start + nl + 1;

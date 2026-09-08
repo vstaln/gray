@@ -2,9 +2,11 @@
 
 use super::*;
 
-/// Expands `/skills:<name> [args]` into a Prompt carrying the skill body
+/// Expands `/skills:<name> [args]` (or the `/skill <name> [args]` alias —
+/// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). Bare `/skills` opens an interactive picker like /resume.
+/// appended). Bare `/skills` opens the installed-skills manager (TTY) or
+/// prints the text list (headless). `/skill <name>` runs one (Task 4).
 /// With `local` set (Esc mid-turn), the skill is announced but never expanded
 /// into an AI prompt — the turn was cancelled, nothing talks to the model.
 pub(crate) fn expand_skill_command(
@@ -26,57 +28,52 @@ pub(crate) fn expand_skill_command(
     };
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
-        // Bare /skills — interactive picker (EnterAlternateScreen, like /resume)
-        let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-        let picked = match with_modal_sync(tui, || crate::setup::run_skills_modal(cwd, bg.as_ref()))
-        {
-            Ok(v) => v,
-            Err(e) => {
-                say(tui, &format!("skills picker error: {e}"));
-                return ReplCommand::Empty;
-            }
-        };
-        let Some((skill, picked_args)) = picked else {
-            // Esc — picker cancelled; viewport already restored
-            return ReplCommand::Empty;
-        };
-        // load skill body and optionally append args part from query
-        let expanded = match std::fs::read_to_string(&skill.file_path) {
-            Ok(content) => {
-                let body = crate::skills_tool::strip_frontmatter(&content);
-                let mut out = format!(
-                    "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
-                    skill.name,
-                    skill.file_path.display(),
-                    body
-                );
-                if !picked_args.trim().is_empty() {
-                    out.push_str(&format!("\n\n**ARGUMENTS:** {}", picked_args.trim()));
+        // Bare /skills — installed manager on TTY (like /plugins),
+        // text list headless.
+        if tui.is_some() {
+            let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
+            match with_modal_sync(tui, || crate::setup::run_skills_modal(bg.as_ref())) {
+                Ok(true) => {
+                    if let Some(shared) = tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        t.push_action("Skills updated", None);
+                        let _ = t.draw();
+                    }
                 }
-                out
-            }
-            Err(e) => {
-                say(
-                    tui,
-                    &format!("failed to read {}: {e}", skill.file_path.display()),
-                );
-                return ReplCommand::Empty;
+                Ok(false) => {
+                    if let Some(shared) = tui {
+                        let mut t = shared.lock().expect("tui lock");
+                        t.textarea.set_text("");
+                        t.matches.clear();
+                        t.sel = 0;
+                        t.history_idx = None;
+                        t.draft.clear();
+                        t.attachments.clear();
+                        t.pending_pastes.clear();
+                        let _ = t.draw();
+                    }
+                }
+                Err(e) => {
+                    say(tui, &format!("skills error: {e}"));
+                }
             }
         };
-        // surface a dim line like resume does so user sees the pick
-        say(
-            tui,
-            &format!(
-                "→ /skills:{} {}",
-                skill.name,
-                if picked_args.trim().is_empty() {
-                    String::new()
-                } else {
-                    picked_args.trim().to_string()
+        match gray_pkg::skills_ops::list() {
+            Ok(skills) if skills.is_empty() => {
+                say(tui, "no skills installed — /marketplace to browse");
+            }
+            Ok(skills) => {
+                for s in &skills {
+                    if s.version.trim().is_empty() {
+                        say(tui, &format!("{} [{}]", s.name, s.source));
+                    } else {
+                        say(tui, &format!("{} {} [{}]", s.name, s.version, s.source));
+                    }
                 }
-            ),
-        );
-        return to_prompt(expanded);
+            }
+            Err(e) => say(tui, &format!("skills list failed: {e:#}")),
+        }
+        return ReplCommand::Empty;
     };
     let (name, args) = match rest.split_once(char::is_whitespace) {
         Some((n, a)) => (n.trim(), Some(a.trim().to_string())),
@@ -170,7 +167,7 @@ pub(crate) async fn handle_sys(
                 tui,
                 &format!("✓ system prompt restored to default ({})", path.display()),
             );
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
         }
         SysAction::Edit => {
             // Make sure the file exists before opening an editor on it.
@@ -190,7 +187,7 @@ pub(crate) async fn handle_sys(
                             tui,
                             "✓ system prompt saved — applies from your next message",
                         );
-                        reload_agent(agent, config, cwd, session_id).await;
+                        reload_agent(agent, config, cwd, session_id, tui).await;
                     }
                     Ok(None) => say(tui, "prompt unchanged"),
                     Err(e) => say(tui, &format!("editor error: {e}")),
@@ -231,7 +228,7 @@ pub(crate) async fn handle_sys(
                         tui,
                         "✓ system prompt saved — applies from your next message",
                     );
-                    reload_agent(agent, config, cwd, session_id).await;
+                    reload_agent(agent, config, cwd, session_id, tui).await;
                 }
                 Ok(None) => {
                     say(tui, "prompt unchanged");
@@ -247,17 +244,19 @@ pub(crate) async fn handle_sys(
 /// Rebuilds the agent after a system-prompt change, preserving conversation history.
 /// `session_id` pins the Responses `prompt_cache_key` shard: rebuilding with
 /// `None` would rotate the shard mid-session and bust prefix-cache hits.
+/// Build failures render via `say()` (never raw `println!` over the live viewport).
 pub(crate) async fn reload_agent(
     agent: &mut Option<Agent>,
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
+    tui: Option<&crate::composer::SharedTui>,
 ) {
     let old = agent.take();
     let mut rebuilt = match build_agent(config, cwd, session_id).await {
         Ok(a) => a,
         Err(e) => {
-            println!("{e}");
+            say(tui, &format!("{e}"));
             *agent = old;
             return;
         }
@@ -298,6 +297,7 @@ pub(crate) async fn handle_model(
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
             t.push_action("Model set to", Some(&m));
+            t.ensure_gap(1);
         } else {
             println!("✓ Model set to {m}");
         }
@@ -310,7 +310,7 @@ pub(crate) async fn handle_model(
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }
-        reload_agent(agent, config, cwd, session_id).await;
+        reload_agent(agent, config, cwd, session_id, tui).await;
         return;
     }
 
@@ -323,6 +323,7 @@ pub(crate) async fn handle_model(
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
                     t.push_action("Model set to", Some(m));
+                    t.ensure_gap(1);
                 }
                 let _ = t.draw();
             }
@@ -336,7 +337,7 @@ pub(crate) async fn handle_model(
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
             if let Some(shared) = tui {
@@ -348,15 +349,17 @@ pub(crate) async fn handle_model(
                 t.draft.clear();
                 t.attachments.clear();
                 t.pending_pastes.clear();
+                // Dismissed picker leaves the slash card with no feedback:
+                // gap so it doesn't jam the input box.
+                t.ensure_gap(1);
                 let _ = t.draw();
             }
         }
         Err(e) => {
             if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .push_dim(format!("└ error: {e}"));
+                let mut t = shared.lock().expect("tui lock");
+                t.push_dim(format!("└ error: {e}"));
+                t.ensure_gap(1);
             } else {
                 println!("model error: {e}");
             }
@@ -393,20 +396,20 @@ pub(crate) async fn handle_thinking(
                 t.set_thinking_effort(eff_clean.clone());
                 t.set_hide_thinking(*hide_thinking);
                 t.push_action("Thinking effort set to", Some(&eff_clean));
+                t.ensure_gap(1);
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
             }
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
             return;
         }
         let msg = format!(
             "unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max"
         );
         if let Some(shared) = tui {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_dim(format!("└ {msg}"));
+            let mut t = shared.lock().expect("tui lock");
+            t.push_dim(format!("└ {msg}"));
+            t.ensure_gap(1);
         } else {
             println!("{msg}");
         }
@@ -425,10 +428,11 @@ pub(crate) async fn handle_thinking(
                     *hide_thinking = config.reasoning_hidden();
                     t.set_hide_thinking(*hide_thinking);
                     t.push_action("Thinking effort set to", Some(eff));
+                    t.ensure_gap(1);
                 }
                 let _ = t.draw();
             }
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
             if !has_explicit_level {
@@ -450,6 +454,7 @@ pub(crate) async fn handle_thinking(
                     let mut t = shared.lock().expect("tui lock");
                     t.set_hide_thinking(*hide_thinking);
                     t.push_dim(format!("└ {msg}"));
+                    t.ensure_gap(1);
                 } else {
                     println!("{msg}");
                 }
@@ -462,6 +467,9 @@ pub(crate) async fn handle_thinking(
                 t.draft.clear();
                 t.attachments.clear();
                 t.pending_pastes.clear();
+                // Dismissed picker leaves the slash card with no feedback:
+                // gap so it doesn't jam the input box.
+                t.ensure_gap(1);
                 let _ = t.draw();
             }
         }
@@ -475,5 +483,38 @@ pub(crate) async fn handle_thinking(
                 println!("effort error: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // reload_agent with no model configured fails soft through say()
+    // (headless println path) and preserves the previous agent.
+    #[tokio::test]
+    async fn reload_agent_failure_preserves_agent() {
+        let config = Config {
+            model: None,
+            base_url: String::new(),
+            api_key: None,
+            thinking_effort: None,
+            show_reasoning: None,
+            context_window: None,
+            context_reserve: None,
+            context_keep: None,
+            permissions: None,
+        };
+        let mut agent: Option<Agent> = None;
+        reload_agent(
+            &mut agent,
+            &config,
+            std::path::Path::new("/tmp"),
+            None,
+            None,
+        )
+        .await;
+        assert!(agent.is_none());
     }
 }

@@ -26,7 +26,7 @@ pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Default-deny batchable set: statically `Allow` in every approval mode
 /// (see test), never prompts, never mutates. Everything else is a barrier.
 pub fn is_batchable(name: &str) -> bool {
-    matches!(name, "read" | "ls" | "find" | "grep")
+    matches!(name, "read" | "ls" | "find" | "glob" | "grep")
 }
 
 /// `GRAY_PARALLEL_READS=0|false|no|off` (any case) disables the lane;
@@ -224,6 +224,18 @@ mod tests {
                     "{tool} in {mode}"
                 );
             }
+        }
+    }
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn glob_batchable_parity_with_find() {
+        assert!(is_batchable("glob"));
+        for mode in ["read-only", "auto", "full"] {
+            assert_eq!(
+                crate::approvals::verdict(mode, "glob", &json!({}), std::path::Path::new("/work")),
+                crate::approvals::Verdict::Allow,
+                "glob in {mode}"
+            );
         }
     }
     #[test]

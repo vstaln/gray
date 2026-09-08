@@ -38,9 +38,17 @@ fn relativize(result_path: &str, search_path: &Path) -> String {
 pub const FIND_SNIPPET: &str = "Find files by glob pattern (respects .gitignore)";
 pub const FIND_GUIDELINES: &[&str] = &[];
 
+pub const GLOB_SNIPPET: &str = "Fast file search using glob patterns (respects .gitignore)";
+pub const GLOB_GUIDELINES: &[&str] = &[];
+
 /// Filename glob search. Respects .gitignore via `fd` when available,
 /// otherwise falls back to a manual walk.
 pub struct FindTool;
+
+/// `glob` tool (opencode glob.ts parity): fast pattern matching honoring
+/// .gitignore. Thin alias over the `find` infrastructure — same fd-first +
+/// ignore/globset fallback path, same output shape.
+pub struct GlobTool;
 
 #[async_trait]
 impl Tool for FindTool {
@@ -101,6 +109,41 @@ impl Tool for FindTool {
 
         // Fallback: manual recursive walk with simple glob matching.
         fallback_walk(&pattern, &search_path, effective_limit).await
+    }
+}
+
+#[async_trait]
+impl Tool for GlobTool {
+    fn def(&self) -> ToolDef {
+        ToolDef::new(
+            "glob",
+            format!(
+                "Fast file search using glob patterns. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to {DEFAULT_LIMIT} results or {}KB (whichever is hit first).",
+                MAX_BYTES / 1024
+            ),
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "The glob pattern to match files against" },
+                    "path": { "type": "string", "description": "The directory to search in. If not specified, the current working directory will be used." },
+                    "limit": { "type": "integer", "description": "Maximum number of results (default: 1000)" }
+                },
+                "required": ["pattern"]
+            }),
+        )
+    }
+
+    fn prompt_snippet(&self) -> Option<&'static str> {
+        Some(GLOB_SNIPPET)
+    }
+
+    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
+        Some(GLOB_GUIDELINES)
+    }
+
+    async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
+        // ponytail: delegate — one search path (fd → ignore/globset), not two.
+        FindTool.execute(ctx, args).await
     }
 }
 
@@ -250,63 +293,64 @@ async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Op
     Some(finish(output))
 }
 
+/// Fallback when `fd` is missing: recursive walk via the `ignore` crate
+/// (real .gitignore handling) + `globset` matching with fd `--glob`
+/// semantics (no `/` in pattern = basename match, else rel-path match).
 async fn fallback_walk(pattern: &str, search_path: &Path, effective_limit: usize) -> ToolOutput {
-    // Use glob crate-style matching via simple conversion to a matcher.
-    // We support `*`, `**`, `?`, and `{a,b}`-like? For now handle `*` and `**`.
-    // For correctness we try to use the `glob` pattern via matching file paths.
-    // We'll read .gitignore if present and skip matching ignores.
-
-    let gitignore_patterns = read_gitignore(search_path).await;
+    // Mirror the `--full-path` anchoring `try_fd` applies.
+    let full_pattern = if pattern.contains('/')
+        && !pattern.starts_with('/')
+        && !pattern.starts_with("**/")
+        && pattern != "**"
+    {
+        format!("**/{pattern}")
+    } else {
+        pattern.to_string()
+    };
+    let matcher = match globset::GlobBuilder::new(&full_pattern)
+        .literal_separator(true)
+        .build()
+    {
+        Ok(g) => g.compile_matcher(),
+        Err(_) => return fail(format!("invalid glob pattern: {pattern}")),
+    };
+    let match_basename = !pattern.contains('/');
 
     let mut results: Vec<String> = Vec::new();
-    let mut stack: Vec<std::path::PathBuf> = vec![search_path.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(rd) => rd,
-            Err(_) => continue,
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy().to_string();
-
-            // Skip .git and node_modules always.
-            if name == ".git" || name == "node_modules" {
-                continue;
-            }
-            // Check .gitignore (simple prefix/glob check)
-            if is_ignored(&path, search_path, &gitignore_patterns) {
-                continue;
-            }
-
-            let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-            if is_dir {
-                stack.push(path.clone());
-            }
-
-            // Match glob against relative path and basename.
-            let rel = path.strip_prefix(search_path).unwrap_or(&path);
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
-            let basename = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            if glob_matches(pattern, &rel_str, &basename) {
-                // For directories, include trailing slash like pi does? For find we return files; include dirs with slash.
-                let mut out = rel_str.clone();
-                if is_dir && !out.ends_with('/') {
-                    out.push('/');
-                }
-                results.push(out);
-                if results.len() >= effective_limit {
-                    break;
-                }
-            }
-        }
+    let walker = ignore::WalkBuilder::new(search_path)
+        .hidden(false) // fd --hidden parity: include dotfiles
+        .require_git(false) // honor .gitignore outside repos, like before
+        .filter_entry(|e| {
+            // Always prune these, even when not ignored.
+            !(e.file_type().is_some_and(|t| t.is_dir())
+                && (e.file_name() == ".git" || e.file_name() == "node_modules"))
+        })
+        .build();
+    for entry in walker {
         if results.len() >= effective_limit {
             break;
+        }
+        let Ok(entry) = entry else { continue };
+        let Ok(rel) = entry.path().strip_prefix(search_path) else {
+            continue;
+        };
+        if rel.as_os_str().is_empty() {
+            continue; // the root itself
+        }
+        let is_dir = entry.file_type().is_some_and(|t| t.is_dir());
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let hit = if match_basename {
+            matcher.is_match_candidate(&globset::Candidate::new(entry.file_name()))
+        } else {
+            matcher.is_match(&rel_str)
+        };
+        if hit {
+            // Directories keep a trailing slash, as before.
+            if is_dir && !rel_str.ends_with('/') {
+                results.push(format!("{rel_str}/"));
+            } else {
+                results.push(rel_str);
+            }
         }
     }
 
@@ -342,202 +386,68 @@ async fn fallback_walk(pattern: &str, search_path: &Path, effective_limit: usize
     finish(output)
 }
 
-async fn read_gitignore(search_path: &Path) -> Vec<String> {
-    let mut patterns = Vec::new();
-    // Walk up to find .gitignore at search_path only (simple).
-    let gi = search_path.join(".gitignore");
-    if let Ok(content) = tokio::fs::read_to_string(&gi).await {
-        for line in content.lines() {
-            let l = line.trim();
-            if l.is_empty() || l.starts_with('#') {
-                continue;
-            }
-            patterns.push(l.to_string());
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn glob_def_is_named_glob_with_pattern_required() {
+        let def = Tool::def(&GlobTool);
+        assert_eq!(def.name, "glob");
+        let required = def
+            .parameters
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("required");
+        assert!(required.contains(&json!("pattern")));
+        let props = def
+            .parameters
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("properties");
+        assert!(props.contains_key("pattern"));
+        assert!(props.contains_key("path"));
     }
-    patterns
-}
 
-fn is_ignored(path: &Path, search_path: &Path, patterns: &[String]) -> bool {
-    let rel = path.strip_prefix(search_path).unwrap_or(path);
-    let rel_str = rel.to_string_lossy().replace('\\', "/");
-    for pat in patterns {
-        // Very simple: if pattern is a prefix or matches basename
-        let p = pat.trim_end_matches('/');
-        if p.contains('*') || p.contains('?') {
-            if glob_matches(p, &rel_str, &rel_str) {
-                return true;
-            }
-        } else if rel_str == *p || rel_str.starts_with(&format!("{p}/")) {
-            return true;
-        }
-    }
-    false
-}
-
-fn glob_matches(pattern: &str, rel_path: &str, basename: &str) -> bool {
-    // Use a lightweight glob matcher without external crates.
-    // Supports: *, **, ?, and literal segments.
-    // For patterns without '/', match against basename only (like fd default).
-    // For patterns with '/', match against rel_path.
-    let target = if pattern.contains('/') {
-        rel_path
-    } else {
-        basename
-    };
-    matches_glob(pattern, target)
-}
-
-fn matches_glob(pattern: &str, text: &str) -> bool {
-    // Convert glob to a simple recursive matcher.
-    // Split pattern by '/' for ** handling, but for non-** we treat as single string glob.
-    if pattern.contains("**") {
-        return matches_with_doublestar(pattern, text);
-    }
-    matches_star(pattern, text)
-}
-
-fn matches_with_doublestar(pattern: &str, text: &str) -> bool {
-    // Split on "**" and require each segment to appear in order.
-    let parts: Vec<&str> = pattern.split("**").collect();
-    if parts.is_empty() {
-        return true;
-    }
-    // parts[0] must be prefix, parts[last] must be suffix, middle parts anywhere in order.
-    let mut remaining = text;
-
-    // Prefix
-    if !parts[0].is_empty() {
-        let prefix = parts[0].trim_matches('/');
-        if !prefix.is_empty() {
-            // prefix may contain * — match against start of remaining
-            // Find the prefix match at start
-            if !matches_prefix(prefix, remaining) {
-                return false;
-            }
-            // Advance past the matched prefix segment length (approx).
-            // Instead, try to find where prefix glob could end: search for next '/' boundary.
-            // Simpler: check if remaining starts with a path that matches prefix glob up to next '/'.
-            // We'll use a sliding window: try every split point.
-            let mut found = false;
-            for i in 0..=remaining.len() {
-                if remaining.is_char_boundary(i) {
-                    let prefix_slice = &remaining[..i];
-                    if matches_star(prefix, prefix_slice) {
-                        remaining = &remaining[i..];
-                        // consume optional '/'
-                        if remaining.starts_with('/') {
-                            remaining = &remaining[1..];
-                        }
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found {
-                return false;
-            }
-        } else if remaining.starts_with('/') {
-            remaining = &remaining[1..];
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn glob_shares_find_schema_shape() {
+        let g = Tool::def(&GlobTool);
+        let f = Tool::def(&FindTool);
+        assert_ne!(g.name, f.name);
+        for def in [&g, &f] {
+            let required = def
+                .parameters
+                .get("required")
+                .and_then(|v| v.as_array())
+                .expect("required");
+            assert!(required.contains(&json!("pattern")), "{}", def.name);
         }
     }
 
-    for (idx, part) in parts[1..].iter().enumerate() {
-        let is_last = idx == parts[1..].len() - 1;
-        let seg = part.trim_matches('/');
-        if seg.is_empty() {
-            continue;
-        }
-        if is_last {
-            // suffix must match end
-            // Try every position from start to end
-            let mut matched = false;
-            for i in 0..=remaining.len() {
-                if remaining.is_char_boundary(i) && matches_star(seg, &remaining[i..]) {
-                    matched = true;
-                    break;
-                }
-                // For suffix that should match end, also try matching suffix of remaining
-                if remaining[i..].len() <= seg.len() + 20 {
-                    // not needed
-                }
-            }
-            // More precise: does the tail of remaining match seg?
-            // Check if any suffix of remaining matches seg
-            let mut ok = false;
-            for i in 0..=remaining.len() {
-                if remaining.is_char_boundary(i) && matches_star(seg, &remaining[i..]) {
-                    ok = true;
-                }
-            }
-            if !ok && !matched {
-                return false;
-            }
-            return ok || matched;
-        } else {
-            // middle part must appear somewhere
-            let mut found = false;
-            for i in 0..=remaining.len() {
-                if remaining.is_char_boundary(i) {
-                    // try to match seg at position i
-                    for j in i..=remaining.len() {
-                        if remaining.is_char_boundary(j) && matches_star(seg, &remaining[i..j]) {
-                            remaining = &remaining[j..];
-                            if remaining.starts_with('/') {
-                                remaining = &remaining[1..];
-                            }
-                            found = true;
-                            break;
-                        }
-                    }
-                    if found {
-                        break;
-                    }
-                }
-            }
-            if !found {
-                return false;
-            }
-        }
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn builtin_registry_contains_glob_beside_find() {
+        let reg = crate::Registry::builtin();
+        let names = reg.tool_names();
+        assert!(names.contains(&"glob".to_string()), "{names:?}");
+        assert!(names.contains(&"find".to_string()), "{names:?}");
+        let pos_glob = names.iter().position(|n| n == "glob").unwrap();
+        let pos_find = names.iter().position(|n| n == "find").unwrap();
+        assert!(
+            (pos_glob as i64 - pos_find as i64).abs() <= 2,
+            "glob should sit beside find, got {names:?}"
+        );
+        assert!(reg.get("glob").is_some());
     }
-    true
-}
 
-fn matches_prefix(pattern: &str, text: &str) -> bool {
-    // Does text start with something matching pattern?
-    for i in 0..=text.len() {
-        if text.is_char_boundary(i) && matches_star(pattern, &text[..i]) {
-            return true;
-        }
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[tokio::test]
+    async fn glob_rejects_missing_pattern_like_find() {
+        let ctx = ToolContext::default();
+        let out = Tool::execute(&GlobTool, &ctx, json!({})).await;
+        assert!(out.is_error, "{out:?}");
     }
-    false
-}
-
-fn matches_star(pattern: &str, text: &str) -> bool {
-    // Classic wildcard matching for * and ?
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star, mut match_idx) = (None::<usize>, 0usize);
-
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            match_idx = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            match_idx += 1;
-            ti = match_idx;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
 }

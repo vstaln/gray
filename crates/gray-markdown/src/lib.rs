@@ -58,10 +58,6 @@ pub use style::{MarkdownStyle, TableBorders};
 pub use syntax::{Syntect, get_syntect, syntect_to_ratatui_fg};
 pub use syntect;
 
-// Re-export test helpers when fuzzing
-#[cfg(fuzzing)]
-pub use syntax::test_syntect;
-
 /// Render markdown to ratatui Lines with full output including checkpoint.
 ///
 /// Runs the parser pass followed by the `url_scan` pass so the returned

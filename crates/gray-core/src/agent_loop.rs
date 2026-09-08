@@ -176,6 +176,15 @@ impl Agent {
                     }
                 }
             }
+            // Per-turn hook context (fetched once above) concatenates onto
+            // this turn's system prompt. Empty when no hooks replied.
+            let mut system = self.system.clone();
+            if !hook_context.is_empty() {
+                if !system.is_empty() {
+                    system.push_str("\n\n");
+                }
+                system.push_str(&hook_context);
+            }
 
             // Per-turn hook context (fetched once above) concatenates onto
             // this turn's system prompt. Empty when no hooks replied.
@@ -274,6 +283,19 @@ impl Agent {
                                 let live_name = slot.name.clone().unwrap_or_default();
                                 emit!(AgentEvent::tool_call_start(live_id, live_name));
                                 pending_emitted_start[index] = true;
+                            }
+                            // pi `updateArgs`: keep streaming partial args so the
+                            // TUI can render the tool call live instead of
+                            // popping it in only at ToolCallEnd/ToolResult.
+                            if pending_emitted_start[index] && !arguments_delta.is_empty() {
+                                let live_id =
+                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
+                                let live_name = slot.name.clone().unwrap_or_default();
+                                emit!(AgentEvent::tool_call_progress(
+                                    live_id,
+                                    live_name,
+                                    slot.arguments.clone(),
+                                ));
                             }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {

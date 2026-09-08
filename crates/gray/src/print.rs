@@ -21,12 +21,6 @@ pub struct ActiveToolCall {
     pub args: Option<serde_json::Value>,
 }
 
-/// Renders a single AgentEvent to a writer according to CLI display conventions.
-pub fn render_event<W: Write>(w: &mut W, event: &AgentEvent) -> std::io::Result<()> {
-    let mut current_tool = None;
-    render_event_with_context(w, event, None, &mut current_tool)
-}
-
 /// Renders a single AgentEvent with active tool tracking and CWD context.
 pub fn render_event_with_context<W: Write>(
     w: &mut W,
@@ -52,6 +46,7 @@ pub fn render_event_with_context<W: Write>(
             });
             Ok(())
         }
+        AgentEvent::ToolCallProgress { .. } => Ok(()),
         AgentEvent::ToolCallEnd { args, .. } => {
             let name = current_tool
                 .as_ref()

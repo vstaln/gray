@@ -104,7 +104,7 @@ pub use format::{THINKING_STYLE, fmt_event, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
-pub(crate) use plugin_cmds::handle_plugin_command;
+pub(crate) use plugin_cmds::{handle_marketplace_command, handle_plugin_command};
 pub(crate) use session::{
     dispatch_agent_event, handle_resume, maybe_overflow_compact, maybe_threshold_compact,
     persist_turn_messages, print_exit_hint,
@@ -284,9 +284,13 @@ pub async fn run_repl_mode(
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
     // auto-fetch provider context window in background if not yet cached and no user override
+    // models.dev doubles as the reasoning-effort source for the thinking
+    // picker, so it fetches unconditionally — gating it on the context
+    // override starved the picker (unknown families fell back to the full
+    // catalog, offering efforts the model rejects).
+    tokio::spawn(crate::setup::fetch_models_dev_context());
     if crate::setup::get_user_context_window().is_none() {
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
-        tokio::spawn(crate::setup::fetch_models_dev_context());
         tokio::spawn(crate::setup::fetch_openrouter_rates());
         if let Some(m) = config.model.clone()
             && crate::setup::get_cached_model_context(&m).is_none()
@@ -321,9 +325,9 @@ pub async fn run_repl_mode(
         crate::setup::set_user_context_window(config.context_window);
         crate::setup::set_user_reserve_tokens(config.context_reserve);
         crate::setup::set_user_keep_recent_tokens(config.context_keep);
+        // reasoning efforts already fetched unconditionally at boot (see above).
         if crate::setup::get_user_context_window().is_none() {
             tokio::spawn(crate::setup::fetch_litellm_context_windows());
-            tokio::spawn(crate::setup::fetch_models_dev_context());
             if let Some(m) = config.model.clone()
                 && crate::setup::get_cached_model_context(&m).is_none()
             {
@@ -799,5 +803,31 @@ mod ctrl_c_policy_tests {
         assert!(sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS));
         // Clock skew backwards → wrapping_sub is huge → false.
         assert!(!sigint_should_exit(2_000, 1_000));
+    }
+
+    #[test]
+    fn totals_sum_durations_and_skip_untimed() {
+        let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+            entry_id: id,
+            parent_id: None,
+            timestamp: 0,
+            message: gray_core::message::Message::user("hi"),
+            usage: Some(gray_core::event::Usage::new(10, 5)),
+            duration_ms,
+        };
+        let entries = vec![entry(0, Some(6000)), entry(1, Some(4000)), entry(2, None)];
+        let t = super::SessionTotals::from_entries(&entries, "test-persist-model");
+        assert_eq!(t.turns, 3);
+        assert_eq!(t.total_duration_ms, 10_000);
+        assert_eq!(t.timed_turns, 2);
+    }
+
+    #[test]
+    fn turn_footer_includes_duration_when_known() {
+        let usage = gray_core::event::Usage::new(1000, 500);
+        let totals = super::SessionTotals::default();
+        let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
+        assert!(line.contains("6.5s"), "footer should show time: {line}");
+        assert!(line.contains("tok"), "footer should keep tokens: {line}");
     }
 }
