@@ -819,10 +819,12 @@ mod tests {
             .expect("task just started");
         // The pump creates the log file asynchronously; wait for the echo
         // to land (CI runners are slow) so the append below can't lose a
-        // creation race.
+        // creation race. tokio sleep (not thread sleep): this suite runs on
+        // tokio's current_thread runtime, where blocking the thread would
+        // starve the very pump future we're waiting for.
         let mut waited = 0;
         while !info.log_path.exists() && waited < 100 {
-            std::thread::sleep(Duration::from_millis(20));
+            tokio::time::sleep(Duration::from_millis(20)).await;
             waited += 1;
         }
         assert!(info.log_path.exists(), "pump never created log file");
