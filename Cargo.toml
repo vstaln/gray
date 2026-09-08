@@ -4,6 +4,7 @@ members = [
     "crates/gray",
     "crates/gray-acp",
     "crates/gray-core",
+    "crates/gray-cron",
     "crates/gray-extras",
     "crates/gray-gateway",
     "crates/gray-markdown",
