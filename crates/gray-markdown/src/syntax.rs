@@ -28,6 +28,7 @@ impl Syntect {
     ///
     /// The theme bytes should be a TextMate `.tmTheme` file.
     /// Uses two-face's extended syntax set with 250+ languages.
+    /// A corrupt theme falls back to the default theme instead of panicking.
     ///
     /// # Example
     ///
@@ -36,7 +37,8 @@ impl Syntect {
     /// ```
     pub fn new(theme_bytes: &[u8]) -> Self {
         let mut cursor = Cursor::new(theme_bytes);
-        let theme = ThemeSet::load_from_reader(&mut cursor).expect("Failed to load theme");
+        let theme = ThemeSet::load_from_reader(&mut cursor)
+            .unwrap_or_else(|_| Self::default().theme);
         // Use two-face's extended syntax set which includes 250+ languages from bat
         let syntax_set = two_face::syntax::extra_newlines();
         Self { theme, syntax_set }

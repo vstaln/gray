@@ -5,7 +5,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
-use super::{PANEL_ROWS, Tui};
+use super::{MIN_VIEWPORT_H, PANEL_ROWS, Tui, VIEWPORT_H};
 
 mod widgets;
 
@@ -57,6 +57,44 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         0
     };
 
+    // Exact-fit viewport: grow/shrink to content so the completion panel
+    // has room (avail > 0). Without this the fixed MIN_VIEWPORT_H viewport
+    // leaves avail == 0 and visible_count == 0, so `/co` rows never paint.
+    // Shrink is two-phase: paint small content into the outgoing viewport
+    // (surplus rows Cleared) before recreating the smaller Inline viewport,
+    // so closing the popup abandons blanks, not ghost matches.
+    let mut shrink_to: Option<u16> = None;
+    {
+        let n = tui.queued_inputs.len();
+        let queued_est: u16 = if question_active || n == 0 {
+            0
+        } else {
+            1 + n.min(3) as u16 + u16::from(n > 3)
+        };
+        let panel_est: u16 = if question_active {
+            PANEL_ROWS as u16
+        } else {
+            tui.matches.len().min(PANEL_ROWS) as u16
+        };
+        let box_rows_est: u16 = if question_active { 0 } else { box_h };
+        let desired =
+            (status_h + queued_est + box_rows_est + panel_est + attach_h + 1)
+                .clamp(MIN_VIEWPORT_H, VIEWPORT_H);
+        if desired > tui.viewport_h
+            && let Ok(term) = ratatui::Terminal::with_options(
+                ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+                ratatui::TerminalOptions {
+                    viewport: ratatui::Viewport::Inline(desired),
+                },
+            )
+        {
+            tui.terminal = term;
+            tui.viewport_h = desired;
+        } else if desired < tui.viewport_h {
+            shrink_to = Some(desired);
+        }
+    }
+
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
     // Terminals without support ignore the sequence.
@@ -64,7 +102,10 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         std::io::stdout(),
         crossterm::terminal::BeginSynchronizedUpdate
     )?;
-    let res = tui.terminal.draw(|frame| {
+    // Shrink pass 1 paints into the outgoing (larger) viewport; pass 2
+    // repaints the shrunken one.
+    let res: std::io::Result<()> = loop {
+        let pass = tui.terminal.draw(|frame| {
         let area = frame.area();
         let w = area.width as usize;
 
@@ -180,7 +221,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         if rendered_box_h > 0 && !question_active {
             let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
             frame.render_widget(
-                Paragraph::new(ibox.lines).block(box_block),
+                Paragraph::new(ibox.lines.clone()).block(box_block),
                 Rect::new(area.x, box_y, area.width, rendered_box_h),
             );
         }
@@ -188,13 +229,26 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         if let Some(qlines) = &question_lines
             && visible_count > 0
         {
+            // ponytail: clipped option window shows a count, no extra row.
+            let q_hidden = (need as usize).saturating_sub(visible_count);
             for (i, line) in qlines.iter().enumerate().take(visible_count) {
                 let item_y = panel_y + i as u16;
                 if item_y < area.y || item_y >= area.y + area.height {
                     continue;
                 }
+                let is_last = i + 1 == visible_count;
+                let rendered: Line<'static> = if is_last && q_hidden > 0 {
+                    Line::from(vec![Span::styled(
+                        format!(" … ↓ +{} more", q_hidden),
+                        Style::default()
+                            .fg(Color::Rgb(140, 140, 140))
+                            .bg(Color::Rgb(22, 22, 22)),
+                    )])
+                } else {
+                    line.clone()
+                };
                 frame.render_widget(
-                    Paragraph::new(line.clone())
+                    Paragraph::new(rendered)
                         .block(Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)))),
                     Rect::new(area.x, item_y, area.width, 1),
                 );
@@ -224,6 +278,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 .sel
                 .saturating_sub(visible_count.saturating_sub(1))
                 .min(tui.sel);
+            // Scroll indicator: the window clips when the list is longer
+            // than the cap — arrows at the clipped edge(s).
+            let total = tui.matches.len();
+            let end = (start + visible_count).min(total);
+            let hidden_above = start;
+            let hidden_below = total.saturating_sub(end);
             for (i, (name, desc)) in tui
                 .matches
                 .iter()
@@ -240,11 +300,32 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 let cmd_str = format!(" /{name} ");
                 let desc_str = format!(" {desc} ");
                 let used_len = cmd_str.chars().count() + desc_str.chars().count();
-                let pad_len = w.saturating_sub(used_len);
+                // ponytail: single-char edge arrows, no extra row or layout.
+                let marker = match (
+                    i == start && hidden_above > 0,
+                    i + 1 == end && hidden_below > 0,
+                ) {
+                    (true, true) => "↕",
+                    (true, false) => "↑",
+                    (false, true) => "↓",
+                    (false, false) => "",
+                };
+                let pad_len = w.saturating_sub(used_len + marker.chars().count());
                 let line_bg = if is_sel {
                     Color::Rgb(246, 173, 126)
                 } else {
                     Color::Rgb(28, 28, 28)
+                };
+                let marker_style = if is_sel {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(line_bg)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::White)
+                        .bg(line_bg)
+                        .add_modifier(Modifier::BOLD)
                 };
                 let line = if is_sel {
                     Line::from(vec![
@@ -260,6 +341,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                             Style::default().fg(Color::Rgb(40, 40, 40)).bg(line_bg),
                         ),
                         Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
+                        Span::styled(marker.to_string(), marker_style),
                     ])
                 } else {
                     Line::from(vec![
@@ -275,6 +357,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                             Style::default().fg(Color::Rgb(140, 140, 140)).bg(line_bg),
                         ),
                         Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
+                        Span::styled(marker.to_string(), marker_style),
                     ])
                 };
                 frame.render_widget(
@@ -334,8 +417,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // says this model doesn't reason. Unknown → show, as before.
         let show_effort =
             crate::setup::context::model_supports_reasoning(&tui.model_name) != Some(false);
+        // `off` already implies hidden — don't render "off · hidden".
+        // Non-reasoning models (show_effort false) render no badge; the
+        // separator is omitted with it so the footer never trails " · ".
         let effort_display = if !show_effort {
             String::new()
+        } else if tui.thinking_effort == "off" {
+            "off".to_string()
         } else if tui.hide_thinking {
             if tui.thinking_effort.is_empty() {
                 "hidden".to_string()
@@ -352,9 +440,18 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 _ => None,
             };
             let mut v = if model_display.is_empty() {
+                if effort_display.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![Span::styled(
+                        effort_display.clone(),
+                        Style::default().fg(Color::Rgb(108, 108, 108)),
+                    )]
+                }
+            } else if effort_display.is_empty() {
                 vec![Span::styled(
-                    effort_display.clone(),
-                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                    model_display.clone(),
+                    Style::default().fg(Color::Rgb(140, 140, 140)),
                 )]
             } else {
                 vec![
@@ -378,6 +475,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let (right_parts, badge_len) = right_parts;
         let right_len = if model_display.is_empty() {
             effort_display.chars().count() + badge_len
+        } else if effort_display.is_empty() {
+            model_display.chars().count() + badge_len
         } else {
             model_display.chars().count() + 3 + effort_display.chars().count() + badge_len
         };
@@ -428,7 +527,25 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         }
-    });
+        })
+        .map(|_| ());
+        let Some(target) = shrink_to.take() else {
+            break pass;
+        };
+        // Pass 1 parked the cursor on the input row with the surplus already
+        // cleared, so this shrink abandons only blank rows — then repaint.
+        if let Ok(term) = ratatui::Terminal::with_options(
+            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
+            ratatui::TerminalOptions {
+                viewport: ratatui::Viewport::Inline(target),
+            },
+        ) {
+            tui.terminal = term;
+            tui.viewport_h = target;
+        } else {
+            break pass;
+        }
+    };
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EndSynchronizedUpdate

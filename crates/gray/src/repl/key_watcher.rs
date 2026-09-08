@@ -4,6 +4,20 @@ type Cancel = tokio_util::sync::CancellationToken;
 type Stop = std::sync::Arc<std::sync::atomic::AtomicBool>;
 type TuiOpt = Option<crate::composer::SharedTui>;
 
+/// Non-blocking TUI lock that survives a poisoned mutex: a panic elsewhere
+/// must not permanently wedge the watcher (question overlay / typing dead).
+/// `WouldBlock` still yields `None` (skip this tick). Ctrl-C/Esc paths never
+/// touch the lock, so a bad mutex can never swallow a cancel.
+fn try_lock_tui<T>(
+    shared: &std::sync::Arc<std::sync::Mutex<T>>,
+) -> Option<std::sync::MutexGuard<'_, T>> {
+    match shared.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+    }
+}
+
 /// Brief 3B: any keystroke while a turn runs wakes a sleeping agent early
 /// (250 ms coalesced inside the registry; fire-and-forget here).
 fn poke_shell_sleep() {
@@ -31,7 +45,7 @@ pub(crate) fn spawn_key_watcher(
             };
             if let Event::Resize(cols, _) = event {
                 if let Some(shared) = watcher_tui.as_ref()
-                    && let Ok(mut t) = shared.try_lock()
+                    && let Some(mut t) = try_lock_tui(shared)
                 {
                     t.pending_resize = Some((
                         cols,
@@ -56,7 +70,7 @@ pub(crate) fn spawn_key_watcher(
                 }
                 // request_user_input overlay owns the keyboard while active
                 if let Some(shared) = watcher_tui.as_ref()
-                    && let Ok(mut t) = shared.try_lock()
+                    && let Some(mut t) = try_lock_tui(shared)
                     && t.active_question.is_some()
                 {
                     crate::composer::handle_question_key(&mut t, code, modifiers);
@@ -94,7 +108,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
             match event {
                 Event::Resize(cols, _) => {
                     if let Some(shared) = watcher_tui.as_ref()
-                        && let Ok(mut t) = shared.try_lock()
+                        && let Some(mut t) = try_lock_tui(shared)
                     {
                         t.pending_resize = Some((
                             cols,
@@ -118,7 +132,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     }
                     // request_user_input overlay owns the keyboard while active
                     if let Some(shared) = watcher_tui.as_ref()
-                        && let Ok(mut t) = shared.try_lock()
+                        && let Some(mut t) = try_lock_tui(shared)
                         && t.active_question.is_some()
                     {
                         crate::composer::handle_question_key(&mut t, code, modifiers);
@@ -130,7 +144,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     // else plain cancel.
                     if code == KeyCode::Esc {
                         if let Some(shared) = watcher_tui.as_ref()
-                            && let Ok(mut t) = shared.try_lock()
+                            && let Some(mut t) = try_lock_tui(shared)
                         {
                             if !t.matches.is_empty() {
                                 t.matches.clear();
@@ -166,7 +180,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     // loop) without cancelling the turn.
                     if code == KeyCode::BackTab {
                         if let Some(shared) = watcher_tui.as_ref()
-                            && let Ok(mut t) = shared.try_lock()
+                            && let Some(mut t) = try_lock_tui(shared)
                         {
                             let cur = t.permission_mode().to_string();
                             let next = crate::composer::input::next_permission_mode(&cur);
@@ -180,7 +194,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     let Some(shared) = watcher_tui.as_ref() else {
                         continue;
                     };
-                    let Ok(mut t) = shared.try_lock() else {
+                    let Some(mut t) = try_lock_tui(shared) else {
                         continue;
                     };
                     if !t.is_task_running {
@@ -515,7 +529,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     let Some(shared) = watcher_tui.as_ref() else {
                         continue;
                     };
-                    let Ok(mut t) = shared.try_lock() else {
+                    let Some(mut t) = try_lock_tui(shared) else {
                         continue;
                     };
                     if !t.is_task_running {
@@ -534,4 +548,44 @@ pub(crate) fn spawn_key_watcher_with_typing(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::try_lock_tui;
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn try_lock_recovers_poisoned_mutex() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(1u32));
+        let clone = m.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = clone.lock().unwrap();
+            panic!("poison the mutex");
+        }));
+        // Poisoned: still usable, value preserved.
+        let g = try_lock_tui(&m).expect("poisoned mutex must recover");
+        assert_eq!(*g, 1u32);
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn try_lock_skips_contended_mutex() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(0u32));
+        let _held = m.lock().unwrap();
+        std::thread::scope(|s| {
+            let got = s
+                .spawn(|| try_lock_tui(&m).is_some())
+                .join()
+                .expect("thread joins");
+            assert!(!got, "contended lock must skip, never block");
+        });
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    #[test]
+    fn try_lock_happy_path() {
+        let m = std::sync::Arc::new(std::sync::Mutex::new(7u32));
+        assert_eq!(*try_lock_tui(&m).expect("uncontended lock"), 7u32);
+    }
 }

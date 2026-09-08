@@ -167,7 +167,7 @@ pub(crate) async fn handle_sys(
                 tui,
                 &format!("✓ system prompt restored to default ({})", path.display()),
             );
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
         }
         SysAction::Edit => {
             // Make sure the file exists before opening an editor on it.
@@ -187,7 +187,7 @@ pub(crate) async fn handle_sys(
                             tui,
                             "✓ system prompt saved — applies from your next message",
                         );
-                        reload_agent(agent, config, cwd, session_id).await;
+                        reload_agent(agent, config, cwd, session_id, tui).await;
                     }
                     Ok(None) => say(tui, "prompt unchanged"),
                     Err(e) => say(tui, &format!("editor error: {e}")),
@@ -228,7 +228,7 @@ pub(crate) async fn handle_sys(
                         tui,
                         "✓ system prompt saved — applies from your next message",
                     );
-                    reload_agent(agent, config, cwd, session_id).await;
+                    reload_agent(agent, config, cwd, session_id, tui).await;
                 }
                 Ok(None) => {
                     say(tui, "prompt unchanged");
@@ -244,17 +244,19 @@ pub(crate) async fn handle_sys(
 /// Rebuilds the agent after a system-prompt change, preserving conversation history.
 /// `session_id` pins the Responses `prompt_cache_key` shard: rebuilding with
 /// `None` would rotate the shard mid-session and bust prefix-cache hits.
+/// Build failures render via `say()` (never raw `println!` over the live viewport).
 pub(crate) async fn reload_agent(
     agent: &mut Option<Agent>,
     config: &Config,
     cwd: &Path,
     session_id: Option<&str>,
+    tui: Option<&crate::composer::SharedTui>,
 ) {
     let old = agent.take();
     let mut rebuilt = match build_agent(config, cwd, session_id).await {
         Ok(a) => a,
         Err(e) => {
-            println!("{e}");
+            say(tui, &format!("{e}"));
             *agent = old;
             return;
         }
@@ -308,7 +310,7 @@ pub(crate) async fn handle_model(
                 crate::setup::fetch_live_provider_models(&base, key.as_deref());
             });
         }
-        reload_agent(agent, config, cwd, session_id).await;
+        reload_agent(agent, config, cwd, session_id, tui).await;
         return;
     }
 
@@ -335,7 +337,7 @@ pub(crate) async fn handle_model(
                     crate::setup::fetch_live_provider_models(&base, key.as_deref());
                 });
             }
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
             if let Some(shared) = tui {
@@ -398,7 +400,7 @@ pub(crate) async fn handle_thinking(
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
             }
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
             return;
         }
         let msg = format!(
@@ -430,7 +432,7 @@ pub(crate) async fn handle_thinking(
                 }
                 let _ = t.draw();
             }
-            reload_agent(agent, config, cwd, session_id).await;
+            reload_agent(agent, config, cwd, session_id, tui).await;
         }
         Ok(false) => {
             if !has_explicit_level {
@@ -481,5 +483,38 @@ pub(crate) async fn handle_thinking(
                 println!("effort error: {e}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // reload_agent with no model configured fails soft through say()
+    // (headless println path) and preserves the previous agent.
+    #[tokio::test]
+    async fn reload_agent_failure_preserves_agent() {
+        let config = Config {
+            model: None,
+            base_url: String::new(),
+            api_key: None,
+            thinking_effort: None,
+            show_reasoning: None,
+            context_window: None,
+            context_reserve: None,
+            context_keep: None,
+            permissions: None,
+        };
+        let mut agent: Option<Agent> = None;
+        reload_agent(
+            &mut agent,
+            &config,
+            std::path::Path::new("/tmp"),
+            None,
+            None,
+        )
+        .await;
+        assert!(agent.is_none());
     }
 }

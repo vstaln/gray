@@ -264,6 +264,7 @@ pub(crate) async fn dispatch_command(
                         config,
                         cwd,
                         session_state.as_ref().map(|s| s.session_id.as_str()),
+                        tui.as_ref().map(|(s, _)| s),
                     )
                     .await;
                 }

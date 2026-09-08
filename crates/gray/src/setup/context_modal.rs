@@ -138,7 +138,7 @@ pub fn run_context_modal(
 
             terminal.draw(|frame| {
                 let area = frame.area();
-                if area.width < 40 || area.height < 20 {
+                if area.width < 20 || area.height < 6 {
                     return;
                 }
                 render_dimmed_background(frame, &bg_snapshot);
