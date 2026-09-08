@@ -1310,9 +1310,7 @@ pub(crate) fn classify_http_error(
         "gousagelimiterror",
         "available balance",
     ];
-    let quota_exhausted = QUOTA_EXHAUSTED_HINTS
-        .iter()
-        .any(|h| lower.contains(h));
+    let quota_exhausted = QUOTA_EXHAUSTED_HINTS.iter().any(|h| lower.contains(h));
     match status.as_u16() {
         401 | 403 => ProviderError::Auth(msg),
         // 402 is definitionally billing; a 429 naming quota exhaustion is not
@@ -1426,10 +1424,7 @@ fn parse_http_date_delay(raw: &str) -> Option<Duration> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
     let target = days * 86400 + hour as i64 * 3600 + min as i64 * 60 + sec as i64;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
     Some(Duration::from_secs((target - now).max(0) as u64))
 }
 
@@ -3522,7 +3517,10 @@ mod tests {
                 "quota 429 must surface as terminal Auth: {body} -> {err}"
             );
             assert!(!is_retryable_error(&err), "must not fast-retry: {body}");
-            assert!(!err.should_compress(), "compaction cannot fix billing: {body}");
+            assert!(
+                !err.should_compress(),
+                "compaction cannot fix billing: {body}"
+            );
         }
     }
 
@@ -3605,10 +3603,7 @@ mod tests {
             Some(Duration::ZERO),
             "past HTTP-date means now"
         );
-        headers.insert(
-            reqwest::header::RETRY_AFTER,
-            "not-a-date".parse().unwrap(),
-        );
+        headers.insert(reqwest::header::RETRY_AFTER, "not-a-date".parse().unwrap());
         assert_eq!(parse_retry_after(&headers), None, "garbage stays None");
         // Millis wins when both headers are present (more precise).
         headers.insert(reqwest::header::RETRY_AFTER, "45".parse().unwrap());
@@ -3629,14 +3624,27 @@ mod tests {
         let snippet = |body: &str| -> String { body.chars().take(4000).collect() };
         let pad = "x".repeat(600);
         let body = format!("{pad} insufficient_quota: billing exhausted");
-        let err = classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, &snippet(&body), None, None);
+        let err = classify_http_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &snippet(&body),
+            None,
+            None,
+        );
         assert!(
             matches!(err, ProviderError::Auth(_)),
             "late quota signal must surface: {err}"
         );
         let plain = format!("{pad} Rate limit reached, slow down");
-        let err = classify_http_error(reqwest::StatusCode::TOO_MANY_REQUESTS, &snippet(&plain), None, None);
-        assert!(matches!(err, ProviderError::RateLimited(_)), "long != quota: {err}");
+        let err = classify_http_error(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            &snippet(&plain),
+            None,
+            None,
+        );
+        assert!(
+            matches!(err, ProviderError::RateLimited(_)),
+            "long != quota: {err}"
+        );
     }
 
     // UNRUN (cargo test banned under X — verified via check + clippy only).
