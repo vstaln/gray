@@ -20,6 +20,7 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 use gray_markdown::HyperlinkTarget;
 
 pub(crate) const PANEL_ROWS: usize = 6;
+pub(crate) const VIEWPORT_H: u16 = 14;
 /// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
 /// bottom pad + context footer. No cleared slack below the footer.
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
@@ -85,7 +86,7 @@ pub struct Tui {
     pub(crate) live_streamed_tokens: usize,
     pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
-    /// content height (clamped to `MIN_VIEWPORT_H..`) so there is
+    /// content height (clamped to `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is
     /// never cleared slack below the footer; popups can grow it back up.
     pub(crate) viewport_h: u16,
     // request_user_input overlay (codex port) + late non-blocking answers

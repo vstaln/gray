@@ -29,6 +29,7 @@ pub(crate) static KILL_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Single raw-signal choke point (brief pitfall: mock behind a trait or
 /// cfg(test) hook — the counter is the hook; probes with sig 0 don't count).
 /// SAFETY: `kill(2)` is async-signal-safe; targets are validated by callers.
+#[cfg(unix)]
 unsafe fn signal_pid(target: i32, sig: i32) -> i32 {
     #[cfg(test)]
     if sig != 0 {
@@ -37,46 +38,73 @@ unsafe fn signal_pid(target: i32, sig: i32) -> i32 {
     unsafe { libc::kill(target, sig) }
 }
 
+/// Windows has no POSIX signals: every signal attempt fails (-1), so all
+/// callers fail closed via their existing error paths (never ESRCH).
+#[cfg(not(unix))]
+unsafe fn signal_pid(_target: i32, _sig: i32) -> i32 {
+    -1
+}
+
 /// True when no process answers at `target` (`kill(target, 0)` → ESRCH).
 /// Anything else (including EPERM) counts as alive — fail closed.
+/// Non-unix: no signal probe exists, so never report gone (fail closed).
+#[cfg_attr(not(unix), allow(dead_code))] // windows `escalate` stub never probes
 fn gone(target: i32) -> bool {
     if unsafe { signal_pid(target, 0) } == 0 {
         return false;
     }
-    io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    #[cfg(unix)]
+    {
+        io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Shared SIGTERM → 100 ms poll → SIGKILL escalation. `sig_target` is the
 /// `kill(2)` first arg (`-pgid` for our groups, `pid` for foreign singles).
 async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<KillMethod, String> {
-    let t0 = Instant::now();
-    if unsafe { signal_pid(sig_target, libc::SIGTERM) } != 0 {
-        let e = io::Error::last_os_error();
-        if e.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(KillMethod::AlreadyExited);
-        }
-        return Err(format!("SIGTERM to {what} failed: {e}"));
+    // Windows has no SIGTERM/SIGKILL escalation: refuse instead of signalling.
+    #[cfg(not(unix))]
+    {
+        let _ = (sig_target, grace);
+        return Err(format!(
+            "cannot signal {what}: POSIX signals are unavailable on Windows"
+        ));
     }
-    loop {
+    #[cfg(unix)]
+    {
+        let t0 = Instant::now();
+        if unsafe { signal_pid(sig_target, libc::SIGTERM) } != 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(KillMethod::AlreadyExited);
+            }
+            return Err(format!("SIGTERM to {what} failed: {e}"));
+        }
+        loop {
+            if gone(sig_target) {
+                return Ok(KillMethod::TermAnswered(t0.elapsed()));
+            }
+            if t0.elapsed() >= grace {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         if gone(sig_target) {
             return Ok(KillMethod::TermAnswered(t0.elapsed()));
         }
-        if t0.elapsed() >= grace {
-            break;
+        if unsafe { signal_pid(sig_target, libc::SIGKILL) } != 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(KillMethod::TermAnswered(t0.elapsed()));
+            }
+            return Err(format!("SIGKILL to {what} failed: {e}"));
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok(KillMethod::TermIgnoredThenKill(grace))
     }
-    if gone(sig_target) {
-        return Ok(KillMethod::TermAnswered(t0.elapsed()));
-    }
-    if unsafe { signal_pid(sig_target, libc::SIGKILL) } != 0 {
-        let e = io::Error::last_os_error();
-        if e.raw_os_error() == Some(libc::ESRCH) {
-            return Ok(KillMethod::TermAnswered(t0.elapsed()));
-        }
-        return Err(format!("SIGKILL to {what} failed: {e}"));
-    }
-    Ok(KillMethod::TermIgnoredThenKill(grace))
 }
 
 /// SIGTERM a group we created, SIGKILL after `grace` when ignored.
@@ -92,6 +120,7 @@ pub async fn term_then_kill(pgid: i32, grace: Duration) -> Result<KillMethod, St
     if pgid == me {
         return Err(format!("refusing to signal our own pid ({me})"));
     }
+    #[cfg(unix)]
     if pgid == unsafe { libc::getpgrp() } {
         return Err(format!("refusing to signal our own process group ({pgid})"));
     }
@@ -380,7 +409,7 @@ async fn wait_exit(session: &str, id: TaskId) -> Option<ExitReport> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))] // signal/sh/sleep/lsof fixtures are unix-only (T3 windows gate)
 #[allow(clippy::await_holding_lock)] // KILL_SERIAL is test-only serialization; holding it across await is its job
 mod tests {
     use super::*;

@@ -31,7 +31,7 @@ pub(crate) use gray_core::tool_out::{
 use serde_json::Value;
 
 pub use edit::EditTool;
-pub use find::FindTool;
+pub use find::{FindTool, GlobTool};
 pub use grep::GrepTool;
 pub use ledger::{FileLedger, LedgerEntry};
 pub use ls::LsTool;
@@ -66,6 +66,7 @@ impl Registry {
             Arc::new(RequestUserInputTool),
             Arc::new(GrepTool),
             Arc::new(FindTool),
+            Arc::new(GlobTool),
             Arc::new(LsTool),
         ]);
         out.file_ledger = ledger;

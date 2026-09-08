@@ -77,6 +77,9 @@ pub fn mask_key_pretty(key: &str) -> String {
 }
 
 /// On-disk configuration, kept deliberately tiny.
+/// Default-tolerant on purpose: every field is optional and unknown fields
+/// are ignored so known fields survive hand-edits — never add
+/// `deny_unknown_fields` here (it would drop the whole file on one typo).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,11 +145,72 @@ pub fn saved_config_path() -> anyhow::Result<PathBuf> {
 }
 
 /// Loads the saved config; a missing file yields an all-None struct.
+/// A corrupt file warns loudly (file + serde line/column) and falls back to
+/// defaults — or to the surviving fields when a single value is mistyped.
 pub fn load_saved_config_at(path: &Path) -> SavedConfig {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    let body = match std::fs::read_to_string(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return SavedConfig::default(),
+        Err(e) => {
+            warn_bad_config(path, &format!("cannot read ({e:#})"));
+            return SavedConfig::default();
+        }
+    };
+    match serde_json::from_str::<SavedConfig>(&body) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            // One mistyped value must not drop the whole file (e.g. model):
+            // retry field-by-field so known-good fields survive.
+            let recovered = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+                .map(|obj| partial_saved_config(&obj))
+                .unwrap_or_default();
+            warn_bad_config(path, &e.to_string());
+            recovered
+        }
+    }
+}
+
+/// Visible warning for a bad config file: stderr (immediate) + log
+/// (existing `gray_config` target, cf. `Config::resolve`).
+fn warn_bad_config(path: &Path, detail: &dyn std::fmt::Display) {
+    let msg = format!(
+        "cannot load {} config ({}); using defaults",
+        path.display(),
+        detail
+    );
+    eprintln!("warning: {msg}");
+    log::warn!(target: "gray_config", "{msg}");
+}
+
+/// Per-field tolerant parse: unknown fields ignored, mistyped values become
+/// None instead of nuking the whole file.
+fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> SavedConfig {
+    SavedConfig {
+        base_url: opt_field(obj, "base_url"),
+        api_key: opt_field(obj, "api_key"),
+        model: opt_field(obj, "model"),
+        auth_mode: opt_field(obj, "auth_mode"),
+        thinking_effort: opt_field(obj, "thinking_effort"),
+        show_reasoning: opt_field(obj, "show_reasoning"),
+        context_window: opt_field(obj, "context_window"),
+        context_reserve: opt_field(obj, "context_reserve"),
+        context_keep: opt_field(obj, "context_keep"),
+        permissions: opt_field(obj, "permissions"),
+    }
+}
+
+fn opt_field<T>(obj: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<T>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    match obj.get(key) {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => serde_json::from_value::<Option<T>>(v.clone())
+            .ok()
+            .flatten(),
+    }
 }
 
 /// Writes the config pretty-printed so users can hand-edit it too.
@@ -467,5 +531,42 @@ mod tests {
             .collect();
         assert_eq!(keys.get("openrouter").map(String::as_str), Some("sk-or-1"));
         assert!(!keys.contains_key("xai"));
+    }
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn mistyped_field_preserves_known_fields() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"model":"anthropic/claude","context_window":"not-a-number","base_url":"https://x"}"#,
+        )
+        .expect("write");
+        let cfg = load_saved_config_at(&path);
+        assert_eq!(cfg.model.as_deref(), Some("anthropic/claude"));
+        assert_eq!(cfg.base_url.as_deref(), Some("https://x"));
+        assert_eq!(cfg.context_window, None);
+    }
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn unknown_fields_are_ignored() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, r#"{"model":"m","bogus_field":123}"#).expect("write");
+        let cfg = load_saved_config_at(&path);
+        assert_eq!(cfg.model.as_deref(), Some("m"));
+    }
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn bad_json_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{bad json").expect("write");
+        let cfg = load_saved_config_at(&path);
+        assert_eq!(cfg.model, None);
+        assert_eq!(cfg.base_url, None);
     }
 }

@@ -25,6 +25,18 @@ pub(crate) use rows::{
 // ---------------------------------------------------------------------------
 // Tui transcript methods (batch insert_before)
 // ---------------------------------------------------------------------------
+/// Bounds `history_entries` with the same oldest-first policy as the
+/// `transcript` `> 1000 / drain 0..100` guards: without this, long sessions
+/// grow the vec without bound. `reflow_on_resize` just re-emits whatever
+/// remains (eviction only shortens resize scrollback, like the transcript
+/// cap) and `replay_session_history` reads `SessionEntry`s, not this vec,
+/// so resume is unaffected.
+pub(crate) fn cap_history_entries(entries: &mut Vec<super::TranscriptEntry>) {
+    if entries.len() > 1000 {
+        entries.drain(0..100);
+    }
+}
+
 impl Tui {
     pub(crate) fn ensure_gap(&mut self, n: usize) {
         let trailing = self
@@ -49,6 +61,7 @@ impl Tui {
         });
         self.history_entries.push(super::TranscriptEntry::Gap(need));
         self.transcript.extend(lines);
+        cap_history_entries(&mut self.history_entries);
     }
 
     pub fn stream(&mut self, chunk: &str) {
@@ -216,6 +229,7 @@ impl Tui {
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
+        cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }
 }
@@ -384,5 +398,28 @@ mod tests {
             assert!(r.start >= prev_end, "ranges ascend without overlap");
             prev_end = r.end;
         }
+    }
+
+    // UNRUN (cargo test banned in X session; run in TTY/CI): over-cap push
+    // evicts oldest-first, mirroring the transcript >1000/drain-100 guard.
+    #[test]
+    fn history_entries_cap_evicts_oldest_first_unrun() {
+        let mut entries: Vec<crate::composer::TranscriptEntry> =
+            (0..1001).map(crate::composer::TranscriptEntry::Gap).collect();
+        cap_history_entries(&mut entries);
+        assert_eq!(entries.len(), 901);
+        match &entries[0] {
+            crate::composer::TranscriptEntry::Gap(n) => assert_eq!(*n, 100),
+            other => panic!("must drop gaps 0..100 oldest-first, got {other:?}"),
+        }
+    }
+
+    // UNRUN (cargo test banned in X session; run in TTY/CI): at-cap is a no-op.
+    #[test]
+    fn history_entries_cap_keeps_at_most_1000_unrun() {
+        let mut entries: Vec<crate::composer::TranscriptEntry> =
+            (0..1000).map(crate::composer::TranscriptEntry::Gap).collect();
+        cap_history_entries(&mut entries);
+        assert_eq!(entries.len(), 1000);
     }
 }
