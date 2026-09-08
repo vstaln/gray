@@ -80,6 +80,18 @@ pub(crate) async fn run_prompt_turn(
                 }
             }
         }
+        // Fresh sessions built the provider with session None (per-process
+        // fallback cache shard) and minted the real SessionId only after the
+        // first turn — the reused agent then sat on the fallback shard all
+        // session. Ensure the real sid BEFORE the first build so the provider
+        // gets it from turn one. Gated on model so the no-model REPL still
+        // opens session-free (lazy build).
+        if super::session::should_ensure_session_before_build(
+            session_state.is_some(),
+            config.model.as_deref(),
+        ) {
+            super::session::ensure_session_state(session_state, config, cwd).await;
+        }
         let sid = session_state
             .as_ref()
             .map(|s| s.session_id.as_str().to_string());
@@ -100,12 +112,18 @@ pub(crate) async fn run_prompt_turn(
                 }
             }
             Err(e) => {
-                println!("{e}");
-                if let Some(s) = &tui_stream {
-                    let mut t = s.lock().expect("tui lock");
-                    t.set_status(None);
-                    t.is_task_running = false;
-                    let _ = t.draw();
+                if tui_stream.is_some() {
+                    // Live viewport: never raw println! over it (ghost input
+                    // on the next draw) — render through the composer.
+                    say(tui_stream.as_ref(), &format!("{e}"));
+                    if let Some(s) = &tui_stream {
+                        let mut t = s.lock().unwrap_or_else(|e| e.into_inner());
+                        t.set_status(None);
+                        t.is_task_running = false;
+                        let _ = t.draw();
+                    }
+                } else {
+                    println!("{e}");
                 }
                 return Ok(());
             }
@@ -113,7 +131,7 @@ pub(crate) async fn run_prompt_turn(
     }
     let agent = agent.as_mut().expect("agent built above");
     let cancel = tokio_util::sync::CancellationToken::new();
-    *TURN_STATE.lock().expect("turn state lock") = Some(cancel.clone());
+    *TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(cancel.clone());
     let ctx = ToolContext {
         cwd: cwd.to_path_buf(),
         cancel: cancel.clone(),
@@ -242,7 +260,7 @@ pub(crate) async fn run_prompt_turn(
             run_result = retry_res;
         }
     }
-    TURN_STATE.lock().expect("turn state lock").take();
+    TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
     // signal the watcher to exit; it dies within one 100ms tick.
     // (Never .await it here without the flag — deadlock.)
     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -338,4 +356,21 @@ pub(crate) async fn run_prompt_turn(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // Guards the exact TURN_STATE idiom used above: a poisoned turn-state
+    // mutex must recover, never panic the REPL.
+    #[test]
+    fn turn_state_lock_survives_poison() {
+        let m = std::sync::Mutex::new(Some(tokio_util::sync::CancellationToken::new()));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = m.lock().unwrap();
+            panic!("poison the mutex");
+        }));
+        *m.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        assert!(m.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+    }
 }

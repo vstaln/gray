@@ -194,9 +194,33 @@ pub fn resume_command_hint(id: &SessionId) -> String {
     format!("gray resume {}", id.as_str())
 }
 
+fn quarantined_file_name(root: &Path, raw: &str) -> Option<String> {
+    let needle = raw.trim();
+    if needle.is_empty() {
+        return None;
+    }
+    let exact = format!("{needle}.corrupt-");
+    let mut prefix_hit = None;
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(&exact) {
+            return Some(name);
+        }
+        if prefix_hit.is_none()
+            && let Some((stem, _)) = name.split_once(".corrupt-")
+            && stem.starts_with(needle)
+        {
+            prefix_hit = Some(name);
+        }
+    }
+    prefix_hit
+}
+
 /// Strict explicit-id resolution shared by `gray resume <id>` and `gray -p
 /// --session <id>`: prefix/exact match wins, else an exact load is attempted,
 /// else the same `no session matching` error both paths report (exit 1).
+/// A file `list()` already quarantined surfaces as the quarantined truth
+/// (`session corrupt, moved to .corrupt-N`), never masked as NotFound.
 pub async fn resolve_session_strict(
     store: &JsonlSessionStore,
     raw: &str,
@@ -207,7 +231,18 @@ pub async fn resolve_session_strict(
     }
     match store.load(&SessionId::new(raw)).await {
         Ok(_) => Ok(SessionId::new(raw)),
-        Err(e) => anyhow::bail!("no session matching '{raw}': {e}"),
+        Err(e) if matches!(e, gray_session::SessionError::Corrupt { .. }) => {
+            if let Some(q) = quarantined_file_name(store.root_dir(), raw) {
+                anyhow::bail!("session '{raw}' is corrupt (moved to {q}): {e}");
+            }
+            anyhow::bail!("session '{raw}' is corrupt: {e}");
+        }
+        Err(e) => {
+            if let Some(q) = quarantined_file_name(store.root_dir(), raw) {
+                anyhow::bail!("session '{raw}' is corrupt (moved to {q})");
+            }
+            anyhow::bail!("no session matching '{raw}': {e}");
+        }
     }
 }
 
@@ -268,7 +303,7 @@ pub async fn run_resume_picker(
     summaries.sort_by_key(|s| s.started_at);
     summaries.reverse();
     if summaries.is_empty() {
-        return Ok(None);
+        anyhow::bail!("no saved sessions");
     }
     run_picker_sync(summaries, show_all, bg)
 }

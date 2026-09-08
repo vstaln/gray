@@ -435,6 +435,7 @@ pub(crate) async fn handle_compact(
             config,
             cwd,
             session_state.as_ref().map(|s| s.session_id.as_str()),
+            tui,
         )
         .await;
     }

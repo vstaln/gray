@@ -111,6 +111,26 @@ fn arboard_text() -> Option<String> {
     None
 }
 
+/// Bound for one clipboard helper: `wl-paste` blocks until the compositor
+/// answers, which used to freeze the draw loop inside `Command::output`.
+const CLIPBOARD_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// `Command::output` on a spawned thread (`std::thread::spawn` + mpsc, same
+/// shape as the marketplace modal flights) with a bounded wait so a hung
+/// helper can't block the UI thread. `None` on spawn failure/timeout —
+/// same as the old blocking `.ok()?` path. The orphaned thread exits on
+/// its own when the helper does; its send then fails silently.
+fn output_with_timeout(full: &std::path::Path, args: &[String]) -> Option<std::process::Output> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let full = full.to_path_buf();
+    let args = args.to_owned();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&full).args(&args).output();
+        let _ = tx.send(out);
+    });
+    rx.recv_timeout(CLIPBOARD_CMD_TIMEOUT).ok()?.ok()
+}
+
 /// Reads OS clipboard text via native helpers found in `paths`. Hermetic
 /// (takes the PATH explicitly) so tests can point it at shim binaries.
 /// Executes the resolved full path — `Command::new(cmd)` would re-resolve
@@ -120,11 +140,8 @@ pub(crate) fn read_system_clipboard_text_with_paths(paths: &str) -> Option<Strin
         let Some(full) = resolve_in(&cmd, paths) else {
             continue;
         };
-        // ponytail: one spawn path; None on spawn failure/non-zero/blank.
-        let out = std::process::Command::new(&full)
-            .args(&args)
-            .output()
-            .ok()?;
+        // ponytail: one spawn path; None on spawn failure/timeout/non-zero/blank.
+        let out = output_with_timeout(&full, &args)?;
         if !out.status.success() {
             continue;
         }

@@ -1,24 +1,20 @@
-//! Headless markdown analysis sharing Grok Build's exact `pulldown-cmark` config.
+//! Shared `pulldown-cmark` parser configuration and strikethrough filter.
 //!
-//! This crate is intentionally lean -- it depends only on `pulldown-cmark` -- so it
-//! can be used without pulling in the terminal-rendering stack (syntect, ratatui,
-//! two-face). [`parser_options`] is the single source of truth for the parser
-//! feature set, shared with `xai-grok-markdown` so analysis matches what Grok
-//! Build actually renders 1:1.
-//!
-//! After parsing, Grok applies [`offset_events`]: only `~~…~~` is strikethrough.
-//! Single-tilde pairs (`~text~`) are demoted to literal `~` text so LLM output
-//! like `~**10%**` is not struck (pulldown treats those pairs as strike; we do not).
+//! [`offset_events`] is the single entry point for the parser event stream:
+//! the GFM + strikethrough + math + tasklist + table option set, with
+//! single-tilde pairs (`~text~`) demoted to literal `~` text so only
+//! `~~…~~` counts as strikethrough (LLM output like `~**10%**` must not
+//! strike).
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
 
-/// The exact `pulldown-cmark` option set Grok Build uses to render markdown.
+/// The `pulldown-cmark` option set used for both analysis and rendering.
 ///
-/// With `ENABLE_STRIKETHROUGH`, pulldown treats both `~~…~~` and single-`~` pairs as
-/// strike. Callers must consume events via [`offset_events`] so only double-tilde
-/// strikethrough is retained (LLM-friendly post-policy).
-pub fn parser_options() -> Options {
+/// With `ENABLE_STRIKETHROUGH`, pulldown treats both `~~…~~` and single-`~`
+/// pairs as strike. Events must be consumed via [`offset_events`] so only
+/// double-tilde strikethrough is retained.
+fn parser_options() -> Options {
     Options::ENABLE_GFM
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_MATH
@@ -26,7 +22,7 @@ pub fn parser_options() -> Options {
         | Options::ENABLE_TABLES
 }
 
-/// Offset event stream from Grok's parser, with single-tilde strikethrough demoted.
+/// Offset event stream with single-tilde strikethrough demoted.
 ///
 /// Prefer this over `Parser::new_ext(...).into_offset_iter()` so analysis and
 /// rendering agree on what counts as strikethrough.

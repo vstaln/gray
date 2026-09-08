@@ -28,8 +28,8 @@
 
 use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::{
-    LatexDelimiterNormalizer, MarkdownBuffers, MarkdownRenderOutput, MarkdownRenderView,
-    MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,
+    HyperlinkTarget, LatexDelimiterNormalizer, MarkdownBuffers, MarkdownRenderOutput,
+    MarkdownRenderView, MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,
 };
 
 /// Tracks the frozen state for truncation.
@@ -106,6 +106,21 @@ pub struct StreamingMarkdownRenderer {
     /// including inside table cells. Held-back ambiguous bytes (a partial
     /// delimiter at a chunk boundary) are flushed by `finish()`.
     normalizer: LatexDelimiterNormalizer,
+
+    /// Whether the current output was built with syntax highlighting.
+    ///
+    /// Threaded from the `syntect` argument of the last render
+    /// (`rerender_tail` and `finish()` are the only output builders).
+    /// `clone()` cannot take a `Syntect` parameter, so it replays the render
+    /// via `get_syntect()` when this is set — matching production, where
+    /// every render passes `Some(get_syntect())`.
+    highlighted: bool,
+
+    /// When the frozen boundary last advanced. Drives the age bound of
+    /// `should_force_checkpoint` (see `rerender_tail`): a tail that never
+    /// checkpoints is one long open block, and mid-block freezes stay
+    /// deferred until renderer resume support lands.
+    frozen_at: std::time::Instant,
 }
 
 impl std::fmt::Debug for StreamingMarkdownRenderer {
@@ -138,7 +153,16 @@ impl Clone for StreamingMarkdownRenderer {
         // suffix and make the clone's source diverge). Copy the normalizer
         // state separately so any held-back bytes survive the clone.
         new.push_normalized(&self.source);
-        new.render(None);
+        // Preserve highlight state: replay the render with `get_syntect()`
+        // when the original was highlighted instead of `None` — otherwise
+        // fenced code blocks lose their colors in the clone. (A custom-theme
+        // original still re-renders under the shared theme; output stays
+        // self-consistent. See the theme-stability note on `render()`.)
+        new.render(if self.highlighted {
+            Some(crate::get_syntect())
+        } else {
+            None
+        });
         new.normalizer = self.normalizer.clone();
         new
     }
@@ -158,6 +182,8 @@ impl StreamingMarkdownRenderer {
             collapse_soft_breaks: true,
             open_code: None,
             normalizer: LatexDelimiterNormalizer::new(),
+            highlighted: false,
+            frozen_at: std::time::Instant::now(),
         }
     }
 
@@ -256,6 +282,8 @@ impl StreamingMarkdownRenderer {
 
     /// Internal: render the unfrozen tail and update frozen state.
     fn rerender_tail(&mut self, syntect: Option<&Syntect>) {
+        // Thread highlight state for `clone()` (see field docs).
+        self.highlighted = syntect.is_some();
         // Truncate output to frozen state (discard stale tail)
         self.output.lines.truncate(self.frozen.lines_len);
         self.output.line_source_map.truncate(self.frozen.lines_len);
@@ -269,6 +297,10 @@ impl StreamingMarkdownRenderer {
         self.output
             .code_blocks
             .retain(|cb| cb.output_line_range.end <= self.frozen.lines_len);
+        // Frozen hyperlinks are `[..frozen_hyperlinks]` from here on: already
+        // sorted, all on lines `< frozen_lines`, so the tail sort below only
+        // needs to order the suffix (frozen < tail on the sort key's major).
+        let frozen_hyperlinks = self.output.hyperlinks.len();
 
         // Render the tail (unfrozen portion) using reusable buffers.
         // When the frozen source ends without a trailing newline (e.g., a
@@ -366,14 +398,30 @@ impl StreamingMarkdownRenderer {
         );
         self.output.hyperlinks.extend(file_links);
 
-        // Sort hyperlinks by (line_index, column_range.start) so downstream
-        // consumers (`map_hyperlinks_to_overlay`, link map builders) see a
-        // well-ordered list — matching the invariant `finish()` enforces.
-        self.output
-            .hyperlinks
+        // Sort only the tail's hyperlinks. The frozen prefix is already sorted
+        // and every frozen target sits on a line `< frozen_lines` while every
+        // tail target sits on `>= frozen_lines`, so two sorted runs concatenate
+        // into a globally sorted list — matching the invariant `finish()`
+        // enforces. Sorting the whole vec each pass was O(N log N)/pass.
+        self.output.hyperlinks[frozen_hyperlinks..]
             .sort_by_key(|h| (h.line_index, h.column_range.start));
-        // Make file/web links always underlined (cyan) no matter what
-        crate::url_scan::apply_link_styling(&mut self.output.lines, &self.output.hyperlinks);
+        // Style only tail lines: frozen lines were already styled when they
+        // were tail, and styling is per-line so the frozen prefix is unaffected
+        // by new tail links (links never cross a checkpoint block boundary).
+        // `patch_lines_with_link_style` indexes `lines` by absolute
+        // `line_index`, so rebase tail targets to the slice origin. Only the
+        // geometry fields are read — `url` stays empty to avoid cloning every
+        // URL string on each pass.
+        let tail_links: Vec<HyperlinkTarget> = self.output.hyperlinks[frozen_hyperlinks..]
+            .iter()
+            .map(|h| HyperlinkTarget {
+                line_index: h.line_index - frozen_lines,
+                column_range: h.column_range.clone(),
+                url: String::new(),
+                id: h.id,
+            })
+            .collect();
+        crate::url_scan::apply_link_styling(&mut self.output.lines[frozen_lines..], &tail_links);
 
         // If checkpoint found, update frozen state.
         // The checkpoint's source_bytes is relative to the tail we rendered,
@@ -385,6 +433,24 @@ impl StreamingMarkdownRenderer {
                 source_bytes: tail_start + cp.source_bytes,
                 next_link_id: post_scan_next_id,
             };
+            self.frozen_at = std::time::Instant::now();
+        } else if crate::checkpoint::should_force_checkpoint(
+            self.source.len().saturating_sub(tail_start),
+            self.output
+                .lines
+                .len()
+                .saturating_sub(self.frozen.lines_len),
+            self.frozen_at.elapsed(),
+        ) {
+            // Forced-checkpoint policy fired but the parser found no
+            // container-safe point: the whole tail is one long open block.
+            // CHOICE (documented in `checkpoint.rs`): freeze is DEFERRED.
+            // A tail starting mid-fence/list loses its container context, so
+            // naive freezing corrupts the streaming view until `finish()`
+            // heals it; true mid-block freezing waits on renderer resume
+            // support (which must also rebase `open_code`/`next_link_id`).
+            // The policy stays consulted every pass so the bounds go live
+            // the moment that support lands.
         }
     }
 
@@ -473,6 +539,8 @@ impl StreamingMarkdownRenderer {
         // complete, normalized source.
         let flushed = self.normalizer.finish();
         self.source.push_str(&flushed);
+        // Thread highlight state for `clone()` (see field docs).
+        self.highlighted = syntect.is_some();
 
         // Do a full re-render of the entire source, preserving max_table_width.
         let mut buffers = MarkdownBuffers::new();
@@ -523,6 +591,7 @@ impl StreamingMarkdownRenderer {
             source_bytes: self.source.len(),
             next_link_id: post_scan_next_id,
         };
+        self.frozen_at = std::time::Instant::now();
 
         // Streaming is over: release the highlighter caches (open-block state
         // + closed-fence memo) instead of retaining them for the lifetime of
@@ -636,5 +705,123 @@ mod streaming_torn_tests {
             })
             .expect("hyperlink over link text should survive torn chunk");
         assert_eq!(hit.column_range.len(), 5);
+    }
+
+    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
+    // (`cargo test` under X kills the session; see repo AGENTS.md.)
+    // Run: `cargo test -p gray-markdown tail_hyperlink -- --ignored`
+    //
+    // Regression test for tail-scoped hyperlink handling in `rerender_tail`:
+    // the global sort invariant must hold after every push and hyperlinks on
+    // frozen lines must only grow (never be reordered/restyled). Link ids are
+    // intentionally NOT compared: streaming interleaves parser/url_scan ids
+    // per tail while a one-shot render numbers all parser links first.
+    #[test]
+    #[ignore]
+    fn unrun_tail_hyperlinks_sorted_and_frozen_stable() {
+        let mut full = String::new();
+        for i in 0..50 {
+            full.push_str(&format!("See [link{i}](https://example.com/{i}) here.\n\n"));
+        }
+        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+        let mut prev_frozen: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
+        let bytes = full.as_bytes();
+        for chunk in bytes.chunks(7) {
+            // ASCII-only doc, so byte chunks are always char boundaries.
+            r.push_and_render(std::str::from_utf8(chunk).unwrap(), None);
+            let view = r.view();
+            let keys: Vec<(usize, usize)> = view
+                .hyperlinks
+                .iter()
+                .map(|h| (h.line_index, h.column_range.start))
+                .collect();
+            let mut sorted = keys.clone();
+            sorted.sort_unstable();
+            assert_eq!(keys, sorted, "hyperlinks must stay globally sorted");
+            let frozen = r.frozen_lines_count();
+            let cur: Vec<(usize, std::ops::Range<usize>, String)> = view
+                .hyperlinks
+                .iter()
+                .filter(|h| h.line_index < frozen)
+                .map(|h| (h.line_index, h.column_range.clone(), h.url.clone()))
+                .collect();
+            assert!(
+                cur.starts_with(&prev_frozen),
+                "frozen hyperlinks must only grow: {cur:?} prev {prev_frozen:?}"
+            );
+            prev_frozen = cur;
+        }
+        let view = r.finish(None);
+        let (expected, _) = render_markdown_ratatui_full(&full, test_style::STYLE, true, None);
+        assert_eq!(lines_text(view.lines), lines_text(&expected.lines));
+        let geom = |hs: &[crate::HyperlinkTarget]| {
+            hs.iter()
+                .map(|h| (h.line_index, h.column_range.clone(), h.url.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(geom(view.hyperlinks), geom(&expected.hyperlinks));
+    }
+
+    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
+    // (`cargo test` under X kills the session; see repo AGENTS.md.)
+    // Run: `cargo test -p gray-markdown clone_ -- --ignored`
+    //
+    // Wiring (1): `Clone` must preserve highlight state — the clone replays
+    // its render with `get_syntect()` when the original was highlighted.
+    #[test]
+    #[ignore]
+    fn unrun_clone_preserves_highlight_state() {
+        let src = "Intro.\n\n```rust\nfn main() {}\n```\n\n";
+        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+        r.push_and_render(src, Some(crate::get_syntect()));
+        let c = r.clone();
+        // Exact equality: text AND styles (ratatui `Line: PartialEq`).
+        assert_eq!(c.view().lines, r.view().lines);
+        assert_eq!(c.frozen_lines_count(), r.frozen_lines_count());
+        // And the clone actually carries highlight colors (not a `None` render).
+        let mut plain = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+        plain.push_and_render(src, None);
+        assert_ne!(c.view().lines, plain.view().lines);
+        assert_eq!(lines_text(c.view().lines), lines_text(r.view().lines));
+    }
+
+    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
+    // (`cargo test` under X kills the session; see repo AGENTS.md.)
+    // Run: `cargo test -p gray-markdown clone_ -- --ignored`
+    #[test]
+    #[ignore]
+    fn unrun_clone_without_highlight_stays_plain() {
+        let src = "Intro.\n\n```rust\nfn main() {}\n```\n\n";
+        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+        r.push_and_render(src, None);
+        let c = r.clone();
+        assert_eq!(c.view().lines, r.view().lines);
+    }
+
+    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
+    // (`cargo test` under X kills the session; see repo AGENTS.md.)
+    // Run: `cargo test -p gray-markdown forced_ -- --ignored`
+    //
+    // Wiring (2): `should_force_checkpoint` fires on the oversized open
+    // fence, but with no container-safe point the freeze DEFERS (frozen
+    // stays 0); closing the fence restores normal checkpointing.
+    #[test]
+    #[ignore]
+    fn unrun_forced_checkpoint_defers_mid_fence() {
+        use crate::checkpoint::{FORCED_CHECKPOINT_TAIL_BYTES, should_force_checkpoint};
+        let mut src = String::from("```rust\n");
+        while src.len() < FORCED_CHECKPOINT_TAIL_BYTES + 1024 {
+            src.push_str("let x = 1;\n");
+        }
+        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+        r.push_and_render(&src, None);
+        assert!(should_force_checkpoint(
+            src.len(),
+            r.view().lines.len(),
+            std::time::Duration::ZERO
+        ));
+        assert_eq!(r.frozen_lines_count(), 0);
+        r.push_and_render("```\n\n", None);
+        assert!(r.frozen_lines_count() > 0);
     }
 }

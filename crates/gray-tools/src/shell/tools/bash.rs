@@ -293,6 +293,11 @@ fn shell_dir() -> PathBuf {
     gray_home().join("shell")
 }
 
+/// Bound for the pump drain after the child exits: a grandchild inheriting
+/// the pipes keeps the pump alive forever, so the task must never wait past
+/// this to reach Exited.
+const PUMP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Shared waiter: background starts and promoted timeouts differ only in
 /// who awaits. Reaps the child, drains the pump, marks the task exited.
 async fn waiter(
@@ -322,7 +327,14 @@ async fn waiter(
         }
     };
     // Drain the pump before marking so the log tail is complete for 2C reads.
-    let _ = pump.await;
+    // Watchdog: a grandchild holding the pipes keeps the pump alive forever —
+    // bound the drain so the task always reaches Exited.
+    if tokio::time::timeout(PUMP_DRAIN_TIMEOUT, pump)
+        .await
+        .is_err()
+    {
+        log::warn!("shell {id}: pump drain timed out; marking exited");
+    }
     registry().mark_exited(&session, id, exit_report(status, &command));
 }
 
@@ -587,5 +599,49 @@ mod tests {
             r2.content
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // UNRUN (cargo test banned under X).
+    #[tokio::test]
+    async fn waiter_marks_exited_despite_hung_pump() {
+        // A backgrounded grandchild inherits the pipes, so the pump never
+        // sees EOF; the watchdog must still mark the task Exited.
+        let session = sess("pump-watchdog");
+        let ctx = ctx_for(&session);
+        let tool = BashTool;
+        let r = tool
+            .execute(&ctx, json!({"command": "sleep 30 &", "background": true}))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        let n: u32 = r
+            .content
+            .lines()
+            .next()
+            .and_then(|h| h.split("started t").nth(1))
+            .and_then(|s| {
+                s.chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .ok()
+            })
+            .expect("t1 header");
+        // The shell exits at once; the pump hangs on the sleeper's pipes.
+        // The task must reach Exited well before the 30 s sleeper is done
+        // (the suite does not wait for the sleeper itself).
+        let t0 = Instant::now();
+        loop {
+            let done = registry()
+                .get(&session, TaskId(n))
+                .is_some_and(|t| matches!(t.state, TaskState::Exited { .. }));
+            if done {
+                break;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(15),
+                "task t{n} stuck Running with a hung pump"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }

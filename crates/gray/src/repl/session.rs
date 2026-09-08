@@ -235,6 +235,14 @@ pub(crate) async fn persist_turn_messages(
     }
 }
 
+/// Decision gate for the lazy first build: only mint a session before
+/// `build_agent` when there is none yet AND a model is configured. A missing
+/// model means `build_agent` bails anyway — minting then would leave junk
+/// empty sessions and break the no-model REPL-open behavior.
+pub(crate) fn should_ensure_session_before_build(has_session: bool, model: Option<&str>) -> bool {
+    !has_session && model.is_some_and(|m| !m.is_empty())
+}
+
 pub(crate) async fn ensure_session_state(
     session_state: &mut Option<SessionState>,
     config: &Config,
@@ -564,5 +572,29 @@ pub(crate) async fn maybe_overflow_compact(
             log::warn!(target: "gray_compact", "overflow auto-compact failed: {e}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // The lazy-build gate: a fresh session with a model mints before the
+    // first build (real sid from turn one); no model (or existing session)
+    // never mints, so the unconfigured REPL still opens session-free.
+    use super::should_ensure_session_before_build;
+
+    #[test]
+    fn first_build_ensures_session_only_when_model_configured() {
+        assert!(should_ensure_session_before_build(
+            false,
+            Some("openai/gpt-4o")
+        ));
+        assert!(!should_ensure_session_before_build(false, None));
+        assert!(!should_ensure_session_before_build(false, Some("")));
+        assert!(!should_ensure_session_before_build(
+            true,
+            Some("openai/gpt-4o")
+        ));
+        assert!(!should_ensure_session_before_build(true, None));
     }
 }

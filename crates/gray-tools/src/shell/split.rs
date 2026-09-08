@@ -27,9 +27,12 @@ pub fn split_pipeline(cmd: &str) -> Vec<String> {
     split(cmd, true).into_iter().map(|s| s.text).collect()
 }
 
-/// Top-level `( … )` / `$( … )` innards (one level, quotes respected) so
-/// `(rm -rf /)` and `echo $(rm -rf /)` don't slip past the segment scan.
-/// Unbalanced input yields nothing for that group.
+/// Top-level `( … )` / `$( … )` innards (one level, quotes respected — except
+/// `$( … )`, which still substitutes inside `"…"`, so `echo "$(rm -rf /)"`
+/// is extracted too). `(rm -rf /)` and `echo $(rm -rf /)` don't slip past
+/// the segment scan. Unbalanced input yields nothing for that group.
+/// `<( … )` / `>( … )` process substitutions ride along via their `(` —
+/// see [`process_subst_inners`] for the explicit extractor the guard uses.
 pub fn subshell_inners(cmd: &str) -> Vec<String> {
     let chars: Vec<char> = cmd.chars().collect();
     let n = chars.len();
@@ -46,11 +49,21 @@ pub fn subshell_inners(cmd: &str) -> Vec<String> {
             i += 1;
         } else if double {
             if c == '\\' {
-                i += 1;
+                i += 2;
             } else if c == '"' {
                 double = false;
+                i += 1;
+            } else if c == '$' && i + 1 < n && chars[i + 1] == '(' {
+                // `$(…)` is live inside `"…"` (bare `(…)` is literal there).
+                if let Some((inner, end)) = balanced(&chars, i + 2) {
+                    out.push(inner);
+                    i = end;
+                } else {
+                    i += 2;
+                }
+            } else {
+                i += 1;
             }
-            i += 1;
         } else {
             match c {
                 '\'' => {
@@ -89,6 +102,110 @@ pub fn subshell_inners(cmd: &str) -> Vec<String> {
     out
 }
 
+/// `<( … )` / `>( … )` process-substitution innards (one level, quotes
+/// respected) so `sh <(curl …)` / `diff <(rm -rf /) <(ls)` don't slip past
+/// the segment scan. Unbalanced input yields nothing for that group.
+pub fn process_subst_inners(cmd: &str) -> Vec<String> {
+    let chars: Vec<char> = cmd.chars().collect();
+    let n = chars.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut single = false;
+    let mut double = false;
+    while i < n {
+        let c = chars[i];
+        if single {
+            if c == '\'' {
+                single = false;
+            }
+            i += 1;
+        } else if double {
+            if c == '\\' {
+                i += 1;
+            } else if c == '"' {
+                double = false;
+            }
+            i += 1;
+        } else {
+            match c {
+                '\'' => {
+                    single = true;
+                    i += 1;
+                }
+                '"' => {
+                    double = true;
+                    i += 1;
+                }
+                '\\' => {
+                    i += 2;
+                }
+                '<' | '>' if i + 1 < n && chars[i + 1] == '(' => {
+                    if let Some((inner, end)) = balanced(&chars, i + 2) {
+                        out.push(inner);
+                        i = end;
+                    } else {
+                        i += 2;
+                    }
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Backtick `` `…` `` innards (one level). Single quotes respected (backticks
+/// are literal there); double quotes kept scanning since `` ` `` still
+/// substitutes inside `"…"`. Unbalanced input yields nothing for that group.
+pub fn backtick_inners(cmd: &str) -> Vec<String> {
+    let chars: Vec<char> = cmd.chars().collect();
+    let n = chars.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let mut single = false;
+    while i < n {
+        let c = chars[i];
+        if single {
+            if c == '\'' {
+                single = false;
+            }
+            i += 1;
+        } else if c == '\\' {
+            i += 2;
+        } else if c == '\'' {
+            single = true;
+            i += 1;
+        } else if c == '`' {
+            let mut j = i + 1;
+            let mut inner = String::new();
+            let mut closed = false;
+            while j < n {
+                if chars[j] == '\\' && j + 1 < n {
+                    inner.push(chars[j]);
+                    inner.push(chars[j + 1]);
+                    j += 2;
+                } else if chars[j] == '`' {
+                    closed = true;
+                    break;
+                } else {
+                    inner.push(chars[j]);
+                    j += 1;
+                }
+            }
+            if closed {
+                out.push(inner);
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
 /// From just past an opening `(`, collect to its match (quotes respected).
 /// Returns the inner text and the index just past the closing `)`.
 fn balanced(chars: &[char], mut i: usize) -> Option<(String, usize)> {
@@ -380,6 +497,30 @@ mod split_tests {
         assert_eq!(texts("echo $(echo a | b)"), ["echo $(echo a | b)"]);
         assert_eq!(subshell_inners("(rm -rf /)"), ["rm -rf /"]);
         assert_eq!(subshell_inners("echo $(rm -rf /)"), ["rm -rf /"]);
+    }
+
+    // UNRUN (cargo test banned under X).
+    #[test]
+    fn substitution_inners() {
+        assert_eq!(subshell_inners("(rm -rf /)"), ["rm -rf /"]);
+        // Process substitution is its own extractor (bare-`(` also sees it).
+        assert_eq!(
+            process_subst_inners("diff <(rm -rf /) <(ls)"),
+            ["rm -rf /", "ls"]
+        );
+        assert_eq!(process_subst_inners("cat >(rm -rf /)"), ["rm -rf /"]);
+        assert_eq!(
+            process_subst_inners("echo '<(rm -rf /)'"),
+            Vec::<String>::new()
+        );
+        // Backticks: active outside single quotes (incl. inside `"…"`).
+        assert_eq!(backtick_inners("echo `rm -rf /`"), ["rm -rf /"]);
+        assert_eq!(backtick_inners("echo \"`rm -rf /`\""), ["rm -rf /"]);
+        assert_eq!(backtick_inners("echo '`rm -rf /`'"), Vec::<String>::new());
+        assert_eq!(backtick_inners("echo `unclosed"), Vec::<String>::new());
+        // `$(…)` is live inside `"…"` but literal inside `'…'`.
+        assert_eq!(subshell_inners("echo \"$(rm -rf /)\""), ["rm -rf /"]);
+        assert_eq!(subshell_inners("echo '$(rm -rf /)'"), Vec::<String>::new());
     }
 
     #[test]

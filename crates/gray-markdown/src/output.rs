@@ -180,10 +180,12 @@ pub(crate) fn build_code_block_spans(
     let mut cursor_newlines = 0usize;
     let mut newlines_before = |pos: usize| -> usize {
         let pos = pos.min(bytes.len());
-        debug_assert!(
-            pos >= cursor_pos,
-            "metas must be processed in ascending body order",
-        );
+        if pos < cursor_pos {
+            eprintln!(
+                "gray-markdown: CodeBlockMeta out of order (pos {pos} < cursor {cursor_pos}); \
+                 span line ranges may be wrong"
+            );
+        }
         while cursor_pos < pos {
             if bytes[cursor_pos] == b'\n' {
                 cursor_newlines += 1;
@@ -597,5 +599,29 @@ mod code_block_span_tests {
                 "pretty={pretty}: chunked stream must match full render",
             );
         }
+    }
+
+    #[test]
+    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
+    fn out_of_order_metas_are_loud_not_silent() {
+        use super::build_code_block_spans;
+        use crate::buffers::CodeBlockMeta;
+        let src = "aaa\nbbb\n";
+        let metas = vec![
+            CodeBlockMeta {
+                info: "text".into(),
+                body: "bbb\n".into(),
+                body_source_range: 4..8,
+            },
+            CodeBlockMeta {
+                info: "text".into(),
+                body: "aaa\n".into(),
+                body_source_range: 0..4,
+            },
+        ];
+        // Must not panic in any profile (previously `debug_assert!` fired in
+        // debug and silently mis-ranged in release); the error goes to stderr.
+        let spans = build_code_block_spans(src, &[0, 1], metas);
+        assert_eq!(spans.len(), 2);
     }
 }

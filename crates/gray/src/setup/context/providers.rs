@@ -276,6 +276,11 @@ pub fn supported_efforts(model_id: &str) -> Option<Vec<&'static str>> {
     if id.contains("deepseek-v4") || id.contains("deepseek_v4") {
         return Some(vec!["low", "medium", "high", "max"]);
     }
+    // Muse Spark / Glimmer: effort values per models.dev reasoning_options —
+    // [minimal, low, medium, high, xhigh] (no `max`; the provider 400-rejects it).
+    if id.contains("muse") || id.contains("spark") || id.contains("glimmer") {
+        return Some(vec!["minimal", "low", "medium", "high", "xhigh"]);
+    }
     None
 }
 
@@ -942,21 +947,45 @@ pub fn load_models_cache_to_memory() -> usize {
     n
 }
 
+/// Merges in-memory entries over the disk map. `None` = nothing new (caller
+/// must skip the write so mtime stays stable and concurrent boots don't
+/// rewrite/race every fetch).
+fn merged_models_cache(
+    mut disk: std::collections::HashMap<String, usize>,
+    mem: impl IntoIterator<Item = (String, usize)>,
+) -> Option<std::collections::HashMap<String, usize>> {
+    let mut dirty = false;
+    for (k, v) in mem {
+        if disk.get(&k) != Some(&v) {
+            disk.insert(k, v);
+            dirty = true;
+        }
+    }
+    if dirty { Some(disk) } else { None }
+}
+
 /// Persists the in-memory cache to disk (read-modify-write, best-effort).
 /// Called after any successful fetch so cold boot beats the guess.
+/// Skips the write when memory adds nothing new; the write itself is atomic
+/// tmp-file + rename (delivery.rs precedent).
 pub fn save_models_cache_to_disk() {
     let Some(path) = models_cache_path() else {
         return;
     };
-    let mut map: std::collections::HashMap<String, usize> = std::fs::read_to_string(&path)
+    let mem: Vec<(String, usize)> = model_context_cache()
+        .read()
+        .map(|g| g.iter().map(|(k, v)| (k.clone(), *v)).collect())
+        .unwrap_or_default();
+    if mem.is_empty() {
+        return;
+    }
+    let disk: std::collections::HashMap<String, usize> = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-    if let Ok(g) = model_context_cache().read() {
-        for (k, v) in g.iter() {
-            map.insert(k.clone(), *v);
-        }
-    }
+    let Some(map) = merged_models_cache(disk, mem) else {
+        return;
+    };
     let Ok(s) = serde_json::to_string(&map) else {
         return;
     };
@@ -965,7 +994,11 @@ pub fn save_models_cache_to_disk() {
     {
         return;
     }
-    let _ = std::fs::write(path, s);
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, s).is_err() {
+        return;
+    }
+    let _ = std::fs::rename(&tmp, path);
 }
 
 /// One-shot cold-boot load so disk values are present before first resolve.
@@ -975,4 +1008,33 @@ pub(crate) fn ensure_disk_loaded() {
     ONCE.call_once(|| {
         let _ = load_models_cache_to_memory();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn merged_cache_skips_write_when_unchanged() {
+        let disk: std::collections::HashMap<String, usize> =
+            [("a".to_string(), 1)].into_iter().collect();
+        let mem = vec![("a".to_string(), 1)];
+        assert!(merged_models_cache(disk, mem).is_none());
+    }
+
+    // UNRUN (cargo test banned under X — verified via check + clippy only).
+    #[test]
+    fn merged_cache_returns_map_on_new_or_changed() {
+        let disk: std::collections::HashMap<String, usize> =
+            [("a".to_string(), 1)].into_iter().collect();
+        let out = merged_models_cache(disk, vec![("b".to_string(), 2)])
+            .expect("new key must dirty");
+        assert_eq!(out.get("b"), Some(&2));
+        let disk: std::collections::HashMap<String, usize> =
+            [("a".to_string(), 1)].into_iter().collect();
+        let out = merged_models_cache(disk, vec![("a".to_string(), 9)])
+            .expect("changed value must dirty");
+        assert_eq!(out.get("a"), Some(&9));
+    }
 }

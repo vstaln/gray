@@ -126,6 +126,10 @@ impl QuestionSession {
     }
 
     pub(crate) fn current_question(&self) -> &UserQuestion {
+        // Invariant: a session never holds zero questions (attach_request
+        // and resolve_with resolve empty requests immediately), so [0]-style
+        // indexing here cannot panic. on_key additionally early-returns on
+        // empty as defense in depth.
         &self.questions[self.current_idx]
     }
 
@@ -231,11 +235,24 @@ impl QuestionSession {
     /// request (codex advance_queue_or_complete) or ends the session.
     /// Returns `true` when the session is done.
     fn resolve_with(&mut self, answers: Vec<UserAnswer>) -> bool {
-        if let Some(tx) = self.current_tx.take() {
-            self.current_resolved.store(true, Ordering::Relaxed);
-            let _ = tx.send(answers);
-        }
-        if let Some(next) = self.queue.pop_front() {
+        let mut answers = answers;
+        loop {
+            if let Some(tx) = self.current_tx.take() {
+                self.current_resolved.store(true, Ordering::Relaxed);
+                let _ = tx.send(answers);
+            }
+            let Some(next) = self.queue.pop_front() else {
+                return true;
+            };
+            if next.questions.is_empty() {
+                // Degenerate request (model asked zero questions): resolve it
+                // empty at once so an empty session can never exist —
+                // current_question() indexes questions[current_idx].
+                next.resolved.store(true, Ordering::Relaxed);
+                let _ = next.tx.send(Vec::new());
+                answers = Vec::new();
+                continue;
+            }
             self.questions = next.questions;
             self.blocking = next.blocking;
             self.current_tx = Some(next.tx);
@@ -247,9 +264,7 @@ impl QuestionSession {
             self.request_started_at = Instant::now();
             self.auto_snoozed = false;
             self.last_countdown = None;
-            false
-        } else {
-            true
+            return false;
         }
     }
 
@@ -431,6 +446,11 @@ impl QuestionSession {
         if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
             return QuestionOutcome::None; // global Ctrl-C policy handles the turn
         }
+        // Unreachable via attach_request/resolve_with (empty requests resolve
+        // immediately), but never index into zero questions if one arrives.
+        if self.questions.is_empty() {
+            return QuestionOutcome::None;
+        }
         self.auto_snoozed = !self.blocking;
 
         if self.confirm_unanswered.is_some() {
@@ -610,6 +630,14 @@ pub(crate) fn attach_request(
     tx: oneshot::Sender<Vec<UserAnswer>>,
 ) {
     let resolved = Arc::new(AtomicBool::new(false));
+    if questions.is_empty() {
+        // Degenerate request (model asked zero questions): resolve empty at
+        // once. A zero-question session would panic on the next draw —
+        // current_question() indexes questions[current_idx].
+        resolved.store(true, Ordering::Relaxed);
+        let _ = tx.send(Vec::new());
+        return;
+    }
     if let Some(q) = t.active_question.as_mut() {
         q.queue.push_back(QueuedRequest {
             questions,
@@ -757,5 +785,96 @@ fn push_result_summary(
             t.push_dim(line);
         }
         t.ensure_gap(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::questions::UserOption;
+
+    fn one_question() -> UserQuestion {
+        UserQuestion {
+            id: "q0".into(),
+            header: "H".into(),
+            question: "proceed?".into(),
+            options: vec![UserOption {
+                label: "Yes".into(),
+                description: "do it".into(),
+            }],
+            is_other: false,
+        }
+    }
+
+    fn empty_session() -> QuestionSession {
+        let (tx, _rx) = oneshot::channel();
+        QuestionSession::new(Vec::new(), true, tx, Arc::new(AtomicBool::new(false)))
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // Zero-question session must never panic on key handling.
+    #[test]
+    fn empty_session_ignores_keys() {
+        let mut q = empty_session();
+        let mut ta = TextArea::new();
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Up,
+            KeyCode::Tab,
+            KeyCode::Backspace,
+        ] {
+            assert!(matches!(
+                q.on_key(code, KeyModifiers::NONE, &mut ta),
+                QuestionOutcome::None
+            ));
+        }
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // A queued zero-question request resolves empty at once and never
+    // becomes a live (unindexable) session.
+    #[test]
+    fn empty_queued_request_resolves_without_session() {
+        let (tx0, _rx0) = oneshot::channel();
+        let mut q = QuestionSession::new(
+            vec![one_question()],
+            true,
+            tx0,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (tx1, mut rx1) = oneshot::channel();
+        let resolved1 = Arc::new(AtomicBool::new(false));
+        q.queue.push_back(QueuedRequest {
+            questions: Vec::new(),
+            blocking: true,
+            tx: tx1,
+            resolved: resolved1.clone(),
+        });
+        let mut ta = TextArea::new();
+        match q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta) {
+            QuestionOutcome::Resolved { session_done, .. } => assert!(session_done),
+            other => panic!("expected resolution, got {other:?}"),
+        }
+        assert!(resolved1.load(Ordering::Relaxed));
+        match rx1.try_recv() {
+            Ok(answers) => assert!(answers.is_empty()),
+            Err(_) => panic!("empty queued request must resolve immediately"),
+        }
+    }
+
+    // UNRUN (cargo test banned under X): run in TTY/CI.
+    // Auto-resolution tick on a zero-question session ends it, no panic.
+    #[test]
+    fn empty_session_tick_auto_resolves() {
+        let (tx, _rx) = oneshot::channel();
+        let mut q = QuestionSession::new(Vec::new(), false, tx, Arc::new(AtomicBool::new(false)));
+        let late = q.request_started_at + Duration::from_secs(121);
+        assert!(matches!(
+            q.tick(late),
+            TickOutcome::AutoResolved {
+                session_done: true,
+                ..
+            }
+        ));
     }
 }

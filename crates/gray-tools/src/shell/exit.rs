@@ -6,9 +6,11 @@
 //! build. Assumes wiring as `shell::exit` with `super::contract::ExitReport`
 //! (same layout as `shell::guard`).
 //!
-//! Unix-only (`ExitStatusExt::signal`), like the rest of the shell module
-//! (setsid spawn, pgid kills — brief 2D non-goals Windows).
+//! Unix signals (`ExitStatusExt::signal`) where available; on Windows the
+//! signal is always `None`, so signal-derived labels/notes don't apply
+//! (plain exit codes still report honestly).
 
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 
 use super::contract::ExitReport;
@@ -22,12 +24,16 @@ use super::split::split_pipeline;
 /// otherwise misread (OOM, benign grep/diff, masked pipelines).
 pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitReport {
     let code = status.code();
-    let signal = status.signal();
+    #[cfg(unix)]
+    let signal: Option<i32> = status.signal();
+    #[cfg(not(unix))]
+    let signal: Option<i32> = None;
     let (effective, label) = match (code, signal) {
         (Some(n), _) => (n, format!("exit {n}")),
         (None, Some(s)) => {
             let eff = 128 + s;
             let mut label = format!("exit {eff} ({})", signal_name(s));
+            #[cfg(unix)]
             if status.core_dumped() {
                 label.push_str(" (core dumped)");
             }
@@ -135,7 +141,7 @@ fn masked_note(command: &str) -> Option<String> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))] // ExitStatusExt::from_raw is unix-only (T3 windows gate)
 mod exit_tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;

@@ -258,6 +258,30 @@ pub(crate) fn handle_key_event_without_popup(
 // read_line — main loop, verbatim from mod.rs 887-1120 with dispatch split
 // ---------------------------------------------------------------------------
 
+/// Pushes Kitty `DISAMBIGUATE_ESCAPE_CODES` while the prompt is live so
+/// Shift+Enter (and Alt+Enter) arrive with their modifiers instead of a
+/// bare Enter (submit) — tmux otherwise collapses Shift+Enter to `\r`.
+/// Popped on drop, covering every `read_line` exit. Terminals without
+/// support ignore the sequence (same precedent as `EnableBracketedPaste`
+/// below, re-asserted every turn because full-screen children clear it).
+struct KeyboardEnhancementGuard;
+impl KeyboardEnhancementGuard {
+    fn push() -> Self {
+        use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+        Self
+    }
+}
+impl Drop for KeyboardEnhancementGuard {
+    fn drop(&mut self) {
+        use crossterm::event::PopKeyboardEnhancementFlags;
+        let _ = crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+    }
+}
+
 /// Reads one submitted line, redrawing on each keystroke. The TUI lock is
 /// held only per phase — never across the input wait — so background
 /// painters (boot watcher, footer ticker) can draw while idling at the
@@ -275,6 +299,7 @@ pub(crate) fn read_line(
     // exit, which silently downgrades later pastes to raw keystrokes
     // (multi-line paste then submits on the first Enter). Idempotent.
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+    let _keyboard_enhancement = KeyboardEnhancementGuard::push();
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::cursor::Show)?;
 
@@ -423,7 +448,13 @@ pub(crate) fn read_line(
                 ..
             }) if modifiers.contains(KeyModifiers::ALT) => {
                 // popup short-circuit: word moves swallowed when completion visible
-                if handle_popup_key(tui, code, modifiers) {
+                if code == KeyCode::Enter {
+                    // Alt+Enter inserts a newline (same as Shift+Enter/Ctrl-J),
+                    // bypassing the popup exactly like the Shift+Enter path.
+                    // Must precede handle_popup_key, which swallows every ALT
+                    // key while the popup is open.
+                    tui.textarea.insert_str("\n");
+                } else if handle_popup_key(tui, code, modifiers) {
                     // consumed
                 } else {
                     match code {

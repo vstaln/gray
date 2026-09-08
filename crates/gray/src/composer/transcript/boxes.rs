@@ -9,6 +9,7 @@ impl Tui {
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
+        cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }
 
@@ -19,6 +20,7 @@ impl Tui {
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
+        cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }
 
@@ -157,6 +159,7 @@ impl Tui {
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
+        cap_history_entries(&mut self.history_entries);
         let _ = std::io::stdout().flush();
     }
 

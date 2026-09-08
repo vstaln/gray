@@ -107,6 +107,9 @@ mod tests {
         );
     }
 
+    // T3: ExitStatusExt::from_raw is unix-only; both from_raw tests are
+    // unix-gated (brief names :128; :112 needs the identical gate).
+    #[cfg(unix)]
     #[test]
     fn absent_service_names_the_service() {
         use std::os::unix::process::ExitStatusExt;
@@ -123,6 +126,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn active_service_prints_status() {
         use std::os::unix::process::ExitStatusExt;

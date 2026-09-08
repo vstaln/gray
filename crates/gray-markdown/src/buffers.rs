@@ -3,6 +3,8 @@
 //! This module contains all the intermediate data structures used by
 //! MarkdownHighlighter during parsing and rendering.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
 
 use anstyle::Style as AnsiStyle;
@@ -235,13 +237,63 @@ pub struct TableReplace {
 }
 
 /// Calculate the display width of a string (accounting for Unicode).
+///
+/// Short inputs (words, table cells) hit a thread-local LRU cache: table
+/// layout and word-wrap measure the same words on every streaming re-render,
+/// so repeats become HashMap hits instead of `unicode-width` scans. Longer
+/// strings are usually unique lines — measured directly, never cached.
+/// Pure function of `s`, so caching is always correct.
 pub fn unicode_display_width(s: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
-    s.width()
+    if s.len() > WIDTH_CACHE_MAX_BYTES {
+        return s.width();
+    }
+    WIDTH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.tick = cache.tick.wrapping_add(1);
+        let tick = cache.tick;
+        if let Some(entry) = cache.map.get_mut(s) {
+            entry.1 = tick;
+            return entry.0;
+        }
+        let w = s.width();
+        if cache.map.len() >= WIDTH_CACHE_CAP {
+            // Evict the least-recently-used entry (insert path only, so the
+            // O(cap) scan never runs on a cache hit).
+            if let Some(oldest) = cache
+                .map
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone())
+            {
+                cache.map.remove(&oldest);
+            }
+        }
+        cache.map.insert(s.to_owned(), (w, tick));
+        w
+    })
 }
 
-/// Polyfill for `str::floor_char_boundary` (stable in Rust 1.91+).
-///
+/// Max entries in the [`unicode_display_width`] cache.
+const WIDTH_CACHE_CAP: usize = 1024;
+/// Only strings at or below this byte length are cached (words/cells, not lines).
+const WIDTH_CACHE_MAX_BYTES: usize = 64;
+
+/// Thread-local LRU for [`unicode_display_width`]: owned short string to
+/// `(width, last-use tick)`. Thread-local (not a global `Mutex`) because the
+/// hot path must never contend; `wrapping_add` ticks make wrap-around harmless.
+struct WidthCache {
+    map: HashMap<String, (usize, u64)>,
+    tick: u64,
+}
+
+thread_local! {
+    static WIDTH_CACHE: RefCell<WidthCache> = RefCell::new(WidthCache {
+        map: HashMap::new(),
+        tick: 0,
+    });
+}
+
 /// Event kind for the render loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -330,5 +382,56 @@ impl MarkdownBuffers {
 impl Default for MarkdownBuffers {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod unrun_width_cache_tests {
+    use super::unicode_display_width;
+
+    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
+    // (`cargo test` under X kills the session; see repo AGENTS.md.)
+    // Run: `cargo test -p gray-markdown width_cache -- --ignored`
+
+    #[test]
+    #[ignore]
+    fn unrun_width_cache_matches_uncached() {
+        use unicode_width::UnicodeWidthStr;
+        for s in [
+            "",
+            "a",
+            "hello",
+            "日本語",
+            "🎉",
+            "a🎉b",
+            "  pad  ",
+            &"x".repeat(64),
+        ] {
+            assert_eq!(unicode_display_width(s), s.width(), "{s:?}");
+        }
+        // Over the cache length bound: still correct, just uncached.
+        let long = "日".repeat(100);
+        assert_eq!(unicode_display_width(&long), long.width());
+    }
+
+    #[test]
+    #[ignore]
+    fn unrun_width_cache_repeat_hits_stable() {
+        let w = unicode_display_width("日本語");
+        for _ in 0..10_000 {
+            assert_eq!(unicode_display_width("日本語"), w);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn unrun_width_cache_eviction_bounded() {
+        // Insert 10x capacity of distinct words; all widths must stay correct
+        // (eviction drops entries, never corrupts them).
+        use unicode_width::UnicodeWidthStr;
+        for i in 0..10_240 {
+            let s = format!("w{i}");
+            assert_eq!(unicode_display_width(&s), s.width());
+        }
     }
 }
