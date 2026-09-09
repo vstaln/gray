@@ -401,8 +401,8 @@ impl Plugin for SidecarPlugin {
         {
             Ok(v) => ToolBefore::from_result(&v, args),
             Err(e) => {
-                log::warn!(target: "gray_plugin", "sidecar tool/before failed, failing open: {e}");
-                ToolBefore::Allow
+                log::warn!(target: "gray_plugin", "sidecar tool/before failed: {e}");
+                ToolBefore::Deny("plugin policy unavailable; tool not executed".to_string())
             }
         }
     }
