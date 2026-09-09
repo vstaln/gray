@@ -163,7 +163,7 @@ pub async fn run_print_mode_with_session(
         approvals: Some(gray_core::approvals::ApprovalGate::new(
             permissions
                 .as_deref()
-                .unwrap_or(gray_core::approvals::MODE_AUTO),
+                .unwrap_or(gray_core::approvals::MODE_FULL),
         )),
     };
 

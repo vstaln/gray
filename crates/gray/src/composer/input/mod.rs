@@ -318,8 +318,10 @@ pub(crate) fn read_line(
                 && std::time::Instant::now() >= deadline
             {
                 tui.pending_resize = None;
-                if cols != tui.last_width {
-                    tui.reflow_on_resize(cols);
+                let (live_cols, live_rows) =
+                    crossterm::terminal::size().unwrap_or((cols, tui.last_height));
+                if live_cols != tui.last_width || live_rows != tui.last_height {
+                    tui.reflow_on_resize(live_cols);
                     needs_draw = false;
                 }
             }
@@ -371,11 +373,13 @@ pub(crate) fn read_line(
             continue;
         }
         match ev {
-            Event::Resize(cols, _) => {
-                tui.pending_resize = Some((
-                    cols,
-                    std::time::Instant::now() + std::time::Duration::from_millis(75),
-                ));
+            Event::Resize(cols, rows) => {
+                if cols != tui.last_width || rows != tui.last_height {
+                    tui.pending_resize = Some((
+                        cols,
+                        std::time::Instant::now() + std::time::Duration::from_millis(75),
+                    ));
+                }
                 needs_draw = false;
             }
             Event::Paste(data) => {

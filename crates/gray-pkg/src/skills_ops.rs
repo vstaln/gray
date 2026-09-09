@@ -10,14 +10,17 @@
 use std::path::{Path, PathBuf};
 
 /// Skill-shaped search hit: [`crate::ops::SearchHit`] projected onto the
-/// skill-bearing sources (ClawHub skills, Claude bundles).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// skill-bearing sources (ClawHub skills, Claude bundles). `popularity`
+/// rides along but both sources report 0.0, so popularity sort on the
+/// Skills tab is a documented name-fallback.
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillHit {
     pub name: String,
     pub version: String,
     pub desc: String,
     pub source: String,
     pub trust: String,
+    pub popularity: f32,
 }
 
 /// Skill-shaped view over [`crate::ops::search_all`]: one fan-out, then keep
@@ -44,6 +47,7 @@ async fn search_inner(query: &str) -> anyhow::Result<Vec<SkillHit>> {
                     desc: h.desc,
                     source: h.source.label().to_string(),
                     trust: h.trust,
+                    popularity: h.popularity,
                 })
             }
             crate::ops::SearchSource::Gray | crate::ops::SearchSource::Pi => None,

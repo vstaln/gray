@@ -334,19 +334,10 @@ pub(crate) fn dispatch_agent_event(
                         e.1 = Some(args.clone());
                     })
                     .or_insert((name.clone(), Some(args.clone())));
-                // Live header: show the tool call the moment args are
-                // complete (before execution), not only at ToolResult.
-                // The result box below repeats this header canonically;
-                // the live line is the streaming signal (pi partial box).
-                let live_name = pending_tools
-                    .get(id)
-                    .map(|(n, _)| n.clone())
-                    .unwrap_or_default();
-                if !live_name.is_empty() && live_name != "request_user_input" {
-                    let header =
-                        crate::tool_fmt::format_tool_call_header(&live_name, args, Some(cwd));
-                    t.push_line_spans(header);
-                }
+                // No transcript line here: the result card below is the single
+                // render of the call. The live signal rides the status dock
+                // (`Preparing tool:` at Start, `Working` here) so a duplicate
+                // header never lands in the transcript.
                 t.set_status(Some("Working"));
                 // Brief 3B: `sleep` shows its countdown until its result lands.
                 if pending_tools.get(id).is_some_and(|(n, _)| n == "sleep") {
@@ -382,11 +373,15 @@ pub(crate) fn dispatch_agent_event(
                         *is_error,
                         Some(cwd),
                     );
-                    let header = args
-                        .as_ref()
-                        .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
-                        .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                    t.push_tool_box(header, lines);
+                    // The box is the single render of the call — always push
+                    // it (no live line exists to duplicate it).
+                    {
+                        let header = args
+                            .as_ref()
+                            .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+                            .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
+                        t.push_tool_box(header, lines);
+                    }
                 }
             }
             AgentEvent::StepUsage { usage } => {

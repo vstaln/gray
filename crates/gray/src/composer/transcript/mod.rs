@@ -111,14 +111,14 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            self.push_line_styled(trimmed.to_string(), thinking_style());
+            self.thinking_lines.push(trimmed.to_string());
         }
         if self.pending.chars().count() >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
             self.pending = chars[cut..].iter().collect();
-            self.push_line_styled(line, thinking_style());
+            self.thinking_lines.push(line);
         }
         let _ = self.draw();
     }
@@ -164,29 +164,37 @@ impl Tui {
     }
 
     pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking && self.pending.is_empty() {
+        if !self.thinking && self.pending.is_empty() && self.thinking_lines.is_empty() {
             return;
         }
-        // Opencode parity (`Thought: <title> · <duration>`): the completed
-        // thinking run gets a summary line with its wall time. It lands
-        // AFTER the block — scrollback is append-only (`insert_before`),
-        // so unlike opencode's re-rendered header it can't sit on top.
-        let was_thinking = self.thinking;
+        // Opencode parity (`Thought: <duration>` header + blank + body):
+        // rows buffer during the run and flush header-first here —
+        // scrollback is append-only (`insert_before`), so unlike opencode's
+        // re-rendered header it can't sit on top while streaming.
         let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
         if !self.hide_thinking {
             if !self.pending.is_empty() {
                 let rest = std::mem::take(&mut self.pending);
-                self.push_line_styled(rest, thinking_style());
+                self.thinking_lines.push(rest);
             }
-            if was_thinking && let Some(d) = elapsed {
-                self.push_line_spans(thought_summary_line(d));
+            if !self.thinking_lines.is_empty() {
+                self.ensure_gap(1);
+                let rows = std::mem::take(&mut self.thinking_lines);
+                for row in rows {
+                    self.push_line_styled(row, thinking_style());
+                }
+                if let Some(d) = elapsed {
+                    self.ensure_gap(1);
+                    self.push_line_spans(thought_summary_line(d));
+                }
             }
             if spacer {
                 self.ensure_gap(1);
             }
         } else {
             self.pending.clear();
+            self.thinking_lines.clear();
         }
     }
 
@@ -251,12 +259,12 @@ pub(crate) fn fmt_thought_duration(d: Duration) -> String {
     }
 }
 
-/// Completed-thinking summary line: amber `Thought: <duration>` like
-/// opencode's `ReasoningHeader` (no title — gray carries no summary titles).
+/// Bottom summary: gray `⬡ Thought for <duration>` under the body, matching
+/// the thinking text above — same hexagon marker as the live status.
 fn thought_summary_line(elapsed: Duration) -> Line<'static> {
     Line::from(vec![Span::styled(
-        format!("Thought: {}", fmt_thought_duration(elapsed)),
-        Style::default().fg(Color::Rgb(246, 173, 126)),
+        format!("⬡ Thought for {}", fmt_thought_duration(elapsed)),
+        Style::default().fg(Color::Rgb(140, 140, 140)),
     )])
 }
 
@@ -318,8 +326,8 @@ mod tests {
     fn thought_summary_line_names_duration() {
         let line = thought_summary_line(Duration::from_millis(5800));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "Thought: 5.8s");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(246, 173, 126)));
+        assert_eq!(text, "⬡ Thought for 5.8s");
+        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(140, 140, 140)));
     }
 
     #[test]

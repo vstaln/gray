@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -25,10 +24,12 @@ pub(crate) const VIEWPORT_H: u16 = 14;
 /// bottom pad + context footer. No cleared slack below the footer.
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
-type Term = Terminal<CrosstermBackend<Stdout>>;
+mod terminal;
+pub(crate) use terminal::CustomTerminal;
+
+type Term = CustomTerminal<CrosstermBackend<Stdout>>;
 
 mod draw;
-pub(crate) use draw::thinking_style;
 pub(crate) mod input;
 pub(crate) mod transcript;
 
@@ -63,6 +64,10 @@ pub struct Tui {
     truecolor: bool,
     thinking: bool,
     thinking_started: Option<Instant>,
+    /// Buffered thinking rows for the current run. Rendered header-first
+    /// (`Thought: <dur>` + blank + body, opencode parity) when the run ends —
+    /// scrollback is append-only so a top header can't be re-rendered live.
+    pub(crate) thinking_lines: Vec<String>,
     hide_thinking: bool,
     pending_tokens: Option<String>,
     pub(crate) history: Vec<String>,
@@ -78,6 +83,10 @@ pub struct Tui {
     pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
+    /// Height twin of `last_width`: resize detection must fire on ANY
+    /// geometry change. Height-only drags never reflowed, so a paint
+    /// landing on stale screen math tore scrollback with no repair coming.
+    pub(crate) last_height: u16,
     pub latest_usage: Option<gray_core::event::Usage>,
     pub cumulative_usage: Option<gray_core::event::Usage>,
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
@@ -85,9 +94,10 @@ pub struct Tui {
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
     pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
-    /// Fixed inline viewport height (baseline `Inline(VIEWPORT_H)`). `draw`
-    /// never resizes it: the filler bottom-anchor + surplus `Clear` stay live
-    /// every frame, so unpainted rows are cleared, never ghosts.
+    /// Current inline viewport height. `draw` keeps it at the exact-fit
+    /// content height (+1 spare cleared row, clamped to
+    /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
+    /// popups can grow it back up.
     pub(crate) viewport_h: u16,
     // request_user_input overlay (codex port) + late non-blocking answers
     pub(crate) active_question: Option<question::QuestionSession>,
@@ -169,13 +179,9 @@ impl Tui {
         crossterm::terminal::enable_raw_mode()?;
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
-        let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let mut terminal = Terminal::with_options(
-            CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
-            },
-        )?;
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let mut terminal =
+            CustomTerminal::with_options(CrosstermBackend::new(std::io::stdout()), MIN_VIEWPORT_H)?;
 
         // Print welcome logo into scrollback once at startup
         let welcome_lines = build_welcome_lines(cols as usize);
@@ -204,6 +210,7 @@ impl Tui {
             truecolor: true,
             thinking: false,
             thinking_started: None,
+            thinking_lines: Vec::new(),
             hide_thinking: false,
             pending_tokens: None,
             history: Vec::new(),
@@ -215,10 +222,11 @@ impl Tui {
             model_name: String::new(),
             cwd,
             thinking_effort: String::new(),
-            permission_mode: gray_core::approvals::MODE_AUTO.to_string(),
+            permission_mode: gray_core::approvals::MODE_FULL.to_string(),
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
+            last_height: rows,
             latest_usage: None,
             cumulative_usage: None,
             markdown_renderer: gray_markdown::StreamingMarkdownRenderer::new(
@@ -229,7 +237,7 @@ impl Tui {
             pending_resize: None,
             live_streamed_tokens: 0,
             tool_progress_lens: std::collections::HashMap::new(),
-            viewport_h: VIEWPORT_H,
+            viewport_h: MIN_VIEWPORT_H,
             active_question: None,
             pending_question_answers: Vec::new(),
         })
@@ -243,15 +251,16 @@ impl Tui {
     /// purging here is what destroyed the transcript behind modals.
     pub(crate) fn reanchor_viewport(&mut self, cols: u16) {
         self.last_width = cols;
+        if let Ok((_, rows)) = crossterm::terminal::size() {
+            self.last_height = rows;
+        }
         self.pending_resize = None;
         // Mode 2004 (bracketed paste) is terminal-global; re-assert after any
         // alternate-screen modal in case a child cleared it.
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
-        if let Ok(term) = Terminal::with_options(
+        if let Ok(term) = CustomTerminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(self.viewport_h.max(MIN_VIEWPORT_H)),
-            },
+            self.viewport_h.max(MIN_VIEWPORT_H),
         ) {
             self.terminal = term;
         }
@@ -263,17 +272,18 @@ impl Tui {
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
     pub(crate) fn reflow_on_resize(&mut self, new_cols: u16) {
         self.last_width = new_cols;
+        if let Ok((_, rows)) = crossterm::terminal::size() {
+            self.last_height = rows;
+        }
 
         // Codex-style: reset scroll region, clear visible screen and purge scrollback, home cursor
         let mut out = std::io::stdout();
         let _ = write!(out, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
         let _ = out.flush();
 
-        if let Ok(term) = Terminal::with_options(
+        if let Ok(term) = CustomTerminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(self.viewport_h.max(MIN_VIEWPORT_H)),
-            },
+            self.viewport_h.max(MIN_VIEWPORT_H),
         ) {
             self.terminal = term;
         }
@@ -444,14 +454,19 @@ impl Tui {
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            let style = if self.thinking {
-                thinking_style()
+            if self.thinking {
+                // Thinking rows buffer for the header-first flush in
+                // `end_thinking_run`, never straight to the transcript.
+                for line in rest.split('\n') {
+                    if !line.is_empty() {
+                        self.thinking_lines.push(line.to_string());
+                    }
+                }
             } else {
-                Style::default()
-            };
-            for line in rest.split('\n') {
-                if !line.is_empty() {
-                    self.push_line_styled(line.to_string(), style);
+                for line in rest.split('\n') {
+                    if !line.is_empty() {
+                        self.push_line_styled(line.to_string(), Style::default());
+                    }
                 }
             }
         }
@@ -588,16 +603,20 @@ impl Tui {
         }
         let needs_cron_tick = false;
         // Reference: codex screen_size.rs + transcript_reflow.rs — trailing 75ms debounce.
+        // Rows ride along: a height-only drag must reflow too, otherwise a
+        // paint on stale screen math tears scrollback with no repair coming.
         if let Some((cols, deadline)) = self.pending_resize {
             if Instant::now() >= deadline {
                 self.pending_resize = None;
-                if cols != self.last_width {
-                    self.reflow_on_resize(cols);
+                let (live_cols, live_rows) =
+                    crossterm::terminal::size().unwrap_or((cols, self.last_height));
+                if live_cols != self.last_width || live_rows != self.last_height {
+                    self.reflow_on_resize(live_cols);
                     return;
                 }
             }
-        } else if let Ok((cols, _)) = crossterm::terminal::size()
-            && cols != self.last_width
+        } else if let Ok((cols, rows)) = crossterm::terminal::size()
+            && (cols != self.last_width || rows != self.last_height)
         {
             self.pending_resize = Some((cols, Instant::now() + Duration::from_millis(75)));
             if !needs_cron_tick && self.status.is_none() {
