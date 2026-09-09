@@ -31,7 +31,6 @@ impl GatewayRunner {
         // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let host_handler = cron_host_handler(cwd.clone());
-        let denied = self.config.denied_tools.clone();
         let workspace = cwd.clone();
         let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
             model,
@@ -51,7 +50,7 @@ impl GatewayRunner {
             // model gets the gate's accurate reason instead of "does not exist".
             wrap_executor: Some(Box::new(
                 move |inner: std::sync::Arc<dyn gray_core::agent::ToolExecutor>| {
-                    std::sync::Arc::new(GatedExecutor::new(inner, denied, workspace))
+                    std::sync::Arc::new(GatedExecutor::new(inner, workspace))
                         as std::sync::Arc<dyn gray_core::agent::ToolExecutor>
                 },
             )),
