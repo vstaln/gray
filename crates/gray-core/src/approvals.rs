@@ -173,30 +173,24 @@ pub fn tool_path(args: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// True when `path` resolves inside `cwd` (lexically; symlinks are resolved
-/// below when the file exists).
+/// True when `path` resolves inside `cwd`. Both sides are resolved through
+/// the filesystem: when the target does not exist yet there is nothing to
+/// resolve, so the answer is false (uncertainty asks, never authorizes).
+/// A symlinked parent pointing outside the workspace therefore denies.
+/// This does not stop a concurrent symlink swap between check and use.
 pub fn path_in_cwd(cwd: &Path, path: &str) -> bool {
     let joined = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
         cwd.join(path)
     };
-    let canon = |p: PathBuf| {
-        std::fs::canonicalize(&p).unwrap_or_else(|_| {
-            let mut out = PathBuf::new();
-            for comp in p.components() {
-                match comp {
-                    std::path::Component::ParentDir => {
-                        out.pop();
-                    }
-                    std::path::Component::CurDir => {}
-                    c => out.push(c.as_os_str()),
-                }
-            }
-            out
-        })
+    let Ok(root) = std::fs::canonicalize(cwd) else {
+        return false;
     };
-    canon(joined).starts_with(canon(cwd.to_path_buf()))
+    let Ok(target) = std::fs::canonicalize(joined) else {
+        return false;
+    };
+    target.starts_with(root)
 }
 
 /// Static verdict for a tool call: no asking, no session memory yet.
@@ -413,24 +407,40 @@ mod tests {
 
     #[test]
     fn auto_verdict_matrix() {
-        assert_eq!(verdict("auto", "read", &json!({}), &cwd()), Verdict::Allow);
+        // path_in_cwd resolves through the filesystem: use a real temp dir.
+        // Existing in-workspace files allow; new files, escapes, and missing
+        // args ask (uncertainty never authorizes).
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().to_path_buf();
+        let existing = work.join("a.rs");
+        std::fs::write(&existing, "x").unwrap();
+        assert_eq!(verdict("auto", "read", &json!({}), &work), Verdict::Allow);
         assert_eq!(
-            verdict("auto", "write", &json!({"path": "src/a.rs"}), &cwd()),
+            verdict("auto", "write", &json!({"path": "a.rs"}), &work),
             Verdict::Allow
         );
         assert_eq!(
-            verdict("auto", "edit", &json!({"path": "/work/proj/b.rs"}), &cwd()),
+            verdict(
+                "auto",
+                "edit",
+                &json!({"path": existing.to_str().unwrap()}),
+                &work
+            ),
             Verdict::Allow
         );
         assert_eq!(
-            verdict("auto", "write", &json!({"path": "/etc/passwd"}), &cwd()),
+            verdict("auto", "write", &json!({"path": "new-file.rs"}), &work),
             Verdict::Ask
         );
         assert_eq!(
-            verdict("auto", "write", &json!({"path": "../outside.txt"}), &cwd()),
+            verdict("auto", "write", &json!({"path": "/etc/passwd"}), &work),
             Verdict::Ask
         );
-        assert_eq!(verdict("auto", "write", &json!({}), &cwd()), Verdict::Ask);
+        assert_eq!(
+            verdict("auto", "write", &json!({"path": "../outside.txt"}), &work),
+            Verdict::Ask
+        );
+        assert_eq!(verdict("auto", "write", &json!({}), &work), Verdict::Ask);
         assert_eq!(
             verdict("auto", "bash", &json!({"command": "ls"}), &cwd()),
             Verdict::Ask
@@ -481,12 +491,15 @@ mod tests {
 
     #[test]
     fn path_aliases_resolve_inside_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().to_path_buf();
+        std::fs::write(work.join("x.rs"), "x").unwrap();
         assert_eq!(
-            verdict("auto", "edit", &json!({"file_path": "x.rs"}), &cwd()),
+            verdict("auto", "edit", &json!({"file_path": "x.rs"}), &work),
             Verdict::Allow
         );
         assert_eq!(
-            verdict("auto", "write", &json!({"target": "/etc/x"}), &cwd()),
+            verdict("auto", "write", &json!({"target": "/etc/x"}), &work),
             Verdict::Ask
         );
     }

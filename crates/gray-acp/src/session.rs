@@ -105,13 +105,20 @@ fn guard_path(cwd: &std::path::Path, path: &std::path::Path) -> Result<PathBuf, 
     if std::env::var("GRAY_ACP_ALLOW_ANY_PATH").as_deref() == Ok("1") {
         return Ok(path.to_path_buf());
     }
-    let canon_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let canon_path = if path.is_absolute() {
+    // Strict on both sides: an unresolvable workspace or a not-yet-existing
+    // target denies. New-file creation through this path intentionally fails;
+    // a future safe version must authorize/open the parent directory.
+    let canon_cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve workspace: {e}"))?;
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
         canon_cwd.join(path)
     };
-    let normalized = canon_path;
+    let normalized = joined
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve existing target: {e}"))?;
     if normalized.starts_with(&canon_cwd) {
         Ok(normalized)
     } else {
@@ -194,6 +201,17 @@ fn client_builder(
             move |req: WriteTextFileRequest, responder: Responder<WriteTextFileResponse>, _cx| {
                 let cwd_write = cwd_write.clone();
                 async move {
+                    // Host filesystem writes need explicit auto-approval:
+                    // rejecting request_permission is not itself a gate.
+                    if !auto_approve {
+                        return responder.respond_with_error(
+                            agent_client_protocol::Error::invalid_request().data(
+                                serde_json::json!(
+                                    "host filesystem writes require explicit auto-approval"
+                                ),
+                            ),
+                        );
+                    }
                     match guard_path(&cwd_write, &req.path) {
                         Err(e) => responder.respond_with_error(
                             agent_client_protocol::Error::invalid_request()
@@ -574,11 +592,32 @@ mod tests {
     #[test]
     fn guard_path_keeps_paths_inside_workspace() {
         use std::path::PathBuf;
-        let cwd = std::env::temp_dir()
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
-        let inside = cwd.join("sub").join("file.txt");
-        assert_eq!(guard_path(&cwd, &inside), Ok(inside));
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        // Existing file inside: ok.
+        let inside = cwd.join("file.txt");
+        std::fs::write(&inside, "x").unwrap();
+        assert_eq!(guard_path(&cwd, &inside), Ok(inside.clone()));
+        // Relative form of the same file: ok.
+        assert_eq!(guard_path(&cwd, &PathBuf::from("file.txt")), Ok(inside));
+        // Traversal and absolute escapes: denied.
+        assert!(guard_path(&cwd, &PathBuf::from("../outside.txt")).is_err());
+        assert!(guard_path(&cwd, &PathBuf::from("/etc/passwd")).is_err());
+        // Not-yet-existing target: denied (uncertainty never authorizes).
+        assert!(guard_path(&cwd, &PathBuf::from("new-file.txt")).is_err());
+        // Symlinked subdir pointing out: denied.
+        #[cfg(unix)]
+        {
+            let out = dir.path().parent().unwrap().join(format!(
+                "gray-acp-guard-test-outside-{}",
+                std::process::id()
+            ));
+            std::fs::write(&out, "x").unwrap();
+            std::os::unix::fs::symlink(&out, cwd.join("link-out.txt")).unwrap();
+            let denied = guard_path(&cwd, &PathBuf::from("link-out.txt")).is_err();
+            let _ = std::fs::remove_file(&out);
+            assert!(denied, "symlink escape must be rejected");
+        }
         if let Some(parent) = cwd.parent() {
             let outside: PathBuf = parent.join("definitely-outside-gray-workspace-xyz");
             assert!(
