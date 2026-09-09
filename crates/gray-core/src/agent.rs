@@ -196,7 +196,10 @@ impl ToolBefore {
                     .to_string(),
             ),
             Some("modify") => Self::Modify(v.get("args").cloned().unwrap_or_else(|| args.clone())),
-            _ => Self::Allow,
+            // A claimed hook's verdict must be explicit: anything but a
+            // documented "allow" denies rather than silently authorizing.
+            Some("allow") => Self::Allow,
+            _ => Self::Deny("plugin returned an unrecognized policy verdict".to_string()),
         }
     }
 }
