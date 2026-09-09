@@ -14,31 +14,8 @@ pub(crate) use widgets::{
     transcript_ends_blank,
 };
 
-/// Blank rows inserted between the status/queued rows and the input so the
-/// input + panel + footer sit flush at the viewport bottom. Without this the
-/// fixed-height inline viewport leaves the unused rows below the footer.
-pub(crate) fn filler_rows(
-    area_h: u16,
-    status_h: u16,
-    queued_h: u16,
-    box_rows: u16,
-    attach_h: u16,
-    panel_h: u16,
-) -> u16 {
-    area_h
-        .saturating_sub(status_h + queued_h + box_rows + attach_h + 1)
-        .saturating_sub(panel_h)
-}
-
-/// Spare cleared row kept above the input so a 1-row estimate-vs-layout
-/// mismatch can't leave ghost shell text below the box (the `/` corruption
-/// that forced the fixed-14 revert). Idle viewport is ~5 rows, not 14.
-pub(crate) const SPARE_ROWS: u16 = 1;
-
 /// Exact-fit viewport height for the given content, clamped to
-/// `MIN_VIEWPORT_H..=VIEWPORT_H`. The spare is skipped while a status dock
-/// is up: the dock already ends in a bare breathing row, so adding SPARE on
-/// top renders a second blank row between `Working…` and the input.
+/// `MIN_VIEWPORT_H..=VIEWPORT_H`.
 pub(crate) fn desired_viewport_h(
     status_h: u16,
     queued_h: u16,
@@ -46,8 +23,7 @@ pub(crate) fn desired_viewport_h(
     panel_h: u16,
     attach_h: u16,
 ) -> u16 {
-    let spare = if status_h > 0 { 0 } else { SPARE_ROWS };
-    (status_h + queued_h + box_rows + panel_h + attach_h + 1 + spare)
+    (status_h + queued_h + box_rows + panel_h + attach_h + 1)
         .clamp(MIN_VIEWPORT_H, VIEWPORT_H)
 }
 
@@ -161,14 +137,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     tui.matches.len().min(panel_cap as usize)
                 };
                 let panel_h = visible_count as u16;
-                // Bottom-anchor the composer: unused viewport rows go ABOVE the input
-                // as a blank gap, so the input + footer sit flush at the viewport
-                // bottom instead of floating with a huge cleared area below them.
                 let box_rows = if question_active { 0 } else { box_h };
-                let filler =
-                    filler_rows(area.height, status_h, queued_h, box_rows, attach_h, panel_h);
-                debug_assert_eq!(filler, avail.saturating_sub(panel_h));
-                let box_y = status_y + status_h + queued_h + filler;
+                let box_y = status_y + status_h + queued_h;
                 // Codex parity: while a question is active the question surface REPLACES
                 // the composer — no input box, the panel occupies its slot.
                 let panel_y = if question_active {
@@ -178,12 +148,6 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 };
                 let attach_y = panel_y + panel_h;
                 let footer_y = attach_y + attach_h;
-                if filler > 0 {
-                    frame.render_widget(
-                        ratatui::widgets::Clear,
-                        Rect::new(area.x, status_y + status_h + queued_h, area.width, filler),
-                    );
-                }
 
                 if let Some((started, label)) = &tui.status
                     && !question_active
@@ -579,32 +543,14 @@ mod tests {
     }
 
     #[test]
-    fn filler_bottom_anchors_footer() {
-        // Screenshot repro: 14-row inline viewport, status dock 3 + input 3,
-        // no panel/matches -> footer must sit on the last viewport row, with
-        // the slack above the input instead of below the footer.
-        let filler = filler_rows(14, 3, 0, 3, 0, 0);
-        assert_eq!(filler, 7);
-        // status(3) + filler(7) + box(3) + footer(1) fills the viewport.
-        assert_eq!(3 + filler + 3 + 1, 14);
-        // Full panel consumes the slack: no gap below the footer either.
-        assert_eq!(filler_rows(14, 3, 0, 3, 0, 6), 1);
-        // Overflow saturates instead of underflowing.
-        assert_eq!(filler_rows(5, 3, 0, 3, 0, 0), 0);
-    }
-
-    #[test]
-    fn desired_viewport_collapses_idle_gap() {
-        // Idle: input 3 + footer 1 + 1 spare = 5 rows, not 14. Filler is 1.
-        assert_eq!(desired_viewport_h(0, 0, 3, 0, 0), 5);
-        assert_eq!(filler_rows(5, 0, 0, 3, 0, 0), 1);
-        // Slash popup: input 3 + panel 6 + footer 1 + spare 1 = 11.
-        assert_eq!(desired_viewport_h(0, 0, 3, 6, 0), 11);
-        // Running: dock already ends in a breathing row, so no spare —
-        // status 2 + input 3 + footer 1 = 6, filler 0, single separator.
+    fn desired_viewport_exact_fit() {
+        // Idle: input 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
+        assert_eq!(desired_viewport_h(0, 0, 3, 0, 0), 4);
+        // Slash popup: input 3 + panel 6 + footer 1 = 10.
+        assert_eq!(desired_viewport_h(0, 0, 3, 6, 0), 10);
+        // Running: status 2 + input 3 + footer 1 = 6.
         assert_eq!(desired_viewport_h(2, 0, 3, 0, 0), 6);
-        assert_eq!(filler_rows(6, 2, 0, 3, 0, 0), 0);
-        // Running + full panel still fits: 3 + 3 + 6 + 1 = 13.
+        // Running + full panel: 3 + 3 + 6 + 1 = 13.
         assert_eq!(desired_viewport_h(3, 0, 3, 6, 0), 13);
     }
 
