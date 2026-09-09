@@ -85,9 +85,10 @@ pub struct Tui {
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
     pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
-    /// Fixed inline viewport height (baseline `Inline(VIEWPORT_H)`). `draw`
-    /// never resizes it: the filler bottom-anchor + surplus `Clear` stay live
-    /// every frame, so unpainted rows are cleared, never ghosts.
+    /// Current inline viewport height. `draw` keeps it at the exact-fit
+    /// content height (+1 spare cleared row, clamped to
+    /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
+    /// popups can grow it back up.
     pub(crate) viewport_h: u16,
     // request_user_input overlay (codex port) + late non-blocking answers
     pub(crate) active_question: Option<question::QuestionSession>,
@@ -173,7 +174,7 @@ impl Tui {
         let mut terminal = Terminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
             ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(VIEWPORT_H),
+                viewport: ratatui::Viewport::Inline(MIN_VIEWPORT_H),
             },
         )?;
 
@@ -229,7 +230,7 @@ impl Tui {
             pending_resize: None,
             live_streamed_tokens: 0,
             tool_progress_lens: std::collections::HashMap::new(),
-            viewport_h: VIEWPORT_H,
+            viewport_h: MIN_VIEWPORT_H,
             active_question: None,
             pending_question_answers: Vec::new(),
         })

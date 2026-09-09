@@ -208,6 +208,21 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     }
 }
 
+/// First visible row of the input box so a huge paste never exceeds `max_h`
+/// rows while the cursor stays visible. Stateless (recomputed per frame, no
+/// Tui field): cursor at head shows the head, otherwise the window ends at
+/// the cursor — typing at the tail keeps the tail, arrowing up follows.
+#[allow(dead_code)]
+pub(crate) fn input_scroll(total_rows: usize, cursor_line: usize, max_h: usize) -> usize {
+    if total_rows <= max_h || max_h == 0 {
+        return 0;
+    }
+    let cursor_line = cursor_line.min(total_rows.saturating_sub(1));
+    (cursor_line + 1)
+        .saturating_sub(max_h)
+        .min(total_rows - max_h)
+}
+
 /// True when the last scrollback row is a bare blank (no bg, no glyphs):
 /// the transcript already left breathing room above the viewport (a
 /// paragraph separator, `ensure_gap`, …). Same predicate `ensure_gap` uses.
@@ -319,5 +334,29 @@ mod tests {
         let rows = row_texts(&ibox);
         assert!(rows.iter().any(|r| r.contains("ok ")), "{rows:?}");
         assert!(rows.iter().any(|r| r.contains("end")), "{rows:?}");
+    }
+
+    #[test]
+    fn input_box_has_top_and_bottom_margin_rows() {
+        let ibox = build_input_box("", 0, 80);
+        let rows = row_texts(&ibox);
+        assert_eq!(rows.len(), 3, "top margin + prompt + bottom margin: {rows:?}");
+        assert!(rows.first().unwrap().trim().is_empty());
+        assert!(rows.last().unwrap().trim().is_empty());
+        assert!(rows[1].contains('❯'));
+    }
+
+    #[test]
+    fn input_scroll_keeps_cursor_visible_in_capped_box() {
+        // 10-row viewport: a 20-row paste must window, never clip the cursor.
+        assert_eq!(input_scroll(3, 1, 6), 0); // short box: no scroll
+        assert_eq!(input_scroll(20, 0, 6), 0); // cursor at top: show head
+        assert_eq!(input_scroll(20, 19, 6), 14); // cursor at end: show tail
+        // cursor in the middle: window must contain it
+        let scroll = input_scroll(20, 10, 6);
+        assert!(
+            (scroll..scroll + 6).contains(&10),
+            "cursor must stay visible: scroll={scroll}"
+        );
     }
 }
