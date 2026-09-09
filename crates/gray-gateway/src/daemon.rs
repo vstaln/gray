@@ -1214,11 +1214,7 @@ mod tests {
                 Box::pin(async { ToolOutput::ok("must not reach inner") })
             }
         }
-        let ex = GatedExecutor::new(
-            Arc::new(Inner),
-            vec!["write".to_string()],
-            std::path::PathBuf::from("."),
-        );
+        let ex = GatedExecutor::new(Arc::new(Inner), std::path::PathBuf::from("."));
         let ctx = ToolContext {
             cwd: std::path::PathBuf::from("."),
             cancel: tokio_util::sync::CancellationToken::new(),
@@ -1234,11 +1230,16 @@ mod tests {
             "got: {}",
             out.content
         );
-        // Non-denied tools still delegate.
+        // Containment: no native tool delegates, even previously-allowed reads.
         let out = ex
             .execute(&ctx, "read", serde_json::json!({"path": "x"}))
             .await;
-        assert!(!out.is_error);
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("disabled in gateway mode"),
+            "got: {}",
+            out.content
+        );
     }
 
     #[test]
