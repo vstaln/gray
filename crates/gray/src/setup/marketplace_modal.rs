@@ -85,6 +85,41 @@ pub(crate) fn format_market_row(
     format!("{head}{tail}")
 }
 
+/// Short row chip for a plugin source (display only; install specs and
+/// the preview pane keep full labels via `format_preview`).
+fn source_chip(source: gray_pkg::ops::SearchSource) -> &'static str {
+    use gray_pkg::ops::SearchSource as S;
+    match source {
+        S::Gray => "gray",
+        S::Pi => "pi",
+        S::ClawHub => "claw",
+        S::Claude => "claude",
+    }
+}
+
+/// Short row chip for a Skills-tab source label (`SkillHit.source` is a
+/// plain string): `"ClawHub"`→`"claw"`, `"Claude"`→`"claude"`, else input.
+fn skill_chip(source: &str) -> &str {
+    match source {
+        "ClawHub" => "claw",
+        "Claude" => "claude",
+        other => other,
+    }
+}
+
+/// Per-source chip fg for the unselected row head (`gray` reuses the
+/// modal peach; selected rows suppress chip colors wholesale).
+fn chip_color(chip: &str, accent_peach: ratatui::style::Color) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match chip {
+        "[gray]" => accent_peach,
+        "[pi]" => Color::Rgb(125, 211, 252),
+        "[claw]" => Color::Rgb(134, 239, 172),
+        "[claude]" => Color::Rgb(196, 181, 253),
+        _ => Color::White,
+    }
+}
+
 /// Pure plugin preview: name/version/source/desc plus files, trust,
 /// version detail and required bins/env — each trailing line only when
 /// known (non-empty). `requires` is empty in the current `search_all`
@@ -543,7 +578,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                     let (head, tail) = split_market_row(
                                         &h.name,
                                         &h.version,
-                                        h.source.label(),
+                                        source_chip(h.source),
                                         &h.desc,
                                     );
                                     out.push((head, tail, true));
@@ -584,8 +619,12 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                 }
                             } else {
                                 for h in &skill_hits {
-                                    let (head, tail) =
-                                        split_market_row(&h.name, &h.version, &h.source, &h.desc);
+                                    let (head, tail) = split_market_row(
+                                        &h.name,
+                                        &h.version,
+                                        skill_chip(&h.source),
+                                        &h.desc,
+                                    );
                                     out.push((head, tail, true));
                                 }
                             }
@@ -1323,8 +1362,22 @@ fn render_market_row(
         if lit {
             head_style = head_style.add_modifier(Modifier::BOLD);
         }
+        // The trailing `[chip]` (always emitted by `split_market_row`)
+        // paints in its source color, bold off — the color is the signal.
+        // Non-hit rows carry no bracket suffix and stay head-styled.
+        let chip_at = head_vis.rfind('[').filter(|_| head_vis.ends_with(']'));
+        let (head_text, chip_text) = match chip_at {
+            Some(i) => head_vis.split_at(i),
+            None => (head_vis.as_str(), ""),
+        };
         Line::from(vec![
-            Span::styled(head_vis, head_style),
+            Span::styled(head_text, head_style),
+            Span::styled(
+                chip_text,
+                Style::default()
+                    .fg(chip_color(chip_text, accent_peach))
+                    .bg(box_bg),
+            ),
             Span::styled(tail_vis, Style::default().fg(text_dim).bg(box_bg)),
             Span::styled(" ".repeat(fill), Style::default().bg(box_bg)),
         ])
@@ -1362,11 +1415,11 @@ fn footer_spans(
 #[cfg(test)]
 mod tests {
     use super::{
-        MarketTab, apply_plugin_view, apply_skill_view, filter_short, format_install_status,
-        format_market_row, format_preview, format_skill_preview, format_source_row,
-        install_spec_for_plugin, install_spec_for_skill, installed_summary, next_plugin_filter,
-        next_skill_filter, sort_plugins_by_name, sort_skills_by_name, split_market_row,
-        install_status_covered_by_footer,
+        MarketTab, apply_plugin_view, apply_skill_view, chip_color, filter_short,
+        format_install_status, format_market_row, format_preview, format_skill_preview,
+        format_source_row, install_spec_for_plugin, install_spec_for_skill,
+        install_status_covered_by_footer, installed_summary, next_plugin_filter, next_skill_filter,
+        skill_chip, sort_plugins_by_name, sort_skills_by_name, source_chip, split_market_row,
     };
     use gray_pkg::ops::{SearchHit, SearchSource};
     use gray_pkg::skills_ops::SkillHit;
@@ -1406,6 +1459,28 @@ mod tests {
             split_market_row("demo", "1.2.3", "Gray Index", "  "),
             ("demo 1.2.3 [Gray Index]".to_string(), String::new())
         );
+    }
+
+    #[test]
+    fn source_chips_are_short_and_exact() {
+        use gray_pkg::ops::SearchSource as S;
+        assert_eq!(source_chip(S::Gray), "gray");
+        assert_eq!(source_chip(S::Pi), "pi");
+        assert_eq!(source_chip(S::ClawHub), "claw");
+        assert_eq!(source_chip(S::Claude), "claude");
+    }
+
+    #[test]
+    fn skill_chips_and_colors_follow_source_table() {
+        assert_eq!(skill_chip("ClawHub"), "claw");
+        assert_eq!(skill_chip("Claude"), "claude");
+        assert_eq!(skill_chip("Other"), "Other");
+        use ratatui::style::Color as C;
+        let peach = C::Rgb(246, 173, 126);
+        assert_eq!(chip_color("[gray]", peach), peach);
+        assert_eq!(chip_color("[pi]", peach), C::Rgb(125, 211, 252));
+        assert_eq!(chip_color("[claw]", peach), C::Rgb(134, 239, 172));
+        assert_eq!(chip_color("[claude]", peach), C::Rgb(196, 181, 253));
     }
 
     #[test]
