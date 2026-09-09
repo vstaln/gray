@@ -54,21 +54,69 @@ impl MarketTab {
     }
 }
 
-/// Pure row renderer, shared by both search tabs:
-/// `name version [source] - desc`, desc suffix omitted when empty
-/// (mirrors `ops::format_search_hit` without depending on its enum).
+/// Pure row split, shared by both search tabs:
+/// head `name version [source]`, tail ` - desc` (empty when desc blank).
+/// (Mirrors `ops::format_search_hit` without depending on its enum.)
+pub(crate) fn split_market_row(
+    name: &str,
+    version: &str,
+    source_label: &str,
+    desc: &str,
+) -> (String, String) {
+    let head = format!("{name} {version} [{source_label}]");
+    let desc = desc.trim();
+    if desc.is_empty() {
+        (head, String::new())
+    } else {
+        (head, format!(" - {desc}"))
+    }
+}
+
+/// `split_market_row` concatenated (kept so existing callers/tests read
+/// the full row as one string).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn format_market_row(
     name: &str,
     version: &str,
     source_label: &str,
     desc: &str,
 ) -> String {
-    let base = format!("{name} {version} [{source_label}]");
-    let desc = desc.trim();
-    if desc.is_empty() {
-        base
-    } else {
-        format!("{base} - {desc}")
+    let (head, tail) = split_market_row(name, version, source_label, desc);
+    format!("{head}{tail}")
+}
+
+/// Short row chip for a plugin source (display only; install specs and
+/// the preview pane keep full labels via `format_preview`).
+fn source_chip(source: gray_pkg::ops::SearchSource) -> &'static str {
+    use gray_pkg::ops::SearchSource as S;
+    match source {
+        S::Gray => "gray",
+        S::Pi => "pi",
+        S::ClawHub => "claw",
+        S::Claude => "claude",
+    }
+}
+
+/// Short row chip for a Skills-tab source label (`SkillHit.source` is a
+/// plain string): `"ClawHub"`→`"claw"`, `"Claude"`→`"claude"`, else input.
+fn skill_chip(source: &str) -> &str {
+    match source {
+        "ClawHub" => "claw",
+        "Claude" => "claude",
+        other => other,
+    }
+}
+
+/// Per-source chip fg for the unselected row head (`gray` reuses the
+/// modal peach; selected rows suppress chip colors wholesale).
+fn chip_color(chip: &str, accent_peach: ratatui::style::Color) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    match chip {
+        "[gray]" => accent_peach,
+        "[pi]" => Color::Rgb(125, 211, 252),
+        "[claw]" => Color::Rgb(134, 239, 172),
+        "[claude]" => Color::Rgb(196, 181, 253),
+        _ => Color::White,
     }
 }
 
@@ -134,6 +182,12 @@ pub(crate) fn format_install_status(err: Option<&str>) -> String {
         None => "active".to_string(),
         Some(e) => format!("failed: {e}"),
     }
+}
+
+/// True when the preview footer already shows the in-flight `installing...`
+/// line, so the status row above it must stay quiet (no duplicate).
+pub(crate) fn install_status_covered_by_footer(msg: &str, preview_open: bool) -> bool {
+    msg == "installing..." && preview_open
 }
 
 /// Install spec for a plugin hit: Gray names install bare, Pi via `npm:`,
@@ -203,12 +257,39 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
     let mut search_err: Option<String> = None;
     let mut statuses: [Option<bool>; 4] = [None, None, None, None];
     let mut sel = 0usize;
+    // First visible hit row in the list view (auto-follows `sel`;
+    // self-corrects every frame, so no reset sites needed).
+    let mut sel_top = 0usize;
     let mut changed = false;
+    // Empty-state content (local lock reads, instant, no network).
+    // Corrupt locks degrade to "no installed row", never a modal error.
+    let installed_plugins: Vec<(String, String)> = gray_pkg::ops::list()
+        .map(|m| m.into_iter().map(|(n, e)| (n, e.version.clone())).collect())
+        .unwrap_or_default();
+    let installed_skills: Vec<(String, String)> = gray_pkg::skills_ops::list()
+        .map(|v| {
+            v.into_iter()
+                .map(|s| (s.name.clone(), s.version.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Pristine receipts; the display vecs are filter+sort views over these.
+    let mut plugin_all: Vec<SearchHit> = Vec::new();
+    let mut skill_all: Vec<SkillHit> = Vec::new();
+    let mut plugin_filter: Option<gray_pkg::ops::SearchSource> = None;
+    let mut skill_filter: Option<gray_pkg::ops::SearchSource> = None;
+    let mut sort_mode = SortMode::Relevance;
+    let mut skill_booted = false;
 
     // Runtime handle for spawned `block_on` flights (same shape as the
     // provider live-fetch path: `try_current` here, `block_on` on a fresh
     // OS thread so the modal loop never blocks the runtime worker).
     let rt = tokio::runtime::Handle::try_current().ok();
+    // Browse on open: empty-query search in the background. The modal
+    // opens instantly over Installed rows; hits land when ready.
+    if let Some(handle) = rt.clone() {
+        pending_search = Some(spawn_plugin_search(handle, String::new()));
+    }
     // Kick off the first marketplace reachability check immediately so
     // the Marketplaces tab rarely shows `checking...`.
     if let Some(handle) = rt.clone() {
@@ -285,7 +366,8 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     SearchPoll::PluginReady(res) => match res {
                         Ok(out) => {
                             plugin_unreachable = unreachable_lines(&out);
-                            plugin_hits = out.hits;
+                            plugin_all = out.hits;
+                            plugin_hits = apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
                             plugin_dirty = false;
                             search_err = None;
                             sel = 0;
@@ -298,7 +380,8 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     },
                     SearchPoll::SkillReady(res) => match res {
                         Ok(hits) => {
-                            skill_hits = hits;
+                            skill_all = hits;
+                            skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
                             skill_dirty = false;
                             search_err = None;
                             sel = 0;
@@ -349,8 +432,10 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     return;
                 }
                 render_dimmed_background(frame, &bg_snapshot);
+                // Near-fullscreen: result rows are long and many;
+                // the old 116-wide cap truncated every description.
                 let modal_w = (area.width.saturating_sub(4))
-                    .clamp(56, 116)
+                    .clamp(56, 220)
                     .min(area.width);
                 let pad_x = 3u16;
                 let inner_w = modal_w.saturating_sub(pad_x * 2);
@@ -381,7 +466,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                 // + 2 for modal top/bottom padding.
                 let needed_h = rows + 6;
                 let modal_h = needed_h
-                    .clamp(10, 24)
+                    .clamp(10, 40)
                     .min(area.height.saturating_sub(2).max(10))
                     .min(area.height);
                 let modal_x = (area.width.saturating_sub(modal_w)) / 2;
@@ -454,43 +539,47 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                 } else {
                     bottom
                 };
-                // Body rows for the active view.
-                let body: Vec<(String, bool)> = match tab {
+                // Body rows for the active view: (head, tail, lit) —
+                // browse hits split bright-head/dim-tail, every other
+                // line passes tail = "".
+                let body: Vec<(String, String, bool)> = match tab {
                     MarketTab::Plugins => {
                         if let Some(idx) = preview {
                             preview_lines_plugins(&plugin_hits, Some(idx))
                                 .into_iter()
-                                .map(|l| (l, true))
+                                .map(|l| (l, String::new(), true))
                                 .collect()
                         } else {
-                            let mut out = vec![(query_line(&plugin_query), true)];
+                            let mut out = vec![(query_line(&plugin_query), String::new(), true)];
                             if searching {
-                                out.push(("* Loading...".to_string(), true));
+                                out.push(("* Loading...".to_string(), String::new(), true));
                             } else if let Some(e) = search_err.as_deref() {
-                                out.push((format!("search failed: {e}"), true));
+                                out.push((format!("search failed: {e}"), String::new(), true));
                             } else if plugin_hits.is_empty() {
-                                out.push((
-                                    if plugin_dirty {
-                                        "type a query + Enter to search".to_string()
-                                    } else {
-                                        "no hits — try another query".to_string()
-                                    },
-                                    true,
-                                ));
-                            } else {
-                                for h in &plugin_hits {
+                                if !plugin_dirty {
                                     out.push((
-                                        format_market_row(
-                                            &h.name,
-                                            &h.version,
-                                            h.source.label(),
-                                            &h.desc,
-                                        ),
+                                        "no hits — try another query".to_string(),
+                                        String::new(),
                                         true,
                                     ));
+                                } else if let Some(line) = installed_summary(&installed_plugins) {
+                                    // Unsearched: show what's installed
+                                    // instead of an empty pane (dim info
+                                    // row, never selectable).
+                                    out.push((line, String::new(), false));
+                                }
+                            } else {
+                                for h in &plugin_hits {
+                                    let (head, tail) = split_market_row(
+                                        &h.name,
+                                        &h.version,
+                                        source_chip(h.source),
+                                        &h.desc,
+                                    );
+                                    out.push((head, tail, true));
                                 }
                                 for line in &plugin_unreachable {
-                                    out.push((line.clone(), true));
+                                    out.push((line.clone(), String::new(), true));
                                 }
                             }
                             out
@@ -500,29 +589,36 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         if let Some(idx) = preview {
                             preview_lines_skills(&skill_hits, Some(idx))
                                 .into_iter()
-                                .map(|l| (l, true))
+                                .map(|l| (l, String::new(), true))
                                 .collect()
                         } else {
-                            let mut out = vec![(query_line(&skill_query), true)];
+                            let mut out = vec![(query_line(&skill_query), String::new(), true)];
                             if searching {
-                                out.push(("* Loading...".to_string(), true));
+                                out.push(("* Loading...".to_string(), String::new(), true));
                             } else if let Some(e) = search_err.as_deref() {
-                                out.push((format!("search failed: {e}"), true));
+                                out.push((format!("search failed: {e}"), String::new(), true));
                             } else if skill_hits.is_empty() {
-                                out.push((
-                                    if skill_dirty {
-                                        "type a query + Enter to search".to_string()
-                                    } else {
-                                        "no hits — try another query".to_string()
-                                    },
-                                    true,
-                                ));
-                            } else {
-                                for h in &skill_hits {
+                                if !skill_dirty {
                                     out.push((
-                                        format_market_row(&h.name, &h.version, &h.source, &h.desc),
+                                        "no hits — try another query".to_string(),
+                                        String::new(),
                                         true,
                                     ));
+                                } else if let Some(line) = installed_summary(&installed_skills) {
+                                    // Unsearched: show what's installed
+                                    // instead of an empty pane (dim info
+                                    // row, never selectable).
+                                    out.push((line, String::new(), false));
+                                }
+                            } else {
+                                for h in &skill_hits {
+                                    let (head, tail) = split_market_row(
+                                        &h.name,
+                                        &h.version,
+                                        skill_chip(&h.source),
+                                        &h.desc,
+                                    );
+                                    out.push((head, tail, true));
                                 }
                             }
                             out
@@ -531,7 +627,13 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     MarketTab::Marketplaces => MARKET_SOURCES
                         .iter()
                         .enumerate()
-                        .map(|(i, s)| (format_source_row(s.label(), statuses[i]), true))
+                        .map(|(i, s)| {
+                            (
+                                format_source_row(s.label(), statuses[i]),
+                                String::new(),
+                                true,
+                            )
+                        })
                         .collect(),
                 };
                 // In list views the first row is the query line (never
@@ -544,15 +646,16 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                 if body.is_empty() {
                     // Unreachable: every branch emits at least one row.
                 } else if preview.is_some() || tab == MarketTab::Marketplaces {
-                    for (text, lit) in body.iter() {
+                    for (head, tail, lit) in body.iter() {
                         if cur_y >= rows_cap {
                             break;
                         }
-                        render_row(
+                        render_market_row(
                             frame,
                             inner,
                             cur_y,
-                            text,
+                            head,
+                            tail,
                             false,
                             *lit,
                             box_bg,
@@ -561,26 +664,8 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         );
                         cur_y += 1;
                     }
-                    // Marketplaces selection highlight.
-                    if tab == MarketTab::Marketplaces && MARKET_SOURCES.len() > 1 {
-                        let row_y = inner.y + 2 + (sel as u16);
-                        if row_y < rows_cap
-                            && sel < MARKET_SOURCES.len()
-                            && let Some(text) = body.get(sel).map(|(t, _)| t.clone())
-                        {
-                            render_row(
-                                frame,
-                                inner,
-                                row_y,
-                                &text,
-                                true,
-                                true,
-                                box_bg,
-                                accent_peach,
-                                text_dim,
-                            );
-                        }
-                    }
+                    // Marketplaces rows are status only (Enter does
+                    // nothing there): never highlight, like hint rows.
                 } else {
                     // Hits length for selection (hint/loading rows are never
                     // highlighted).
@@ -589,18 +674,29 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         MarketTab::Skills => skill_hits.len(),
                         MarketTab::Marketplaces => 0,
                     };
-                    for (idx, (text, lit)) in body.iter().enumerate() {
+                    // Hit slots on screen past the query row; the
+                    // window follows `sel` so long lists scroll.
+                    let hit_slots = rows_cap.saturating_sub(cur_y + 1).max(1) as usize;
+                    sel_top = scroll_top(sel_top, sel, hit_slots);
+                    for (idx, (head, tail, lit)) in body.iter().enumerate() {
                         if cur_y >= rows_cap {
                             break;
+                        }
+                        if idx >= list_offset && idx - list_offset < hits_len {
+                            let vi = idx - list_offset;
+                            if vi < sel_top || vi >= sel_top + hit_slots {
+                                continue;
+                            }
                         }
                         let is_selected = idx >= list_offset
                             && (idx - list_offset) == sel
                             && (idx - list_offset) < hits_len;
-                        render_row(
+                        render_market_row(
                             frame,
                             inner,
                             cur_y,
-                            text,
+                            head,
+                            tail,
                             is_selected,
                             *lit,
                             box_bg,
@@ -610,7 +706,9 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         cur_y += 1;
                     }
                 }
-                if let Some(msg) = install_msg.as_deref() {
+                if let Some(msg) = install_msg.as_deref()
+                    && !install_status_covered_by_footer(msg, preview.is_some())
+                {
                     let msg_y = footer_y.saturating_sub(1);
                     if msg_y > inner.y + 1 {
                         let text: String = msg.chars().take(inner.width as usize).collect();
@@ -633,6 +731,17 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         );
                     }
                 }
+                // Active source filter + sort mode for the footer
+                // (`^F` cycles sources, `^S` cycles rel|name|pop).
+                let filter_seg = format!(
+                    "src:{} · ",
+                    filter_short(match tab {
+                        MarketTab::Plugins => plugin_filter,
+                        MarketTab::Skills => skill_filter,
+                        MarketTab::Marketplaces => None,
+                    })
+                );
+                let sort_seg = format!("sort:{} · ", sort_mode.short());
                 let footer_line = match tab {
                     MarketTab::Plugins | MarketTab::Skills if preview.is_some() => {
                         if installing {
@@ -656,10 +765,14 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         vec![
                             ("↑↓ ", true),
                             ("nav · ", false),
+                            ("←→ ", true),
+                            ("tabs · ", false),
                             ("Enter ", true),
                             ("search/open · ", false),
-                            ("Tab ", true),
-                            ("· ", false),
+                            ("^S ", true),
+                            (sort_seg.as_str(), false),
+                            ("^F ", true),
+                            (filter_seg.as_str(), false),
                             ("Esc ", true),
                             ("close", false),
                         ],
@@ -670,10 +783,10 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         vec![
                             ("↑↓ ", true),
                             ("nav · ", false),
+                            ("←→ ", true),
+                            ("tabs · ", false),
                             ("u ", true),
                             ("re-check · ", false),
-                            ("Tab ", true),
-                            ("· ", false),
                             ("Esc ", true),
                             ("close", false),
                         ],
@@ -716,6 +829,18 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         search_err = None;
                         sel = 0;
                     }
+                    KeyCode::Left | KeyCode::Right if preview.is_none() => {
+                        tab = if code == KeyCode::Right {
+                            tab.next()
+                        } else {
+                            tab.prev()
+                        };
+                        pending_search = None;
+                        preview = None;
+                        install_msg = None;
+                        search_err = None;
+                        sel = 0;
+                    }
                     KeyCode::Char('n') | KeyCode::Char('p')
                         if modifiers.contains(KeyModifiers::CONTROL) =>
                     {
@@ -728,6 +853,43 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         preview = None;
                         install_msg = None;
                         search_err = None;
+                        sel = 0;
+                    }
+                    // A–Z toggle over the pristine receipts (fresh
+                    // searches re-apply it). Ctrl namespace: plain
+                    // letters type into the query.
+                    KeyCode::Char('s') | KeyCode::Char('S')
+                        if modifiers.contains(KeyModifiers::CONTROL) && preview.is_none() =>
+                    {
+                        sort_mode = sort_mode.next();
+                        match tab {
+                            MarketTab::Plugins => {
+                                plugin_hits =
+                                    apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
+                            }
+                            MarketTab::Skills => {
+                                skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
+                            }
+                            MarketTab::Marketplaces => {}
+                        }
+                        sel = 0;
+                    }
+                    // Source filter cycle over the pristine receipts.
+                    KeyCode::Char('f') | KeyCode::Char('F')
+                        if modifiers.contains(KeyModifiers::CONTROL) && preview.is_none() =>
+                    {
+                        match tab {
+                            MarketTab::Plugins => {
+                                plugin_filter = next_plugin_filter(plugin_filter);
+                                plugin_hits =
+                                    apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
+                            }
+                            MarketTab::Skills => {
+                                skill_filter = next_skill_filter(skill_filter);
+                                skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
+                            }
+                            MarketTab::Marketplaces => {}
+                        }
                         sel = 0;
                     }
                     KeyCode::Up if preview.is_none() => {
@@ -765,17 +927,13 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         } else {
                             match tab {
                                 MarketTab::Plugins => {
-                                    if plugin_dirty && !plugin_query.trim().is_empty() {
+                                    // Dirty alone (re)searches: empty query
+                                    // browses the full catalog, no typing needed.
+                                    if plugin_dirty {
                                         if let Some(handle) = rt.clone() {
                                             let q = plugin_query.trim().to_string();
-                                            let (tx, rx) = channel();
-                                            pending_search = Some(SearchFlight::Plugin(rx));
+                                            pending_search = Some(spawn_plugin_search(handle, q));
                                             search_err = None;
-                                            std::thread::spawn(move || {
-                                                let out =
-                                                    handle.block_on(gray_pkg::ops::search_all(&q));
-                                                let _ = tx.send(out);
-                                            });
                                         } else {
                                             search_err = Some("no runtime".to_string());
                                         }
@@ -786,17 +944,13 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                     }
                                 }
                                 MarketTab::Skills => {
-                                    if skill_dirty && !skill_query.trim().is_empty() {
+                                    // Dirty alone (re)searches: empty query
+                                    // browses the full catalog, no typing needed.
+                                    if skill_dirty {
                                         if let Some(handle) = rt.clone() {
                                             let q = skill_query.trim().to_string();
-                                            let (tx, rx) = channel();
-                                            pending_search = Some(SearchFlight::Skill(rx));
+                                            pending_search = Some(spawn_skill_search(handle, q));
                                             search_err = None;
-                                            std::thread::spawn(move || {
-                                                let out = handle
-                                                    .block_on(gray_pkg::skills_ops::search(&q));
-                                                let _ = tx.send(out);
-                                            });
                                         } else {
                                             search_err = Some("no runtime".to_string());
                                         }
@@ -905,6 +1059,20 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                 Event::Resize(_, _) => {}
                 _ => {}
             }
+            // Lazy Skills browse: first visit with an empty query fires
+            // the background search (Plugins browses at open). Never
+            // clobbers a running flight; manual search works regardless.
+            if tab == MarketTab::Skills
+                && !skill_booted
+                && skill_query.trim().is_empty()
+                && pending_search.is_none()
+            {
+                skill_booted = true;
+                if let Some(handle) = rt.clone() {
+                    pending_search = Some(spawn_skill_search(handle, String::new()));
+                    search_err = None;
+                }
+            }
         }
     })();
     let _ = terminal.clear();
@@ -988,6 +1156,195 @@ fn query_line(query: &str) -> String {
     }
 }
 
+/// Background browse/search flight for plugins (empty query = browse all).
+fn spawn_plugin_search(handle: tokio::runtime::Handle, query: String) -> SearchFlight {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = handle.block_on(gray_pkg::ops::search_all(&query));
+        let _ = tx.send(out);
+    });
+    SearchFlight::Plugin(rx)
+}
+
+/// Background search flight for skills (empty query = browse all).
+fn spawn_skill_search(handle: tokio::runtime::Handle, query: String) -> SearchFlight {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let out = handle.block_on(gray_pkg::skills_ops::search(&query));
+        let _ = tx.send(out);
+    });
+    SearchFlight::Skill(rx)
+}
+
+/// `^S` sort cycle over the pristine receipts: relevance (search order),
+/// A–Z, then npm popularity descending. Skills-tab hits all report 0.0,
+/// so popularity there is a documented name-fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortMode {
+    Relevance,
+    Name,
+    Popularity,
+}
+
+impl SortMode {
+    fn next(self) -> SortMode {
+        match self {
+            SortMode::Relevance => SortMode::Name,
+            SortMode::Name => SortMode::Popularity,
+            SortMode::Popularity => SortMode::Relevance,
+        }
+    }
+
+    fn short(self) -> &'static str {
+        match self {
+            SortMode::Relevance => "rel",
+            SortMode::Name => "name",
+            SortMode::Popularity => "pop",
+        }
+    }
+}
+
+/// Display view over pristine receipts: source filter, then the `^S` sort.
+fn apply_plugin_view(
+    all: &[SearchHit],
+    filter: Option<gray_pkg::ops::SearchSource>,
+    sort: SortMode,
+) -> Vec<SearchHit> {
+    let mut v: Vec<SearchHit> = all
+        .iter()
+        .filter(|h| filter.is_none_or(|f| h.source == f))
+        .cloned()
+        .collect();
+    match sort {
+        SortMode::Relevance => {}
+        SortMode::Name => sort_plugins_by_name(&mut v),
+        SortMode::Popularity => sort_plugins_by_popularity(&mut v),
+    }
+    v
+}
+
+/// Display view over pristine skill receipts: source filter, then `^S` sort.
+fn apply_skill_view(
+    all: &[SkillHit],
+    filter: Option<gray_pkg::ops::SearchSource>,
+    sort: SortMode,
+) -> Vec<SkillHit> {
+    let mut v: Vec<SkillHit> = all
+        .iter()
+        .filter(|h| filter.is_none_or(|f| h.source == f.label()))
+        .cloned()
+        .collect();
+    match sort {
+        SortMode::Relevance => {}
+        SortMode::Name => sort_skills_by_name(&mut v),
+        SortMode::Popularity => sort_skills_by_popularity(&mut v),
+    }
+    v
+}
+
+/// `^F` cycles (tab-scoped; `None` = all sources).
+fn next_plugin_filter(
+    cur: Option<gray_pkg::ops::SearchSource>,
+) -> Option<gray_pkg::ops::SearchSource> {
+    use gray_pkg::ops::SearchSource as S;
+    const ORDER: [Option<S>; 5] = [
+        None,
+        Some(S::Gray),
+        Some(S::Pi),
+        Some(S::Claude),
+        Some(S::ClawHub),
+    ];
+    let pos = ORDER.iter().position(|f| *f == cur).unwrap_or(0);
+    ORDER[(pos + 1) % ORDER.len()]
+}
+
+/// `^F` cycles on the Skills tab (only skill-bearing sources).
+fn next_skill_filter(
+    cur: Option<gray_pkg::ops::SearchSource>,
+) -> Option<gray_pkg::ops::SearchSource> {
+    use gray_pkg::ops::SearchSource as S;
+    const ORDER: [Option<S>; 3] = [None, Some(S::ClawHub), Some(S::Claude)];
+    let pos = ORDER.iter().position(|f| *f == cur).unwrap_or(0);
+    ORDER[(pos + 1) % ORDER.len()]
+}
+
+/// Short footer label for the active source filter.
+fn filter_short(f: Option<gray_pkg::ops::SearchSource>) -> &'static str {
+    use gray_pkg::ops::SearchSource as S;
+    match f {
+        None => "all",
+        Some(S::Gray) => "gray",
+        Some(S::Pi) => "pi",
+        Some(S::Claude) => "claude",
+        Some(S::ClawHub) => "clawhub",
+    }
+}
+
+/// Scroll offset so the selected hit stays visible: pulls the window
+/// up when `sel` moves above it, pushes it down when `sel` runs past
+/// the bottom. `visible` = hit slots on screen (≥1 by caller).
+fn scroll_top(top: usize, sel: usize, visible: usize) -> usize {
+    if sel < top {
+        sel
+    } else if visible == 0 {
+        top
+    } else if sel >= top + visible {
+        sel + 1 - visible
+    } else {
+        top
+    }
+}
+
+/// Case-insensitive A–Z over a hit list (`^S` cycle).
+fn sort_plugins_by_name(hits: &mut [SearchHit]) {
+    hits.sort_by_key(|a| a.name.to_lowercase());
+}
+
+/// Case-insensitive A–Z over a skill hit list (`^S` cycle).
+fn sort_skills_by_name(hits: &mut [SkillHit]) {
+    hits.sort_by_key(|a| a.name.to_lowercase());
+}
+
+/// Popularity descending (`total_cmp`, NaN-proof) with a lowercase-name
+/// tiebreak (`^S` third stop).
+fn sort_plugins_by_popularity(hits: &mut [SearchHit]) {
+    hits.sort_by(|a, b| {
+        b.popularity
+            .total_cmp(&a.popularity)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
+/// Popularity descending over a skill hit list (all zeros today, so this
+/// reads as A–Z — the documented name-fallback).
+fn sort_skills_by_popularity(hits: &mut [SkillHit]) {
+    hits.sort_by(|a, b| {
+        b.popularity
+            .total_cmp(&a.popularity)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
+/// Empty-state line naming what's already installed:
+/// `Installed (2): foo 1.0.0, bar`. `None` when empty (row stays hidden).
+fn installed_summary(items: &[(String, String)]) -> Option<String> {
+    if items.is_empty() {
+        return None;
+    }
+    let list = items
+        .iter()
+        .map(|(n, v)| {
+            if v.trim().is_empty() {
+                n.clone()
+            } else {
+                format!("{n} {}", v.trim())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!("Installed ({}): {list}", items.len()))
+}
+
 fn preview_lines_plugins(hits: &[SearchHit], preview: Option<usize>) -> Vec<String> {
     let Some(idx) = preview else {
         return Vec::new();
@@ -1017,11 +1374,12 @@ fn preview_lines_skills(hits: &[SkillHit], preview: Option<usize>) -> Vec<String
 }
 
 #[allow(clippy::too_many_arguments)]
-fn render_row(
+fn render_market_row(
     frame: &mut ratatui::Frame,
     inner: ratatui::layout::Rect,
     y: u16,
-    text: &str,
+    head: &str,
+    tail: &str,
     is_selected: bool,
     lit: bool,
     box_bg: ratatui::style::Color,
@@ -1031,21 +1389,52 @@ fn render_row(
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::Paragraph;
-    // Truncate to the inner width so long rows never wrap.
-    let row: String = text.chars().take(inner.width as usize).collect();
-    let fill = (inner.width as usize).saturating_sub(row.chars().count());
+    // Head-first truncation to the inner width (rows never wrap): the
+    // head stays whole while the tail absorbs the cut; a head longer
+    // than the row drops the tail entirely.
+    let budget = inner.width as usize;
+    let (head_vis, tail_vis): (String, String) = if head.chars().count() >= budget {
+        (head.chars().take(budget).collect(), String::new())
+    } else {
+        (
+            head.to_string(),
+            tail.chars().take(budget - head.chars().count()).collect(),
+        )
+    };
+    let visible = format!("{head_vis}{tail_vis}");
+    let fill = budget.saturating_sub(visible.chars().count());
     let row_line = if is_selected {
         Line::from(Span::styled(
-            format!("{row}{}", " ".repeat(fill)),
+            format!("{visible}{}", " ".repeat(fill)),
             Style::default()
                 .fg(Color::Black)
                 .bg(accent_peach)
                 .add_modifier(Modifier::BOLD),
         ))
     } else {
-        let fg = if lit { Color::White } else { text_dim };
+        let mut head_style = Style::default()
+            .fg(if lit { Color::White } else { text_dim })
+            .bg(box_bg);
+        if lit {
+            head_style = head_style.add_modifier(Modifier::BOLD);
+        }
+        // The trailing `[chip]` (always emitted by `split_market_row`)
+        // paints in its source color, bold off — the color is the signal.
+        // Non-hit rows carry no bracket suffix and stay head-styled.
+        let chip_at = head_vis.rfind('[').filter(|_| head_vis.ends_with(']'));
+        let (head_text, chip_text) = match chip_at {
+            Some(i) => head_vis.split_at(i),
+            None => (head_vis.as_str(), ""),
+        };
         Line::from(vec![
-            Span::styled(row, Style::default().fg(fg).bg(box_bg)),
+            Span::styled(head_text, head_style),
+            Span::styled(
+                chip_text,
+                Style::default()
+                    .fg(chip_color(chip_text, accent_peach))
+                    .bg(box_bg),
+            ),
+            Span::styled(tail_vis, Style::default().fg(text_dim).bg(box_bg)),
             Span::styled(" ".repeat(fill), Style::default().bg(box_bg)),
         ])
     };
@@ -1082,8 +1471,12 @@ fn footer_spans(
 #[cfg(test)]
 mod tests {
     use super::{
-        MarketTab, format_install_status, format_market_row, format_preview, format_skill_preview,
+        MarketTab, SortMode, apply_plugin_view, apply_skill_view, chip_color, filter_short,
+        format_install_status, format_market_row, format_preview, format_skill_preview,
         format_source_row, install_spec_for_plugin, install_spec_for_skill,
+        install_status_covered_by_footer, installed_summary, next_plugin_filter, next_skill_filter,
+        scroll_top, skill_chip, sort_plugins_by_name, sort_skills_by_name, source_chip,
+        split_market_row,
     };
     use gray_pkg::ops::{SearchHit, SearchSource};
     use gray_pkg::skills_ops::SkillHit;
@@ -1097,6 +1490,7 @@ mod tests {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         }
     }
 
@@ -1107,7 +1501,45 @@ mod tests {
             desc: "grep gifs".to_string(),
             source: "ClawHub".to_string(),
             trust: "community".to_string(),
+            popularity: 0.0,
         }
+    }
+
+    #[test]
+    fn split_market_row_separates_head_and_tail() {
+        assert_eq!(
+            split_market_row("demo", "1.2.3", "Gray Index", "does things"),
+            (
+                "demo 1.2.3 [Gray Index]".to_string(),
+                " - does things".to_string()
+            )
+        );
+        assert_eq!(
+            split_market_row("demo", "1.2.3", "Gray Index", "  "),
+            ("demo 1.2.3 [Gray Index]".to_string(), String::new())
+        );
+    }
+
+    #[test]
+    fn source_chips_are_short_and_exact() {
+        use gray_pkg::ops::SearchSource as S;
+        assert_eq!(source_chip(S::Gray), "gray");
+        assert_eq!(source_chip(S::Pi), "pi");
+        assert_eq!(source_chip(S::ClawHub), "claw");
+        assert_eq!(source_chip(S::Claude), "claude");
+    }
+
+    #[test]
+    fn skill_chips_and_colors_follow_source_table() {
+        assert_eq!(skill_chip("ClawHub"), "claw");
+        assert_eq!(skill_chip("Claude"), "claude");
+        assert_eq!(skill_chip("Other"), "Other");
+        use ratatui::style::Color as C;
+        let peach = C::Rgb(246, 173, 126);
+        assert_eq!(chip_color("[gray]", peach), peach);
+        assert_eq!(chip_color("[pi]", peach), C::Rgb(125, 211, 252));
+        assert_eq!(chip_color("[claw]", peach), C::Rgb(134, 239, 172));
+        assert_eq!(chip_color("[claude]", peach), C::Rgb(196, 181, 253));
     }
 
     #[test]
@@ -1168,9 +1600,179 @@ mod tests {
     }
 
     #[test]
+    fn name_sort_orders_case_insensitive() {
+        let mut plugins = vec![
+            ("zebra".to_string(), "1.0.0".to_string()),
+            ("Apple".to_string(), "2.0.0".to_string()),
+            ("mango".to_string(), "0.1.0".to_string()),
+        ]
+        .into_iter()
+        .map(|(name, version)| {
+            let mut h = plugin_hit();
+            h.name = name;
+            h.version = version;
+            h
+        })
+        .collect::<Vec<_>>();
+        sort_plugins_by_name(&mut plugins);
+        let names: Vec<&str> = plugins.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["Apple", "mango", "zebra"]);
+        let mut skills = vec!["zebra", "Apple", "mango"]
+            .into_iter()
+            .map(|name| {
+                let mut h = skill_hit();
+                h.name = name.to_string();
+                h
+            })
+            .collect::<Vec<_>>();
+        sort_skills_by_name(&mut skills);
+        let names: Vec<&str> = skills.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["Apple", "mango", "zebra"]);
+    }
+
+    #[test]
+    fn popularity_sort_orders_desc_then_name() {
+        let hit = |name: &str, popularity: f32| {
+            let mut h = plugin_hit();
+            h.name = name.to_string();
+            h.popularity = popularity;
+            h
+        };
+        let all = vec![
+            hit("mid", 0.5),
+            hit("top", 0.9),
+            hit("Zebra", 0.0),
+            hit("apple", 0.0),
+        ];
+        let names = |v: &[SearchHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
+        // Descending popularity; 0.0 ties break by lowercase name.
+        assert_eq!(
+            names(&apply_plugin_view(&all, None, SortMode::Popularity)),
+            vec!["top", "mid", "apple", "Zebra"]
+        );
+    }
+
+    #[test]
+    fn apply_plugin_view_filters_then_sorts() {
+        use gray_pkg::ops::SearchSource as S;
+        let hit = |name: &str, source: S| {
+            let mut h = plugin_hit();
+            h.name = name.to_string();
+            h.source = source;
+            h
+        };
+        let all = vec![
+            hit("zebra", S::Pi),
+            hit("Apple", S::Gray),
+            hit("mango", S::Pi),
+        ];
+        let names = |v: &[SearchHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
+        // Filter keeps receipt order.
+        assert_eq!(
+            names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Relevance)),
+            vec!["zebra", "mango"]
+        );
+        // Filter + sort.
+        assert_eq!(
+            names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Name)),
+            vec!["mango", "zebra"]
+        );
+        // No filter + sort.
+        assert_eq!(
+            names(&apply_plugin_view(&all, None, SortMode::Name)),
+            vec!["Apple", "mango", "zebra"]
+        );
+    }
+
+    #[test]
+    fn apply_skill_view_matches_label_sources() {
+        let hit = |name: &str, source: &str| {
+            let mut h = skill_hit();
+            h.name = name.to_string();
+            h.source = source.to_string();
+            h
+        };
+        let all = vec![
+            hit("zebra", "ClawHub"),
+            hit("Apple", "Claude"),
+            hit("mango", "ClawHub"),
+        ];
+        let names = |v: &[SkillHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
+        use gray_pkg::ops::SearchSource as S;
+        assert_eq!(
+            names(&apply_skill_view(&all, Some(S::ClawHub), SortMode::Name)),
+            vec!["mango", "zebra"]
+        );
+        assert_eq!(
+            names(&apply_skill_view(&all, None, SortMode::Relevance)),
+            vec!["zebra", "Apple", "mango"]
+        );
+    }
+
+    #[test]
+    fn filter_cycles_cover_tab_sources() {
+        use gray_pkg::ops::SearchSource as S;
+        let mut f = None;
+        for expect in [
+            Some(S::Gray),
+            Some(S::Pi),
+            Some(S::Claude),
+            Some(S::ClawHub),
+            None,
+        ] {
+            f = next_plugin_filter(f);
+            assert_eq!(f, expect);
+        }
+        let mut f = None;
+        for expect in [Some(S::ClawHub), Some(S::Claude), None] {
+            f = next_skill_filter(f);
+            assert_eq!(f, expect);
+        }
+        assert_eq!(filter_short(None), "all");
+        assert_eq!(filter_short(Some(S::Pi)), "pi");
+        assert_eq!(filter_short(Some(S::ClawHub)), "clawhub");
+    }
+
+    #[test]
+    fn scroll_top_follows_selection() {
+        // Window of 5: sel inside stays, past bottom pushes, above pulls.
+        assert_eq!(scroll_top(0, 0, 5), 0);
+        assert_eq!(scroll_top(0, 4, 5), 0);
+        assert_eq!(scroll_top(0, 5, 5), 1);
+        assert_eq!(scroll_top(3, 9, 5), 5);
+        assert_eq!(scroll_top(5, 2, 5), 2);
+        // Reset (sel back to 0) rewinds to top.
+        assert_eq!(scroll_top(7, 0, 5), 0);
+        // Degenerate window keeps the offset.
+        assert_eq!(scroll_top(3, 9, 0), 3);
+    }
+
+    #[test]
+    fn installed_summary_names_versions_or_hides_when_empty() {
+        assert_eq!(installed_summary(&[]), None);
+        assert_eq!(
+            installed_summary(&[
+                ("foo".to_string(), "1.0.0".to_string()),
+                ("bar".to_string(), String::new()),
+            ]),
+            Some("Installed (2): foo 1.0.0, bar".to_string())
+        );
+    }
+
+    #[test]
     fn install_status_reports_active_or_failed_inline() {
         assert_eq!(format_install_status(None), "active");
         assert_eq!(format_install_status(Some("boom")), "failed: boom");
+    }
+
+    #[test]
+    fn installing_status_hides_only_when_footer_shows_it() {
+        // Preview footer prints `installing...` mid-flight: status row stays
+        // quiet (no duplicate). Everywhere else it is the only indicator.
+        assert!(install_status_covered_by_footer("installing...", true));
+        assert!(!install_status_covered_by_footer("installing...", false));
+        assert!(!install_status_covered_by_footer("active", true));
+        assert!(!install_status_covered_by_footer("failed: boom", true));
     }
 
     #[test]

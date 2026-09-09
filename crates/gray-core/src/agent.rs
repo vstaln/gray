@@ -413,6 +413,16 @@ impl Agent {
         }
     }
 
+    /// Releases a turn whose future was dropped instead of awaited. The
+    /// REPL preempts on Ctrl-C by dropping `run_streaming` inside an
+    /// outer `select!`, so the `Idle` reset at the end of `run` never
+    /// executes — without this, every later submit degrades to `Steered`
+    /// into a turn that never runs (instant no-op turns, stale usage).
+    /// Idempotent: safe on an already-idle agent.
+    pub fn abort_turn(&mut self) {
+        self.turn_state = crate::turn_queue::TurnState::Idle;
+    }
+
     /// Read-only view of the accumulated conversation so far.
     pub fn messages(&self) -> &[Message] {
         &self.messages
@@ -1197,6 +1207,69 @@ mod agent_tests {
         assert_eq!(
             call_log.lock().expect("calls lock poisoned").clone(),
             vec![TOOL_NAME.to_string()]
+        );
+    }
+
+    /// Provider that never yields: the turn stays inside `run_inner` until
+    /// the caller drops its future (what the REPL does on Ctrl-C).
+    struct PendingProvider;
+
+    #[async_trait]
+    impl Provider for PendingProvider {
+        fn stream(&self, _req: ChatRequest) -> ProviderStream {
+            Box::pin(futures::stream::pending())
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_turn_future_blocks_admission_until_abort() {
+        // Regression: the REPL preempts a turn by dropping its
+        // `run_streaming` future (outer `select!` on the cancel token), so
+        // the `Idle` reset at the end of `run` never executes. Admission
+        // must be recoverable via `abort_turn`, or every later prompt
+        // degrades to an instant no-op steer (ms footer, stale tokens).
+        //
+        // NOTE: this drops the live future directly instead of racing a
+        // cancel token through `select!` — the inner stream loop has its
+        // own cancel arm, so a raced token resolves either way
+        // nondeterministically. The drop is what the outer arm does when
+        // it wins that race (e.g. preemption during tool execution, where
+        // the inner arm isn't on the stack).
+        use crate::turn_queue::{Submission, SubmitMode};
+        let mut agent = Agent::new(
+            Box::new(PendingProvider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
+        );
+        let mut on_event = |_: &AgentEvent| {};
+        let mut run_future = Box::pin(agent.run_streaming(
+            Message::user("hi"),
+            ToolContext::default(),
+            &mut on_event,
+        ));
+        // Park the turn inside its provider poll, then drop it mid-turn.
+        futures::future::poll_fn(|cx| {
+            use futures::FutureExt as _;
+            let _ = run_future.poll_unpin(cx);
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(run_future);
+        // The dropped future never reset its admission flag...
+        assert!(
+            matches!(
+                agent.submit(Message::user("next"), SubmitMode::StartOrSteer),
+                Submission::Steered { .. }
+            ),
+            "dropped turn must leave admission busy (the trap)"
+        );
+        // ...until the preempting layer releases it.
+        agent.abort_turn();
+        assert!(
+            matches!(
+                agent.submit(Message::user("next"), SubmitMode::StartOrSteer),
+                Submission::Started { .. }
+            ),
+            "abort_turn must restore admission"
         );
     }
 

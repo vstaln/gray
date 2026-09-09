@@ -304,6 +304,20 @@ pub fn render_diff_hunks(
         ]));
     }
 
+    let mut max_num = 1usize;
+    for hunk in hunks {
+        for line in hunk {
+            max_num = max_num.max(line.lo).max(line.ln);
+        }
+    }
+    let gutter_width = max_num.to_string().len().max(3);
+    let term_w = crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(120)
+        .max(60);
+    let overhead = 2 + gutter_width + 5 + 2;
+    let content_w = term_w.saturating_sub(overhead).max(20);
+
     for (i, hunk) in hunks.iter().enumerate() {
         if i > 0 && !lines.is_empty() {
             let prev_last = hunks[i - 1]
@@ -317,41 +331,31 @@ pub fn render_diff_hunks(
                 if n > p + 1 {
                     let count = n - p - 1;
                     if count == 1 {
-                        "  … 1 unchanged line".to_string()
+                        "… 1 unchanged line".to_string()
                     } else {
-                        format!("  … {count} unchanged lines")
+                        format!("… {count} unchanged lines")
                     }
                 } else {
-                    "  …".to_string()
+                    "…".to_string()
                 }
             } else {
-                "  …".to_string()
+                "…".to_string()
             };
 
-            lines.push(Line::from(vec![Span::styled(
-                gap_text,
-                Style::default().fg(DIFF_GUTTER_FG),
-            )]));
+            let gutter_pad = " ".repeat(gutter_width + 5);
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::raw(gutter_pad),
+                Span::styled(gap_text, Style::default().fg(DIFF_GUTTER_FG)),
+            ]));
         }
 
         if hunk.is_empty() {
             continue;
         }
 
-        let mut max_num = 1usize;
-        for line in hunk {
-            max_num = max_num.max(line.lo).max(line.ln);
-        }
-        let gutter_width = max_num.to_string().len().max(3);
-
         let mut old_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
         let mut new_highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
-        let term_w = crossterm::terminal::size()
-            .map(|(w, _)| w as usize)
-            .unwrap_or(120)
-            .max(60);
-        let overhead = 2 + gutter_width + 5 + 2;
-        let content_w = term_w.saturating_sub(overhead).max(20);
 
         for line in hunk {
             let bg_color = match line.tag {

@@ -454,8 +454,10 @@ fn render_numbered_lines(
             );
         }
         let omitted = total.saturating_sub(HEAD + TAIL);
+        let gutter_pad = " ".repeat(gutter_width + 3);
         lines.push(Line::from(vec![
             Span::raw("  "),
+            Span::raw(gutter_pad),
             Span::styled(
                 format!("… +{omitted} lines"),
                 Style::default()
@@ -487,6 +489,16 @@ fn render_numbered_lines(
     }
 
     lines
+}
+
+/// Tools whose success results can render a body in the TUI (diffs, code,
+/// command output). Everything else (skill, read, …) renders header-only,
+/// so the REPL keeps the styled result card instead of a naked live line.
+pub fn tool_may_render_body(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "bash" | "grep" | "find" | "ls" | "edit" | "write"
+    )
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.
@@ -559,8 +571,7 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    let show_output = matches!(tool_name, "bash" | "grep" | "find" | "ls");
-    if !show_output {
+    if !tool_may_render_body(tool_name) {
         return Vec::new();
     }
 
@@ -569,13 +580,17 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    // Show the whole output as a code block: numbered gutter, syntax
-    // highlighting, indent-aware wrapping. HTML/XML is split one tag per
-    // line and JSON is reflowed so minified bodies stay readable.
+    // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
+    // full output stays in model context, TUI only renders a window.
+    // ponytail: reuse render_code_block cap, no new collapsing system.
     let (pretty, token) = prettify_output(trimmed);
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
-    render_numbered_lines(&pretty.lines().collect::<Vec<_>>(), &mut highlighter, None)
+    render_numbered_lines(
+        &pretty.lines().collect::<Vec<_>>(),
+        &mut highlighter,
+        Some(40),
+    )
 }
 
 /// Formats tool output lines (convenience wrapper).
@@ -620,21 +635,31 @@ mod tests {
     }
 
     #[test]
-    fn bash_shows_every_line_uncapped() {
+    fn bash_caps_long_output_like_code_blocks() {
         let out: String = (1..=60)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
         let lines = format_tool_result_lines("bash", &out, false);
         let first_rows: Vec<String> = lines.iter().map(row_text).collect();
+        // 18 head + 1 omission marker + 6 tail
+        assert_eq!(lines.len(), 25);
         assert!(
-            first_rows.iter().any(|r| r.contains("60 | ")),
-            "last gutter missing"
+            first_rows.iter().any(|r| r.contains("… +36 lines")),
+            "must collapse, got {first_rows:?}"
         );
-        assert!(
-            !first_rows.iter().any(|r| r.contains("… +")),
-            "must not truncate"
-        );
+    }
+
+    #[test]
+    fn ls_caps_home_dir_flooding() {
+        // Screenshot case: `ls ~` with 180 entries dumped literally
+        // everything into the TUI transcript.
+        let out: String = (1..=180)
+            .map(|i| format!("entry-{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = format_tool_result_lines("ls", &out, false);
+        assert_eq!(lines.len(), 25, "must cap, got {}", lines.len());
     }
 
     #[test]
@@ -659,6 +684,49 @@ mod tests {
         }
         let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
         assert!(text.contains("<title>Vercel Security</title>"));
+    }
+
+    #[test]
+    fn render_code_block_608_line_file_has_unique_gutters() {
+        // Screenshot case: a 608-line Write box painted head rows on the
+        // left and tail rows AGAIN on the right. Gutter numbers must each
+        // appear exactly once: 1..=18 head, 603..=608 tail.
+        let mut src: Vec<String> = vec![
+            "<!DOCTYPE html>".to_string(),
+            "<html lang=\"en\">".to_string(),
+            "<head>".to_string(),
+            "<meta charset=\"UTF-8\" />".to_string(),
+            "<title>HorseTinder</title>".to_string(),
+            "<style>".to_string(),
+        ];
+        while src.len() < 602 {
+            let i = src.len();
+            src.push(format!("  .filler-{i}{{color:#ff00{i:04};}}"));
+        }
+        src.push("  function rebuildDeck(){ renderMatches(); }".to_string());
+        src.push("  document.addEventListener(\"x\", rebuildDeck);".to_string());
+        src.push("  }})();".to_string());
+        src.push("  </script>".to_string());
+        src.push("</body>".to_string());
+        src.push("</html>".to_string());
+        assert_eq!(src.len(), 608);
+        let content = src.join("\n");
+        let lines = render_code_block(&content, None);
+        assert_eq!(lines.len(), 25, "18 head + marker + 6 tail");
+        let mut gutters: Vec<usize> = Vec::new();
+        for l in &lines {
+            let t: String = row_text(l);
+            let num = t.split('|').next().unwrap_or("").trim();
+            if num.is_empty() || num.starts_with('…') {
+                continue;
+            }
+            gutters.push(num.parse::<usize>().expect("gutter must be numeric"));
+        }
+        let mut expected: Vec<usize> = (1..=18).chain(603..=608).collect();
+        let mut got = gutters.clone();
+        got.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(got, expected, "duplicated or missing gutters: {gutters:?}");
     }
 
     #[test]

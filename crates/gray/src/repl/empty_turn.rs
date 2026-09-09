@@ -194,7 +194,14 @@ pub(crate) async fn run_empty_turn(
                 );
             };
             let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
-            tokio::select! { res = &mut run_future => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), }
+            tokio::select! {
+                res = &mut run_future => res,
+                _ = cancel.cancelled() => {
+                    drop(run_future);
+                    agent.abort_turn();
+                    Err(gray_core::error::CoreError::Cancelled)
+                }
+            }
         };
         // overflow recovery (one retry only)
         if let Err(ref e) = run_result {
@@ -241,7 +248,14 @@ pub(crate) async fn run_empty_turn(
                 };
                 let mut run_future2 =
                     Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
-                let retry_res = tokio::select! { res = &mut run_future2 => res, _ = cancel.cancelled() => Err(gray_core::error::CoreError::Cancelled), };
+                let retry_res = tokio::select! {
+                    res = &mut run_future2 => res,
+                    _ = cancel.cancelled() => {
+                        drop(run_future2);
+                        agent.abort_turn();
+                        Err(gray_core::error::CoreError::Cancelled)
+                    }
+                };
                 run_result = retry_res;
             }
         }

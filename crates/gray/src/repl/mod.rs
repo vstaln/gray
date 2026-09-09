@@ -222,10 +222,8 @@ async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
 fn restore_viewport(tui: Option<&crate::composer::SharedTui>) {
     if let Some(shared) = tui {
         let mut t = shared.lock().expect("tui lock");
-        let cols = crossterm::terminal::size()
-            .map(|(c, _)| c)
-            .unwrap_or(t.last_width);
-        if cols == t.last_width {
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((t.last_width, t.last_height));
+        if cols == t.last_width && rows == t.last_height {
             t.reanchor_viewport(cols);
         } else {
             t.pending_resize = None;
@@ -517,7 +515,7 @@ pub async fn run_repl_mode(
         config
             .permissions
             .as_deref()
-            .unwrap_or(gray_core::approvals::MODE_AUTO),
+            .unwrap_or(gray_core::approvals::MODE_FULL),
     );
     if let Some((shared, _)) = tui.as_ref() {
         shared
