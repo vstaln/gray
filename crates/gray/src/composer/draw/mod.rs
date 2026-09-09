@@ -15,16 +15,17 @@ pub(crate) use widgets::{
 };
 
 /// Exact-fit viewport height for the given content, clamped to
-/// `MIN_VIEWPORT_H..=VIEWPORT_H`.
+/// `MIN_VIEWPORT_H..=max_h`.
 pub(crate) fn desired_viewport_h(
     status_h: u16,
     queued_h: u16,
     box_rows: u16,
     panel_h: u16,
     attach_h: u16,
+    max_h: u16,
 ) -> u16 {
     (status_h + queued_h + box_rows + panel_h + attach_h + 1)
-        .clamp(MIN_VIEWPORT_H, VIEWPORT_H)
+        .clamp(MIN_VIEWPORT_H, max_h)
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
@@ -65,13 +66,33 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     } else {
         1 + n.min(3) as u16 + u16::from(n > 3)
     };
+    let question_lines_need = if question_active {
+        tui.active_question
+            .as_ref()
+            .map(|q| super::question::panel_lines(q, tui.textarea.text(), w, 100).len() as u16)
+            .unwrap_or(PANEL_ROWS as u16)
+    } else {
+        0
+    };
     let panel_est: u16 = if question_active {
-        PANEL_ROWS as u16
+        question_lines_need
     } else {
         tui.matches.len().min(PANEL_ROWS) as u16
     };
     let box_rows_est: u16 = if question_active { 0 } else { box_h };
-    let desired = desired_viewport_h(status_h, queued_est, box_rows_est, panel_est, attach_h);
+    let max_viewport_h = if question_active {
+        rows.saturating_sub(1).max(VIEWPORT_H)
+    } else {
+        VIEWPORT_H
+    };
+    let desired = desired_viewport_h(
+        status_h,
+        queued_est,
+        box_rows_est,
+        panel_est,
+        attach_h,
+        max_viewport_h,
+    );
 
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
@@ -106,13 +127,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 // Grow viewport to fit full question; fall back to PANEL_ROWS min when short on space.
                 // Two-pass (uncapped then capped), no new layout engine.
                 let need = if question_active {
-                    tui.active_question
-                        .as_ref()
-                        .map(|q| {
-                            super::question::panel_lines(q, tui.textarea.text(), w, 100).len()
-                                as u16
-                        })
-                        .unwrap_or(PANEL_ROWS as u16)
+                    question_lines_need
                 } else {
                     PANEL_ROWS as u16
                 };
@@ -545,13 +560,15 @@ mod tests {
     #[test]
     fn desired_viewport_exact_fit() {
         // Idle: input 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
-        assert_eq!(desired_viewport_h(0, 0, 3, 0, 0), 4);
+        assert_eq!(desired_viewport_h(0, 0, 3, 0, 0, VIEWPORT_H), 4);
         // Slash popup: input 3 + panel 6 + footer 1 = 10.
-        assert_eq!(desired_viewport_h(0, 0, 3, 6, 0), 10);
+        assert_eq!(desired_viewport_h(0, 0, 3, 6, 0, VIEWPORT_H), 10);
         // Running: status 2 + input 3 + footer 1 = 6.
-        assert_eq!(desired_viewport_h(2, 0, 3, 0, 0), 6);
+        assert_eq!(desired_viewport_h(2, 0, 3, 0, 0, VIEWPORT_H), 6);
         // Running + full panel: 3 + 3 + 6 + 1 = 13.
-        assert_eq!(desired_viewport_h(3, 0, 3, 6, 0), 13);
+        assert_eq!(desired_viewport_h(3, 0, 3, 6, 0, VIEWPORT_H), 13);
+        // Question panel: expands up to available screen height to show all options.
+        assert_eq!(desired_viewport_h(0, 0, 0, 15, 0, 23), 16);
     }
 
     #[test]
