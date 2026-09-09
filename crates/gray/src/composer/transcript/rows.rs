@@ -122,11 +122,11 @@ pub(crate) fn wrap_styled_line_with_ranges(
         {
             let mut gutter_end = bar_idx + 3;
             let mut cont_pad = 0;
-            if let Some(rest) = flat.get(gutter_end..) {
-                if rest.starts_with("+ ") || rest.starts_with("- ") {
-                    gutter_end += 2;
-                    cont_pad = 2;
-                }
+            if let Some(rest) = flat.get(gutter_end..)
+                && (rest.starts_with("+ ") || rest.starts_with("- "))
+            {
+                gutter_end += 2;
+                cont_pad = 2;
             }
             let gutter_style = span_bounds
                 .iter()
