@@ -11,7 +11,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
@@ -25,7 +24,10 @@ pub(crate) const VIEWPORT_H: u16 = 14;
 /// bottom pad + context footer. No cleared slack below the footer.
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
-type Term = Terminal<CrosstermBackend<Stdout>>;
+mod terminal;
+pub(crate) use terminal::CustomTerminal;
+
+type Term = CustomTerminal<CrosstermBackend<Stdout>>;
 
 mod draw;
 pub(crate) use draw::thinking_style;
@@ -171,11 +173,9 @@ impl Tui {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
         let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let mut terminal = Terminal::with_options(
+        let mut terminal = CustomTerminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(MIN_VIEWPORT_H),
-            },
+            MIN_VIEWPORT_H,
         )?;
 
         // Print welcome logo into scrollback once at startup
@@ -248,11 +248,9 @@ impl Tui {
         // Mode 2004 (bracketed paste) is terminal-global; re-assert after any
         // alternate-screen modal in case a child cleared it.
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
-        if let Ok(term) = Terminal::with_options(
+        if let Ok(term) = CustomTerminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(self.viewport_h.max(MIN_VIEWPORT_H)),
-            },
+            self.viewport_h.max(MIN_VIEWPORT_H),
         ) {
             self.terminal = term;
         }
@@ -270,11 +268,9 @@ impl Tui {
         let _ = write!(out, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H");
         let _ = out.flush();
 
-        if let Ok(term) = Terminal::with_options(
+        if let Ok(term) = CustomTerminal::with_options(
             CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(self.viewport_h.max(MIN_VIEWPORT_H)),
-            },
+            self.viewport_h.max(MIN_VIEWPORT_H),
         ) {
             self.terminal = term;
         }

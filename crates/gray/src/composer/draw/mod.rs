@@ -55,7 +55,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     if tui.modal_open {
         return Ok(());
     }
-    let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+    let screen_size = ratatui::layout::Size::new(cols, rows);
     let w = cols as usize;
 
     let text = tui.textarea.text().to_string();
@@ -78,40 +79,23 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         0
     };
 
-    // Exact-fit viewport (collapses the idle 10-row gap) with one spare
-    // cleared row: grow immediately, shrink two-phase (paint-then-shrink so
-    // closing a popup abandons blanks, not ghost matches). The filler
-    // bottom-anchor + surplus Clear stay live every frame, so a 1-row
-    // estimate mismatch still paints Clear, never ghost shell text.
-    let mut shrink_to: Option<u16> = None;
-    {
-        let n = tui.queued_inputs.len();
-        let queued_est: u16 = if question_active || n == 0 {
-            0
-        } else {
-            1 + n.min(3) as u16 + u16::from(n > 3)
-        };
-        let panel_est: u16 = if question_active {
-            PANEL_ROWS as u16
-        } else {
-            tui.matches.len().min(PANEL_ROWS) as u16
-        };
-        let box_rows_est: u16 = if question_active { 0 } else { box_h };
-        let desired = desired_viewport_h(status_h, queued_est, box_rows_est, panel_est, attach_h);
-        if desired > tui.viewport_h
-            && let Ok(term) = ratatui::Terminal::with_options(
-                ratatui::backend::CrosstermBackend::new(std::io::stdout()),
-                ratatui::TerminalOptions {
-                    viewport: ratatui::Viewport::Inline(desired),
-                },
-            )
-        {
-            tui.terminal = term;
-            tui.viewport_h = desired;
-        } else if desired < tui.viewport_h {
-            shrink_to = Some(desired);
-        }
-    }
+    // Exact-fit viewport with in-place resizing (codex parity):
+    // Grow and shrink are applied directly to the terminal's viewport area without
+    // recreating the terminal or re-probing cursor position via CPR, preventing
+    // prompt doubling and cursor drift.
+    let n = tui.queued_inputs.len();
+    let queued_est: u16 = if question_active || n == 0 {
+        0
+    } else {
+        1 + n.min(3) as u16 + u16::from(n > 3)
+    };
+    let panel_est: u16 = if question_active {
+        PANEL_ROWS as u16
+    } else {
+        tui.matches.len().min(PANEL_ROWS) as u16
+    };
+    let box_rows_est: u16 = if question_active { 0 } else { box_h };
+    let desired = desired_viewport_h(status_h, queued_est, box_rows_est, panel_est, attach_h);
 
     // frankentui lesson: synchronized-output bracketing (DEC2026) — one atomic
     // present per frame so the compositor never shows a torn frame.
@@ -120,12 +104,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         std::io::stdout(),
         crossterm::terminal::BeginSynchronizedUpdate
     )?;
-    // Shrink pass 1 paints into the outgoing (larger) viewport; pass 2
-    // repaints the shrunken one.
-    let res: std::io::Result<()> = loop {
-        let pass = tui
-            .terminal
-            .draw(|frame| {
+    let _ = tui.terminal.set_viewport_height(desired, screen_size);
+    tui.viewport_h = desired;
+
+    let res = tui
+        .terminal
+        .draw(|frame| {
                 let area = frame.area();
                 let w = area.width as usize;
 
@@ -561,25 +545,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         .min(area.y + area.height.saturating_sub(1));
                     frame.set_cursor_position(Position::new(cur_x, cur_y));
                 }
-            })
-            .map(|_| ());
-        let Some(target) = shrink_to.take() else {
-            break pass;
-        };
-        // Pass 1 parked the cursor on the input row with the surplus already
-        // cleared, so this shrink abandons only blank rows — then repaint.
-        if let Ok(term) = ratatui::Terminal::with_options(
-            ratatui::backend::CrosstermBackend::new(std::io::stdout()),
-            ratatui::TerminalOptions {
-                viewport: ratatui::Viewport::Inline(target),
-            },
-        ) {
-            tui.terminal = term;
-            tui.viewport_h = target;
-        } else {
-            break pass;
-        }
-    };
+            });
     let _ = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EndSynchronizedUpdate
