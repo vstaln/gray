@@ -186,16 +186,6 @@ impl Agent {
                 system.push_str(&hook_context);
             }
 
-            // Per-turn hook context (fetched once above) concatenates onto
-            // this turn's system prompt. Empty when no hooks replied.
-            let mut system = self.system.clone();
-            if !hook_context.is_empty() {
-                if !system.is_empty() {
-                    system.push_str("\n\n");
-                }
-                system.push_str(&hook_context);
-            }
-
             let req = ChatRequest {
                 system: (!system.is_empty()).then_some(system),
                 messages: self.messages.clone(),
