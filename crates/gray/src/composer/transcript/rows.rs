@@ -115,18 +115,25 @@ pub(crate) fn wrap_styled_line_with_ranges(
 
     // Detect if this line has a gutter prefix (e.g. " 12 | " or "    | ")
     let gutter_info = if let Some(bar_idx) = flat.find(" | ") {
-        if bar_idx <= 14
+        if bar_idx <= 24
             && flat[..bar_idx]
                 .chars()
                 .all(|c| c.is_ascii_digit() || c == ' ')
         {
-            let gutter_end = bar_idx + 3;
+            let mut gutter_end = bar_idx + 3;
+            let mut cont_pad = 0;
+            if let Some(rest) = flat.get(gutter_end..) {
+                if rest.starts_with("+ ") || rest.starts_with("- ") {
+                    gutter_end += 2;
+                    cont_pad = 2;
+                }
+            }
             let gutter_style = span_bounds
                 .iter()
                 .find(|(r, _)| r.start <= bar_idx && bar_idx < r.end)
                 .map(|(_, s)| *s)
                 .unwrap_or(line.style);
-            let cont_gutter_str = format!("{:>width$} | ", "", width = bar_idx);
+            let cont_gutter_str = format!("{:>width$} | {:pad$}", "", "", width = bar_idx, pad = cont_pad);
             Some((gutter_end, cont_gutter_str, gutter_style))
         } else {
             None
