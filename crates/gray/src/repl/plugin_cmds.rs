@@ -90,6 +90,7 @@ pub(crate) async fn handle_marketplace_command(
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
                     t.push_action("Marketplace updated", None);
+                    t.ensure_gap(1);
                     let _ = t.draw();
                 }
             }
@@ -103,6 +104,9 @@ pub(crate) async fn handle_marketplace_command(
                     t.draft.clear();
                     t.attachments.clear();
                     t.pending_pastes.clear();
+                    // Dismissed picker leaves the slash card with no feedback:
+                    // restore the trailing gap so it doesn't jam the input box.
+                    t.ensure_gap(1);
                     let _ = t.draw();
                 }
             }

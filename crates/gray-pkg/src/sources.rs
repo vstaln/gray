@@ -1178,8 +1178,25 @@ fn if_version(v: &str) -> String {
     }
 }
 
-/// Clone a git plugin source (optional subdir), verifying the pinned
-/// `sha` against the cloned HEAD when present.
+/// Check out the catalog-pinned commit: fresh clones usually sit on it
+/// already (fast path, no network); when upstream moved on, fetch just that
+/// commit so installs keep working instead of rotting. Fail-closed when the
+/// pin doesn't resolve upstream.
+fn checkout_pinned_commit(repo_dir: &Path, plugin: &str, want: &str) -> anyhow::Result<()> {
+    if git_output(&["rev-parse", "HEAD"], repo_dir)? == want {
+        return Ok(());
+    }
+    git_output(&["fetch", "--depth", "1", "origin", want], repo_dir).map_err(|e| {
+        anyhow::anyhow!("claude plugin {plugin} pinned commit {want} unavailable upstream ({e:#})")
+    })?;
+    git_output(&["checkout", "--quiet", want], repo_dir).map_err(|e| {
+        anyhow::anyhow!("claude plugin {plugin} cannot check out pinned commit {want} ({e:#})")
+    })?;
+    Ok(())
+}
+
+/// Clone a git plugin source (optional subdir), checking out the pinned
+/// `sha` when present so the installed tree is exactly the catalog commit.
 async fn install_git_source(
     url: &str,
     git_ref: &str,
@@ -1197,6 +1214,9 @@ async fn install_git_source(
         Some(git_ref.trim())
     };
     let (staging, repo_dir) = clone_plugin_repo(url, branch)?;
+    if !sha.trim().is_empty() {
+        checkout_pinned_commit(&repo_dir, plugin, sha.trim())?;
+    }
     let root = match subdir {
         Some(s) if !s.trim().is_empty() => repo_dir.join(s.trim()),
         _ => repo_dir.clone(),
@@ -1205,12 +1225,6 @@ async fn install_git_source(
         anyhow::bail!("claude plugin {plugin} subdir missing in repo");
     }
     let head = git_output(&["rev-parse", "HEAD"], &repo_dir)?;
-    if !sha.trim().is_empty() && head != sha.trim() {
-        anyhow::bail!(
-            "claude plugin {plugin} sha mismatch (catalog pins {})",
-            sha.trim()
-        );
-    }
     Ok(ClaudeResolved {
         root,
         version: if !p.version.trim().is_empty() {
@@ -1395,6 +1409,59 @@ mod tests {
         assert!(local_marketplace_dir(&format!("file://{}", dir.path().display())).is_some());
         assert!(local_marketplace_dir("anthropics/claude-plugins-official").is_none());
         assert!(local_marketplace_dir("").is_none());
+    }
+
+    #[tokio::test]
+    async fn git_source_checks_out_stale_pin() {
+        // Upstream moved past the catalog pin: resolve must check out the
+        // pinned commit (not fail), fully offline over file://.
+        // SAFETY: serialized by ENV_GUARD (process-global env).
+        let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        run(&["init", "-q"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "one"]);
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let pin = String::from_utf8(out.stdout).unwrap().trim().to_string();
+        std::fs::write(dir.path().join("b.txt"), "two\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "two"]);
+        let url = format!("file://{}", dir.path().display());
+        let p = MarketplacePlugin {
+            name: "pin-test".to_string(),
+            description: String::new(),
+            version: String::new(),
+            source: PluginSource::Path("x".to_string()),
+        };
+        let resolved = install_git_source(&url, "", &pin, None, &p, "pin-test")
+            .await
+            .expect("stale pin must resolve via checkout");
+        assert_eq!(resolved.hash, pin);
+        assert!(!resolved.unverified);
+        assert!(resolved.root.join("a.txt").is_file());
+        assert!(!resolved.root.join("b.txt").exists());
     }
 
     #[tokio::test]

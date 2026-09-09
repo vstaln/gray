@@ -257,15 +257,14 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
     let mut search_err: Option<String> = None;
     let mut statuses: [Option<bool>; 4] = [None, None, None, None];
     let mut sel = 0usize;
+    // First visible hit row in the list view (auto-follows `sel`;
+    // self-corrects every frame, so no reset sites needed).
+    let mut sel_top = 0usize;
     let mut changed = false;
     // Empty-state content (local lock reads, instant, no network).
     // Corrupt locks degrade to "no installed row", never a modal error.
     let installed_plugins: Vec<(String, String)> = gray_pkg::ops::list()
-        .map(|m| {
-            m.into_iter()
-                .map(|(n, e)| (n, e.version.clone()))
-                .collect()
-        })
+        .map(|m| m.into_iter().map(|(n, e)| (n, e.version.clone())).collect())
         .unwrap_or_default();
     let installed_skills: Vec<(String, String)> = gray_pkg::skills_ops::list()
         .map(|v| {
@@ -368,8 +367,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         Ok(out) => {
                             plugin_unreachable = unreachable_lines(&out);
                             plugin_all = out.hits;
-                            plugin_hits =
-                                apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
+                            plugin_hits = apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
                             plugin_dirty = false;
                             search_err = None;
                             sel = 0;
@@ -383,8 +381,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     SearchPoll::SkillReady(res) => match res {
                         Ok(hits) => {
                             skill_all = hits;
-                            skill_hits =
-                                apply_skill_view(&skill_all, skill_filter, sort_mode);
+                            skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
                             skill_dirty = false;
                             search_err = None;
                             sel = 0;
@@ -565,9 +562,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                         String::new(),
                                         true,
                                     ));
-                                } else if let Some(line) =
-                                    installed_summary(&installed_plugins)
-                                {
+                                } else if let Some(line) = installed_summary(&installed_plugins) {
                                     // Unsearched: show what's installed
                                     // instead of an empty pane (dim info
                                     // row, never selectable).
@@ -609,9 +604,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                         String::new(),
                                         true,
                                     ));
-                                } else if let Some(line) =
-                                    installed_summary(&installed_skills)
-                                {
+                                } else if let Some(line) = installed_summary(&installed_skills) {
                                     // Unsearched: show what's installed
                                     // instead of an empty pane (dim info
                                     // row, never selectable).
@@ -681,9 +674,19 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         MarketTab::Skills => skill_hits.len(),
                         MarketTab::Marketplaces => 0,
                     };
+                    // Hit slots on screen past the query row; the
+                    // window follows `sel` so long lists scroll.
+                    let hit_slots = rows_cap.saturating_sub(cur_y + 1).max(1) as usize;
+                    sel_top = scroll_top(sel_top, sel, hit_slots);
                     for (idx, (head, tail, lit)) in body.iter().enumerate() {
                         if cur_y >= rows_cap {
                             break;
+                        }
+                        if idx >= list_offset && idx - list_offset < hits_len {
+                            let vi = idx - list_offset;
+                            if vi < sel_top || vi >= sel_top + hit_slots {
+                                continue;
+                            }
                         }
                         let is_selected = idx >= list_offset
                             && (idx - list_offset) == sel
@@ -856,24 +859,16 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     // searches re-apply it). Ctrl namespace: plain
                     // letters type into the query.
                     KeyCode::Char('s') | KeyCode::Char('S')
-                        if modifiers.contains(KeyModifiers::CONTROL)
-                            && preview.is_none() =>
+                        if modifiers.contains(KeyModifiers::CONTROL) && preview.is_none() =>
                     {
                         sort_mode = sort_mode.next();
                         match tab {
                             MarketTab::Plugins => {
-                                plugin_hits = apply_plugin_view(
-                                    &plugin_all,
-                                    plugin_filter,
-                                    sort_mode,
-                                );
+                                plugin_hits =
+                                    apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
                             }
                             MarketTab::Skills => {
-                                skill_hits = apply_skill_view(
-                                    &skill_all,
-                                    skill_filter,
-                                    sort_mode,
-                                );
+                                skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
                             }
                             MarketTab::Marketplaces => {}
                         }
@@ -881,25 +876,17 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                     }
                     // Source filter cycle over the pristine receipts.
                     KeyCode::Char('f') | KeyCode::Char('F')
-                        if modifiers.contains(KeyModifiers::CONTROL)
-                            && preview.is_none() =>
+                        if modifiers.contains(KeyModifiers::CONTROL) && preview.is_none() =>
                     {
                         match tab {
                             MarketTab::Plugins => {
                                 plugin_filter = next_plugin_filter(plugin_filter);
-                                plugin_hits = apply_plugin_view(
-                                    &plugin_all,
-                                    plugin_filter,
-                                    sort_mode,
-                                );
+                                plugin_hits =
+                                    apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
                             }
                             MarketTab::Skills => {
                                 skill_filter = next_skill_filter(skill_filter);
-                                skill_hits = apply_skill_view(
-                                    &skill_all,
-                                    skill_filter,
-                                    sort_mode,
-                                );
+                                skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
                             }
                             MarketTab::Marketplaces => {}
                         }
@@ -945,9 +932,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                     if plugin_dirty {
                                         if let Some(handle) = rt.clone() {
                                             let q = plugin_query.trim().to_string();
-                                            pending_search = Some(spawn_plugin_search(
-                                                handle, q,
-                                            ));
+                                            pending_search = Some(spawn_plugin_search(handle, q));
                                             search_err = None;
                                         } else {
                                             search_err = Some("no runtime".to_string());
@@ -964,9 +949,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                     if skill_dirty {
                                         if let Some(handle) = rt.clone() {
                                             let q = skill_query.trim().to_string();
-                                            pending_search = Some(spawn_skill_search(
-                                                handle, q,
-                                            ));
+                                            pending_search = Some(spawn_skill_search(handle, q));
                                             search_err = None;
                                         } else {
                                             search_err = Some("no runtime".to_string());
@@ -1260,7 +1243,9 @@ fn apply_skill_view(
 }
 
 /// `^F` cycles (tab-scoped; `None` = all sources).
-fn next_plugin_filter(cur: Option<gray_pkg::ops::SearchSource>) -> Option<gray_pkg::ops::SearchSource> {
+fn next_plugin_filter(
+    cur: Option<gray_pkg::ops::SearchSource>,
+) -> Option<gray_pkg::ops::SearchSource> {
     use gray_pkg::ops::SearchSource as S;
     const ORDER: [Option<S>; 5] = [
         None,
@@ -1274,7 +1259,9 @@ fn next_plugin_filter(cur: Option<gray_pkg::ops::SearchSource>) -> Option<gray_p
 }
 
 /// `^F` cycles on the Skills tab (only skill-bearing sources).
-fn next_skill_filter(cur: Option<gray_pkg::ops::SearchSource>) -> Option<gray_pkg::ops::SearchSource> {
+fn next_skill_filter(
+    cur: Option<gray_pkg::ops::SearchSource>,
+) -> Option<gray_pkg::ops::SearchSource> {
     use gray_pkg::ops::SearchSource as S;
     const ORDER: [Option<S>; 3] = [None, Some(S::ClawHub), Some(S::Claude)];
     let pos = ORDER.iter().position(|f| *f == cur).unwrap_or(0);
@@ -1290,6 +1277,21 @@ fn filter_short(f: Option<gray_pkg::ops::SearchSource>) -> &'static str {
         Some(S::Pi) => "pi",
         Some(S::Claude) => "claude",
         Some(S::ClawHub) => "clawhub",
+    }
+}
+
+/// Scroll offset so the selected hit stays visible: pulls the window
+/// up when `sel` moves above it, pushes it down when `sel` runs past
+/// the bottom. `visible` = hit slots on screen (≥1 by caller).
+fn scroll_top(top: usize, sel: usize, visible: usize) -> usize {
+    if sel < top {
+        sel
+    } else if visible == 0 {
+        top
+    } else if sel >= top + visible {
+        sel + 1 - visible
+    } else {
+        top
     }
 }
 
@@ -1473,7 +1475,8 @@ mod tests {
         format_install_status, format_market_row, format_preview, format_skill_preview,
         format_source_row, install_spec_for_plugin, install_spec_for_skill,
         install_status_covered_by_footer, installed_summary, next_plugin_filter, next_skill_filter,
-        skill_chip, sort_plugins_by_name, sort_skills_by_name, source_chip, split_market_row,
+        scroll_top, skill_chip, sort_plugins_by_name, sort_skills_by_name, source_chip,
+        split_market_row,
     };
     use gray_pkg::ops::{SearchHit, SearchSource};
     use gray_pkg::skills_ops::SkillHit;
@@ -1641,11 +1644,7 @@ mod tests {
             hit("Zebra", 0.0),
             hit("apple", 0.0),
         ];
-        let names = |v: &[SearchHit]| {
-            v.iter()
-                .map(|h| h.name.clone())
-                .collect::<Vec<String>>()
-        };
+        let names = |v: &[SearchHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
         // Descending popularity; 0.0 ties break by lowercase name.
         assert_eq!(
             names(&apply_plugin_view(&all, None, SortMode::Popularity)),
@@ -1667,11 +1666,7 @@ mod tests {
             hit("Apple", S::Gray),
             hit("mango", S::Pi),
         ];
-        let names = |v: &[SearchHit]| {
-            v.iter()
-                .map(|h| h.name.clone())
-                .collect::<Vec<String>>()
-        };
+        let names = |v: &[SearchHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
         // Filter keeps receipt order.
         assert_eq!(
             names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Relevance)),
@@ -1702,11 +1697,7 @@ mod tests {
             hit("Apple", "Claude"),
             hit("mango", "ClawHub"),
         ];
-        let names = |v: &[SkillHit]| {
-            v.iter()
-                .map(|h| h.name.clone())
-                .collect::<Vec<String>>()
-        };
+        let names = |v: &[SkillHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
         use gray_pkg::ops::SearchSource as S;
         assert_eq!(
             names(&apply_skill_view(&all, Some(S::ClawHub), SortMode::Name)),
@@ -1740,6 +1731,20 @@ mod tests {
         assert_eq!(filter_short(None), "all");
         assert_eq!(filter_short(Some(S::Pi)), "pi");
         assert_eq!(filter_short(Some(S::ClawHub)), "clawhub");
+    }
+
+    #[test]
+    fn scroll_top_follows_selection() {
+        // Window of 5: sel inside stays, past bottom pushes, above pulls.
+        assert_eq!(scroll_top(0, 0, 5), 0);
+        assert_eq!(scroll_top(0, 4, 5), 0);
+        assert_eq!(scroll_top(0, 5, 5), 1);
+        assert_eq!(scroll_top(3, 9, 5), 5);
+        assert_eq!(scroll_top(5, 2, 5), 2);
+        // Reset (sel back to 0) rewinds to top.
+        assert_eq!(scroll_top(7, 0, 5), 0);
+        // Degenerate window keeps the offset.
+        assert_eq!(scroll_top(3, 9, 0), 3);
     }
 
     #[test]

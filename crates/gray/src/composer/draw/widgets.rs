@@ -2,12 +2,6 @@
 
 use super::*;
 
-pub(crate) fn thinking_style() -> Style {
-    Style::default()
-        .fg(Color::Rgb(140, 140, 140))
-        .add_modifier(Modifier::ITALIC)
-}
-
 pub(crate) fn shimmer_spans(text: &str, elapsed: Duration, truecolor: bool) -> Vec<Span<'static>> {
     use ratatui::style::Color;
     let chars: Vec<char> = text.chars().collect();
@@ -340,7 +334,11 @@ mod tests {
     fn input_box_has_top_and_bottom_margin_rows() {
         let ibox = build_input_box("", 0, 80);
         let rows = row_texts(&ibox);
-        assert_eq!(rows.len(), 3, "top margin + prompt + bottom margin: {rows:?}");
+        assert_eq!(
+            rows.len(),
+            3,
+            "top margin + prompt + bottom margin: {rows:?}"
+        );
         assert!(rows.first().unwrap().trim().is_empty());
         assert!(rows.last().unwrap().trim().is_empty());
         assert!(rows[1].contains('❯'));

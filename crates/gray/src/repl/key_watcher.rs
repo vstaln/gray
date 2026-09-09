@@ -43,9 +43,10 @@ pub(crate) fn spawn_key_watcher(
             let Ok(event) = read() else {
                 continue;
             };
-            if let Event::Resize(cols, _) = event {
+            if let Event::Resize(cols, rows) = event {
                 if let Some(shared) = watcher_tui.as_ref()
                     && let Some(mut t) = try_lock_tui(shared)
+                    && (cols != t.last_width || rows != t.last_height)
                 {
                     t.pending_resize = Some((
                         cols,
@@ -106,9 +107,10 @@ pub(crate) fn spawn_key_watcher_with_typing(
                 continue;
             };
             match event {
-                Event::Resize(cols, _) => {
+                Event::Resize(cols, rows) => {
                     if let Some(shared) = watcher_tui.as_ref()
                         && let Some(mut t) = try_lock_tui(shared)
+                        && (cols != t.last_width || rows != t.last_height)
                     {
                         t.pending_resize = Some((
                             cols,

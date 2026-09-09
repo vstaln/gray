@@ -346,10 +346,7 @@ pub fn render_diff_hunks(
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::raw(gutter_pad),
-                Span::styled(
-                    gap_text,
-                    Style::default().fg(DIFF_GUTTER_FG),
-                ),
+                Span::styled(gap_text, Style::default().fg(DIFF_GUTTER_FG)),
             ]));
         }
 

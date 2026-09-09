@@ -70,7 +70,9 @@ where
 {
     pub fn with_options(mut backend: B, height: u16) -> io::Result<Self> {
         let screen_size = backend.size()?;
-        let cursor_pos = backend.get_cursor_position().unwrap_or(Position { x: 0, y: 0 });
+        let cursor_pos = backend
+            .get_cursor_position()
+            .unwrap_or(Position { x: 0, y: 0 });
         let height = height.min(screen_size.height);
 
         let mut y = cursor_pos.y;
@@ -142,10 +144,8 @@ where
             let scroll_by = area.bottom() - screen_size.height;
             // Clear the stale composer before scrolling
             self.clear_after_position(Position::new(0, area.top()))?;
-            self.backend.set_cursor_position(Position::new(
-                0,
-                screen_size.height.saturating_sub(1),
-            ))?;
+            self.backend
+                .set_cursor_position(Position::new(0, screen_size.height.saturating_sub(1)))?;
             self.backend.append_lines(scroll_by)?;
             Backend::flush(&mut self.backend)?;
             area.y = screen_size.height - area.height;
@@ -288,7 +288,11 @@ where
             let to_draw = buffer_height.min(screen_height);
             let scroll_up = 0.max(drawn_height + to_draw - screen_height);
             self.scroll_up(scroll_up as u16)?;
-            buffer_content = self.draw_lines((drawn_height - scroll_up) as u16, to_draw as u16, buffer_content)?;
+            buffer_content = self.draw_lines(
+                (drawn_height - scroll_up) as u16,
+                to_draw as u16,
+                buffer_content,
+            )?;
             drawn_height += to_draw - scroll_up;
             buffer_height -= to_draw;
         }

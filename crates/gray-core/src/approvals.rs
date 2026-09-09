@@ -20,7 +20,8 @@
 //! The gate lives in gray-core so both the interactive REPL and headless
 //! surfaces (gateway daemon, print mode) enforce the same policy. Session
 //! memory is a per-gate [`ApprovalCache`] (codex's session-scoped approval
-//! cache); the process default is `auto`.
+//! cache); the process default is `full` (yolo locally; opt into
+//! `auto`/`read-only` via `/permissions` — remote surfaces stay deny-by-default).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -305,7 +306,7 @@ pub struct ApprovalGate {
 impl Default for ApprovalGate {
     fn default() -> Self {
         Self {
-            mode: Arc::new(Mutex::new(MODE_AUTO.to_string())),
+            mode: Arc::new(Mutex::new(MODE_FULL.to_string())),
             cache: Arc::new(ApprovalCache::default()),
         }
     }

@@ -133,7 +133,13 @@ pub(crate) fn wrap_styled_line_with_ranges(
                 .find(|(r, _)| r.start <= bar_idx && bar_idx < r.end)
                 .map(|(_, s)| *s)
                 .unwrap_or(line.style);
-            let cont_gutter_str = format!("{:>width$} | {:pad$}", "", "", width = bar_idx, pad = cont_pad);
+            let cont_gutter_str = format!(
+                "{:>width$} | {:pad$}",
+                "",
+                "",
+                width = bar_idx,
+                pad = cont_pad
+            );
             Some((gutter_end, cont_gutter_str, gutter_style))
         } else {
             None

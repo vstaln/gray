@@ -37,6 +37,7 @@ pub(crate) fn expand_skill_command(
                     if let Some(shared) = tui {
                         let mut t = shared.lock().expect("tui lock");
                         t.push_action("Skills updated", None);
+                        t.ensure_gap(1);
                         let _ = t.draw();
                     }
                 }
@@ -50,6 +51,9 @@ pub(crate) fn expand_skill_command(
                         t.draft.clear();
                         t.attachments.clear();
                         t.pending_pastes.clear();
+                        // Dismissed picker leaves the slash card with no feedback:
+                        // restore the trailing gap so it doesn't jam the input box.
+                        t.ensure_gap(1);
                         let _ = t.draw();
                     }
                 }

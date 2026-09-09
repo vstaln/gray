@@ -205,7 +205,14 @@ pub(crate) async fn run_prompt_turn(
         let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
         tokio::select! {
             res = &mut run_future => res,
-            _ = cancel.cancelled() => Err(CoreError::Cancelled),
+            _ = cancel.cancelled() => {
+                // Preemption drops the turn future, so its `Idle` reset
+                // never runs — release admission or every later prompt
+                // degrades to an instant no-op steer.
+                drop(run_future);
+                agent.abort_turn();
+                Err(CoreError::Cancelled)
+            }
         }
     };
     // overflow recovery (one retry only)
@@ -255,7 +262,11 @@ pub(crate) async fn run_prompt_turn(
                 Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
             let retry_res = tokio::select! {
                 res = &mut run_future2 => res,
-                _ = cancel.cancelled() => Err(CoreError::Cancelled),
+                _ = cancel.cancelled() => {
+                    drop(run_future2);
+                    agent.abort_turn();
+                    Err(CoreError::Cancelled)
+                }
             };
             run_result = retry_res;
         }

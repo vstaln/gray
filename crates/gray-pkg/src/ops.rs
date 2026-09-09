@@ -2837,7 +2837,11 @@ pub(crate) mod tests {
         let _home = use_search_env(&index_url, &registry);
 
         let out = search_all("pi").await.unwrap();
-        let hit = out.hits.iter().find(|h| h.source == SearchSource::Pi).unwrap();
+        let hit = out
+            .hits
+            .iter()
+            .find(|h| h.source == SearchSource::Pi)
+            .unwrap();
         assert!((hit.popularity - 0.83).abs() < 1e-6);
     }
 
