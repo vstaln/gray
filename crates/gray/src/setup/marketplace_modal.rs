@@ -279,7 +279,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
     let mut skill_all: Vec<SkillHit> = Vec::new();
     let mut plugin_filter: Option<gray_pkg::ops::SearchSource> = None;
     let mut skill_filter: Option<gray_pkg::ops::SearchSource> = None;
-    let mut sort_names = false;
+    let mut sort_mode = SortMode::Relevance;
     let mut skill_booted = false;
 
     // Runtime handle for spawned `block_on` flights (same shape as the
@@ -369,7 +369,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                             plugin_unreachable = unreachable_lines(&out);
                             plugin_all = out.hits;
                             plugin_hits =
-                                apply_plugin_view(&plugin_all, plugin_filter, sort_names);
+                                apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
                             plugin_dirty = false;
                             search_err = None;
                             sel = 0;
@@ -384,7 +384,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         Ok(hits) => {
                             skill_all = hits;
                             skill_hits =
-                                apply_skill_view(&skill_all, skill_filter, sort_names);
+                                apply_skill_view(&skill_all, skill_filter, sort_mode);
                             skill_dirty = false;
                             search_err = None;
                             sel = 0;
@@ -728,7 +728,8 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         );
                     }
                 }
-                // Active source filter for the footer (`^F` cycles).
+                // Active source filter + sort mode for the footer
+                // (`^F` cycles sources, `^S` cycles rel|name|pop).
                 let filter_seg = format!(
                     "src:{} · ",
                     filter_short(match tab {
@@ -737,6 +738,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         MarketTab::Marketplaces => None,
                     })
                 );
+                let sort_seg = format!("sort:{} · ", sort_mode.short());
                 let footer_line = match tab {
                     MarketTab::Plugins | MarketTab::Skills if preview.is_some() => {
                         if installing {
@@ -765,7 +767,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                             ("Enter ", true),
                             ("search/open · ", false),
                             ("^S ", true),
-                            ("sort · ", false),
+                            (sort_seg.as_str(), false),
                             ("^F ", true),
                             (filter_seg.as_str(), false),
                             ("Esc ", true),
@@ -857,20 +859,20 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         if modifiers.contains(KeyModifiers::CONTROL)
                             && preview.is_none() =>
                     {
-                        sort_names = !sort_names;
+                        sort_mode = sort_mode.next();
                         match tab {
                             MarketTab::Plugins => {
                                 plugin_hits = apply_plugin_view(
                                     &plugin_all,
                                     plugin_filter,
-                                    sort_names,
+                                    sort_mode,
                                 );
                             }
                             MarketTab::Skills => {
                                 skill_hits = apply_skill_view(
                                     &skill_all,
                                     skill_filter,
-                                    sort_names,
+                                    sort_mode,
                                 );
                             }
                             MarketTab::Marketplaces => {}
@@ -888,7 +890,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                 plugin_hits = apply_plugin_view(
                                     &plugin_all,
                                     plugin_filter,
-                                    sort_names,
+                                    sort_mode,
                                 );
                             }
                             MarketTab::Skills => {
@@ -896,7 +898,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                                 skill_hits = apply_skill_view(
                                     &skill_all,
                                     skill_filter,
-                                    sort_names,
+                                    sort_mode,
                                 );
                             }
                             MarketTab::Marketplaces => {}
@@ -1191,36 +1193,68 @@ fn spawn_skill_search(handle: tokio::runtime::Handle, query: String) -> SearchFl
     SearchFlight::Skill(rx)
 }
 
-/// Display view over pristine receipts: source filter, then optional A–Z.
+/// `^S` sort cycle over the pristine receipts: relevance (search order),
+/// A–Z, then npm popularity descending. Skills-tab hits all report 0.0,
+/// so popularity there is a documented name-fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SortMode {
+    Relevance,
+    Name,
+    Popularity,
+}
+
+impl SortMode {
+    fn next(self) -> SortMode {
+        match self {
+            SortMode::Relevance => SortMode::Name,
+            SortMode::Name => SortMode::Popularity,
+            SortMode::Popularity => SortMode::Relevance,
+        }
+    }
+
+    fn short(self) -> &'static str {
+        match self {
+            SortMode::Relevance => "rel",
+            SortMode::Name => "name",
+            SortMode::Popularity => "pop",
+        }
+    }
+}
+
+/// Display view over pristine receipts: source filter, then the `^S` sort.
 fn apply_plugin_view(
     all: &[SearchHit],
     filter: Option<gray_pkg::ops::SearchSource>,
-    sort: bool,
+    sort: SortMode,
 ) -> Vec<SearchHit> {
     let mut v: Vec<SearchHit> = all
         .iter()
         .filter(|h| filter.is_none_or(|f| h.source == f))
         .cloned()
         .collect();
-    if sort {
-        sort_plugins_by_name(&mut v);
+    match sort {
+        SortMode::Relevance => {}
+        SortMode::Name => sort_plugins_by_name(&mut v),
+        SortMode::Popularity => sort_plugins_by_popularity(&mut v),
     }
     v
 }
 
-/// Display view over pristine skill receipts: source filter, then A–Z.
+/// Display view over pristine skill receipts: source filter, then `^S` sort.
 fn apply_skill_view(
     all: &[SkillHit],
     filter: Option<gray_pkg::ops::SearchSource>,
-    sort: bool,
+    sort: SortMode,
 ) -> Vec<SkillHit> {
     let mut v: Vec<SkillHit> = all
         .iter()
         .filter(|h| filter.is_none_or(|f| h.source == f.label()))
         .cloned()
         .collect();
-    if sort {
-        sort_skills_by_name(&mut v);
+    match sort {
+        SortMode::Relevance => {}
+        SortMode::Name => sort_skills_by_name(&mut v),
+        SortMode::Popularity => sort_skills_by_popularity(&mut v),
     }
     v
 }
@@ -1259,14 +1293,34 @@ fn filter_short(f: Option<gray_pkg::ops::SearchSource>) -> &'static str {
     }
 }
 
-/// Case-insensitive A–Z over a hit list (`^S` toggle).
+/// Case-insensitive A–Z over a hit list (`^S` cycle).
 fn sort_plugins_by_name(hits: &mut [SearchHit]) {
     hits.sort_by_key(|a| a.name.to_lowercase());
 }
 
-/// Case-insensitive A–Z over a skill hit list (`^S` one-shot).
+/// Case-insensitive A–Z over a skill hit list (`^S` cycle).
 fn sort_skills_by_name(hits: &mut [SkillHit]) {
     hits.sort_by_key(|a| a.name.to_lowercase());
+}
+
+/// Popularity descending (`total_cmp`, NaN-proof) with a lowercase-name
+/// tiebreak (`^S` third stop).
+fn sort_plugins_by_popularity(hits: &mut [SearchHit]) {
+    hits.sort_by(|a, b| {
+        b.popularity
+            .total_cmp(&a.popularity)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+}
+
+/// Popularity descending over a skill hit list (all zeros today, so this
+/// reads as A–Z — the documented name-fallback).
+fn sort_skills_by_popularity(hits: &mut [SkillHit]) {
+    hits.sort_by(|a, b| {
+        b.popularity
+            .total_cmp(&a.popularity)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
 }
 
 /// Empty-state line naming what's already installed:
@@ -1415,7 +1469,7 @@ fn footer_spans(
 #[cfg(test)]
 mod tests {
     use super::{
-        MarketTab, apply_plugin_view, apply_skill_view, chip_color, filter_short,
+        MarketTab, SortMode, apply_plugin_view, apply_skill_view, chip_color, filter_short,
         format_install_status, format_market_row, format_preview, format_skill_preview,
         format_source_row, install_spec_for_plugin, install_spec_for_skill,
         install_status_covered_by_footer, installed_summary, next_plugin_filter, next_skill_filter,
@@ -1433,6 +1487,7 @@ mod tests {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         }
     }
 
@@ -1443,6 +1498,7 @@ mod tests {
             desc: "grep gifs".to_string(),
             source: "ClawHub".to_string(),
             trust: "community".to_string(),
+            popularity: 0.0,
         }
     }
 
@@ -1572,6 +1628,32 @@ mod tests {
     }
 
     #[test]
+    fn popularity_sort_orders_desc_then_name() {
+        let hit = |name: &str, popularity: f32| {
+            let mut h = plugin_hit();
+            h.name = name.to_string();
+            h.popularity = popularity;
+            h
+        };
+        let all = vec![
+            hit("mid", 0.5),
+            hit("top", 0.9),
+            hit("Zebra", 0.0),
+            hit("apple", 0.0),
+        ];
+        let names = |v: &[SearchHit]| {
+            v.iter()
+                .map(|h| h.name.clone())
+                .collect::<Vec<String>>()
+        };
+        // Descending popularity; 0.0 ties break by lowercase name.
+        assert_eq!(
+            names(&apply_plugin_view(&all, None, SortMode::Popularity)),
+            vec!["top", "mid", "apple", "Zebra"]
+        );
+    }
+
+    #[test]
     fn apply_plugin_view_filters_then_sorts() {
         use gray_pkg::ops::SearchSource as S;
         let hit = |name: &str, source: S| {
@@ -1592,17 +1674,17 @@ mod tests {
         };
         // Filter keeps receipt order.
         assert_eq!(
-            names(&apply_plugin_view(&all, Some(S::Pi), false)),
+            names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Relevance)),
             vec!["zebra", "mango"]
         );
         // Filter + sort.
         assert_eq!(
-            names(&apply_plugin_view(&all, Some(S::Pi), true)),
+            names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Name)),
             vec!["mango", "zebra"]
         );
         // No filter + sort.
         assert_eq!(
-            names(&apply_plugin_view(&all, None, true)),
+            names(&apply_plugin_view(&all, None, SortMode::Name)),
             vec!["Apple", "mango", "zebra"]
         );
     }
@@ -1627,11 +1709,11 @@ mod tests {
         };
         use gray_pkg::ops::SearchSource as S;
         assert_eq!(
-            names(&apply_skill_view(&all, Some(S::ClawHub), true)),
+            names(&apply_skill_view(&all, Some(S::ClawHub), SortMode::Name)),
             vec!["mango", "zebra"]
         );
         assert_eq!(
-            names(&apply_skill_view(&all, None, false)),
+            names(&apply_skill_view(&all, None, SortMode::Relevance)),
             vec!["zebra", "Apple", "mango"]
         );
     }

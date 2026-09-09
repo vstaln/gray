@@ -1411,7 +1411,9 @@ impl SearchSource {
 /// `version_detail` (e.g. a source qualifier), `files`, and `trust`
 /// (e.g. ClawHub `official/community + scan status`) feed the
 /// preview+confirm pane; [`format_search_hit`] ignores them by design.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `popularity` is npm's `score.detail.popularity` (0..1) on pi hits,
+/// 0.0 everywhere else (never fails a search on a stat).
+#[derive(Debug, Clone, PartialEq)]
 pub struct SearchHit {
     pub name: String,
     pub version: String,
@@ -1420,6 +1422,7 @@ pub struct SearchHit {
     pub version_detail: String,
     pub files: Vec<String>,
     pub trust: String,
+    pub popularity: f32,
 }
 
 /// Advisory line printed when the pi side fails; search still exits 0.
@@ -1509,6 +1512,15 @@ async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Free npm signal (`score.detail.popularity`, 0..1); missing
+            // or odd shapes degrade to 0.0, never fail the search.
+            let popularity = obj
+                .get("score")
+                .and_then(|s| s.get("detail"))
+                .and_then(|d| d.get("popularity"))
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            let popularity = popularity.clamp(0.0, 1.0);
             hits.push(SearchHit {
                 name: name.to_string(),
                 version,
@@ -1517,6 +1529,7 @@ async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<
                 version_detail: String::new(),
                 files: Vec::new(),
                 trust: String::new(),
+                popularity,
             });
         }
     }
@@ -1559,6 +1572,7 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         });
     }
     let pi_unreachable = match search_pi(&client, query).await {
@@ -1587,6 +1601,7 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
                 version_detail: e.qualifier,
                 files: Vec::new(),
                 trust: String::new(),
+                popularity: 0.0,
             });
         }
     }
@@ -1606,6 +1621,7 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
                         version_detail: String::new(),
                         files: Vec::new(),
                         trust: crate::sources::clawhub_trust(e.official, &e.scan),
+                        popularity: 0.0,
                     });
                 }
             }
@@ -2810,6 +2826,22 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn search_pi_reports_npm_popularity() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let index_url = spawn_index_stub(index_fixture(&[])).await;
+        let objects = serde_json::json!([
+            {"package": {"name": "pi", "version": "1.0.0", "description": "d"},
+             "score": {"detail": {"popularity": 0.83}}}
+        ]);
+        let registry = spawn_search_stub(objects).await;
+        let _home = use_search_env(&index_url, &registry);
+
+        let out = search_all("pi").await.unwrap();
+        let hit = out.hits.iter().find(|h| h.source == SearchSource::Pi).unwrap();
+        assert!((hit.popularity - 0.83).abs() < 1e-6);
+    }
+
+    #[tokio::test]
     async fn search_collision_prefers_gray() {
         let _guard = ENV_GUARD.lock().unwrap();
         let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
@@ -2926,6 +2958,7 @@ pub(crate) mod tests {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         };
         assert_eq!(format_search_hit(&bare), "n 1.0.0 [Gray Index]");
         let padded = SearchHit {
@@ -2951,6 +2984,7 @@ pub(crate) mod tests {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         };
         assert_eq!(
             format_search_hit(&scoped),
@@ -2964,6 +2998,7 @@ pub(crate) mod tests {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         };
         assert_eq!(
             format_search_hit(&plain),
@@ -2978,6 +3013,7 @@ pub(crate) mod tests {
             version_detail: String::new(),
             files: Vec::new(),
             trust: String::new(),
+            popularity: 0.0,
         };
         assert_eq!(format_search_hit(&gray), "@scope/bar 1.0.0 [Gray Index]");
     }
@@ -3040,6 +3076,7 @@ pub(crate) mod tests {
             version_detail: "github:o/r@main".to_string(),
             files: vec!["SKILL.md".to_string()],
             trust: "community".to_string(),
+            popularity: 0.0,
         };
         assert_eq!(format_search_hit(&hit), "x 1.0.0 [ClawHub] - d");
     }
