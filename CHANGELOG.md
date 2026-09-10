@@ -59,6 +59,8 @@
 - Release: tarballs build with `--features all-platforms` (real adapters, not stubs); CI tests the all-platforms gateway code and asserts release artifact architecture
 - Update: `GRAY_AUTO_UPDATE=1` auto-updates on the stable channel only; update trust model documented in SECURITY.md
 - README: 0.x stability line, user-side rollback note, and raw-session persistence disclosure
+- Manifests: gray-cron declared once in workspace.dependencies (GRY-003)
+- README: default vs feature-gated source-build table; no blanket "ships in the binary" claim (GRY-004)
 
 ## [0.1.0] - 2026-09-07
 

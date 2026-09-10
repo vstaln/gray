@@ -28,7 +28,7 @@
   <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
 </div>
 
-Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — everything below ships in the binary today.
+Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — the release binary carries everything below; from-source builds are feature-gated (see [Install](#install)).
 
 | | |
 |---|---|
@@ -37,7 +37,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
 | **Batteries in, guard on** | read · write · edit · bash · find · grep · ls · glob · cron. A destructive-command guard asks before foot-guns; Ctrl-C cancels a runaway turn. |
-| **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. |
+| **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. Release binary; from source add `--features all-platforms`. |
 | **Extend the harness** | Skills from `SKILL.md`, sidecar plugins over stdio (frozen wire v1), or `/acp` to *become* claude, codex, cursor, opencode… |
 
 ## Install
@@ -50,8 +50,16 @@ curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # bleeding edg
 or from source:
 
 ```bash
-cargo build --release -p gray
+cargo build --release -p gray                             # harness core
+cargo build --release -p gray --features all-platforms    # + Telegram/Discord/Slack adapters
+cargo build --release -p gray --features clipboard        # + image paste in the TUI
 ```
+
+| build | adds |
+|---|---|
+| default | harness core: CLI, TUI, provider, sessions, tools, cron |
+| `--features all-platforms` | Telegram + Discord + Slack gateway adapters (what the release binary ships) |
+| `--features clipboard` | image/paste attachments (arboard + image) |
 
 Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
