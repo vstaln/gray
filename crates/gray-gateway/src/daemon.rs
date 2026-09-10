@@ -53,6 +53,10 @@ pub struct GatewayRunner {
     pub dead: Arc<DeadTargets>,
     /// Per-session cancellation for /stop and message interrupts.
     pub(crate) cancel_tokens: Mutex<HashMap<String, tokio_util::sync::CancellationToken>>,
+    /// Per-key admission locks: held for the whole run_agent body so two
+    /// turns for the same key (inbound + inbound, inbound + cron) can never
+    /// overlap, and token removal always removes the run's own token.
+    pub(crate) run_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     draining: AtomicBool,
     /// Fresh uuid per process boot: `pid:boot_id` stamps cron fire-claims, so a
     /// dead process never reuses its owner id (no pid-start-time helper in gray).
@@ -182,6 +186,7 @@ impl GatewayRunner {
             ledger: DeliveryLedger::open_default(),
             dead,
             cancel_tokens: Mutex::new(HashMap::new()),
+            run_locks: Mutex::new(HashMap::new()),
             draining: AtomicBool::new(false),
             boot_id: uuid::Uuid::new_v4().to_string(),
         })
@@ -368,16 +373,46 @@ impl GatewayRunner {
                     }
                 }
                 SlashCommand::Restart => {
-                    // Remember the requester, reply, then exit;
-                    // systemd (RestartForceExitStatus=75) revives us and boot pings back.
-                    if let Ok(home) = crate::config::gray_home_dir() {
-                        let _ = write_restart_marker_in(&home, platform, &chat_id);
+                    // Operators only: pairing approves chatting, not daemon
+                    // administration. Membership is checked against the
+                    // explicit allowlist (config + env), never pairing state.
+                    let cfg = self
+                        .config
+                        .platforms
+                        .get(&platform)
+                        .cloned()
+                        .unwrap_or_default();
+                    let env = std::env::var(platform.allowed_users_env()).ok();
+                    let allow =
+                        crate::authz::effective_allowlist(platform, &cfg, env.as_deref());
+                    let user = ev
+                        .source
+                        .user_id
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|u| !u.is_empty())
+                        .map(|u| crate::pairing::normalize_user_id(platform, u));
+                    let permitted = user
+                        .map(|u| allow.contains(&u) || allow.contains("*"))
+                        .unwrap_or(false);
+                    if !permitted {
+                        log::warn!(
+                            "gateway restart refused for non-operator {platform} user={:?}",
+                            ev.source.user_id
+                        );
+                        "Gateway restart is restricted to configured operators.".into()
+                    } else {
+                        // Remember the requester, reply, then exit;
+                        // systemd (RestartForceExitStatus=75) revives us and boot pings back.
+                        if let Ok(home) = crate::config::gray_home_dir() {
+                            let _ = write_restart_marker_in(&home, platform, &chat_id);
+                        }
+                        std::thread::spawn(|| {
+                            std::thread::sleep(Duration::from_secs(2));
+                            std::process::exit(gray_supervise::exit::EXIT_RESTART);
+                        });
+                        "Restarting gateway…".into()
                     }
-                    std::thread::spawn(|| {
-                        std::thread::sleep(Duration::from_secs(2));
-                        std::process::exit(gray_supervise::exit::EXIT_RESTART);
-                    });
-                    "Restarting gateway…".into()
                 }
                 SlashCommand::Whoami => format!(
                     "platform {platform}\nuser_id {}\nchat_id {chat_id}\nchat_type {}{}\n\nAdd the user_id to platforms.{platform}.allowed_users in gateway.yaml to skip pairing.",
