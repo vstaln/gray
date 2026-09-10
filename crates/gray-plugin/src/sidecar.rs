@@ -13,7 +13,7 @@
 //! - `command/run` (request): params `{"name":"/x","argv"}`, reply `{"text"}`.
 //! - `event/notify` (notification): NO `id`, NO reply expected. Params carry a
 //!   minimal tagged event `{"type", ...}` where type is one of
-//!   `pre_step` | `pre_tool` | `post_tool` | `turn_end` with only the fields
+//!   `pre_tool` | `post_tool` | `turn_end` with only the fields
 //!   the sidecar needs (tool name/args, output content, usage totals).
 //!
 //! Unknown methods/lines are ignored.
@@ -498,7 +498,6 @@ impl Plugin for SidecarPlugin {
         // Minimal tagged JSON (see protocol v1 doc comment above) + v1.1 session.
         let session = session_json("", &self.cwd);
         let params = match &e {
-            CoreEvent::PreStep { .. } => json!({"type": "pre_step", "session": session}),
             CoreEvent::PreTool { name, args } => {
                 json!({"type": "pre_tool", "name": name, "args": args, "session": session})
             }

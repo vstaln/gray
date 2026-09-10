@@ -14,18 +14,15 @@ name = "gray"
 path = "src/main.rs"
 
 [dependencies]
-gray-acp = { workspace = true }
+gray-acp = { workspace = true, optional = true }
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }
-gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
 gray-supervise = { workspace = true }
 gray-markdown = { workspace = true }
-# Direct path dep: workspace table has no gray-cron entry (workspace Cargo.toml
-# is owned elsewhere); same version as workspace.package.
-gray-cron = { version = "0.1.0", path = "../gray-cron" }
+gray-cron = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
@@ -56,6 +53,9 @@ ignore = { workspace = true }
 
 [features]
 default = []
+# External agents over the Agent Client Protocol (`/acp`, `--acp`). Off by
+# default: the default graph carries no ACP client.
+acp = ["dep:gray-acp"]
 # Clipboard/image attachments (arboard + image). Off by default to keep the
 # default tree and binary lean; build with --features clipboard for paste.
 clipboard = ["dep:arboard", "dep:image"]
@@ -64,8 +64,3 @@ telegram = ["gray-gateway/telegram"]
 discord = ["gray-gateway/discord"]
 slack = ["gray-gateway/slack"]
 all-platforms = ["gray-gateway/all-platforms"]
-
-[dev-dependencies]
-async-trait = { workspace = true }
-reqwest = { workspace = true }
-tempfile = { workspace = true }

@@ -16,19 +16,15 @@ chrono = { workspace = true }
 log = { workspace = true }
 gray-core = { workspace = true }
 gray-session = { workspace = true }
-gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-plugin = { workspace = true }
 gray-supervise = { workspace = true }
-# Direct path dep: workspace table has no gray-cron entry (workspace Cargo.toml
-# is owned elsewhere); same version as workspace.package.
-gray-cron = { version = "0.1.0", path = "../gray-cron" }
+gray-cron = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
-fs2 = { workspace = true }
 # Optional real platform deps (feature-gated; default build stays stub so cargo check passes offline)
 teloxide = { version = "0.17", optional = true, default-features = false, features = ["rustls"] }
 twilight-gateway = { version = "0.17", optional = true }

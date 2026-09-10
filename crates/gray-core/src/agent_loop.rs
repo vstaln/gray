@@ -31,6 +31,48 @@ impl Agent {
         }
     }
 
+    /// Validation + `tool/before`/`pre_tool` pre-pass shared by both dispatch
+    /// lanes. `Err` is a ready-to-record error result (unknown tool,
+    /// non-object args, or a hook deny); `Ok` carries the possibly
+    /// hook-rewritten args the executor may run.
+    async fn preflight(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, ToolOutput> {
+        if !self.tools.iter().any(|t| t.name == name) {
+            let list = if self.tools.is_empty() {
+                "(none)".to_string()
+            } else {
+                self.tools
+                    .iter()
+                    .map(|t| t.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            return Err(ToolOutput::error(format!(
+                "Tool '{name}' does not exist. Available: {list}"
+            )));
+        }
+        if !args.is_object() {
+            return Err(ToolOutput::error(format!(
+                "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
+            )));
+        }
+        let mut effective_args = args.clone();
+        for hook in &self.hooks {
+            match hook.tool_before(name, &effective_args).await {
+                ToolBefore::Allow => {}
+                ToolBefore::Modify(rewritten) => effective_args = rewritten,
+                ToolBefore::Deny(reason) => return Err(ToolOutput::error(reason)),
+            }
+        }
+        for hook in &self.hooks {
+            hook.pre_tool(name, &effective_args).await;
+        }
+        Ok(effective_args)
+    }
+
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///
@@ -608,12 +650,12 @@ impl Agent {
             // W3 dispatch validation: unknown tools and malformed args never
             // reach the executor; each still gets one error tool result so the
             // assistant/user alternation stays intact.
-            let available: Vec<String> = self.tools.iter().map(|t| t.name.clone()).collect();
             // Parallel batch lane: a maximal run of batchable-known-object
             // calls executes concurrently via `join_ordered`; everything else
             // keeps the sequential path below, verbatim. Kill-switch off (or
             // any barrier) degrades to all-`Single` — today's loop exactly.
-            let known: std::collections::HashSet<String> = available.iter().cloned().collect();
+            let known: std::collections::HashSet<String> =
+                self.tools.iter().map(|t| t.name.clone()).collect();
             let segments = if crate::parallel::parallel_enabled() {
                 crate::parallel::plan_segments(&tool_uses, &known)
             } else {
@@ -649,49 +691,12 @@ impl Agent {
                             cancelled_at = Some(idx);
                             break;
                         }
-                        if !self.tools.iter().any(|t| t.name == *name) {
-                            let list = if available.is_empty() {
-                                "(none)".to_string()
-                            } else {
-                                available.join(", ")
-                            };
-                            inline_errors.insert(
-                                idx,
-                                ToolOutput::error(format!(
-                                    "Tool '{name}' does not exist. Available: {list}"
-                                )),
-                            );
-                            continue;
-                        }
-                        if !args.is_object() {
-                            inline_errors.insert(
-                                idx,
-                                ToolOutput::error(format!(
-                                    "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
-                                )),
-                            );
-                            continue;
-                        }
-                        let mut effective_args = args.clone();
-                        let mut denial: Option<String> = None;
-                        for hook in &self.hooks {
-                            match hook.tool_before(name, &effective_args).await {
-                                ToolBefore::Allow => {}
-                                ToolBefore::Modify(rewritten) => effective_args = rewritten,
-                                ToolBefore::Deny(reason) => {
-                                    denial = Some(reason);
-                                    break;
-                                }
+                        match self.preflight(name, args).await {
+                            Ok(effective_args) => ready.push((idx, name.clone(), effective_args)),
+                            Err(err) => {
+                                inline_errors.insert(idx, err);
                             }
                         }
-                        if let Some(reason) = denial {
-                            inline_errors.insert(idx, ToolOutput::error(reason));
-                            continue;
-                        }
-                        for hook in &self.hooks {
-                            hook.pre_tool(name, &effective_args).await;
-                        }
-                        ready.push((idx, name.clone(), effective_args));
                     }
                     if cancelled_at.is_some() {
                         // Nothing in the run executed: the pre-pass only
@@ -818,86 +823,25 @@ impl Agent {
                 // tables (wire vs filtered index spaces must never mix).
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
-                if !self.tools.iter().any(|t| t.name == *name) {
-                    let list = if available.is_empty() {
-                        "(none)".to_string()
-                    } else {
-                        available.join(", ")
-                    };
-                    let err = ToolOutput::error(format!(
-                        "Tool '{name}' does not exist. Available: {list}"
-                    ));
-                    emit!(AgentEvent::tool_result(
-                        id.clone(),
-                        err.content.clone(),
-                        true
-                    ));
-                    self.messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult {
-                            id: id.clone(),
-                            content: err.content,
-                            is_error: true,
-                        }],
-                    });
-                    continue;
-                }
-                if !args.is_object() {
-                    let err = ToolOutput::error(format!(
-                        "Invalid arguments for tool '{name}': expected a JSON object. Please provide a valid JSON object."
-                    ));
-                    emit!(AgentEvent::tool_result(
-                        id.clone(),
-                        err.content.clone(),
-                        true
-                    ));
-                    self.messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult {
-                            id: id.clone(),
-                            content: err.content,
-                            is_error: true,
-                        }],
-                    });
-                    continue;
-                }
-
-                // Protocol v1 `tool/before`: each hook sees the call in
-                // order; a modify rewrites args for later hooks and the
-                // executor, the first deny wins and skips the executor.
-                let mut effective_args = args.clone();
-                let mut denial: Option<String> = None;
-                for hook in &self.hooks {
-                    match hook.tool_before(name, &effective_args).await {
-                        ToolBefore::Allow => {}
-                        ToolBefore::Modify(rewritten) => effective_args = rewritten,
-                        ToolBefore::Deny(reason) => {
-                            denial = Some(reason);
-                            break;
-                        }
+                let effective_args = match self.preflight(name, args).await {
+                    Ok(effective_args) => effective_args,
+                    Err(err) => {
+                        emit!(AgentEvent::tool_result(
+                            id.clone(),
+                            err.content.clone(),
+                            true
+                        ));
+                        self.messages.push(Message {
+                            role: Role::User,
+                            content: vec![ContentBlock::ToolResult {
+                                id: id.clone(),
+                                content: err.content,
+                                is_error: true,
+                            }],
+                        });
+                        continue;
                     }
-                }
-                if let Some(reason) = denial {
-                    let err = ToolOutput::error(reason);
-                    emit!(AgentEvent::tool_result(
-                        id.clone(),
-                        err.content.clone(),
-                        true
-                    ));
-                    self.messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult {
-                            id: id.clone(),
-                            content: err.content,
-                            is_error: true,
-                        }],
-                    });
-                    continue;
-                }
-
-                for hook in &self.hooks {
-                    hook.pre_tool(name, &effective_args).await;
-                }
+                };
                 let output = tokio::select! {
                     out = tokio::time::timeout(
                         self.tool_timeout,

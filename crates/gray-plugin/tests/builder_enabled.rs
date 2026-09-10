@@ -2,8 +2,18 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use gray_plugin::Plugin;
-use gray_plugin::builder::{active_plugins, default_plugins, take_builder_warnings};
+use gray_plugin::builder::{
+    ToolsBasicPlugin, ToolsSearchPlugin, active_plugins, take_builder_warnings,
+};
 use gray_plugin::lock::{LockEntry, LockFile, lock_path, project_lock_path};
+
+/// Test-local copy of the two builtin plugins (no surface extras).
+fn default_plugins() -> Vec<Arc<dyn Plugin>> {
+    vec![
+        Arc::new(ToolsBasicPlugin::default()) as Arc<dyn Plugin>,
+        Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
+    ]
+}
 
 // Serializes the process-global mutation below (GRAY_HOME + cwd) within
 // this test binary; every other suite runs in its own process.

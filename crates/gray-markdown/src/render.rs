@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 
 use crate::buffers::{MarkdownBuffers, RenderEvent, RenderEventKind, unicode_display_width};
 use crate::checkpoint::Checkpoint;
-use crate::colors::StyleInto;
+use crate::colors::anstyle_to_ratatui_style;
 use crate::hyperlinks::{ChunkLinkRange, chunk_link_offsets, emit_segment_hyperlinks};
 use crate::output::{HyperlinkTarget, MarkdownRenderOutput};
 use crate::parse::ParsedMarkdown;
@@ -65,9 +65,9 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         }
     }
 
-    /// Build sorted render events into the provided Vec.
-    fn build_render_events_into(&self, events: &mut Vec<RenderEvent>) {
-        events.clear();
+    /// Build sorted render events.
+    fn build_render_events(&self) -> Vec<RenderEvent> {
+        let mut events = Vec::new();
         let capacity = self.buffers.highlights.len() * 2
             + self.buffers.replaces.len() * 2
             + self.buffers.table_replaces.len() * 2; // mermaid removed
@@ -117,12 +117,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         }
         // mermaid removed: fences render as code blocks
         events.sort_unstable();
-    }
-
-    /// Build sorted render events into a new Vec.
-    fn build_render_events(&self) -> Vec<RenderEvent> {
-        let mut events = Vec::new();
-        self.build_render_events_into(&mut events);
         events
     }
 
@@ -158,7 +152,8 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         let mut checkpoint_output_lines: Option<usize> = None;
 
         // Style already adapted - no need to call adapt_style again
-        let code_bg_style: ratatui::style::Style = self.ms.code_background.style_into();
+        let code_bg_style: ratatui::style::Style =
+            anstyle_to_ratatui_style(self.ms.code_background);
 
         let in_untagged_code = |pos: usize, buffers: &MarkdownBuffers| -> bool {
             buffers
@@ -304,7 +299,8 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
                             );
 
                             let transformed = self.apply_transforms(text, range_start, pretty);
-                            let ratatui_style: ratatui::style::Style = style.style_into();
+                            let ratatui_style: ratatui::style::Style =
+                                anstyle_to_ratatui_style(style);
 
                             let chunk_src_start = text_start;
                             let chunk_src_end = text_start + text.len();

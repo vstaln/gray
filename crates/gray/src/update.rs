@@ -98,69 +98,10 @@ fn run_installer_locked() -> anyhow::Result<()> {
     run_installer()
 }
 
-/// Writes one JSON receipt doc `{ts, channel, from, to, rc, reason}`.
-/// `latest.json` is overwritten with the single latest doc (whole-file JSON);
-/// history appends to sibling `history.jsonl`, trimmed to the last 200 lines.
-/// Best effort: receipt failures never fail the update.
-pub(crate) fn write_update_receipt_to(
-    path: &Path,
-    channel: &str,
-    from: &str,
-    to: &str,
-    rc: i32,
-    reason: &str,
-) {
-    const HISTORY_LINES: usize = 200;
-    let _ = (|| -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let receipt = serde_json::json!({
-            "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "channel": channel, "from": from, "to": to, "rc": rc, "reason": reason,
-        });
-        std::fs::write(path, format!("{receipt}\n"))?;
-        let hist = path
-            .parent()
-            .map(|p| p.join("history.jsonl"))
-            .unwrap_or_else(|| PathBuf::from("history.jsonl"));
-        let mut f = OpenOptions::new().create(true).append(true).open(&hist)?;
-        use std::io::Write as _;
-        writeln!(f, "{receipt}")?;
-        drop(f);
-        let text = std::fs::read_to_string(&hist)?;
-        let lines: Vec<&str> = text.lines().collect();
-        if lines.len() > HISTORY_LINES {
-            std::fs::write(
-                &hist,
-                lines[lines.len() - HISTORY_LINES..].join("\n") + "\n",
-            )?;
-        }
-        Ok(())
-    })();
-}
-
-fn write_update_receipt(channel: &str, from: &str, to: &str, rc: i32, reason: &str) {
-    let path = crate::setup::gray_home()
-        .map(|h| h.join("logs").join("update_receipts").join("latest.json"))
-        .unwrap_or_else(|_| {
-            std::env::temp_dir()
-                .join("gray-update-receipts")
-                .join("latest.json")
-        });
-    write_update_receipt_to(&path, channel, from, to, rc, reason);
-}
-
 /// Manual `gray update`: run the installer unconditionally, then exit hint.
 pub async fn update_now() -> anyhow::Result<()> {
-    let from = env!("CARGO_PKG_VERSION");
     println!("→ updating gray ({CHANNEL})...");
-    let res = run_installer_locked();
-    match &res {
-        Ok(()) => write_update_receipt(CHANNEL, from, "", 0, "ok"),
-        Err(e) => write_update_receipt(CHANNEL, from, "", 1, &e.to_string()),
-    }
-    res?;
+    run_installer_locked()?;
     println!("✓ updated. restart gray to use the new version.");
     Ok(())
 }
@@ -203,6 +144,13 @@ fn now_secs() -> u64 {
     chrono::Utc::now().timestamp().try_into().unwrap_or(0)
 }
 
+/// Auto self-update is stable-channel only: beta redeploys on every push to
+/// main, so GRAY_AUTO_UPDATE=1 on beta would be a per-commit curl|sh
+/// subscription. Manual `gray update` stays unconditional.
+fn auto_update_allowed(channel: &str, flag: Option<&str>) -> bool {
+    channel == "stable" && flag == Some("1")
+}
+
 /// Called before the REPL starts. Checks for a newer release, prompts y/n.
 /// Errors are silent — update checks must never break startup.
 pub async fn startup_check() {
@@ -226,7 +174,8 @@ pub async fn startup_check() {
     if !is_newer(&latest, current) {
         return;
     }
-    if std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
+    let auto_flag = std::env::var("GRAY_AUTO_UPDATE").ok();
+    if auto_update_allowed(CHANNEL, auto_flag.as_deref()) {
         let latest = latest.clone();
         tokio::spawn(async move {
             let Ok(_lock) = acquire_update_lock() else {
@@ -237,13 +186,6 @@ pub async fn startup_check() {
                 .arg(install_command())
                 .output()
                 .is_ok_and(|o| o.status.success());
-            write_update_receipt(
-                CHANNEL,
-                current,
-                &latest,
-                if ok { 0 } else { 1 },
-                if ok { "ok" } else { "installer failed" },
-            );
             if ok {
                 eprintln!(
                     "\x1b[2mgray {latest} installed in the background — restart to apply\x1b[0m"
@@ -258,14 +200,10 @@ pub async fn startup_check() {
     if confirm() {
         match run_installer_locked() {
             Ok(()) => {
-                write_update_receipt(CHANNEL, current, &latest, 0, "ok");
                 println!("✓ updated. restart gray to use {latest}.");
                 std::process::exit(0);
             }
-            Err(e) => {
-                write_update_receipt(CHANNEL, current, &latest, 1, &e.to_string());
-                eprintln!("update failed: {e}");
-            }
+            Err(e) => eprintln!("update failed: {e}"),
         }
     }
 }
@@ -291,60 +229,19 @@ mod tests {
     }
 
     #[test]
+    fn auto_update_refuses_beta_channel() {
+        assert!(auto_update_allowed("stable", Some("1")));
+        assert!(!auto_update_allowed("beta", Some("1")));
+        assert!(!auto_update_allowed("stable", Some("0")));
+        assert!(!auto_update_allowed("stable", None));
+    }
+
+    #[test]
     fn install_command_carries_channel() {
         assert!(install_command().contains("gray.alignment.id/install.sh"));
         if CHANNEL == "beta" {
             assert!(install_command().ends_with("beta'"));
         }
-    }
-
-    #[test]
-    fn receipt_latest_overwrites_and_history_appends() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("update_receipts").join("latest.json");
-        write_update_receipt_to(&path, "beta", "0.1.0", "0.2.0", 0, "ok");
-        write_update_receipt_to(&path, "beta", "0.2.0", "", 1, "boom");
-        // latest.json holds exactly the newest receipt doc (whole-file JSON).
-        let text = std::fs::read_to_string(&path).unwrap();
-        let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(v["channel"], "beta");
-        assert_eq!(v["from"], "0.2.0");
-        assert_eq!(v["to"], "");
-        assert_eq!(v["rc"], 1);
-        assert_eq!(v["reason"], "boom");
-        assert!(v["ts"].is_string());
-        // history.jsonl keeps every receipt.
-        let hist =
-            std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl"))
-                .unwrap();
-        let lines: Vec<&str> = hist.lines().collect();
-        assert_eq!(lines.len(), 2);
-        let h0: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(h0["from"], "0.1.0");
-        let h1: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(h1["reason"], "boom");
-    }
-
-    #[test]
-    fn receipt_history_trims_to_last_200() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("update_receipts").join("latest.json");
-        for i in 0..205 {
-            write_update_receipt_to(&path, "beta", "0.1.0", "0.2.0", 0, &format!("run-{i}"));
-        }
-        let hist =
-            std::fs::read_to_string(dir.path().join("update_receipts").join("history.jsonl"))
-                .unwrap();
-        let lines: Vec<&str> = hist.lines().collect();
-        assert_eq!(lines.len(), 200);
-        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
-        assert_eq!(first["reason"], "run-5");
-        let last: serde_json::Value = serde_json::from_str(lines[199]).unwrap();
-        assert_eq!(last["reason"], "run-204");
-        // latest.json still a single doc with the newest receipt.
-        let v: serde_json::Value =
-            serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
-        assert_eq!(v["reason"], "run-204");
     }
 
     #[test]

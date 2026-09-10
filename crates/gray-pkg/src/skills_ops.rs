@@ -95,22 +95,6 @@ pub(crate) fn skills_dir() -> PathBuf {
     crate::gray_home().join("skills")
 }
 
-fn now_secs() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
-}
-
-/// Reject install keys that would escape `<skills>/`: empty, `.`, `..`, or
-/// anything holding `/` or `\`.
-fn validate_slug(slug: &str) -> anyhow::Result<()> {
-    if slug.is_empty() || slug == "." || slug == ".." || slug.contains('/') || slug.contains('\\') {
-        anyhow::bail!("cannot derive a safe skill name (got {slug:?})");
-    }
-    Ok(())
-}
-
 /// `(registry, item)` identity for install failures, from the spec kind.
 fn spec_identity(spec: &str) -> (String, String) {
     let t = spec.trim();
@@ -171,7 +155,7 @@ struct PendingSkill {
 /// origin sidecar, and report. Failures leave no half-state (a partial dest
 /// is removed).
 fn finish_skill(p: PendingSkill) -> anyhow::Result<crate::ops::Report> {
-    validate_slug(&p.slug)?;
+    crate::ops::validate_install_key(&p.slug)?;
     if !p.root.join("SKILL.md").is_file() {
         anyhow::bail!(
             "skill bundle '{}' has no SKILL.md (not a skill bundle)",
@@ -207,7 +191,7 @@ fn finish_skill(p: PendingSkill) -> anyhow::Result<crate::ops::Report> {
         slug: p.slug.clone(),
         owner: p.owner,
         installed_version: p.version.clone(),
-        installed_at: now_secs(),
+        installed_at: crate::ops::now_secs(),
         source_url: p.source_url.clone(),
     };
     if dest.exists() {
@@ -235,8 +219,6 @@ fn finish_skill(p: PendingSkill) -> anyhow::Result<crate::ops::Report> {
         name: p.slug,
         version: p.version,
         path: dest,
-        unverified: p.unverified,
-        pi_summary: None,
     })
 }
 
@@ -248,33 +230,18 @@ async fn stage_clawhub(client: &reqwest::Client, body: &str) -> anyhow::Result<P
     if slug.is_empty() {
         anyhow::bail!("clawhub skill slug is empty (want clawhub:<owner/slug>)");
     }
-    let detail = crate::sources::clawhub_detail(client, slug).await?;
-    let archive = crate::sources::clawhub_download_bundle(client, &detail).await?;
-    let tmp_root = crate::plugins_dir().join("tmp");
-    std::fs::create_dir_all(&tmp_root)?;
-    let staging = tempfile::tempdir_in(&tmp_root)?;
-    // Hosted skills are ZIPs; GitHub-handoff bundles are tarballs.
-    let is_zip = std::fs::read(&archive)
-        .map(|b| b.len() >= 2 && b[..2] == *b"PK")
-        .unwrap_or(false);
-    let unpacked = if is_zip {
-        crate::fetch::unpack_zip(&archive, staging.path())
-    } else {
-        crate::fetch::unpack_tar_gz(&archive, staging.path())
-    };
-    if let Err(e) = unpacked {
-        let _ = std::fs::remove_file(&archive);
-        return Err(e);
-    }
-    let _ = std::fs::remove_file(&archive);
-    let root = crate::ops::stage_root(staging.path());
-    let verified = crate::sources::verify_clawhub_files(&root, &detail.files)?;
+    let crate::sources::StagedClawHub {
+        root,
+        detail,
+        verified,
+        _staging,
+    } = crate::sources::stage_clawhub_bundle(client, slug).await?;
     let version = if detail.version.trim().is_empty() {
         "0.0.0".to_string()
     } else {
         detail.version.clone()
     };
-    validate_slug(&detail.slug)?;
+    crate::ops::validate_install_key(&detail.slug)?;
     let source_url = crate::sources::clawhub_canonical_url(&detail.owner, &detail.slug);
     Ok(PendingSkill {
         root,
@@ -289,7 +256,7 @@ async fn stage_clawhub(client: &reqwest::Client, body: &str) -> anyhow::Result<P
         registry: "clawhub".to_string(),
         owner: detail.owner.clone(),
         source_url,
-        _staging: Some(staging),
+        _staging: Some(_staging),
     })
 }
 
@@ -320,11 +287,7 @@ fn parse_github_spec(body: &str) -> anyhow::Result<(String, String, Option<Strin
 async fn stage_github(body: &str) -> anyhow::Result<PendingSkill> {
     let (owner, repo, subpath) = parse_github_spec(body)?;
     let url = format!("https://github.com/{owner}/{repo}.git");
-    let tmp_root = crate::plugins_dir().join("tmp");
-    std::fs::create_dir_all(&tmp_root)?;
-    let staging = tempfile::tempdir_in(&tmp_root)?;
-    let clone_dir = staging.path().join("repo");
-    crate::ops::clone_git_repo(&url, None, &clone_dir)?;
+    let (_staging, clone_dir, _sha) = crate::ops::clone_git_repo(&url, None)?;
     let root = match &subpath {
         Some(s) => clone_dir.join(s),
         None => clone_dir.clone(),
@@ -343,7 +306,7 @@ async fn stage_github(body: &str) -> anyhow::Result<PendingSkill> {
         Some(s) => s.rsplit('/').next().unwrap_or(&repo).to_string(),
         None => repo.clone(),
     };
-    validate_slug(&slug)?;
+    crate::ops::validate_install_key(&slug)?;
     let source_url = match &subpath {
         Some(s) => format!("https://github.com/{owner}/{repo}#{s}"),
         None => format!("https://github.com/{owner}/{repo}"),
@@ -357,7 +320,7 @@ async fn stage_github(body: &str) -> anyhow::Result<PendingSkill> {
         registry: "github".to_string(),
         owner,
         source_url,
-        _staging: Some(staging),
+        _staging: Some(_staging),
     })
 }
 
@@ -387,7 +350,7 @@ fn slug_from_url(url: &str) -> anyhow::Result<String> {
     } else {
         last
     };
-    validate_slug(slug).map_err(|_| {
+    crate::ops::validate_install_key(slug).map_err(|_| {
         anyhow::anyhow!(
             "cannot derive a skill name from URL: {}",
             crate::fetch::redact(url)
@@ -460,7 +423,7 @@ fn stage_local(path_str: &str) -> anyhow::Result<PendingSkill> {
     } else {
         anyhow::bail!("skill path does not exist: {path_str:?}");
     };
-    validate_slug(&slug)
+    crate::ops::validate_install_key(&slug)
         .map_err(|_| anyhow::anyhow!("cannot derive a safe skill name from path: {path_str:?}"))?;
     Ok(PendingSkill {
         root,
@@ -740,7 +703,6 @@ mod tests {
         let report = install(bundle.to_str().unwrap()).await.unwrap();
         assert_eq!(report.name, "demo-skill");
         assert_eq!(report.version, "0.0.0");
-        assert!(!report.unverified);
         let dest = skills_dir().join("demo-skill");
         assert_eq!(report.path, dest);
         assert_eq!(
@@ -904,7 +866,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.name, "x-skill");
-        assert!(report.unverified);
         assert_eq!(
             std::fs::read(report.path.join("SKILL.md")).unwrap(),
             FIXTURE_SKILL.as_bytes()

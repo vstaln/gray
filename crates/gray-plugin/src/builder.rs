@@ -6,7 +6,7 @@
 //! (no tools→cron/gateway edges); the direction here is plugin→tools/provider.
 //!
 //! Surface policy stays with the callers: the system prompt (skills/context
-//! vs gateway suffix), the executor wrapper (plain vs `GatedExecutor`), the
+//! vs gateway suffix), the executor wrapper (plain vs `DenyExecutor`), the
 //! host handler, and abort-vs-warn on sidecar spawn failure all arrive via
 //! [`BuilderOptions`]. Cron needs no direct call — the sidecar fires through
 //! `host/run` (`gray -p`) and gateway delivery runs through `run_agent`.
@@ -40,12 +40,7 @@ impl Plugin for ToolsBasicPlugin {
             name: "tools-basic".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             tools: tools.iter().map(|t| t.def()).collect(),
-            commands: vec![],
-            hooks: vec![],
-            provider: None,
-            protocol: None,
-            capabilities: vec![],
-            subcommands: vec![],
+            ..Manifest::default()
         }
     }
 
@@ -80,12 +75,7 @@ impl Plugin for ToolsSearchPlugin {
             name: "tools-search".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             tools: tools.iter().map(|t| t.def()).collect(),
-            commands: vec![],
-            hooks: vec![],
-            provider: None,
-            protocol: None,
-            capabilities: vec![],
-            subcommands: vec![],
+            ..Manifest::default()
         }
     }
 
@@ -96,15 +86,6 @@ impl Plugin for ToolsSearchPlugin {
             Arc::new(gray_tools::LsTool),
         ]
     }
-}
-
-/// Default builtin plugins (no surface extras; pass those via
-/// [`BuilderOptions::extra_tools`]).
-pub fn default_plugins() -> Vec<Arc<dyn Plugin>> {
-    vec![
-        Arc::new(ToolsBasicPlugin::default()) as Arc<dyn Plugin>,
-        Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
-    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +577,7 @@ pub enum SystemPrompt {
 /// registry (snippets, names, guidelines).
 pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
 
-/// Wraps the profile-built registry executor (gateway: `GatedExecutor`;
+/// Wraps the profile-built registry executor (gateway: `DenyExecutor`;
 /// `None` = plain registry).
 pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 
@@ -683,6 +664,14 @@ mod tests {
     use super::*;
     use gray_core::agent::{ToolContext, ToolExecutor};
     use serde_json::json;
+
+    /// Test-local copy of the two builtin plugins (no surface extras).
+    fn default_plugins() -> Vec<Arc<dyn Plugin>> {
+        vec![
+            Arc::new(ToolsBasicPlugin::default()) as Arc<dyn Plugin>,
+            Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
+        ]
+    }
 
     // Two tests build a registry; both write the process-global
     // CURRENT_LEDGER. Serialize them so one test's build cannot clobber the

@@ -1,14 +1,12 @@
 //! System prompt construction.
 //!
 //! System prompt rules:
-//! - tools list only includes tools WITH `promptSnippet`
-//! - guidelines deduped via insertion-ordered set
-//! - cwd appended last
+//! - customPrompt replaces the built-in prompt; project_context + skills still appended
 //! - skills section gated on `read` tool presence
-//! - customPrompt replaces default prompt; project_context + skills still appended
+//! - cwd appended last
 //! - project_context blocks from AGENTS.md / CLAUDE.md discovery (walk up to git root)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -65,16 +63,10 @@ pub fn discover_context_files(cwd: &Path) -> Vec<ContextFile> {
 
 #[derive(Debug, Clone, Default)]
 pub struct BuildSystemPromptOptions {
-    /// Custom system prompt (replaces default).
+    /// Custom system prompt (replaces the built-in default).
     pub custom_prompt: Option<String>,
-    /// Tools to include in prompt. Default: ["read", "bash", "edit", "write"]
+    /// Selected tool names; the skills section is gated on `read` presence.
     pub selected_tools: Option<Vec<String>>,
-    /// One-line tool snippets keyed by tool name. Only tools WITH a snippet appear in Available tools.
-    pub tool_snippets: Option<HashMap<String, String>>,
-    /// Additional guideline bullets appended to default guidelines (deduped).
-    pub prompt_guidelines: Option<Vec<String>>,
-    /// Text appended to system prompt.
-    pub append_system_prompt: Option<String>,
     /// Working directory (used for cwd line + context file discovery if not provided).
     pub cwd: PathBuf,
     /// Pre-loaded context files (if None, discovered via AGENTS.md/CLAUDE.md).
@@ -83,25 +75,10 @@ pub struct BuildSystemPromptOptions {
     pub skills: Option<Vec<Skill>>,
 }
 
-fn default_selected_tools() -> Vec<String> {
-    vec![
-        "read".to_string(),
-        "bash".to_string(),
-        "edit".to_string(),
-        "write".to_string(),
-    ]
-}
-
 /// Build the system prompt.
 pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
     let cwd = options.cwd.clone();
     let prompt_cwd = cwd.to_string_lossy().replace('\\', "/");
-
-    let append_section = options
-        .append_system_prompt
-        .as_deref()
-        .map(|s| format!("\n\n{s}"))
-        .unwrap_or_default();
 
     // Resolve context files: use provided, else discover
     let context_files: Vec<ContextFile> = if let Some(cf) = options.context_files {
@@ -112,116 +89,9 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
 
     let skills: Vec<Skill> = options.skills.unwrap_or_default();
 
-    // Custom prompt branch — replaces default prompt
-    if let Some(custom) = options.custom_prompt {
-        let mut prompt = custom;
-        if !append_section.is_empty() {
-            prompt.push_str(&append_section);
-        }
-        if !context_files.is_empty() {
-            prompt.push_str("\n\n<project_context>\n\n");
-            prompt.push_str("Project-specific instructions and guidelines:\n\n");
-            for cf in &context_files {
-                prompt.push_str(&format!(
-                    "<project_instructions path=\"{}\">\n{}\n</project_instructions>\n\n",
-                    cf.path.display(),
-                    cf.content
-                ));
-            }
-            prompt.push_str("</project_context>\n");
-        }
-        let selected = options.selected_tools.clone();
-        let has_read = selected
-            .as_ref()
-            .map(|t| t.iter().any(|n| n == "read"))
-            .unwrap_or(true);
-        if has_read && !skills.is_empty() {
-            prompt.push_str(&format_skills_for_prompt(&skills));
-        }
-        prompt.push_str(&format!("\nCurrent working directory: {prompt_cwd}\n"));
-        return prompt;
-    }
-
-    // Default prompt branch
-    let readme_path = get_readme_path();
-    let docs_path = get_docs_path();
-    let examples_path = get_examples_path();
-
-    let tools = options
-        .selected_tools
-        .unwrap_or_else(default_selected_tools);
-    let snippets = options.tool_snippets.unwrap_or_default();
-
-    // Only tools WITH a snippet appear
-    let visible_tools: Vec<&String> = tools
-        .iter()
-        .filter(|name| snippets.contains_key(*name as &str))
-        .collect();
-    let tools_list = if visible_tools.is_empty() {
-        "(none)".to_string()
-    } else {
-        visible_tools
-            .iter()
-            .map(|name| format!("- {}: {}", name, snippets[*name as &str]))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
-    // Guidelines — deduped insertion-ordered
-    let mut guidelines_list: Vec<String> = Vec::new();
-    let mut guidelines_set: HashSet<String> = HashSet::new();
-    let mut add_guideline = |g: String| {
-        if guidelines_set.insert(g.clone()) {
-            guidelines_list.push(g);
-        }
-    };
-
-    let has_bash = tools.iter().any(|t| t == "bash");
-    let has_powershell = tools.iter().any(|t| t == "powershell");
-    let has_grep = tools.iter().any(|t| t == "grep");
-    let has_find = tools.iter().any(|t| t == "find");
-    let has_ls = tools.iter().any(|t| t == "ls");
-    let has_read = tools.iter().any(|t| t == "read");
-
-    if (has_bash || has_powershell) && !has_grep && !has_find && !has_ls {
-        if has_bash && has_powershell {
-            add_guideline("Use bash or PowerShell for file operations like listing, searching, and finding files".to_string());
-        } else if has_powershell {
-            add_guideline(
-                "Use PowerShell for file operations like listing, searching, and finding files"
-                    .to_string(),
-            );
-        } else {
-            add_guideline("Use bash for file operations like ls, rg, find".to_string());
-        }
-    }
-
-    for g in options.prompt_guidelines.unwrap_or_default() {
-        let normalized = g.trim().to_string();
-        if !normalized.is_empty() {
-            add_guideline(normalized);
-        }
-    }
-
-    add_guideline("Be concise in your responses".to_string());
-    add_guideline("Show file paths clearly with clickable file:// or markdown links (e.g. file:///path/to/file or [filename](file:///path/to/file)) so users can click to open them".to_string());
-    add_guideline("When a tool call is declined, do NOT re-attempt it via write/edit/bash workarounds; ask the user instead".to_string());
-    add_guideline("Treat secret-bearing files as sensitive: never print their values, redact secrets when quoting".to_string());
-
-    let guidelines = guidelines_list
-        .iter()
-        .map(|g| format!("- {g}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let mut prompt = format!(
-        "You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n{tools_list}\n\nIn addition to the tools above, you may have access to other custom tools depending on the project.\n\nGuidelines:\n{guidelines}\n\nPi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n- Main documentation: {readme_path}\n- Additional docs: {docs_path}\n- Examples: {examples_path} (extensions, custom tools, SDK)\n- When reading pi docs or examples, resolve docs/... under Additional docs and examples/... under Examples, not the current working directory\n- When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md), environment variables (docs/environment-variables.md)\n- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)"
-    );
-
-    if !append_section.is_empty() {
-        prompt.push_str(&append_section);
-    }
-
+    // The custom prompt (user's AGENTS.md) replaces the built-in prompt;
+    // project_context + skills still append.
+    let mut prompt = options.custom_prompt.unwrap_or_default();
     if !context_files.is_empty() {
         prompt.push_str("\n\n<project_context>\n\n");
         prompt.push_str("Project-specific instructions and guidelines:\n\n");
@@ -234,40 +104,28 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
         }
         prompt.push_str("</project_context>\n");
     }
-
+    let selected = options.selected_tools.clone();
+    let has_read = selected
+        .as_ref()
+        .map(|t| t.iter().any(|n| n == "read"))
+        .unwrap_or(true);
     if has_read && !skills.is_empty() {
         prompt.push_str(&format_skills_for_prompt(&skills));
     }
-
-    prompt.push_str(&format!("\nCurrent working directory: {prompt_cwd}"));
+    prompt.push_str(&format!("\nCurrent working directory: {prompt_cwd}\n"));
     prompt
-}
-
-fn get_readme_path() -> String {
-    // Try to resolve via env or fallback
-    std::env::var("PI_README_PATH").unwrap_or_else(|_| "README.md".to_string())
-}
-fn get_docs_path() -> String {
-    std::env::var("PI_DOCS_PATH").unwrap_or_else(|_| "docs".to_string())
-}
-fn get_examples_path() -> String {
-    std::env::var("PI_EXAMPLES_PATH").unwrap_or_else(|_| "examples".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    fn default_opts() -> BuildSystemPromptOptions {
+    fn custom_opts(prompt: &str) -> BuildSystemPromptOptions {
         BuildSystemPromptOptions {
+            custom_prompt: Some(prompt.to_string()),
             cwd: PathBuf::from("/tmp"),
             context_files: Some(vec![]),
             skills: Some(vec![]),
-            tool_snippets: Some(HashMap::from([
-                ("read".to_string(), "read files".to_string()),
-                ("bash".to_string(), "run commands".to_string()),
-            ])),
             ..Default::default()
         }
     }
@@ -276,22 +134,28 @@ mod tests {
     fn rebuild_is_byte_stable() {
         // Prefix-cache invariant: identical inputs must rebuild to identical
         // bytes, or providers rebill the whole prefix every turn.
-        let a = build_system_prompt(default_opts());
-        let b = build_system_prompt(default_opts());
+        let a = build_system_prompt(custom_opts("You are gray."));
+        let b = build_system_prompt(custom_opts("You are gray."));
         assert_eq!(a, b, "system prompt rebuild diverged");
     }
 
     #[test]
-    fn default_prompt_forbids_decline_workarounds() {
-        let prompt = build_system_prompt(default_opts());
+    fn custom_prompt_forbids_decline_workarounds() {
+        let guide = "When a tool call is declined, do NOT re-attempt it via write/edit/bash workarounds; ask the user instead";
+        let prompt = build_system_prompt(custom_opts(guide));
         assert!(prompt.contains("do NOT re-attempt"), "{prompt}");
         assert!(prompt.contains("write/edit/bash"), "{prompt}");
         assert!(prompt.contains("ask the user instead"), "{prompt}");
+        assert!(
+            !prompt.contains("operating inside pi"),
+            "dead default prompt must not leak: {prompt}"
+        );
     }
 
     #[test]
-    fn default_prompt_warns_on_secret_files() {
-        let prompt = build_system_prompt(default_opts());
+    fn custom_prompt_warns_on_secret_files() {
+        let guide = "Treat secret-bearing files as sensitive: never print their values, redact secrets when quoting";
+        let prompt = build_system_prompt(custom_opts(guide));
         assert!(prompt.contains("secret-bearing"), "{prompt}");
         assert!(prompt.contains("never print"), "{prompt}");
         assert!(prompt.contains("redact"), "{prompt}");

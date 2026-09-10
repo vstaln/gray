@@ -119,26 +119,14 @@ pub struct LatexDelimiterNormalizer {
     pending: String,
 }
 
-impl Default for LatexDelimiterNormalizer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl LatexDelimiterNormalizer {
+    #[allow(clippy::new_without_default)] // no Default: `new` is the only construction
     pub fn new() -> Self {
         Self {
             state: State::Normal,
             at_line_start: true,
             pending: String::new(),
         }
-    }
-
-    /// Reset to the initial state, dropping any held-back bytes.
-    pub fn reset(&mut self) {
-        self.state = State::Normal;
-        self.at_line_start = true;
-        self.pending.clear();
     }
 
     /// Push a raw chunk; returns the finalized normalized prefix.

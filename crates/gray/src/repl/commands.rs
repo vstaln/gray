@@ -114,17 +114,6 @@ pub(crate) fn format_help_line(d: &CmdDef) -> String {
     }
 }
 
-/// Full `/help` body for TUI + stdout paths (callers join plugin rows after).
-// In-flight (unwired): silenced for CI -D warnings; wire up or delete.
-#[allow(dead_code)]
-pub(crate) fn format_help_all() -> String {
-    REGISTRY
-        .iter()
-        .map(format_help_line)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// Canonical lookup: strip one leading `/`, lowercase, exact wins then aliases.
 pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
     let n = name.strip_prefix('/').unwrap_or(name).to_lowercase();
@@ -322,11 +311,13 @@ fn complete_model_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
 
 /// Suffixes for `/acp`: subcommands plus installed agent names.
 fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
+    #[cfg_attr(not(feature = "acp"), allow(unused_mut))]
     let mut out: Vec<(String, String)> = vec![
         ("acp list".to_string(), "list agents".to_string()),
         ("acp status".to_string(), "show ACP session".to_string()),
         ("acp off".to_string(), "back to native".to_string()),
     ];
+    #[cfg(feature = "acp")]
     for spec in gray_acp::all_specs(None) {
         let status = if gray_acp::installed(&spec) {
             "installed"
@@ -770,29 +761,6 @@ mod tests {
     }
 
     #[test]
-    fn help_shows_aliases_inline() {
-        let help = super::format_help_all();
-        // hidden `/exit` must be visible as a quit alias
-        assert!(
-            help.contains("/quit (alias: /exit)"),
-            "quit alias missing: {help}"
-        );
-        // welcome advertises `/provider`; help listed only `/connect`
-        assert!(help.contains("/provider"), "provider alias missing: {help}");
-        assert!(help.contains("/connect"), "connect missing: {help}");
-        // every declared alias appears in the help text (no drift)
-        for d in super::REGISTRY {
-            for a in d.aliases {
-                assert!(
-                    help.contains(&format!("/{a}")),
-                    "alias /{a} of /{} missing: {help}",
-                    d.name
-                );
-            }
-        }
-    }
-
-    #[test]
     fn registry_completion_covers_aliases() {
         for (alias, target) in [
             ("clear", "new"),
@@ -1097,10 +1065,5 @@ mod tests {
             parse_command("/skills foo"),
             ReplCommand::Unknown(_)
         ));
-        // Help line documents the singular form.
-        assert!(
-            super::format_help_all().contains("/skill <name>"),
-            "help must mention /skill <name>"
-        );
     }
 }

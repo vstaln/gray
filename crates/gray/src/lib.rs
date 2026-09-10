@@ -161,22 +161,10 @@ pub async fn build_agent(
         cwd: cwd.to_path_buf(),
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |registry: &gray_tools::Registry| {
-                // Tools only appear in the prompt when they have a snippet.
-                // Same plugins feed the registry and the agent hooks.
-                let tool_snippets = registry.prompt_snippets();
                 let selected_tools = registry.tool_names();
-                let guidelines = registry.prompt_guidelines();
-                let prompt_guidelines = if guidelines.is_empty() {
-                    None
-                } else {
-                    Some(guidelines)
-                };
                 system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
                     custom_prompt: Some(body),
                     selected_tools: Some(selected_tools),
-                    tool_snippets: Some(tool_snippets),
-                    prompt_guidelines,
-                    append_system_prompt: None,
                     cwd: prompt_cwd,
                     context_files: Some(context_files),
                     skills: Some(discovered.skills),
@@ -303,6 +291,22 @@ pub enum Commands {
         /// Message text (words are joined with spaces)
         text: Vec<String>,
     },
+    /// Session store maintenance
+    Sessions {
+        #[command(subcommand)]
+        cmd: SessionsCmd,
+    },
+}
+
+/// `gray sessions ...` — session store maintenance.
+#[derive(Parser, Debug, Clone)]
+pub enum SessionsCmd {
+    /// Delete sessions started more than N days ago
+    Prune {
+        /// Age threshold in days (default 90)
+        #[arg(long, default_value_t = 90)]
+        older_than_days: u64,
+    },
 }
 
 /// `gray cron ...` — recurring/one-shot job management.
@@ -381,6 +385,7 @@ pub enum PluginCmd {
     /// Install a plugin by index name or https URL
     Install {
         /// Index name or https URL
+        #[arg(value_parser = |s: &str| Ok::<_, std::convert::Infallible>(gray_pkg::ops::parse_spec(s)))]
         spec: gray_pkg::ops::NameOrUrl,
     },
     /// Remove an installed plugin
@@ -535,7 +540,7 @@ mod tests {
 
     #[test]
     fn reload_path_keeps_session_cache_shard() {
-        // Steady-state builds (prompt_turn/empty_turn) and the reload path
+        // Steady-state builds (prompt_turn) and the reload path
         // must resolve the identical key for one session id; the pre-fix
         // reload passed None, rotating to the fallback shard (~0% hits).
         let sid = "cc5d154d-4c24-42ee-b8a8-6a5735bdcfc9";

@@ -55,7 +55,7 @@ pub struct CodeBlockSpan {
     pub body: String,
 
     /// Range of **pre-wrap** rendered body lines for this block, as indices
-    /// into [`MarkdownRenderOutput::lines`] / [`MarkdownRenderView::lines`].
+    /// into [`MarkdownRenderOutput::lines`].
     ///
     /// Covers only the body — the delimiter ` ``` ` lines are excluded — so it
     /// is independent of whether the renderer hides those delimiters in pretty
@@ -107,43 +107,6 @@ impl MarkdownRenderOutput {
         self.line_source_map.clear();
         self.hyperlinks.clear();
         self.code_blocks.clear();
-    }
-
-    /// Get a borrowed view of this output.
-    pub fn as_view(&self) -> MarkdownRenderView<'_> {
-        MarkdownRenderView {
-            lines: &self.lines,
-            line_source_map: &self.line_source_map,
-            hyperlinks: &self.hyperlinks,
-            code_blocks: &self.code_blocks,
-        }
-    }
-}
-
-/// Borrowed view of rendered markdown output.
-///
-/// This is a zero-copy reference to rendered content, used by the streaming
-/// renderer to avoid cloning frozen content on every render.
-#[derive(Debug, Clone, Copy)]
-pub struct MarkdownRenderView<'a> {
-    /// Rendered lines ready for display.
-    pub lines: &'a [Line<'static>],
-
-    /// Maps each rendered line index to its source line number.
-    pub line_source_map: &'a [usize],
-
-    /// Hyperlink targets extracted from the rendered markdown.
-    pub hyperlinks: &'a [HyperlinkTarget],
-
-    /// Fenced code blocks discovered during rendering, in document order.
-    /// One entry per closed fenced block; see [`CodeBlockSpan`].
-    pub code_blocks: &'a [CodeBlockSpan],
-}
-
-impl<'a> MarkdownRenderView<'a> {
-    /// Get the number of lines.
-    pub fn line_count(&self) -> usize {
-        self.lines.len()
     }
 }
 
@@ -519,7 +482,7 @@ mod code_block_span_tests {
         for ch in full.chars() {
             renderer.push_and_render(&ch.to_string(), None);
             let view = renderer.view();
-            let frozen_lines = renderer.frozen_lines_count();
+            let frozen_lines = renderer.frozen_lines_len();
             if let Some(cb) = view.code_blocks.iter().find(|c| c.info == "mermaid") {
                 // Only assert stability once the block is within frozen content.
                 if cb.output_line_range.end <= frozen_lines {
@@ -560,9 +523,9 @@ mod code_block_span_tests {
         let mut renderer = StreamingMarkdownRenderer::new(STYLE, true);
         for chunk in ["intro\n\n", "```mermaid\n", "flowchart TD\n", "A --> B\n"] {
             renderer.push_and_render(chunk, None);
-            let frozen_lines = renderer.frozen_lines_count();
+            let frozen_lines = renderer.frozen_lines_len();
             let view = renderer.view();
-            for cb in view.code_blocks {
+            for cb in &view.code_blocks {
                 assert!(
                     cb.output_line_range.end > frozen_lines,
                     "open fence span must not be frozen: {cb:?} frozen_lines={frozen_lines}",

@@ -10,7 +10,6 @@ use crate::platform::{
     BasePlatformAdapter, MessageEvent, SendOptions, SendResult, check_token_shape, utf16_len,
 };
 use crate::session::SessionSource;
-use crate::status::GatewayStatusBoard;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
@@ -80,8 +79,6 @@ pub struct DiscordAdapter {
     /// Live shard task. `connect()` stores it, `disconnect()` aborts it, and
     /// the supervisor re-enters the reconnect ladder when it dies.
     shard: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Status board for staged connect progress (wired by the daemon; None for send-only).
-    board: Mutex<Option<GatewayStatusBoard>>,
 }
 
 /// How long `connect()` waits for the first Ready before failing.
@@ -122,14 +119,7 @@ impl DiscordAdapter {
             last_inbound: Mutex::new(HashMap::new()),
             identity: Mutex::new(None),
             shard: Mutex::new(None),
-            board: Mutex::new(None),
         })
-    }
-
-    fn stage(&self, stage: &'static str) {
-        if let Some(b) = self.board.lock().unwrap().clone() {
-            b.mark_stage(Platform::Discord, stage);
-        }
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -331,7 +321,6 @@ fn spawn_shard(
                             m.author.id.get(),
                             m.id.get(),
                         ),
-                        media_urls: vec![],
                         user_name: Some(m.author.name.clone()),
                     };
                     let _ = tx.send(ev);
@@ -395,7 +384,6 @@ fn spawn_shard(
                             user_id,
                             interaction.0.id.get(),
                         ),
-                        media_urls: vec![],
                         user_name: interaction.0.author().map(|u| u.name.clone()),
                     };
                     let _ = tx.send(ev);
@@ -426,7 +414,6 @@ impl BasePlatformAdapter for DiscordAdapter {
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
-        self.stage("validating token");
         validate_discord_token(&self.token)?;
         #[cfg(feature = "discord")]
         {
@@ -466,7 +453,6 @@ impl BasePlatformAdapter for DiscordAdapter {
             let tx = self.event_tx.lock().unwrap().clone();
             match tx {
                 Some(tx) => {
-                    self.stage("connecting gateway");
                     if let Some(old) = self.shard.lock().unwrap().take() {
                         old.abort();
                     }
@@ -479,7 +465,6 @@ impl BasePlatformAdapter for DiscordAdapter {
                         Some(ready_tx),
                     );
                     *self.shard.lock().unwrap() = Some(h);
-                    self.stage("waiting for ready");
                     if let Err(e) = wait_for_ready(ready_rx).await {
                         if let Some(h) = self.shard.lock().unwrap().take() {
                             h.abort();
@@ -517,10 +502,6 @@ impl BasePlatformAdapter for DiscordAdapter {
 
     fn set_event_tx(&mut self, tx: UnboundedSender<MessageEvent>) {
         *self.event_tx.lock().unwrap() = Some(tx);
-    }
-
-    fn set_status_board(&self, board: GatewayStatusBoard) {
-        *self.board.lock().unwrap() = Some(board);
     }
 
     async fn send_typing(&self, chat: &str) {
@@ -727,7 +708,7 @@ mod tests {
         assert!(res.success);
         #[cfg(feature = "discord")]
         assert!(!res.success && res.error.as_deref() == Some("discord not connected"));
-        let chunks = crate::platform::split_message(&long, MAX_LENGTH);
+        let chunks = crate::platform::split_message_smart(&long, MAX_LENGTH);
         assert_eq!(chunks.len(), 3); // 2000*2 +1000
         for c in &chunks {
             assert!(utf16_len(c) <= MAX_LENGTH);
@@ -867,10 +848,7 @@ mod tests {
         // connect — a fake Ok made the boot card claim "connected").
         #[cfg(not(feature = "discord"))]
         {
-            use crate::status::GatewayStatusBoard;
             let a = DiscordAdapter::new(cfg(&"x".repeat(50))).unwrap();
-            let board = GatewayStatusBoard::new(&[Platform::Discord]);
-            a.set_status_board(board.clone());
             let err = a.connect().await.unwrap_err();
             assert!(
                 err.to_string().contains("not compiled"),

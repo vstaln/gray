@@ -58,14 +58,6 @@ pub struct LoadSkillsResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone)]
-pub struct LoadSkillsOptions {
-    pub cwd: PathBuf,
-    pub agent_dir: Option<PathBuf>,
-    pub skill_paths: Vec<PathBuf>,
-    pub include_defaults: bool,
-}
-
 // ---------------------------------------------------------------------------
 // Helpers: paths
 // ---------------------------------------------------------------------------
@@ -136,15 +128,6 @@ pub(crate) fn find_git_root(start: &Path) -> Option<PathBuf> {
 pub(crate) struct IgnoreMatcher {
     builder: GitignoreBuilder,
     built: Option<Gitignore>,
-}
-
-impl Default for IgnoreMatcher {
-    fn default() -> Self {
-        Self {
-            builder: GitignoreBuilder::new(""),
-            built: None,
-        }
-    }
 }
 
 impl IgnoreMatcher {
@@ -307,10 +290,6 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     lines.join("\n")
 }
 
-pub fn format_skill_invocation(skill: &Skill) -> String {
-    format!("Skill `{}`: {}", skill.name, skill.description)
-}
-
 // ---------------------------------------------------------------------------
 // Invocation-arg validation (Bug1: `/skills:<name> <bogus-args>` silently
 // ignored args while `/skills:bogus-name` errored). Skills declare args via
@@ -373,16 +352,16 @@ pub fn validate_skill_args(skill: &Skill, args: Option<&str>) -> Result<(), Stri
 
 // ---------------------------------------------------------------------------
 // Top-level loader
-// Handles global + project defaults and explicit paths, with collision diagnostics.
+// Handles global + project defaults with collision diagnostics.
 // ---------------------------------------------------------------------------
 
-pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
-    let resolved_cwd = if options.cwd.as_os_str().is_empty() {
+fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
+    let resolved_cwd = if cwd.as_os_str().is_empty() {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
-        options.cwd.clone()
+        cwd.to_path_buf()
     };
-    let resolved_agent_dir = options.agent_dir.clone().unwrap_or_else(gray_agent_dir);
+    let resolved_agent_dir = agent_dir.to_path_buf();
 
     let mut skill_map: HashMap<String, Skill> = HashMap::new();
     let mut real_path_set: HashSet<PathBuf> = HashSet::new();
@@ -420,122 +399,51 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
         }
     };
 
-    if options.include_defaults {
-        // global
-        let global_skills = resolved_agent_dir.join("skills");
+    // global
+    let global_skills = resolved_agent_dir.join("skills");
+    do_add(
+        load_skills_from_dir(&global_skills, "user"),
+        &mut skill_map,
+        &mut real_path_set,
+        &mut all_diagnostics,
+        &mut collision_diagnostics,
+    );
+    // P2-2: pi installs land in `<agent_dir>/plugins/pi/<pkg>/`.
+    let pi_plugins = resolved_agent_dir.join("plugins").join("pi");
+    if pi_plugins.is_dir() && pi_plugins != global_skills {
         do_add(
-            load_skills_from_dir(&global_skills, "user"),
+            load_skills_from_dir(&pi_plugins, "user"),
             &mut skill_map,
             &mut real_path_set,
             &mut all_diagnostics,
             &mut collision_diagnostics,
         );
-        // P2-2: pi installs land in `<agent_dir>/plugins/pi/<pkg>/`.
-        let pi_plugins = resolved_agent_dir.join("plugins").join("pi");
-        if pi_plugins.is_dir() && pi_plugins != global_skills {
+    }
+    if let Some(home) = resolve_home() {
+        // OpenCode global skills & plugins (e.g. superpowers)
+        let config_base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".config"));
+        let opencode_dir = config_base.join("opencode");
+        let opencode_skills = opencode_dir.join("skills");
+        if opencode_skills.is_dir() && opencode_skills != global_skills {
             do_add(
-                load_skills_from_dir(&pi_plugins, "user"),
+                load_skills_from_dir(&opencode_skills, "user"),
                 &mut skill_map,
                 &mut real_path_set,
                 &mut all_diagnostics,
                 &mut collision_diagnostics,
             );
         }
-        if let Some(home) = resolve_home() {
-            // OpenCode global skills & plugins (e.g. superpowers)
-            let config_base = std::env::var("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| home.join(".config"));
-            let opencode_dir = config_base.join("opencode");
-            let opencode_skills = opencode_dir.join("skills");
-            if opencode_skills.is_dir() && opencode_skills != global_skills {
-                do_add(
-                    load_skills_from_dir(&opencode_skills, "user"),
-                    &mut skill_map,
-                    &mut real_path_set,
-                    &mut all_diagnostics,
-                    &mut collision_diagnostics,
-                );
-            }
-            if let Ok(entries) = fs::read_dir(&opencode_dir) {
-                for entry in entries.flatten() {
-                    let sub_skills = entry.path().join("skills");
-                    if sub_skills.is_dir()
-                        && sub_skills != opencode_skills
-                        && sub_skills != global_skills
-                    {
-                        do_add(
-                            load_skills_from_dir(&sub_skills, "user"),
-                            &mut skill_map,
-                            &mut real_path_set,
-                            &mut all_diagnostics,
-                            &mut collision_diagnostics,
-                        );
-                    }
-                }
-            }
-
-            // Agents and Claude global skills
-            let agents_skills = home.join(".agents").join("skills");
-            if agents_skills.is_dir() && agents_skills != global_skills {
-                do_add(
-                    load_skills_from_dir(&agents_skills, "user"),
-                    &mut skill_map,
-                    &mut real_path_set,
-                    &mut all_diagnostics,
-                    &mut collision_diagnostics,
-                );
-            }
-            let claude_skills = home.join(".claude").join("skills");
-            if claude_skills.is_dir() && claude_skills != global_skills {
-                do_add(
-                    load_skills_from_dir(&claude_skills, "user"),
-                    &mut skill_map,
-                    &mut real_path_set,
-                    &mut all_diagnostics,
-                    &mut collision_diagnostics,
-                );
-            }
-
-            let pi_skills = home.join(".pi").join("agent").join("skills");
-            if pi_skills.is_dir() && pi_skills != global_skills {
-                do_add(
-                    load_skills_from_dir(&pi_skills, "user"),
-                    &mut skill_map,
-                    &mut real_path_set,
-                    &mut all_diagnostics,
-                    &mut collision_diagnostics,
-                );
-            }
-        }
-        // project: walk up to git root collecting skills
-        let git_root = find_git_root(&resolved_cwd);
-        let mut project_roots: Vec<PathBuf> = Vec::new();
-        let mut cur = Some(resolved_cwd.clone());
-        while let Some(dir) = cur {
-            project_roots.push(dir.clone());
-            if let Some(root) = &git_root
-                && &dir == root
-            {
-                break;
-            }
-            cur = dir.parent().map(|p| p.to_path_buf());
-            if cur.is_none() {
-                break;
-            }
-            if let Some(root) = &git_root
-                && cur.as_ref() == Some(root)
-            {
-                project_roots.push(root.clone());
-                break;
-            }
-        }
-        for ancestor in project_roots.iter().rev() {
-            for cfg in [".gray", ".opencode", ".agents", ".claude", ".pi"] {
-                let d = ancestor.join(cfg).join("skills");
-                if d.is_dir() {
+        if let Ok(entries) = fs::read_dir(&opencode_dir) {
+            for entry in entries.flatten() {
+                let sub_skills = entry.path().join("skills");
+                if sub_skills.is_dir()
+                    && sub_skills != opencode_skills
+                    && sub_skills != global_skills
+                {
                     do_add(
-                        load_skills_from_dir(&d, "project"),
+                        load_skills_from_dir(&sub_skills, "user"),
                         &mut skill_map,
                         &mut real_path_set,
                         &mut all_diagnostics,
@@ -544,109 +452,76 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
                 }
             }
         }
-    }
 
-    // explicit paths handling
-    let mut user_skill_roots = vec![resolved_agent_dir.join("skills")];
-    if let Some(home) = resolve_home() {
-        let config_base = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join(".config"));
-        let opencode_dir = config_base.join("opencode");
-        user_skill_roots.push(opencode_dir.join("skills"));
-        if let Ok(entries) = fs::read_dir(&opencode_dir) {
-            for entry in entries.flatten() {
-                let sub = entry.path().join("skills");
-                if sub.is_dir() {
-                    user_skill_roots.push(sub);
-                }
-            }
-        }
-        user_skill_roots.push(home.join(".agents").join("skills"));
-        user_skill_roots.push(home.join(".claude").join("skills"));
-        user_skill_roots.push(home.join(".pi").join("agent").join("skills"));
-    }
-    // For is_under_path checks
-    let is_under = |target: &Path, root: &Path| -> bool {
-        if target == root {
-            return true;
-        }
-        target.strip_prefix(root).is_ok()
-    };
-
-    for raw in &options.skill_paths {
-        let resolved = if raw.is_absolute() {
-            raw.clone()
-        } else {
-            resolved_cwd.join(raw)
-        };
-        if !resolved.exists() {
-            all_diagnostics.push(Diagnostic {
-                kind: "warning".to_string(),
-                message: "skill path does not exist".to_string(),
-                path: resolved.clone(),
-                collision: None,
-            });
-            continue;
-        }
-        let meta = match fs::metadata(&resolved) {
-            Ok(m) => m,
-            Err(e) => {
-                all_diagnostics.push(Diagnostic {
-                    kind: "warning".to_string(),
-                    message: e.to_string(),
-                    path: resolved.clone(),
-                    collision: None,
-                });
-                continue;
-            }
-        };
-        let source = if !options.include_defaults {
-            if user_skill_roots
-                .iter()
-                .any(|root| is_under(&resolved, root))
-            {
-                "user"
-            } else {
-                "path"
-            }
-        } else {
-            "path"
-        };
-        if meta.is_dir() {
+        // Agents and Claude global skills
+        let agents_skills = home.join(".agents").join("skills");
+        if agents_skills.is_dir() && agents_skills != global_skills {
             do_add(
-                load_skills_from_dir(&resolved, source),
+                load_skills_from_dir(&agents_skills, "user"),
                 &mut skill_map,
                 &mut real_path_set,
                 &mut all_diagnostics,
                 &mut collision_diagnostics,
             );
-        } else if meta.is_file() && resolved.extension().and_then(|e| e.to_str()) == Some("md") {
-            let (skill, diags) = load_skill_from_file(&resolved, source);
-            if let Some(s) = skill {
+        }
+        let claude_skills = home.join(".claude").join("skills");
+        if claude_skills.is_dir() && claude_skills != global_skills {
+            do_add(
+                load_skills_from_dir(&claude_skills, "user"),
+                &mut skill_map,
+                &mut real_path_set,
+                &mut all_diagnostics,
+                &mut collision_diagnostics,
+            );
+        }
+
+        let pi_skills = home.join(".pi").join("agent").join("skills");
+        if pi_skills.is_dir() && pi_skills != global_skills {
+            do_add(
+                load_skills_from_dir(&pi_skills, "user"),
+                &mut skill_map,
+                &mut real_path_set,
+                &mut all_diagnostics,
+                &mut collision_diagnostics,
+            );
+        }
+    }
+    // project: walk up to git root collecting skills
+    let git_root = find_git_root(&resolved_cwd);
+    let mut project_roots: Vec<PathBuf> = Vec::new();
+    let mut cur = Some(resolved_cwd.clone());
+    while let Some(dir) = cur {
+        project_roots.push(dir.clone());
+        if let Some(root) = &git_root
+            && &dir == root
+        {
+            break;
+        }
+        cur = dir.parent().map(|p| p.to_path_buf());
+        if cur.is_none() {
+            break;
+        }
+        if let Some(root) = &git_root
+            && cur.as_ref() == Some(root)
+        {
+            project_roots.push(root.clone());
+            break;
+        }
+    }
+    for ancestor in project_roots.iter().rev() {
+        for cfg in [".gray", ".opencode", ".agents", ".claude", ".pi"] {
+            let d = ancestor.join(cfg).join("skills");
+            if d.is_dir() {
                 do_add(
-                    LoadSkillsResult {
-                        skills: vec![s],
-                        diagnostics: diags,
-                    },
+                    load_skills_from_dir(&d, "project"),
                     &mut skill_map,
                     &mut real_path_set,
                     &mut all_diagnostics,
                     &mut collision_diagnostics,
                 );
-            } else {
-                all_diagnostics.extend(diags);
             }
-        } else {
-            all_diagnostics.push(Diagnostic {
-                kind: "warning".to_string(),
-                message: "skill path is not a markdown file".to_string(),
-                path: resolved.clone(),
-                collision: None,
-            });
         }
     }
-
     let mut skills: Vec<Skill> = skill_map.into_values().collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
     all_diagnostics.extend(collision_diagnostics);
@@ -656,14 +531,9 @@ pub fn load_skills(options: LoadSkillsOptions) -> LoadSkillsResult {
     }
 }
 
-/// Convenience: discover skills for `cwd` with defaults (global + project).
+/// Discover skills for `cwd` with defaults (global + project).
 pub fn discover_skills(cwd: &Path) -> LoadSkillsResult {
-    load_skills(LoadSkillsOptions {
-        cwd: cwd.to_path_buf(),
-        agent_dir: None,
-        skill_paths: vec![],
-        include_defaults: true,
-    })
+    load_skills(cwd, &gray_agent_dir())
 }
 
 #[cfg(test)]
@@ -733,12 +603,7 @@ mod tests {
             "---\ndescription: probe skill\n---\nBody",
         )
         .unwrap();
-        let res = load_skills(LoadSkillsOptions {
-            cwd: agent.path().to_path_buf(),
-            agent_dir: Some(agent.path().to_path_buf()),
-            skill_paths: vec![],
-            include_defaults: true,
-        });
+        let res = load_skills(agent.path(), agent.path());
         assert!(
             res.skills.iter().any(|s| s.name == "pi-probe-zzz-skill"),
             "installed pi skill not discovered: {:?}",

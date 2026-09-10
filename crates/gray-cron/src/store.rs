@@ -14,8 +14,6 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
-
 use crate::schedule::{ONESHOT_GRACE_SECS, Schedule, next_run, parse_schedule};
 
 /// Fire-claim TTL: a live claim blocks re-fire; a stale one is reclaimable
@@ -117,8 +115,8 @@ fn default_enabled() -> bool {
 /// Whole-file JSON write via tmp-file + rename (atomic on the same fs), mode
 /// 0600 on unix. Plan-A fallback home: `gray_gateway::delivery::atomic_write_json`
 /// is `pub(crate)` there, and depending on gray-gateway from here would cycle
-/// (gateway gains the gray-cron dep in Task 3) — so gray-cron owns this copy
-/// and re-exports it. Do NOT add a third copy elsewhere.
+/// (gateway gains the gray-cron dep in Task 3) — so gray-cron owns this copy.
+/// Do NOT add a third copy elsewhere.
 pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_string_pretty(value)?;
@@ -170,9 +168,9 @@ fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) ->
         .open(lock_path)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        match file.try_lock_exclusive() {
+        match file.try_lock() {
             Ok(()) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(std::fs::TryLockError::WouldBlock) => {
                 anyhow::ensure!(
                     std::time::Instant::now() < deadline,
                     "cron lock timeout on {}",
@@ -180,7 +178,7 @@ fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) ->
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err(e) => return Err(e.into()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
     }
     // Closing the file releases the lock, including on error/unwind.
@@ -305,16 +303,6 @@ impl CronStore {
         atomic_write_json(&self.jobs_path(), raw)
     }
 
-    pub fn add(
-        &self,
-        name: &str,
-        schedule: &str,
-        prompt: &str,
-        deliver: Deliver,
-    ) -> anyhow::Result<String> {
-        self.add_full(name, schedule, prompt, deliver, None, None)
-    }
-
     pub fn add_full(
         &self,
         name: &str,
@@ -396,8 +384,9 @@ impl CronStore {
     }
 
     /// Claim all due jobs for `owner` in one pass (poison-proof): skip
-    /// disabled/paused/done, skip live claims, skip the not-yet-due, retire
-    /// missed one-shots (never fire), and stamp + advance everything else.
+    /// disabled/paused/done, skip live claims (reclaim claims older than
+    /// [`FIRE_CLAIM_TTL_SECS`]), skip the not-yet-due, retire missed
+    /// one-shots (never fire), and stamp + advance everything else.
     /// Stale recurring jobs fast-forward (`next_run_at` jumps past now) but
     /// STILL fire once now — no grace branch is needed because stale and fresh
     /// recurring jobs behave identically. Single save at end.
@@ -411,12 +400,22 @@ impl CronStore {
                 if !job.enabled || job.state != JobState::Active {
                     continue;
                 }
-                // Any outstanding claim blocks re-claim: a 300s TTL cannot
-                // prove a long run finished, and an old completion must not
-                // clear a newer worker's lease. Crashed claims need explicit
-                // offline recovery (liveness traded for no overlap).
-                if job.fire_claim.is_some() {
-                    continue;
+                // A live claim blocks re-claim. A claim older than the TTL is a
+                // crashed worker (mark_done always clears on completion): reclaim
+                // it once, loudly, for this owner. At-most-once is preserved for
+                // any claimant whose claim is younger than the TTL.
+                if let Some(claim) = &job.fire_claim {
+                    if now.saturating_sub(claim.at) <= FIRE_CLAIM_TTL_SECS {
+                        continue;
+                    }
+                    log::warn!(
+                        "cron job {}: reclaiming stale fire claim by {} ({}s old)",
+                        job.id,
+                        claim.by,
+                        now.saturating_sub(claim.at)
+                    );
+                    job.fire_claim = None;
+                    dirty = true;
                 }
                 if matches!(job.schedule, Schedule::Once { .. }) && job.last_run_at.is_some() {
                     continue; // completed one-shot, retained for inspection
@@ -526,6 +525,18 @@ mod tests {
     // UNRUN (cargo test banned under X): run in TTY/CI.
     use super::*;
 
+    impl CronStore {
+        fn add(
+            &self,
+            name: &str,
+            schedule: &str,
+            prompt: &str,
+            deliver: Deliver,
+        ) -> anyhow::Result<String> {
+            self.add_full(name, schedule, prompt, deliver, None, None)
+        }
+    }
+
     fn test_store() -> (tempfile::TempDir, CronStore) {
         let dir = tempfile::tempdir().unwrap();
         let store = CronStore::open(dir.path()).unwrap();
@@ -549,21 +560,42 @@ mod tests {
     }
 
     #[test]
-    fn expired_claim_never_reclaimed_automatically() {
+    fn live_claim_never_reclaimed_within_ttl() {
         let (_dir, store) = test_store();
         let id = store
             .add("hourly", "every 1h", "say hi", Deliver::Local)
             .unwrap();
-        store.set_next_run_for_test(&id, 1).unwrap();
         let t0 = 1_700_000_000;
-        let first = store.claim_due(t0, "owner-a").unwrap();
-        assert_eq!(first.len(), 1);
-        // Past the TTL and past the next schedule: still no second claim.
-        // A crashed owner needs offline recovery, not silent overlap.
-        let second = store
-            .claim_due(t0 + FIRE_CLAIM_TTL_SECS + 7200, "owner-b")
+        store.set_next_run_for_test(&id, 1).unwrap();
+        assert_eq!(store.claim_due(t0, "owner-a").unwrap().len(), 1);
+        // Force the job due again while the claim is still live: the live
+        // claim must still block re-fire (at-most-once).
+        store.set_next_run_for_test(&id, 1).unwrap();
+        let second = store.claim_due(t0 + 10, "owner-b").unwrap();
+        assert!(second.is_empty(), "live claim must not re-fire");
+    }
+
+    #[test]
+    fn stale_claim_is_reclaimed_with_warning_and_refires_once() {
+        let (_dir, store) = test_store();
+        let id = store
+            .add("hourly", "every 1h", "say hi", Deliver::Local)
             .unwrap();
-        assert!(second.is_empty(), "expired claim must not re-fire");
+        let t0 = 1_700_000_000;
+        store.set_next_run_for_test(&id, 1).unwrap();
+        assert_eq!(store.claim_due(t0, "owner-a").unwrap().len(), 1);
+        // Crashed worker: the job is due, the claim is past the TTL.
+        store.set_next_run_for_test(&id, 1).unwrap();
+        let due = store
+            .claim_due(t0 + FIRE_CLAIM_TTL_SECS + 1, "owner-b")
+            .unwrap();
+        assert_eq!(due.len(), 1, "stale claim must be reclaimed past the TTL");
+        assert_eq!(due[0].fire_claim.as_ref().unwrap().by, "owner-b");
+        // The reclaim is a single winner: the new claim is live for others.
+        let third = store
+            .claim_due(t0 + FIRE_CLAIM_TTL_SECS + 2, "owner-c")
+            .unwrap();
+        assert!(third.is_empty(), "reclaimed job is at-most-once again");
     }
 
     #[test]

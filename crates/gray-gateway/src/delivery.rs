@@ -170,6 +170,11 @@ pub struct DeliveryLedger {
     lock: Mutex<HashMap<String, DeliveryObligation>>,
 }
 
+/// True while an obligation still has a retry budget.
+fn retryable_with_attempts_left(o: &DeliveryObligation) -> bool {
+    o.retryable && o.attempts < MAX_DELIVERY_ATTEMPTS
+}
+
 impl DeliveryLedger {
     /// Load persisted obligations; corrupt JSON warns and starts fresh
     /// (documented) instead of silently wiping.
@@ -319,11 +324,7 @@ impl DeliveryLedger {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .filter(|o| {
-                o.status == ObligationStatus::Pending
-                    && o.retryable
-                    && o.attempts < MAX_DELIVERY_ATTEMPTS
-            })
+            .filter(|o| o.status == ObligationStatus::Pending && retryable_with_attempts_left(o))
             .cloned()
             .collect()
     }
@@ -367,8 +368,7 @@ impl DeliveryLedger {
                         ObligationStatus::Pending
                             | ObligationStatus::Attempting
                             | ObligationStatus::Failed
-                    ) && o.retryable
-                        && o.attempts < MAX_DELIVERY_ATTEMPTS
+                    ) && retryable_with_attempts_left(o)
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -377,22 +377,6 @@ impl DeliveryLedger {
             self.persist();
         }
         out
-    }
-
-    /// `(id, text_to_send)` with [`RECOVERED_MARKER`] prepended for every
-    /// non-pending row: a crash mid-await means the platform MAY have it.
-    pub fn sweep_marked(&self) -> Vec<(String, String)> {
-        self.sweep_all_claimable()
-            .into_iter()
-            .map(|o| {
-                let text = if o.status == ObligationStatus::Pending {
-                    o.text.clone()
-                } else {
-                    format!("{RECOVERED_MARKER}{}", o.text)
-                };
-                (o.id.clone(), text)
-            })
-            .collect()
     }
 
     /// Bound disk growth: drop delivered/abandoned older than 7d, then cap
@@ -1252,11 +1236,12 @@ mod tests {
         ledger.mark_attempting(&id); // crash happens here; process dies
         drop(ledger);
         let ledger2 = DeliveryLedger::new(dir.path().join("l.json"));
-        let pending = ledger2.sweep_marked();
+        let pending = ledger2.sweep_all_claimable();
         assert_eq!(pending.len(), 1);
-        assert!(
-            pending[0].1.starts_with(RECOVERED_MARKER),
-            "ambiguous send must be marked"
+        assert_eq!(
+            pending[0].status,
+            ObligationStatus::Attempting,
+            "ambiguous send must redeliver"
         );
     }
 

@@ -12,7 +12,6 @@ use std::ops::Range;
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct TextElement {
-    pub(crate) id: u64,
     pub(crate) range: Range<usize>,
 }
 
@@ -26,7 +25,6 @@ pub(crate) struct TextArea {
     text: String,
     cursor: usize, // byte index
     elements: Vec<TextElement>,
-    next_id: u64,
     preferred_col: Option<usize>,
     wrap_cache: Option<WrapCache>,
 }
@@ -38,7 +36,6 @@ impl TextArea {
             text: String::new(),
             cursor: 0,
             elements: Vec::new(),
-            next_id: 1,
             preferred_col: None,
             wrap_cache: None,
         }
@@ -125,21 +122,15 @@ impl TextArea {
         self.preferred_col = None;
         self.rebuild_wrap_cache();
     }
-    pub(crate) fn insert_element(&mut self, placeholder: &str) -> u64 {
-        let id = self.next_id;
-        self.next_id += 1;
+    pub(crate) fn insert_element(&mut self, placeholder: &str) {
         let start = self.cursor;
         self.insert_str(placeholder);
         let end = start + placeholder.len();
-        self.elements.push(TextElement {
-            id,
-            range: start..end,
-        });
+        self.elements.push(TextElement { range: start..end });
         self.elements.sort_by_key(|e| e.range.start);
         // insert_str already invalidated, but ensure element range accounted
         self.preferred_col = None;
         self.rebuild_wrap_cache();
-        id
     }
     pub(crate) fn shift_elements(&mut self, pos: usize, removed: usize, inserted: usize) {
         let diff = inserted as isize - removed as isize;
@@ -294,23 +285,14 @@ impl TextArea {
         self.preferred_col = None;
     }
     // --- WrapCache + preferred_col helpers ---
-    fn char_width(c: char) -> usize {
-        // simple width, 1 for most, 2 for CJK wide. Upgrade to unicode-width crate if needed.
-        match c {
-            // CJK Unified Ideographs and wide ranges (approx)
-            '\u{1100}'..='\u{115F}'
-            | '\u{2E80}'..='\u{A4CF}'
-            | '\u{AC00}'..='\u{D7A3}'
-            | '\u{F900}'..='\u{FAFF}'
-            | '\u{FF01}'..='\u{FF60}' => 2,
-            _ => 1,
-        }
-    }
     fn display_width_of_range(&self, start: usize, end: usize) -> usize {
         if start >= self.text.len() || end > self.text.len() || start >= end {
             return 0;
         }
-        self.text[start..end].chars().map(Self::char_width).sum()
+        self.text[start..end]
+            .chars()
+            .map(crate::text_width::char_width)
+            .sum()
     }
     fn current_display_col(&self) -> usize {
         let bol = self.text[..self.cursor]
@@ -341,7 +323,7 @@ impl TextArea {
         let mut width = 0usize;
         let mut byte_pos = line_start;
         for (idx, ch) in line.char_indices() {
-            let w = Self::char_width(ch);
+            let w = crate::text_width::char_width(ch);
             if width + w > target_col {
                 break;
             }

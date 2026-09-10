@@ -28,7 +28,7 @@
   <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
 </div>
 
-Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — everything below ships in the binary today.
+Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — the release binary ships the gateway adapters; from-source builds are feature-gated (see [Install](#install)).
 
 | | |
 |---|---|
@@ -37,7 +37,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
 | **Batteries in, guard on** | read · write · edit · bash · find · grep · ls · glob · cron. A destructive-command guard asks before foot-guns; Ctrl-C cancels a runaway turn. |
-| **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. |
+| **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. Release binary; from source add `--features all-platforms`. |
 | **Extend the harness** | Skills from `SKILL.md`, sidecar plugins over stdio (frozen wire v1), or `/acp` to *become* claude, codex, cursor, opencode… |
 
 ## Install
@@ -50,8 +50,19 @@ curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # bleeding edg
 or from source:
 
 ```bash
-cargo build --release -p gray
+cargo build --release -p gray                             # harness core
+cargo build --release -p gray --features all-platforms,acp  # what release binaries ship
+cargo build --release -p gray --features clipboard        # + image paste in the TUI
 ```
+
+| build | adds |
+|---|---|
+| default | harness core: CLI, TUI, provider, sessions, tools, cron |
+| `--features all-platforms` | Telegram + Discord + Slack gateway adapters |
+| `--features acp` | external agents over the Agent Client Protocol (`/acp`, `--acp`) |
+| `--features clipboard` | image/paste attachments (arboard + image) |
+
+Release binaries ship `all-platforms` + `acp`.
 
 Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
@@ -134,6 +145,8 @@ Always-on: `gray gateway install` (systemd user service, `Restart=always`, survi
 
 `gray` executes shell commands from the model. The destructive-command guard (`crates/gray-tools/src/shell/guard.rs`) blocks obvious foot-guns (`rm -rf /`, `mkfs`, fork bombs, `git reset --hard`) after an allow-prompt — it is prefix-based and **not a sandbox**: pipes, `&&` chains, `$(...)`, `eval`, `xargs rm`, `find -delete`, `python -c 'shutil.rmtree(...)'` and `curl … | sh` all pass through. `GRAY_GUARD_BYPASS=1` disables it entirely. There is no container or VM isolation: run gray in a container/VM for untrusted work. Security reports: [SECURITY.md](SECURITY.md).
 
+Persistence note: gateway and REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting; set `persist_redacted: true` in `gateway.yaml` to scrub gateway transcripts too. Plan backups, snapshots, and disk access accordingly.
+
 ## Context window & auto-compact
 
 The window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` → auto-fetched provider value → LiteLLM model table → hardcoded fallback. Inspect with `/context`, set with `/context 128k` (or `1m`; `auto` clears).
@@ -189,7 +202,7 @@ The essentials — everything else is one `--help` or doc page away.
 
 ## Stability
 
-Stable in 1.x: CLI flags, session JSONL schema, plugin wire v1, `~/.gray` layout. Not stable: the TUI, internal crate APIs, `gray-markdown`. Per-release changes: [CHANGELOG.md](CHANGELOG.md).
+The 1.x stability contract (CLI flags, session JSONL schema, plugin wire v1, `~/.gray` layout) takes effect at 1.0 — on 0.x these are best-effort. Not stable: the TUI, internal crate APIs, `gray-markdown`. Per-release changes: [CHANGELOG.md](CHANGELOG.md). Rollback is publisher-side today (manifest re-point); user-side `gray update --to <version>` is planned.
 
 ---
 

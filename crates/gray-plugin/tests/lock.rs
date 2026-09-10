@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 
-use gray_plugin::lock::{
-    LockEntry, LockFile, disabled_sidecar_argvs, load_disabled_sidecar_argvs, lock_path,
-    project_lock_path,
-};
+use gray_plugin::lock::{LockEntry, LockFile, disabled_sidecar_argvs, lock_path};
 
 fn entry(argv: Vec<&str>) -> LockEntry {
     LockEntry {
@@ -128,38 +125,4 @@ fn project_overlay_wins_on_the_flag_only() {
         disabled_sidecar_argvs(&user_lock(), &project),
         vec![vec!["dead-bin".to_string()]]
     );
-}
-
-#[test]
-fn load_disabled_argvs_reads_both_files() {
-    let home = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
-    // Missing files: empty, no warnings.
-    let (disabled, warnings) = load_disabled_sidecar_argvs(Some(home.path()), cwd.path());
-    assert!(disabled.is_empty());
-    assert!(warnings.is_empty(), "{warnings:?}");
-    // User lock disables one sidecar; project overlay disables another.
-    user_lock().save(&lock_path(home.path())).unwrap();
-    LockFile {
-        schema: 1,
-        plugins: BTreeMap::from([named("on-sidecar", vec![], false)]),
-    }
-    .save(&project_lock_path(cwd.path()))
-    .unwrap();
-    let (disabled, warnings) = load_disabled_sidecar_argvs(Some(home.path()), cwd.path());
-    assert_eq!(
-        disabled,
-        vec![
-            vec!["dead-bin".to_string()],
-            vec!["sidecar-bin".to_string()]
-        ]
-    );
-    assert!(warnings.is_empty(), "{warnings:?}");
-    // Corrupt user lock: warning; its argv lists are lost so the project
-    // overlay has nothing to match against.
-    std::fs::write(lock_path(home.path()), "not json {{{").unwrap();
-    let (disabled, warnings) = load_disabled_sidecar_argvs(Some(home.path()), cwd.path());
-    assert!(disabled.is_empty());
-    assert_eq!(warnings.len(), 1, "{warnings:?}");
-    assert!(warnings[0].contains("lock.json"), "{warnings:?}");
 }

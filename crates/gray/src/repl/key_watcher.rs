@@ -24,68 +24,6 @@ fn poke_shell_sleep() {
     gray_tools::shell::registry::registry().notify_user_input();
 }
 
-/// Minimal watcher (image turns): cancel/resize/question-overlay/Esc only.
-pub(crate) fn spawn_key_watcher(
-    watch_cancel: Cancel,
-    watcher_stopped: Stop,
-    watcher_tui: TuiOpt,
-) -> tokio::task::JoinHandle<()> {
-    tokio::task::spawn_blocking(move || {
-        use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-        loop {
-            if watcher_stopped.load(std::sync::atomic::Ordering::Relaxed) {
-                return;
-            }
-            match poll(std::time::Duration::from_millis(50)) {
-                Ok(true) => {}
-                _ => continue,
-            }
-            let Ok(event) = read() else {
-                continue;
-            };
-            if let Event::Resize(cols, rows) = event {
-                if let Some(shared) = watcher_tui.as_ref()
-                    && let Some(mut t) = try_lock_tui(shared)
-                    && (cols != t.last_width || rows != t.last_height)
-                {
-                    t.pending_resize = Some((
-                        cols,
-                        std::time::Instant::now() + std::time::Duration::from_millis(75),
-                    ));
-                }
-                continue;
-            }
-            if let Event::Key(KeyEvent {
-                code,
-                modifiers,
-                kind,
-                ..
-            }) = event
-            {
-                if kind == KeyEventKind::Release {
-                    continue;
-                }
-                if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
-                    watch_cancel.cancel();
-                    return;
-                }
-                // request_user_input overlay owns the keyboard while active
-                if let Some(shared) = watcher_tui.as_ref()
-                    && let Some(mut t) = try_lock_tui(shared)
-                    && t.active_question.is_some()
-                {
-                    crate::composer::handle_question_key(&mut t, code, modifiers);
-                    continue;
-                }
-                if code == KeyCode::Esc {
-                    watch_cancel.cancel();
-                    return;
-                }
-            }
-        }
-    })
-}
-
 /// Full watcher (prompt turns): typing queues follow-ups, clipboard paste, popups.
 pub(crate) fn spawn_key_watcher_with_typing(
     watch_cancel: Cancel,
@@ -160,8 +98,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             }
                             let text = text.trim().to_string();
                             if text.starts_with('/') && !text.contains('\n') {
-                                let echo = crate::composer::transcript::redact_command_echo(&text);
-                                t.push_user_prompt(&echo, &[], false);
+                                t.push_user_prompt(&text, &[], false);
                                 t.local_command = Some(text);
                                 t.textarea.set_text("");
                                 t.attachments.clear();
@@ -272,14 +209,8 @@ pub(crate) fn spawn_key_watcher_with_typing(
                                 continue;
                             }
                             KeyCode::Char('w') | KeyCode::Backspace => {
-                                // when popup open, dismiss? mimic input.rs popup swallows word deletes
-                                if !t.matches.is_empty() {
-                                    t.textarea.delete_word_backward();
-                                    t.sync_attachments();
-                                    sync_matches(&mut t);
-                                    let _ = t.draw();
-                                    continue;
-                                }
+                                // input.rs parity: word-delete regardless of an
+                                // open popup (popup keys are handled above).
                                 t.textarea.delete_word_backward();
                                 t.sync_attachments();
                                 sync_matches(&mut t);

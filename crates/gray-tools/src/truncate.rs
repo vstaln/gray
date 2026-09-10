@@ -20,6 +20,15 @@ pub fn format_size(bytes: usize) -> String {
     }
 }
 
+/// Append the standard `[a. b]` notice block to `output` when non-empty.
+pub fn append_notices(output: &mut String, notices: &[String]) {
+    if !notices.is_empty() {
+        output.push_str("\n\n[");
+        output.push_str(&notices.join(". "));
+        output.push(']');
+    }
+}
+
 fn split_lines_for_counting(content: &str) -> Vec<&str> {
     if content.is_empty() {
         return Vec::new();

@@ -28,6 +28,7 @@
 - Glob tool for file pattern matching
 - Session-ID threading across turns
 - prompt_cache_key passthrough for chat requests
+- `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
 ### Fixed
 - Synthesize tool outputs for orphaned function calls (unbricks sessions after mid-turn cancel)
@@ -53,6 +54,16 @@
 - Executor watchdog for hung tool runs
 - Models-cache atomicity via atomic writes
 - Markdown rendering fixes
+- Cron: stale fire claims (>300s) from a crashed ticker are reclaimed instead of wedging the job forever
+- Gateway: terminal adapter failures (revoked token, adapter not compiled) are parked until restart instead of re-entering the reconnect ladder forever
+- Release: tarballs build with `--features all-platforms` (real adapters, not stubs); CI tests the all-platforms gateway code and asserts release artifact architecture
+- Update: `GRAY_AUTO_UPDATE=1` auto-updates on the stable channel only; update trust model documented in SECURITY.md
+- README: 0.x stability line, user-side rollback note, and raw-session persistence disclosure
+- Manifests: gray-cron declared once in workspace.dependencies (GRY-003)
+- README: default vs feature-gated source-build table; no blanket "ships in the binary" claim (GRY-004)
+- Deps: gray-acp is an optional default-off `acp` feature (GRY-001); release builds use `--features all-platforms,acp`
+- Deps: workspace Tokio declares explicit features instead of `full` (GRY-002)
+- README demo GIF: dropped the 3.5s dead lead-in, stable 10fps, diff palette (2.3MB → 1.4MB, 12.8s → 9.5s)
 
 ## [0.1.0] - 2026-09-07
 

@@ -1,6 +1,5 @@
 //! The `grep` tool: content search via ripgrep (`rg --json`).
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -30,7 +29,7 @@ fn truncate_line(line: &str) -> (String, bool) {
     (format!("{truncated}... [truncated]"), true)
 }
 
-use crate::truncate::truncate_head;
+use crate::truncate::{append_notices, truncate_head};
 
 fn relativize(search_path: &Path, file_path: &str, is_dir: bool) -> String {
     let fp = Path::new(file_path);
@@ -127,6 +126,9 @@ impl Tool for GrepTool {
             .arg("--line-number")
             .arg("--color=never")
             .arg("--hidden");
+        if context > 0 {
+            cmd.arg("--context").arg(context.to_string());
+        }
         if ignore_case {
             cmd.arg("--ignore-case");
         }
@@ -173,7 +175,8 @@ impl Tool for GrepTool {
         });
 
         let mut reader = tokio::io::BufReader::new(stdout).lines();
-        let mut matches: Vec<(String, usize, Option<String>)> = Vec::new();
+        // (path, line_number, text, is_match)
+        let mut matches: Vec<(String, usize, Option<String>, bool)> = Vec::new();
         let mut match_count: usize = 0;
         let mut match_limit_reached = false;
         let mut cancelled = false;
@@ -192,10 +195,15 @@ impl Tool for GrepTool {
                         Ok(v) => v,
                         Err(_) => continue,
                     };
-                    if event.get("type").and_then(|t| t.as_str()) != Some("match") {
+                    let kind = event.get("type").and_then(|t| t.as_str());
+                    let is_match = kind == Some("match");
+                    // Context events only exist when `--context` was passed.
+                    if !is_match && !(context > 0 && kind == Some("context")) {
                         continue;
                     }
-                    match_count += 1;
+                    if is_match {
+                        match_count += 1;
+                    }
                     let data = &event["data"];
                     let file_path = data
                         .get("path")
@@ -213,9 +221,9 @@ impl Tool for GrepTool {
                         .and_then(|t| t.as_str())
                         .map(|s| s.to_string());
                     if !file_path.is_empty() && line_number > 0 {
-                        matches.push((file_path, line_number, line_text));
+                        matches.push((file_path, line_number, line_text, is_match));
                     }
-                    if match_count >= effective_limit {
+                    if is_match && match_count >= effective_limit {
                         match_limit_reached = true;
                         let _ = child.kill().await;
                         break;
@@ -268,79 +276,31 @@ impl Tool for GrepTool {
             return finish("No matches found".to_string());
         }
 
-        // Format matches
+        // Format matches: `file:line: text`, context lines `file-line- text`.
         let mut output_lines: Vec<String> = Vec::new();
         let mut lines_truncated = false;
-        let context_val = context;
 
-        if context_val == 0 {
-            for (file_path, line_number, line_text) in &matches {
-                let rel = relativize(&search_path, file_path, is_dir);
-                if let Some(raw) = line_text {
-                    let sanitized = raw
-                        .replace("\r\n", "\n")
-                        .replace('\r', "")
-                        .trim_end_matches('\n')
-                        .to_string();
-                    let (text, was_truncated) = truncate_line(&sanitized);
-                    if was_truncated {
-                        lines_truncated = true;
-                    }
-                    output_lines.push(format!("{rel}:{line_number}: {text}"));
-                } else {
-                    // Fallback: read file to get line (should not happen)
-                    let rel2 = rel.clone();
-                    output_lines.push(format!("{rel2}:{line_number}: (unable to read line)"));
+        for (file_path, line_number, line_text, is_match) in &matches {
+            let rel = relativize(&search_path, file_path, is_dir);
+            let Some(raw) = line_text else {
+                if *is_match {
+                    output_lines.push(format!("{rel}:{line_number}: (unable to read line)"));
                 }
+                continue;
+            };
+            let sanitized = raw
+                .replace("\r\n", "\n")
+                .replace('\r', "")
+                .trim_end_matches('\n')
+                .to_string();
+            let (text, was_truncated) = truncate_line(&sanitized);
+            if was_truncated {
+                lines_truncated = true;
             }
-        } else {
-            // Context mode: read files and show surrounding lines
-            let mut file_cache: HashMap<String, Vec<String>> = HashMap::new();
-            for (file_path, line_number, _line_text) in &matches {
-                let rel = relativize(&search_path, file_path, is_dir);
-                let lines: Vec<String> = if let Some(cached) = file_cache.get(file_path) {
-                    cached.clone()
-                } else {
-                    match tokio::fs::read_to_string(file_path).await {
-                        Ok(content) => {
-                            let v: Vec<String> = content
-                                .replace("\r\n", "\n")
-                                .replace('\r', "\n")
-                                .split('\n')
-                                .map(|s| s.to_string())
-                                .collect();
-                            file_cache.insert(file_path.clone(), v.clone());
-                            v
-                        }
-                        Err(_) => {
-                            file_cache.insert(file_path.clone(), Vec::new());
-                            Vec::new()
-                        }
-                    }
-                };
-                if lines.is_empty() {
-                    output_lines.push(format!("{rel}:{line_number}: (unable to read file)"));
-                    continue;
-                }
-                let start = if *line_number > context_val {
-                    line_number - context_val
-                } else {
-                    1
-                };
-                let end = (*line_number + context_val).min(lines.len());
-                for current in start..=end {
-                    let raw = lines.get(current - 1).map(|s| s.as_str()).unwrap_or("");
-                    let sanitized = raw.replace('\r', "");
-                    let (text, was_truncated) = truncate_line(&sanitized);
-                    if was_truncated {
-                        lines_truncated = true;
-                    }
-                    if current == *line_number {
-                        output_lines.push(format!("{rel}:{current}: {text}"));
-                    } else {
-                        output_lines.push(format!("{rel}-{current}- {text}"));
-                    }
-                }
+            if *is_match {
+                output_lines.push(format!("{rel}:{line_number}: {text}"));
+            } else {
+                output_lines.push(format!("{rel}-{line_number}- {text}"));
             }
         }
 
@@ -366,11 +326,7 @@ impl Tool for GrepTool {
                 "Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines"
             ));
         }
-        if !notices.is_empty() {
-            output.push_str("\n\n[");
-            output.push_str(&notices.join(". "));
-            output.push(']');
-        }
+        append_notices(&mut output, &notices);
 
         finish(output)
     }

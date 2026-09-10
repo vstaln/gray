@@ -13,7 +13,7 @@ pub(crate) enum Flow {
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
     agent: &mut Option<Agent>,
-    acp: &mut Option<gray_acp::AcpSession>,
+    acp: &mut Option<AcpSession>,
     config: &mut Config,
     cwd: &std::path::Path,
     tui: &TuiOpt,
@@ -271,13 +271,7 @@ pub(crate) async fn dispatch_command(
                 Ok(false) => {
                     if let Some((shared, _)) = tui {
                         let mut t = shared.lock().expect("tui lock");
-                        t.textarea.set_text("");
-                        t.matches.clear();
-                        t.sel = 0;
-                        t.history_idx = None;
-                        t.draft.clear();
-                        t.attachments.clear();
-                        t.pending_pastes.clear();
+                        t.clear_draft();
                         // Dismissed picker leaves the slash card with no
                         // feedback: gap so it doesn't jam the input box.
                         t.ensure_gap(1);
@@ -302,6 +296,7 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Acp(raw) => {
+            #[cfg(feature = "acp")]
             handle_acp_command(
                 &raw,
                 cwd,
@@ -310,6 +305,14 @@ pub(crate) async fn dispatch_command(
                 config.model.as_deref(),
             )
             .await;
+            #[cfg(not(feature = "acp"))]
+            {
+                let _ = (&raw, &mut *acp, config);
+                say(
+                    tui.as_ref().map(|(s, _)| s),
+                    "acp support is not compiled in this build — rebuild with `--features acp`",
+                );
+            }
             Flow::Continue
         }
         ReplCommand::Plugin(raw) => {

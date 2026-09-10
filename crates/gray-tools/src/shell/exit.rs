@@ -49,9 +49,7 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
     // Signal notes key off the effective value, so a plain `exit 137`
     // (the shell's own 128+N spelling of SIGKILL) annotates the same way.
     let mut note: Option<String> = signal_note(effective).map(str::to_string);
-    let mut benign = false;
     if let Some(b) = benign_note(&head, effective) {
-        benign = true;
         note = Some(b.to_string());
     } else if effective == 0 && !command.contains("pipefail") {
         note = masked_note(command);
@@ -59,12 +57,9 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
     // `ls` exit 2 ("No such file") is deliberately NOT benign: a missing
     // file is a real error, left unannotated.
     ExitReport {
-        code,
-        signal,
         effective,
         label,
         note,
-        benign,
     }
 }
 
@@ -162,7 +157,6 @@ mod exit_tests {
         let r = exit_report(code(3), "sh -c 'exit 3'");
         assert_eq!(r.effective, 3);
         assert_eq!(r.label, "exit 3");
-        assert!(!r.benign);
         assert!(r.note.is_none());
     }
 
@@ -172,7 +166,6 @@ mod exit_tests {
         assert_eq!(r.effective, 137);
         assert!(r.label.contains("SIGKILL"), "{}", r.label);
         assert!(r.note.as_deref().unwrap_or("").contains("OOM"));
-        assert!(!r.benign);
     }
 
     #[test]
@@ -187,28 +180,24 @@ mod exit_tests {
     fn grep_no_match_is_benign() {
         let r = exit_report(code(1), "grep zzz /dev/null");
         assert_eq!(r.effective, 1);
-        assert!(r.benign);
         assert!(r.note.as_deref().unwrap_or("").contains("no matches"));
     }
 
     #[test]
     fn diff_success_is_plain() {
         let r = exit_report(code(0), "diff a a");
-        assert!(!r.benign);
         assert!(r.note.is_none());
     }
 
     #[test]
     fn diff_difference_is_benign() {
         let r = exit_report(code(1), "diff a b");
-        assert!(r.benign);
         assert!(r.note.as_deref().unwrap_or("").contains("files differ"));
     }
 
     #[test]
     fn masked_pipeline_gets_pipefail_note() {
         let r = exit_report(code(0), "false | tail -1");
-        assert!(!r.benign);
         assert!(r.note.as_deref().unwrap_or("").contains("pipefail"));
     }
 
@@ -221,14 +210,12 @@ mod exit_tests {
     #[test]
     fn sudo_env_wrapper_still_matches_benign_table() {
         let r = exit_report(code(1), "sudo env X=1 grep z f");
-        assert!(r.benign);
         assert!(r.note.as_deref().unwrap_or("").contains("no matches"));
     }
 
     #[test]
     fn command_dash_v_is_benign() {
         let r = exit_report(code(1), "command -v foo");
-        assert!(r.benign);
         assert!(r.note.as_deref().unwrap_or("").contains("PATH"));
     }
 
@@ -247,7 +234,6 @@ mod exit_tests {
     #[test]
     fn ls_missing_file_stays_an_error() {
         let r = exit_report(code(2), "ls /nonexistent");
-        assert!(!r.benign);
         assert!(r.note.is_none());
     }
 

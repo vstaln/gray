@@ -49,7 +49,6 @@ where
     pub hidden_cursor: bool,
     pub viewport_area: Rect,
     pub last_known_screen_size: Size,
-    pub last_known_cursor_pos: Position,
 }
 
 impl<B> Drop for CustomTerminal<B>
@@ -91,35 +90,9 @@ where
             hidden_cursor: false,
             viewport_area,
             last_known_screen_size: screen_size,
-            last_known_cursor_pos: cursor_pos,
         };
         term.set_viewport_area(viewport_area);
         Ok(term)
-    }
-
-    #[allow(dead_code)]
-    pub fn backend(&self) -> &B {
-        &self.backend
-    }
-
-    #[allow(dead_code)]
-    pub fn backend_mut(&mut self) -> &mut B {
-        &mut self.backend
-    }
-
-    #[allow(dead_code)]
-    pub fn current_buffer(&self) -> &Buffer {
-        &self.buffers[self.current]
-    }
-
-    #[allow(dead_code)]
-    pub fn current_buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.buffers[self.current]
-    }
-
-    #[allow(dead_code)]
-    pub fn previous_buffer(&self) -> &Buffer {
-        &self.buffers[1 - self.current]
     }
 
     #[allow(dead_code)]
@@ -196,13 +169,7 @@ where
     pub fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
         let position = position.into();
         self.backend.set_cursor_position(position)?;
-        self.last_known_cursor_pos = position;
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn get_cursor_position(&mut self) -> io::Result<Position> {
-        self.backend.get_cursor_position()
     }
 
     pub fn swap_buffers(&mut self) {
@@ -214,9 +181,6 @@ where
         let previous_buffer = &self.buffers[1 - self.current];
         let current_buffer = &self.buffers[self.current];
         let updates = previous_buffer.diff(current_buffer);
-        if let Some((col, row, _)) = updates.last() {
-            self.last_known_cursor_pos = Position { x: *col, y: *row };
-        }
         self.backend.draw(updates.into_iter())
     }
 

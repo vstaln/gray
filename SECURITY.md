@@ -37,6 +37,15 @@ written `0600` (owner-only), and prefer `dm_policy: pairing` over `open`
 (`allowed_users: "*"` admits everyone). Extra `denied_tools` merge with
 the built-in gateway deny set.
 
+## Update trust model
+
+Installs and `gray update` fetch the installer script, the tarball, and
+`SHA256SUMS` over HTTPS from one origin (`gray.alignment.id`). The sums
+verify integrity in transit, not publisher identity: releases are not
+signed yet. Background auto-update (`GRAY_AUTO_UPDATE=1`) runs on the
+stable channel only — beta redeploys on every push to main. Operators who
+need signed updates should build from source at a reviewed tag.
+
 ## Reporting
 
 Report vulnerabilities privately via a GitHub security advisory on

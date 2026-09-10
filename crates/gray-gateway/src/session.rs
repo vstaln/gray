@@ -316,8 +316,8 @@ mod tests {
     }
 
     #[test]
-    fn integration_truncate_and_key() {
-        // ensure truncate does not affect session key (keys are not truncated)
+    fn integration_key_keeps_full_chat_id() {
+        // ensure the session key is not truncated
         let long_chat = "a".repeat(5000);
         let src = SessionSource {
             platform: Platform::Telegram,
@@ -330,12 +330,6 @@ mod tests {
         };
         let key = build_session_key(&src, true, false);
         assert!(key.contains(&long_chat));
-        // but outgoing message would be truncated/split
-        let msg = "b".repeat(5000);
-        let truncated = crate::platform::truncate_message(&msg, 4096);
-        assert!(crate::platform::utf16_len(&truncated) <= 4096);
-        let chunks = crate::platform::split_message(&msg, 4096);
-        assert!(chunks.len() >= 2);
     }
 
     #[test]

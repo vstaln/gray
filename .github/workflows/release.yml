@@ -91,15 +91,45 @@ jobs:
           GRAY_CHANNEL: ${{ steps.meta.outputs.channel }}
         shell: bash
         run: |
+          # all-platforms: the default build stubs the Telegram/Discord/Slack
+          # adapters; the released binary must carry them or the advertised
+          # gateway crash-loops on "not compiled" (audit B1).
+          # acp: ACP support is opt-in at the crate level and must stay in the
+          # released binary (GRY-001).
           if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release -p gray --features all-platforms,acp --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release -p gray --features all-platforms,acp --target ${{ matrix.target }}
           fi
+
+      - name: release build must carry gateway adapters
+        if: matrix.plat == 'x86_64-linux'
+        run: |
+          cargo tree -p gray --features all-platforms -e normal \
+            | grep -Eq 'teloxide|twilight-gateway|slack-morphism' \
+            || { echo "::error::release binary would ship stub adapters"; exit 1; }
 
       - name: smoke test (native platforms)
         if: matrix.plat == 'x86_64-linux' || matrix.plat == 'aarch64-darwin'
         run: ./target/${{ matrix.target }}/release/gray --version
+
+      - name: artifact identity
+        shell: bash
+        run: |
+          # The un-smoked legs (x86_64-darwin, aarch64-linux) get no execution
+          # check at all; assert the packaged binary is the claimed
+          # architecture for every leg instead (audit F6).
+          case "${{ matrix.plat }}" in
+            x86_64-linux) want="x86-64" ;;
+            aarch64-linux) want="aarch64" ;;
+            aarch64-darwin) want="arm64" ;;
+            x86_64-darwin) want="x86_64" ;;
+            *) want="" ;;
+          esac
+          [ -n "$want" ] || { echo "::error::no expected arch for ${{ matrix.plat }}"; exit 1; }
+          file target/${{ matrix.target }}/release/gray
+          file target/${{ matrix.target }}/release/gray | grep -q "$want" \
+            || { echo "::error::artifact for ${{ matrix.plat }} is not $want"; exit 1; }
 
       - name: package
         shell: bash
@@ -116,16 +146,13 @@ jobs:
             gray-*.tar.gz
             SHA256SUMS-*
 
+      - uses: ./.github/actions/deploy-key
+        with:
+          key: ${{ secrets.DEPLOY_KEY }}
+
       - name: stage tarball on gray.alignment.id (manifest swaps last, in finalize)
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         shell: bash
         run: |
-          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
-          mkdir -p ~/.ssh ~/.config/gray-deploy
-          install -m 600 /dev/null ~/.config/gray-deploy/key
-          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
-          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           CHANNEL="${{ steps.meta.outputs.channel }}"
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" opc@168.110.210.65:/tmp/
@@ -133,17 +160,10 @@ jobs:
             && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/$TAR \
             && rm -f /tmp/$TAR"
 
-      - name: sync installers to gray.alignment.id (once)
-        if: matrix.plat == 'x86_64-linux'
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      - name: sync installers to gray.alignment.id (beta pushes; tag pushes sync in publish)
+        if: matrix.plat == 'x86_64-linux' && !startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
-          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
-          mkdir -p ~/.ssh ~/.config/gray-deploy
-          install -m 600 /dev/null ~/.config/gray-deploy/key
-          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
-          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
           ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
 
@@ -153,6 +173,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy-key
+        with:
+          key: ${{ secrets.DEPLOY_KEY }}
       - name: resolve channel
         id: meta
         shell: bash
@@ -164,15 +187,8 @@ jobs:
             echo "channel=beta" >> "$GITHUB_OUTPUT"
           fi
       - name: promote staged set live, swap manifest last
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         shell: bash
         run: |
-          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
-          mkdir -p ~/.ssh ~/.config/gray-deploy
-          install -m 600 /dev/null ~/.config/gray-deploy/key
-          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
-          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           CHANNEL="${{ steps.meta.outputs.channel }}"
           VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
@@ -193,6 +209,9 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/deploy-key
+        with:
+          key: ${{ secrets.DEPLOY_KEY }}
       - uses: actions/download-artifact@v4
         with:
           path: dist-all
@@ -214,14 +233,7 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist-all/gray-*.tar.gz dist-all/SHA256SUMS \
             $PRERELEASE --title "$GITHUB_REF_NAME" --notes-file dist-all/NOTES.md
       - name: sync sums + installers to CDN
-        env:
-          DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
         shell: bash
         run: |
-          [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
-          mkdir -p ~/.ssh ~/.config/gray-deploy
-          install -m 600 /dev/null ~/.config/gray-deploy/key
-          printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
-          cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist-all/SHA256SUMS dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
           ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/SHA256SUMS /var/www/gray/dl/SHA256SUMS && sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/SHA256SUMS /tmp/install.sh /tmp/install.ps1 && echo '✓ sums + installers live: https://gray.alignment.id/dl/SHA256SUMS'"

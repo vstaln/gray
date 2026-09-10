@@ -272,9 +272,9 @@ pub use super::agent_compact::summary_pair;
 /// tool calls through a [`ToolExecutor`] until the model stops requesting
 /// tools or cancellation fires.
 ///
-/// `max_rounds` (default 50, [`with_max_rounds`](Self::with_max_rounds))
-/// bounds total loop iterations. The loop terminates when a turn ends without
-/// tool calls (`TurnEnd`) or when cancellation fires. A lightweight stall
+/// `max_rounds` (default 50) bounds total loop iterations. The loop
+/// terminates when a turn ends without tool calls (`TurnEnd`) or when
+/// cancellation fires. A lightweight stall
 /// guard (3 identical consecutive tool calls) aborts runaway loops; provider
 /// context errors and user cancellation remain the other natural bounds.
 ///
@@ -346,12 +346,6 @@ impl Agent {
     /// Sets the initial conversation messages (useful for resumed sessions).
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.messages = messages;
-        self
-    }
-
-    /// Caps agent-loop rounds (default 50); `None` leaves the loop unbounded.
-    pub fn with_max_rounds(mut self, max_rounds: Option<u32>) -> Self {
-        self.max_rounds = max_rounds;
         self
     }
 
@@ -438,16 +432,6 @@ impl Agent {
     /// Updates or replaces the accumulated conversation messages (e.g. after compaction).
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
-    }
-
-    /// Clears all accumulated conversation messages (e.g. on `/new`).
-    pub fn clear_messages(&mut self) {
-        self.messages.clear();
-    }
-
-    /// Reference to the underlying LLM provider.
-    pub fn provider(&self) -> &dyn Provider {
-        &*self.provider
     }
 
     /// System prompt sent with every request. `pub(crate)` because the
@@ -1775,8 +1759,8 @@ mod agent_tests {
             Box::new(provider),
             Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
         )
-        .with_tools(vec![tool_def()])
-        .with_max_rounds(Some(1));
+        .with_tools(vec![tool_def()]);
+        agent.max_rounds = Some(1);
 
         // Budget stop is not a loop error: productive runs hit this while
         // making progress, so the turn ends normally with a resume note.

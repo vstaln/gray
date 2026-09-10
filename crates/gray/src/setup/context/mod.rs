@@ -1,5 +1,3 @@
-use super::catalog::Catalog;
-
 mod providers;
 
 pub(crate) use providers::ensure_disk_loaded;
@@ -7,10 +5,10 @@ pub use providers::{
     ModelRate, cache_model_context, cache_model_context_if_absent, cache_model_reasoning,
     cache_models_dev_if_absent, cached_model_ids, context_source, fetch_litellm_context_windows,
     fetch_live_provider_models, fetch_models_dev_context, fetch_openrouter_rates, format_cost,
-    friendly_model_name, get_cached_model_context, get_model_rate, get_provider_models,
-    get_provider_models_with_live, load_models_cache_to_memory, model_supports_reasoning,
-    parse_litellm_context_json, parse_models_dev_json, parse_openrouter_models_json,
-    save_models_cache_to_disk, supported_efforts, supported_thinking_levels, turn_cost,
+    friendly_model_name, get_cached_model_context, get_model_rate, load_models_cache_to_memory,
+    model_supports_reasoning, parse_litellm_context_json, parse_models_dev_json,
+    parse_openrouter_models_json, save_models_cache_to_disk, supported_efforts,
+    supported_thinking_levels, turn_cost,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
@@ -32,7 +30,6 @@ pub fn get_user_context_window() -> Option<usize> {
     user_context_window_cell().read().ok().and_then(|g| *g)
 }
 
-pub const DEFAULT_RESERVE_TOKENS: usize = 16_384;
 pub const DEFAULT_KEEP_RECENT_TOKENS: usize = 20_000;
 
 static USER_RESERVE_TOKENS: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
@@ -52,15 +49,6 @@ pub fn set_user_reserve_tokens(v: Option<usize>) {
     if let Ok(mut g) = user_reserve_cell().write() {
         *g = v.filter(|&n| n > 0);
     }
-}
-/// Effective reserve: override or default.
-// Legacy flat default; new code prefers `user_reserve_tokens_for(window)`.
-pub fn user_reserve_tokens() -> usize {
-    user_reserve_cell()
-        .read()
-        .ok()
-        .and_then(|g| *g)
-        .unwrap_or(DEFAULT_RESERVE_TOKENS)
 }
 /// User override for keep-recent tail (`None` = default 20k).
 pub fn set_user_keep_recent_tokens(v: Option<usize>) {
@@ -440,7 +428,6 @@ mod tests {
 
     #[test]
     fn compaction_defaults_match_legacy() {
-        assert_eq!(user_reserve_tokens(), 16_384);
         assert_eq!(user_keep_recent_tokens(), 20_000);
     }
 

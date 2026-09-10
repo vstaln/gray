@@ -167,12 +167,9 @@ mod tests {
 
     fn report(effective: i32, label: &str) -> ExitReport {
         ExitReport {
-            code: Some(effective),
-            signal: None,
             effective,
             label: label.into(),
             note: None,
-            benign: false,
         }
     }
 

@@ -63,7 +63,6 @@ pub struct Tui {
     /// Slash command submitted via Esc mid-turn: cancel + run locally, never to the AI.
     pub local_command: Option<String>,
     pending: String,
-    truecolor: bool,
     thinking: bool,
     thinking_started: Option<Instant>,
     /// Buffered thinking rows for the current run. Rendered header-first
@@ -224,7 +223,6 @@ impl Tui {
             queued_inputs: std::collections::VecDeque::new(),
             local_command: None,
             pending: String::new(),
-            truecolor: true,
             thinking: false,
             thinking_started: None,
             thinking_lines: Vec::new(),
@@ -391,15 +389,16 @@ impl Tui {
     pub fn permission_mode(&self) -> &str {
         &self.permission_mode
     }
-    pub fn cycle_permission_mode(&mut self) -> String {
-        let next = if self.permission_mode == gray_core::approvals::MODE_READ_ONLY {
-            gray_core::approvals::MODE_AUTO
-        } else {
-            gray_core::approvals::MODE_READ_ONLY
-        };
-        self.permission_mode = next.to_string();
-        let _ = self.draw();
-        next.to_string()
+    /// Dismissed/cancelled modal: drop the typed slash draft, its completion
+    /// popup and attachments so the next prompt starts clean.
+    pub(crate) fn clear_draft(&mut self) {
+        self.textarea.set_text("");
+        self.matches.clear();
+        self.sel = 0;
+        self.history_idx = None;
+        self.draft.clear();
+        self.attachments.clear();
+        self.pending_pastes.clear();
     }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
@@ -420,10 +419,6 @@ impl Tui {
 
     pub(crate) fn draw(&mut self) -> anyhow::Result<()> {
         draw::draw(self)
-    }
-
-    pub fn attach_image(&mut self, path: PathBuf) {
-        input::attach_image(self, path)
     }
 
     pub(crate) fn sync_attachments(&mut self) {
@@ -618,7 +613,6 @@ impl Tui {
             self.status = Some((Instant::now(), sleep_label(remaining, &reason)));
             sleep_tick = true;
         }
-        let needs_cron_tick = false;
         // Reference: codex screen_size.rs + transcript_reflow.rs — trailing 75ms debounce.
         // Rows ride along: a height-only drag must reflow too, otherwise a
         // paint on stale screen math tears scrollback with no repair coming.
@@ -636,11 +630,11 @@ impl Tui {
             && (cols != self.last_width || rows != self.last_height)
         {
             self.pending_resize = Some((cols, Instant::now() + Duration::from_millis(75)));
-            if !needs_cron_tick && self.status.is_none() {
+            if self.status.is_none() {
                 return;
             }
         }
-        if self.status.is_none() && !needs_cron_tick && !sleep_tick {
+        if self.status.is_none() && !sleep_tick {
             return;
         }
         let _ = self.draw();

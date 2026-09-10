@@ -1,9 +1,8 @@
 //! Gateway boot and CLI entry points (move-only split from `daemon.rs`).
 //!
-//! [`run_gateway`] runs until SIGINT/SIGTERM; [`run_gateway_shutdown`] and
-//! [`run_gateway_shutdown_with_board`] also exit on an explicit shutdown
-//! signal (REPL `/gateway stop`). [`GatewayRunner::send_startup_notifications`]
-//! pings the `/restart` requester and announces the online notice.
+//! [`run_gateway`] runs until SIGINT/SIGTERM.
+//! [`GatewayRunner::send_startup_notifications`] pings the `/restart`
+//! requester and announces the online notice.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -67,40 +66,12 @@ impl GatewayRunner {
 /// CLI entry: run until SIGINT/SIGTERM.
 pub async fn run_gateway() -> anyhow::Result<()> {
     let token = tokio_util::sync::CancellationToken::new();
-    let res = run_gateway_inner(token.clone(), None).await;
+    let res = run_gateway_inner(token.clone()).await;
     token.cancel();
     res
 }
 
-/// Like [`run_gateway`], but also exits when `shutdown` resolves (REPL `/gateway stop`).
-pub async fn run_gateway_shutdown(
-    shutdown: tokio::sync::oneshot::Receiver<()>,
-) -> anyhow::Result<()> {
-    run_gateway_shutdown_with_board(shutdown, None).await
-}
-
-/// Like [`run_gateway_shutdown`], but reports per-platform connect progress
-/// on `board` for the REPL's live boot card (`connecting…` → `connected as …`).
-pub async fn run_gateway_shutdown_with_board(
-    shutdown: tokio::sync::oneshot::Receiver<()>,
-    board: Option<GatewayStatusBoard>,
-) -> anyhow::Result<()> {
-    let token = tokio_util::sync::CancellationToken::new();
-    let t = token.clone();
-    let relay = tokio::spawn(async move {
-        let _ = shutdown.await;
-        t.cancel();
-    });
-    let res = run_gateway_inner(token.clone(), board).await;
-    token.cancel();
-    let _ = relay.await;
-    res
-}
-
-async fn run_gateway_inner(
-    token: tokio_util::sync::CancellationToken,
-    board: Option<GatewayStatusBoard>,
-) -> anyhow::Result<()> {
+async fn run_gateway_inner(token: tokio_util::sync::CancellationToken) -> anyhow::Result<()> {
     // Cross-process singleton: two gateway processes share one gateway.yaml /
     // one Discord token, and Discord allows concurrent sessions — without
     // this both connect and both reply to every message. `_lock` is held
@@ -164,7 +135,7 @@ async fn run_gateway_inner(
         connect_adapter_with_retry(
             adapter,
             *plat,
-            board.as_ref(),
+            None,
             &runner.router,
             &runner.ledger,
             BOOT_MAX_ATTEMPTS,
@@ -184,14 +155,12 @@ async fn run_gateway_inner(
     let runner = Arc::new(runner);
     // Steady-state supervisor: dead adapters re-enter the connect ladder
     // (bounded by MAX_RECONNECT_ATTEMPTS, spaced by supervise_backoff);
-    // all-dead + empty queue exits 75 for systemd. Reuse the REPL's board
-    // when present, else track internally. Snapshot now so the probe sees
-    // boot results before the first 30s tick.
+    // all-dead + empty queue exits 75 for systemd. Track board state
+    // internally. Snapshot now so the probe sees boot results before the
+    // first 30s tick.
     {
         let plats: Vec<Platform> = runner.adapters.keys().copied().collect();
-        let board = board
-            .clone()
-            .unwrap_or_else(|| GatewayStatusBoard::new(&plats));
+        let board = GatewayStatusBoard::new(&plats);
         board.save_snapshot(&home);
         tokio::spawn(supervise_adapters(Arc::clone(&runner), board, home.clone()));
     }

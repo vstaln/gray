@@ -6,7 +6,7 @@
 //! 2. **slash dispatch** — `/reset /new /status /stop /restart /whoami /help`;
 //! 3. **interrupt** — a new message for a session with a running agent cancels
 //!    that run first (level 2); `/stop` cancels without replacing (level 1);
-//! 4. **run** — agent with the [`crate::authz::GatedExecutor`] (dangerous
+//! 4. **run** — agent with the [`crate::authz::DenyExecutor`] (dangerous
 //!    tools auto-denied), Hermes-style progress bubbles where the platform allows;
 //! 5. **deliver** — reply to the originating chat/thread, chunked to the
 //!    platform limit. Cron output goes to each platform's `home_channel`.
@@ -33,7 +33,7 @@ use crate::daemon_stream::ProgressBubble;
 /// Minimum interval between progress-bubble EDITS while working
 /// (Discord/Telegram edit rate limits sit around 1/s per chat).
 /// The first send is always immediate; only edits are throttled.
-pub use super::daemon_boot::{run_gateway, run_gateway_shutdown, run_gateway_shutdown_with_board};
+pub use super::daemon_boot::run_gateway;
 pub use super::daemon_supervise::{
     BOOT_MAX_ATTEMPTS, FAST_FAILURE_WINDOW, Fatal, MAX_FAST_FAILURES, MAX_RECONNECT_ATTEMPTS,
     classify_connect_error, classify_shard_end, crash_loop_tripped,
@@ -988,7 +988,6 @@ mod tests {
                 scope_id: None,
                 message_id: Some(id),
             },
-            media_urls: vec![],
             user_name: Some("tester".into()),
         }
     }
@@ -1231,31 +1230,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gated_executor_denies_with_accurate_message() {
-        use crate::authz::GatedExecutor;
-        use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
-        struct Inner;
-        #[async_trait::async_trait]
-        impl ToolExecutor for Inner {
-            fn execute(
-                &self,
-                _ctx: &ToolContext,
-                _name: &str,
-                _args: serde_json::Value,
-            ) -> futures::future::BoxFuture<'static, ToolOutput> {
-                Box::pin(async { ToolOutput::ok("must not reach inner") })
-            }
-        }
-        let ex = GatedExecutor::new(Arc::new(Inner), std::path::PathBuf::from("."));
-        let ctx = ToolContext {
-            cwd: std::path::PathBuf::from("."),
-            cancel: tokio_util::sync::CancellationToken::new(),
-            questions: None,
-            session_id: None,
-            permission: gray_core::agent::PermissionMode::Ask,
-            approvals: None,
-        };
-        let out = ex.execute(&ctx, "write", serde_json::json!({})).await;
+    async fn deny_executor_denies_with_accurate_message() {
+        use crate::authz::DenyExecutor;
+        use gray_core::agent::{ToolContext, ToolExecutor};
+        let ctx = ToolContext::default();
+        let out = DenyExecutor
+            .execute(&ctx, "write", serde_json::json!({}))
+            .await;
         assert!(out.is_error);
         assert!(
             out.content.contains("disabled in gateway mode"),
@@ -1263,7 +1244,7 @@ mod tests {
             out.content
         );
         // Containment: no native tool delegates, even previously-allowed reads.
-        let out = ex
+        let out = DenyExecutor
             .execute(&ctx, "read", serde_json::json!({"path": "x"}))
             .await;
         assert!(out.is_error);
@@ -1278,11 +1259,6 @@ mod tests {
     fn pairing_prompt_contains_cli_hint() {
         let p = pairing_prompt(Platform::Slack, "ABCD2345");
         assert!(p.contains("gray gateway pairing approve slack ABCD2345"));
-    }
-
-    #[test]
-    fn truncate_helper_still_exported() {
-        assert_eq!(crate::platform::truncate_message("hello", 10), "hello");
     }
 
     // UNRUN (cargo test banned under X): run in TTY/CI.
@@ -1499,9 +1475,16 @@ mod tests {
             "sweep must deliver: {:?}",
             done[0].1
         );
-        assert_eq!(
-            runner.ledger.get(&id).unwrap().status,
-            ObligationStatus::Delivered
-        );
+        // Feature-on builds have a real adapter with no client in tests: the
+        // sweep must still reach delivery and record the honest outcome.
+        match runner.ledger.get(&id).unwrap().status {
+            ObligationStatus::Delivered => {}
+            ObligationStatus::Failed => assert_eq!(
+                done[0].1.error.as_deref(),
+                Some("telegram not connected"),
+                "feature-on sweep must fail at the unconnected real adapter"
+            ),
+            other => panic!("unexpected ledger status after sweep: {other:?}"),
+        }
     }
 }
