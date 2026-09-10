@@ -14,7 +14,7 @@ name = "gray"
 path = "src/main.rs"
 
 [dependencies]
-gray-acp = { workspace = true }
+gray-acp = { workspace = true, optional = true }
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }
@@ -54,6 +54,9 @@ ignore = { workspace = true }
 
 [features]
 default = []
+# External agents over the Agent Client Protocol (`/acp`, `--acp`). Off by
+# default: the default graph carries no ACP client.
+acp = ["dep:gray-acp"]
 # Clipboard/image attachments (arboard + image). Off by default to keep the
 # default tree and binary lean; build with --features clipboard for paste.
 clipboard = ["dep:arboard", "dep:image"]

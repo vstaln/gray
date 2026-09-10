@@ -28,7 +28,7 @@
   <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
 </div>
 
-Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — the release binary carries everything below; from-source builds are feature-gated (see [Install](#install)).
+Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — the release binary ships the gateway adapters; from-source builds are feature-gated (see [Install](#install)).
 
 | | |
 |---|---|
@@ -51,15 +51,18 @@ or from source:
 
 ```bash
 cargo build --release -p gray                             # harness core
-cargo build --release -p gray --features all-platforms    # + Telegram/Discord/Slack adapters
+cargo build --release -p gray --features all-platforms,acp  # what release binaries ship
 cargo build --release -p gray --features clipboard        # + image paste in the TUI
 ```
 
 | build | adds |
 |---|---|
 | default | harness core: CLI, TUI, provider, sessions, tools, cron |
-| `--features all-platforms` | Telegram + Discord + Slack gateway adapters (what the release binary ships) |
+| `--features all-platforms` | Telegram + Discord + Slack gateway adapters |
+| `--features acp` | external agents over the Agent Client Protocol (`/acp`, `--acp`) |
 | `--features clipboard` | image/paste attachments (arboard + image) |
+
+Release binaries ship `all-platforms` + `acp`.
 
 Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 

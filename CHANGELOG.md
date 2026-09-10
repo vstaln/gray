@@ -61,6 +61,8 @@
 - README: 0.x stability line, user-side rollback note, and raw-session persistence disclosure
 - Manifests: gray-cron declared once in workspace.dependencies (GRY-003)
 - README: default vs feature-gated source-build table; no blanket "ships in the binary" claim (GRY-004)
+- Deps: gray-acp is an optional default-off `acp` feature (GRY-001); release builds use `--features all-platforms,acp`
+- Deps: workspace Tokio declares explicit features instead of `full` (GRY-002)
 
 ## [0.1.0] - 2026-09-07
 

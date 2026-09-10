@@ -13,7 +13,7 @@ pub(crate) enum Flow {
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
     agent: &mut Option<Agent>,
-    acp: &mut Option<gray_acp::AcpSession>,
+    acp: &mut Option<AcpSession>,
     config: &mut Config,
     cwd: &std::path::Path,
     tui: &TuiOpt,
@@ -302,6 +302,7 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Acp(raw) => {
+            #[cfg(feature = "acp")]
             handle_acp_command(
                 &raw,
                 cwd,
@@ -310,6 +311,14 @@ pub(crate) async fn dispatch_command(
                 config.model.as_deref(),
             )
             .await;
+            #[cfg(not(feature = "acp"))]
+            {
+                let _ = (&raw, &mut *acp, config);
+                say(
+                    tui.as_ref().map(|(s, _)| s),
+                    "acp support is not compiled in this build — rebuild with `--features acp`",
+                );
+            }
             Flow::Continue
         }
         ReplCommand::Plugin(raw) => {
