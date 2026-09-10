@@ -60,6 +60,9 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Send { target, text } => {
                 return run_send(&target, &text).await;
             }
+            gray::Commands::Sessions { cmd } => {
+                return run_sessions(cmd).await;
+            }
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
@@ -388,6 +391,26 @@ fn default_job_name(prompt: &str) -> String {
         "job".to_string()
     } else {
         name.trim().to_string()
+    }
+}
+
+async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
+    match cmd {
+        gray::SessionsCmd::Prune { older_than_days } => {
+            let root = gray_session::default_root()
+                .ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
+            let store = gray_session::JsonlSessionStore::new(root);
+            let cutoff_ms = chrono::Utc::now()
+                .timestamp_millis()
+                .saturating_sub((older_than_days as i64).saturating_mul(86_400_000))
+                .max(0) as u64;
+            let removed = store.prune_before(cutoff_ms).await?;
+            println!(
+                "pruned {} session(s) older than {older_than_days}d",
+                removed.len()
+            );
+            Ok(())
+        }
     }
 }
 

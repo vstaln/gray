@@ -1077,6 +1077,20 @@ impl JsonlSessionStore {
         }
     }
 
+    /// Deletes every session whose header timestamp predates `cutoff_ms`.
+    /// Returns the ids removed. Corrupt files are quarantined by `list`, not
+    /// deleted (`gray sessions prune --older-than-days N`, audit F8).
+    pub async fn prune_before(&self, cutoff_ms: u64) -> Result<Vec<SessionId>> {
+        let mut removed = Vec::new();
+        for summary in self.list().await {
+            if summary.started_at < cutoff_ms {
+                self.delete(&summary.id).await?;
+                removed.push(summary.id);
+            }
+        }
+        Ok(removed)
+    }
+
     /// Sets an explicit user title; always wins over auto titles.
     pub async fn set_user_title(&self, id: &SessionId, title: &str) -> Result<()> {
         self.set_title_inner(id, title, "user", true)
@@ -1218,6 +1232,31 @@ mod tests {
         assert!(matches!(err, SessionError::AlreadyExists(_)));
         let (_, entries) = store.load(&id).await.unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn prune_before_deletes_only_old_sessions() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let old = SessionId::new("old");
+        let new = SessionId::new("new");
+        store
+            .create(SessionMeta::new(old.clone(), 1_000, "/tmp", "t"))
+            .await
+            .unwrap();
+        store
+            .create(SessionMeta::new(new.clone(), 9_000, "/tmp", "t"))
+            .await
+            .unwrap();
+        let removed = store.prune_before(5_000).await.unwrap();
+        assert_eq!(removed, vec![old.clone()]);
+        let left = store.list().await;
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, new);
+        assert!(matches!(
+            store.load(&old).await,
+            Err(SessionError::NotFound(_))
+        ));
     }
 
     #[tokio::test]

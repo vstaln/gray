@@ -1499,9 +1499,16 @@ mod tests {
             "sweep must deliver: {:?}",
             done[0].1
         );
-        assert_eq!(
-            runner.ledger.get(&id).unwrap().status,
-            ObligationStatus::Delivered
-        );
+        // Feature-on builds have a real adapter with no client in tests: the
+        // sweep must still reach delivery and record the honest outcome.
+        match runner.ledger.get(&id).unwrap().status {
+            ObligationStatus::Delivered => {}
+            ObligationStatus::Failed => assert_eq!(
+                done[0].1.error.as_deref(),
+                Some("telegram not connected"),
+                "feature-on sweep must fail at the unconnected real adapter"
+            ),
+            other => panic!("unexpected ledger status after sweep: {other:?}"),
+        }
     }
 }

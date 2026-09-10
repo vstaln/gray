@@ -188,14 +188,15 @@ impl GatewayRunner {
         // Persist whatever the agent produced (also on cancel — partial turns are still history).
         // A shrink below the cursor means in-loop compaction ran: persist the
         // active transcript behind a boundary marker instead of skipping it.
-        let persist_error = if agent.messages().len() < prior_len {
+        let to_persist = messages_to_persist(self.config.persist_redacted, agent.messages());
+        let persist_error = if to_persist.len() < prior_len {
             store
-                .append_compaction_replacement(&sid, agent.messages())
+                .append_compaction_replacement(&sid, &to_persist)
                 .await
                 .err()
         } else {
             let mut err = None;
-            for m in agent.messages().iter().skip(prior_len) {
+            for m in to_persist.iter().skip(prior_len) {
                 if let Err(e) = store.append(&sid, m).await {
                     err = Some(e);
                     break;
@@ -304,4 +305,53 @@ Guidelines:
     format!(
         "{body}\n\n# Gateway mode\nYou are talking through a chat platform (Telegram/Discord/Slack), not a terminal.\n- Nobody can answer interactive prompts; destructive shell commands are auto-denied by policy — say so instead of retrying.\n- Keep replies short; long output is split into multiple messages.\n- Plain text or light markdown only; no ANSI escapes."
     )
+}
+
+/// Persist-time scrub: raw by default (exact replay fidelity), redacted when
+/// the operator opts in via `gateway.yaml: persist_redacted: true`. Print
+/// mode always scrubs; this closes the daemon gap (audit F4).
+fn messages_to_persist(redact: bool, messages: &[gray_core::Message]) -> Vec<gray_core::Message> {
+    if redact {
+        messages
+            .iter()
+            .map(gray_core::redaction::redact_message)
+            .collect()
+    } else {
+        messages.to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gray_core::message::{ContentBlock, Message, Role};
+
+    #[test]
+    fn persist_redacted_scrubs_but_keeps_replay_shape() {
+        let secret_msg = Message::new(
+            Role::Assistant,
+            vec![
+                ContentBlock::tool_use(
+                    "c1",
+                    "bash",
+                    serde_json::json!({"command": "curl -H \"Authorization: Bearer qqq12345\" https://x"}),
+                ),
+                ContentBlock::text("plain prose about /tmp/build"),
+            ],
+        );
+        // Default: byte-identical raw persistence.
+        assert_eq!(
+            messages_to_persist(false, std::slice::from_ref(&secret_msg)),
+            vec![secret_msg.clone()]
+        );
+        // Opt-in: secret scrubbed, args stay parseable JSON, prose survives.
+        let scrubbed = messages_to_persist(true, std::slice::from_ref(&secret_msg));
+        let ContentBlock::ToolUse { args, .. } = &scrubbed[0].content[0] else {
+            panic!("expected ToolUse");
+        };
+        let cmd = args.get("command").and_then(|v| v.as_str()).unwrap();
+        assert!(!cmd.contains("qqq12345"), "{cmd}");
+        assert!(cmd.contains("<redacted>"), "{cmd}");
+        assert_eq!(scrubbed[0].content[1], secret_msg.content[1]);
+    }
 }

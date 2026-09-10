@@ -143,7 +143,12 @@ pub(crate) async fn connect_adapter_with_retry(
                 Fatal::Terminal(m) => {
                     log::error!("gateway {plat} connect failed (terminal, not retrying): {m}");
                     if let Some(b) = board {
-                        b.mark_failed(plat, m);
+                        b.mark_failed(
+                            plat,
+                            format!(
+                                "{m} (parked — fix gateway.yaml, then `systemctl --user restart gray-gateway`)"
+                            ),
+                        );
                     }
                     return;
                 }
@@ -185,10 +190,13 @@ pub(crate) async fn connect_adapter_with_retry(
 /// still board-`Failed` from boot re-enters [`connect_adapter_with_retry`]
 /// with [`MAX_RECONNECT_ATTEMPTS`]. Reconnect rounds per adapter are spaced
 /// by [`supervise_backoff`] so a persistently dead platform backs off to one
-/// ladder per 5 minutes (and self-heals when the operator fixes the token —
-/// no restart needed). When every tracked adapter is terminally `Failed` and
-/// the delivery queue is empty, the process exits 75 so systemd revives it
-/// fresh (obligations survive in the persistent ledger and replay at boot).
+/// ladder per 5 minutes (and retryable failures self-heal — no restart
+/// needed). Terminal failures (bad/revoked token, adapter not compiled) are
+/// parked until process restart, which re-reads gateway.yaml; reviving them
+/// would only re-log the same terminal error forever. When every tracked
+/// adapter is terminally `Failed` and the delivery queue is empty, the
+/// process exits 75 so systemd revives it fresh (obligations survive in the
+/// persistent ledger and replay at boot).
 pub(crate) async fn supervise_adapters(
     runner: Arc<GatewayRunner>,
     board: GatewayStatusBoard,
@@ -211,6 +219,12 @@ pub(crate) async fn supervise_adapters(
                 if matches!(row, Some(PlatformConnState::Connecting { .. })) {
                     board.mark_connected(*plat, adapter.bot_identity());
                 }
+                continue;
+            }
+            // Terminal failure rows are parked: gateway.yaml is only read at
+            // boot, so re-entering the ladder just re-logs the same terminal
+            // error forever and never heals a revoked token.
+            if parked_failure(row) {
                 continue;
             }
             let round = state.get(plat).map(|(n, _)| n + 1).unwrap_or(1);
@@ -247,6 +261,12 @@ pub(crate) async fn supervise_adapters(
     }
 }
 
+/// True when a `Failed` board row is terminal (auth/config): the ladder must
+/// not revive it. Retryable failures still re-enter the ladder and self-heal.
+fn parked_failure(row: Option<&PlatformConnState>) -> bool {
+    matches!(row, Some(PlatformConnState::Failed(m)) if matches!(classify_connect_error(m), Fatal::Terminal(_)))
+}
+
 fn board_shows_failed(board: &GatewayStatusBoard, plat: Platform) -> bool {
     board
         .snapshot()
@@ -265,6 +285,24 @@ fn all_adapters_failed(runner: &GatewayRunner, board: &GatewayStatusBoard) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_failed_rows_are_parked_but_retryable_ones_are_not() {
+        for msg in [
+            "unauthorized",
+            "invalid_auth: token revoked",
+            "telegram adapter not compiled in this build",
+        ] {
+            let row = PlatformConnState::Failed(msg.to_string());
+            assert!(parked_failure(Some(&row)), "{msg:?} must be parked");
+        }
+        let retryable = PlatformConnState::Failed("connect timeout 45s".to_string());
+        assert!(!parked_failure(Some(&retryable)));
+        assert!(!parked_failure(Some(&PlatformConnState::Connected {
+            identity: None
+        })));
+        assert!(!parked_failure(None));
+    }
 
     #[test]
     fn backoff_schedule_caps_at_five_minutes() {
