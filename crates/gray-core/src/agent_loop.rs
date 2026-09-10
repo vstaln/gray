@@ -222,6 +222,13 @@ impl Agent {
                             return Err(CoreError::Cancelled);
                         }
                     };
+                    // Absolute event-count backstop: a hostile/broken server
+                    // must not grow the retained turn without bound.
+                    const MAX_EVENTS: usize = 100_000;
+                    if events.len() >= MAX_EVENTS {
+                        self.emit_turn_end(&total_usage).await;
+                        return Err(CoreError::Provider("turn event limit exceeded".into()));
+                    }
                     match next_event {
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
                             emit!(AgentEvent::text_delta(delta.clone()));
@@ -277,15 +284,32 @@ impl Agent {
                             // pi `updateArgs`: keep streaming partial args so the
                             // TUI can render the tool call live instead of
                             // popping it in only at ToolCallEnd/ToolResult.
+                            // Forward every update to the live sink, but retain
+                            // only the latest snapshot per call: retaining each
+                            // cumulative snapshot would grow quadratically
+                            // under per-byte deltas.
                             if pending_emitted_start[index] && !arguments_delta.is_empty() {
                                 let live_id =
                                     slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
                                 let live_name = slot.name.clone().unwrap_or_default();
-                                emit!(AgentEvent::tool_call_progress(
-                                    live_id,
+                                let ev = AgentEvent::tool_call_progress(
+                                    live_id.clone(),
                                     live_name,
                                     slot.arguments.clone(),
-                                ));
+                                );
+                                if let Some(cb) = sink.as_deref_mut() {
+                                    cb(&ev);
+                                }
+                                let replace = matches!(
+                                    events.last(),
+                                    Some(AgentEvent::ToolCallProgress { id, .. })
+                                        if *id == live_id
+                                );
+                                if replace {
+                                    *events.last_mut().unwrap() = ev;
+                                } else {
+                                    events.push(ev);
+                                }
                             }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
@@ -329,9 +353,23 @@ impl Agent {
                             return Err(err);
                         }
                         None => {
-                            // Provider closed without a completion event;
-                            // treat as a normal end of turn.
-                            break (StopReason::EndTurn, Usage::default());
+                            // Provider closed without a completion event: never
+                            // treat that as success. Text-only partial output
+                            // is salvaged (marked interrupted); pending tool
+                            // calls are NOT executed from a truncated stream.
+                            if !text_parts.is_empty() && pending.is_empty() {
+                                salvage_partial_text(
+                                    &mut self.messages,
+                                    thinking_parts.concat(),
+                                    text_parts.concat(),
+                                    &pending_reasoning,
+                                    self.provider.model_id(),
+                                );
+                            }
+                            self.emit_turn_end(&total_usage).await;
+                            return Err(CoreError::Provider(
+                                "provider stream ended without completion".into(),
+                            ));
                         }
                     }
                 }
