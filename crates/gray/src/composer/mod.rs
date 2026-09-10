@@ -18,6 +18,8 @@ use ratatui::widgets::{Block, Paragraph, Widget};
 
 use gray_markdown::HyperlinkTarget;
 
+use crate::text_width::display_width;
+
 pub(crate) const PANEL_ROWS: usize = 6;
 pub(crate) const VIEWPORT_H: u16 = 14;
 /// Smallest the viewport shrinks to while idle: box top pad + `❯` row +
@@ -124,7 +126,7 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
     let l_rows = logo_raw.len().max(1) as f32;
     let max_logo_w = logo_raw
         .iter()
-        .map(|l| l.trim().chars().count())
+        .map(|l| display_width(l.trim()))
         .max()
         .unwrap_or(0);
     let l_cols = (max_logo_w as f32).max(1.0);
@@ -154,7 +156,7 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
         "gray {} \u{b7} Run /help for commands",
         env!("CARGO_PKG_VERSION")
     );
-    let banner_len = banner_raw.chars().count();
+    let banner_len = display_width(&banner_raw);
     let pad = w.saturating_sub(banner_len) / 2;
     welcome_lines.push(Line::from(vec![
         Span::raw(" ".repeat(pad)),
