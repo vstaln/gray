@@ -273,19 +273,21 @@ impl Transport {
         params: Option<Value>,
         ttl: Duration,
     ) -> anyhow::Result<Value> {
-        if !self.ensure_alive().await {
-            anyhow::bail!("sidecar child dead and respawn failed");
-        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let mut req = json!({"id": id, "method": method});
         if let Some(p) = params {
             req["params"] = p;
         }
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.map.insert(id, tx);
-        // One deadline for the whole lifecycle (write + reply): a child
-        // that stops reading must not wedge us past the advertised TTL.
+        // One deadline for the whole lifecycle (admission + write + reply):
+        // a dead child, a stuck stdin lock, or a child that stops reading
+        // must not wedge us past the advertised TTL. Insert the pending
+        // entry after ensure_alive: a respawn clears the pending map.
         let outcome = timeout(ttl, async {
+            if !self.ensure_alive().await {
+                anyhow::bail!("sidecar child dead and respawn failed");
+            }
+            let (tx, rx) = oneshot::channel();
+            self.pending.lock().await.map.insert(id, tx);
             {
                 let mut stdin = self.stdin.lock().await;
                 stdin.write_all(format!("{req}\n").as_bytes()).await?;
