@@ -881,7 +881,6 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_1", TOOL_NAME),
-                AgentEvent::tool_call_progress("call_1", TOOL_NAME, r#"{"q":"#),
                 AgentEvent::tool_call_progress("call_1", TOOL_NAME, r#"{"q":"x"}"#),
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
@@ -939,7 +938,6 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_err", TOOL_NAME),
-                AgentEvent::tool_call_progress("call_err", TOOL_NAME, r#"{"q":"#),
                 AgentEvent::tool_call_progress("call_err", TOOL_NAME, r#"{"q":"x"}"#),
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
