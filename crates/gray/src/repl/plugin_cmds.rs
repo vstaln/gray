@@ -97,13 +97,7 @@ pub(crate) async fn handle_marketplace_command(
             Ok(false) => {
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
-                    t.textarea.set_text("");
-                    t.matches.clear();
-                    t.sel = 0;
-                    t.history_idx = None;
-                    t.draft.clear();
-                    t.attachments.clear();
-                    t.pending_pastes.clear();
+                    t.clear_draft();
                     // Dismissed picker leaves the slash card with no feedback:
                     // restore the trailing gap so it doesn't jam the input box.
                     t.ensure_gap(1);
@@ -146,13 +140,7 @@ pub(crate) async fn handle_plugin_command(raw: &str, tui: Option<&crate::compose
             Ok(false) => {
                 if let Some(shared) = tui {
                     let mut t = shared.lock().expect("tui lock");
-                    t.textarea.set_text("");
-                    t.matches.clear();
-                    t.sel = 0;
-                    t.history_idx = None;
-                    t.draft.clear();
-                    t.attachments.clear();
-                    t.pending_pastes.clear();
+                    t.clear_draft();
                     // Dismissed picker leaves the slash card with no feedback:
                     // restore the trailing gap so it doesn't jam the input box.
                     t.ensure_gap(1);
@@ -358,7 +346,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("tempdir").keep();
         let tui: super::TuiOpt = None;
         let mut agent: Option<super::Agent> = None;
-        let mut acp: Option<gray_acp::AcpSession> = None;
+        let mut acp: Option<super::AcpSession> = None;
         let mut session_state: Option<super::SessionState> = None;
         let mut totals = super::SessionTotals::default();
         let mut pending: Option<super::ReplCommand> = None;

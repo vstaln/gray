@@ -39,10 +39,6 @@ pub struct OpenAiProvider {
     /// caching. Also sent as the `x-opencode-session` header (Console Go
     /// routes on it; required).
     session_id: Option<String>,
-    /// Opaque `prompt_cache_retention` value forwarded verbatim on both wire
-    /// bodies when set (operator opts in per transport that supports it);
-    /// `None` (default) omits the field everywhere.
-    prompt_cache_retention: Option<String>,
     /// Pre-stream POST retry bound (replaces the single `MAX_ATTEMPTS` gate in
     /// `Init`/`ResponsesInit`). Default 3 reproduces today's behavior.
     request_max_retries: usize,
@@ -63,14 +59,8 @@ pub struct OpenAiProviderBuilder {
     base_url: Option<String>,
     api_key: String,
     model: String,
-    http: Option<reqwest::Client>,
-    initial_backoff: Option<Duration>,
     reasoning_effort: Option<String>,
     session_id: Option<String>,
-    prompt_cache_retention: Option<String>,
-    request_max_retries: Option<usize>,
-    stream_max_retries: Option<usize>,
-    stream_idle_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for OpenAiProvider {
@@ -96,14 +86,8 @@ impl OpenAiProviderBuilder {
             base_url: None,
             api_key: api_key.into(),
             model: model.into(),
-            http: None,
-            initial_backoff: None,
             reasoning_effort: None,
             session_id: None,
-            prompt_cache_retention: None,
-            request_max_retries: None,
-            stream_max_retries: None,
-            stream_idle_timeout: None,
         }
     }
 
@@ -115,53 +99,15 @@ impl OpenAiProviderBuilder {
         self
     }
 
-    /// Sets an opaque `prompt_cache_retention` value forwarded verbatim on
-    /// the wire bodies of transports that support it; omitted everywhere
-    /// when unset (default). No validation here — the server owns the enum.
-    pub fn prompt_cache_retention(mut self, retention: impl Into<String>) -> Self {
-        self.prompt_cache_retention = Some(retention.into());
-        self
-    }
-
     /// Sets the base URL for the OpenAI-compatible API endpoint.
     pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
         self.base_url = Some(base_url.into());
         self
     }
 
-    /// Sets a custom `reqwest::Client`.
-    pub fn http(mut self, http: reqwest::Client) -> Self {
-        self.http = Some(http);
-        self
-    }
-
-    /// Sets the initial backoff duration used for retrying rate limits and stream errors.
-    pub fn initial_backoff(mut self, backoff: Duration) -> Self {
-        self.initial_backoff = Some(backoff);
-        self
-    }
-
     /// Sets reasoning effort (e.g. "low", "medium", "high", "off").
     pub fn reasoning_effort(mut self, effort: Option<String>) -> Self {
         self.reasoning_effort = effort;
-        self
-    }
-
-    /// Sets the pre-stream POST retry bound (default `MAX_ATTEMPTS`).
-    pub fn request_max_retries(mut self, n: usize) -> Self {
-        self.request_max_retries = Some(n);
-        self
-    }
-
-    /// Sets the mid-stream retry bound (default `MAX_ATTEMPTS`; Task 2 wires it).
-    pub fn stream_max_retries(mut self, n: usize) -> Self {
-        self.stream_max_retries = Some(n);
-        self
-    }
-
-    /// Sets the per-SSE-event idle deadline (default `None`: read_timeout governs).
-    pub fn stream_idle_timeout(mut self, idle: Duration) -> Self {
-        self.stream_idle_timeout = Some(idle);
         self
     }
 
@@ -173,75 +119,34 @@ impl OpenAiProviderBuilder {
         let base_url = Url::parse(&base_url_str)
             .map_err(|e| format!("invalid base_url '{base_url_str}': {e}"))?;
 
-        // default client when the caller doesn't inject one — with a
-        // 120s idle-read timeout so a stalled server (finish_reason then silence,
-        // hung proxy) can't freeze a turn forever. Total timeout stays off:
-        // long generations are legal.
-        let http = self.http.unwrap_or_else(|| {
-            reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(10))
-                .read_timeout(Duration::from_secs(120))
-                .build()
-                .expect("reqwest client with timeouts")
-        });
+        // default client with a 120s idle-read timeout so a stalled server
+        // (finish_reason then silence, hung proxy) can't freeze a turn
+        // forever. Total timeout stays off: long generations are legal.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(120))
+            .build()
+            .expect("reqwest client with timeouts");
 
         Ok(OpenAiProvider {
             base_url,
             api_key: self.api_key,
             model: self.model,
             http,
-            initial_backoff: self.initial_backoff.unwrap_or(Duration::from_millis(50)),
+            initial_backoff: Duration::from_millis(50),
             reasoning_effort: self.reasoning_effort,
             session_id: self.session_id,
-            prompt_cache_retention: self.prompt_cache_retention,
-            request_max_retries: self.request_max_retries.unwrap_or(MAX_ATTEMPTS),
-            stream_max_retries: self.stream_max_retries.unwrap_or(MAX_ATTEMPTS),
-            stream_idle_timeout: self.stream_idle_timeout,
+            request_max_retries: MAX_ATTEMPTS,
+            stream_max_retries: MAX_ATTEMPTS,
+            stream_idle_timeout: None,
         })
     }
 }
 
 impl OpenAiProvider {
-    /// Creates a new `OpenAiProvider` with default options.
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self::builder(api_key, model)
-            .build()
-            .expect("default OpenAiProvider configuration is valid")
-    }
-
     /// Returns a builder to configure and construct an `OpenAiProvider`.
     pub fn builder(api_key: impl Into<String>, model: impl Into<String>) -> OpenAiProviderBuilder {
         OpenAiProviderBuilder::new(api_key, model)
-    }
-
-    /// Returns the configured base URL.
-    pub fn base_url(&self) -> &Url {
-        &self.base_url
-    }
-
-    /// Returns the configured API key.
-    pub fn api_key(&self) -> &str {
-        &self.api_key
-    }
-
-    /// Returns the configured model name.
-    pub fn model(&self) -> &str {
-        &self.model
-    }
-
-    /// Returns the pre-stream POST retry bound.
-    pub fn request_max_retries(&self) -> usize {
-        self.request_max_retries
-    }
-
-    /// Returns the mid-stream retry bound (bounds Responses resume).
-    pub fn stream_max_retries(&self) -> usize {
-        self.stream_max_retries
-    }
-
-    /// Returns the per-SSE-event idle deadline, if set.
-    pub fn stream_idle_timeout(&self) -> Option<Duration> {
-        self.stream_idle_timeout
     }
 }
 
@@ -264,10 +169,6 @@ pub(crate) struct OpenAiChatRequest {
     /// Responses `prompt_cache_key`); without it chat turns rotate shards.
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_cache_key: Option<String>,
-    /// Opaque retention hint forwarded only when the operator sets it
-    /// (transports that don't understand it must never see it).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_retention: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -812,7 +713,6 @@ fn map_chat_request(
         messages,
         tools,
         prompt_cache_key: None,
-        prompt_cache_retention: None,
     })
 }
 
@@ -945,10 +845,6 @@ pub(crate) struct ResponsesRequest {
     /// replay from scratch (duplicating already-yielded text).
     #[serde(skip_serializing_if = "Option::is_none")]
     previous_response_id: Option<String>,
-    /// Opaque retention hint forwarded only when the operator sets it
-    /// (transports that don't understand it must never see it).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt_cache_retention: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1133,7 +1029,6 @@ fn map_chat_to_responses(
         reasoning,
         include,
         previous_response_id: None,
-        prompt_cache_retention: None,
     }
 }
 
@@ -2749,16 +2644,12 @@ impl Provider for OpenAiProvider {
                 Ok(u) => u,
                 Err(e) => return stream::once(async move { Err(e) }).boxed(),
             };
-            let mut body = map_chat_to_responses(
+            let body = map_chat_to_responses(
                 req,
                 &self.model,
                 self.session_id.as_deref(),
                 self.reasoning_effort.as_deref(),
             );
-            body.prompt_cache_retention = self
-                .prompt_cache_retention
-                .clone()
-                .filter(|s| !s.is_empty());
             log::debug!(target: "gray_provider", "using Responses API for model {}", self.model);
             let init_state = StreamState::ResponsesInit {
                 client: self.http.clone(),
@@ -2790,10 +2681,6 @@ impl Provider for OpenAiProvider {
         // header alone leaves chat turns rotating cache shards — stamp the
         // body key too so consecutive chat turns pin one shard.
         body.prompt_cache_key = self.session_id.clone().filter(|s| !s.is_empty());
-        body.prompt_cache_retention = self
-            .prompt_cache_retention
-            .clone()
-            .filter(|s| !s.is_empty());
         let init_state = StreamState::Init {
             client: self.http.clone(),
             url,
@@ -2903,7 +2790,6 @@ mod tests {
             .await;
         let provider = OpenAiProvider::builder("key", "test-model")
             .base_url(server.uri())
-            .initial_backoff(Duration::from_millis(1))
             .build()
             .expect("provider builds");
         let req = ChatRequest {
@@ -2923,73 +2809,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn retry_knobs_default_to_current_behavior() {
-        let p = OpenAiProvider::builder("k", "m").build().unwrap();
-        assert_eq!(p.request_max_retries(), 3); // == MAX_ATTEMPTS today
-        assert_eq!(p.stream_max_retries(), 3); // == today's effective stream bound
-        assert_eq!(p.stream_idle_timeout(), None); // read_timeout governs until set
-    }
-
-    #[test]
-    fn retry_knobs_settable() {
-        let p = OpenAiProvider::builder("k", "m")
-            .request_max_retries(4)
-            .stream_max_retries(5)
-            .stream_idle_timeout(Duration::from_secs(300))
-            .build()
-            .unwrap();
-        assert_eq!(
-            (
-                p.request_max_retries(),
-                p.stream_max_retries(),
-                p.stream_idle_timeout()
-            ),
-            (4, 5, Some(Duration::from_secs(300)))
-        );
-    }
-
-    #[tokio::test]
-    async fn request_max_retries_bounds_pre_stream_retries() {
-        // Threading proof: request_max_retries(1) must skip the retry burst
-        // entirely — no notice, terminal Err on the first 500.
-        use futures::StreamExt;
-        use gray_core::message::ChatRequest;
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::any())
-            .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
-            .mount(&server)
-            .await;
-        let provider = OpenAiProvider::builder("key", "test-model")
-            .base_url(server.uri())
-            .initial_backoff(Duration::from_millis(1))
-            .request_max_retries(1)
-            .build()
-            .expect("provider builds");
-        let req = ChatRequest {
-            system: None,
-            messages: Vec::new(),
-            tools: Vec::new(),
-        };
-        let events: Vec<_> = provider.stream(req).collect().await;
-        let notices = events
-            .iter()
-            .filter(|r| matches!(r, Ok(StreamEvent::StreamError { .. })))
-            .count();
-        assert_eq!(
-            notices, 0,
-            "max 1 attempt = no retry, no notice: {events:?}"
-        );
-        assert!(
-            matches!(events.last(), Some(Err(_))),
-            "burst ends with terminal error: {events:?}"
-        );
-    }
-
     #[tokio::test]
     async fn session_header_sent_on_chat_post() {
-        // Console Go 400s without `x-opencode-session`: the one POST must
-        // carry the configured session id (500 stub still records it).
+        // Console Go 400s without `x-opencode-session`: every POST in the
+        // default retry burst must carry the configured session id.
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::any())
             .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
@@ -2998,8 +2821,6 @@ mod tests {
         let provider = OpenAiProvider::builder("key", "test-model")
             .base_url(server.uri())
             .session_id("sess-123")
-            .initial_backoff(Duration::from_millis(1))
-            .request_max_retries(1)
             .build()
             .expect("provider builds");
         let req = ChatRequest {
@@ -3009,12 +2830,18 @@ mod tests {
         };
         let _events: Vec<_> = provider.stream(req).collect().await;
         let received = server.received_requests().await.expect("requests recorded");
-        assert_eq!(received.len(), 1, "one POST attempt");
-        let got = received[0]
-            .headers
-            .get("x-opencode-session")
-            .expect("session header sent");
-        assert_eq!(got.to_str().expect("header ascii"), "sess-123");
+        assert_eq!(
+            received.len(),
+            3,
+            "default retry burst POSTs once per attempt"
+        );
+        for r in &received {
+            let got = r
+                .headers
+                .get("x-opencode-session")
+                .expect("session header sent");
+            assert_eq!(got.to_str().expect("header ascii"), "sess-123");
+        }
     }
 
     #[tokio::test]
@@ -3696,7 +3523,6 @@ mod tests {
             .await;
         let provider = OpenAiProvider::builder("key", "test-model")
             .base_url(server.uri())
-            .initial_backoff(Duration::from_millis(1))
             .build()
             .expect("provider builds");
         let req = ChatRequest {
@@ -3734,7 +3560,6 @@ mod tests {
             .await;
         let provider = OpenAiProvider::builder("key", "test-model")
             .base_url(server.uri())
-            .initial_backoff(Duration::from_millis(1))
             .build()
             .expect("provider builds");
         let req = ChatRequest {
@@ -3768,10 +3593,9 @@ mod tests {
 
     // UNRUN (cargo test banned under X — verified via check + clippy only).
     #[tokio::test]
-    async fn chat_post_carries_prompt_cache_key_body_and_retention() {
-        // (1) chat turns must pin the cache shard in the BODY (the
-        // `x-opencode-session` header alone left chat rotating shards);
-        // (5) retention rides along only when the operator sets it.
+    async fn chat_post_carries_prompt_cache_key_body() {
+        // Chat turns must pin the cache shard in the BODY (the
+        // `x-opencode-session` header alone left chat rotating shards).
         use futures::StreamExt;
         use gray_core::message::ChatRequest;
         let server = wiremock::MockServer::start().await;
@@ -3782,9 +3606,6 @@ mod tests {
         let provider = OpenAiProvider::builder("key", "test-model")
             .base_url(server.uri())
             .session_id("sess-123")
-            .prompt_cache_retention("in-memory")
-            .initial_backoff(Duration::from_millis(1))
-            .request_max_retries(1)
             .build()
             .expect("provider builds");
         let req = ChatRequest {
@@ -3794,40 +3615,29 @@ mod tests {
         };
         let _events: Vec<_> = provider.stream(req).collect().await;
         let received = server.received_requests().await.expect("requests recorded");
-        assert_eq!(received.len(), 1, "one POST attempt");
+        assert_eq!(
+            received.len(),
+            3,
+            "default retry burst POSTs once per attempt"
+        );
         let body: serde_json::Value = received[0].body_json().expect("json body");
         assert_eq!(
             body.get("prompt_cache_key").and_then(|k| k.as_str()),
             Some("sess-123"),
             "chat pins shard like Responses: {body}"
         );
-        assert_eq!(
-            body.get("prompt_cache_retention").and_then(|r| r.as_str()),
-            Some("in-memory"),
-            "retention passthrough: {body}"
-        );
     }
 
     // UNRUN (cargo test banned under X — verified via check + clippy only).
     #[test]
-    fn chat_affinity_and_retention_omitted_when_unset() {
-        // No-op elsewhere: unset session/retention sends neither field, so
-        // transports that don't understand them never see them.
+    fn chat_affinity_omitted_when_unset() {
+        // No-op elsewhere: unset session sends no `prompt_cache_key`, so
+        // transports that don't understand it never see the field.
         let body = map_chat_request(empty_chat_req(), "test-model", None).expect("maps");
         let v = serde_json::to_value(&body).expect("serializes");
         assert!(
             v.get("prompt_cache_key").is_none(),
             "absent by default: {v}"
-        );
-        assert!(
-            v.get("prompt_cache_retention").is_none(),
-            "no-op when unset: {v}"
-        );
-        let body = map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), Some("high"));
-        let v = serde_json::to_value(&body).expect("serializes");
-        assert!(
-            v.get("prompt_cache_retention").is_none(),
-            "responses no-op when unset: {v}"
         );
     }
 

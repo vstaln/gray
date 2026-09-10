@@ -196,26 +196,7 @@ pub(crate) async fn persist_turn_messages(
     latest_usage: Option<gray_core::event::Usage>,
     duration_ms: Option<u64>,
 ) {
-    if session_state.is_none()
-        && let Some(root) = default_root()
-    {
-        let store = JsonlSessionStore::new(root);
-        let session_id = SessionId::generate();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let meta = SessionMeta::new(
-            session_id.clone(),
-            timestamp,
-            cwd.to_path_buf(),
-            config.model.clone().unwrap_or_else(|| "unset".into()),
-        );
-        if let Err(e) = store.create(meta).await {
-            log::warn!(target: "gray_session", "session create failed: {e}");
-        }
-        *session_state = Some(SessionState { store, session_id });
-    }
+    ensure_session_state(session_state, config, cwd).await;
     if let Some(state) = session_state
         && agent.messages().len() > initial_count
     {
@@ -513,7 +494,7 @@ pub(crate) async fn maybe_threshold_compact(
         crate::setup::format_context_length(tokens),
         crate::setup::format_context_length(window)
     );
-    match crate::compact::auto_compact_if_needed(agent, config, latest, "threshold").await {
+    match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
             say(tui, &notice);
             ensure_session_state(session_state, config, cwd).await;
@@ -539,7 +520,7 @@ pub(crate) async fn maybe_overflow_compact(
     session_state: &mut Option<SessionState>,
     cwd: &Path,
     tui: Option<&crate::composer::SharedTui>,
-    latest: Option<gray_core::event::Usage>,
+    _latest: Option<gray_core::event::Usage>,
     initial_count: &mut usize,
     err: &CoreError,
 ) -> bool {
@@ -551,7 +532,7 @@ pub(crate) async fn maybe_overflow_compact(
         t.lock().expect("tui lock").ensure_gap(1);
     }
     say(tui, "context overflow — compacting...");
-    match crate::compact::auto_compact_if_needed(agent, config, latest, "overflow").await {
+    match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {

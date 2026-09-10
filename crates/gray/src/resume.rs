@@ -33,43 +33,9 @@ fn format_relative(ts: u64) -> String {
     if weeks < 5 {
         return format!("{weeks}w ago");
     }
-    let secs = ts / 1000;
-    let days_since_epoch = secs / 86400;
-    let mut y = 1970i32;
-    let mut d = days_since_epoch as i32;
-    loop {
-        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-        let diy = if leap { 366 } else { 365 };
-        if d < diy {
-            break;
-        }
-        d -= diy;
-        y += 1;
-    }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_lens = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 1;
-    for ml in month_lens {
-        if d < ml {
-            break;
-        }
-        d -= ml;
-        m += 1;
-    }
-    format!("{y:04}-{m:02}-{:02}", d + 1)
+    chrono::DateTime::from_timestamp((ts / 1000) as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn cwd_display(cwd: &Path, width: usize) -> String {
@@ -113,6 +79,27 @@ fn paths_match(a: &Path, b: &Path) -> bool {
     let ca = a.canonicalize().unwrap_or_else(|_| a.to_path_buf());
     let cb = b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
     ca == cb
+}
+
+/// Picker filter: cwd scope plus case-insensitive query over id, cwd, and
+/// first user text. Shared by the draw loop and the Down/Enter handlers.
+fn session_matches(s: &SessionSummary, query: &str, cwd_filter: Option<&Path>) -> bool {
+    if let Some(f) = cwd_filter
+        && !paths_match(&s.cwd, f)
+    {
+        return false;
+    }
+    if query.is_empty() {
+        return true;
+    }
+    let q = query.to_lowercase();
+    s.id.as_str().to_lowercase().contains(&q)
+        || s.cwd.display().to_string().to_lowercase().contains(&q)
+        || s.first_user_text
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains(&q)
 }
 
 pub fn latest_summary<'a>(
@@ -188,10 +175,6 @@ pub async fn resolve_prefix(
     }
 
     None
-}
-
-pub fn resume_command_hint(id: &SessionId) -> String {
-    format!("gray resume {}", id.as_str())
 }
 
 fn quarantined_file_name(root: &Path, raw: &str) -> Option<String> {
@@ -353,27 +336,7 @@ fn run_picker_sync(
             let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
             let filtered: Vec<&SessionSummary> = summaries
                 .iter()
-                .filter(|s| {
-                    if let Some(f) = cwd_filter {
-                        paths_match(&s.cwd, f)
-                    } else {
-                        true
-                    }
-                })
-                .filter(|s| {
-                    if query.is_empty() {
-                        true
-                    } else {
-                        let q = query.to_lowercase();
-                        s.id.as_str().to_lowercase().contains(&q)
-                            || s.cwd.display().to_string().to_lowercase().contains(&q)
-                            || s.first_user_text
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_lowercase()
-                                .contains(&q)
-                    }
-                })
+                .filter(|s| session_matches(s, &query, cwd_filter))
                 .collect();
 
             if sel >= filtered.len() && !filtered.is_empty() {
@@ -651,27 +614,7 @@ fn run_picker_sync(
                         let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
                         let count = summaries
                             .iter()
-                            .filter(|s| {
-                                if let Some(f) = cwd_filter {
-                                    paths_match(&s.cwd, f)
-                                } else {
-                                    true
-                                }
-                            })
-                            .filter(|s| {
-                                if query.is_empty() {
-                                    true
-                                } else {
-                                    let q = query.to_lowercase();
-                                    s.id.as_str().to_lowercase().contains(&q)
-                                        || s.cwd.display().to_string().to_lowercase().contains(&q)
-                                        || s.first_user_text
-                                            .as_deref()
-                                            .unwrap_or("")
-                                            .to_lowercase()
-                                            .contains(&q)
-                                }
-                            })
+                            .filter(|s| session_matches(s, &query, cwd_filter))
                             .count();
                         if count > 0 {
                             sel = (sel + 1).min(count - 1);
@@ -681,27 +624,7 @@ fn run_picker_sync(
                         let cwd_filter: Option<&Path> = if show_all { None } else { Some(&cwd) };
                         let filtered: Vec<&SessionSummary> = summaries
                             .iter()
-                            .filter(|s| {
-                                if let Some(f) = cwd_filter {
-                                    paths_match(&s.cwd, f)
-                                } else {
-                                    true
-                                }
-                            })
-                            .filter(|s| {
-                                if query.is_empty() {
-                                    true
-                                } else {
-                                    let q = query.to_lowercase();
-                                    s.id.as_str().to_lowercase().contains(&q)
-                                        || s.cwd.display().to_string().to_lowercase().contains(&q)
-                                        || s.first_user_text
-                                            .as_deref()
-                                            .unwrap_or("")
-                                            .to_lowercase()
-                                            .contains(&q)
-                                }
-                            })
+                            .filter(|s| session_matches(s, &query, cwd_filter))
                             .collect();
                         if let Some(s) = filtered.get(sel) {
                             return Ok(Some(s.id.clone()));

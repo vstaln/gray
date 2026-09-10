@@ -3,7 +3,6 @@
 use super::*;
 
 pub struct CompactionSettings {
-    pub enabled: bool,
     pub reserve_tokens: usize,
     pub keep_recent_tokens: usize,
 }
@@ -39,30 +38,13 @@ pub fn init_auto_compact_from_env() {
     set_auto_compact_enabled(!disabled);
 }
 
-pub const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = CompactionSettings {
-    enabled: true,
-    reserve_tokens: 16384,
-    keep_recent_tokens: 20000,
-};
-
 pub fn should_compact(tokens: usize, window: usize, s: &CompactionSettings) -> bool {
-    s.enabled && tokens > window.saturating_sub(s.reserve_tokens)
-}
-
-/// Effective compaction settings from user overrides (or proportional defaults).
-/// Window-aware: reserve ≈ window/16, keep ≈ window/13 when no override.
-pub fn compaction_settings() -> CompactionSettings {
-    CompactionSettings {
-        enabled: true,
-        reserve_tokens: crate::setup::user_reserve_tokens(),
-        keep_recent_tokens: crate::setup::user_keep_recent_tokens(),
-    }
+    tokens > window.saturating_sub(s.reserve_tokens)
 }
 
 /// Window-aware variant — prefer this where the model window is known.
 pub fn compaction_settings_for(window: usize) -> CompactionSettings {
     CompactionSettings {
-        enabled: true,
         reserve_tokens: crate::setup::user_reserve_tokens_for(window),
         keep_recent_tokens: crate::setup::user_keep_for(window),
     }

@@ -137,7 +137,6 @@ pub struct ClawHubEntry {
     pub name: String,
     pub slug: String,
     pub owner: String,
-    pub display_name: String,
     pub summary: String,
     pub version: String,
     pub official: bool,
@@ -149,8 +148,6 @@ pub struct ClawHubEntry {
 struct ClawHubResult {
     #[serde(default)]
     slug: String,
-    #[serde(default)]
-    display_name: String,
     #[serde(default)]
     summary: String,
     #[serde(default)]
@@ -210,7 +207,6 @@ pub fn parse_clawhub_search(raw: &serde_json::Value) -> Vec<ClawHubEntry> {
             name,
             slug,
             owner,
-            display_name: r.display_name,
             summary: r.summary,
             version,
             official: r.official,
@@ -306,8 +302,6 @@ pub async fn clawhub_search(
 pub struct ClawHubDetail {
     pub slug: String,
     pub owner: String,
-    pub display_name: String,
-    pub summary: String,
     pub version: String,
     pub files: Vec<ClawHubFile>,
 }
@@ -343,13 +337,6 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
     }
     let body: serde_json::Value = resp.error_for_status()?.json().await?;
     let skill = body.get("skill").unwrap_or(&body);
-    let str_at = |v: &serde_json::Value, k: &str| {
-        v.get(k)
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .trim()
-            .to_string()
-    };
     let version = body
         .get("latestVersion")
         .and_then(|v| v.get("version"))
@@ -418,8 +405,6 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
     Ok(ClawHubDetail {
         slug: bare,
         owner,
-        display_name: str_at(skill, "displayName"),
-        summary: str_at(skill, "summary"),
         version,
         files,
     })
@@ -524,6 +509,52 @@ pub fn verify_clawhub_files(root: &Path, files: &[ClawHubFile]) -> anyhow::Resul
         }
     }
     Ok(true)
+}
+
+/// A downloaded + unpacked ClawHub bundle awaiting the shared skills
+/// extraction. `_staging` keeps the tempdir alive as long as `root`.
+pub(crate) struct StagedClawHub {
+    pub(crate) _staging: tempfile::TempDir,
+    pub(crate) root: PathBuf,
+    pub(crate) detail: ClawHubDetail,
+    /// Per-file hashes matched (false = no file list or mismatch-free path).
+    pub(crate) verified: bool,
+}
+
+/// Detail → download → unpack → per-file verify, shared by the plugin
+/// (`ops::install_clawhub`) and skill (`skills_ops::stage_clawhub`) arms.
+pub(crate) async fn stage_clawhub_bundle(
+    client: &reqwest::Client,
+    slug: &str,
+) -> anyhow::Result<StagedClawHub> {
+    let detail = clawhub_detail(client, slug).await?;
+    let archive = clawhub_download_bundle(client, &detail).await?;
+    let tmp_root = crate::plugins_dir().join("tmp");
+    std::fs::create_dir_all(&tmp_root)?;
+    let staging = tempfile::tempdir_in(&tmp_root)?;
+    // Hosted skills are ZIPs; GitHub-handoff bundles are tarballs.
+    let is_zip = std::fs::read(&archive)
+        .map(|b| b.len() >= 2 && b[..2] == *b"PK")
+        .unwrap_or(false);
+    let unpacked = if is_zip {
+        crate::fetch::unpack_zip(&archive, staging.path())
+    } else {
+        crate::fetch::unpack_tar_gz(&archive, staging.path())
+    };
+    if let Err(e) = unpacked {
+        let _ = std::fs::remove_file(&archive);
+        return Err(e);
+    }
+    let _ = std::fs::remove_file(&archive);
+    // ClawHub zips carry no `package/` wrapper; `stage_root` covers both.
+    let root = crate::ops::stage_root(staging.path());
+    let verified = verify_clawhub_files(&root, &detail.files)?;
+    Ok(StagedClawHub {
+        _staging: staging,
+        root,
+        detail,
+        verified,
+    })
 }
 
 /// Batch trust verdicts (`POST /skills/-/security-verdicts`, up to 100
@@ -842,7 +873,6 @@ pub struct ClaudeEntry {
     pub description: String,
     pub version: String,
     pub qualifier: String,
-    pub marketplace: String,
 }
 
 /// Split an `owner/repo` spec (exactly two non-empty parts).
@@ -891,7 +921,7 @@ fn git_output(args: &[&str], cwd: &Path) -> anyhow::Result<String> {
 
 /// Shallow-clone `url` into `<tmp>/repo` (`extra` holds `--branch` /
 /// `--filter` / `--sparse` flags) and return the keeper tempdir + path.
-fn clone_into_tmp(
+pub(crate) fn clone_into_tmp(
     url: &str,
     extra: &[&str],
     under_plugins_tmp: bool,
@@ -975,11 +1005,6 @@ pub fn claude_search_entries(query: &str) -> (Vec<ClaudeEntry>, bool) {
                 continue;
             }
         };
-        let mname = if cat.name.trim().is_empty() || cat.name == "unknown" {
-            spec.rsplit('/').next().unwrap_or(&spec).to_string()
-        } else {
-            cat.name.clone()
-        };
         for p in &cat.plugins {
             if matches!(p.source, PluginSource::Command { .. }) {
                 continue;
@@ -995,7 +1020,6 @@ pub fn claude_search_entries(query: &str) -> (Vec<ClaudeEntry>, bool) {
                 description: p.description.clone(),
                 version: p.version.clone(),
                 qualifier: claude_qualifier(&p.source),
-                marketplace: mname.clone(),
             });
         }
     }
@@ -1233,7 +1257,12 @@ async fn install_git_source(
     } else {
         Some(git_ref.trim())
     };
-    let (staging, repo_dir) = clone_plugin_repo(url, branch)?;
+    let mut extra: Vec<&str> = Vec::new();
+    if let Some(b) = branch {
+        extra.push("--branch");
+        extra.push(b);
+    }
+    let (staging, repo_dir) = clone_into_tmp(url, &extra, true)?;
     if !sha.trim().is_empty() {
         checkout_pinned_commit(&repo_dir, plugin, sha.trim())?;
     }
@@ -1259,21 +1288,6 @@ async fn install_git_source(
         unverified: sha.trim().is_empty(),
         _staging: staging,
     })
-}
-
-/// Shallow-clone a plugin repo under `$GRAY_HOME/plugins/tmp/`.
-fn clone_plugin_repo(
-    url: &str,
-    branch: Option<&str>,
-) -> anyhow::Result<(tempfile::TempDir, PathBuf)> {
-    let mut extra: Vec<&str> = Vec::new();
-    let owned;
-    if let Some(b) = branch {
-        owned = b.to_string();
-        extra.push("--branch");
-        extra.push(&owned);
-    }
-    clone_into_tmp(url, &extra, true)
 }
 
 #[cfg(test)]

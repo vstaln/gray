@@ -8,7 +8,6 @@ description = "Streaming markdown renderer for gray (vendored from xai-grok-mark
 [dependencies]
 anstyle = "1.0"
 anstyle-lossy = "1.1.4"
-anstyle-syntect = "1.0.4"
 html-escape = "0.2"
 linkify = "0.10"
 pulldown-cmark = "0.13"

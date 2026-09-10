@@ -38,15 +38,6 @@ impl std::fmt::Display for Platform {
     }
 }
 impl Platform {
-    /// Human-facing name for menus and status lines. `Display` stays lowercase:
-    /// it feeds command strings and persisted session keys (`gray:main:telegram:…`).
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Telegram => "Telegram",
-            Self::Discord => "Discord",
-            Self::Slack => "Slack",
-        }
-    }
     /// All platforms, for iteration in status/onboarding code.
     pub const ALL: [Platform; 3] = [Platform::Telegram, Platform::Discord, Platform::Slack];
     /// Outbound hard limit in UTF-16 code units (Telegram 4096, Discord 2000, Slack 39000).
@@ -162,13 +153,14 @@ pub struct GatewayConfig {
     /// Auto-start the in-process gateway when gray launches (toggle: /gateway autostart on|off).
     #[serde(default = "default_autostart")]
     pub autostart: bool,
-    /// Tools the agent may never call while driven from a chat platform
-    /// (no interactive operator to confirm). Merged with the built-in deny set.
-    #[serde(default)]
-    pub denied_tools: Vec<String>,
     /// Stream partial replies via edit-in-place where the platform supports it.
     #[serde(default = "default_true")]
     pub streaming: bool,
+    /// Scrub secrets from persisted gateway transcripts. Default `false`:
+    /// raw messages are kept for exact replay fidelity; print mode always
+    /// scrubs, this closes the daemon gap (audit F4).
+    #[serde(default)]
+    pub persist_redacted: bool,
     /// Auto-reset policy for gateway sessions (default: never).
     #[serde(default)]
     pub reset_policy: ResetPolicy,
@@ -189,8 +181,8 @@ impl Default for GatewayConfig {
             group_per_user: true,
             thread_per_user: false,
             autostart: false,
-            denied_tools: Vec::new(),
             streaming: true,
+            persist_redacted: false,
             reset_policy: ResetPolicy::default(),
         }
     }
@@ -281,7 +273,6 @@ mod tests {
         assert!(t.allowed_users.is_empty());
         assert_eq!(t.dm_policy, DmPolicy::Pairing);
         assert!(cfg.streaming);
-        assert!(cfg.denied_tools.is_empty());
     }
 
     #[test]
@@ -314,6 +305,15 @@ mod tests {
         let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
         let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(!cfg.autostart);
+    }
+
+    #[test]
+    fn persist_redacted_defaults_off_and_opts_in() {
+        let yaml = "platforms:\n  telegram:\n    enabled: true\n    token: 123:abc\n";
+        let cfg: GatewayConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!cfg.persist_redacted);
+        let cfg: GatewayConfig = serde_yaml_ng::from_str("persist_redacted: true\n").unwrap();
+        assert!(cfg.persist_redacted);
     }
 
     #[test]

@@ -37,8 +37,7 @@ impl Tool for SleepTool {
             json!({
                 "type": "object",
                 "properties": {
-                    "seconds": {"type": "integer", "description": "Seconds to wait (1..=600, required)"},
-                    "reason": {"type": "string", "description": "Why you are waiting (shown in the UI)"}
+                    "seconds": {"type": "integer", "description": "Seconds to wait (1..=600, required)"}
                 },
                 "required": ["seconds"]
             }),
@@ -50,7 +49,7 @@ impl Tool for SleepTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let (secs, _reason) = match parse_sleep_args(&args) {
+        let secs = match parse_sleep_args(&args) {
             Ok(v) => v,
             Err(e) => return e,
         };
@@ -119,8 +118,7 @@ fn ours(session: &str, id: TaskId) -> bool {
 }
 
 /// Pure arg parsing (kept separate so tests don't need a runtime).
-/// Local `reason` reader until 4A centralizes arg parsing (same as 2C's).
-fn parse_sleep_args(args: &Value) -> Result<(u64, Option<String>), ToolOutput> {
+fn parse_sleep_args(args: &Value) -> Result<u64, ToolOutput> {
     let secs = match get_opt_u64(args, "seconds") {
         Ok(Some(s)) => s,
         Ok(None) => {
@@ -135,16 +133,7 @@ fn parse_sleep_args(args: &Value) -> Result<(u64, Option<String>), ToolOutput> {
             "invalid argument 'seconds': expected 1..={MAX_SLEEP_SECS}, got {secs}"
         )));
     }
-    let reason = match args.get("reason") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(s)) => Some(s.clone()),
-        Some(_) => {
-            return Err(fail(
-                "invalid argument 'reason': expected string".to_string(),
-            ));
-        }
-    };
-    Ok((secs, reason))
+    Ok(secs)
 }
 
 #[cfg(test)]
@@ -153,17 +142,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn seconds_required_in_range_reason_optional() {
+    fn seconds_required_in_range() {
         assert!(parse_sleep_args(&json!({})).is_err()); // missing
         assert!(parse_sleep_args(&json!({"seconds": 0})).is_err());
         assert!(parse_sleep_args(&json!({"seconds": 601})).is_err());
         assert!(parse_sleep_args(&json!({"seconds": "60"})).is_err()); // wrong type, no coercion here
         assert!(parse_sleep_args(&json!({"seconds": 1.5})).is_err());
-        let (s, r) = parse_sleep_args(&json!({"seconds": 60})).unwrap();
-        assert_eq!((s, r), (60, None));
-        let (s, r) = parse_sleep_args(&json!({"seconds": 600, "reason": "build"})).unwrap();
-        assert_eq!((s, r.as_deref()), (600, Some("build")));
-        assert!(parse_sleep_args(&json!({"seconds": 5, "reason": 7})).is_err());
+        assert_eq!(parse_sleep_args(&json!({"seconds": 60})).unwrap(), 60);
+        assert_eq!(parse_sleep_args(&json!({"seconds": 600})).unwrap(), 600);
     }
 
     #[test]

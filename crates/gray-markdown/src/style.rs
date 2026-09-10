@@ -30,10 +30,6 @@ impl TableBorders {
         chars: ['─', '│', '┌', '┐', '└', '┘', '┬', '┴', '├', '┤', '┼'],
     };
 
-    pub const fn new(chars: [char; 11]) -> Self {
-        Self { chars }
-    }
-
     // Short names (used in table formatting)
     pub const fn h(&self) -> char {
         self.chars[Self::H]
@@ -67,12 +63,6 @@ impl TableBorders {
     }
     pub const fn x(&self) -> char {
         self.chars[Self::X]
-    }
-}
-
-impl Default for TableBorders {
-    fn default() -> Self {
-        Self::BOX
     }
 }
 

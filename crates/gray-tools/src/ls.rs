@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{MAX_BYTES, Tool, fail, finish, get_opt_u64, resolve_path};
 
-use crate::truncate::truncate_head;
+use crate::truncate::{append_notices, truncate_head};
 
 const DEFAULT_LIMIT: usize = 500;
 
@@ -125,9 +125,7 @@ impl Tool for LsTool {
             ));
         }
         if !notices.is_empty() {
-            output.push_str("\n\n[");
-            output.push_str(&notices.join(". "));
-            output.push(']');
+            append_notices(&mut output, &notices);
         }
 
         finish(output)

@@ -10,12 +10,7 @@ fn manifest_a() -> Manifest {
         name: "plugin-a".to_string(),
         version: "0.1.0".to_string(),
         tools: vec![tool_def("read")],
-        commands: vec![],
-        hooks: vec![],
-        provider: None,
-        protocol: None,
-        capabilities: vec![],
-        subcommands: vec![],
+        ..Manifest::default()
     }
 }
 
@@ -24,12 +19,7 @@ fn manifest_b() -> Manifest {
         name: "plugin-b".to_string(),
         version: "0.1.0".to_string(),
         tools: vec![tool_def("read")],
-        commands: vec![],
-        hooks: vec![],
-        provider: None,
-        protocol: None,
-        capabilities: vec![],
-        subcommands: vec![],
+        ..Manifest::default()
     }
 }
 

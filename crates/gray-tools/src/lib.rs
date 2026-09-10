@@ -30,8 +30,17 @@ pub(crate) use gray_core::tool_out::{
 };
 use serde_json::Value;
 
+/// Optional string argument (`null`/absent -> `None`; wrong type -> error).
+pub(crate) fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
+    }
+}
+
 pub use edit::EditTool;
-pub use find::{FindTool, GlobTool};
+pub use find::FindTool;
 pub use grep::GrepTool;
 pub use ledger::{FileLedger, LedgerEntry};
 pub use ls::LsTool;
@@ -66,7 +75,6 @@ impl Registry {
             Arc::new(RequestUserInputTool),
             Arc::new(GrepTool),
             Arc::new(FindTool),
-            Arc::new(GlobTool),
             Arc::new(LsTool),
         ]);
         out.file_ledger = ledger;
@@ -167,6 +175,15 @@ static ALIASES: &[(&str, &str)] = &[
     ("data", "content"),
     ("old_text", "oldText"),
     ("new_text", "newText"),
+    ("TargetContent", "oldText"),
+    ("target_content", "oldText"),
+    ("targetContent", "oldText"),
+    ("search", "oldText"),
+    ("find", "oldText"),
+    ("ReplacementContent", "newText"),
+    ("replacement_content", "newText"),
+    ("replacementContent", "newText"),
+    ("replace", "newText"),
     ("cmd", "command"),
     ("script", "command"),
     ("shell_command", "command"),
@@ -559,6 +576,25 @@ mod tests {
         assert_eq!(out.get("path"), Some(&json!("/tmp/x")));
         assert!(out.get("file_path").is_none());
         assert_eq!(out.get("limit"), Some(&json!(3)));
+    }
+
+    #[test]
+    fn write_and_edit_alias_props_collapse_to_canonical_args() {
+        let w = coerce_args(
+            &WriteTool::default().def(),
+            json!({"file_path": "a.txt", "contents": "hi"}),
+        );
+        assert_eq!(w.get("path"), Some(&json!("a.txt")));
+        assert_eq!(w.get("content"), Some(&json!("hi")));
+        assert!(w.get("file_path").is_none() && w.get("contents").is_none());
+
+        let e = coerce_args(
+            &EditTool::default().def(),
+            json!({"file_path": "a.txt", "TargetContent": "old", "ReplacementContent": "new"}),
+        );
+        assert_eq!(e.get("path"), Some(&json!("a.txt")));
+        assert_eq!(e.get("oldText"), Some(&json!("old")));
+        assert_eq!(e.get("newText"), Some(&json!("new")));
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //!    [`tail_suggestion`]); line-cap arm → [`line_cap`]; byte-cap arm →
 //!    [`byte_cap`] with `next` = first unshown line; clamp arm → [`clamped`].
 //!    Join content + note with [`join`]. Existing `read failed for …` call
-//!    sites already comply — route them through [`read_failed`] when touched.
+//!    sites already comply (the driver formats them inline).
 //!    (Wave-C INT-C wired the empty/EOF/cap/clamp arms; this list stays as the
 //!    wording index.)
 //! 2. Done (wave gate): T1.4 `hygiene.rs` (`mime_note`, `nul_note`), T1.5
@@ -184,12 +184,6 @@ pub fn no_files_matched(paths: &[String]) -> String {
     )
 }
 
-/// Genuine I/O failures stay `is_error=true`; the prefix is `read failed:`,
-/// never `Error:`.
-pub fn read_failed(display: &str, detail: &str) -> String {
-    format!("read failed for {display}: {detail}")
-}
-
 /// Write refused: the file exists but was never read this session (T3.2 rule
 /// 2). Names the recovery (`read <path>`) and the `force=true` escape.
 pub fn write_unread(display: &str) -> String {
@@ -319,7 +313,6 @@ mod tests {
             byte_cap(1, 2, 3),
             line_cap_count_skipped(1, 2, 3, 200 * 1024 * 1024, 3),
             clamped(1),
-            read_failed("p", "No such file or directory (os error 2)"),
             write_unread("p"),
             write_changed("p"),
             edit_changed("p"),

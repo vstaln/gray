@@ -18,7 +18,6 @@ mod cards;
 mod rows;
 
 pub(crate) use cards::format_tool_box_lines;
-pub use rows::redact_command_echo;
 pub(crate) use rows::{
     format_user_prompt_lines, left_pad, strip_ansi, thinking_style, word_flush_cut,
     wrap_styled_line, wrap_styled_line_with_ranges,
@@ -273,26 +272,6 @@ fn thought_summary_line(elapsed: Duration) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn redact_command_echo_hides_connect_token() {
-        assert_eq!(
-            redact_command_echo("/gateway connect discord secret-token"),
-            "/gateway connect discord ••••"
-        );
-        // No token yet: untouched.
-        assert_eq!(
-            redact_command_echo("/gateway connect discord"),
-            "/gateway connect discord"
-        );
-        assert_eq!(
-            redact_command_echo("/gateway pairing approve discord ABC123"),
-            "/gateway pairing approve discord ••••"
-        );
-        // Anything else: untouched.
-        assert_eq!(redact_command_echo("/gateway status"), "/gateway status");
-        assert_eq!(redact_command_echo("hello world"), "hello world");
-    }
 
     #[test]
     fn word_flush_cut_breaks_at_spaces() {

@@ -10,15 +10,12 @@ use super::Tui;
 mod attach;
 mod clipboard;
 
-pub(crate) use attach::{
-    attach_image, sync_attachments, try_attach_clipboard_image, try_attach_image_paste,
-};
+pub(crate) use attach::{sync_attachments, try_attach_clipboard_image, try_attach_image_paste};
 pub(crate) use clipboard::paste_from_system_clipboard;
 
 /// Shift+Tab cycles ALL permission modes: Ask(auto) → ReadOnly → Full → Ask.
 /// Pure helper so the prompt loop and the mid-turn key watcher share one
-/// source of truth (the `Tui::cycle_permission_mode` in super only toggles
-/// two modes and lives in a file this fix may not touch).
+/// source of truth.
 pub(crate) fn next_permission_mode(current: &str) -> &'static str {
     use gray_core::approvals::{MODE_AUTO, MODE_FULL, MODE_READ_ONLY, normalize_mode};
     match normalize_mode(current).unwrap_or(MODE_AUTO) {
@@ -583,11 +580,7 @@ pub(crate) fn read_line(
                         if trimmed.is_empty() && tui.attachments.is_empty() {
                             continue;
                         }
-                        // A connect command carries a live token: echo it redacted and keep it
-                        // out of Up/Down history so neither the transcript nor recall leaks it.
-                        let echo = super::transcript::redact_command_echo(&trimmed);
-                        let has_secret = echo != trimmed;
-                        if !trimmed.is_empty() && !has_secret {
+                        if !trimmed.is_empty() {
                             tui.history.push(trimmed.clone());
                             if tui.history.len() > 100 {
                                 tui.history.remove(0);
@@ -611,7 +604,7 @@ pub(crate) fn read_line(
                         tui.matches.clear();
                         tui.sel = 0;
                         // Slash commands hug their feedback: no trailing gap, say() output follows directly.
-                        tui.push_user_prompt(&echo, &attached, !trimmed.starts_with('/'));
+                        tui.push_user_prompt(&trimmed, &attached, !trimmed.starts_with('/'));
                         return Ok(Some((trimmed, attached)));
                     }
                     KeyCode::BackTab => {

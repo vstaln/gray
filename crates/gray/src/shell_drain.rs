@@ -218,14 +218,10 @@ pub async fn shutdown_shell_session(session: &str) -> usize {
 /// 2E startup sweep: delete `~/.gray/shell/*/t*.log` older than 7 days or
 /// bigger than 10MiB (size catches pre-cap runaway logs the pump now stops).
 pub fn sweep_old_shell_logs() {
-    let base = std::env::var("GRAY_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::env::var("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".gray"))
-                .unwrap_or_default()
-        })
-        .join("shell");
+    let Ok(home) = crate::setup::gray_home() else {
+        return;
+    };
+    let base = home.join("shell");
     let now = std::time::SystemTime::now();
     let Ok(sessions) = std::fs::read_dir(&base) else {
         return;

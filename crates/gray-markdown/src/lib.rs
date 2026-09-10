@@ -46,12 +46,9 @@ mod url_scan;
 // Re-export public API
 pub use buffers::MarkdownBuffers;
 pub use checkpoint::{Checkpoint, CheckpointKind};
-pub use colors::{
-    ColorLevel, adapt_color, adapt_style, detect_color_level, get_color_level,
-    polarity_safe_syntax, polarity_safe_syntax_ansi, set_color_level_cap, set_polarity_safe_syntax,
-};
+pub use colors::{ColorLevel, adapt_color, adapt_style, detect_color_level};
 pub use latex_delimiters::{LatexDelimiterNormalizer, normalize_latex_delimiters};
-pub use output::{CodeBlockSpan, HyperlinkTarget, MarkdownRenderOutput, MarkdownRenderView};
+pub use output::{CodeBlockSpan, HyperlinkTarget, MarkdownRenderOutput};
 pub use parse::{MarkdownParser, ParsedMarkdown};
 pub use streaming::StreamingMarkdownRenderer;
 pub use style::{MarkdownStyle, TableBorders};
@@ -131,13 +128,11 @@ pub(crate) fn render_markdown_ratatui_with_link_id(
     syntect: Option<&Syntect>,
     max_table_width: Option<usize>,
     link_id_start: u32,
-    collapse_soft_breaks: bool,
     open_code: Option<&mut open_code_highlighter::OpenCodeHighlighter>,
 ) -> (MarkdownRenderOutput, Option<Checkpoint>, u32) {
     let mut parsed = MarkdownParser::new(text, ms, buffers, syntect)
         .max_table_width(max_table_width)
         .link_id_start(link_id_start)
-        .collapse_soft_breaks(collapse_soft_breaks)
         .open_code(open_code)
         .parse();
 
@@ -145,17 +140,6 @@ pub(crate) fn render_markdown_ratatui_with_link_id(
     let next_link_id = parsed.next_link_id;
     let (output, checkpoint) = parsed.render_ratatui(pretty);
     (output, checkpoint, next_link_id)
-}
-
-/// Render markdown to ratatui Lines (simple API).
-pub fn render_markdown_ratatui(
-    text: &str,
-    ms: MarkdownStyle,
-    pretty: bool,
-    syntect: Option<&Syntect>,
-) -> (Vec<ratatui::text::Line<'static>>, Vec<usize>) {
-    let (out, _checkpoint) = render_markdown_ratatui_full(text, ms, pretty, syntect);
-    (out.lines, out.line_source_map)
 }
 
 pub fn gray_markdown_style() -> MarkdownStyle {

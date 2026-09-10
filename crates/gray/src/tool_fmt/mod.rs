@@ -593,20 +593,9 @@ pub fn format_tool_result_lines_with_context(
     )
 }
 
-/// Formats tool output lines (convenience wrapper).
-pub fn format_tool_result_lines(
-    tool_name: &str,
-    output: &str,
-    is_error: bool,
-) -> Vec<Line<'static>> {
-    format_tool_result_lines_with_context(tool_name, None, output, is_error, None)
-}
-
 mod plain;
 
-pub use plain::{
-    format_tool_call_header_plain, format_tool_result_plain, format_tool_result_plain_with_context,
-};
+pub use plain::{format_tool_call_header_plain, format_tool_result_plain_with_context};
 
 #[cfg(test)]
 mod tests {
@@ -618,7 +607,8 @@ mod tests {
 
     #[test]
     fn bash_plain_output_is_numbered() {
-        let lines = format_tool_result_lines("bash", "hello\nworld", false);
+        let lines =
+            format_tool_result_lines_with_context("bash", None, "hello\nworld", false, None);
         assert_eq!(lines.len(), 2);
         assert!(
             row_text(&lines[0]).contains("1 | "),
@@ -631,7 +621,9 @@ mod tests {
 
     #[test]
     fn bash_empty_output_returns_nothing() {
-        assert!(format_tool_result_lines("bash", "   \n  ", false).is_empty());
+        assert!(
+            format_tool_result_lines_with_context("bash", None, "   \n  ", false, None).is_empty()
+        );
     }
 
     #[test]
@@ -640,7 +632,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let lines = format_tool_result_lines("bash", &out, false);
+        let lines = format_tool_result_lines_with_context("bash", None, &out, false, None);
         let first_rows: Vec<String> = lines.iter().map(row_text).collect();
         // 18 head + 1 omission marker + 6 tail
         assert_eq!(lines.len(), 25);
@@ -658,13 +650,19 @@ mod tests {
             .map(|i| format!("entry-{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let lines = format_tool_result_lines("ls", &out, false);
+        let lines = format_tool_result_lines_with_context("ls", None, &out, false, None);
         assert_eq!(lines.len(), 25, "must cap, got {}", lines.len());
     }
 
     #[test]
     fn bash_json_is_pretty_printed() {
-        let lines = format_tool_result_lines("bash", r#"{"a":1,"b":[1,2]}"#, false);
+        let lines = format_tool_result_lines_with_context(
+            "bash",
+            None,
+            r#"{"a":1,"b":[1,2]}"#,
+            false,
+            None,
+        );
         let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
         assert!(lines.len() > 1);
         assert!(text.contains("\"a\": 1"), "got {text:?}");
@@ -673,7 +671,7 @@ mod tests {
     #[test]
     fn bash_html_is_split_one_tag_per_line() {
         let html = "<!DOCTYPE html><html><head><title>Vercel Security</title></head><body><p>hi</p></body></html>";
-        let lines = format_tool_result_lines("bash", html, false);
+        let lines = format_tool_result_lines_with_context("bash", None, html, false, None);
         assert!(lines.len() > 1);
         for l in &lines {
             assert!(

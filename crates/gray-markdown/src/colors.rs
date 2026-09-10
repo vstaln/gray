@@ -4,7 +4,6 @@
 //! and downgrade RGB colors to the appropriate level when needed.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use anstyle::{Ansi256Color, AnsiColor, Color, Effects, RgbColor};
 
@@ -129,51 +128,6 @@ fn terminal_supports_truecolor() -> bool {
         || env::var("ALACRITTY_SOCKET").is_ok()
 }
 
-/// Process-wide upper bound on the effective color level, stored as the
-/// `ColorLevel` declaration-order discriminant.
-static COLOR_LEVEL_CAP: AtomicU8 = AtomicU8::new(ColorLevel::TrueColor as u8);
-
-/// When set, RGB syntax colors are remapped with [`polarity_safe_syntax_ansi`]
-/// instead of nearest-ANSI16. Used by pager minimal mode: the canvas is the
-/// terminal's own bg, so night-theme pastels quantized to White vanish on
-/// light profiles. See `xai-grok-pager-render` syntax docs.
-static POLARITY_SAFE_SYNTAX: AtomicU8 = AtomicU8::new(0);
-
-/// Set the process-wide upper bound on the effective color level. Pass
-/// [`ColorLevel::TrueColor`] to remove the cap.
-pub fn set_color_level_cap(cap: ColorLevel) {
-    COLOR_LEVEL_CAP.store(cap as u8, Ordering::Relaxed);
-}
-
-/// Engage dual-polarity-safe syntax color remapping (minimal / terminal-native).
-///
-/// When enabled, [`adapt_color`] maps near-gray RGB to "no color" (inherit
-/// terminal default fg) and chromatic RGB to base ANSI accents — never White.
-pub fn set_polarity_safe_syntax(enabled: bool) {
-    POLARITY_SAFE_SYNTAX.store(u8::from(enabled), Ordering::Relaxed);
-}
-
-/// Whether polarity-safe syntax remapping is active.
-#[must_use]
-pub fn polarity_safe_syntax() -> bool {
-    POLARITY_SAFE_SYNTAX.load(Ordering::Relaxed) != 0
-}
-
-fn color_level_cap() -> ColorLevel {
-    match COLOR_LEVEL_CAP.load(Ordering::Relaxed) {
-        0 => ColorLevel::None,
-        1 => ColorLevel::Basic,
-        2 => ColorLevel::Ansi256,
-        _ => ColorLevel::TrueColor,
-    }
-}
-
-/// Get the current color level (detecting if not already done), bounded by
-/// the process-wide cap (see [`set_color_level_cap`]).
-pub fn get_color_level() -> ColorLevel {
-    detect_color_level().min(color_level_cap())
-}
-
 /// Convert an `anstyle::Color` to the appropriate level based on terminal support.
 ///
 /// This will downgrade colors as needed:
@@ -181,15 +135,8 @@ pub fn get_color_level() -> ColorLevel {
 /// - 256-color terminals: RGB colors are converted to closest ANSI 256 color
 /// - Basic terminals: colors are converted to closest ANSI 16 color
 /// - No color: returns None
-///
-/// When [`polarity_safe_syntax`] is enabled (minimal mode), RGB tokens take
-/// the dual-polarity path instead of nearest-ANSI16.
 pub fn adapt_color(color: Color) -> Option<Color> {
-    if polarity_safe_syntax() {
-        return adapt_color_polarity_safe(color);
-    }
-
-    let level = get_color_level();
+    let level = detect_color_level();
 
     match level {
         ColorLevel::None => None,
@@ -203,106 +150,6 @@ pub fn adapt_color(color: Color) -> Option<Color> {
             Color::Ansi256(idx) => Color::Ansi(ansi256_to_ansi16(idx)),
             Color::Ansi(ansi) => Color::Ansi(ansi),
         }),
-    }
-}
-
-/// Polarity-safe remap for syntax tokens painted on a transparent canvas.
-///
-/// - Near-gray RGB → `None` (inherit terminal default fg)
-/// - Chromatic RGB → base ANSI Red/Green/Yellow/Blue/Magenta/Cyan
-/// - Existing ANSI → demote bright white / white body slots to `None`; keep accents
-fn adapt_color_polarity_safe(color: Color) -> Option<Color> {
-    match color {
-        Color::Rgb(rgb) => polarity_safe_syntax_ansi(rgb.0, rgb.1, rgb.2).map(Color::Ansi),
-        Color::Ansi256(idx) => {
-            // Expand xterm index to an approximate RGB then re-map.
-            let (r, g, b) = ansi256_to_rgb(idx.index());
-            polarity_safe_syntax_ansi(r, g, b).map(Color::Ansi)
-        }
-        Color::Ansi(ansi) => match ansi {
-            // Body-ish slots that flip polarity → inherit default fg.
-            AnsiColor::Black
-            | AnsiColor::White
-            | AnsiColor::BrightBlack
-            | AnsiColor::BrightWhite => None,
-            // Demote bright accents to base (brights can wash out on light).
-            AnsiColor::BrightRed => Some(Color::Ansi(AnsiColor::Red)),
-            AnsiColor::BrightGreen => Some(Color::Ansi(AnsiColor::Green)),
-            AnsiColor::BrightYellow => Some(Color::Ansi(AnsiColor::Yellow)),
-            AnsiColor::BrightBlue => Some(Color::Ansi(AnsiColor::Blue)),
-            AnsiColor::BrightMagenta => Some(Color::Ansi(AnsiColor::Magenta)),
-            AnsiColor::BrightCyan => Some(Color::Ansi(AnsiColor::Cyan)),
-            other => Some(Color::Ansi(other)),
-        },
-    }
-}
-
-/// Dual-polarity-safe ANSI mapping for syntax tokens (minimal mode).
-///
-/// Returns `None` for near-gray (caller inherits terminal default fg).
-/// Chromatic hues map to base ANSI colors only — never White/Black.
-pub fn polarity_safe_syntax_ansi(r: u8, g: u8, b: u8) -> Option<AnsiColor> {
-    let max = r.max(g).max(b) as i32;
-    let min = r.min(g).min(b) as i32;
-    let chroma = max - min;
-    if chroma < 40 {
-        return None;
-    }
-    let (ri, gi, bi) = (r as i32, g as i32, b as i32);
-    let h = if max == ri {
-        let mut h = (gi - bi) * 60 / chroma;
-        if h < 0 {
-            h += 360;
-        }
-        h
-    } else if max == gi {
-        (bi - ri) * 60 / chroma + 120
-    } else {
-        (ri - gi) * 60 / chroma + 240
-    };
-    // Magenta starts at 255° so Tokyo Night purple (#bb9af7, ~261°) lands
-    // Magenta rather than Blue; pure blues (~221°) stay Blue.
-    Some(match h {
-        0..30 | 330..=360 => AnsiColor::Red,
-        30..90 => AnsiColor::Yellow,
-        90..150 => AnsiColor::Green,
-        150..210 => AnsiColor::Cyan,
-        210..255 => AnsiColor::Blue,
-        _ => AnsiColor::Magenta,
-    })
-}
-
-/// Approximate RGB for an xterm 256-color index (cube + grayscale).
-fn ansi256_to_rgb(idx: u8) -> (u8, u8, u8) {
-    match idx {
-        0 => (0, 0, 0),
-        1 => (128, 0, 0),
-        2 => (0, 128, 0),
-        3 => (128, 128, 0),
-        4 => (0, 0, 128),
-        5 => (128, 0, 128),
-        6 => (0, 128, 128),
-        7 => (192, 192, 192),
-        8 => (128, 128, 128),
-        9 => (255, 0, 0),
-        10 => (0, 255, 0),
-        11 => (255, 255, 0),
-        12 => (0, 0, 255),
-        13 => (255, 0, 255),
-        14 => (0, 255, 255),
-        15 => (255, 255, 255),
-        16..=231 => {
-            let n = idx - 16;
-            let r = n / 36;
-            let g = (n / 6) % 6;
-            let b = n % 6;
-            let level = |c: u8| if c == 0 { 0 } else { 55 + 40 * c };
-            (level(r), level(g), level(b))
-        }
-        232..=255 => {
-            let v = 8 + (idx - 232) * 10;
-            (v, v, v)
-        }
     }
 }
 
@@ -337,47 +184,41 @@ pub fn ansi256_to_ansi16(idx: Ansi256Color) -> AnsiColor {
     anstyle_lossy::xterm_to_ansi(idx, anstyle_lossy::palette::VGA)
 }
 
-/// Trait for converting anstyle to ratatui style.
-pub(crate) trait StyleInto<T> {
-    fn style_into(self) -> T;
-}
+/// Convert an anstyle style to a ratatui style.
+pub(crate) fn anstyle_to_ratatui_style(style: anstyle::Style) -> ratatui::style::Style {
+    use ratatui::style::{Modifier, Style as RStyle};
 
-impl StyleInto<ratatui::style::Style> for anstyle::Style {
-    fn style_into(self) -> ratatui::style::Style {
-        use ratatui::style::{Modifier, Style as RStyle};
+    let mut out = RStyle::default();
 
-        let mut style = RStyle::default();
-
-        if let Some(fg) = self.get_fg_color() {
-            style = style.fg(anstyle_to_ratatui_color(fg));
-        }
-        if let Some(bg) = self.get_bg_color() {
-            style = style.bg(anstyle_to_ratatui_color(bg));
-        }
-
-        let effects = self.get_effects();
-        let mut modifiers = Modifier::empty();
-        if effects.contains(Effects::BOLD) {
-            modifiers |= Modifier::BOLD;
-        }
-        if effects.contains(Effects::DIMMED) {
-            modifiers |= Modifier::DIM;
-        }
-        if effects.contains(Effects::ITALIC) {
-            modifiers |= Modifier::ITALIC;
-        }
-        if effects.contains(Effects::UNDERLINE) {
-            modifiers |= Modifier::UNDERLINED;
-        }
-        if effects.contains(Effects::STRIKETHROUGH) {
-            modifiers |= Modifier::CROSSED_OUT;
-        }
-        if effects.contains(Effects::HIDDEN) {
-            modifiers |= Modifier::HIDDEN;
-        }
-
-        style.add_modifier(modifiers)
+    if let Some(fg) = style.get_fg_color() {
+        out = out.fg(anstyle_to_ratatui_color(fg));
     }
+    if let Some(bg) = style.get_bg_color() {
+        out = out.bg(anstyle_to_ratatui_color(bg));
+    }
+
+    let effects = style.get_effects();
+    let mut modifiers = Modifier::empty();
+    if effects.contains(Effects::BOLD) {
+        modifiers |= Modifier::BOLD;
+    }
+    if effects.contains(Effects::DIMMED) {
+        modifiers |= Modifier::DIM;
+    }
+    if effects.contains(Effects::ITALIC) {
+        modifiers |= Modifier::ITALIC;
+    }
+    if effects.contains(Effects::UNDERLINE) {
+        modifiers |= Modifier::UNDERLINED;
+    }
+    if effects.contains(Effects::STRIKETHROUGH) {
+        modifiers |= Modifier::CROSSED_OUT;
+    }
+    if effects.contains(Effects::HIDDEN) {
+        modifiers |= Modifier::HIDDEN;
+    }
+
+    out.add_modifier(modifiers)
 }
 
 pub(crate) fn anstyle_to_ratatui_color(color: anstyle::Color) -> ratatui::style::Color {

@@ -11,7 +11,7 @@ use crate::edit_diff::{
 };
 use crate::ledger::{FileLedger, LedgerEntry};
 use crate::read::notices;
-use crate::{Tool, fail, resolve_path};
+use crate::{Tool, fail, get_str, resolve_path};
 
 pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
 pub const EDIT_GUIDELINES: &[&str] = &[
@@ -167,22 +167,11 @@ fn parse_edits(args: &Value) -> Result<Vec<Edit>, String> {
     Ok(edits)
 }
 
+/// Top-level single-edit form (`oldText`/`newText`; legacy names are
+/// renamed to these by the central ALIASES table in `crate`/coerce_args).
 fn parse_single_or_legacy(args: &Value) -> Result<Vec<Edit>, String> {
-    let old = args
-        .get("oldText")
-        .or_else(|| args.get("old_text"))
-        .or_else(|| args.get("TargetContent"))
-        .or_else(|| args.get("target_content"))
-        .or_else(|| args.get("targetContent"))
-        .or_else(|| args.get("search"))
-        .or_else(|| args.get("find"));
-    let new = args
-        .get("newText")
-        .or_else(|| args.get("new_text"))
-        .or_else(|| args.get("ReplacementContent"))
-        .or_else(|| args.get("replacement_content"))
-        .or_else(|| args.get("replacementContent"))
-        .or_else(|| args.get("replace"));
+    let old = args.get("oldText");
+    let new = args.get("newText");
     if let (Some(o), Some(n)) = (old, new) {
         if let (Some(os), Some(ns)) = (o.as_str(), n.as_str()) {
             return Ok(vec![Edit {
@@ -266,8 +255,6 @@ impl Tool for EditTool {
                             }
                         }
                     },
-                    "old_text": { "type": "string", "description": "Legacy single-edit old text (aliases oldText)" },
-                    "new_text": { "type": "string", "description": "Legacy single-edit new text (aliases newText)" },
                     "oldText": { "type": "string" },
                     "newText": { "type": "string" },
                     "line_start": { "type": "integer", "description": "Optional 1-based line number hint to disambiguate multiple occurrences." },
@@ -287,19 +274,12 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = args
-            .get("path")
-            .or_else(|| args.get("file_path"))
-            .or_else(|| args.get("filePath"))
-            .or_else(|| args.get("TargetFile"))
-            .or_else(|| args.get("target_file"))
-            .or_else(|| args.get("targetFile"))
-            .or_else(|| args.get("file"))
-            .or_else(|| args.get("filename"))
-            .or_else(|| args.get("target"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        // Legacy path names (file_path/TargetFile/…) are renamed by the
+        // ALIASES table in `crate` (coerce_args) before lookup.
+        let path = match get_str(&args, "path") {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
         if path.is_empty() {
             return fail("missing required argument 'path'".to_string());
         }

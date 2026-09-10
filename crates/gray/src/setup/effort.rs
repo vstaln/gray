@@ -40,13 +40,9 @@ pub fn run_effort_modal(
 
     // Provider-driven levels (opencode parity): only offer efforts the
     // current model's family accepts; non-reasoning models get just `off`.
-    let owned_levels: Vec<(&str, &str)> =
+    // `supported_thinking_levels` never returns an empty list.
+    let levels: Vec<(&str, &str)> =
         super::context::supported_thinking_levels(&bg_snapshot.model_name);
-    let levels: &[(&str, &str)] = if owned_levels.is_empty() {
-        THINKING_LEVELS
-    } else {
-        &owned_levels
-    };
 
     let current_level = config
         .thinking_effort

@@ -19,7 +19,7 @@ use crate::buffers::{
     TableReplace, TableState, Transform, unicode_display_width,
 };
 use crate::checkpoint::CheckpointKind;
-use crate::colors::StyleInto;
+use crate::colors::anstyle_to_ratatui_style;
 use crate::latex;
 use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::style::{MarkdownStyle, TableBorders};
@@ -143,12 +143,6 @@ pub struct MarkdownParser<'a, 'b, 'syn, 'oc> {
     /// Monotonically increasing counter for assigning stable link IDs.
     /// Persisted across `rerender_tail` calls via the streaming renderer.
     link_id_counter: u32,
-    /// When `true` (default), CommonMark soft breaks inside a paragraph
-    /// collapse to a single space. When `false`, the source newline is
-    /// preserved so each source line surfaces as its own visual line —
-    /// required by the line-numbered plan preview, where rendered lines
-    /// must map 1:1 to file lines.
-    collapse_soft_breaks: bool,
     /// In-progress fenced code block, set between its start and end events.
     pending_code_block: Option<PendingCodeBlock>,
 }
@@ -366,19 +360,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             last_checkpoint: None,
             max_table_width: None,
             link_id_counter: 0,
-            collapse_soft_breaks: true,
             pending_code_block: None,
         }
-    }
-
-    /// Set whether CommonMark soft breaks collapse to a space.
-    ///
-    /// Defaults to `true`. Set `false` for source-faithful rendering (plan
-    /// preview) where each source line must keep its own visual line and
-    /// `line_source_map` entry.
-    pub fn collapse_soft_breaks(mut self, collapse: bool) -> Self {
-        self.collapse_soft_breaks = collapse;
-        self
     }
 
     /// Set the maximum width for rendered tables.
@@ -537,18 +520,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 }
 
                 if let Some(parent_code_block) = parent_code_block {
-                    // Closed mermaid fences render as a diagram; open ones fall
-                    // through so the source shows while still streaming.
-                    if let Some(lang) = parent_code_block.as_deref()
-                        && lang
-                            .split_whitespace()
-                            .next()
-                            .is_some_and(|t| t.eq_ignore_ascii_case("mermaid"))
-                        && range.end < self.text.len()
-                        && self.try_push_mermaid(&text, &range)
-                    {
-                        return;
-                    }
                     let highlighted = match parent_code_block {
                         Some(lang) => {
                             if let Some(syn) = self.syntect
@@ -656,7 +627,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 } else {
                     let next = self.text.as_bytes().get(range.end);
                     let is_continuation = matches!(next, Some(b' ' | b'\t' | b'>' | b'|'));
-                    if self.collapse_soft_breaks && !is_continuation {
+                    if !is_continuation {
                         let span = range.end - range.start;
                         debug_assert!(span >= 1, "SoftBreak range must cover at least one byte");
                         self.buffers.transforms.push(Transform {
@@ -1292,10 +1263,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         }
     }
 
-    fn try_push_mermaid(&mut self, _text: &str, _range: &Range<usize>) -> bool {
-        false
-    }
-
     /// Apply inline-code styling to a code/math span: dim the delimiters,
     /// style the content. Shared by `Event::Code` and the inline-math
     /// fallback path.
@@ -1439,7 +1406,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         } else if self.text[range.end..].starts_with('\n') {
             range.end += 1;
         }
-        let style: ratatui::style::Style = self.ms.math.style_into();
+        let style: ratatui::style::Style = anstyle_to_ratatui_style(self.ms.math);
         let src_newlines = self.text[range.clone()]
             .bytes()
             .filter(|&b| b == b'\n')
@@ -1471,7 +1438,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         let padding = 1;
 
         // Style already adapted - no need to call adapt_style again
-        let border_style: ratatui::style::Style = self.ms.rule.style_into().dim();
+        let border_style: ratatui::style::Style = anstyle_to_ratatui_style(self.ms.rule).dim();
 
         let all_rows: Vec<&Vec<StyledCell>> = std::iter::once(&state.header)
             .chain(state.rows.iter())
@@ -1628,7 +1595,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         // tokens or starve expansive cells, render vertical key/value records
         // instead of a box grid.
         if crate::table_records::should_render_records(&state.header, &state.rows, &col_widths) {
-            let label_style: ratatui::style::Style = self.ms.rule.style_into().bold();
+            let label_style: ratatui::style::Style = anstyle_to_ratatui_style(self.ms.rule).bold();
             let rec = crate::table_records::render_records(
                 &state.header,
                 &state.rows,
@@ -1904,7 +1871,8 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                                 continue;
                             }
 
-                            let mut style: ratatui::style::Style = self.ms.text.style_into();
+                            let mut style: ratatui::style::Style =
+                                anstyle_to_ratatui_style(self.ms.text);
                             if is_header || cell_span.bold {
                                 style = style.bold();
                             }
@@ -1912,7 +1880,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                                 style = style.italic();
                             }
                             if cell_span.code {
-                                style = self.ms.inline_code_inner.style_into();
+                                style = anstyle_to_ratatui_style(self.ms.inline_code_inner);
                             }
                             if let Some((url, id)) = &cell_span.link {
                                 // Apply link styling additively (preserves
@@ -1921,7 +1889,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                                 // the cell visually matches paragraph link
                                 // rendering.
                                 let link_style: ratatui::style::Style =
-                                    self.ms.link_text.style_into();
+                                    anstyle_to_ratatui_style(self.ms.link_text);
                                 style = style.patch(link_style);
 
                                 let slice_width = unicode_display_width(slice);

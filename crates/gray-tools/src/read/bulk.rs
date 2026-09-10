@@ -4,7 +4,8 @@
 //! worktree calls this task T4.2; plan.ts T4.2 (did-you-mean) is a different
 //! task living in `resolve.rs` — NOT touched here.
 //!
-//! Std only (+ `tempfile` in tests, already a gray-tools dep): no new deps.
+//! Uses `globset` for matching and `ignore` for the gitignore-aware walk
+//! (both workspace deps, same pair `find.rs::fallback_walk` uses).
 //! WIRED (wave gate): `read/mod.rs` has `mod bulk;`, the `paths`/`exclude`
 //! schema, the per-file render loop (recursive `execute`, per-file
 //! ledger/dedup), `fit_within_cap` on rendered bytes + trailing
@@ -32,14 +33,6 @@
 //! 1. Done (T6.1): `read/mod.rs` wiring above.
 //! 2. Done (wave gate): `notices.rs` owns [`aggregate_note`]/
 //!    [`MISSING_INPUT_MESSAGE`] verbatim.
-//! 3. Walk performance: workspace already has `ignore`; switching the walk to
-//!    it is a follow-up (needs manifest + `mod.rs` — outside here).
-//!
-//! // ponytail: hand-rolled `*`/`?`/`**` matcher instead of `ignore`/`globset` —
-//! // zero new deps, covers the spec's globs. `[...]`/`{a,b}` are literals.
-//! // ponytail: walk collects then filters (no dir pruning) so literally-named
-//! // excludes still resolve; symlinks never followed (no cycles).
-//! // ponytail: gitignore `!` negation unsupported — such lines are skipped.
 
 use std::path::Path;
 
@@ -100,150 +93,73 @@ pub fn is_excluded(rel: &str, inputs: &[String]) -> bool {
         .is_some_and(|base| base.ends_with(".lock"))
 }
 
-/// Classic `*`/`?` matcher over one path segment (never crosses `/`).
-fn matches_segment(pat: &str, text: &str) -> bool {
-    let p: Vec<char> = pat.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let mut star: Option<usize> = None;
-    let mut back = 0usize;
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            back = ti;
-            pi += 1;
-        } else if let Some(s) = star {
-            pi = s + 1;
-            back += 1;
-            ti = back;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
+/// Compiled glob patterns (native `globset`, fd `--glob` semantics):
+/// slash-less patterns match the basename only; all others the full
+/// cwd-relative path. A trailing `/` means "the dir and everything under it".
+struct Globs {
+    full: globset::GlobSet,
+    base: globset::GlobSet,
 }
 
-/// Segment matcher where `**` eats zero or more whole segments.
-fn matches_segs(pat: &[&str], path: &[&str]) -> bool {
-    if pat.is_empty() {
-        return path.is_empty();
-    }
-    if pat[0] == "**" {
-        return matches_segs(&pat[1..], path)
-            || (!path.is_empty() && matches_segs(pat, &path[1..]));
-    }
-    if path.is_empty() || !matches_segment(pat[0], path[0]) {
-        return false;
-    }
-    matches_segs(&pat[1..], &path[1..])
-}
-
-/// Glob match for one pattern against a cwd-relative `/`-joined path.
-/// Slash-less patterns match the basename only (fd behavior, same as
-/// `find.rs`); otherwise the match is anchored. A trailing `/` means "the
-/// dir and everything under it".
-pub fn matches_pattern(pattern: &str, rel: &str) -> bool {
-    let pat = pattern.strip_prefix("./").unwrap_or(pattern);
-    if let Some(dir) = pat.strip_suffix('/') {
-        return rel == dir || rel.starts_with(&format!("{dir}/"));
-    }
-    if !pat.contains('/') {
-        let base = rel.rsplit('/').next().unwrap_or(rel);
-        return matches_segment(pat, base);
-    }
-    matches_segs(
-        &pat.split('/').collect::<Vec<_>>(),
-        &rel.split('/').collect::<Vec<_>>(),
-    )
-}
-
-/// `.gitignore` patterns at `cwd` (no negation, no I/O failure — missing file
-/// means no patterns). Same simple subset as `find.rs`.
-fn read_gitignore(cwd: &Path) -> Vec<String> {
-    let content = std::fs::read_to_string(cwd.join(".gitignore")).unwrap_or_default();
-    content
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('!'))
-        .map(str::to_string)
-        .collect()
-}
-
-/// True when `rel` is gitignored. Wildcard patterns match via
-/// [`matches_pattern`] (plus a basename retry for bare `*.log` shapes);
-/// plain patterns match the path or any path under them.
-fn is_gitignored(rel: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|pat| {
-        let p = pat.trim_end_matches('/');
-        if p.contains('*') || p.contains('?') {
-            if matches_pattern(p, rel) {
-                return true;
-            }
-            if !p.contains('/')
-                && let Some(base) = rel.rsplit('/').next()
-                && matches_segment(p, base)
+impl Globs {
+    fn compile<'a>(patterns: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut full = globset::GlobSetBuilder::new();
+        let mut base = globset::GlobSetBuilder::new();
+        for p in patterns {
+            let pat = p.strip_prefix("./").unwrap_or(p);
+            let (builder, pattern) = if let Some(dir) = pat.strip_suffix('/') {
+                (&mut full, format!("{dir}/**"))
+            } else if pat.contains('/') {
+                (&mut full, pat.to_string())
+            } else {
+                (&mut base, pat.to_string())
+            };
+            // Unbuildable patterns are skipped: nothing sensible to match.
+            if let Ok(glob) = globset::GlobBuilder::new(&pattern)
+                .literal_separator(true)
+                .build()
             {
-                return true;
+                builder.add(glob);
             }
-            false
-        } else {
-            rel == p || rel.starts_with(&format!("{p}/"))
         }
-    })
-}
-
-/// Every file under `cwd` as `/`-joined relative paths. No pruning except
-/// symlinks (filtering happens in [`expand`] so literals still resolve).
-fn walk_files(cwd: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack = vec![cwd.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-            let rel = match entry.path().strip_prefix(cwd) {
-                Ok(r) => r.to_string_lossy().replace('\\', "/"),
-                Err(_) => continue,
-            };
-            if rel.is_empty() {
-                continue;
-            }
-            let ft = match entry.file_type() {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            if ft.is_symlink() {
-                continue;
-            } else if ft.is_dir() {
-                stack.push(entry.path());
-            } else if ft.is_file() {
-                out.push(rel);
-            }
+        let build =
+            |b: globset::GlobSetBuilder| b.build().unwrap_or_else(|_| globset::GlobSet::empty());
+        Self {
+            full: build(full),
+            base: build(base),
         }
     }
-    out
+
+    fn is_match(&self, rel: &str) -> bool {
+        if self.full.is_match(rel) {
+            return true;
+        }
+        let base = rel.rsplit('/').next().unwrap_or(rel);
+        self.base.is_match_candidate(&globset::Candidate::new(base))
+    }
 }
 
 /// Expand `paths[]` to a sorted, capped file list (cwd-relative `/` paths).
 ///
 /// Literals (non-globs) resolve first when they exist as files — dirs and
 /// missing names are skipped here (the per-file render reports them); globs
-/// walk `cwd`, honoring `.gitignore`, [`is_excluded`], and `extra_excludes`
-/// (user `exclude[]`, always wins). Result is sorted, deduped, capped at
-/// [`MAX_MATCHES`].
+/// walk `cwd`, honoring `.gitignore` (via the `ignore` crate, same as
+/// `find.rs`), [`is_excluded`], and `extra_excludes` (user `exclude[]`,
+/// always wins). Result is sorted, deduped, capped at [`MAX_MATCHES`].
 pub fn expand(cwd: &Path, inputs: &[String], extra_excludes: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    let globs: Vec<&String> = inputs.iter().filter(|s| is_glob(s)).collect();
+    let excludes = Globs::compile(extra_excludes.iter().map(String::as_str));
+    let globs: Vec<&str> = inputs
+        .iter()
+        .filter(|s| is_glob(s))
+        .map(String::as_str)
+        .collect();
     for lit in inputs.iter().filter(|s| !is_glob(s)) {
         let rel = lit.strip_prefix("./").unwrap_or(lit).replace('\\', "/");
         if out.contains(&rel) {
             continue;
         }
-        if extra_excludes.iter().any(|e| matches_pattern(e, &rel)) {
+        if excludes.is_match(&rel) {
             continue;
         }
         if std::fs::metadata(cwd.join(&rel)).is_ok_and(|m| m.is_file()) {
@@ -251,21 +167,32 @@ pub fn expand(cwd: &Path, inputs: &[String], extra_excludes: &[String]) -> Vec<S
         }
     }
     if !globs.is_empty() {
-        let ignored = read_gitignore(cwd);
-        for rel in walk_files(cwd) {
+        let matcher = Globs::compile(globs.iter().copied());
+        let walker = ignore::WalkBuilder::new(cwd)
+            .hidden(false) // include dotfiles, as the old walk did
+            .require_git(false) // honor .gitignore outside repos, as before
+            .build();
+        for entry in walker.flatten() {
+            let Ok(rel) = entry.path().strip_prefix(cwd) else {
+                continue;
+            };
+            if rel.as_os_str().is_empty() {
+                continue; // the root itself
+            }
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue; // dirs and symlinks: files only, as before
+            }
+            let rel = rel.to_string_lossy().replace('\\', "/");
             if out.contains(&rel) {
                 continue;
             }
-            if extra_excludes.iter().any(|e| matches_pattern(e, &rel)) {
-                continue;
-            }
-            if is_gitignored(&rel, &ignored) {
+            if excludes.is_match(&rel) {
                 continue;
             }
             if is_excluded(&rel, inputs) {
                 continue;
             }
-            if globs.iter().any(|g| matches_pattern(g, &rel)) {
+            if matcher.is_match(&rel) {
                 out.push(rel);
             }
         }
@@ -364,14 +291,18 @@ mod tests {
         ));
     }
 
+    fn matches(pattern: &str, rel: &str) -> bool {
+        Globs::compile([pattern]).is_match(rel)
+    }
+
     #[test]
     fn pattern_matching_basics() {
-        assert!(matches_pattern("*.rs", "src/a.rs")); // basename rule
-        assert!(matches_pattern("src/**/*.rs", "src/a.rs")); // ** eats zero
-        assert!(matches_pattern("src/**/*.rs", "src/sub/a.rs"));
-        assert!(!matches_pattern("src/*.rs", "src/sub/a.rs")); // * no cross-/
-        assert!(!matches_pattern("src/**/*.rs", "other/a.rs")); // anchored
-        assert!(matches_pattern("target/", "target/a.rmeta")); // dir prefix
+        assert!(matches("*.rs", "src/a.rs")); // basename rule
+        assert!(matches("src/**/*.rs", "src/a.rs")); // ** eats zero
+        assert!(matches("src/**/*.rs", "src/sub/a.rs"));
+        assert!(!matches("src/*.rs", "src/sub/a.rs")); // * no cross-/
+        assert!(!matches("src/**/*.rs", "other/a.rs")); // anchored
+        assert!(matches("target/", "target/a.rmeta")); // dir prefix
     }
 
     #[test]

@@ -5,8 +5,6 @@
 //! pump→pump.rs, spawn→spawn.rs, registry→registry.rs, kill→kill.rs,
 //! wake/sleep→wake.rs.
 
-#![allow(dead_code, unused_variables)]
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -65,12 +63,9 @@ impl NotifyPattern {
 
 #[derive(Clone, Debug)]
 pub struct ExitReport {
-    pub code: Option<i32>,
-    pub signal: Option<i32>,
     pub effective: i32,
     pub label: String,
     pub note: Option<String>,
-    pub benign: bool,
 }
 
 pub struct View {
@@ -99,12 +94,6 @@ pub struct TaskInfo {
     pub state: TaskState,
 }
 
-pub enum WaitMode {
-    None,
-    Output,
-    Exit,
-}
-
 #[derive(Clone, Debug)] // Clone: broadcast::Sender<WakeEvent> requires it (P1D wiring fix)
 pub enum WakeEvent {
     Exited { id: TaskId, report: ExitReport },
@@ -119,8 +108,6 @@ pub enum KillTarget {
 }
 
 pub struct KillReport {
-    pub pid: u32,
-    pub method: KillMethod,
     pub report: Option<ExitReport>,
     pub describe: String,
 }
@@ -147,5 +134,4 @@ pub struct Spawned {
     pub child: Child,
     pub pid: u32,
     pub pgid: i32,
-    pub start_ticks: Option<u64>,
 }

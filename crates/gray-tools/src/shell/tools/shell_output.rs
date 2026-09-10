@@ -28,7 +28,7 @@ use crate::shell::contract::{
 use crate::shell::fence::fence;
 use crate::shell::registry::registry;
 use crate::shell::view::{fmt_num, format_elapsed, home_relative, middle_out, resume_hint};
-use crate::{fail, get_opt_u64};
+use crate::{fail, get_opt_str, get_opt_u64};
 
 /// Default/max window for one read (brief: default 16384, cap 51200).
 pub const DEFAULT_MAX_BYTES: u64 = 16_384;
@@ -155,16 +155,6 @@ impl Tool for ShellOutputTool {
             ));
         }
         ToolOutput::ok(out)
-    }
-}
-
-/// Optional string argument (`null`/absent -> `None`). Local until 4A
-/// centralizes arg parsing.
-fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
     }
 }
 
