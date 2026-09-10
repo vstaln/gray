@@ -139,7 +139,8 @@ impl Tool for GrepTool {
         cmd.arg("--").arg(&pattern).arg(&search_path);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -175,53 +176,74 @@ impl Tool for GrepTool {
         let mut matches: Vec<(String, usize, Option<String>)> = Vec::new();
         let mut match_count: usize = 0;
         let mut match_limit_reached = false;
+        let mut cancelled = false;
 
-        while let Ok(Some(line)) = reader.next_line().await {
-            if line.trim().is_empty() {
-                continue;
-            }
-            if match_count >= effective_limit {
-                break;
-            }
-            let event: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if event.get("type").and_then(|t| t.as_str()) != Some("match") {
-                continue;
-            }
-            match_count += 1;
-            let data = &event["data"];
-            let file_path = data
-                .get("path")
-                .and_then(|p| p.get("text"))
-                .and_then(|t| t.as_str())
-                .unwrap_or("")
-                .to_string();
-            let line_number = data
-                .get("line_number")
-                .and_then(|n| n.as_u64())
-                .unwrap_or(0) as usize;
-            let line_text = data
-                .get("lines")
-                .and_then(|l| l.get("text"))
-                .and_then(|t| t.as_str())
-                .map(|s| s.to_string());
-            if !file_path.is_empty() && line_number > 0 {
-                matches.push((file_path, line_number, line_text));
-            }
-            if match_count >= effective_limit {
-                match_limit_reached = true;
-                let _ = child.kill().await;
-                break;
+        loop {
+            tokio::select! {
+                line_res = reader.next_line() => {
+                    let Some(line) = line_res.unwrap_or(None) else { break };
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if match_count >= effective_limit {
+                        break;
+                    }
+                    let event: Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    if event.get("type").and_then(|t| t.as_str()) != Some("match") {
+                        continue;
+                    }
+                    match_count += 1;
+                    let data = &event["data"];
+                    let file_path = data
+                        .get("path")
+                        .and_then(|p| p.get("text"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let line_number = data
+                        .get("line_number")
+                        .and_then(|n| n.as_u64())
+                        .unwrap_or(0) as usize;
+                    let line_text = data
+                        .get("lines")
+                        .and_then(|l| l.get("text"))
+                        .and_then(|t| t.as_str())
+                        .map(|s| s.to_string());
+                    if !file_path.is_empty() && line_number > 0 {
+                        matches.push((file_path, line_number, line_text));
+                    }
+                    if match_count >= effective_limit {
+                        match_limit_reached = true;
+                        let _ = child.kill().await;
+                        break;
+                    }
+                }
+                _ = ctx.cancel.cancelled() => {
+                    cancelled = true;
+                    let _ = child.kill().await;
+                    break;
+                }
             }
         }
 
+        // Always reap: normal EOF, limit kill, and cancel kill all land here.
         let status = match child.wait().await {
             Ok(s) => s,
             Err(e) => return fail(format!("ripgrep wait failed: {e}")),
         };
-        let stderr_str = stderr_handle.await.unwrap_or_default();
+        // Cancel must not hang on a grandchild-held stderr pipe.
+        let stderr_str = if cancelled {
+            stderr_handle.abort();
+            String::new()
+        } else {
+            stderr_handle.await.unwrap_or_default()
+        };
+        if cancelled {
+            return finish("cancelled by user".to_string());
+        }
 
         // rg exit codes: 0 = matches found, 1 = no matches, 2+ = error
         if !match_limit_reached {

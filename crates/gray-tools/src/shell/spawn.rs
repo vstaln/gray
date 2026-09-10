@@ -37,7 +37,12 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
                 // Detach from controlling terminal (setsid) so child processes
                 // cannot open /dev/tty to block on password prompts or leak
                 // onto the TUI. The child becomes its own group leader.
-                libc::setsid();
+                // A failed setsid must fail the spawn: recording pgid == pid
+                // afterwards would be fictitious (kill paths would signal the
+                // wrong group).
+                if check_setsid(libc::setsid()).is_err() {
+                    return Err(io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
@@ -52,6 +57,17 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
         pgid: pid as i32, // setsid: group leader, pgid == pid
         start_ticks: start_ticks_for(pid),
     })
+}
+
+/// Pure setsid-result check so the pre_exec failure path is unit-testable
+/// (a real setsid failure cannot be forced from a test).
+#[cfg(unix)]
+fn check_setsid(ret: libc::pid_t) -> io::Result<()> {
+    if ret == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// Linux `/proc/{pid}/stat` field 22 (starttime); `None` elsewhere
@@ -70,4 +86,26 @@ fn start_ticks_for(pid: u32) -> Option<u64> {
 #[cfg(not(target_os = "linux"))]
 fn start_ticks_for(_pid: u32) -> Option<u64> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[cfg(unix)]
+    #[test]
+    fn setsid_failure_is_an_error() {
+        // The pre_exec closure maps -1 to Err so a failed setsid can never
+        // record a fictitious pgid == pid.
+        assert!(check_setsid(-1).is_err());
+        assert!(check_setsid(1234).is_ok());
+    }
+
+    #[tokio::test]
+    async fn spawn_records_real_process_group() {
+        let spawned =
+            spawn("true", &PathBuf::from("/tmp"), TaskId(1)).expect("sh -c true must spawn");
+        assert_eq!(spawned.pgid, spawned.pid as i32);
+    }
 }
