@@ -78,7 +78,7 @@ impl Tool for BashTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(BASH_SNIPPET)
     }
 

@@ -93,7 +93,7 @@ impl Tool for ReadTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(READ_SNIPPET)
     }
 
