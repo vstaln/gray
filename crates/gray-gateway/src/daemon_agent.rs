@@ -117,7 +117,9 @@ impl GatewayRunner {
                 Vec::new()
             }
             Err(e) => {
-                return Err(anyhow::anyhow!("gateway cannot load session history: {e:#}"));
+                return Err(anyhow::anyhow!(
+                    "gateway cannot load session history: {e:#}"
+                ));
             }
         };
         let prior_len = prior_messages.len();

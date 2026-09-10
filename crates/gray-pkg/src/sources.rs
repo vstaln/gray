@@ -1194,10 +1194,19 @@ fn checkout_pinned_commit(repo_dir: &Path, plugin: &str, want: &str) -> anyhow::
     git_output(&["fetch", "--depth", "1", "origin", want], repo_dir).map_err(|e| {
         anyhow::anyhow!("claude plugin {plugin} pinned commit {want} unavailable upstream ({e:#})")
     })?;
-    git_output(&["-c", "advice.detachedHead=false", "checkout", "--quiet", want], repo_dir)
-        .map_err(|e| {
-            anyhow::anyhow!("claude plugin {plugin} cannot check out pinned commit {want} ({e:#})")
-        })?;
+    git_output(
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "--quiet",
+            want,
+        ],
+        repo_dir,
+    )
+    .map_err(|e| {
+        anyhow::anyhow!("claude plugin {plugin} cannot check out pinned commit {want} ({e:#})")
+    })?;
     // Verify the result, not the command: checkout succeeding does not prove
     // HEAD is the pinned commit.
     if git_output(&["rev-parse", "HEAD"], repo_dir)? != want {
