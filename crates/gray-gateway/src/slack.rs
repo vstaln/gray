@@ -23,7 +23,6 @@ use crate::platform::{
     BasePlatformAdapter, MessageEvent, SendOptions, SendResult, check_token_shape, utf16_len,
 };
 use crate::session::SessionSource;
-use crate::status::GatewayStatusBoard;
 use std::sync::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -43,8 +42,6 @@ pub struct SlackAdapter {
     listener: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// `(bot_name, team_name, team_id)` from `auth.test` (set on connect, read by the boot card).
     identity: Mutex<Option<(String, String, String)>>,
-    /// Status board for staged connect progress (wired by the daemon; None for send-only).
-    board: Mutex<Option<GatewayStatusBoard>>,
 }
 
 /// Boot-card display for a slack identity triple: `connected as @{bot} in {team}`.
@@ -75,14 +72,7 @@ impl SlackAdapter {
             event_tx: Mutex::new(None),
             listener: Mutex::new(None),
             identity: Mutex::new(None),
-            board: Mutex::new(None),
         })
-    }
-
-    fn stage(&self, stage: &'static str) {
-        if let Some(b) = self.board.lock().unwrap().clone() {
-            b.mark_stage(Platform::Slack, stage);
-        }
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -92,10 +82,6 @@ impl SlackAdapter {
                 .as_ref()
                 .map(|t| validate_slack_app_token(t).is_ok())
                 .unwrap_or(true)
-    }
-
-    pub fn has_socket_mode(&self) -> bool {
-        self.app_token.is_some()
     }
 }
 
@@ -231,14 +217,13 @@ mod live {
             text,
             message_id: Some(ts.clone()),
             source: source_for(
-                &event.team_id.to_string(),
+                event.team_id.as_ref(),
                 &channel_id,
                 chat_type,
                 user_id.as_deref(),
                 thread_ts.as_deref(),
                 &ts,
             ),
-            media_urls: vec![],
             user_name,
         };
         let _ = st.tx.send(ev);
@@ -312,7 +297,6 @@ impl BasePlatformAdapter for SlackAdapter {
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
-        self.stage("validating tokens");
         validate_slack_bot_token(&self.bot_token)?;
         if let Some(ref t) = self.app_token {
             validate_slack_app_token(t)?;
@@ -323,7 +307,6 @@ impl BasePlatformAdapter for SlackAdapter {
             use slack_morphism::prelude::*;
             let client = std::sync::Arc::new(SlackClient::new(SlackClientHyperConnector::new()?));
             let token = SlackApiToken::new(self.bot_token.clone().into());
-            self.stage("authenticating");
             let me = client
                 .open_session(&token)
                 .auth_test()
@@ -344,7 +327,6 @@ impl BasePlatformAdapter for SlackAdapter {
             let tx = self.event_tx.lock().unwrap().clone();
             match (tx, self.app_token.clone()) {
                 (Some(tx), Some(app)) => {
-                    self.stage("starting socket");
                     let state = live::ListenerState {
                         tx,
                         bot_user_id: me.user_id.to_string(),
@@ -382,10 +364,6 @@ impl BasePlatformAdapter for SlackAdapter {
 
     fn set_event_tx(&mut self, tx: UnboundedSender<MessageEvent>) {
         *self.event_tx.lock().unwrap() = Some(tx);
-    }
-
-    fn set_status_board(&self, board: GatewayStatusBoard) {
-        *self.board.lock().unwrap() = Some(board);
     }
 
     fn supports_edit(&self) -> bool {
@@ -546,12 +524,10 @@ mod tests {
     }
 
     #[test]
-    fn new_and_socket_mode_flag() {
+    fn new_and_auth_flags() {
         let a = SlackAdapter::new(cfg("xoxb-1234567890-abc", None)).unwrap();
         assert!(a.is_authenticated());
-        assert!(!a.has_socket_mode());
         let b = SlackAdapter::new(cfg("xoxb-1234567890-abc", Some("xapp-1-A1-2-abc"))).unwrap();
-        assert!(b.has_socket_mode());
         assert!(SlackAdapter::new(cfg("xoxb-1234567890-abc", Some("bad"))).is_err());
         assert!(SlackAdapter::new(cfg("nope", None)).is_err());
         assert_eq!(b.platform(), Platform::Slack);
@@ -631,10 +607,7 @@ mod tests {
         // Stub-only: no network, connect must fail loudly, terminally.
         #[cfg(not(feature = "slack"))]
         {
-            use crate::status::GatewayStatusBoard;
             let a = SlackAdapter::new(cfg("xoxb-1234567890-abc", None)).unwrap();
-            let board = GatewayStatusBoard::new(&[Platform::Slack]);
-            a.set_status_board(board.clone());
             let err = a.connect().await.unwrap_err();
             assert!(
                 err.to_string().contains("not compiled"),

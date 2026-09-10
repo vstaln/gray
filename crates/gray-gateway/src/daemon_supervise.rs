@@ -114,10 +114,6 @@ pub(crate) async fn connect_adapter_with_retry(
     ledger: &DeliveryLedger,
     max_attempts: u32,
 ) {
-    // Wire the board so adapters report staged progress (`validating token` → …).
-    if let Some(b) = board {
-        adapter.set_status_board(b.clone());
-    }
     let cap = max_attempts.max(1);
     let mut fast_failures = 0u32;
     let mut last_failure: Option<Instant> = None;
@@ -186,8 +182,8 @@ pub(crate) async fn connect_adapter_with_retry(
 }
 
 /// Steady-state supervisor (spawned by `daemon_boot` after boot, on the main
-/// runtime): every 30s, each adapter that lost liveness (`!is_alive()`) or is
-/// still board-`Failed` from boot re-enters [`connect_adapter_with_retry`]
+/// runtime): every 30s, each adapter that is still board-`Failed` from boot
+/// re-enters [`connect_adapter_with_retry`]
 /// with [`MAX_RECONNECT_ATTEMPTS`]. Reconnect rounds per adapter are spaced
 /// by [`supervise_backoff`] so a persistently dead platform backs off to one
 /// ladder per 5 minutes (and retryable failures self-heal — no restart
@@ -211,11 +207,11 @@ pub(crate) async fn supervise_adapters(
         for (plat, adapter) in runner.adapters.iter() {
             let row = snap.iter().find(|(p, _)| p == plat).map(|(_, s)| s);
             let failed = matches!(row, Some(PlatformConnState::Failed(_)));
-            if adapter.is_alive() && !failed {
+            if !failed {
                 state.remove(plat);
-                // Boot used no board in `gateway run`: a live adapter stuck on
-                // `Connecting` really is connected — record it. Failed rows
-                // are never touched here; only the ladder rewrites them.
+                // Boot used no board: an adapter stuck on `Connecting`
+                // really is connected — record it. Failed rows are never
+                // touched here; only the ladder rewrites them.
                 if matches!(row, Some(PlatformConnState::Connecting { .. })) {
                     board.mark_connected(*plat, adapter.bot_identity());
                 }
@@ -246,7 +242,7 @@ pub(crate) async fn supervise_adapters(
                 MAX_RECONNECT_ATTEMPTS,
             )
             .await;
-            if adapter.is_alive() && !board_shows_failed(&board, *plat) {
+            if !board_shows_failed(&board, *plat) {
                 state.remove(plat);
                 log::info!("gateway {plat} recovered in steady state");
             }

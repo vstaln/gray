@@ -15,7 +15,6 @@
 //! Group senders never get a pairing prompt (silently ignored) so a bot
 //! added to a public group can't be used to spam codes.
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use crate::config::{DmPolicy, GatewayConfig, Platform, PlatformConfig};
 use crate::pairing::{PairingStore, normalize_user_id};
@@ -155,49 +154,22 @@ impl Authorizer {
 // and the model is told to use the local REPL instead. This intentionally
 // reduces gateway sessions to conversation-only.
 
-/// Decide whether a tool call may proceed in gateway mode.
-/// Currently denies everything (see module docs). Kept as a seam so a
-/// future confinement design has one place to land.
-pub fn tool_call_allowed(
-    _denied_tools: &[String],
-    name: &str,
-    _args: &serde_json::Value,
-    _workspace: &std::path::Path,
-) -> Result<(), String> {
-    Err(format!(
-        "native tool `{name}` is disabled in gateway mode; use the local REPL"
-    ))
-}
+/// Gateway tool policy: deny every native call (see module docs). Denials
+/// come back as tool errors (data for the model, not a crash), so the agent
+/// can explain and continue.
+pub struct DenyExecutor;
 
-/// [`gray_core::agent::ToolExecutor`] wrapper that enforces [`tool_call_allowed`]
-/// before delegating. Denials are returned as tool errors (data for the model,
-/// not a crash), so the agent can explain and continue.
-pub struct GatedExecutor {
-    inner: Arc<dyn gray_core::agent::ToolExecutor>,
-    workspace: std::path::PathBuf,
-}
-
-impl GatedExecutor {
-    pub fn new(
-        inner: Arc<dyn gray_core::agent::ToolExecutor>,
-        workspace: std::path::PathBuf,
-    ) -> Self {
-        Self { inner, workspace }
-    }
-}
-
-impl gray_core::agent::ToolExecutor for GatedExecutor {
+impl gray_core::agent::ToolExecutor for DenyExecutor {
     fn execute(
         &self,
-        ctx: &gray_core::agent::ToolContext,
+        _ctx: &gray_core::agent::ToolContext,
         name: &str,
-        args: serde_json::Value,
+        _args: serde_json::Value,
     ) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
-        if let Err(reason) = tool_call_allowed(&[], name, &args, &self.workspace) {
-            log::warn!("gateway denied tool {name}: {reason}");
-            return Box::pin(async move { gray_core::agent::ToolOutput::error(reason) });
-        }
-        self.inner.execute(ctx, name, args)
+        let reason =
+            format!("native tool `{name}` is disabled in gateway mode; use the local REPL");
+        log::warn!("gateway denied tool {name}: {reason}");
+        Box::pin(async move { gray_core::agent::ToolOutput::error(reason) })
     }
 }
 
@@ -373,8 +345,8 @@ mod tests {
 
     #[test]
     fn all_native_tools_denied_in_gateway_mode() {
-        let ws = std::path::Path::new("/work");
-        let none: Vec<String> = vec![];
+        use gray_core::agent::{ToolContext, ToolExecutor};
+        let ctx = ToolContext::default();
         // Builtins, boring-but-previously-allowed commands, unknown names,
         // and sidecar/plugin names: everything is denied until a supported
         // confinement design exists.
@@ -395,11 +367,12 @@ mod tests {
             ("totally_unknown_tool", serde_json::json!({})),
             ("my_sidecar_plugin_tool", serde_json::json!({})),
         ] {
-            let err =
-                tool_call_allowed(&none, name, &args, ws).expect_err(&format!("must deny: {name}"));
+            let out = futures::executor::block_on(DenyExecutor.execute(&ctx, name, args));
+            assert!(out.is_error, "must deny: {name}");
             assert!(
-                err.contains("disabled in gateway mode"),
-                "wrong reason for {name}: {err}"
+                out.content.contains("disabled in gateway mode"),
+                "wrong reason for {name}: {}",
+                out.content
             );
         }
     }

@@ -16,7 +16,6 @@ chrono = { workspace = true }
 log = { workspace = true }
 gray-core = { workspace = true }
 gray-session = { workspace = true }
-gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-plugin = { workspace = true }
 gray-supervise = { workspace = true }

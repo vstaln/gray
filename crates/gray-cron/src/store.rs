@@ -115,8 +115,8 @@ fn default_enabled() -> bool {
 /// Whole-file JSON write via tmp-file + rename (atomic on the same fs), mode
 /// 0600 on unix. Plan-A fallback home: `gray_gateway::delivery::atomic_write_json`
 /// is `pub(crate)` there, and depending on gray-gateway from here would cycle
-/// (gateway gains the gray-cron dep in Task 3) — so gray-cron owns this copy
-/// and re-exports it. Do NOT add a third copy elsewhere.
+/// (gateway gains the gray-cron dep in Task 3) — so gray-cron owns this copy.
+/// Do NOT add a third copy elsewhere.
 pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_string_pretty(value)?;
@@ -301,16 +301,6 @@ impl CronStore {
             }
         }
         atomic_write_json(&self.jobs_path(), raw)
-    }
-
-    pub fn add(
-        &self,
-        name: &str,
-        schedule: &str,
-        prompt: &str,
-        deliver: Deliver,
-    ) -> anyhow::Result<String> {
-        self.add_full(name, schedule, prompt, deliver, None, None)
     }
 
     pub fn add_full(
@@ -534,6 +524,18 @@ impl CronStore {
 mod tests {
     // UNRUN (cargo test banned under X): run in TTY/CI.
     use super::*;
+
+    impl CronStore {
+        fn add(
+            &self,
+            name: &str,
+            schedule: &str,
+            prompt: &str,
+            deliver: Deliver,
+        ) -> anyhow::Result<String> {
+            self.add_full(name, schedule, prompt, deliver, None, None)
+        }
+    }
 
     fn test_store() -> (tempfile::TempDir, CronStore) {
         let dir = tempfile::tempdir().unwrap();

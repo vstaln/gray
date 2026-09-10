@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::authz::GatedExecutor;
+use crate::authz::DenyExecutor;
 use crate::daemon::GatewayRunner;
 use crate::daemon_stream::ProgressMsg;
 
@@ -16,7 +16,7 @@ impl GatewayRunner {
     /// builder for REPL, `-p`, gateway, and cron — F8 resolved the `gray →
     /// gray-gateway` cycle by moving it to the lowest common crate).
     /// Surface policy owned here: provider config, gateway system prompt,
-    /// [`GatedExecutor`] wrapping, and warn-and-skip on sidecar spawn
+    /// [`DenyExecutor`] wrapping, and warn-and-skip on sidecar spawn
     /// failure (the daemon must stay up). `session_id` pins the Responses
     /// cache shard per session instead of colliding all daemon sessions on
     /// one per-process key.
@@ -33,7 +33,6 @@ impl GatewayRunner {
         // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let host_handler = cron_host_handler();
-        let workspace = cwd.clone();
         let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
             model,
             api_key: api_key.unwrap_or_default(),
@@ -48,11 +47,11 @@ impl GatewayRunner {
             host_handler: Some(host_handler),
             profile_path: "gray.yml".to_string(),
             abort_on_spawn_failure: false,
-            // Advertise the full registry: denials belong to GatedExecutor so the
+            // Advertise the full registry: denials belong to DenyExecutor so the
             // model gets the gate's accurate reason instead of "does not exist".
             wrap_executor: Some(Box::new(
-                move |inner: std::sync::Arc<dyn gray_core::agent::ToolExecutor>| {
-                    std::sync::Arc::new(GatedExecutor::new(inner, workspace))
+                |_inner: std::sync::Arc<dyn gray_core::agent::ToolExecutor>| {
+                    std::sync::Arc::new(DenyExecutor)
                         as std::sync::Arc<dyn gray_core::agent::ToolExecutor>
                 },
             )),
@@ -155,7 +154,7 @@ impl GatewayRunner {
             questions: None, // no interactive user → request_user_input is denied anyway
             session_id: Some(sid_str.to_string()),
             permission: PermissionMode::resolve(false),
-            approvals: None, // gateway daemon owns policy via GatedExecutor/authz instead
+            approvals: None, // gateway daemon owns policy via DenyExecutor/authz instead
         };
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {
