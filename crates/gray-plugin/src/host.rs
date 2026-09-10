@@ -59,11 +59,16 @@ pub async fn run_prompt_child(cwd: &Path, prompt: &str) -> Value {
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            let _ = drain.await;
+            // A descendant can hold stdout open past the child's death; never
+            // hang the caller waiting on the drain.
+            let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
             return json!({"error": "host/run timed out after 28s"});
         }
     };
-    let bytes = drain.await.unwrap_or_default();
+    let bytes = match tokio::time::timeout(Duration::from_secs(2), drain).await {
+        Ok(Ok(v)) => v,
+        _ => Vec::new(),
+    };
     if !status.success() {
         return json!({"error": format!("host/run: gray -p exited {status}")});
     }

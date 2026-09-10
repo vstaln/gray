@@ -383,8 +383,7 @@ impl GatewayRunner {
                         .cloned()
                         .unwrap_or_default();
                     let env = std::env::var(platform.allowed_users_env()).ok();
-                    let allow =
-                        crate::authz::effective_allowlist(platform, &cfg, env.as_deref());
+                    let allow = crate::authz::effective_allowlist(platform, &cfg, env.as_deref());
                     let user = ev
                         .source
                         .user_id
@@ -392,9 +391,7 @@ impl GatewayRunner {
                         .map(str::trim)
                         .filter(|u| !u.is_empty())
                         .map(|u| crate::pairing::normalize_user_id(platform, u));
-                    let permitted = user
-                        .map(|u| allow.contains(&u) || allow.contains("*"))
-                        .unwrap_or(false);
+                    let permitted = user.map(|u| allow.contains(&u)).unwrap_or(false);
                     if !permitted {
                         log::warn!(
                             "gateway restart refused for non-operator {platform} user={:?}",

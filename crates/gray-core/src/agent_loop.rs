@@ -163,7 +163,7 @@ impl Agent {
                 );
                 self.messages.push(Message::assistant(note.clone()));
                 emit!(AgentEvent::text_delta(format!("\n{note}\n")));
-                emit!(AgentEvent::turn_end(StopReason::EndTurn, billed.clone()));
+                emit!(AgentEvent::turn_end(StopReason::EndTurn, billed));
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
@@ -551,7 +551,7 @@ impl Agent {
                     0.0
                 };
                 log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
-                emit!(AgentEvent::turn_end(stop_reason, billed.clone()));
+                emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
