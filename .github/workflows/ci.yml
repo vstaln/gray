@@ -26,6 +26,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
       - run: cargo check -p gray-gateway --features all-platforms
+      - run: cargo test -p gray-gateway --features all-platforms --quiet
       - run: cargo check -p gray --all-features
       - run: python3 docs/schema/validate.py
       - run: cargo test --workspace --quiet

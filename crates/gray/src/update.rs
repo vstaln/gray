@@ -203,6 +203,13 @@ fn now_secs() -> u64 {
     chrono::Utc::now().timestamp().try_into().unwrap_or(0)
 }
 
+/// Auto self-update is stable-channel only: beta redeploys on every push to
+/// main, so GRAY_AUTO_UPDATE=1 on beta would be a per-commit curl|sh
+/// subscription. Manual `gray update` stays unconditional.
+fn auto_update_allowed(channel: &str, flag: Option<&str>) -> bool {
+    channel == "stable" && flag == Some("1")
+}
+
 /// Called before the REPL starts. Checks for a newer release, prompts y/n.
 /// Errors are silent — update checks must never break startup.
 pub async fn startup_check() {
@@ -226,7 +233,8 @@ pub async fn startup_check() {
     if !is_newer(&latest, current) {
         return;
     }
-    if std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
+    let auto_flag = std::env::var("GRAY_AUTO_UPDATE").ok();
+    if auto_update_allowed(CHANNEL, auto_flag.as_deref()) {
         let latest = latest.clone();
         tokio::spawn(async move {
             let Ok(_lock) = acquire_update_lock() else {
@@ -288,6 +296,14 @@ mod tests {
         assert!(!is_newer("0.1.0-beta.1", "0.1.0"));
         assert!(!is_newer(" 1.2.3 ", "1.2.3"));
         assert!(is_newer(" 1.2.3 ", "1.2.2"));
+    }
+
+    #[test]
+    fn auto_update_refuses_beta_channel() {
+        assert!(auto_update_allowed("stable", Some("1")));
+        assert!(!auto_update_allowed("beta", Some("1")));
+        assert!(!auto_update_allowed("stable", Some("0")));
+        assert!(!auto_update_allowed("stable", None));
     }
 
     #[test]

@@ -303,6 +303,22 @@ pub enum Commands {
         /// Message text (words are joined with spaces)
         text: Vec<String>,
     },
+    /// Session store maintenance
+    Sessions {
+        #[command(subcommand)]
+        cmd: SessionsCmd,
+    },
+}
+
+/// `gray sessions ...` — session store maintenance.
+#[derive(Parser, Debug, Clone)]
+pub enum SessionsCmd {
+    /// Delete sessions started more than N days ago
+    Prune {
+        /// Age threshold in days (default 90)
+        #[arg(long, default_value_t = 90)]
+        older_than_days: u64,
+    },
 }
 
 /// `gray cron ...` — recurring/one-shot job management.

@@ -134,6 +134,8 @@ Always-on: `gray gateway install` (systemd user service, `Restart=always`, survi
 
 `gray` executes shell commands from the model. The destructive-command guard (`crates/gray-tools/src/shell/guard.rs`) blocks obvious foot-guns (`rm -rf /`, `mkfs`, fork bombs, `git reset --hard`) after an allow-prompt — it is prefix-based and **not a sandbox**: pipes, `&&` chains, `$(...)`, `eval`, `xargs rm`, `find -delete`, `python -c 'shutil.rmtree(...)'` and `curl … | sh` all pass through. `GRAY_GUARD_BYPASS=1` disables it entirely. There is no container or VM isolation: run gray in a container/VM for untrusted work. Security reports: [SECURITY.md](SECURITY.md).
 
+Persistence note: gateway and REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting; set `persist_redacted: true` in `gateway.yaml` to scrub gateway transcripts too. Plan backups, snapshots, and disk access accordingly.
+
 ## Context window & auto-compact
 
 The window resolves as: `--context-window` / `GRAY_CONTEXT_WINDOW` → auto-fetched provider value → LiteLLM model table → hardcoded fallback. Inspect with `/context`, set with `/context 128k` (or `1m`; `auto` clears).
@@ -189,7 +191,7 @@ The essentials — everything else is one `--help` or doc page away.
 
 ## Stability
 
-Stable in 1.x: CLI flags, session JSONL schema, plugin wire v1, `~/.gray` layout. Not stable: the TUI, internal crate APIs, `gray-markdown`. Per-release changes: [CHANGELOG.md](CHANGELOG.md).
+The 1.x stability contract (CLI flags, session JSONL schema, plugin wire v1, `~/.gray` layout) takes effect at 1.0 — on 0.x these are best-effort. Not stable: the TUI, internal crate APIs, `gray-markdown`. Per-release changes: [CHANGELOG.md](CHANGELOG.md). Rollback is publisher-side today (manifest re-point); user-side `gray update --to <version>` is planned.
 
 ---
 

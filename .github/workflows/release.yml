@@ -91,15 +91,43 @@ jobs:
           GRAY_CHANNEL: ${{ steps.meta.outputs.channel }}
         shell: bash
         run: |
+          # all-platforms: the default build stubs the Telegram/Discord/Slack
+          # adapters; the released binary must carry them or the advertised
+          # gateway crash-loops on "not compiled" (audit B1).
           if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
-            cross build --release --target ${{ matrix.target }}
+            cross build --release -p gray --features all-platforms --target ${{ matrix.target }}
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release -p gray --features all-platforms --target ${{ matrix.target }}
           fi
+
+      - name: release build must carry gateway adapters
+        if: matrix.plat == 'x86_64-linux'
+        run: |
+          cargo tree -p gray --features all-platforms -e normal \
+            | grep -Eq 'teloxide|twilight-gateway|slack-morphism' \
+            || { echo "::error::release binary would ship stub adapters"; exit 1; }
 
       - name: smoke test (native platforms)
         if: matrix.plat == 'x86_64-linux' || matrix.plat == 'aarch64-darwin'
         run: ./target/${{ matrix.target }}/release/gray --version
+
+      - name: artifact identity
+        shell: bash
+        run: |
+          # The un-smoked legs (x86_64-darwin, aarch64-linux) get no execution
+          # check at all; assert the packaged binary is the claimed
+          # architecture for every leg instead (audit F6).
+          case "${{ matrix.plat }}" in
+            x86_64-linux) want="x86-64" ;;
+            aarch64-linux) want="aarch64" ;;
+            aarch64-darwin) want="arm64" ;;
+            x86_64-darwin) want="x86_64" ;;
+            *) want="" ;;
+          esac
+          [ -n "$want" ] || { echo "::error::no expected arch for ${{ matrix.plat }}"; exit 1; }
+          file target/${{ matrix.target }}/release/gray
+          file target/${{ matrix.target }}/release/gray | grep -q "$want" \
+            || { echo "::error::artifact for ${{ matrix.plat }} is not $want"; exit 1; }
 
       - name: package
         shell: bash

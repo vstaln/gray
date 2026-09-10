@@ -9,6 +9,7 @@ Usage: python3 docs/schema/validate.py
 """
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,16 @@ HOOKS = {"prompt/context", "tool/before", "turn/end"}
 def fail(msg):
     print(f"FAIL {msg}")
     sys.exit(1)
+
+
+def check_readme_stability():
+    """README must not claim the 1.x stability contract while 0.x (audit F5)."""
+    cargo = (ROOT / "Cargo.toml").read_text()
+    m = re.search(r'\[workspace\.package\][^\[]*?version\s*=\s*"(\d+)\.', cargo, re.S)
+    if not m:
+        fail("cannot read workspace.package.version from Cargo.toml")
+    if m.group(1) == "0" and "Stable in 1.x" in (ROOT / "README.md").read_text():
+        fail("README claims 'Stable in 1.x' while workspace version is 0.x")
 
 
 def main():
@@ -67,6 +78,7 @@ def main():
             fail(f"unknown capability {c!r}")
     if "protocol" in m and m["protocol"] != "1.1":
         fail(f"unknown protocol {m['protocol']!r}")
+    check_readme_stability()
     print(f"PASS echo manifest: name={m['name']} tools={len(m['tools'])} protocol={m.get('protocol')}")
 
 
