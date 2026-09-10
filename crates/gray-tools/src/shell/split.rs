@@ -27,13 +27,86 @@ pub fn split_pipeline(cmd: &str) -> Vec<String> {
     split(cmd, true).into_iter().map(|s| s.text).collect()
 }
 
-/// Top-level `( … )` / `$( … )` innards (one level, quotes respected — except
-/// `$( … )`, which still substitutes inside `"…"`, so `echo "$(rm -rf /)"`
-/// is extracted too). `(rm -rf /)` and `echo $(rm -rf /)` don't slip past
-/// the segment scan. Unbalanced input yields nothing for that group.
+/// Token that opens one substitution form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Opener {
+    /// `( … )` — bare subshell (outside quotes only).
+    Paren,
+    /// `$( … )` — live inside `"…"` too.
+    DollarParen,
+    /// `<( … )` / `>( … )` — process substitution (outside quotes only).
+    ProcSubst,
+    /// `` ` … ` `` — backtick substitution.
+    Backtick,
+}
+
+impl Opener {
+    fn len(self) -> usize {
+        match self {
+            Opener::Paren | Opener::Backtick => 1,
+            Opener::DollarParen | Opener::ProcSubst => 2,
+        }
+    }
+}
+
+/// One scanner configuration: which openers are active where.
+struct Scan {
+    /// Openers active outside any quotes.
+    outside: &'static [Opener],
+    /// Openers active inside `"…"` (only `$(` substitutes there).
+    inside_double: &'static [Opener],
+    /// Whether `"…"` state is tracked at all (backticks are literal inside
+    /// single quotes but live inside double ones, so double is not tracked).
+    track_double: bool,
+}
+
+/// `(…)` and `$(…)` innards (one level, quotes respected — except `$( … )`,
+/// which still substitutes inside `"…"`, so `echo "$(rm -rf /)"` is
+/// extracted too). `(rm -rf /)` and `echo $(rm -rf /)` don't slip past the
+/// segment scan. Unbalanced input yields nothing for that group.
 /// `<( … )` / `>( … )` process substitutions ride along via their `(` —
 /// see [`process_subst_inners`] for the explicit extractor the guard uses.
 pub fn subshell_inners(cmd: &str) -> Vec<String> {
+    scan_inners(
+        cmd,
+        &Scan {
+            outside: &[Opener::DollarParen, Opener::Paren],
+            inside_double: &[Opener::DollarParen],
+            track_double: true,
+        },
+    )
+}
+
+/// `<( … )` / `>( … )` process-substitution innards (one level, quotes
+/// respected) so `sh <(curl …)` / `diff <(rm -rf /) <(ls)` don't slip past
+/// the segment scan. Unbalanced input yields nothing for that group.
+pub fn process_subst_inners(cmd: &str) -> Vec<String> {
+    scan_inners(
+        cmd,
+        &Scan {
+            outside: &[Opener::ProcSubst],
+            inside_double: &[],
+            track_double: true,
+        },
+    )
+}
+
+/// Backtick `` `…` `` innards (one level). Single quotes respected (backticks
+/// are literal there); double quotes kept scanning since `` ` `` still
+/// substitutes inside `"…"`. Unbalanced input yields nothing for that group.
+pub fn backtick_inners(cmd: &str) -> Vec<String> {
+    scan_inners(
+        cmd,
+        &Scan {
+            outside: &[Opener::Backtick],
+            inside_double: &[],
+            track_double: false,
+        },
+    )
+}
+
+/// One quote-aware substitution scanner; `scan` picks the trigger tokens.
+fn scan_inners(cmd: &str, scan: &Scan) -> Vec<String> {
     let chars: Vec<char> = cmd.chars().collect();
     let n = chars.len();
     let mut out = Vec::new();
@@ -53,159 +126,73 @@ pub fn subshell_inners(cmd: &str) -> Vec<String> {
             } else if c == '"' {
                 double = false;
                 i += 1;
-            } else if c == '$' && i + 1 < n && chars[i + 1] == '(' {
-                // `$(…)` is live inside `"…"` (bare `(…)` is literal there).
-                if let Some((inner, end)) = balanced(&chars, i + 2) {
+            } else if let Some(open) = match_opener(&chars, i, scan.inside_double) {
+                if let Some((inner, end)) = balanced(&chars, i + open.len()) {
                     out.push(inner);
                     i = end;
                 } else {
-                    i += 2;
+                    i += open.len();
                 }
             } else {
                 i += 1;
             }
-        } else {
-            match c {
-                '\'' => {
-                    single = true;
-                    i += 1;
-                }
-                '"' => {
-                    double = true;
-                    i += 1;
-                }
-                '\\' => {
-                    i += 2;
-                }
-                '$' if i + 1 < n && chars[i + 1] == '(' => {
-                    if let Some((inner, end)) = balanced(&chars, i + 2) {
-                        out.push(inner);
-                        i = end;
+        } else if let Some(open) = match_opener(&chars, i, scan.outside) {
+            if open == Opener::Backtick {
+                // Raw until the closing backtick; escapes copied verbatim.
+                let mut j = i + 1;
+                let mut inner = String::new();
+                let mut closed = false;
+                while j < n {
+                    if chars[j] == '\\' && j + 1 < n {
+                        inner.push(chars[j]);
+                        inner.push(chars[j + 1]);
+                        j += 2;
+                    } else if chars[j] == '`' {
+                        closed = true;
+                        break;
                     } else {
-                        i += 2;
+                        inner.push(chars[j]);
+                        j += 1;
                     }
                 }
-                '(' => {
-                    if let Some((inner, end)) = balanced(&chars, i + 1) {
-                        out.push(inner);
-                        i = end;
-                    } else {
-                        i += 1;
-                    }
-                }
-                _ => {
+                if closed {
+                    out.push(inner);
+                    i = j + 1;
+                } else {
                     i += 1;
                 }
+            } else if let Some((inner, end)) = balanced(&chars, i + open.len()) {
+                out.push(inner);
+                i = end;
+            } else {
+                i += open.len();
             }
-        }
-    }
-    out
-}
-
-/// `<( … )` / `>( … )` process-substitution innards (one level, quotes
-/// respected) so `sh <(curl …)` / `diff <(rm -rf /) <(ls)` don't slip past
-/// the segment scan. Unbalanced input yields nothing for that group.
-pub fn process_subst_inners(cmd: &str) -> Vec<String> {
-    let chars: Vec<char> = cmd.chars().collect();
-    let n = chars.len();
-    let mut out = Vec::new();
-    let mut i = 0;
-    let mut single = false;
-    let mut double = false;
-    while i < n {
-        let c = chars[i];
-        if single {
-            if c == '\'' {
-                single = false;
-            }
-            i += 1;
-        } else if double {
-            if c == '\\' {
-                i += 1;
-            } else if c == '"' {
-                double = false;
-            }
-            i += 1;
-        } else {
-            match c {
-                '\'' => {
-                    single = true;
-                    i += 1;
-                }
-                '"' => {
-                    double = true;
-                    i += 1;
-                }
-                '\\' => {
-                    i += 2;
-                }
-                '<' | '>' if i + 1 < n && chars[i + 1] == '(' => {
-                    if let Some((inner, end)) = balanced(&chars, i + 2) {
-                        out.push(inner);
-                        i = end;
-                    } else {
-                        i += 2;
-                    }
-                }
-                _ => {
-                    i += 1;
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Backtick `` `…` `` innards (one level). Single quotes respected (backticks
-/// are literal there); double quotes kept scanning since `` ` `` still
-/// substitutes inside `"…"`. Unbalanced input yields nothing for that group.
-pub fn backtick_inners(cmd: &str) -> Vec<String> {
-    let chars: Vec<char> = cmd.chars().collect();
-    let n = chars.len();
-    let mut out = Vec::new();
-    let mut i = 0;
-    let mut single = false;
-    while i < n {
-        let c = chars[i];
-        if single {
-            if c == '\'' {
-                single = false;
-            }
-            i += 1;
         } else if c == '\\' {
             i += 2;
         } else if c == '\'' {
             single = true;
             i += 1;
-        } else if c == '`' {
-            let mut j = i + 1;
-            let mut inner = String::new();
-            let mut closed = false;
-            while j < n {
-                if chars[j] == '\\' && j + 1 < n {
-                    inner.push(chars[j]);
-                    inner.push(chars[j + 1]);
-                    j += 2;
-                } else if chars[j] == '`' {
-                    closed = true;
-                    break;
-                } else {
-                    inner.push(chars[j]);
-                    j += 1;
-                }
-            }
-            if closed {
-                out.push(inner);
-                i = j + 1;
-            } else {
-                i += 1;
-            }
+        } else if c == '"' && scan.track_double {
+            double = true;
+            i += 1;
         } else {
             i += 1;
         }
     }
     out
 }
+
+/// First opener in `openers` that starts at `i`, if any.
+fn match_opener(chars: &[char], i: usize, openers: &[Opener]) -> Option<Opener> {
+    let c = chars[i];
+    openers.iter().copied().find(|op| match op {
+        Opener::Paren => c == '(',
+        Opener::DollarParen => c == '$' && chars.get(i + 1) == Some(&'('),
+        Opener::ProcSubst => (c == '<' || c == '>') && chars.get(i + 1) == Some(&'('),
+        Opener::Backtick => c == '`',
+    })
+}
+
 /// From just past an opening `(`, collect to its match (quotes respected).
 /// Returns the inner text and the index just past the closing `)`.
 fn balanced(chars: &[char], mut i: usize) -> Option<(String, usize)> {
