@@ -42,13 +42,15 @@ pub fn builtin() -> Vec<AgentSpec> {
         AgentSpec {
             key: "codex".to_string(),
             display: "Codex".to_string(),
-            install_hint: "npm i -g @zed-industries/codex-acp or ensure node is installed".to_string(),
+            install_hint: "npm i -g @zed-industries/codex-acp or ensure node is installed"
+                .to_string(),
             ..npx("@zed-industries/codex-acp")
         },
         AgentSpec {
             key: "claude".to_string(),
             display: "Claude Code".to_string(),
-            install_hint: "npm i -g @zed-industries/claude-code-acp or ensure node is installed".to_string(),
+            install_hint: "npm i -g @zed-industries/claude-code-acp or ensure node is installed"
+                .to_string(),
             ..npx("@zed-industries/claude-code-acp")
         },
         AgentSpec {
