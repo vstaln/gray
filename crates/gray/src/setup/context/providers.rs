@@ -300,11 +300,6 @@ pub fn supported_thinking_levels(model_id: &str) -> Vec<(&'static str, &'static 
         .collect()
 }
 
-/// Returns the models list for a provider from the catalog.
-pub fn get_provider_models(_provider_id: &str, _catalog: &Catalog) -> Vec<(String, String)> {
-    Vec::new()
-}
-
 /// Dynamically queries the provider's live /models endpoint (e.g. OpenAI, OpenRouter, Ollama, vLLM, LMStudio, etc.).
 pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -416,16 +411,6 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
     } else {
         Vec::new()
     }
-}
-
-/// Returns the models list for a provider dynamically from live endpoint.
-pub fn get_provider_models_with_live(
-    _provider_id: &str,
-    base_url: &str,
-    api_key: Option<&str>,
-    _catalog: &Catalog,
-) -> Vec<(String, String)> {
-    fetch_live_provider_models(base_url, api_key)
 }
 
 static MODEL_CONTEXT_CACHE: std::sync::OnceLock<

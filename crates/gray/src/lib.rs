@@ -161,22 +161,10 @@ pub async fn build_agent(
         cwd: cwd.to_path_buf(),
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
             move |registry: &gray_tools::Registry| {
-                // Tools only appear in the prompt when they have a snippet.
-                // Same plugins feed the registry and the agent hooks.
-                let tool_snippets = registry.prompt_snippets();
                 let selected_tools = registry.tool_names();
-                let guidelines = registry.prompt_guidelines();
-                let prompt_guidelines = if guidelines.is_empty() {
-                    None
-                } else {
-                    Some(guidelines)
-                };
                 system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
                     custom_prompt: Some(body),
                     selected_tools: Some(selected_tools),
-                    tool_snippets: Some(tool_snippets),
-                    prompt_guidelines,
-                    append_system_prompt: None,
                     cwd: prompt_cwd,
                     context_files: Some(context_files),
                     skills: Some(discovered.skills),
@@ -397,6 +385,7 @@ pub enum PluginCmd {
     /// Install a plugin by index name or https URL
     Install {
         /// Index name or https URL
+        #[arg(value_parser = |s: &str| Ok::<_, std::convert::Infallible>(gray_pkg::ops::parse_spec(s)))]
         spec: gray_pkg::ops::NameOrUrl,
     },
     /// Remove an installed plugin

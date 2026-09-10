@@ -14,22 +14,9 @@ use serde::{Deserialize, Serialize};
 pub struct CatalogProvider {
     pub name: String,
     pub base_url: String,
-    /// models.dev emits either a string or a list of env var names.
-    #[serde(default)]
-    pub env_key: serde_json::Value,
-    pub featured: bool,
     /// True when the upstream serves a keyless/free tier (9router noAuth).
     #[serde(default)]
     pub no_auth: bool,
-    #[serde(default)]
-    pub models: Vec<CatalogModel>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct CatalogModel {
-    pub id: String,
-    #[serde(default)]
-    pub name: String,
 }
 
 /// The full catalog, keyed by provider id (`openrouter`, `deepseek`, ...).
@@ -42,20 +29,6 @@ pub const PROVIDERS_JSON: &str = include_str!("../../assets/providers.json");
 /// but returns a Result so callers can degrade gracefully.
 pub fn load_catalog() -> anyhow::Result<Catalog> {
     Ok(serde_json::from_str(PROVIDERS_JSON)?)
-}
-
-/// First env var name from the catalog entry, for hints during key input.
-fn env_hint(p: &CatalogProvider) -> String {
-    match &p.env_key {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(a) => a
-            .iter()
-            .filter_map(|v| v.as_str())
-            .next()
-            .unwrap_or("API_KEY")
-            .to_string(),
-        _ => "API_KEY".to_string(),
-    }
 }
 
 /// Pretty masked display for an existing key: `sk-••••Jh8a` (prettier dots, last 4 visible).
@@ -117,19 +90,6 @@ pub struct SavedConfig {
 pub const AUTH_MODE_API_KEY: &str = "api_key";
 pub const AUTH_MODE_OAUTH: &str = "oauth";
 pub const AUTH_MODE_NONE: &str = "none";
-
-/// Unknown/missing modes behave as today: API key.
-pub fn normalize_auth_mode(mode: Option<&str>) -> &'static str {
-    match mode {
-        Some("oauth") => AUTH_MODE_OAUTH,
-        Some("none") => AUTH_MODE_NONE,
-        _ => AUTH_MODE_API_KEY,
-    }
-}
-
-/// Provider ids with an OAuth login flow (`oauth.rs` implements both).
-/// Table, not an if-ladder.
-pub const OAUTH_CAPABLE: &[&str] = &["openai", "xai"];
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
 pub fn gray_home() -> anyhow::Result<PathBuf> {
@@ -363,12 +323,8 @@ pub struct ConnectItem {
     pub id: String,
     pub name: String,
     pub sublabel: String,
-    pub category: &'static str,
     pub base_url: String,
-    pub env_key: String,
     pub no_auth: bool,
-    /// True when the provider also offers browser OAuth login.
-    pub oauth_capable: bool,
 }
 
 /// Builds the full list of providers for the connect modal:
@@ -380,7 +336,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "OpenAI",
             "(ChatGPT login or API key)",
             "https://api.openai.com/v1",
-            "OPENAI_API_KEY",
             false,
         ),
         (
@@ -388,7 +343,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "Anthropic",
             "(API key)",
             "https://api.anthropic.com/v1",
-            "ANTHROPIC_API_KEY",
             false,
         ),
         (
@@ -396,7 +350,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "Google",
             "(Gemini API key)",
             "https://generativelanguage.googleapis.com/v1beta/openai",
-            "GEMINI_API_KEY",
             false,
         ),
         (
@@ -404,7 +357,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "OpenRouter",
             "(Access 300+ models)",
             "https://openrouter.ai/api/v1",
-            "OPENROUTER_API_KEY",
             false,
         ),
         (
@@ -412,7 +364,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "DeepSeek",
             "",
             "https://api.deepseek.com",
-            "DEEPSEEK_API_KEY",
             false,
         ),
         (
@@ -420,7 +371,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "Groq",
             "(Fast inference)",
             "https://api.groq.com/openai/v1",
-            "GROQ_API_KEY",
             false,
         ),
         (
@@ -428,7 +378,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "Ollama",
             "(Local http://localhost:11434)",
             "http://localhost:11434/v1",
-            "",
             true,
         ),
         (
@@ -436,7 +385,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "GitHub Copilot",
             "",
             "https://api.githubcopilot.com",
-            "COPILOT_API_KEY",
             false,
         ),
         (
@@ -444,7 +392,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "xAI (Grok)",
             "(Grok login or API key)",
             "https://api.x.ai/v1",
-            "XAI_API_KEY",
             false,
         ),
         (
@@ -452,7 +399,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "Mistral",
             "(API key)",
             "https://api.mistral.ai/v1",
-            "MISTRAL_API_KEY",
             false,
         ),
     ];
@@ -460,23 +406,15 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let mut items = Vec::new();
     let mut popular_ids = std::collections::HashSet::new();
 
-    for (id, name, sublabel, base_url, env_k, no_auth) in popular_defs {
+    for (id, name, sublabel, base_url, no_auth) in popular_defs {
         popular_ids.insert(id.to_string());
-        let (url, env) = if let Some(p) = catalog.get(id) {
-            let e = env_hint(p);
-            (p.base_url.as_str(), e)
-        } else {
-            (base_url, env_k.to_string())
-        };
+        let url = catalog.get(id).map_or(base_url, |p| p.base_url.as_str());
         items.push(ConnectItem {
             id: id.to_string(),
             name: name.to_string(),
             sublabel: sublabel.to_string(),
-            category: "Popular",
             base_url: url.to_string(),
-            env_key: env,
             no_auth,
-            oauth_capable: OAUTH_CAPABLE.contains(&id),
         });
     }
 
@@ -493,11 +431,8 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             id: id.clone(),
             name: p.name.clone(),
             sublabel: String::new(),
-            category: "Providers",
             base_url: p.base_url.clone(),
-            env_key: env_hint(p),
             no_auth: p.no_auth,
-            oauth_capable: OAUTH_CAPABLE.contains(&id.as_str()),
         });
     }
 
@@ -507,26 +442,6 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_openai_and_xai_offer_oauth() {
-        let catalog = load_catalog().expect("bundled catalog parses");
-        let items = build_connect_items(&catalog);
-        let dual: Vec<_> = items
-            .iter()
-            .filter(|i| i.oauth_capable)
-            .map(|i| i.id.as_str())
-            .collect();
-        assert_eq!(dual, vec!["openai", "xai"], "{dual:?}");
-    }
-
-    #[test]
-    fn normalize_auth_mode_defaults_to_api_key() {
-        assert_eq!(normalize_auth_mode(None), AUTH_MODE_API_KEY);
-        assert_eq!(normalize_auth_mode(Some("oauth")), AUTH_MODE_OAUTH);
-        assert_eq!(normalize_auth_mode(Some("none")), AUTH_MODE_NONE);
-        assert_eq!(normalize_auth_mode(Some("bogus")), AUTH_MODE_API_KEY);
-    }
 
     #[test]
     fn saving_key_preserves_oauth_objects() {

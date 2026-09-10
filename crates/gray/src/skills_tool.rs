@@ -20,57 +20,14 @@ pub const SKILL_SNIPPET: &str = "Load a skill's instructions into context";
 /// Loads a skill file (`path`, or `name` resolved against skill directories).
 pub struct SkillTool;
 
-/// Resolve a skill name to a SKILL.md path by scanning skill roots:
-/// global agent directories and project directories up to the git root. First match wins.
+/// Resolve a skill name to its SKILL.md path via [`crate::skills::discover_skills`]
+/// (global + project roots, first name match wins).
 pub fn resolve_skill_name(cwd: &Path, name: &str) -> Option<PathBuf> {
-    let mut dirs = Vec::new();
-    let home = std::env::var("GRAY_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
-        .ok();
-    if let Some(base) = &home {
-        dirs.push(PathBuf::from(base).join("skills"));
-    }
-    if let Ok(h) = std::env::var("HOME") {
-        let home_path = PathBuf::from(&h);
-        let config_base = std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home_path.join(".config"));
-        let opencode_dir = config_base.join("opencode");
-        dirs.push(opencode_dir.join("skills"));
-        if let Ok(entries) = std::fs::read_dir(&opencode_dir) {
-            for entry in entries.flatten() {
-                let sub_skills = entry.path().join("skills");
-                if sub_skills.is_dir() {
-                    dirs.push(sub_skills);
-                }
-            }
-        }
-        dirs.push(home_path.join(".agents/skills"));
-        dirs.push(home_path.join(".claude/skills"));
-        dirs.push(home_path.join(".pi/agent/skills"));
-    }
-    // project dirs up to git root
-    let mut cur = Some(cwd.to_path_buf());
-    while let Some(dir) = cur {
-        for cfg in [".gray", ".opencode", ".agents", ".claude", ".pi"] {
-            dirs.push(dir.join(cfg).join("skills"));
-        }
-        if dir.join(".git").exists() {
-            break;
-        }
-        cur = dir.parent().map(Path::to_path_buf);
-    }
-    for d in dirs {
-        let skill_md = d.join(name).join("SKILL.md");
-        if skill_md.is_file() {
-            return Some(skill_md);
-        }
-        let direct_md = d.join(format!("{name}.md"));
-        if direct_md.is_file() {
-            return Some(direct_md);
-        }
-    }
-    None
+    crate::skills::discover_skills(cwd)
+        .skills
+        .into_iter()
+        .find(|s| s.name == name)
+        .map(|s| s.file_path)
 }
 
 /// Strip YAML frontmatter (`---`-delimited block at the top), returning the body.
@@ -219,7 +176,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join(".gray/skills/commit");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("SKILL.md"), "---\nname: commit\n---\nBody").unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: commit\ndescription: commit changes\n---\nBody",
+        )
+        .unwrap();
         let resolved = resolve_skill_name(tmp.path(), "commit").unwrap();
         assert_eq!(resolved, dir.join("SKILL.md"));
         assert!(resolve_skill_name(tmp.path(), "missing").is_none());

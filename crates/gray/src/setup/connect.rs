@@ -205,12 +205,8 @@ pub fn run_connect_modal(
                                     if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
-                                        let models = get_provider_models_with_live(
-                                            &item.id,
-                                            &item.base_url,
-                                            None,
-                                            &catalog,
-                                        );
+                                        let models =
+                                            fetch_live_provider_models(&item.base_url, None);
                                         state = ModalState::SelectingModel {
                                             item: item.clone(),
                                             models,
@@ -294,11 +290,9 @@ pub fn run_connect_modal(
                                 saved.api_key = config.api_key.clone();
                                 saved.auth_mode = Some(AUTH_MODE_API_KEY.into());
                                 if is_switching {
-                                    let models = get_provider_models_with_live(
-                                        &item.id,
+                                    let models = fetch_live_provider_models(
                                         &item.base_url,
                                         Some(&final_key),
-                                        &catalog,
                                     );
                                     saved.model = models.first().map(|(id, _)| id.clone());
                                     config.model = saved.model.clone();
@@ -306,11 +300,9 @@ pub fn run_connect_modal(
                                     if let Some(m) = &config.model {
                                         saved.model = Some(m.clone());
                                     } else {
-                                        let models = get_provider_models_with_live(
-                                            &item.id,
+                                        let models = fetch_live_provider_models(
                                             &item.base_url,
                                             Some(&final_key),
-                                            &catalog,
                                         );
                                         saved.model = models.first().map(|(id, _)| id.clone());
                                         config.model = saved.model.clone();
@@ -324,12 +316,8 @@ pub fn run_connect_modal(
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
                                 config.api_key = Some(final_key.clone());
-                                let models = get_provider_models_with_live(
-                                    &item.id,
-                                    &item.base_url,
-                                    Some(&final_key),
-                                    &catalog,
-                                );
+                                let models =
+                                    fetch_live_provider_models(&item.base_url, Some(&final_key));
                                 state = ModalState::SelectingModel {
                                     item: item.clone(),
                                     models,
