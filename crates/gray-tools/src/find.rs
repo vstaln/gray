@@ -103,7 +103,7 @@ impl Tool for FindTool {
         }
 
         // Try fd first (preferred, respects .gitignore correctly).
-        if let Some(output) = try_fd(&pattern, &search_path, effective_limit).await {
+        if let Some(output) = try_fd(&pattern, &search_path, effective_limit, &ctx.cancel).await {
             return output;
         }
 
@@ -147,7 +147,12 @@ impl Tool for GlobTool {
     }
 }
 
-async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Option<ToolOutput> {
+async fn try_fd(
+    pattern: &str,
+    search_path: &Path,
+    effective_limit: usize,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Option<ToolOutput> {
     // Probe fd availability quickly.
     let mut args: Vec<String> = vec![
         "--glob".to_string(),
@@ -195,6 +200,7 @@ async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Op
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,
@@ -220,11 +226,34 @@ async fn try_fd(pattern: &str, search_path: &Path, effective_limit: usize) -> Op
 
     let mut reader = tokio::io::BufReader::new(stdout).lines();
     let mut lines: Vec<String> = Vec::new();
-    while let Ok(Some(line)) = reader.next_line().await {
-        lines.push(line);
+    let mut cancelled = false;
+    loop {
+        tokio::select! {
+            line_res = reader.next_line() => {
+                match line_res {
+                    Ok(Some(line)) => lines.push(line),
+                    _ => break,
+                }
+            }
+            _ = cancel.cancelled() => {
+                cancelled = true;
+                let _ = child.kill().await;
+                break;
+            }
+        }
     }
+    // Always reap: normal EOF and cancel kill both land here.
     let status = child.wait().await.ok()?;
-    let stderr_str = stderr_handle.await.unwrap_or_default();
+    // Cancel must not hang on a grandchild-held stderr pipe.
+    let stderr_str = if cancelled {
+        stderr_handle.abort();
+        String::new()
+    } else {
+        stderr_handle.await.unwrap_or_default()
+    };
+    if cancelled {
+        return Some(finish("cancelled by user".to_string()));
+    }
 
     // If fd exited with error and produced no output, treat as failure and fall back.
     if let Some(code) = status.code()
