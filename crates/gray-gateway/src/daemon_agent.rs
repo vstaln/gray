@@ -4,6 +4,8 @@
 //! session and streams deltas to the caller. Cron delivery lives in the
 //! external cron plugin now (in-gateway firing removed with `gray-cron`).
 
+use std::sync::Arc;
+
 use crate::authz::GatedExecutor;
 use crate::daemon::GatewayRunner;
 use crate::daemon_stream::ProgressMsg;
@@ -80,13 +82,27 @@ impl GatewayRunner {
         use gray_core::event::AgentEvent;
         use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
+        // Serialize turns per key for the whole body (load → build → run →
+        // persist → token removal): no overlapping runs, no cross-run token
+        // removal, no interleaved session appends.
+        let run_lock = self
+            .run_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _run_guard = run_lock.lock().await;
+
         let root = default_root().unwrap_or_else(|| std::path::PathBuf::from(".gray/sessions"));
         let store = JsonlSessionStore::new(root);
         let sid = SessionId::new(sid_str.to_string());
 
         let prior_messages: Vec<Message> = match store.load(&sid).await {
             Ok((_meta, entries)) => entries.into_iter().map(|e| e.message).collect(),
-            Err(_) => {
+            // Only a missing session is created: corruption or I/O errors
+            // must surface, not be paved over with a blank history.
+            Err(gray_session::SessionError::NotFound(_)) => {
                 let model = self
                     .resolve_model()
                     .unwrap_or_else(|| "unknown".to_string());
@@ -99,6 +115,9 @@ impl GatewayRunner {
                 );
                 let _ = store.create(meta).await;
                 Vec::new()
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("gateway cannot load session history: {e:#}"));
             }
         };
         let prior_len = prior_messages.len();
