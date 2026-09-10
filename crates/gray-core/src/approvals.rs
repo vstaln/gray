@@ -13,7 +13,7 @@
 //! execpolicy engine: **Accept** (run once), **AcceptForSession** (remember
 //! this call this session), **Decline** (skip, the turn continues), **Cancel**
 //! (skip and stop listening — Esc always cancels, like codex).
-//! "Always" remembers the FULL canonical command for the rest of the session —
+//! "Always" remembers the FULL raw command for the rest of the session —
 //! never a command prefix (a prefix allow would bless untested siblings) and
 //! never a global mode flip.
 //!
@@ -143,17 +143,17 @@ pub fn permission_modes() -> Vec<(&'static str, &'static str, &'static str)> {
         (
             MODE_AUTO,
             "Ask for approval",
-            "Read and edit files in the workspace, run commands. Approval is required to access the internet or edit other files.",
+            "Read and edit files in the workspace. Every command and anything outside the workspace asks for approval.",
         ),
         (
             MODE_FULL,
             "Full Access",
-            "Edit files outside the workspace and access the internet without asking for approval. Exercise caution.",
+            "No approval prompts: edits and commands run unattended. Exercise caution.",
         ),
         (
             MODE_READ_ONLY,
             "Read Only",
-            "Read files in the workspace. Approval is required to edit files or access the internet.",
+            "Read-only tools only: edits, commands, and network access are denied.",
         ),
     ]
 }
@@ -284,14 +284,14 @@ impl ApprovalGate {
                 {
                     return Ok(());
                 }
-                match ask_user(tool, label, questions).await {
+                match ask_user(tool, label, cwd, questions).await {
                     Decision::Accept => Ok(()),
                     Decision::AcceptForSession => {
                         self.remember(tool, args, cwd);
                         Ok(())
                     }
                     Decision::AcceptAlways => {
-                        // Bash "always" remembers the FULL canonical command
+                        // Bash "always" remembers the FULL raw command
                         // for this session. Never the 2-token prefix: a prefix
                         // allow lets `cargo test --lib` bless `cargo rm -rf`
                         // siblings. Non-bash AcceptAlways keeps the existing
@@ -337,15 +337,24 @@ impl ApprovalGate {
 /// Asks the user once via the question bridge. Fail-closed: no bridge,
 /// cancel, error, or anything but an explicit accept denies (codex: Esc
 /// always cancels).
-pub async fn ask_user(tool: &str, label: &str, questions: Option<&QuestionBridge>) -> Decision {
+pub async fn ask_user(
+    tool: &str,
+    label: &str,
+    cwd: &Path,
+    questions: Option<&QuestionBridge>,
+) -> Decision {
     let Some(bridge) = questions else {
         return Decision::Decline;
     };
-    let preview: String = label.chars().take(160).collect();
+    // Full target, no truncation: an approval prompt that hides the tail of
+    // a command approves something the user did not see.
     let q = UserQuestion {
         id: "tool-approval".to_string(),
         header: "Allow?".to_string(),
-        question: format!("Allow {tool}?\n{preview}"),
+        question: format!(
+            "Allow {tool}?\n{label}\nWorking directory: {}",
+            cwd.display()
+        ),
         options: vec![
             UserOption {
                 label: "Yes (Recommended)".to_string(),

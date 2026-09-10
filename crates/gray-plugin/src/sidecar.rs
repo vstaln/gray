@@ -570,15 +570,16 @@ impl Tool for SidecarTool {
             Ok(v) => {
                 // Route through the shared truncation (50 KiB cap with
                 // annotation): raw sidecar content must not bypass it.
-                let content = v
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                if v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false) {
-                    gray_core::tool_out::fail(content)
-                } else {
-                    gray_core::tool_out::finish(content)
+                let is_error = v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false);
+                let content = v.get("content").and_then(|c| c.as_str());
+                match (is_error, content) {
+                    (true, c) => gray_core::tool_out::fail(c.unwrap_or_default().to_string()),
+                    (false, Some(c)) => gray_core::tool_out::finish(c.to_string()),
+                    // No empty-success fallback: a reply without content is a
+                    // protocol error, not a tool that returned nothing.
+                    (false, None) => ToolOutput::error(format!(
+                        "plugin protocol error: {name} reply missing content"
+                    )),
                 }
             }
             Err(e) => {

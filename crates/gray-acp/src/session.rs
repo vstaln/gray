@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthenticateRequest, CancelNotification, InitializeRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification,
+    AuthenticateRequest, CancelNotification, InitializeRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
@@ -294,7 +294,12 @@ async fn open_session(
                 return Ok((restored.into_session(), id));
             }
             Err(e) => {
-                log::warn!(target: "gray_acp", "session/load failed, starting new session: {e}");
+                // Starting blank would silently orphan the requested history;
+                // surface the failure instead.
+                return Err(AcpError::Request {
+                    method: "session/load",
+                    message: e.to_string(),
+                });
             }
         }
     }

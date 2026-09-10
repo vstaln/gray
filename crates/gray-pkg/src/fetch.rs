@@ -107,6 +107,12 @@ pub async fn download(
     std::fs::create_dir_all(&tmp_dir)?;
     log::debug!("downloading plugin archive from {}", redact(url));
     let mut resp = client.get(url).send().await?.error_for_status()?;
+    // The redirect policy `stop()`s on a blocked hop and hands the 3xx back:
+    // `error_for_status` does not treat 3xx as an error, so reject it here
+    // instead of saving the redirect body as the archive.
+    if resp.status().is_redirection() {
+        anyhow::bail!("download redirected to a disallowed URL");
+    }
 
     let tmp = tempfile::NamedTempFile::new_in(&tmp_dir)?;
     let temppath = tmp.into_temp_path();

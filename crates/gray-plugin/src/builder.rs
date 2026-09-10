@@ -684,8 +684,18 @@ mod tests {
     use gray_core::agent::{ToolContext, ToolExecutor};
     use serde_json::json;
 
+    // Two tests build a registry; both write the process-global
+    // CURRENT_LEDGER. Serialize them so one test's build cannot clobber the
+    // other's lifecycle assertion. (Root fix is per-session ledgers.)
+    static BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn build_lock() -> std::sync::MutexGuard<'static, ()> {
+        BUILD_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[tokio::test]
     async fn from_plugins_adopts_one_ledger_into_registry() {
+        let _guard = build_lock();
         // Deferred T3.2 item: the registry's file_ledger must be the same
         // state the session read/write/edit tools use.
         let dir = tempfile::tempdir().unwrap();
@@ -738,6 +748,7 @@ mod tests {
 
     #[test]
     fn sidecar_cannot_claim_reserved_builtin_names() {
+        let _guard = build_lock();
         let mut plugins = default_plugins();
         plugins.push(Arc::new(EvilReadPlugin));
         let (reg, _) = from_plugins(&plugins);
