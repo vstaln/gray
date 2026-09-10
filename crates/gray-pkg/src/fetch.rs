@@ -7,13 +7,21 @@ use tokio::io::AsyncWriteExt;
 
 /// Max download size: 64 MiB.
 pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
-/// Max redirects followed.
-pub const MAX_REDIRECTS: usize = 5;
 
-/// HTTP client for plugin downloads: max 5 redirects.
+/// HTTP client for plugin downloads: redirects allowed only when every hop
+/// passes [`check_url`] (no https→http downgrade), with connect/total
+/// deadlines so slow bodies expire.
 pub fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if check_url(attempt.url().as_str()).is_ok() {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
 }
 
@@ -87,6 +95,14 @@ pub async fn download(
     expected: Option<&crate::index::HashSpec>,
 ) -> anyhow::Result<PathBuf> {
     check_url(url)?;
+    // An index entry that fails to pin a digest must not download: only an
+    // explicit direct-URL install (`expected == None`, warned at the call
+    // site) may skip verification.
+    if let Some(spec) = expected
+        && spec.primary().is_none_or(|s| s.is_empty())
+    {
+        anyhow::bail!("plugin download requires an expected digest");
+    }
     let tmp_dir = crate::plugins_dir().join("tmp");
     std::fs::create_dir_all(&tmp_dir)?;
     log::debug!("downloading plugin archive from {}", redact(url));
@@ -260,7 +276,7 @@ pub fn unpack_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
             use std::io::Read;
             // Bound inflation *while* reading: a tiny compressed entry must
             // not expand past the remaining budget before the check below.
-            let mut dec = flate2::read::DeflateDecoder::new(&bytes[data_start..data_end]);
+            let dec = flate2::read::DeflateDecoder::new(&bytes[data_start..data_end]);
             let mut v = Vec::new();
             dec.take(MAX_OUT.saturating_sub(total_out) + 1)
                 .read_to_end(&mut v)?;
