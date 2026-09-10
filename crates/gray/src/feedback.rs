@@ -90,17 +90,36 @@ pub fn timestamp() -> String {
 }
 
 /// Writes `# title` + `body` into `dir`, appending `-N` on collision.
-/// Returns the final path.
+/// Returns the final path. Each candidate is reserved with an exclusive
+/// create, so a concurrent writer can never be truncated (audit 25.03).
 pub fn save_feedback(dir: &Path, title: &str, body: &str, stamp: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
-    let mut path = dir.join(format!("feedback-{stamp}.md"));
-    for n in 2..100 {
-        if !path.exists() {
-            break;
+    let mut reserved: Option<(PathBuf, std::fs::File)> = None;
+    for n in 1..100 {
+        let path = if n == 1 {
+            dir.join(format!("feedback-{stamp}.md"))
+        } else {
+            dir.join(format!("feedback-{stamp}-{n}.md"))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                reserved = Some((path, file));
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
         }
-        path = dir.join(format!("feedback-{stamp}-{n}.md"));
     }
-    let mut f = std::fs::File::create(&path)?;
+    let Some((path, mut f)) = reserved else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "feedback filename space exhausted",
+        ));
+    };
     writeln!(f, "# {title}")?;
     writeln!(f)?;
     writeln!(f, "{body}")?;
@@ -221,5 +240,33 @@ mod tests {
         let b = save_feedback(dir.path(), "t", "b", "s").unwrap();
         assert_ne!(a, b);
         assert!(b.to_string_lossy().contains("feedback-s-2.md"));
+    }
+
+    #[test]
+    fn save_never_overwrites_a_reserved_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("feedback-s.md");
+        std::fs::write(&base, "original").unwrap();
+        let p = save_feedback(dir.path(), "t", "b", "s").unwrap();
+        assert!(p.to_string_lossy().ends_with("feedback-s-2.md"));
+        assert_eq!(std::fs::read_to_string(&base).unwrap(), "original");
+    }
+
+    #[test]
+    fn save_refuses_when_suffix_space_is_exhausted() {
+        let dir = tempfile::tempdir().unwrap();
+        for n in 1..100 {
+            let name = if n == 1 {
+                "feedback-s.md".to_string()
+            } else {
+                format!("feedback-s-{n}.md")
+            };
+            std::fs::write(dir.path().join(name), "original").unwrap();
+        }
+        assert!(save_feedback(dir.path(), "t", "b", "s").is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("feedback-s-99.md")).unwrap(),
+            "original"
+        );
     }
 }
