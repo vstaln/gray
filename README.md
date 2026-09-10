@@ -24,6 +24,10 @@
 
 <br/>
 
+<div align="center">
+  <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
+</div>
+
 Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — everything below ships in the binary today.
 
 | | |
@@ -66,6 +70,14 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 | `/provider` | pick a provider — free tier, API key, OAuth (xAI / Codex), or local |
 | `/key openrouter` | paste an API key right in the CLI (input hidden), stored per-provider in `~/.gray/auth.json` |
 | `/model` | searchable picker over the bundled models.dev catalog |
+
+## Watch it go
+
+<div align="center">
+  <img alt="gray building a complete single-file app in the terminal" src="assets/gray-demo.gif" width="100%" />
+</div>
+
+One prompt, one binary: gray plans, writes, runs, and checks its own work — here it builds a complete single-file app end to end.
 
 ## Commands
 
@@ -115,6 +127,12 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 `gray gateway` exposes gray over Telegram, Discord, and Slack — meant to run as a daemon on a VPS. Config lives in `~/.gray/gateway.yaml`, written `0600` (owner-only). The security model is deny-by-default: nobody talks to the agent unless allowlisted — or paired: the user DMs the bot, gray prints a code, you run `gray gateway pairing approve <platform> <CODE>` (`pairing list` / `revoke` manage the rest).
 
 Always-on: `gray gateway install` (systemd user service, `Restart=always`, survives reboot with linger) or `gray gateway run` under your own supervisor. `gray gateway status --probe` reports heartbeat health; heartbeats live in `~/.gray/state/gateway.heartbeat`, lifecycle in `state/gateway.lifecycle.json`, logs rotate at 10 MB × 3.
+
+<div align="center">
+  <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
+  <img alt="Dithered Jupiter storm" src="assets/space/jupiter-dither.png" width="31%" />
+  <img alt="Dithered Saturn" src="assets/space/saturn-dither.png" width="31%" />
+</div>
 
 ## Safety
 
