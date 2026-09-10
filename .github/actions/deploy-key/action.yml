@@ -1,0 +1,21 @@
+name: deploy key
+description: Install the DEPLOY_KEY SSH key and the CDN host's known_hosts entry.
+
+inputs:
+  key:
+    description: SSH private key for the CDN host
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: install key + known hosts
+      shell: bash
+      env:
+        DEPLOY_KEY: ${{ inputs.key }}
+      run: |
+        [ -n "$DEPLOY_KEY" ] || { echo "::error::DEPLOY_KEY secret not set"; exit 1; }
+        mkdir -p ~/.ssh ~/.config/gray-deploy
+        install -m 600 /dev/null ~/.config/gray-deploy/key
+        printf '%s\n' "$DEPLOY_KEY" > ~/.config/gray-deploy/key
+        cat .github/deploy_known_hosts >> ~/.ssh/known_hosts
