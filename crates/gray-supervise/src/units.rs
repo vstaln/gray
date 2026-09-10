@@ -101,10 +101,7 @@ mod tests {
         assert!(!u.contains("ExecStart="));
         let u = generate_systemd_unit(Path::new("/usr/bin/gray"), evil_home);
         assert!(u.contains("unsupported service path"));
-        let p = generate_launchd_plist(
-            Path::new("/bin/gray&a"),
-            Path::new("/h<m>e"),
-        );
+        let p = generate_launchd_plist(Path::new("/bin/gray&a"), Path::new("/h<m>e"));
         assert!(p.contains("/bin/gray&amp;a"), "got:\n{p}");
         assert!(p.contains("/h&lt;m&gt;e"), "got:\n{p}");
     }

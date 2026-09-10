@@ -20,8 +20,9 @@
 //! The gate lives in gray-core so both the interactive REPL and headless
 //! surfaces (gateway daemon, print mode) enforce the same policy. Session
 //! memory is a per-gate [`ApprovalCache`] (codex's session-scoped approval
-//! cache); the process default is `full` (yolo locally; opt into
-//! `auto`/`read-only` via `/permissions` — remote surfaces stay deny-by-default).
+//! cache); the process default is `auto` (ask; opt into `full` explicitly
+//! via `/permissions`, saved config, or `GRAY_PERMISSION=yolo` — remote
+//! surfaces stay deny-by-default).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -96,7 +97,7 @@ pub struct ApprovalGate {
 impl Default for ApprovalGate {
     fn default() -> Self {
         Self {
-            mode: Arc::new(Mutex::new(MODE_FULL.to_string())),
+            mode: Arc::new(Mutex::new(MODE_AUTO.to_string())),
             cache: Arc::new(ApprovalCache::default()),
         }
     }
@@ -336,13 +337,13 @@ pub async fn ask_user(tool: &str, label: &str, questions: Option<&QuestionBridge
                 .iter()
                 .flat_map(|a| a.answers.iter().map(String::as_str))
                 .collect();
-            if picked.iter().any(|s| {
-                s.contains("always") || s.contains("YOLO") || s.contains("don't ask again")
-            }) {
-                Decision::AcceptAlways
-            } else if picked.contains(&"Yes, for session") {
+            // Exact matches on the labels rendered above. Display text is
+            // untrusted input (free-text notes, future copy edits,
+            // localizations): substring matching once escalated any note
+            // containing "always" into session-wide memory.
+            if picked.contains(&"Yes, for session") {
                 Decision::AcceptForSession
-            } else if picked.iter().any(|s| s.starts_with("Yes")) {
+            } else if picked.contains(&"Yes (Recommended)") {
                 Decision::Accept
             } else if picked.contains(&"No") {
                 Decision::Decline
@@ -567,11 +568,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_always_records_exact_command_not_prefix() {
+    async fn session_choice_remembers_exact_command_only() {
         use crate::questions::QuestionBridge;
-        // Scripted with the legacy "always" label so the run exercises the
-        // AcceptAlways path.
-        let bridge = QuestionBridge::scripted(vec!["Yes, always (don't ask again)".to_string()]);
+        let bridge = QuestionBridge::scripted(vec!["Yes, for session".to_string()]);
         let gate = ApprovalGate::new("auto");
         let out = gate
             .check(
@@ -586,7 +585,7 @@ mod tests {
         assert_eq!(
             gate.mode(),
             "auto",
-            "AcceptAlways must NOT flip global mode anymore"
+            "session memory must NOT flip global mode"
         );
         // Same command, different spelling → must re-ask (Err without a
         // user). Raw bytes are the identity now.
@@ -624,5 +623,61 @@ mod tests {
             )
             .await;
         assert!(out4.is_err());
+    }
+
+    #[tokio::test]
+    async fn label_matching_is_exact_and_fail_closed() {
+        use crate::questions::QuestionBridge;
+        // Rendered labels map to their single decision.
+        for (label, expect_ok) in [
+            ("Yes (Recommended)", true),
+            ("Yes, for session", true),
+            ("No", false),
+        ] {
+            let bridge = QuestionBridge::scripted(vec![label.to_string()]);
+            let gate = ApprovalGate::new("auto");
+            let out = gate
+                .check(
+                    "bash",
+                    &json!({"command": "ls"}),
+                    &cwd(),
+                    "ls",
+                    Some(&bridge),
+                )
+                .await;
+            assert_eq!(out.is_ok(), expect_ok, "label {label:?}");
+        }
+        // Ghost labels, free-text notes, and near-misses never authorize —
+        // a note containing "always" must not escalate into memory.
+        for hostile in [
+            "Yes, always (don't ask again)",
+            "YOLO",
+            "user_note: always do it",
+            "yes",
+            "Yes, for session please",
+            "",
+        ] {
+            let bridge = QuestionBridge::scripted(vec![hostile.to_string()]);
+            let gate = ApprovalGate::new("auto");
+            let out = gate
+                .check(
+                    "bash",
+                    &json!({"command": "ls"}),
+                    &cwd(),
+                    "ls",
+                    Some(&bridge),
+                )
+                .await;
+            assert!(out.is_err(), "must not authorize: {hostile:?}");
+            assert!(
+                !gate.cache.remembered_command("ls"),
+                "must not memorize: {hostile:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_gate_is_auto_not_full() {
+        assert_eq!(ApprovalGate::default().mode(), MODE_AUTO);
     }
 }

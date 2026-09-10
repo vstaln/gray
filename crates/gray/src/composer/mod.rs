@@ -237,7 +237,7 @@ impl Tui {
             model_name: String::new(),
             cwd,
             thinking_effort: String::new(),
-            permission_mode: gray_core::approvals::MODE_FULL.to_string(),
+            permission_mode: gray_core::approvals::MODE_AUTO.to_string(),
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,

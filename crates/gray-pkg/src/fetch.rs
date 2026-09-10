@@ -310,10 +310,7 @@ pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
         anyhow::ensure!(index < MAX_ENTRIES, "too many archive entries");
         let mut entry = entry?;
         let kind = entry.header().entry_type();
-        anyhow::ensure!(
-            kind.is_file() || kind.is_dir(),
-            "unsupported archive entry"
-        );
+        anyhow::ensure!(kind.is_file() || kind.is_dir(), "unsupported archive entry");
         total = total
             .checked_add(entry.size())
             .ok_or_else(|| anyhow::anyhow!("archive size overflow"))?;
