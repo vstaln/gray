@@ -46,11 +46,10 @@ fn open_lock_file(path: &Path) -> Option<std::fs::File> {
 }
 
 pub fn try_acquire_gateway_lock_at(path: &Path) -> Option<std::fs::File> {
-    use fs2::FileExt;
     let f = open_lock_file(path)?;
-    match f.try_lock_exclusive() {
+    match f.try_lock() {
         Ok(()) => Some(f),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+        Err(std::fs::TryLockError::WouldBlock) => None,
         // Locking unsupported on this fs: degrade to old behavior (run).
         Err(_) => Some(f),
     }
@@ -62,16 +61,15 @@ pub fn gateway_locked_elsewhere() -> bool {
 }
 
 pub fn gateway_locked_elsewhere_at(path: &Path) -> bool {
-    use fs2::FileExt;
     let Some(f) = open_lock_file(path) else {
         return false;
     };
-    match f.try_lock_exclusive() {
+    match f.try_lock() {
         Ok(()) => {
-            let _ = FileExt::unlock(&f);
+            let _ = f.unlock();
             false
         }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+        Err(std::fs::TryLockError::WouldBlock) => true,
         Err(_) => false,
     }
 }
