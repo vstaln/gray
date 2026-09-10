@@ -174,13 +174,15 @@ pub fn tool_path(args: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
-/// True when `path` resolves inside `cwd`. Both sides are resolved through
-/// the filesystem: when the target does not exist yet there is nothing to
-/// resolve, so the answer is false (uncertainty asks, never authorizes).
-/// A symlinked parent pointing outside the workspace therefore denies.
+/// True when `path` resolves inside `cwd`. The nearest existing ancestor is
+/// resolved through the filesystem and only verified-missing normal tail
+/// components are appended: a new file under a clean parent allows, while a
+/// new file beneath an outward-pointing symlink denies. Anything
+/// unresolvable returns false (uncertainty asks, never authorizes).
 /// This does not stop a concurrent symlink swap between check and use.
 pub fn path_in_cwd(cwd: &Path, path: &str) -> bool {
-    let joined = if Path::new(path).is_absolute() {
+    use std::ffi::OsString;
+    let joined: PathBuf = if Path::new(path).is_absolute() {
         PathBuf::from(path)
     } else {
         cwd.join(path)
@@ -188,9 +190,38 @@ pub fn path_in_cwd(cwd: &Path, path: &str) -> bool {
     let Ok(root) = std::fs::canonicalize(cwd) else {
         return false;
     };
-    let Ok(target) = std::fs::canonicalize(joined) else {
+    // Walk up to the nearest existing ancestor, collecting the missing tail.
+    let mut ancestor: &Path = &joined;
+    let mut missing: Vec<OsString> = Vec::new();
+    loop {
+        if ancestor.exists() {
+            break;
+        }
+        match ancestor.file_name() {
+            Some(name) => {
+                missing.push(name.to_os_string());
+                match ancestor.parent() {
+                    Some(parent) => ancestor = parent,
+                    None => return false,
+                }
+            }
+            None => return false,
+        }
+    }
+    let Ok(mut target) = std::fs::canonicalize(ancestor) else {
         return false;
     };
+    for comp in missing.iter().rev() {
+        // file_name() never yields `.`/`..`/separators, but re-check: only
+        // normal components may extend a resolved ancestor.
+        let p = Path::new(comp);
+        if p.components().count() != 1
+            || !matches!(p.components().next(), Some(std::path::Component::Normal(_)))
+        {
+            return false;
+        }
+        target.push(comp);
+    }
     target.starts_with(root)
 }
 
@@ -431,8 +462,20 @@ mod tests {
         );
         assert_eq!(
             verdict("auto", "write", &json!({"path": "new-file.rs"}), &work),
-            Verdict::Ask
+            Verdict::Allow,
+            "new file under a clean parent allows"
         );
+        // ...but a new file beneath an outward-pointing symlink denies.
+        #[cfg(unix)]
+        {
+            let outside_dir = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside_dir.path(), work.join("link")).unwrap();
+            assert_eq!(
+                verdict("auto", "write", &json!({"path": "link/evil.rs"}), &work),
+                Verdict::Ask,
+                "symlink-parent escape must ask"
+            );
+        }
         assert_eq!(
             verdict("auto", "write", &json!({"path": "/etc/passwd"}), &work),
             Verdict::Ask
