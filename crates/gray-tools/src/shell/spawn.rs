@@ -55,7 +55,6 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
         child,
         pid,
         pgid: pid as i32, // setsid: group leader, pgid == pid
-        start_ticks: start_ticks_for(pid),
     })
 }
 
@@ -68,24 +67,6 @@ fn check_setsid(ret: libc::pid_t) -> io::Result<()> {
     } else {
         Ok(())
     }
-}
-
-/// Linux `/proc/{pid}/stat` field 22 (starttime); `None` elsewhere
-/// (macOS best-effort, per brief 2D).
-#[cfg(target_os = "linux")]
-fn start_ticks_for(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    stat.rsplit(')')
-        .next()?
-        .split_whitespace()
-        .nth(19)?
-        .parse()
-        .ok()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn start_ticks_for(_pid: u32) -> Option<u64> {
-    None
 }
 
 #[cfg(test)]

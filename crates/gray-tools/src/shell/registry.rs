@@ -53,13 +53,11 @@ struct SessionTasks {
     tasks: BTreeMap<u32, Task>,
 }
 
-#[allow(dead_code)] // start_ticks lands with 2D, pattern_strikes with 3C
 struct Task {
     info: TaskInfo,
     start_ticks: Option<u64>,
     bytes: watch::Sender<u64>,
     exit: watch::Sender<Option<ExitReport>>,
-    pattern_strikes: u8,
 }
 
 impl ProcessRegistry {
@@ -150,7 +148,6 @@ impl ProcessRegistry {
                 start_ticks,
                 bytes: bytes_tx,
                 exit: exit_tx,
-                pattern_strikes: 0,
             },
         );
     }
@@ -452,12 +449,9 @@ mod tests {
 
     fn ok_report() -> ExitReport {
         ExitReport {
-            code: Some(0),
-            signal: None,
             effective: 0,
             label: "exit 0".to_string(),
             note: None,
-            benign: false,
         }
     }
 

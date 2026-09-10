@@ -23,47 +23,14 @@ pub fn prefix_line(n: usize, line: &str) -> String {
     format!("{n:>6}\t{line}")
 }
 
-/// Number a selected window: `lines[0]` is file line `first_n`.
-pub fn prefix_lines(first_n: usize, lines: &[&str]) -> Vec<String> {
-    lines
-        .iter()
-        .enumerate()
-        .map(|(i, l)| prefix_line(first_n + i, l))
-        .collect()
-}
-
-/// Spec-fixed per-line ceiling in chars (canonical home; `stream.rs`
-/// re-exports it — same value, do not drift).
+/// Spec-fixed per-line ceiling in chars (canonical home; `stream.rs` uses it
+/// for its byte cap — same value, do not drift).
 pub const MAX_LINE_CHARS: usize = 2000;
 
 /// Spec-fixed window ceilings (T1.1): at most this many lines and this many
 /// output bytes (prefixes included) per read.
 pub const MAX_LINES: usize = 2000;
 pub const MAX_BYTES: usize = 50 * 1024;
-
-/// Positive-int env override, else `default`.
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(default)
-}
-
-/// Env override `GRAY_READ_MAX_LINE_CHARS` (positive ints only, else default).
-pub fn max_line_chars() -> usize {
-    env_usize("GRAY_READ_MAX_LINE_CHARS", MAX_LINE_CHARS)
-}
-
-/// Env override `GRAY_READ_MAX_LINES` (positive ints only, else default).
-pub fn max_lines() -> usize {
-    env_usize("GRAY_READ_MAX_LINES", MAX_LINES)
-}
-
-/// Env override `GRAY_READ_MAX_BYTES` (positive ints only, else default).
-pub fn max_bytes() -> usize {
-    env_usize("GRAY_READ_MAX_BYTES", MAX_BYTES)
-}
 
 /// Which ceiling cut the window (T1.1 `Cut{Lines|Bytes}`).
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -100,8 +67,7 @@ pub struct Window {
 
 /// Clamp one line when its full char count exceeds `max`. `overflow_chars`
 /// is the stream's discard count for this line (`0` when the whole line is in
-/// `line`). Returns the (possibly clamped) line + hit flag. Identical to
-/// [`clamp_line`] when `overflow_chars == 0`.
+/// `line`). Returns the (possibly clamped) line + hit flag.
 pub fn clamp_counted(line: &str, overflow_chars: u64, max: usize) -> (String, bool) {
     let total = line.chars().count() as u64 + overflow_chars;
     if total <= max as u64 {
@@ -178,33 +144,6 @@ pub fn window(
     }
 }
 
-/// Clamp one line to `max` chars (chars, not bytes): keep the first `max`
-/// chars at a char boundary and append ` …[+{N} chars]` where N is the
-/// omitted char count. Returns the (possibly clamped) line + hit flag.
-pub fn clamp_line(line: &str, max: usize) -> (String, bool) {
-    let total = line.chars().count();
-    if total <= max {
-        return (line.to_string(), false);
-    }
-    let kept: String = line.chars().take(max).collect();
-    (format!("{kept} …[+{} chars]", total - max), true)
-}
-
-/// Clamp a selected window; returns the lines + clamped-line count.
-/// Byte budget is charged AFTER this (caller truncates the clamped text).
-pub fn clamp_lines(lines: &[&str], max: usize) -> (Vec<String>, usize) {
-    let mut out = Vec::with_capacity(lines.len());
-    let mut count = 0;
-    for l in lines {
-        let (c, hit) = clamp_line(l, max);
-        if hit {
-            count += 1;
-        }
-        out.push(c);
-    }
-    (out, count)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,66 +155,9 @@ mod tests {
     }
 
     #[test]
-    fn window_numbering_is_absolute_not_window_relative() {
-        // offset=100 limit=3 → prefixes 100,101,102.
-        let got = prefix_lines(100, &["a", "b", "c"]);
-        assert_eq!(got, vec!["   100\ta", "   101\tb", "   102\tc"]);
-    }
-
-    #[test]
     fn width_never_truncates_large_numbers() {
         assert_eq!(prefix_line(1_000_000, "x"), "1000000\tx");
         assert_eq!(prefix_line(12_345_678, "x"), "12345678\tx");
-    }
-
-    #[test]
-    fn empty_lines_still_carry_their_number() {
-        assert_eq!(prefix_lines(2, &["", "b"]), vec!["     2\t", "     3\tb"]);
-    }
-
-    #[test]
-    fn short_lines_pass_through_unclamped() {
-        let (s, hit) = clamp_line("hello", 2000);
-        assert_eq!(s, "hello");
-        assert!(!hit);
-        // Exactly at the ceiling is not clamped.
-        let line = "x".repeat(2000);
-        let (s, hit) = clamp_line(&line, 2000);
-        assert_eq!(s, line);
-        assert!(!hit);
-    }
-
-    #[test]
-    fn minified_line_keeps_first_2000_chars_plus_marker() {
-        // minified.js shape: one 3,900-char line + normal lines.
-        let line = "a".repeat(3900);
-        let (got, hit) = clamp_line(&line, 2000);
-        assert!(hit);
-        assert_eq!(got, format!("{} …[+1900 chars]", "a".repeat(2000)));
-        // Remaining lines still shown; count is per-window.
-        let (lines, count) = clamp_lines(&[&line, "b", "c"], 2000);
-        assert_eq!(count, 1);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[1], "b");
-    }
-
-    #[test]
-    fn clamp_is_char_based_and_never_splits_a_codepoint() {
-        // 2001 emoji: char 2001 is kept whole then cut, marker counts chars.
-        let line = "😀".repeat(2001);
-        let (got, hit) = clamp_line(&line, 2000);
-        assert!(hit);
-        assert_eq!(got, format!("{} …[+1 chars]", "😀".repeat(2000)));
-        assert!(got.starts_with(&"😀".repeat(2000)));
-    }
-
-    #[test]
-    fn ceiling_defaults_to_2000() {
-        assert_eq!(MAX_LINE_CHARS, 2000);
-        // Explicit-max path covers the unit logic; the env override in
-        // max_line_chars() is exercised at the wave gate (serial env).
-        let (got, _) = clamp_line(&"y".repeat(10), 5);
-        assert_eq!(got, "yyyyy …[+5 chars]");
     }
 
     fn wlines(n: usize) -> Vec<WindowLine> {
@@ -291,10 +173,7 @@ mod tests {
     fn ceilings_default_to_spec_values() {
         assert_eq!(MAX_LINES, 2000);
         assert_eq!(MAX_BYTES, 50 * 1024);
-        // Env-unset defaults (overrides are exercised serially at the gate —
-        // no env mutation here so parallel tests cannot flake).
-        assert_eq!(max_lines(), MAX_LINES);
-        assert_eq!(max_bytes(), MAX_BYTES);
+        assert_eq!(MAX_LINE_CHARS, 2000);
     }
 
     #[test]
@@ -423,13 +302,5 @@ mod tests {
         assert_eq!(w.cut, None);
         assert_eq!(w.clamped, 1);
         assert_eq!(w.shown[0], format!("     1\t{kept_text} …[+3000 chars]"));
-        // clamp_counted matches clamp_line when nothing was discarded.
-        let (a, ha) = clamp_counted("hello", 0, 2000);
-        let (b, hb) = clamp_line("hello", 2000);
-        assert_eq!((a, ha), (b, hb));
-        let long = "z".repeat(3900);
-        let (a, ha) = clamp_counted(&long, 0, 2000);
-        let (b, hb) = clamp_line(&long, 2000);
-        assert_eq!((a, ha), (b, hb));
     }
 }

@@ -4,7 +4,7 @@
 //! `BufReader` pull stream: lines before `offset` are counted, never decoded
 //! or stored, and no single line ever occupies more than ~8 KiB — longer
 //! lines are cut at [`LINE_BYTE_CAP`] and the rest discarded to the next
-//! `\n` (counted as `overflow_bytes`). Worst-case resident buffers per
+//! `\n` (counted as `overflow_chars`). Worst-case resident buffers per
 //! stream: ~8 KiB line scratch + 64 KiB reader = ~72 KiB, regardless of file
 //! size (a 200 MiB single line streams, it never materializes).
 //!
@@ -35,8 +35,7 @@
 //! [`LineStream::count_rest_lines`] (exact remaining lines: newlines plus one
 //! for a trailing unterminated line; `fill_buf`/`consume` pass, no per-line
 //! buffering). Files over [`COUNT_SKIP_LIMIT_BYTES`] skip the count: report
-//! [`count_skipped_total`] and still provide `next_offset`. The legacy
-//! [`LineStream::count_rest`] (newline count only) stays for its unit tests.
+//! `notices::count_skipped_total` and still provide `next_offset`.
 //!
 //! T2.2 deferred cut: the driver reads one line past a filled window before
 //! claiming more remains (empty → complete; non-empty → the cut names that
@@ -50,12 +49,7 @@
 //!
 //! Cancellation: `cancel` is checked at open, on every `next_line` entry,
 //! on every backlog chunk, and inside the drain. A hit marks the stream
-//! done and yields `None`; the driver renders [`cancelled_note`].
-//!
-//! Notice strings live in `notices.rs` (moved verbatim at the wave gate);
-//! [`cancelled_note`]/[`count_skipped_total`] below delegate there.
-//! `MAX_LINE_CHARS` is re-exported from `window.rs` (canonical home, same
-//! spec-fixed value 2000 — do not drift).
+//! done and yields `None`; the driver renders `notices::cancelled_note`.
 //!
 //! Driver contract (`read/mod.rs::execute_streamed`, which replaced the
 //! `tokio::fs::read` → `prepare` → `text.lines()` chain in T2.2):
@@ -85,17 +79,12 @@ use super::hygiene;
 /// Reader chunk size: one `fill_buf` window.
 pub const READ_CHUNK_BYTES: usize = 64 * 1024;
 
-/// Spec-fixed line ceiling in chars (canonical home is `window.rs`;
-/// re-exported here so existing callers/tests keep working).
-pub const MAX_LINE_CHARS: usize = super::window::MAX_LINE_CHARS;
+/// Spec-fixed line ceiling in chars (canonical home is `window.rs`).
+pub const LINE_BYTE_CAP: usize = super::window::MAX_LINE_CHARS * 4;
 
-/// No buffered line prefix ever exceeds this: `MAX_LINE_CHARS * 4`
-/// (worst-case UTF-8 expansion). Past it, the stream stops buffering and
-/// discards to the next `\n`, counting [`RawLine::overflow_bytes`].
-pub const LINE_BYTE_CAP: usize = MAX_LINE_CHARS * 4;
-
-/// Files at or under this size get an exact total via [`LineStream::count_rest`];
-/// larger files skip the count ([`count_skipped_total`]) but keep `next_offset`.
+/// Files at or under this size get an exact total via
+/// [`LineStream::count_rest_lines`]; larger files skip the count
+/// (`notices::count_skipped_total`) but keep `next_offset`.
 pub const COUNT_SKIP_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Cap for exact line totals: past this many remaining lines the read tool
@@ -103,17 +92,6 @@ pub const COUNT_SKIP_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// 100k lines ≈ tens of MB of the slowest per-byte work; files under the
 /// ledger hash limit with fewer lines are unaffected (exact + hashed).
 pub const MAX_COUNT_LINES: u64 = 100_000;
-
-/// `[read: cancelled after <n> lines]` — delegates to `notices.rs`.
-pub fn cancelled_note(lines_read: usize) -> String {
-    super::notices::cancelled_note(lines_read)
-}
-
-/// `≥<min> lines (file is <size>, count skipped)` fragment for the total
-/// when the file exceeds [`COUNT_SKIP_LIMIT_BYTES`] — delegates to `notices.rs`.
-pub fn count_skipped_total(min_total: usize, file_size: u64) -> String {
-    super::notices::count_skipped_total(min_total, file_size)
-}
 
 /// True when the file is small enough for an exact total count.
 pub fn should_count_exact(file_size: u64) -> bool {
@@ -159,23 +137,17 @@ impl<R: AsyncRead + Unpin> AsyncRead for HashRead<R> {
 /// One hygiene-cleaned line. `bytes` never holds more than
 /// [`LINE_BYTE_CAP`] + 1 (cap plus the kept `\n` before stripping… in
 /// practice ≤ cap after terminator/CRLF/BOM strips); the remainder of an
-/// over-long line is counted in `overflow_bytes`/`overflow_chars`, never stored.
+/// over-long line is counted in `overflow_chars`, never stored.
 pub struct RawLine {
     /// Absolute 1-based file line number.
     pub line_no: usize,
     /// Line content: terminator, trailing `\r`, and (first line) BOM removed.
     /// Lossy-decoded on demand via [`RawLine::text`].
     pub bytes: Vec<u8>,
-    /// Discarded content bytes of this line past [`LINE_BYTE_CAP`]
-    /// (terminating `\n` excluded).
-    pub overflow_bytes: u64,
     /// Codepoints in the discarded bytes ([`count_chars`]).
     /// `text().chars().count() + overflow_chars` is the line's full char
     /// count (exact for valid UTF-8), so the clamp marker stays exact.
     pub overflow_chars: u64,
-    /// False for a final line with no trailing newline (and for an
-    /// overflow line cut by EOF rather than `\n`).
-    pub had_newline: bool,
 }
 
 impl RawLine {
@@ -189,7 +161,6 @@ impl RawLine {
 /// Bounded-memory forward line reader over a regular file.
 pub struct LineStream {
     reader: BufReader<HashRead<File>>,
-    display: String,
     cancel: CancellationToken,
     line_no: usize,
     file_size: u64,
@@ -221,7 +192,6 @@ impl LineStream {
         let done = binary_note.is_some();
         Ok(Self {
             reader,
-            display: display.to_string(),
             cancel,
             line_no: 0,
             file_size,
@@ -317,9 +287,7 @@ impl LineStream {
         Ok(Some(RawLine {
             line_no: self.line_no,
             bytes,
-            overflow_bytes,
             overflow_chars,
-            had_newline,
         }))
     }
 
@@ -381,13 +349,6 @@ impl LineStream {
             self.reader.consume(len);
         }
         Ok((newlines, saw_any, ended_newline, false))
-    }
-
-    /// Newline-count-only drain of the rest of the file (no per-line
-    /// buffering). Call at a line boundary (the invariant `next_line`
-    /// maintains); the caller adds one if the last line was unterminated.
-    pub async fn count_rest(&mut self) -> std::io::Result<u64> {
-        Ok(self.drain_rest().await?.0)
     }
 
     /// Exact remaining line count after the last yielded line: newlines plus
@@ -456,11 +417,6 @@ impl LineStream {
     pub fn cancelled(&self) -> bool {
         self.cancelled
     }
-
-    /// Display path used for sniff notes (kept for driver messages).
-    pub fn display(&self) -> &str {
-        &self.display
-    }
 }
 
 #[cfg(test)]
@@ -498,16 +454,14 @@ mod tests {
         let line = s.next_line().await.unwrap().unwrap();
         assert_eq!(line.line_no, 1);
         assert_eq!(line.bytes.len(), LINE_BYTE_CAP + 1);
-        assert_eq!(line.overflow_bytes, 20_000 - (LINE_BYTE_CAP + 1) as u64);
-        assert!(!line.had_newline);
+        assert_eq!(line.overflow_chars, 20_000 - (LINE_BYTE_CAP + 1) as u64);
         assert!(s.next_line().await.unwrap().is_none());
         // Same with a trailing newline: terminator excluded from the overflow count.
         std::fs::write(&path, [vec![b'y'; 20_000], vec![b'\n']].concat()).unwrap();
         let mut s = LineStream::open(&path, "big.txt", token()).await.unwrap();
         let line = s.next_line().await.unwrap().unwrap();
         assert_eq!(line.bytes.len(), LINE_BYTE_CAP + 1);
-        assert_eq!(line.overflow_bytes, 20_000 - (LINE_BYTE_CAP + 1) as u64);
-        assert!(line.had_newline);
+        assert_eq!(line.overflow_chars, 20_000 - (LINE_BYTE_CAP + 1) as u64);
         assert!(s.next_line().await.unwrap().is_none());
     }
 
@@ -535,16 +489,22 @@ mod tests {
             let path = dir.path().join(name);
             let data = std::fs::read(&path).unwrap();
             let mut s = LineStream::open(&path, name, token()).await.unwrap();
-            match super::super::hygiene::prepare(&data, name) {
-                Ok(text) => {
+            // Oracle: the whole-file hygiene composition (BOM → sniff → lossy
+            // decode → LF normalize), matching the stream's per-line rules.
+            let bytes = super::super::hygiene::strip_bom(&data);
+            match super::super::hygiene::sniff(bytes, name) {
+                Ok(()) => {
                     assert_eq!(s.binary_note(), None, "{name}");
+                    let text = String::from_utf8_lossy(bytes)
+                        .replace("\r\n", "\n")
+                        .replace('\r', "\n");
                     let expected: Vec<&str> = text.lines().collect();
                     let mut got = Vec::new();
                     let mut n = 0;
                     while let Some(line) = s.next_line().await.unwrap() {
                         n += 1;
                         assert_eq!(line.line_no, n, "{name} line_no");
-                        assert_eq!(line.overflow_bytes, 0, "{name} no fixture overflows");
+                        assert_eq!(line.overflow_chars, 0, "{name} no fixture overflows");
                         got.push(line.text().into_owned());
                     }
                     assert_eq!(got, expected, "{name} byte-for-byte parity");
@@ -582,25 +542,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn count_rest_counts_newlines_only() {
-        let dir = tempfile::TempDir::new().unwrap();
-        super::super::testkit::write_fixtures(dir.path(), false).unwrap();
-        let path = dir.path().join("crlf.txt");
-        let mut s = LineStream::open(&path, "crlf.txt", token()).await.unwrap();
-        s.next_line().await.unwrap().unwrap();
-        assert_eq!(s.count_rest().await.unwrap(), 2);
-        // Unterminated tail: newlines undercount lines by one; had_newline flags it.
-        let p2 = dir.path().join("u.txt");
-        std::fs::write(&p2, b"a\nb").unwrap();
-        let mut s = LineStream::open(&p2, "u.txt", token()).await.unwrap();
-        let l1 = s.next_line().await.unwrap().unwrap();
-        assert!(l1.had_newline);
-        let l2 = s.next_line().await.unwrap().unwrap();
-        assert!(!l2.had_newline);
-        assert_eq!(s.count_rest().await.unwrap(), 0);
-    }
-
-    #[tokio::test]
     async fn big_lines_stream_with_tiny_buffers() {
         if !super::super::testkit::big_enabled() {
             return;
@@ -626,7 +567,7 @@ mod tests {
         assert_eq!(line.line_no, 1);
         assert_eq!(line.bytes.len(), LINE_BYTE_CAP + 1); // ~8 KiB, never 5 MiB
         assert_eq!(
-            line.overflow_bytes,
+            line.overflow_chars,
             5 * 1024 * 1024 - (LINE_BYTE_CAP + 1) as u64
         );
         assert!(s.next_line().await.unwrap().is_none());
@@ -652,7 +593,7 @@ mod tests {
         assert!(s.cancelled());
         assert_eq!(s.line_no(), 0);
         assert_eq!(
-            cancelled_note(s.line_no()),
+            super::super::notices::cancelled_note(s.line_no()),
             "[read: cancelled after 0 lines]"
         );
         // Mid-stream cancel reports lines already yielded.
@@ -666,7 +607,7 @@ mod tests {
         assert!(s.next_line().await.unwrap().is_none());
         assert!(s.cancelled());
         assert_eq!(
-            cancelled_note(s.line_no()),
+            super::super::notices::cancelled_note(s.line_no()),
             "[read: cancelled after 2 lines]"
         );
     }
@@ -676,7 +617,7 @@ mod tests {
         assert!(should_count_exact(COUNT_SKIP_LIMIT_BYTES));
         assert!(!should_count_exact(COUNT_SKIP_LIMIT_BYTES + 1));
         assert_eq!(
-            count_skipped_total(2001, 200 * 1024 * 1024),
+            super::super::notices::count_skipped_total(2001, 200 * 1024 * 1024),
             "≥2001 lines (file is 200.0MB, count skipped)"
         );
     }
@@ -684,7 +625,7 @@ mod tests {
     #[test]
     fn caps_are_spec_values() {
         assert_eq!(READ_CHUNK_BYTES, 64 * 1024);
-        assert_eq!(MAX_LINE_CHARS, 2000);
+        assert_eq!(super::super::window::MAX_LINE_CHARS, 2000);
         assert_eq!(LINE_BYTE_CAP, 8000);
         assert_eq!(COUNT_SKIP_LIMIT_BYTES, 64 * 1024 * 1024);
     }
@@ -697,8 +638,7 @@ mod tests {
         std::fs::write(&path, vec![b'x'; 20_000]).unwrap();
         let mut s = LineStream::open(&path, "a.txt", token()).await.unwrap();
         let line = s.next_line().await.unwrap().unwrap();
-        assert_eq!(line.overflow_bytes, 20_000 - (LINE_BYTE_CAP + 1) as u64);
-        assert_eq!(line.overflow_chars, line.overflow_bytes);
+        assert_eq!(line.overflow_chars, 20_000 - (LINE_BYTE_CAP + 1) as u64);
         // Emoji (4 bytes each): 5000 chars over 20,000 bytes.
         let path = dir.path().join("e.txt");
         std::fs::write(&path, "😀".repeat(5000)).unwrap();
@@ -742,9 +682,6 @@ mod tests {
         std::fs::write(&p, b"a\nb\nc").unwrap();
         let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
         s.next_line().await.unwrap().unwrap();
-        assert_eq!(s.count_rest().await.unwrap(), 1);
-        let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
-        s.next_line().await.unwrap().unwrap();
         assert_eq!(s.count_rest_lines().await.unwrap(), 2);
         // Terminated tail: lines == newlines.
         std::fs::write(&p, b"a\nb\n").unwrap();
@@ -754,8 +691,7 @@ mod tests {
         // Nothing left: zero.
         let mut s = LineStream::open(&p, "u.txt", token()).await.unwrap();
         s.next_line().await.unwrap().unwrap();
-        let l2 = s.next_line().await.unwrap().unwrap();
-        assert!(l2.had_newline);
+        s.next_line().await.unwrap().unwrap();
         assert_eq!(s.count_rest_lines().await.unwrap(), 0);
     }
 

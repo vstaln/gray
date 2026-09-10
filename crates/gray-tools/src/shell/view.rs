@@ -278,12 +278,9 @@ mod tests {
 
     fn report(label: &str, note: Option<&str>) -> ExitReport {
         ExitReport {
-            code: Some(0),
-            signal: None,
             effective: 0,
             label: label.into(),
             note: note.map(|s| s.into()),
-            benign: false,
         }
     }
 
@@ -438,12 +435,9 @@ mod tests {
         assert!(h3.contains("exit 137 (SIGKILL) (likely OOM-killed"), "{h3}");
 
         let benign = ExitReport {
-            code: Some(1),
-            signal: None,
             effective: 1,
             label: "exit 1".into(),
             note: Some("no matches — not an error".into()),
-            benign: true,
         };
         let h4 = header(&t, Some(&benign), Some(&v), Duration::from_millis(100));
         assert!(h4.contains("(no matches — not an error)"), "{h4}");

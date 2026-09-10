@@ -38,17 +38,9 @@ fn relativize(result_path: &str, search_path: &Path) -> String {
 pub const FIND_SNIPPET: &str = "Find files by glob pattern (respects .gitignore)";
 pub const FIND_GUIDELINES: &[&str] = &[];
 
-pub const GLOB_SNIPPET: &str = "Fast file search using glob patterns (respects .gitignore)";
-pub const GLOB_GUIDELINES: &[&str] = &[];
-
 /// Filename glob search. Respects .gitignore via `fd` when available,
 /// otherwise falls back to a manual walk.
 pub struct FindTool;
-
-/// `glob` tool (opencode glob.ts parity): fast pattern matching honoring
-/// .gitignore. Thin alias over the `find` infrastructure — same fd-first +
-/// ignore/globset fallback path, same output shape.
-pub struct GlobTool;
 
 #[async_trait]
 impl Tool for FindTool {
@@ -109,41 +101,6 @@ impl Tool for FindTool {
 
         // Fallback: manual recursive walk with simple glob matching.
         fallback_walk(&pattern, &search_path, effective_limit).await
-    }
-}
-
-#[async_trait]
-impl Tool for GlobTool {
-    fn def(&self) -> ToolDef {
-        ToolDef::new(
-            "glob",
-            format!(
-                "Fast file search using glob patterns. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to {DEFAULT_LIMIT} results or {}KB (whichever is hit first).",
-                MAX_BYTES / 1024
-            ),
-            json!({
-                "type": "object",
-                "properties": {
-                    "pattern": { "type": "string", "description": "The glob pattern to match files against" },
-                    "path": { "type": "string", "description": "The directory to search in. If not specified, the current working directory will be used." },
-                    "limit": { "type": "integer", "description": "Maximum number of results (default: 1000)" }
-                },
-                "required": ["pattern"]
-            }),
-        )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(GLOB_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(GLOB_GUIDELINES)
-    }
-
-    async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        // ponytail: delegate — one search path (fd → ignore/globset), not two.
-        FindTool.execute(ctx, args).await
     }
 }
 
@@ -256,23 +213,13 @@ async fn try_fd(
     }
 
     // If fd exited with error and produced no output, treat as failure and fall back.
-    if let Some(code) = status.code()
+    if lines.is_empty()
+        && let Some(code) = status.code()
         && code != 0
-        && lines.is_empty()
+        && code != 1
+        && !stderr_str.trim().is_empty()
     {
-        // Check if fd is actually usable; if error is about missing fd, fall back.
-        // Otherwise surface the error.
-        let msg = stderr_str.trim();
-        if !msg.is_empty() && lines.is_empty() {
-            // If no output, let fallback handle it or return no matches.
-            // Only return error if we clearly have no results and an error.
-            // For now, fall through to fallback if we got nothing.
-            if code != 0 && code != 1 {
-                // Return error only if we have stderr and no fallback would help.
-                // But still try fallback first by returning None? Let's surface error.
-                return Some(fail(msg.to_string()));
-            }
-        }
+        return Some(fail(stderr_str.trim().to_string()));
     }
 
     if lines.is_empty() {
@@ -413,70 +360,4 @@ async fn fallback_walk(pattern: &str, search_path: &Path, effective_limit: usize
     }
 
     finish(output)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    // UNRUN (cargo test banned under X — verified via check + clippy only).
-    #[test]
-    fn glob_def_is_named_glob_with_pattern_required() {
-        let def = Tool::def(&GlobTool);
-        assert_eq!(def.name, "glob");
-        let required = def
-            .parameters
-            .get("required")
-            .and_then(|v| v.as_array())
-            .expect("required");
-        assert!(required.contains(&json!("pattern")));
-        let props = def
-            .parameters
-            .get("properties")
-            .and_then(|v| v.as_object())
-            .expect("properties");
-        assert!(props.contains_key("pattern"));
-        assert!(props.contains_key("path"));
-    }
-
-    // UNRUN (cargo test banned under X — verified via check + clippy only).
-    #[test]
-    fn glob_shares_find_schema_shape() {
-        let g = Tool::def(&GlobTool);
-        let f = Tool::def(&FindTool);
-        assert_ne!(g.name, f.name);
-        for def in [&g, &f] {
-            let required = def
-                .parameters
-                .get("required")
-                .and_then(|v| v.as_array())
-                .expect("required");
-            assert!(required.contains(&json!("pattern")), "{}", def.name);
-        }
-    }
-
-    // UNRUN (cargo test banned under X — verified via check + clippy only).
-    #[test]
-    fn builtin_registry_contains_glob_beside_find() {
-        let reg = crate::Registry::builtin();
-        let names = reg.tool_names();
-        assert!(names.contains(&"glob".to_string()), "{names:?}");
-        assert!(names.contains(&"find".to_string()), "{names:?}");
-        let pos_glob = names.iter().position(|n| n == "glob").unwrap();
-        let pos_find = names.iter().position(|n| n == "find").unwrap();
-        assert!(
-            (pos_glob as i64 - pos_find as i64).abs() <= 2,
-            "glob should sit beside find, got {names:?}"
-        );
-        assert!(reg.get("glob").is_some());
-    }
-
-    // UNRUN (cargo test banned under X — verified via check + clippy only).
-    #[tokio::test]
-    async fn glob_rejects_missing_pattern_like_find() {
-        let ctx = ToolContext::default();
-        let out = Tool::execute(&GlobTool, &ctx, json!({})).await;
-        assert!(out.is_error, "{out:?}");
-    }
 }

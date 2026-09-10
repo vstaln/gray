@@ -293,8 +293,6 @@ async fn kill_task(id: TaskId, session: &str) -> Result<KillReport, String> {
     })?;
     if let TaskState::Exited { report, .. } = &info.state {
         return Ok(KillReport {
-            pid: info.pid,
-            method: KillMethod::AlreadyExited,
             report: Some(report.clone()),
             describe: format!("{id} already exited ({}) — nothing signalled", report.label),
         });
@@ -323,12 +321,7 @@ async fn kill_task(id: TaskId, session: &str) -> Result<KillReport, String> {
         ),
         KillMethod::AlreadyExited => format!("{id} exited on its own — nothing signalled"),
     };
-    Ok(KillReport {
-        pid: info.pid,
-        method,
-        report,
-        describe,
-    })
+    Ok(KillReport { report, describe })
 }
 
 async fn kill_pid(pid: u32, session: &str, ctx: &ToolContext) -> Result<KillReport, String> {
@@ -374,8 +367,6 @@ async fn kill_pid(pid: u32, session: &str, ctx: &ToolContext) -> Result<KillRepo
         KillMethod::AlreadyExited => format!("foreign pid {pid} ({comm}) already gone"),
     };
     Ok(KillReport {
-        pid,
-        method,
         report: None,
         describe,
     })
@@ -550,7 +541,7 @@ mod tests {
         .expect("kill returns")
         .expect("kill ok");
         assert!(
-            matches!(rep.method, KillMethod::TermAnswered(_)),
+            rep.describe.contains("terminated after"),
             "{}",
             rep.describe
         );
@@ -623,11 +614,7 @@ mod tests {
         let rep = kill(KillTarget::Task(id), &s, &ToolContext::default())
             .await
             .expect("already-exited is ok");
-        assert!(
-            matches!(rep.method, KillMethod::AlreadyExited),
-            "{}",
-            rep.describe
-        );
+        assert!(rep.describe.contains("already exited"), "{}", rep.describe);
         assert_eq!(sig_calls(), 0, "no signal for an exited task");
     }
 
@@ -651,7 +638,7 @@ mod tests {
             .await
             .expect("cleanup kill");
         assert!(
-            matches!(rep.method, KillMethod::TermAnswered(_)),
+            rep.describe.contains("terminated after"),
             "{}",
             rep.describe
         );
@@ -770,7 +757,7 @@ mod tests {
         .expect("kill returns")
         .expect("approved kill ok");
         assert!(
-            matches!(rep.method, KillMethod::TermAnswered(_)),
+            rep.describe.contains("terminated after"),
             "{}",
             rep.describe
         );
