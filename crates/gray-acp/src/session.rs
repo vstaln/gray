@@ -33,6 +33,16 @@ impl PermissionPrompt for DenyAllPrompt {
     }
 }
 
+/// Aborts the task on drop: cancellation watchers must not outlive the
+/// turn that spawned them.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SessionInfo {
     pub agent_key: String,
@@ -64,6 +74,9 @@ fn answer_permission(
     prompt: &Arc<dyn PermissionPrompt>,
     responder: Responder<RequestPermissionResponse>,
 ) -> Result<(), agent_client_protocol::Error> {
+    use agent_client_protocol::schema::v1::PermissionOptionKind;
+    // Option IDs are opaque: choose by kind, never by ID string. Prefer the
+    // narrowest allow; unknown/unrepresentable outcomes deny.
     let title = req.tool_call.tool_call_id.0.to_string();
     let option_ids: Vec<String> = req
         .options
@@ -71,15 +84,19 @@ fn answer_permission(
         .map(|o| o.option_id.0.to_string())
         .collect();
     let chosen = if auto_approve {
-        option_ids
+        req.options
             .iter()
-            .find(|id| *id == "allow-always")
-            .or_else(|| option_ids.iter().find(|id| *id == "allow-once"))
-            .or_else(|| option_ids.first())
-            .cloned()
+            .find(|o| o.kind == PermissionOptionKind::AllowOnce)
+            .or_else(|| {
+                req.options
+                    .iter()
+                    .find(|o| o.kind == PermissionOptionKind::AllowAlways)
+            })
+            .map(|o| o.option_id.0.to_string())
     } else {
-        prompt.as_ref().ask(&title, option_ids)
+        prompt.as_ref().ask(&title, option_ids.clone())
     };
+    let chosen = chosen.filter(|id| option_ids.contains(id));
     match chosen {
         Some(id) => responder.respond(RequestPermissionResponse::new(
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
@@ -397,7 +414,7 @@ impl AcpSession {
             .map_err(|e| AcpError::Other(anyhow::anyhow!(e.to_string())))?;
 
         Ok(Self {
-            spec: opts.spec,
+            spec,
             display,
             session_id,
             mode: None,
@@ -482,7 +499,9 @@ impl AcpSession {
                     let cancel_conn = conn.clone();
                     let cancel_flag_spawn = cancel_flag.clone();
                     let sid = session.session_id().clone();
-                    tokio::spawn(async move {
+                    // Scoped to this turn: abort on prompt completion instead
+                    // of polling forever on success.
+                    let _cancel_task = AbortOnDrop(tokio::spawn(async move {
                         loop {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             if cancel_flag_spawn.load(std::sync::atomic::Ordering::SeqCst) {
@@ -491,7 +510,7 @@ impl AcpSession {
                                 break;
                             }
                         }
-                    });
+                    }));
                     session
                         .send_prompt(text)
                         .map_err(|e| err("session/prompt", e.to_string()))?;
@@ -504,13 +523,11 @@ impl AcpSession {
                         match msg {
                             SessionMessage::SessionMessage(dispatch) => {
                                 MatchDispatch::new(dispatch)
-                                    .if_notification(async |n: SessionNotification| {
-                                        let mut mapper = EventMapper::new();
-                                        for ev in mapper.map_update(&n.update) {
-                                            let _ = ev;
-                                        }
-                                        Ok(())
-                                    })
+                                    // Updates already flow through the
+                                    // connection-level mapper in
+                                    // client_builder; mapping them again
+                                    // here only to discard is dead code.
+                                    .if_notification(async |_n: SessionNotification| Ok(()))
                                     .await
                                     .otherwise_ignore()
                                     .map_err(|e| err("session/update", e.to_string()))?;
