@@ -39,7 +39,7 @@ gray = { path = "crates/gray" }
 gray-acp = { path = "crates/gray-acp" }
 gray-core = { path = "crates/gray-core" }
 gray-cron = { path = "crates/gray-cron" }
-gray-gateway = { path = "crates/gray-gateway", default-features = false }
+gray-gateway = { path = "crates/gray-gateway" }
 gray-extras = { path = "crates/gray-extras" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
