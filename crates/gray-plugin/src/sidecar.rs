@@ -34,7 +34,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, timeout};
@@ -92,6 +92,9 @@ struct Transport {
     /// Plugin→host handler (`host/run`/`host/say`). `Arc` so respawned
     /// readers keep the same slot; `None` = reply `{"error":...}`.
     host_handler: Arc<Mutex<Option<HostHandler>>>,
+    /// Bound on concurrent plugin→host handler tasks (shared across
+    /// respawns so a respawn storm can't multiply it).
+    host_slots: Arc<tokio::sync::Semaphore>,
 }
 
 pub struct SidecarPlugin {
@@ -131,17 +134,50 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
 /// Sidecar-originated requests (`method: "host/..."` + **string** `id`)
 /// dispatch to the host handler and get a `{"id","result"}` reply on the
 /// same stdio; anything else without a pending numeric id is dropped.
+/// Max wire frame: longer lines are skipped, never buffered whole.
+const MAX_FRAME: usize = 256 * 1024;
+/// Max concurrent plugin→host handler tasks; excess gets an overload
+/// error instead of spawning unbounded tasks.
+const MAX_HOST_TASKS: usize = 4;
+/// Max in-flight requests per transport; excess fails fast.
+const MAX_PENDING: usize = 64;
+
 fn spawn_reader(
     stdout: ChildStdout,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: Arc<Mutex<Pending>>,
     host_handler: Arc<Mutex<Option<HostHandler>>>,
+    host_slots: Arc<tokio::sync::Semaphore>,
     epoch: u64,
 ) {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let Ok(v) = serde_json::from_str::<Value>(&line) else {
+        let mut reader = BufReader::new(stdout);
+        // Consecutive over-cap chunks without a newline: a wedged child
+        // streaming garbage. Break so the loop can't spin forever; pending
+        // requests still fail via their own TTLs.
+        let mut oversize_streak = 0u32;
+        loop {
+            let mut buf = Vec::new();
+            let n = match (&mut reader)
+                .take((MAX_FRAME + 1) as u64)
+                .read_until(b'\n', &mut buf)
+                .await
+            {
+                Ok(n) => n,
+                Err(_) => break,
+            };
+            if n == 0 {
+                break; // EOF
+            }
+            if n > MAX_FRAME {
+                oversize_streak += 1;
+                if oversize_streak > 64 {
+                    break;
+                }
+                continue;
+            }
+            oversize_streak = 0;
+            let Ok(v) = serde_json::from_slice::<Value>(&buf) else {
                 continue;
             };
             // Plugin→host request: string id + host/ method.
@@ -155,7 +191,20 @@ fn spawn_reader(
                 let method_owned = method.to_string();
                 let stdin = stdin.clone();
                 let host_handler = host_handler.clone();
+                let host_slots = host_slots.clone();
+                // Bounded handler tasks: at capacity, reply overload
+                // instead of spawning unbounded work.
+                let Ok(_permit) = host_slots.try_acquire_owned() else {
+                    let reply = json!({"id": id, "result": {"error": "host overloaded"}});
+                    let _ = stdin
+                        .lock()
+                        .await
+                        .write_all(format!("{reply}\n").as_bytes())
+                        .await;
+                    continue;
+                };
                 tokio::spawn(async move {
+                    let _permit = _permit;
                     let handler = host_handler.lock().await.clone();
                     let result = match handler {
                         Some(h) => {
@@ -199,11 +248,13 @@ impl Transport {
         }));
         let stdin = Arc::new(Mutex::new(stdin));
         let host_handler = Arc::new(Mutex::new(None));
+        let host_slots = Arc::new(tokio::sync::Semaphore::new(MAX_HOST_TASKS));
         spawn_reader(
             stdout,
             stdin.clone(),
             pending.clone(),
             host_handler.clone(),
+            host_slots.clone(),
             0,
         );
         Arc::new(Self {
@@ -213,6 +264,7 @@ impl Transport {
             next_id: AtomicU64::new(1),
             argv,
             host_handler,
+            host_slots,
         })
     }
 
@@ -236,6 +288,7 @@ impl Transport {
                     self.stdin.clone(),
                     self.pending.clone(),
                     self.host_handler.clone(),
+                    self.host_slots.clone(),
                     p.epoch,
                 );
                 true
@@ -285,6 +338,14 @@ impl Transport {
         let outcome = timeout(ttl, async {
             if !self.ensure_alive().await {
                 anyhow::bail!("sidecar child dead and respawn failed");
+            }
+            // Bound in-flight requests: each entry is TTL-scoped, but a
+            // request flood must not grow the map without limit.
+            {
+                let pending = self.pending.lock().await;
+                if pending.map.len() >= MAX_PENDING {
+                    anyhow::bail!("sidecar overloaded: too many in-flight requests");
+                }
             }
             let (tx, rx) = oneshot::channel();
             self.pending.lock().await.map.insert(id, tx);
@@ -506,14 +567,20 @@ impl Tool for SidecarTool {
             .request("tool/call", Some(params), Duration::from_secs(30))
             .await
         {
-            Ok(v) => ToolOutput {
-                content: v
+            Ok(v) => {
+                // Route through the shared truncation (50 KiB cap with
+                // annotation): raw sidecar content must not bypass it.
+                let content = v
                     .get("content")
                     .and_then(|c| c.as_str())
                     .unwrap_or_default()
-                    .into(),
-                is_error: v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false),
-            },
+                    .to_string();
+                if v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false) {
+                    gray_core::tool_out::fail(content)
+                } else {
+                    gray_core::tool_out::finish(content)
+                }
+            }
             Err(e) => {
                 log::warn!(target: "gray_plugin", "sidecar {name} tool call failed, skipping: {e}");
                 let msg = e.to_string();
