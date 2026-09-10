@@ -116,6 +116,11 @@ impl Agent {
         }
         emit!(AgentEvent::Start);
         let mut total_usage = Usage::default();
+        // Billable turn totals: every provider request bills its full
+        // input, so turn_end/cost accounting sums every round's report.
+        // total_usage stays the context gauge (latest input + running
+        // output) for StepUsage and the footer.
+        let mut billed = Usage::default();
         let mut round: u32 = 0;
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
@@ -143,7 +148,7 @@ impl Agent {
             // half-finished assistant message would leave the transcript
             // inconsistent for the provider.
             if ctx.cancel.is_cancelled() {
-                self.emit_turn_end(&total_usage).await;
+                self.emit_turn_end(&billed).await;
                 return Err(CoreError::Cancelled);
             }
             if let Some(m) = self.max_rounds
@@ -158,8 +163,8 @@ impl Agent {
                 );
                 self.messages.push(Message::assistant(note.clone()));
                 emit!(AgentEvent::text_delta(format!("\n{note}\n")));
-                emit!(AgentEvent::turn_end(StopReason::EndTurn, total_usage));
-                self.emit_turn_end(&total_usage).await;
+                emit!(AgentEvent::turn_end(StopReason::EndTurn, billed.clone()));
+                self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
             round += 1;
@@ -169,10 +174,16 @@ impl Agent {
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
-                // history, so re-check without looping forever.
+                // history, so re-check without looping forever. Errors finalize
+                // the turn first: no silent exit without turn_end.
                 while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
-                    if !self.try_compact_budgeted().await? {
-                        break;
+                    match self.try_compact_budgeted().await {
+                        Ok(true) => continue,
+                        Ok(false) => break,
+                        Err(e) => {
+                            self.emit_turn_end(&billed).await;
+                            return Err(e);
+                        }
                     }
                 }
             }
@@ -217,7 +228,7 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
-                            self.emit_turn_end(&total_usage).await;
+                            self.emit_turn_end(&billed).await;
                             return Err(CoreError::Cancelled);
                         }
                     };
@@ -225,7 +236,7 @@ impl Agent {
                     // must not grow the retained turn without bound.
                     const MAX_EVENTS: usize = 100_000;
                     if events.len() >= MAX_EVENTS {
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Provider("turn event limit exceeded".into()));
                     }
                     match next_event {
@@ -253,7 +264,7 @@ impl Agent {
                             // sending index = 2^40 would otherwise allocate gigabytes here.
                             const MAX_TOOL_CALL_INDEX: usize = 4096;
                             if index > MAX_TOOL_CALL_INDEX {
-                                self.emit_turn_end(&total_usage).await;
+                                self.emit_turn_end(&billed).await;
                                 return Err(CoreError::Provider(format!(
                                     "tool-call index {index} exceeds limit ({MAX_TOOL_CALL_INDEX})"
                                 )));
@@ -270,7 +281,7 @@ impl Agent {
                             {
                                 if let Some(existing) = slot.id.as_ref() {
                                     if existing != &new_id {
-                                        self.emit_turn_end(&total_usage).await;
+                                        self.emit_turn_end(&billed).await;
                                         return Err(CoreError::Provider(format!(
                                             "provider changed tool-call id for index {index}: {existing:?} -> {new_id:?}"
                                         )));
@@ -284,7 +295,7 @@ impl Agent {
                             {
                                 if let Some(existing) = slot.name.as_ref() {
                                     if existing != &new_name {
-                                        self.emit_turn_end(&total_usage).await;
+                                        self.emit_turn_end(&billed).await;
                                         return Err(CoreError::Provider(format!(
                                             "provider changed tool-call name for index {index}: {existing:?} -> {new_name:?}"
                                         )));
@@ -369,13 +380,13 @@ impl Agent {
                                     Ok(true) => continue 'turn,
                                     _ => {
                                         let err = CoreError::from(e);
-                                        self.emit_turn_end(&total_usage).await;
+                                        self.emit_turn_end(&billed).await;
                                         return Err(err);
                                     }
                                 }
                             }
                             let err = CoreError::from(e);
-                            self.emit_turn_end(&total_usage).await;
+                            self.emit_turn_end(&billed).await;
                             return Err(err);
                         }
                         None => {
@@ -392,7 +403,7 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
-                            self.emit_turn_end(&total_usage).await;
+                            self.emit_turn_end(&billed).await;
                             return Err(CoreError::Provider(
                                 "provider stream ended without completion".into(),
                             ));
@@ -417,6 +428,7 @@ impl Agent {
             total_usage.reasoning_tokens += usage.reasoning_tokens;
             total_usage.total_tokens = 0;
             total_usage.normalize();
+            billed.accumulate(&usage);
             // Stream-identity hardening: calls that never got a provider ID
             // get a conversation-unique fallback now and emit their single
             // start here, so every dispatched call already has its start and
@@ -539,8 +551,8 @@ impl Agent {
                     0.0
                 };
                 log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
-                emit!(AgentEvent::turn_end(stop_reason, total_usage));
-                self.emit_turn_end(&total_usage).await;
+                emit!(AgentEvent::turn_end(stop_reason, billed.clone()));
+                self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
 
@@ -559,7 +571,7 @@ impl Agent {
                 }
                 if repeat >= 3 {
                     answer_pending_tools(self, &tool_uses, 0, "aborted: tool loop detected");
-                    self.emit_turn_end(&total_usage).await;
+                    self.emit_turn_end(&billed).await;
                     return Err(CoreError::LoopDetected(format!(
                         "same tool call 3× in a row: {sig}"
                     )));
@@ -585,7 +597,7 @@ impl Agent {
             }
             if stall_rounds >= STALL_ABORT_ROUNDS {
                 answer_pending_tools(self, &tool_uses, 0, "aborted: exploration stall");
-                self.emit_turn_end(&total_usage).await;
+                self.emit_turn_end(&billed).await;
                 let explored: Vec<String> = tool_uses.iter().map(|(_, n, _)| n.clone()).collect();
                 return Err(CoreError::LoopDetected(format!(
                     "Stopped: {stall_rounds} consecutive exploration rounds with no file changes — last round used [{}]",
@@ -695,7 +707,7 @@ impl Agent {
                             "cancelled by user",
                         );
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     }
                     // Spawn: one future per ready item. Everything the future
@@ -787,7 +799,7 @@ impl Agent {
                     }
                     if shortfall {
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     }
                     continue;
@@ -798,7 +810,7 @@ impl Agent {
                 let (id, name, args) = &tool_uses[idx];
                 if ctx.cancel.is_cancelled() {
                     answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
-                    self.emit_turn_end(&total_usage).await;
+                    self.emit_turn_end(&billed).await;
                     return Err(CoreError::Cancelled);
                 }
                 // `start` already emitted with the final ID (live or at
@@ -899,7 +911,7 @@ impl Agent {
                     },
                     _ = ctx.cancel.cancelled() => {
                         answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     },
                 };

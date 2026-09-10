@@ -49,6 +49,27 @@ impl Usage {
         }
     }
 
+    /// Add another report into this cumulative total (saturating).
+    /// Every provider request bills its full input, so billable turn
+    /// totals sum every round's report — unlike the context gauge, which
+    /// tracks only the latest request.
+    pub fn accumulate(&mut self, other: &Usage) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        self.reasoning_tokens = self.reasoning_tokens.saturating_add(other.reasoning_tokens);
+        self.cached_tokens = self.cached_tokens.saturating_add(other.cached_tokens);
+        self.non_cached_input_tokens = self
+            .non_cached_input_tokens
+            .saturating_add(other.non_cached_input_tokens);
+        self.cache_read_input_tokens = self
+            .cache_read_input_tokens
+            .saturating_add(other.cache_read_input_tokens);
+        self.cache_write_input_tokens = self
+            .cache_write_input_tokens
+            .saturating_add(other.cache_write_input_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+    }
+
     /// Computes the total tokens consumed — prefers provider `total_tokens` if set.
     pub fn total(&self) -> usize {
         if self.total_tokens != 0 {

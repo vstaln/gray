@@ -895,7 +895,18 @@ mod agent_tests {
                 AgentEvent::StepUsage {
                     usage: Usage::new(20, 15)
                 },
-                AgentEvent::turn_end(StopReason::EndTurn, Usage::new(20, 15)),
+                // turn_end carries billed sums across rounds (10+20 in,
+                // 5+10 out), not the latest report.
+                AgentEvent::turn_end(
+                    StopReason::EndTurn,
+                    Usage {
+                        input_tokens: 30,
+                        output_tokens: 15,
+                        non_cached_input_tokens: 30,
+                        total_tokens: 45,
+                        ..Usage::default()
+                    },
+                ),
             ]
         );
 
@@ -952,6 +963,8 @@ mod agent_tests {
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
                 },
+                // Billed across both rounds; the second reports no usage,
+                // so only round one counts.
                 AgentEvent::turn_end(StopReason::EndTurn, Usage::new(10, 5)),
             ]
         );
