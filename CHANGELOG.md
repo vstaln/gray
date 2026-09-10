@@ -63,6 +63,7 @@
 - README: default vs feature-gated source-build table; no blanket "ships in the binary" claim (GRY-004)
 - Deps: gray-acp is an optional default-off `acp` feature (GRY-001); release builds use `--features all-platforms,acp`
 - Deps: workspace Tokio declares explicit features instead of `full` (GRY-002)
+- README demo GIF: dropped the 3.5s dead lead-in, stable 10fps, diff palette (2.3MB → 1.4MB, 12.8s → 9.5s)
 
 ## [0.1.0] - 2026-09-07
 
