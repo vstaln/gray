@@ -235,6 +235,19 @@ mod tests {
     }
 
     #[test]
+    fn wrap_plain_fits_wide_chars_in_cells() {
+        let rows = wrap_plain("界界界界界", 10); // 6-cell content width
+        assert_eq!(rows.concat(), "界界界界界");
+        for row in &rows {
+            assert!(
+                crate::text_width::display_width(row) <= 6,
+                "row overflows: {row:?}"
+            );
+        }
+        assert!(rows.len() > 1);
+    }
+
+    #[test]
     fn cursor_row_highlighted_on_entry() {
         let (q, _rx) = mk(1);
         let lines = panel_lines(&q, "", 80, 100);

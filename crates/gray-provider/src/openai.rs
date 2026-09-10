@@ -23,7 +23,10 @@ const MAX_ATTEMPTS: usize = 3;
 const MAX_TOOL_CALL_INDEX: usize = 4096;
 
 /// An OpenAI-compatible LLM provider implementing the `Provider` trait.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is redacted by hand: the struct carries a plaintext API key,
+/// so the derived impl would leak it into any log that formats the provider.
+#[derive(Clone)]
 pub struct OpenAiProvider {
     base_url: Url,
     api_key: String,
@@ -53,7 +56,9 @@ pub struct OpenAiProvider {
 }
 
 /// Builder for constructing an `OpenAiProvider`.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is redacted by hand (see [`OpenAiProvider`]).
+#[derive(Clone)]
 pub struct OpenAiProviderBuilder {
     base_url: Option<String>,
     api_key: String,
@@ -66,6 +71,22 @@ pub struct OpenAiProviderBuilder {
     request_max_retries: Option<usize>,
     stream_max_retries: Option<usize>,
     stream_idle_timeout: Option<Duration>,
+}
+
+impl std::fmt::Debug for OpenAiProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiProvider")
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for OpenAiProviderBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenAiProviderBuilder")
+            .field("model", &self.model)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpenAiProviderBuilder {
@@ -2793,6 +2814,15 @@ impl Provider for OpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_never_contains_api_key() {
+        let p = OpenAiProviderBuilder::new("sk-sentinel-secret", "m")
+            .build()
+            .unwrap();
+        let dbg = format!("{p:?}");
+        assert!(!dbg.contains("sk-sentinel-secret"), "{dbg}");
+    }
 
     #[test]
     fn unsupported_model_500_maps_to_bad_request_and_preserves_cf_ray() {

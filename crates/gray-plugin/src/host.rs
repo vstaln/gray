@@ -34,17 +34,22 @@ pub async fn run_prompt_child(cwd: &Path, prompt: &str) -> Value {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,
         Err(e) => return json!({"error": format!("host/run spawn: {e}")}),
     };
-    // Drain stdout concurrently: `wait()` alone deadlocks past the pipe buffer.
+    // Drain stdout concurrently (capped: a runaway child must not fill
+    // memory): `wait()` alone deadlocks past the pipe buffer.
+    const MAX_CHILD_OUT: u64 = 256 * 1024;
     let mut piped = child.stdout.take();
     let drain = tokio::spawn(async move {
         let mut v = Vec::new();
         if let Some(ref mut o) = piped {
-            let _ = o.read_to_end(&mut v).await;
+            let _ = tokio::io::AsyncReadExt::take(o, MAX_CHILD_OUT + 1)
+                .read_to_end(&mut v)
+                .await;
         }
         v
     });
@@ -54,11 +59,16 @@ pub async fn run_prompt_child(cwd: &Path, prompt: &str) -> Value {
         Err(_) => {
             let _ = child.kill().await;
             let _ = child.wait().await;
-            let _ = drain.await;
+            // A descendant can hold stdout open past the child's death; never
+            // hang the caller waiting on the drain.
+            let _ = tokio::time::timeout(Duration::from_secs(2), drain).await;
             return json!({"error": "host/run timed out after 28s"});
         }
     };
-    let bytes = drain.await.unwrap_or_default();
+    let bytes = match tokio::time::timeout(Duration::from_secs(2), drain).await {
+        Ok(Ok(v)) => v,
+        _ => Vec::new(),
+    };
     if !status.success() {
         return json!({"error": format!("host/run: gray -p exited {status}")});
     }

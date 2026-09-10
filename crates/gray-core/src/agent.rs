@@ -141,7 +141,7 @@ pub trait Tool: Send + Sync {
 
     /// One-line snippet rendered in the system prompt's "Available tools" list.
     /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         None
     }
 
@@ -184,9 +184,10 @@ pub enum ToolBefore {
 }
 
 impl ToolBefore {
-    /// Parse a `tool/before` result. Lenient: unknown shapes fail open
-    /// (pre-v1 behavior) so a confused plugin can't wedge the agent loop.
-    pub fn from_result(v: &serde_json::Value, args: &serde_json::Value) -> Self {
+    /// Parse a `tool/before` result. Strict: only documented verdicts
+    /// authorize or rewrite; anything else denies (a claimed hook's
+    /// confusion must not become permission).
+    pub fn from_result(v: &serde_json::Value) -> Self {
         match v.get("decision").and_then(|d| d.as_str()) {
             Some("deny") => Self::Deny(
                 v.get("reason")
@@ -195,8 +196,14 @@ impl ToolBefore {
                     .unwrap_or("denied by plugin")
                     .to_string(),
             ),
-            Some("modify") => Self::Modify(v.get("args").cloned().unwrap_or_else(|| args.clone())),
-            _ => Self::Allow,
+            Some("modify") => match v.get("args") {
+                Some(a) if a.is_object() => Self::Modify(a.clone()),
+                _ => Self::Deny("plugin modify verdict missing object args".to_string()),
+            },
+            // A claimed hook's verdict must be explicit: anything but a
+            // documented "allow" denies rather than silently authorizing.
+            Some("allow") => Self::Allow,
+            _ => Self::Deny("plugin returned an unrecognized policy verdict".to_string()),
         }
     }
 }
@@ -878,7 +885,6 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_1", TOOL_NAME),
-                AgentEvent::tool_call_progress("call_1", TOOL_NAME, r#"{"q":"#),
                 AgentEvent::tool_call_progress("call_1", TOOL_NAME, r#"{"q":"x"}"#),
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
@@ -889,7 +895,18 @@ mod agent_tests {
                 AgentEvent::StepUsage {
                     usage: Usage::new(20, 15)
                 },
-                AgentEvent::turn_end(StopReason::EndTurn, Usage::new(20, 15)),
+                // turn_end carries billed sums across rounds (10+20 in,
+                // 5+10 out), not the latest report.
+                AgentEvent::turn_end(
+                    StopReason::EndTurn,
+                    Usage {
+                        input_tokens: 30,
+                        output_tokens: 15,
+                        non_cached_input_tokens: 30,
+                        total_tokens: 45,
+                        ..Usage::default()
+                    },
+                ),
             ]
         );
 
@@ -936,7 +953,6 @@ mod agent_tests {
                 AgentEvent::Start,
                 AgentEvent::text_delta("checking..."),
                 AgentEvent::tool_call_start("call_err", TOOL_NAME),
-                AgentEvent::tool_call_progress("call_err", TOOL_NAME, r#"{"q":"#),
                 AgentEvent::tool_call_progress("call_err", TOOL_NAME, r#"{"q":"x"}"#),
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
@@ -947,6 +963,8 @@ mod agent_tests {
                 AgentEvent::StepUsage {
                     usage: Usage::new(10, 5)
                 },
+                // Billed across both rounds; the second reports no usage,
+                // so only round one counts.
                 AgentEvent::turn_end(StopReason::EndTurn, Usage::new(10, 5)),
             ]
         );
@@ -2361,5 +2379,181 @@ mod agent_tests {
                 .count();
             assert_eq!(n, 1, "tool {id} must have exactly one ToolResult message");
         }
+    }
+
+    #[tokio::test]
+    async fn name_before_id_emits_no_start_until_id_arrives() {
+        // Name-only delta buffers args without any start/progress; the ID
+        // arriving later emits the single start with the provider ID.
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::tool_call_delta(0, None, Some(TOOL_NAME.into()), r#"{"q":"#),
+                StreamEvent::tool_call_delta(0, Some("c-late".into()), None, r#""x"}"#),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+            ],
+            end_script(),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+
+        let starts: Vec<(String, String)> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolCallStart { id, name } => Some((id.clone(), name.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            starts,
+            vec![("c-late".to_string(), TOOL_NAME.to_string())],
+            "exactly one start with the late provider ID, got {starts:?}"
+        );
+        for e in &events {
+            match e {
+                AgentEvent::ToolCallProgress { id, .. }
+                | AgentEvent::ToolCallEnd { id, .. }
+                | AgentEvent::ToolResult { id, .. } => {
+                    assert_eq!(id, "c-late", "no fallback ID may leak, got {e:?}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn conflicting_id_reset_is_provider_protocol_error() {
+        let provider = FakeProvider::new(vec![vec![
+            StreamEvent::tool_call_delta(
+                0,
+                Some("c-a".into()),
+                Some(TOOL_NAME.into()),
+                r#"{"q":"x"}"#,
+            ),
+            StreamEvent::tool_call_delta(0, Some("c-b".into()), None, ""),
+            StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+        ]]);
+        let executor = FakeExecutor::new(ToolOutput::ok("must-not-run"));
+        let call_log = executor.calls.clone();
+        let mut agent =
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+        let err = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect_err("conflicting ID must fail the turn");
+        assert!(
+            err.to_string().contains("changed tool-call id"),
+            "protocol error, got {err:?}"
+        );
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "conflicted call must never execute"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_id_call_gets_single_fallback_used_everywhere() {
+        let provider = FakeProvider::new(vec![
+            vec![
+                StreamEvent::tool_call_delta(0, None, Some(TOOL_NAME.into()), r#"{"q":"x"}"#),
+                StreamEvent::message_complete(Some(StopReason::ToolUse), None),
+            ],
+            end_script(),
+        ]);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        let events = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .unwrap();
+
+        let mut ids = std::collections::HashSet::new();
+        for e in &events {
+            match e {
+                AgentEvent::ToolCallStart { id, .. }
+                | AgentEvent::ToolCallProgress { id, .. }
+                | AgentEvent::ToolCallEnd { id, .. }
+                | AgentEvent::ToolResult { id, .. } => {
+                    ids.insert(id.clone());
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(ids.len(), 1, "one fallback ID everywhere, got {ids:?}");
+        let fallback = ids.into_iter().next().unwrap();
+        assert!(
+            fallback.starts_with("gray_call_"),
+            "fallback must be conversation-unique, got {fallback:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e,
+                AgentEvent::ToolCallStart { id, .. } if id == "call_0")),
+            "positional call_{{index}} fallback must be gone: {events:?}"
+        );
+        // History agrees: ToolUse and ToolResult share the fallback.
+        let use_id = agent.messages().iter().find_map(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+        });
+        let result_id = agent.messages().iter().find_map(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::ToolResult { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+        });
+        assert_eq!(use_id.as_deref(), Some(fallback.as_str()));
+        assert_eq!(result_id.as_deref(), Some(fallback.as_str()));
+    }
+
+    #[tokio::test]
+    async fn eof_with_tool_pending_executes_nothing() {
+        // Stream ends without MessageComplete after a tool delta: the
+        // pending call must never execute and the turn errors.
+        let provider = FakeProvider::new(vec![vec![StreamEvent::tool_call_delta(
+            0,
+            Some("c-eof".into()),
+            Some(TOOL_NAME.into()),
+            r#"{"q":"x"}"#,
+        )]]);
+        let executor = FakeExecutor::new(ToolOutput::ok("must-not-run"));
+        let call_log = executor.calls.clone();
+        let mut agent =
+            Agent::new(Box::new(provider), Arc::new(executor)).with_tools(vec![tool_def()]);
+
+        let err = agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect_err("EOF without completion must fail");
+        assert!(
+            err.to_string().contains("without completion"),
+            "got {err:?}"
+        );
+        assert!(
+            call_log.lock().expect("calls lock poisoned").is_empty(),
+            "truncated-stream tool must never execute"
+        );
+        assert!(
+            !agent.messages().iter().any(|m| m.content.iter().any(|b| {
+                matches!(
+                    b,
+                    ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+                )
+            })),
+            "no orphaned call/result may land in history"
+        );
     }
 }

@@ -1183,15 +1183,35 @@ fn if_version(v: &str) -> String {
 /// commit so installs keep working instead of rotting. Fail-closed when the
 /// pin doesn't resolve upstream.
 fn checkout_pinned_commit(repo_dir: &Path, plugin: &str, want: &str) -> anyhow::Result<()> {
+    // The pin must be a full commit object ID: refs, short prefixes, and
+    // option-looking strings are rejected before touching git.
+    if want.len() != 40 || !want.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("claude plugin {plugin} has a malformed pinned commit");
+    }
     if git_output(&["rev-parse", "HEAD"], repo_dir)? == want {
         return Ok(());
     }
     git_output(&["fetch", "--depth", "1", "origin", want], repo_dir).map_err(|e| {
         anyhow::anyhow!("claude plugin {plugin} pinned commit {want} unavailable upstream ({e:#})")
     })?;
-    git_output(&["checkout", "--quiet", want], repo_dir).map_err(|e| {
+    git_output(
+        &[
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "--quiet",
+            want,
+        ],
+        repo_dir,
+    )
+    .map_err(|e| {
         anyhow::anyhow!("claude plugin {plugin} cannot check out pinned commit {want} ({e:#})")
     })?;
+    // Verify the result, not the command: checkout succeeding does not prove
+    // HEAD is the pinned commit.
+    if git_output(&["rev-parse", "HEAD"], repo_dir)? != want {
+        anyhow::bail!("claude plugin {plugin} checkout did not land on pinned commit {want}");
+    }
     Ok(())
 }
 

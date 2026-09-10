@@ -31,14 +31,15 @@ impl WriteTool {
     }
 
     /// T3.2 decision table (pure; `None` = allow), in order: (1) new file →
-    /// allow; (2) unread → refuse unless `force`; (3) changed on disk →
-    /// refuse; (4) full view → allow; (5) same bytes (clamped-but-complete) →
-    /// allow; (6) partial → refuse with the resume offset. `force` bypasses
-    /// (2) and (6) only.
+    /// allow; (2) unread → refuse unless `force`; (3) changed on disk
+    /// (mtime/size, or content hash when both sides hashed) → refuse;
+    /// (4) full view (delivered coverage) → allow; (5) partial → refuse
+    /// with the resume offset. `force` bypasses (2) and (5) only, never (3).
+    /// Disk hash gates freshness only, never overwrite authorization.
     pub(crate) fn decide(
         entry: Option<&LedgerEntry>,
         meta: Option<&std::fs::Metadata>,
-        old: &str,
+        old_bytes: &[u8],
         force: bool,
         display: &str,
     ) -> Option<String> {
@@ -52,24 +53,27 @@ impl WriteTool {
         if meta.modified().is_ok_and(|t| t != entry.mtime) || meta.len() != entry.size {
             return Some(notices::write_changed(display));
         }
-        // `force` bypasses (2) and (6) — but never (3) above.
+        // Freshness via bytes when already read: same mtime/size but different
+        // bytes still counts as changed.
+        if let (Some(expected), Some(actual)) =
+            (entry.content_hash, FileLedger::hash_bytes(old_bytes))
+            && expected != actual
+        {
+            return Some(notices::write_changed(display));
+        }
+        // `force` bypasses (2) and (5) — but never (3) above.
         if force {
             return None;
         }
         if entry.full_view {
             return None;
         }
-        if entry
-            .content_hash
-            .is_some_and(|h| Some(h) == FileLedger::hash_bytes(old.as_bytes()))
-        {
-            return None;
-        }
+        let old_text = String::from_utf8_lossy(old_bytes);
         Some(notices::write_partial(
             display,
             entry.first_line,
             entry.last_line,
-            old.lines().count(),
+            old_text.lines().count(),
         ))
     }
 }
@@ -80,6 +84,51 @@ impl Default for WriteTool {
             ledger: Arc::new(FileLedger::new()),
         }
     }
+}
+
+/// Atomic file replace via temp + rename with mode preservation.
+///
+/// Symlink/hardlink semantics: rename replaces the directory entry itself, so
+/// a symlink at `path` is replaced (not followed — the link is gone, the old
+/// target keeps its bytes) and a hardlink is broken (new inode; other names
+/// keep the old content). Crash safety (no half-written target) wins over
+/// link-following here; callers that must follow a symlink should resolve it
+/// first.
+pub(crate) async fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let existing_perms = tokio::fs::metadata(path)
+        .await
+        .ok()
+        .map(|m| m.permissions());
+    let tmp_name = format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .map(|s| s.to_string_lossy())
+            .as_deref()
+            .unwrap_or("file"),
+        uuid::Uuid::new_v4()
+    );
+    let tmp = match path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(dir) => dir.join(tmp_name),
+        None => std::path::PathBuf::from(tmp_name),
+    };
+    let result: std::io::Result<()> = async {
+        tokio::fs::write(&tmp, bytes).await?;
+        if let Some(perms) = existing_perms {
+            tokio::fs::set_permissions(&tmp, perms).await?;
+        }
+        tokio::fs::rename(&tmp, path).await?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result
 }
 
 #[async_trait]
@@ -102,7 +151,7 @@ impl Tool for WriteTool {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Full file contents (default: empty string)"
+                        "description": "Full file contents (explicit empty string truncates)"
                     },
                     "force": {
                         "type": "boolean",
@@ -122,7 +171,7 @@ impl Tool for WriteTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(WRITE_SNIPPET)
     }
 
@@ -147,16 +196,31 @@ impl Tool for WriteTool {
             None => return fail("missing required argument 'path'".to_string()),
         };
 
-        let content = args
+        // Content must be an explicit string: missing or wrong-typed content
+        // must never become an empty-string truncation. Explicit "" stays valid.
+        let content_value = args
             .get("content")
             .or_else(|| args.get("contents"))
             .or_else(|| args.get("text"))
             .or_else(|| args.get("code"))
             .or_else(|| args.get("body"))
-            .or_else(|| args.get("data"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+            .or_else(|| args.get("data"));
+        let content = match content_value {
+            None => {
+                return fail(
+                    "missing required argument 'content' (provide an explicit empty string to truncate)".to_string(),
+                );
+            }
+            Some(v) => match v.as_str() {
+                Some(s) => s.to_string(),
+                None => {
+                    return fail(format!(
+                        "invalid argument 'content': expected string, got {}",
+                        crate::read::args::render_got(v)
+                    ));
+                }
+            },
+        };
 
         let full = resolve_path(&ctx.cwd, &path);
         let display = full.display().to_string();
@@ -164,30 +228,48 @@ impl Tool for WriteTool {
             Ok(v) => v.unwrap_or(false),
             Err(e) => return e,
         };
-        let disk_meta = tokio::fs::metadata(&full).await.ok();
-        let old = if disk_meta.is_some() {
-            tokio::fs::read_to_string(&full).await.unwrap_or_default()
-        } else {
-            String::new()
+        // Distinguish NotFound (new file) from other metadata errors: only
+        // NotFound means "does not exist yet"; anything else fails closed.
+        let disk_meta = match tokio::fs::metadata(&full).await {
+            Ok(m) => Some(m),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return fail(format!("write failed for {}: {e}", full.display())),
         };
+        // Validate regular files: refuse directories/special files before any
+        // read or write (metadata follows symlinks; see atomic_write for link
+        // semantics).
+        if let Some(meta) = disk_meta.as_ref()
+            && !meta.file_type().is_file()
+        {
+            return fail(format!("write refused: {display} is not a regular file"));
+        }
+        // No read-errors-become-empty: NotFound after an existing metadata is
+        // a race (treat as changed); other read errors fail closed.
+        let old_bytes: Vec<u8> = if disk_meta.is_some() {
+            match tokio::fs::read(&full).await {
+                Ok(b) => b,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return fail(notices::write_changed(&display));
+                }
+                Err(e) => return fail(format!("write failed for {}: {e}", full.display())),
+            }
+        } else {
+            Vec::new()
+        };
+        let old = String::from_utf8_lossy(&old_bytes).into_owned();
         // T3.2 ledger guard: refuse blind/partial/stale overwrites (pure table
         // above). Runs before any directory creation or write.
         if let Some(msg) = Self::decide(
             self.ledger.get(&full).as_ref(),
             disk_meta.as_ref(),
-            &old,
+            &old_bytes,
             force,
             &display,
         ) {
             return fail(msg);
         }
-        if let Some(parent) = full.parent()
-            && let Err(e) = tokio::fs::create_dir_all(parent).await
-        {
-            return fail(format!("write failed for {}: {e}", full.display()));
-        }
         let existed = disk_meta.is_some();
-        match tokio::fs::write(&full, content.as_bytes()).await {
+        match atomic_write(&full, content.as_bytes()).await {
             Ok(()) => {
                 // T3.2 ledger: the whole new content is known — the next write
                 // is allowed without a re-read, and the next read is full.
@@ -249,14 +331,14 @@ mod tests {
 
     #[test]
     fn new_file_is_always_allowed() {
-        assert!(WriteTool::decide(None, None, "", false, "new.txt").is_none());
+        assert!(WriteTool::decide(None, None, b"", false, "new.txt").is_none());
     }
 
     #[test]
     fn unread_existing_file_is_refused_naming_read_and_force() {
         let (_dir, p, old) = fixture(b"one\ntwo\n");
         let meta = std::fs::metadata(&p).unwrap();
-        let msg = WriteTool::decide(None, Some(&meta), &old, false, "f.txt")
+        let msg = WriteTool::decide(None, Some(&meta), old.as_bytes(), false, "f.txt")
             .expect("unread write must be refused");
         assert!(msg.contains("has not been read"), "{msg}");
         assert!(msg.contains("read f.txt"), "{msg}");
@@ -267,33 +349,75 @@ mod tests {
     fn force_bypasses_unread_and_partial_but_not_stale() {
         let (_dir, p, old) = fixture(b"one\ntwo\n");
         let meta = std::fs::metadata(&p).unwrap();
-        assert!(WriteTool::decide(None, Some(&meta), &old, true, "f.txt").is_none());
+        assert!(WriteTool::decide(None, Some(&meta), old.as_bytes(), true, "f.txt").is_none());
         let partial = entry_for(&p, false, None);
-        assert!(WriteTool::decide(Some(&partial), Some(&meta), &old, true, "f.txt").is_none());
+        assert!(
+            WriteTool::decide(Some(&partial), Some(&meta), old.as_bytes(), true, "f.txt").is_none()
+        );
         // Staleness still refuses even with force.
         std::fs::write(&p, b"one\ntwo\nthree\n").unwrap();
         let grown = std::fs::metadata(&p).unwrap();
-        assert!(WriteTool::decide(Some(&partial), Some(&grown), &old, true, "f.txt").is_some());
+        let current = std::fs::read(&p).unwrap();
+        assert!(WriteTool::decide(Some(&partial), Some(&grown), &current, true, "f.txt").is_some());
     }
 
     #[test]
-    fn full_view_and_clamped_complete_writes_are_allowed() {
+    fn full_view_writes_are_allowed() {
         let (_dir, p, old) = fixture(b"one\ntwo\n");
         let meta = std::fs::metadata(&p).unwrap();
         let full = entry_for(&p, true, None);
-        assert!(WriteTool::decide(Some(&full), Some(&meta), &old, false, "f.txt").is_none());
-        // Rule 5: partial window, but every byte was seen (hash matches disk).
-        let clamped = entry_for(&p, false, FileLedger::hash_bytes(old.as_bytes()));
-        assert!(WriteTool::decide(Some(&clamped), Some(&meta), &old, false, "f.txt").is_none());
+        assert!(
+            WriteTool::decide(Some(&full), Some(&meta), old.as_bytes(), false, "f.txt").is_none()
+        );
+    }
+
+    #[test]
+    fn partial_with_matching_hash_is_still_refused_hash_is_freshness_only() {
+        // Old lossy rule allowed a partial view when the hash matched disk.
+        // New contract: hash gates freshness only; delivered coverage gates
+        // overwrite, so a partial view is refused even with a matching hash.
+        let (_dir, p, old) = fixture(b"one\ntwo\n");
+        let meta = std::fs::metadata(&p).unwrap();
+        let partial = entry_for(&p, false, FileLedger::hash_bytes(old.as_bytes()));
+        let msg = WriteTool::decide(Some(&partial), Some(&meta), old.as_bytes(), false, "f.txt")
+            .expect("partial write must be refused even with matching hash");
+        assert!(msg.contains("only part of"), "{msg}");
+    }
+
+    #[test]
+    fn hash_mismatch_with_same_mtime_shape_is_stale() {
+        // Same size, forged-old mtime in entry is already stale via mtime;
+        // here the bytes differ while mtime/size match (entry forged to match
+        // disk meta): hash mismatch must still refuse as changed.
+        let (_dir, p, _old) = fixture(b"one\ntwo\n");
+        let meta = std::fs::metadata(&p).unwrap();
+        let entry = LedgerEntry {
+            mtime: meta.modified().unwrap(),
+            size: meta.len(),
+            content_hash: FileLedger::hash_bytes(b"different bytes same len!!"),
+            full_view: true,
+            window: (1, None),
+            first_line: 1,
+            last_line: 2,
+            dedup_armed: true,
+            read_at: std::time::Instant::now(),
+        };
+        let current = std::fs::read(&p).unwrap();
+        // Sanity: same length so only the hash can catch it.
+        assert_eq!(current.len() as u64, meta.len());
+        let msg = WriteTool::decide(Some(&entry), Some(&meta), &current, false, "f.txt")
+            .expect("hash mismatch must be stale");
+        assert!(msg.contains("changed on disk"), "{msg}");
     }
 
     #[test]
     fn changed_on_disk_is_refused() {
-        let (_dir, p, old) = fixture(b"one\ntwo\n");
+        let (_dir, p, _old) = fixture(b"one\ntwo\n");
         let stale = entry_for(&p, true, None);
         std::fs::write(&p, b"one\ntwo\nthree\n").unwrap();
         let meta = std::fs::metadata(&p).unwrap();
-        let msg = WriteTool::decide(Some(&stale), Some(&meta), &old, false, "f.txt")
+        let current = std::fs::read(&p).unwrap();
+        let msg = WriteTool::decide(Some(&stale), Some(&meta), &current, false, "f.txt")
             .expect("stale write must be refused");
         assert!(msg.contains("changed on disk"), "{msg}");
     }
@@ -304,7 +428,7 @@ mod tests {
         let meta = std::fs::metadata(&p).unwrap();
         let mut partial = entry_for(&p, false, None);
         partial.last_line = 2;
-        let msg = WriteTool::decide(Some(&partial), Some(&meta), &old, false, "f.txt")
+        let msg = WriteTool::decide(Some(&partial), Some(&meta), old.as_bytes(), false, "f.txt")
             .expect("partial write must be refused");
         assert!(msg.contains("only part of f.txt"), "{msg}");
         assert!(msg.contains("lines 1-2 of 5"), "{msg}");

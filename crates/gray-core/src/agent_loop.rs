@@ -116,6 +116,11 @@ impl Agent {
         }
         emit!(AgentEvent::Start);
         let mut total_usage = Usage::default();
+        // Billable turn totals: every provider request bills its full
+        // input, so turn_end/cost accounting sums every round's report.
+        // total_usage stays the context gauge (latest input + running
+        // output) for StepUsage and the footer.
+        let mut billed = Usage::default();
         let mut round: u32 = 0;
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
@@ -143,7 +148,7 @@ impl Agent {
             // half-finished assistant message would leave the transcript
             // inconsistent for the provider.
             if ctx.cancel.is_cancelled() {
-                self.emit_turn_end(&total_usage).await;
+                self.emit_turn_end(&billed).await;
                 return Err(CoreError::Cancelled);
             }
             if let Some(m) = self.max_rounds
@@ -158,8 +163,8 @@ impl Agent {
                 );
                 self.messages.push(Message::assistant(note.clone()));
                 emit!(AgentEvent::text_delta(format!("\n{note}\n")));
-                emit!(AgentEvent::turn_end(StopReason::EndTurn, total_usage));
-                self.emit_turn_end(&total_usage).await;
+                emit!(AgentEvent::turn_end(StopReason::EndTurn, billed));
+                self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
             round += 1;
@@ -169,23 +174,19 @@ impl Agent {
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
-                // history, so re-check without looping forever.
+                // history, so re-check without looping forever. Errors finalize
+                // the turn first: no silent exit without turn_end.
                 while needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
-                    if !self.try_compact_budgeted().await? {
-                        break;
+                    match self.try_compact_budgeted().await {
+                        Ok(true) => continue,
+                        Ok(false) => break,
+                        Err(e) => {
+                            self.emit_turn_end(&billed).await;
+                            return Err(e);
+                        }
                     }
                 }
             }
-            // Per-turn hook context (fetched once above) concatenates onto
-            // this turn's system prompt. Empty when no hooks replied.
-            let mut system = self.system.clone();
-            if !hook_context.is_empty() {
-                if !system.is_empty() {
-                    system.push_str("\n\n");
-                }
-                system.push_str(&hook_context);
-            }
-
             // Per-turn hook context (fetched once above) concatenates onto
             // this turn's system prompt. Empty when no hooks replied.
             let mut system = self.system.clone();
@@ -212,7 +213,6 @@ impl Agent {
             // the next turn can replay it verbatim (cache warmth).
             let mut pending_reasoning: Option<(String, String)> = None;
             let mut pending: Vec<PendingToolCall> = Vec::new();
-            let mut pending_emitted_start: Vec<bool> = Vec::new();
             let (stop_reason, usage) = {
                 let mut stream = self.provider.stream(req);
                 loop {
@@ -228,10 +228,17 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
-                            self.emit_turn_end(&total_usage).await;
+                            self.emit_turn_end(&billed).await;
                             return Err(CoreError::Cancelled);
                         }
                     };
+                    // Absolute event-count backstop: a hostile/broken server
+                    // must not grow the retained turn without bound.
+                    const MAX_EVENTS: usize = 100_000;
+                    if events.len() >= MAX_EVENTS {
+                        self.emit_turn_end(&billed).await;
+                        return Err(CoreError::Provider("turn event limit exceeded".into()));
+                    }
                     match next_event {
                         Some(Ok(StreamEvent::TextDelta { delta })) => {
                             emit!(AgentEvent::text_delta(delta.clone()));
@@ -257,45 +264,89 @@ impl Agent {
                             // sending index = 2^40 would otherwise allocate gigabytes here.
                             const MAX_TOOL_CALL_INDEX: usize = 4096;
                             if index > MAX_TOOL_CALL_INDEX {
-                                self.emit_turn_end(&total_usage).await;
+                                self.emit_turn_end(&billed).await;
                                 return Err(CoreError::Provider(format!(
                                     "tool-call index {index} exceeds limit ({MAX_TOOL_CALL_INDEX})"
                                 )));
                             }
                             while pending.len() <= index {
                                 pending.push(PendingToolCall::default());
-                                pending_emitted_start.push(false);
                             }
                             let slot = &mut pending[index];
-                            let was_unnamed = slot.name.is_none();
-                            if slot.id.is_none() {
-                                slot.id = id;
+                            // Stream-identity hardening: id and name are
+                            // immutable once set (blank counts as unset). A
+                            // conflicting re-set is a provider protocol error.
+                            if let Some(new_id) = id
+                                && !new_id.trim().is_empty()
+                            {
+                                if let Some(existing) = slot.id.as_ref() {
+                                    if existing != &new_id {
+                                        self.emit_turn_end(&billed).await;
+                                        return Err(CoreError::Provider(format!(
+                                            "provider changed tool-call id for index {index}: {existing:?} -> {new_id:?}"
+                                        )));
+                                    }
+                                } else {
+                                    slot.id = Some(new_id);
+                                }
                             }
-                            if slot.name.is_none() {
-                                slot.name = name.clone();
+                            if let Some(new_name) = name
+                                && !new_name.trim().is_empty()
+                            {
+                                if let Some(existing) = slot.name.as_ref() {
+                                    if existing != &new_name {
+                                        self.emit_turn_end(&billed).await;
+                                        return Err(CoreError::Provider(format!(
+                                            "provider changed tool-call name for index {index}: {existing:?} -> {new_name:?}"
+                                        )));
+                                    }
+                                } else {
+                                    slot.name = Some(new_name);
+                                }
                             }
                             slot.arguments.push_str(&arguments_delta);
-                            // Live emit: as soon as we know the tool name, tell the UI
-                            // so it can show "Preparing tool: bash…" instead of "Thinking... 53s".
-                            if was_unnamed && slot.name.is_some() && !pending_emitted_start[index] {
-                                let live_id =
-                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
-                                let live_name = slot.name.clone().unwrap_or_default();
+                            // Live emit: only once BOTH id and name are known
+                            // non-blank, so the start ID can never mutate.
+                            // Args arriving early stay buffered in `slot`.
+                            if !slot.started
+                                && slot.id.as_ref().is_some_and(|s| !s.trim().is_empty())
+                                && slot.name.as_ref().is_some_and(|s| !s.trim().is_empty())
+                            {
+                                let live_id = slot.id.clone().unwrap();
+                                let live_name = slot.name.clone().unwrap();
                                 emit!(AgentEvent::tool_call_start(live_id, live_name));
-                                pending_emitted_start[index] = true;
+                                slot.started = true;
                             }
                             // pi `updateArgs`: keep streaming partial args so the
                             // TUI can render the tool call live instead of
                             // popping it in only at ToolCallEnd/ToolResult.
-                            if pending_emitted_start[index] && !arguments_delta.is_empty() {
-                                let live_id =
-                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
-                                let live_name = slot.name.clone().unwrap_or_default();
-                                emit!(AgentEvent::tool_call_progress(
-                                    live_id,
+                            // Forward every update to the live sink, but retain
+                            // only the latest snapshot per call: retaining each
+                            // cumulative snapshot would grow quadratically
+                            // under per-byte deltas.
+                            if slot.started && !arguments_delta.is_empty() {
+                                // Started implies both id and name are present
+                                // (start waits for both), so no fallback here.
+                                let live_id = slot.id.clone().unwrap();
+                                let live_name = slot.name.clone().unwrap();
+                                let ev = AgentEvent::tool_call_progress(
+                                    live_id.clone(),
                                     live_name,
                                     slot.arguments.clone(),
-                                ));
+                                );
+                                if let Some(cb) = sink.as_deref_mut() {
+                                    cb(&ev);
+                                }
+                                let replace = matches!(
+                                    events.last(),
+                                    Some(AgentEvent::ToolCallProgress { id, .. })
+                                        if *id == live_id
+                                );
+                                if replace {
+                                    *events.last_mut().unwrap() = ev;
+                                } else {
+                                    events.push(ev);
+                                }
                             }
                         }
                         Some(Ok(StreamEvent::MessageComplete { stop_reason, usage })) => {
@@ -329,19 +380,33 @@ impl Agent {
                                     Ok(true) => continue 'turn,
                                     _ => {
                                         let err = CoreError::from(e);
-                                        self.emit_turn_end(&total_usage).await;
+                                        self.emit_turn_end(&billed).await;
                                         return Err(err);
                                     }
                                 }
                             }
                             let err = CoreError::from(e);
-                            self.emit_turn_end(&total_usage).await;
+                            self.emit_turn_end(&billed).await;
                             return Err(err);
                         }
                         None => {
-                            // Provider closed without a completion event;
-                            // treat as a normal end of turn.
-                            break (StopReason::EndTurn, Usage::default());
+                            // Provider closed without a completion event: never
+                            // treat that as success. Text-only partial output
+                            // is salvaged (marked interrupted); pending tool
+                            // calls are NOT executed from a truncated stream.
+                            if !text_parts.is_empty() && pending.is_empty() {
+                                salvage_partial_text(
+                                    &mut self.messages,
+                                    thinking_parts.concat(),
+                                    text_parts.concat(),
+                                    &pending_reasoning,
+                                    self.provider.model_id(),
+                                );
+                            }
+                            self.emit_turn_end(&billed).await;
+                            return Err(CoreError::Provider(
+                                "provider stream ended without completion".into(),
+                            ));
                         }
                     }
                 }
@@ -363,6 +428,28 @@ impl Agent {
             total_usage.reasoning_tokens += usage.reasoning_tokens;
             total_usage.total_tokens = 0;
             total_usage.normalize();
+            billed.accumulate(&usage);
+            // Stream-identity hardening: calls that never got a provider ID
+            // get a conversation-unique fallback now and emit their single
+            // start here, so every dispatched call already has its start and
+            // dispatch never consults positional side tables.
+            {
+                let fallback_base = self.messages.len();
+                for (wire_index, slot) in pending.iter_mut().enumerate() {
+                    if !slot.name.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+                        continue;
+                    }
+                    if !slot.id.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+                        slot.id = Some(format!("gray_call_{fallback_base}_{wire_index}"));
+                    }
+                    if !slot.started {
+                        let id = slot.id.clone().unwrap();
+                        let name = slot.name.clone().unwrap();
+                        emit!(AgentEvent::tool_call_start(id, name));
+                        slot.started = true;
+                    }
+                }
+            }
             emit!(AgentEvent::StepUsage { usage: total_usage });
 
             // Finalize the assistant message exactly as streamed.
@@ -383,13 +470,21 @@ impl Agent {
                 content.push(ContentBlock::Text { text });
             }
             for (index, call) in pending.iter().enumerate() {
-                let name = call.name.clone().unwrap_or_default();
-                if name.trim().is_empty() {
-                    log::warn!(target: "gray_agent", "dropping tool call index {index} with empty name (args: {})", call.arguments.chars().take(200).collect::<String>());
+                let name = match call.name.as_ref() {
+                    Some(n) if !n.trim().is_empty() => n.clone(),
+                    _ => {
+                        log::warn!(target: "gray_agent", "dropping tool call index {index} with empty name (args: {})", call.arguments.chars().take(200).collect::<String>());
+                        continue;
+                    }
+                };
+                // IDs are final here: provider IDs from the stream or the
+                // gray_call_* fallback assigned above — never a positional default.
+                let Some(id) = call.id.clone().filter(|s| !s.trim().is_empty()) else {
+                    log::warn!(target: "gray_agent", "dropping tool call index {index} with empty id after fallback");
                     continue;
-                }
+                };
                 content.push(ContentBlock::ToolUse {
-                    id: call.id.clone().unwrap_or_else(|| format!("call_{index}")),
+                    id,
                     name,
                     args: call.parsed_args(),
                 });
@@ -456,8 +551,8 @@ impl Agent {
                     0.0
                 };
                 log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
-                emit!(AgentEvent::turn_end(stop_reason, total_usage));
-                self.emit_turn_end(&total_usage).await;
+                emit!(AgentEvent::turn_end(stop_reason, billed));
+                self.emit_turn_end(&billed).await;
                 return Ok(events);
             }
 
@@ -476,7 +571,7 @@ impl Agent {
                 }
                 if repeat >= 3 {
                     answer_pending_tools(self, &tool_uses, 0, "aborted: tool loop detected");
-                    self.emit_turn_end(&total_usage).await;
+                    self.emit_turn_end(&billed).await;
                     return Err(CoreError::LoopDetected(format!(
                         "same tool call 3× in a row: {sig}"
                     )));
@@ -502,7 +597,7 @@ impl Agent {
             }
             if stall_rounds >= STALL_ABORT_ROUNDS {
                 answer_pending_tools(self, &tool_uses, 0, "aborted: exploration stall");
-                self.emit_turn_end(&total_usage).await;
+                self.emit_turn_end(&billed).await;
                 let explored: Vec<String> = tool_uses.iter().map(|(_, n, _)| n.clone()).collect();
                 return Err(CoreError::LoopDetected(format!(
                     "Stopped: {stall_rounds} consecutive exploration rounds with no file changes — last round used [{}]",
@@ -534,10 +629,9 @@ impl Agent {
                 // verdicts, `pre_tool` hooks. Only `executor.execute` runs
                 // concurrently — never `ApprovalGate::check`: batchable names
                 // are statically `Allow` in every mode. Post-pass (loop
-                // thread, input order): `tool_call_start/end` emission (kept
-                // here, not in the pre-pass, so a cancel-free parallel run is
-                // event-identical to the sequential path), `post_tool` hooks,
-                // `tool_result` events, history writes.
+                // thread, input order): `tool_call_end` emission (`start`
+                // already emitted live/at-finalize with the final ID),
+                // `post_tool` hooks, `tool_result` events, history writes.
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
                         (idxs.first().copied(), idxs.last().map(|i| *i + 1))
@@ -613,7 +707,7 @@ impl Agent {
                             "cancelled by user",
                         );
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     }
                     // Spawn: one future per ready item. Everything the future
@@ -659,9 +753,8 @@ impl Agent {
                     for &idx in &idxs {
                         let (id, name, args) = &tool_uses[idx];
                         if let Some(err) = inline_errors.remove(&idx) {
-                            if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
-                                emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
-                            }
+                            // `start` already emitted with the final ID (live
+                            // or at finalize); dispatch only ends the call.
                             emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                             emit!(AgentEvent::tool_result(
                                 id.clone(),
@@ -682,9 +775,6 @@ impl Agent {
                             Some(Some(output)) => {
                                 for hook in &self.hooks {
                                     hook.post_tool(name, output).await;
-                                }
-                                if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
-                                    emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
                                 }
                                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                                 emit!(AgentEvent::tool_result(
@@ -709,7 +799,7 @@ impl Agent {
                     }
                     if shortfall {
                         answer_pending_tools(self, &tool_uses, run_end, "cancelled by user");
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     }
                     continue;
@@ -720,12 +810,12 @@ impl Agent {
                 let (id, name, args) = &tool_uses[idx];
                 if ctx.cancel.is_cancelled() {
                     answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
-                    self.emit_turn_end(&total_usage).await;
+                    self.emit_turn_end(&billed).await;
                     return Err(CoreError::Cancelled);
                 }
-                if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
-                    emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
-                }
+                // `start` already emitted with the final ID (live or at
+                // finalize); dispatch only ends the call — no positional side
+                // tables (wire vs filtered index spaces must never mix).
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
                 if !self.tools.iter().any(|t| t.name == *name) {
@@ -821,7 +911,7 @@ impl Agent {
                     },
                     _ = ctx.cancel.cancelled() => {
                         answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
-                        self.emit_turn_end(&total_usage).await;
+                        self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     },
                 };

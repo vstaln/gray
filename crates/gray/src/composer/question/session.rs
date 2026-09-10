@@ -489,11 +489,6 @@ impl QuestionSession {
                     self.select_current_option(true);
                     self.go_next_or_submit(ta)
                 }
-                KeyCode::Char('!') if self.is_approval() && self.options_len() > 2 => {
-                    self.answers[self.current_idx].selected_idx = Some(2);
-                    self.select_current_option(true);
-                    self.go_next_or_submit(ta)
-                }
                 KeyCode::Char('n') if self.is_approval() => {
                     let last = self.options_len().saturating_sub(1);
                     self.answers[self.current_idx].selected_idx = Some(last);

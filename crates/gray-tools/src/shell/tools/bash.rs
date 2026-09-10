@@ -20,8 +20,9 @@ use tokio::process::Child;
 use tokio::task::JoinHandle;
 
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, ExitReport, MAX_TIMEOUT_SECS, NotifyPattern, PROMOTION_TAIL_BYTES,
-    PumpSummary, TaskId, TaskInfo, TaskState, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View,
+    DEFAULT_TIMEOUT_SECS, ExitReport, MAX_TIMEOUT_SECS, MEM_HEAD_BYTES, MEM_TAIL_BYTES,
+    NotifyPattern, PROMOTION_TAIL_BYTES, PumpSummary, TaskId, TaskInfo, TaskState,
+    VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
@@ -78,7 +79,7 @@ impl Tool for BashTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(BASH_SNIPPET)
     }
 
@@ -210,10 +211,16 @@ impl Tool for BashTool {
         match cause {
             Cause::Exit => {
                 let status = exited.expect("Exit always carries a status");
-                let summary = match pump.await {
-                    Ok(s) => s,
+                let (summary, truncated) = match drain_pump(pump, &log_path).await {
+                    Ok(v) => v,
                     Err(e) => return fail(format!("output pump failed: {e}")),
                 };
+                let first = truncated.then(|| {
+                    format!(
+                        "output truncated: pump drain timed out after {}s",
+                        FOREGROUND_DRAIN_TIMEOUT.as_secs()
+                    )
+                });
                 finish_inline(
                     &session,
                     spawned.pid,
@@ -224,7 +231,7 @@ impl Tool for BashTool {
                     status,
                     &summary,
                     start,
-                    None,
+                    first,
                 )
             }
             Cause::Promote => {
@@ -242,14 +249,20 @@ impl Tool for BashTool {
                     Ok(st) => st,
                     Err(e) => return fail(format!("failed to wait for command: {e}")),
                 };
-                let summary = match pump.await {
-                    Ok(s) => s,
+                let (summary, truncated) = match drain_pump(pump, &log_path).await {
+                    Ok(v) => v,
                     Err(e) => return fail(format!("output pump failed: {e}")),
                 };
-                let first = format!(
+                let mut first = format!(
                     "cancelled by user after {}",
                     format_elapsed(start.elapsed())
                 );
+                if truncated {
+                    first.push_str(&format!(
+                        " (output truncated: pump drain timed out after {}s)",
+                        FOREGROUND_DRAIN_TIMEOUT.as_secs()
+                    ));
+                }
                 finish_inline(
                     &session,
                     spawned.pid,
@@ -298,11 +311,74 @@ fn shell_dir() -> PathBuf {
 /// this to reach Exited.
 const PUMP_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Foreground drain bound: the happy path must survive large-but-finite
+/// output (the 30k-line spew is ~1.4 MiB and drains in ~1.5 s), while a
+/// grandchild-held pipe must still resolve instead of looping to EOF forever.
+/// 30 s is ~20× the measured drain, so parallel-test load cannot trip it;
+/// the background waiter keeps its existing 5 s (mark Exited promptly).
+const FOREGROUND_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bounded pump drain for the foreground exit/cancel paths: time-boxed so a
+/// grandchild holding the pipes can never stall the turn, byte-bounded
+/// downstream via [`build_view`]. On timeout the handle is aborted and
+/// `truncated=true` so the caller reports truncated cleanup. Happy path
+/// (drain completes in time) is byte-identical to a bare `pump.await`.
+async fn drain_pump(
+    mut pump: JoinHandle<PumpSummary>,
+    log_path: &Path,
+) -> Result<(PumpSummary, bool), tokio::task::JoinError> {
+    match tokio::time::timeout(FOREGROUND_DRAIN_TIMEOUT, &mut pump).await {
+        Ok(res) => res.map(|s| (s, false)),
+        Err(_) => {
+            pump.abort();
+            let _ = (&mut pump).await;
+            log::warn!("shell: pump drain timed out; aborted, reporting truncated");
+            Ok((truncated_summary_from_disk(log_path), true))
+        }
+    }
+}
+
+/// Fallback summary when the drain times out: rebuilt from the log file with
+/// bounded reads (head + tail budgets only, never the whole file) so the
+/// rendered view stays middle-out with an `omitted` marker and the header
+/// size stays honest.
+fn truncated_summary_from_disk(log_path: &Path) -> PumpSummary {
+    use std::io::{Read, Seek, SeekFrom};
+    let total_bytes = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    let mut head = Vec::new();
+    let mut tail = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(log_path) {
+        let _ = f
+            .by_ref()
+            .take(MEM_HEAD_BYTES as u64)
+            .read_to_end(&mut head);
+        let tail_len = (MEM_TAIL_BYTES as u64).min(total_bytes);
+        if total_bytes > head.len() as u64
+            && f.seek(SeekFrom::Start(total_bytes.saturating_sub(tail_len)))
+                .is_ok()
+        {
+            let _ = f.by_ref().take(tail_len).read_to_end(&mut tail);
+        }
+    }
+    let total_lines = head
+        .iter()
+        .chain(tail.iter())
+        .filter(|&&b| b == b'\n')
+        .count();
+    PumpSummary {
+        total_bytes,
+        total_lines,
+        head,
+        tail,
+        log_write_failed: false,
+    }
+}
+
 /// Shared waiter: background starts and promoted timeouts differ only in
 /// who awaits. Reaps the child, drains the pump, marks the task exited.
 async fn waiter(
     mut child: Child,
-    pump: JoinHandle<PumpSummary>,
+    mut pump: JoinHandle<PumpSummary>,
     session: String,
     id: TaskId,
     command: String,
@@ -329,10 +405,11 @@ async fn waiter(
     // Drain the pump before marking so the log tail is complete for 2C reads.
     // Watchdog: a grandchild holding the pipes keeps the pump alive forever —
     // bound the drain so the task always reaches Exited.
-    if tokio::time::timeout(PUMP_DRAIN_TIMEOUT, pump)
+    if tokio::time::timeout(PUMP_DRAIN_TIMEOUT, &mut pump)
         .await
         .is_err()
     {
+        pump.abort();
         log::warn!("shell {id}: pump drain timed out; marking exited");
     }
     registry().mark_exited(&session, id, exit_report(status, &command));
@@ -433,7 +510,13 @@ fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
 /// `{{MARKER}}` is replaced only when bytes were actually omitted, so user
 /// text can never collide with the slot.
 fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
-    let raw: Vec<u8> = if summary.total_bytes <= VIEW_BUDGET_BYTES as u64 {
+    // Byte-bounded: the summary small-path reads the log back from disk —
+    // never read an unbounded log on a stale/small summary. Check the real
+    // length first and fall back to the bounded in-memory head ++ tail.
+    let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    let use_disk =
+        summary.total_bytes <= VIEW_BUDGET_BYTES as u64 && file_len <= VIEW_BUDGET_BYTES as u64;
+    let raw: Vec<u8> = if use_disk {
         match std::fs::read(log_path) {
             Ok(bytes) => bytes,
             Err(_) => {

@@ -518,9 +518,12 @@ pub(crate) async fn maybe_threshold_compact(
             say(tui, &notice);
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
-                for msg in agent.messages().to_vec() {
-                    let _ = state.store.append(&state.session_id, &msg).await;
-                }
+                // Boundary marker + replacement: reload replays the active
+                // transcript, not original + replacement duplicated.
+                let _ = state
+                    .store
+                    .append_compaction_replacement(&state.session_id, agent.messages())
+                    .await;
             }
             *initial_count = agent.messages().len();
         }
@@ -552,9 +555,11 @@ pub(crate) async fn maybe_overflow_compact(
         Ok(true) => {
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
-                for msg in agent.messages().to_vec() {
-                    let _ = state.store.append(&state.session_id, &msg).await;
-                }
+                // Boundary marker + replacement (see threshold path).
+                let _ = state
+                    .store
+                    .append_compaction_replacement(&state.session_id, agent.messages())
+                    .await;
             }
             *initial_count = agent.messages().len();
             true

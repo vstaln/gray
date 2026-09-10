@@ -13,8 +13,25 @@ fn nonempty(s: Option<&str>) -> Option<String> {
         .map(ToString::to_string)
 }
 
+/// scheme://host/path without userinfo, query, or fragment (for logs).
+fn scrub_url(url: &str) -> String {
+    let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let auth_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
+    let host = after_scheme[..auth_end].rsplit('@').next().unwrap_or("");
+    let mut path: &str = &after_scheme[auth_end..];
+    path = path.split(['?', '#']).next().unwrap_or("");
+    match url.split_once("://") {
+        Some((scheme, _)) => format!("{scheme}://{host}{path}"),
+        None => format!("{host}{path}"),
+    }
+}
+
 /// Resolved application configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is redacted by hand: the config carries the plaintext API key.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Config {
     /// Target model identifier (e.g. "anthropic/claude-sonnet-4"). None until set.
     pub model: Option<String>,
@@ -35,6 +52,16 @@ pub struct Config {
     pub context_keep: Option<usize>,
     /// Tool approval mode ("read-only" | "auto" | "full"). None = auto default.
     pub permissions: Option<String>,
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_deref().map(|_| "set"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Config {
@@ -119,7 +146,7 @@ impl Config {
             context_keep,
             permissions,
         };
-        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, config.base_url, config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
+        log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)
     }
 

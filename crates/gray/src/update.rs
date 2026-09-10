@@ -29,6 +29,11 @@ async fn latest_version() -> anyhow::Result<String> {
 }
 
 /// curl -fsSL https://gray.alignment.id/install.sh | sh [- beta]
+///
+/// Trust contract: self-update executes the installer's mutable HTTPS script.
+/// Independent verification or pinning of that script is not a goal here;
+/// payload checksums do not authenticate the installer that serves them.
+/// This path is not an independently verified update.
 fn install_command() -> String {
     match CHANNEL {
         "stable" => "sh -c 'curl -fsSL https://gray.alignment.id/install.sh | sh'".into(),

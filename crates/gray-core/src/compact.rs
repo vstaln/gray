@@ -197,24 +197,31 @@ pub(crate) fn build_retained(messages: &[Message], budget: usize) -> Vec<Message
 }
 
 /// Split chronological `messages` into atomic retain/drop groups: an assistant
-/// message's `ToolUse` ids fuse with the NEXT user message's `ToolResult` ids
-/// on id intersection; unmatched strays are singleton groups. Pairs therefore
+/// message's `ToolUse` ids fuse with ALL immediately-following user messages
+/// that share tool ids (the full batch — gray's loop pushes one `ToolResult`
+/// user message per call, so a 3-call batch is 1 assistant + 3 user
+/// messages); unmatched strays are singleton groups. Batches therefore
 /// retain/drop atomically — never an orphaned call or result.
 fn atomic_groups(messages: &[Message]) -> Vec<&[Message]> {
     let mut groups = Vec::new();
     let mut i = 0;
     while i < messages.len() {
-        let pair = messages[i].role == Role::Assistant
-            && messages.get(i + 1).is_some_and(|next| {
-                next.role == Role::User && tool_ids_intersect(&messages[i], next)
-            });
-        if pair {
-            groups.push(&messages[i..i + 2]);
-            i += 2;
-        } else {
-            groups.push(&messages[i..i + 1]);
-            i += 1;
+        if messages[i].role == Role::Assistant && tool_use_ids(&messages[i]).next().is_some() {
+            let mut j = i + 1;
+            while j < messages.len()
+                && messages[j].role == Role::User
+                && tool_ids_intersect(&messages[i], &messages[j])
+            {
+                j += 1;
+            }
+            if j > i + 1 {
+                groups.push(&messages[i..j]);
+                i = j;
+                continue;
+            }
         }
+        groups.push(&messages[i..i + 1]);
+        i += 1;
     }
     groups
 }
@@ -275,15 +282,30 @@ fn group_is_retained(group: &[Message]) -> bool {
 /// `truncate_message_to_token_budget` (fits → keep; first overflow → head+tail
 /// truncate; later text dropped). An image that fits is kept whole and charged;
 /// one that doesn't is dropped whole — base64 is never split (mirrors codex's
-/// "images are handled atomically"). Non-image, non-text blocks pass through
-/// (tool results own the Task 1 trim budget; thinking/tool-use args are
-/// small). Returns `None` when nothing retainable survives (no text or image
+/// "images are handled atomically"). Fixed-cost blocks (`Thinking`,
+/// `ToolUse` args, `ToolResult` bodies) are billed by the group pricer but
+/// are not truncatable here, so they are charged first; a group whose fixed
+/// costs alone exceed `budget` is dropped whole (caller preserves `remaining`
+/// for older groups). The 16k `COMPACT_RESERVE_TOKENS` held back in
+/// `try_compact_budgeted` covers the summary/system/tools overhead outside
+/// this walk. Returns `None` when nothing retainable survives (no text or image
 /// kept — e.g. an image-only group priced out of budget); the caller then
 /// drops the whole group with `remaining` untouched. `None` also when the
 /// group holds no text or image at all.
 fn truncate_group_to_budget(group: &[Message], budget: usize) -> Option<Vec<Message>> {
+    let fixed: usize = group
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .map(|b| match b {
+            ContentBlock::Text { .. } | ContentBlock::Image { .. } => 0,
+            _ => block_tokens(b),
+        })
+        .sum();
+    if fixed > budget {
+        return None;
+    }
     let mut out = group.to_vec();
-    let mut remaining = budget;
+    let mut remaining = budget - fixed;
     let mut retained_billable = false;
     for msg in out.iter_mut().rev() {
         for block in msg.content.iter_mut().rev() {
@@ -438,6 +460,43 @@ mod tests {
         }
     }
 
+    /// Assistant message carrying a whole parallel-call batch: gray's loop
+    /// pushes one `ToolResult` user message per call, so an N-call batch is
+    /// 1 assistant + N user messages.
+    fn assistant_tool_uses(ids: &[&str]) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: ids
+                .iter()
+                .map(|id| ContentBlock::tool_use(*id, "sh", serde_json::json!({})))
+                .collect(),
+        }
+    }
+
+    /// Sorted (calls, results) id sets in `msgs`: equal iff no orphaned call
+    /// or result survives the retain/drop decision.
+    fn call_result_ids(msgs: &[Message]) -> (Vec<String>, Vec<String>) {
+        let mut uses: Vec<String> = msgs
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut results: Vec<String> = msgs
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        uses.sort();
+        results.sort();
+        (uses, results)
+    }
+
     fn is_subsequence(hay: &[Message], needle: &[Message]) -> bool {
         let mut j = 0;
         for m in hay {
@@ -484,6 +543,66 @@ mod tests {
     }
 
     #[test]
+    fn atomic_batch_1_call_drops_without_orphans() {
+        let msgs = vec![assistant_tool_uses(&["c1"]), user_tool_result("c1")];
+        let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+        assert_eq!(call_result_ids(&out), (vec![], vec![]));
+    }
+
+    #[test]
+    fn atomic_batch_2_calls_drop_without_orphans() {
+        // Results span 2 user messages; the tool-use-only batch must drop
+        // whole — never a retained `c2` result orphaned from its call.
+        let msgs = vec![
+            assistant_tool_uses(&["c1", "c2"]),
+            user_tool_result("c1"),
+            user_tool_result("c2"),
+        ];
+        let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+        assert_eq!(call_result_ids(&out), (vec![], vec![]));
+        assert!(
+            is_subsequence(&msgs, &out),
+            "output preserves chronological order"
+        );
+    }
+
+    #[test]
+    fn atomic_batch_3_calls_drop_without_orphans() {
+        let msgs = vec![
+            assistant_tool_uses(&["c1", "c2", "c3"]),
+            user_tool_result("c1"),
+            user_tool_result("c2"),
+            user_tool_result("c3"),
+        ];
+        let out = build_retained(&msgs, RETAINED_MESSAGE_TOKEN_BUDGET);
+        assert_eq!(call_result_ids(&out), (vec![], vec![]));
+        assert!(
+            is_subsequence(&msgs, &out),
+            "output preserves chronological order"
+        );
+    }
+
+    #[test]
+    fn atomic_batch_3_calls_retain_without_orphans() {
+        // Text-carrying assistant: the batch is retained, still atomically.
+        let mut batch = vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::text("running three lookups"),
+                ContentBlock::tool_use("c1", "sh", serde_json::json!({})),
+                ContentBlock::tool_use("c2", "sh", serde_json::json!({})),
+                ContentBlock::tool_use("c3", "sh", serde_json::json!({})),
+            ],
+        }];
+        batch.extend(["c1", "c2", "c3"].into_iter().map(user_tool_result));
+        let out = build_retained(&batch, RETAINED_MESSAGE_TOKEN_BUDGET);
+        assert_eq!(out, batch, "retainable batch kept whole");
+        let (uses, results) = call_result_ids(&out);
+        assert_eq!(uses, vec!["c1", "c2", "c3"]);
+        assert_eq!(uses, results, "no orphaned calls either direction");
+    }
+
+    #[test]
     fn oversized_single_assistant_dropped() {
         let big = Message::assistant("y".repeat(12_000 * 4));
         assert!(
@@ -502,6 +621,64 @@ mod tests {
         assert!(text.contains(TRUNCATION_MARKER), "boundary group truncated");
         assert!(
             crate::agent_compact::est_tokens(&out) <= 1500,
+            "truncated output fits budget"
+        );
+    }
+
+    #[test]
+    fn boundary_truncation_charges_thinking_and_tool_blocks() {
+        // Thinking (500 tokens) + text (1000) in the boundary group, newest
+        // kept (1000) at a 2000 budget: fixed costs bill first, text takes
+        // the remaining 500 with a marker, total stays within budget. The
+        // old text/image-only accounting kept the text whole (1000) with the
+        // 500 thinking tokens free → 2500 over a 2000 budget.
+        let old = Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::thinking("t".repeat(2000)),
+                ContentBlock::text("a".repeat(4000)),
+            ],
+        };
+        let new = Message::user("b".repeat(4000));
+        let out = build_retained(&[old, new.clone()], 2000);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1], new, "newest group kept verbatim");
+        assert!(
+            out[0].text_content().contains(TRUNCATION_MARKER),
+            "boundary text truncated to cover the thinking overhead"
+        );
+        assert!(
+            crate::agent_compact::est_tokens(&out) <= 2000,
+            "truncated output fits budget"
+        );
+
+        // Tool-arg-heavy mixed batch: ToolUse args (~500) + small result are
+        // fixed costs; the batch's text truncates to the remainder.
+        let batch_old = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::text("a".repeat(4000)),
+                    ContentBlock::tool_use(
+                        "c9",
+                        "sh",
+                        serde_json::json!({"data": "x".repeat(2000)}),
+                    ),
+                ],
+            },
+            user_tool_result("c9"),
+        ];
+        let out = build_retained(&[batch_old.clone(), vec![new.clone()]].concat(), 2000);
+        assert_eq!(out.len(), 3, "batch truncated, not dropped: {out:?}");
+        assert_eq!(out[2], new, "newest group kept verbatim");
+        let (uses, results) = call_result_ids(&out);
+        assert_eq!(uses, results, "no orphaned calls either direction");
+        assert!(
+            out[0].text_content().contains(TRUNCATION_MARKER),
+            "batch text truncated to cover the tool-arg overhead"
+        );
+        assert!(
+            crate::agent_compact::est_tokens(&out) <= 2000,
             "truncated output fits budget"
         );
     }

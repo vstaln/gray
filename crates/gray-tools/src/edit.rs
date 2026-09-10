@@ -279,7 +279,7 @@ impl Tool for EditTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(EDIT_SNIPPET)
     }
     fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
@@ -303,7 +303,6 @@ impl Tool for EditTool {
         if path.is_empty() {
             return fail("missing required argument 'path'".to_string());
         }
-        let replace_all = parse_replace_all(&args).unwrap_or(false);
 
         let edits = match parse_edits(&args) {
             Ok(e) => e,
@@ -314,64 +313,61 @@ impl Tool for EditTool {
                 "edit failed for {path}: edits must contain at least one replacement"
             ));
         }
+        // Explicitly reject empty searches before any I/O: an empty oldText
+        // would match everywhere (single fast path or common engine alike).
+        for (i, e) in edits.iter().enumerate() {
+            if e.old_text.is_empty() {
+                let detail = if edits.len() == 1 {
+                    format!("oldText must not be empty in {path}.")
+                } else {
+                    format!("edits[{i}].oldText must not be empty in {path}.")
+                };
+                return fail(format!("edit failed for {path}: {detail}"));
+            }
+        }
 
         let full = resolve_path(&ctx.cwd, &path);
-        // T3.2 ledger: refuse only when the file changed since it was read.
+        // T3.2 ledger: refuse only when the file changed since it was read
+        // (mtime/size here; byte comparison after the read below).
         if let Some(entry) = self.ledger.get(&full)
             && let Ok(meta) = std::fs::metadata(&full)
             && Self::is_stale(&entry, &meta)
         {
             return fail(notices::edit_changed(&full.display().to_string()));
         }
-        if replace_all && edits.len() == 1 {
-            let content = match tokio::fs::read_to_string(&full).await {
-                Ok(c) => c,
-                Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
-            };
-            let old0 = &edits[0].old_text;
-            let new0 = &edits[0].new_text;
-            // T1.6: exact first; on a miss retry once with cat -n prefixes stripped.
-            let stripped = strip_edit_prefixes(&edits[..1]);
-            let (old, new, repaired) = match &stripped {
-                Some(s) if content.matches(old0.as_str()).count() == 0 => {
-                    if content.matches(s[0].old_text.as_str()).count() > 0 {
-                        (&s[0].old_text, &s[0].new_text, true)
-                    } else {
-                        (old0, new0, false)
-                    }
-                }
-                _ => (old0, new0, false),
-            };
-            let matches = content.matches(old.as_str()).count();
-            if matches == 0 {
-                return fail(format!(
-                    "edit failed for {}: old_text not found in file",
-                    full.display()
-                ));
-            }
-            let updated = content.replace(old.as_str(), new.as_str());
-            if let Err(e) = tokio::fs::write(&full, updated.as_bytes()).await {
-                return fail(format!("edit failed for {}: {e}", full.display()));
-            }
-            // T3.2 ledger: the whole new content is known — the next write is
-            // allowed without a re-read.
-            self.ledger.mark_written(&full, updated.as_bytes());
-            return ToolOutput::ok(format!(
-                "edited {}: {} occurrence(s) replaced{}",
-                full.display(),
-                matches,
-                if repaired {
-                    format!("\n{EDIT_PREFIX_STRIP_NOTE}")
-                } else {
-                    String::new()
-                }
+        // Validate regular files before reading (metadata follows symlinks).
+        if let Ok(meta) = std::fs::metadata(&full)
+            && !meta.file_type().is_file()
+        {
+            return fail(format!(
+                "edit failed for {}: not a regular file",
+                full.display()
             ));
         }
 
+        // Distinguish NotFound (clear miss) from other read errors: neither
+        // becomes an empty string.
         let raw = match tokio::fs::read_to_string(&full).await {
             Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return fail(format!(
+                    "edit failed for {}: file not found",
+                    full.display()
+                ));
+            }
             Err(e) => return fail(format!("edit failed for {}: {e}", full.display())),
         };
+        // Freshness via bytes when already read: same mtime/size but different
+        // bytes still counts as changed.
+        if let Some(entry) = self.ledger.get(&full)
+            && let (Some(expected), Some(actual)) =
+                (entry.content_hash, FileLedger::hash_bytes(raw.as_bytes()))
+            && expected != actual
+            && let Ok(meta) = std::fs::metadata(&full)
+            && !Self::is_stale(&entry, &meta)
+        {
+            return fail(notices::edit_changed(&full.display().to_string()));
+        }
         let bom = split_bom(&raw);
         let ending = detect_line_ending(&bom.text);
         let normalized = normalize_to_lf(&bom.text);
@@ -388,10 +384,13 @@ impl Tool for EditTool {
                 },
             };
         let final_content = bom.bom + &restore_line_endings(&applied.new_content, ending);
-        if let Err(e) = tokio::fs::write(&full, final_content.as_bytes()).await {
+        // Atomic replace (temp + rename, mode preserved); see
+        // crate::write::atomic_write for symlink/hardlink semantics.
+        if let Err(e) = crate::write::atomic_write(&full, final_content.as_bytes()).await {
             return fail(format!("edit failed for {}: {e}", full.display()));
         }
-        // T3.2 ledger: see the replace_all path above.
+        // T3.2 ledger: the whole new content is known — the next write is
+        // allowed without a re-read.
         self.ledger.mark_written(&full, final_content.as_bytes());
         let patch = crate::edit_diff::generate_unified_patch(
             &path,

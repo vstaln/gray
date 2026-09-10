@@ -37,7 +37,7 @@ impl Tool for LsTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(LS_SNIPPET)
     }
 

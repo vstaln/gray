@@ -1,7 +1,8 @@
 //! Print mode: one-shot execution of a user prompt, streaming events to stdout
 //! and recording the conversation to a JSONL session.
 
-use std::io::Write;
+use std::collections::HashMap;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,11 +23,15 @@ pub struct ActiveToolCall {
 }
 
 /// Renders a single AgentEvent with active tool tracking and CWD context.
+///
+/// In-flight calls are keyed by call id so concurrent starts/ends/results
+/// can't clobber each other (single-slot tracking swapped names/args on
+/// parallel calls).
 pub fn render_event_with_context<W: Write>(
     w: &mut W,
     event: &AgentEvent,
     cwd: Option<&Path>,
-    current_tool: &mut Option<ActiveToolCall>,
+    in_flight: &mut HashMap<String, ActiveToolCall>,
 ) -> std::io::Result<()> {
     match event {
         AgentEvent::Start => Ok(()),
@@ -39,35 +44,54 @@ pub fn render_event_with_context<W: Write>(
             write!(w, "\x1b[2m\x1b[3m{delta}\x1b[0m")?;
             w.flush()
         }
-        AgentEvent::ToolCallStart { name, .. } => {
-            *current_tool = Some(ActiveToolCall {
+        AgentEvent::ToolCallStart { id, name } => {
+            in_flight.insert(
+                id.clone(),
+                ActiveToolCall {
+                    name: name.clone(),
+                    args: None,
+                },
+            );
+            Ok(())
+        }
+        AgentEvent::ToolCallProgress { id, name, .. } => {
+            in_flight.entry(id.clone()).or_insert(ActiveToolCall {
                 name: name.clone(),
                 args: None,
             });
             Ok(())
         }
-        AgentEvent::ToolCallProgress { .. } => Ok(()),
-        AgentEvent::ToolCallEnd { args, .. } => {
-            let name = current_tool
-                .as_ref()
-                .map(|t| t.name.clone())
-                .unwrap_or_else(|| "tool".to_string());
-            if let Some(t) = current_tool {
-                t.args = Some(args.clone());
+        AgentEvent::ToolCallEnd { id, args } => {
+            let entry = in_flight.entry(id.clone()).or_insert(ActiveToolCall {
+                name: "tool".to_string(),
+                args: None,
+            });
+            entry.args = Some(args.clone());
+            if entry.name.is_empty() {
+                entry.name = "tool".to_string();
             }
+            let name = entry.name.as_str();
             writeln!(
                 w,
                 "\n{}",
-                crate::tool_fmt::format_tool_call_header_plain(&name, args, cwd)
+                crate::tool_fmt::format_tool_call_header_plain(name, args, cwd)
             )?;
             w.flush()
         }
         AgentEvent::ToolResult {
-            output, is_error, ..
+            id,
+            output,
+            is_error,
+            ..
         } => {
-            let tool = current_tool.take().unwrap_or_default();
+            let tool = in_flight.remove(id).unwrap_or_default();
+            let name = if tool.name.is_empty() {
+                "tool"
+            } else {
+                tool.name.as_str()
+            };
             let res = crate::tool_fmt::format_tool_result_plain_with_context(
-                &tool.name,
+                name,
                 tool.args.as_ref(),
                 output,
                 *is_error,
@@ -154,7 +178,7 @@ pub async fn run_print_mode_with_session(
     });
     let ctx = ToolContext {
         cwd: cwd.clone(),
-        cancel,
+        cancel: cancel.clone(),
         questions: None,
         session_id: None, // one-shot print mode has no session
         permission: PermissionMode::resolve(true), // auto for -p unless GRAY_PERMISSION=ask
@@ -163,7 +187,7 @@ pub async fn run_print_mode_with_session(
         approvals: Some(gray_core::approvals::ApprovalGate::new(
             permissions
                 .as_deref()
-                .unwrap_or(gray_core::approvals::MODE_FULL),
+                .unwrap_or(gray_core::approvals::MODE_AUTO),
         )),
     };
 
@@ -176,15 +200,31 @@ pub async fn run_print_mode_with_session(
     }
 
     let user_msg = Message::user(prompt);
-    // Stream events live so piped output isn't all-or-nothing.
-    let result = {
-        let stdout = std::io::stdout();
-        let mut current_tool = None;
+    // SIGINT only signals the shared token — never wrap the run in a
+    // select! that would drop it. Aborted once the run returns.
+    let sigint_cancel = cancel.clone();
+    let sigint_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            sigint_cancel.cancel();
+        }
+    });
+    // Stream events live so piped output isn't all-or-nothing. The first
+    // stdout error cancels paid model/tool work and stops further writes
+    // (recorded once, never spammed per event).
+    let stdout = std::io::stdout();
+    let mut in_flight: HashMap<String, ActiveToolCall> = HashMap::new();
+    let mut render_err: Option<std::io::Error> = None;
+    let run_result = {
+        let render_cancel = cancel.clone();
         let mut on_event = |ev: &AgentEvent| {
+            if render_err.is_some() {
+                return;
+            }
             if let Err(e) =
-                render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut current_tool)
+                render_event_with_context(&mut stdout.lock(), ev, Some(&cwd), &mut in_flight)
             {
-                eprintln!("render error: {e}");
+                render_cancel.cancel();
+                render_err = Some(e);
             }
         };
         agent
@@ -193,14 +233,15 @@ pub async fn run_print_mode_with_session(
             .map_err(|e| {
                 let msg = crate::repl::format_core_error(&e, &config.base_url);
                 anyhow::anyhow!(scrub_error_text(&msg))
-            })?
+            })
     };
-    drop(result);
+    sigint_task.abort();
 
-    // Persist session to JSONL store: a resumed session keeps its file
-    // (only the new turn is appended); otherwise a fresh session is created.
-    if let Some(sid) = &resume_target {
-        append_new_messages(&store, sid, initial_count, agent.messages()).await?;
+    // F14: no `?` between run completion and finalization — always attempt
+    // session persistence AND shell teardown, then propagate the original
+    // error combined with any persistence error.
+    let persist_result: anyhow::Result<()> = if let Some(sid) = &resume_target {
+        append_new_messages(&store, sid, initial_count, agent.messages()).await
     } else {
         save_session(
             &store,
@@ -208,19 +249,68 @@ pub async fn run_print_mode_with_session(
             &cwd,
             agent.messages(),
         )
-        .await?;
-    }
-
-    // Cron (or other plugin-initiated) `host/say` lines queued mid-turn.
-    for line in crate::host::take_host_say() {
-        println!("{line}");
-    }
+        .await
+        .map(|_| ())
+    };
 
     // Print mode has no later turn: background tasks would orphan, so stop
     // the one-shot session unconditionally (exit code unaffected).
     let _ = crate::shell_drain::shutdown_shell_session("nosession").await;
 
-    Ok(())
+    let render_broken = render_err
+        .as_ref()
+        .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe);
+    // Cron (or other plugin-initiated) `host/say` lines queued mid-turn.
+    // Fallible writeln on a locked handle: stdout may already be closed.
+    if render_broken {
+        let _ = crate::host::take_host_say();
+    } else {
+        let lines = crate::host::take_host_say();
+        if !lines.is_empty() {
+            let mut out = stdout.lock();
+            for line in &lines {
+                if writeln!(out, "{line}").is_err() {
+                    break;
+                }
+            }
+            let _ = out.flush();
+        }
+    }
+
+    if render_broken {
+        // Graceful BrokenPipe: the consumer went away. Paid work is already
+        // cancelled, history persisted, shell torn down. Swallow a
+        // cancellation (it is our own stop), keep any other error.
+        match (&run_result, &persist_result) {
+            (_, Err(p)) => return Err(anyhow::anyhow!("{p:#}")),
+            (Ok(_), Ok(_)) => return Ok(()),
+            (Err(r), Ok(_)) if r.to_string().to_lowercase().contains("cancel") => {
+                return Ok(());
+            }
+            (Err(_), Ok(_)) => return run_result.map(|_| ()),
+        }
+    }
+    if let Some(e) = render_err {
+        // Non-pipe stdout failure: surface it, combined with run/persist.
+        return match (run_result, persist_result) {
+            (Err(r), Err(p)) => Err(anyhow::anyhow!(
+                "{r:#}; stdout write failed: {e}; also failed to persist session: {p:#}"
+            )),
+            (Err(r), _) => Err(anyhow::anyhow!("{r:#}; stdout write failed: {e}")),
+            (_, Err(p)) => Err(anyhow::anyhow!(
+                "stdout write failed: {e}; also failed to persist session: {p:#}"
+            )),
+            _ => Err(anyhow::anyhow!("stdout write failed: {e}")),
+        };
+    }
+    match (run_result, persist_result) {
+        (Err(r), Err(p)) => Err(anyhow::anyhow!(
+            "{r:#}; also failed to persist session: {p:#}"
+        )),
+        (Err(r), _) => Err(r),
+        (_, Err(p)) => Err(p),
+        (Ok(_), Ok(_)) => Ok(()),
+    }
 }
 
 /// Scrub provider/error text before it reaches stderr or a receipt.
@@ -230,12 +320,22 @@ pub(crate) fn scrub_error_text(s: &str) -> String {
 
 /// Appends only messages at index `prior_count..` to an existing session
 /// (print-mode `--session`/`-c` continuation in place — never a new file).
+/// When in-loop compaction shrank history below the cursor, persists the
+/// whole active transcript behind a boundary marker instead of skipping it.
 pub async fn append_new_messages(
     store: &JsonlSessionStore,
     sid: &SessionId,
     prior_count: usize,
     messages: &[Message],
 ) -> anyhow::Result<()> {
+    if messages.len() < prior_count {
+        // Same redaction as the normal path: secrets never land in the file.
+        let redacted: Vec<Message> = messages.iter().map(redact_message).collect();
+        return store
+            .append_compaction_replacement(sid, &redacted)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to persist compacted session: {e}"));
+    }
     for msg in &messages[prior_count.min(messages.len())..] {
         // Durable JSONL: persist the redacted copy (secrets/paths never land
         // in the session file); the live turn keeps the raw text.
@@ -352,5 +452,87 @@ mod tests {
         let scrubbed = scrub_error_text("auth failed: ZAI_API_KEY=supersecretvalue12345");
         assert!(!scrubbed.contains("supersecretvalue12345"), "{scrubbed}");
         assert!(scrubbed.contains("<redacted>"), "{scrubbed}");
+    }
+
+    #[test]
+    fn concurrent_tool_calls_track_by_id() {
+        use gray_core::event::AgentEvent;
+        let mut in_flight = HashMap::new();
+        let mut out = Vec::new();
+        let a = serde_json::json!({"x": 1});
+        let b = serde_json::json!({"y": 2});
+        render_event_with_context(
+            &mut out,
+            &AgentEvent::tool_call_start("id1", "alpha"),
+            None,
+            &mut in_flight,
+        )
+        .unwrap();
+        render_event_with_context(
+            &mut out,
+            &AgentEvent::tool_call_start("id2", "beta"),
+            None,
+            &mut in_flight,
+        )
+        .unwrap();
+        render_event_with_context(
+            &mut out,
+            &AgentEvent::tool_call_end("id1", a.clone()),
+            None,
+            &mut in_flight,
+        )
+        .unwrap();
+        // Second call's end must not clobber the first call's name/args.
+        assert_eq!(in_flight["id1"].name, "alpha");
+        assert_eq!(in_flight["id1"].args.as_ref(), Some(&a));
+        render_event_with_context(
+            &mut out,
+            &AgentEvent::tool_call_end("id2", b.clone()),
+            None,
+            &mut in_flight,
+        )
+        .unwrap();
+        assert_eq!(in_flight["id2"].name, "beta");
+        render_event_with_context(
+            &mut out,
+            &AgentEvent::tool_result("id1", "ok-a", false),
+            None,
+            &mut in_flight,
+        )
+        .unwrap();
+        // id2 survives id1's result (no single-slot take() wiping both).
+        assert!(in_flight.contains_key("id2"));
+        assert!(!in_flight.contains_key("id1"));
+        render_event_with_context(
+            &mut out,
+            &AgentEvent::tool_result("id2", "ok-b", false),
+            None,
+            &mut in_flight,
+        )
+        .unwrap();
+        assert!(in_flight.is_empty());
+    }
+
+    #[test]
+    fn render_error_propagates_for_retry_policy() {
+        use std::io::{Error, ErrorKind};
+        struct Fail;
+        impl std::io::Write for Fail {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(Error::new(ErrorKind::BrokenPipe, "closed"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(Error::new(ErrorKind::BrokenPipe, "closed"))
+            }
+        }
+        let mut in_flight = HashMap::new();
+        let err = render_event_with_context(
+            &mut Fail,
+            &gray_core::event::AgentEvent::text_delta("hi"),
+            None,
+            &mut in_flight,
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::BrokenPipe);
     }
 }

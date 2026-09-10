@@ -171,7 +171,7 @@ impl super::Tool for RequestUserInputTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(
             "request_user_input — ask the user 1-3 multiple-choice questions when a decision blocks progress",
         )
