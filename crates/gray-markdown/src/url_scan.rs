@@ -250,13 +250,10 @@ pub(crate) fn detect_file_paths_with_offset(
 
 /// Apply `link_style` (cyan + underline) to `lines` for every `hyperlink` range.
 /// This makes plain URLs and file paths visually identical to markdown `[text](url)` links.
-pub(crate) fn patch_lines_with_link_style(
-    lines: &mut [Line<'_>],
-    hyperlinks: &[HyperlinkTarget],
-    link_style: Style,
-) {
+pub(crate) fn apply_link_styling(lines: &mut [Line<'_>], hyperlinks: &[HyperlinkTarget]) {
     use std::collections::HashMap;
     use unicode_width::UnicodeWidthChar;
+    let link_style = link_style();
     let mut by_line: HashMap<usize, Vec<&HyperlinkTarget>> = HashMap::new();
     for h in hyperlinks {
         by_line.entry(h.line_index).or_default().push(h);
@@ -312,10 +309,6 @@ pub(crate) fn patch_lines_with_link_style(
         let line_style = line.style;
         *line = Line::from(new_spans).style(line_style);
     }
-}
-
-pub(crate) fn apply_link_styling(lines: &mut [Line<'_>], hyperlinks: &[HyperlinkTarget]) {
-    patch_lines_with_link_style(lines, hyperlinks, link_style());
 }
 
 #[cfg(test)]

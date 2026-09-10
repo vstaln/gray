@@ -32,17 +32,13 @@ enum ColumnKind {
     Narrative,
 }
 
-struct ColumnMetrics {
-    kind: ColumnKind,
-}
-
 /// Per-column classification, port of codex `collect_table_column_metrics`
 /// trimmed to the fields the decision heuristics actually read.
 fn collect_metrics(
     header: &[StyledCell],
     rows: &[Vec<StyledCell>],
     num_cols: usize,
-) -> Vec<ColumnMetrics> {
+) -> Vec<ColumnKind> {
     (0..num_cols)
         .map(|col| {
             let header_plain = header.get(col).map(|c| c.plain_text()).unwrap_or_default();
@@ -76,7 +72,7 @@ fn collect_metrics(
             } else {
                 total_cell_width as f64 / total_cells as f64
             };
-            let kind = if long_body_token_count > 0
+            if long_body_token_count > 0
                 && long_body_token_count >= body_token_count.saturating_sub(long_body_token_count)
             {
                 ColumnKind::TokenHeavy
@@ -84,8 +80,7 @@ fn collect_metrics(
                 ColumnKind::Narrative
             } else {
                 ColumnKind::Compact
-            };
-            ColumnMetrics { kind }
+            }
         })
         .collect()
 }
@@ -113,14 +108,14 @@ pub(crate) fn should_render_records(
                 let Some(width) = column_widths.get(col) else {
                     return false;
                 };
-                let Some(m) = metrics.get(col) else {
+                let Some(kind) = metrics.get(col) else {
                     return false;
                 };
                 let has_fragmented_token = cell
                     .plain_text()
                     .split_whitespace()
                     .any(|token| unicode_display_width(token) > *width);
-                match m.kind {
+                match kind {
                     ColumnKind::Compact => has_fragmented_token,
                     ColumnKind::TokenHeavy => {
                         *width < MIN_SCANNABLE_TOKEN_HEAVY_WIDTH && has_fragmented_token
@@ -142,7 +137,7 @@ pub(crate) fn should_render_records(
 fn expansive_cells_are_starved(
     row: &[StyledCell],
     column_widths: &[usize],
-    metrics: &[ColumnMetrics],
+    metrics: &[ColumnKind],
 ) -> bool {
     let expansive_cells: Vec<(ColumnKind, usize, usize)> = row
         .iter()
@@ -150,11 +145,11 @@ fn expansive_cells_are_starved(
         .filter(|(col, _)| {
             metrics
                 .get(*col)
-                .is_some_and(|m| m.kind != ColumnKind::Compact)
+                .is_some_and(|kind| *kind != ColumnKind::Compact)
         })
         .filter_map(|(col, cell)| {
             Some((
-                metrics.get(col)?.kind,
+                *metrics.get(col)?,
                 *column_widths.get(col)?,
                 wrapped_cell_height(cell, *column_widths.get(col)?),
             ))
@@ -206,7 +201,7 @@ pub(crate) fn render_records(
         .map(|h| unicode_display_width(&h.plain_text()))
         .max()
         .unwrap_or(0);
-    let minimum_value_width = if metrics.iter().any(|m| m.kind != ColumnKind::Compact) {
+    let minimum_value_width = if metrics.iter().any(|kind| *kind != ColumnKind::Compact) {
         MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH
     } else {
         MIN_ALIGNED_COMPACT_VALUE_WIDTH
@@ -223,8 +218,7 @@ pub(crate) fn render_records(
 
     for (row_index, row) in rows.iter().enumerate() {
         let row_offset = 2 + row_index;
-        for (col, (h, value)) in header.iter().zip(row.iter()).enumerate() {
-            let _ = metrics.get(col);
+        for (h, value) in header.iter().zip(row.iter()) {
             let label = h.plain_text();
             if aligned_fields {
                 let value_indent = FIELD_LEADING_PADDING + label_width + FIELD_GAP;
