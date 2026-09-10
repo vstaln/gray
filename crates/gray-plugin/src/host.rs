@@ -34,17 +34,22 @@ pub async fn run_prompt_child(cwd: &Path, prompt: &str) -> Value {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
     {
         Ok(c) => c,
         Err(e) => return json!({"error": format!("host/run spawn: {e}")}),
     };
-    // Drain stdout concurrently: `wait()` alone deadlocks past the pipe buffer.
+    // Drain stdout concurrently (capped: a runaway child must not fill
+    // memory): `wait()` alone deadlocks past the pipe buffer.
+    const MAX_CHILD_OUT: u64 = 256 * 1024;
     let mut piped = child.stdout.take();
     let drain = tokio::spawn(async move {
         let mut v = Vec::new();
         if let Some(ref mut o) = piped {
-            let _ = o.read_to_end(&mut v).await;
+            let _ = tokio::io::AsyncReadExt::take(o, MAX_CHILD_OUT + 1)
+                .read_to_end(&mut v)
+                .await;
         }
         v
     });
