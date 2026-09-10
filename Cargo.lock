@@ -1734,6 +1734,7 @@ dependencies = [
 name = "gray-session"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "gray-core",
  "log",
  "serde",
