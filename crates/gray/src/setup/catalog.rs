@@ -80,7 +80,7 @@ pub fn mask_key_pretty(key: &str) -> String {
 /// Default-tolerant on purpose: every field is optional and unknown fields
 /// are ignored so known fields survive hand-edits — never add
 /// `deny_unknown_fields` here (it would drop the whole file on one typo).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SavedConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -265,7 +265,7 @@ fn auth_store_path() -> anyhow::Result<PathBuf> {
 /// Persisted OAuth credential store. Lives here (not `gray-extras::oauth`)
 /// so API-key helpers can read through the mixed `auth.json` store without
 /// depending on the out-of-default-build OAuth signin flow.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredAuth {
     pub provider: String,
     pub access_token: String,
@@ -280,11 +280,39 @@ pub struct StoredAuth {
 /// file is a mixed map `{pid: String | StoredAuth}` (plus a legacy
 /// single-object form); key helpers and OAuth saves share it so neither
 /// writer clobbers the other's shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AuthEntry {
     Key(String),
     OAuth(StoredAuth),
+}
+
+// Hand-redacted Debug: these types carry plaintext keys and tokens, so the
+// derived impl would leak them into any log that formats config/auth.
+impl std::fmt::Debug for SavedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedConfig")
+            .field("model", &self.model)
+            .field("auth_mode", &self.auth_mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for StoredAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredAuth")
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for AuthEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Key(_) => f.write_str("Key(..)"),
+            Self::OAuth(a) => f.debug_tuple("OAuth").field(a).finish(),
+        }
+    }
 }
 
 pub fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
