@@ -494,7 +494,7 @@ pub(crate) async fn maybe_threshold_compact(
         crate::setup::format_context_length(tokens),
         crate::setup::format_context_length(window)
     );
-    match crate::compact::auto_compact_if_needed(agent, config, latest, "threshold").await {
+    match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
             say(tui, &notice);
             ensure_session_state(session_state, config, cwd).await;
@@ -520,7 +520,7 @@ pub(crate) async fn maybe_overflow_compact(
     session_state: &mut Option<SessionState>,
     cwd: &Path,
     tui: Option<&crate::composer::SharedTui>,
-    latest: Option<gray_core::event::Usage>,
+    _latest: Option<gray_core::event::Usage>,
     initial_count: &mut usize,
     err: &CoreError,
 ) -> bool {
@@ -532,7 +532,7 @@ pub(crate) async fn maybe_overflow_compact(
         t.lock().expect("tui lock").ensure_gap(1);
     }
     say(tui, "context overflow — compacting...");
-    match crate::compact::auto_compact_if_needed(agent, config, latest, "overflow").await {
+    match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {

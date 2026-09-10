@@ -6,7 +6,7 @@
 //! (no tools→cron/gateway edges); the direction here is plugin→tools/provider.
 //!
 //! Surface policy stays with the callers: the system prompt (skills/context
-//! vs gateway suffix), the executor wrapper (plain vs `GatedExecutor`), the
+//! vs gateway suffix), the executor wrapper (plain vs `DenyExecutor`), the
 //! host handler, and abort-vs-warn on sidecar spawn failure all arrive via
 //! [`BuilderOptions`]. Cron needs no direct call — the sidecar fires through
 //! `host/run` (`gray -p`) and gateway delivery runs through `run_agent`.
@@ -577,7 +577,7 @@ pub enum SystemPrompt {
 /// registry (snippets, names, guidelines).
 pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
 
-/// Wraps the profile-built registry executor (gateway: `GatedExecutor`;
+/// Wraps the profile-built registry executor (gateway: `DenyExecutor`;
 /// `None` = plain registry).
 pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 

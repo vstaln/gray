@@ -212,7 +212,7 @@ pub(crate) async fn supervise_adapters(
                 // Boot used no board: an adapter stuck on `Connecting`
                 // really is connected — record it. Failed rows are never
                 // touched here; only the ladder rewrites them.
-                if matches!(row, Some(PlatformConnState::Connecting { .. })) {
+                if matches!(row, Some(PlatformConnState::Connecting)) {
                     board.mark_connected(*plat, adapter.bot_identity());
                 }
                 continue;
