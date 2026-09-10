@@ -253,8 +253,24 @@ impl JsonlSessionStore {
         &self.root_dir
     }
 
-    fn session_path(&self, id: &SessionId) -> PathBuf {
-        self.root_dir.join(format!("{}.jsonl", id.as_str()))
+    /// Storage path for `id`, validated at the boundary: only ASCII
+    /// alphanumerics, `-`, `_` (covers UUIDs and safe legacy IDs). Anything
+    /// else — `../`, absolute paths, NUL — is rejected before touching the
+    /// filesystem.
+    fn session_path(&self, id: &SessionId) -> std::io::Result<PathBuf> {
+        let s = id.as_str();
+        if s.is_empty()
+            || s.len() > 128
+            || !s
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid session identifier",
+            ));
+        }
+        Ok(self.root_dir.join(format!("{s}.jsonl")))
     }
 
     /// Moves a corrupt session file aside as `<stem>.corrupt-<n>`, keeping the newest 3.
@@ -324,7 +340,7 @@ impl JsonlSessionStore {
     pub async fn create(&self, meta: SessionMeta) -> Result<SessionId> {
         let _guard = self.lock.lock().await;
         let id = meta.id.clone();
-        let path = self.session_path(&id);
+        let path = self.session_path(&id)?;
 
         tokio::fs::create_dir_all(&self.root_dir).await?;
 
@@ -376,7 +392,7 @@ impl JsonlSessionStore {
         duration_ms: Option<u64>,
     ) -> Result<SessionEntryId> {
         let _guard = self.lock.lock().await;
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
 
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
@@ -438,7 +454,7 @@ impl JsonlSessionStore {
     }
 
     pub async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -590,7 +606,7 @@ impl JsonlSessionStore {
 
     pub async fn delete(&self, id: &SessionId) -> Result<()> {
         let _guard = self.lock.lock().await;
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -618,7 +634,7 @@ impl JsonlSessionStore {
         force: bool,
     ) -> Result<bool> {
         let _guard = self.lock.lock().await;
-        let path = self.session_path(id);
+        let path = self.session_path(id)?;
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -696,6 +712,34 @@ mod tests {
     use tempfile::tempdir;
 
     #[tokio::test]
+    async fn traversal_ids_rejected_at_storage_boundary() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        for bad in [
+            "../evil",
+            "/abs",
+            "..\\win",
+            "a/b",
+            "",
+            "nul\0byte",
+            "sp ace",
+            &"x".repeat(129),
+        ] {
+            let id = SessionId::new(bad);
+            assert!(store.session_path(&id).is_err(), "id accepted: {bad:?}");
+            assert!(store.load(&id).await.is_err(), "load accepted: {bad:?}");
+            assert!(store.delete(&id).await.is_err(), "delete accepted: {bad:?}");
+        }
+        // UUIDs and safe legacy IDs still work.
+        let id = SessionId::generate();
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+            .await
+            .unwrap();
+        assert!(store.load(&id).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn load_ignores_torn_final_line_but_preserves_prior_entries() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
@@ -704,7 +748,7 @@ mod tests {
             .await
             .unwrap();
         store.append(&id, &Message::user("hello")).await.unwrap();
-        let path = store.session_path(&id);
+        let path = store.session_path(&id).unwrap();
         let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
         raw.push_str("{torn\n");
         tokio::fs::write(&path, raw).await.unwrap();
@@ -742,7 +786,7 @@ mod tests {
             .create(SessionMeta::new(SessionId::new("s1"), 1, "/tmp", "test"))
             .await
             .unwrap();
-        let path = store.session_path(&id);
+        let path = store.session_path(&id).unwrap();
         let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
         // Legacy entry shape: no duration_ms field.
         raw.push_str(r#"{"entry_id":0,"parent_id":null,"timestamp":1,"message":{"role":"user","content":[{"type":"text","text":"hi"}]},"usage":null}"#);
@@ -862,7 +906,7 @@ mod tests {
             .create(SessionMeta::new(SessionId::new("bad1"), 1, "/tmp", "m"))
             .await
             .unwrap();
-        let path = store.session_path(&id);
+        let path = store.session_path(&id).unwrap();
         tokio::fs::write(&path, "not json\n").await.unwrap();
         let err = store.load(&id).await.unwrap_err();
         assert!(matches!(err, SessionError::Corrupt { .. }));
@@ -880,7 +924,7 @@ mod tests {
             .await
             .unwrap();
         let bad = SessionId::new("bad2");
-        let bad_path = store.session_path(&bad);
+        let bad_path = store.session_path(&bad).unwrap();
         for _ in 0..5 {
             tokio::fs::write(&bad_path, "not json\n").await.unwrap();
             let summaries = store.list().await;
