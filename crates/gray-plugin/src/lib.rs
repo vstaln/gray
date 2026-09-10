@@ -6,7 +6,7 @@ use serde_json::Value;
 use gray_core::agent::ToolOutput;
 use gray_core::agent::{PluginCommand, PluginHooks};
 use gray_core::event::Usage;
-use gray_core::message::{Message, ToolDef};
+use gray_core::message::ToolDef;
 
 pub mod builder;
 pub mod host;
@@ -18,7 +18,6 @@ pub use sidecar::{HOST_RUN, HOST_SAY, HostHandler, SidecarPlugin};
 
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
-    PreStep { messages: Vec<Message> },
     PreTool { name: String, args: Value },
     PostTool { name: String, output: ToolOutput },
     TurnEnd { usage: Usage },
@@ -37,7 +36,6 @@ pub struct Manifest {
     pub commands: Vec<String>,
     #[serde(default)]
     pub hooks: Vec<String>,
-    pub provider: Option<String>,
     /// Protocol version claimed by the sidecar (`None` = v1 pre-lifecycle).
     /// v1.1 sidecars send `"1.1"` and handle `plugin/shutdown` + `session`.
     #[serde(default)]
@@ -134,7 +132,6 @@ impl Manifest {
             tools: manifest_tools(v).into_iter().map(|t| t.def).collect(),
             commands: str_list("commands"),
             hooks: str_list("hooks"),
-            provider: v.get("provider").and_then(|s| s.as_str()).map(|s| s.into()),
             protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
             capabilities: str_list("capabilities"),
             subcommands: str_list("subcommands"),

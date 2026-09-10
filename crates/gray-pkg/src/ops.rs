@@ -220,13 +220,6 @@ fn name_from_git_url(url: &str) -> String {
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
-impl std::str::FromStr for NameOrUrl {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(parse_spec(s))
-    }
-}
-
 #[derive(Debug, Default, Clone)]
 pub struct InstallOpts {
     pub argv: Vec<String>,
@@ -238,16 +231,13 @@ pub struct Report {
     pub name: String,
     pub version: String,
     pub path: PathBuf,
-    pub unverified: bool,
-    /// Pi installs only; `None` for index/URL installs. Callers print it.
-    pub pi_summary: Option<PiInstallSummary>,
 }
 
 fn lock_path() -> PathBuf {
     crate::plugins_dir().join("lock.json")
 }
 
-fn now_secs() -> String {
+pub(crate) fn now_secs() -> String {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs().to_string())
@@ -271,6 +261,36 @@ fn write_lock(lock: &LockFile) -> anyhow::Result<()> {
     lock.schema = 1;
     std::fs::write(&path, serde_json::to_string_pretty(&lock)?)?;
     Ok(())
+}
+
+/// Record one install in the lockfile, preserving any existing `enabled`
+/// flag (a reinstall must not silently re-enable a disabled plugin).
+fn record_install(
+    name: &str,
+    ecosystem: &str,
+    version: &str,
+    hash: &str,
+    source: &str,
+    scope: String,
+    argv: Vec<String>,
+) -> anyhow::Result<()> {
+    let mut lock = read_lock()?.unwrap_or_default();
+    let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
+    lock.plugins.insert(
+        name.to_string(),
+        LockEntry {
+            ecosystem: ecosystem.to_string(),
+            version: version.to_string(),
+            hash: hash.to_string(),
+            source: source.to_string(),
+            argv,
+            adapter_version: env!("CARGO_PKG_VERSION").to_string(),
+            installed_at: now_secs(),
+            scope,
+            enabled,
+        },
+    );
+    write_lock(&lock)
 }
 
 fn ensure_gray_native(ecosystem: &str, type_: &str) -> anyhow::Result<()> {
@@ -318,12 +338,12 @@ fn npm_metadata_url(base: &str, name: &str) -> String {
     )
 }
 
+#[derive(Debug)]
 struct NpmResolved {
     tarball: String,
     integrity: String,
     version: String,
 }
-
 async fn npm_resolve(
     client: &reqwest::Client,
     name: &str,
@@ -383,24 +403,9 @@ async fn npm_resolve(
     })
 }
 
-/// Resolve `name[@version]` via registry metadata to `(tarball_url, integrity)`.
-/// Unpinned resolves `dist-tags.latest`; integrity falls back to `dist.shasum`.
-// In-flight (P2-2 consumer): silenced for CI -D warnings; wire up or delete.
-#[allow(dead_code)]
-pub(crate) async fn npm_tarball_url(
-    client: &reqwest::Client,
-    name: &str,
-    version: Option<&str>,
-) -> anyhow::Result<(String, String)> {
-    let r = npm_resolve(client, name, version).await?;
-    Ok((r.tarball, r.integrity))
-}
-
 /// Verified + unpacked npm tarball awaiting P2-2's extractor. `dir` owns the
 /// staging tempdir (deleted on drop); the lock write happens in P2-2 after
 /// extraction, so a failed extract leaves no half-state.
-// In-flight (P2-2 consumer): silenced for CI -D warnings; wire up or delete.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct StagedPkg {
     pub(crate) dir: tempfile::TempDir,
@@ -450,8 +455,8 @@ pub(crate) async fn stage_npm_package(
 // manifest `pi.skills` globs. NEVER execute package code: only `.md` files
 // are copied; everything else is left behind (and counted honestly).
 
-/// What a pi install took vs skipped. On [`Report::pi_summary` for callers
-/// to print; extensions/themes are P3 and never executed. `taken` holds
+/// What a pi install took vs skipped, printed by [`emit_pi_summary`];
+/// extensions/themes are P3 and never executed. `taken` holds
 /// loadable skill dirs only; dest-top-level `.md` files are listed in
 /// `docs` (copied for reference — the loader recurses with
 /// `include_root_files=false`, so they never load as skills).
@@ -480,7 +485,7 @@ pub fn sanitize_npm_key(name: &str) -> String {
 
 /// Reject install keys that would escape `<plugins>/pi/`: empty, `.`,
 /// `..`, or anything still holding `/` or `\` after [`sanitize_npm_key`].
-fn validate_install_key(key: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_install_key(key: &str) -> anyhow::Result<()> {
     if key.is_empty() || key == "." || key == ".." || key.contains('/') || key.contains('\\') {
         anyhow::bail!("cannot derive a safe plugin name from package (got {key:?})");
     }
@@ -872,21 +877,15 @@ pub(crate) fn extract_pi_skills(
         eprintln!("skipped {theme_n} theme files (P3)");
     }
     let scope = opts.scope.clone().unwrap_or_else(|| "user".to_string());
-    let mut lock = read_lock()?.unwrap_or_default();
-    let enabled = lock.plugins.get(key).map(|e| e.enabled).unwrap_or(true);
-    let entry = LockEntry {
-        ecosystem: ecosystem.to_string(),
-        version: version.to_string(),
-        hash: hash.to_string(),
-        source: source.to_string(),
-        argv: opts.argv.clone(),
-        adapter_version: env!("CARGO_PKG_VERSION").to_string(),
-        installed_at: now_secs(),
+    if let Err(e) = record_install(
+        key,
+        ecosystem,
+        version,
+        hash,
+        source,
         scope,
-        enabled,
-    };
-    lock.plugins.insert(key.to_string(), entry);
-    if let Err(e) = write_lock(&lock) {
+        opts.argv.clone(),
+    ) {
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
     }
@@ -918,50 +917,43 @@ async fn install_npm(
         name: key,
         version: staged.version,
         path: dest,
-        unverified: false,
-        pi_summary: Some(summary),
     })
 }
 
-/// Shallow-clone `url` into `dest` (must not exist yet) via the `git` CLI
-/// — never reimplemented. Returns the cloned HEAD commit sha. `--branch`
-/// only when pinned; `--` guards against flag-injection URLs.
+/// Shallow-clone `url` (under the plugins tmp dir) via the shared
+/// `sources::clone_into_tmp` helper and return the keeper tempdir, the clone
+/// dir, and the cloned HEAD commit sha. `--branch` only when pinned.
 pub(crate) fn clone_git_repo(
     url: &str,
     git_ref: Option<&str>,
-    dest: &Path,
-) -> anyhow::Result<String> {
-    let mut clone_cmd = std::process::Command::new("git");
-    clone_cmd.arg("clone").arg("--depth").arg("1");
-    if let Some(r) = git_ref.filter(|r| !r.is_empty()) {
-        clone_cmd.arg("--branch").arg(r);
+) -> anyhow::Result<(tempfile::TempDir, PathBuf, String)> {
+    let branch = git_ref.filter(|r| !r.is_empty());
+    let mut extra: Vec<&str> = Vec::new();
+    if let Some(b) = branch {
+        extra.push("--branch");
+        extra.push(b);
     }
-    clone_cmd.arg("--").arg(url).arg(dest);
-    let out = clone_cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("cloning {}: git failed to run ({e})", redact_url(url)))?;
-    if !out.status.success() {
-        let detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        anyhow::bail!("cloning {} failed: {detail}", redact_url(url));
-    }
+    let (staging, clone_dir) = crate::sources::clone_into_tmp(url, &extra, true)?;
     let sha_out = std::process::Command::new("git")
         .arg("-C")
-        .arg(dest)
+        .arg(&clone_dir)
         .arg("rev-parse")
         .arg("HEAD")
         .output()?;
     if !sha_out.status.success() {
-        anyhow::bail!("cloning {} failed: cannot read commit sha", redact_url(url));
+        anyhow::bail!(
+            "cloning {} failed: cannot read commit sha",
+            crate::fetch::redact(url)
+        );
     }
     let sha = String::from_utf8_lossy(&sha_out.stdout).trim().to_string();
     if sha.is_empty() {
-        anyhow::bail!("cloning {} failed: empty commit sha", redact_url(url));
+        anyhow::bail!(
+            "cloning {} failed: empty commit sha",
+            crate::fetch::redact(url)
+        );
     }
-    Ok(sha)
-}
-
-fn redact_url(url: &str) -> String {
-    crate::fetch::redact(url)
+    Ok((staging, clone_dir, sha))
 }
 
 /// `Git` arm: shallow clone → P2-2 extractor over the clone → ONE lock
@@ -978,26 +970,22 @@ async fn install_git(
     }
     eprintln!(
         "warning: unverified install from {} (no index hash; use an index name for verified installs)",
-        redact_url(url)
+        crate::fetch::redact(url)
     );
     let raw = name_from_git_url(url);
     if raw.trim().is_empty() {
         anyhow::bail!(
             "cannot derive a plugin name from git URL: {}",
-            redact_url(url)
+            crate::fetch::redact(url)
         );
     }
     let key = install_key(&raw).map_err(|_| {
         anyhow::anyhow!(
             "cannot derive a plugin name from git URL: {}",
-            redact_url(url)
+            crate::fetch::redact(url)
         )
     })?;
-    let tmp_root = crate::plugins_dir().join("tmp");
-    std::fs::create_dir_all(&tmp_root)?;
-    let stage = tempfile::tempdir_in(&tmp_root)?;
-    let clone_dir = stage.path().join("repo");
-    let sha = clone_git_repo(url, git_ref, &clone_dir)?;
+    let (_stage, clone_dir, sha) = clone_git_repo(url, git_ref)?;
     let version = git_ref
         .filter(|r| !r.is_empty())
         .unwrap_or("0.0.0")
@@ -1009,8 +997,6 @@ async fn install_git(
         name: key,
         version,
         path: dest,
-        unverified: true,
-        pi_summary: Some(summary),
     })
 }
 
@@ -1073,51 +1059,31 @@ async fn install_inner(spec: NameOrUrl, opts: InstallOpts) -> anyhow::Result<Rep
     }
 }
 
-/// `ClawHub` arm: detail → ZIP download → per-file verify when the
-/// versions endpoint answers (else the honest unverified warning) →
+/// `ClawHub` arm: shared detail → download → unpack → verify staging →
 /// shared skills extraction + ONE lock write (`ecosystem: "clawhub"`).
 async fn install_clawhub(
     client: &reqwest::Client,
     slug: &str,
     opts: InstallOpts,
 ) -> anyhow::Result<Report> {
-    let detail = crate::sources::clawhub_detail(client, slug).await?;
-    let archive = crate::sources::clawhub_download_bundle(client, &detail).await?;
-    let tmp_root = crate::plugins_dir().join("tmp");
-    std::fs::create_dir_all(&tmp_root)?;
-    let stage = tempfile::tempdir_in(&tmp_root)?;
-    // Hosted skills are ZIPs; GitHub-handoff bundles are tarballs.
-    let is_zip = std::fs::read(&archive)
-        .map(|b| b.len() >= 2 && b[..2] == *b"PK")
-        .unwrap_or(false);
-    let unpacked = if is_zip {
-        crate::fetch::unpack_zip(&archive, stage.path())
-    } else {
-        crate::fetch::unpack_tar_gz(&archive, stage.path())
-    };
-    if let Err(e) = unpacked {
-        let _ = std::fs::remove_file(&archive);
-        return Err(e);
+    let crate::sources::StagedClawHub {
+        root,
+        detail,
+        verified,
+        _staging,
+    } = crate::sources::stage_clawhub_bundle(client, slug).await?;
+    let source_url = crate::sources::clawhub_canonical_url(&detail.owner, &detail.slug);
+    if !verified {
+        eprintln!(
+            "warning: unverified install from {} (no index hash; use an index name for verified installs)",
+            crate::fetch::redact(&source_url)
+        );
     }
-    let _ = std::fs::remove_file(&archive);
-    // ClawHub zips carry no `package/` wrapper; `stage_root` covers both.
-    let root = stage_root(stage.path());
-    let verified = crate::sources::verify_clawhub_files(&root, &detail.files)?;
     let version = if detail.version.trim().is_empty() {
         "0.0.0".to_string()
     } else {
         detail.version.clone()
     };
-    let unverified = !verified;
-    if unverified {
-        eprintln!(
-            "warning: unverified install from {} (no index hash; use an index name for verified installs)",
-            crate::fetch::redact(&crate::sources::clawhub_canonical_url(
-                &detail.owner,
-                &detail.slug
-            ))
-        );
-    }
     // Owner-qualified key (`owner-slug` after sanitizing): two owners
     // shipping the same slug no longer collide on one `pi/<slug>` dir,
     // and the key derives from the searched display name.
@@ -1125,22 +1091,13 @@ async fn install_clawhub(
         &detail.owner,
         &detail.slug,
     ))?;
-    let (dest, summary) = extract_pi_skills(
-        &root,
-        &key,
-        &version,
-        "",
-        &crate::sources::clawhub_canonical_url(&detail.owner, &detail.slug),
-        "clawhub",
-        &opts,
-    )?;
+    let (dest, summary) =
+        extract_pi_skills(&root, &key, &version, "", &source_url, "clawhub", &opts)?;
     emit_pi_summary(&summary);
     Ok(Report {
         name: key,
         version,
         path: dest,
-        unverified,
-        pi_summary: Some(summary),
     })
 }
 
@@ -1175,8 +1132,6 @@ async fn install_claude(
         name: key,
         version: resolved.version,
         path: dest,
-        unverified: resolved.unverified,
-        pi_summary: Some(summary),
     })
 }
 
@@ -1201,29 +1156,19 @@ async fn install_index(
     } else {
         entry.scope.clone()
     };
-    let mut lock = read_lock()?.unwrap_or_default();
-    let enabled = lock.plugins.get(name).map(|e| e.enabled).unwrap_or(true);
-    lock.plugins.insert(
-        name.to_string(),
-        LockEntry {
-            ecosystem: entry.ecosystem.clone(),
-            version: entry.version.clone(),
-            hash: entry.hash.primary().unwrap_or_default().to_string(),
-            source: entry.source.url.clone(),
-            argv: opts.argv.clone(),
-            adapter_version: env!("CARGO_PKG_VERSION").to_string(),
-            installed_at: now_secs(),
-            scope,
-            enabled,
-        },
-    );
-    write_lock(&lock)?;
+    record_install(
+        name,
+        &entry.ecosystem,
+        &entry.version,
+        entry.hash.primary().unwrap_or_default(),
+        &entry.source.url,
+        scope,
+        opts.argv.clone(),
+    )?;
     Ok(Report {
         name: name.to_string(),
         version: entry.version.clone(),
         path: dest,
-        unverified: false,
-        pi_summary: None,
     })
 }
 
@@ -1251,29 +1196,19 @@ async fn install_url(
         return Err(e);
     }
     let _ = std::fs::remove_file(&archive);
-    let mut lock = read_lock()?.unwrap_or_default();
-    let enabled = lock.plugins.get(&name).map(|e| e.enabled).unwrap_or(true);
-    lock.plugins.insert(
-        name.clone(),
-        LockEntry {
-            ecosystem: "url".to_string(),
-            version: "0.0.0".to_string(),
-            hash: String::new(),
-            source: url.to_string(),
-            argv: opts.argv.clone(),
-            adapter_version: env!("CARGO_PKG_VERSION").to_string(),
-            installed_at: now_secs(),
-            scope: opts.scope.clone().unwrap_or_else(|| "user".to_string()),
-            enabled,
-        },
-    );
-    write_lock(&lock)?;
+    record_install(
+        &name,
+        "url",
+        "0.0.0",
+        "",
+        url,
+        opts.scope.clone().unwrap_or_else(|| "user".to_string()),
+        opts.argv.clone(),
+    )?;
     Ok(Report {
         name,
         version: "0.0.0".to_string(),
         path: dest,
-        unverified: true,
-        pi_summary: None,
     })
 }
 
@@ -1551,8 +1486,6 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
             log::debug!("gray index fetch failed: {e:#}");
             (
                 crate::index::Index {
-                    schema: 0,
-                    generated: String::new(),
                     plugins: Default::default(),
                 },
                 true,
@@ -1890,11 +1823,10 @@ pub(crate) mod tests {
         let _home = use_npm_env(&base);
 
         let client = crate::fetch::client().unwrap();
-        let (url, integrity) = npm_tarball_url(&client, "pi-foo", Some("1.0.0"))
-            .await
-            .unwrap();
-        assert_eq!(url, tarball);
-        assert_eq!(integrity, sha512_integrity(b"old"));
+        let resolved = npm_resolve(&client, "pi-foo", Some("1.0.0")).await.unwrap();
+        assert_eq!(resolved.tarball, tarball);
+        assert_eq!(resolved.integrity, sha512_integrity(b"old"));
+        assert_eq!(resolved.version, "1.0.0");
     }
 
     #[tokio::test]
@@ -1912,9 +1844,10 @@ pub(crate) mod tests {
         let _home = use_npm_env(&base);
 
         let client = crate::fetch::client().unwrap();
-        let (url, integrity) = npm_tarball_url(&client, "pi-foo", None).await.unwrap();
-        assert_eq!(url, tarball);
-        assert_eq!(integrity, sha512_integrity(b"new"));
+        let resolved = npm_resolve(&client, "pi-foo", None).await.unwrap();
+        assert_eq!(resolved.tarball, tarball);
+        assert_eq!(resolved.integrity, sha512_integrity(b"new"));
+        assert_eq!(resolved.version, "2.0.0");
     }
 
     #[tokio::test]
@@ -1931,8 +1864,8 @@ pub(crate) mod tests {
         let _home = use_npm_env(&base);
 
         let client = crate::fetch::client().unwrap();
-        let (_, integrity) = npm_tarball_url(&client, "pi-foo", None).await.unwrap();
-        assert_eq!(integrity, "sha256:abc123");
+        let resolved = npm_resolve(&client, "pi-foo", None).await.unwrap();
+        assert_eq!(resolved.integrity, "sha256:abc123");
     }
 
     #[tokio::test]
@@ -1949,7 +1882,7 @@ pub(crate) mod tests {
         let _home = use_npm_env(&base);
 
         let client = crate::fetch::client().unwrap();
-        let err = npm_tarball_url(&client, "pi-foo", Some("9.9.9"))
+        let err = npm_resolve(&client, "pi-foo", Some("9.9.9"))
             .await
             .unwrap_err()
             .to_string();
@@ -1970,7 +1903,7 @@ pub(crate) mod tests {
         let _home = use_npm_env(&base);
 
         let client = crate::fetch::client().unwrap();
-        let err = npm_tarball_url(&client, "pi-foo", None)
+        let err = npm_resolve(&client, "pi-foo", None)
             .await
             .unwrap_err()
             .to_string();
@@ -2227,12 +2160,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.name, "pi-foo");
         assert_eq!(report.version, "1.0.0");
-        assert!(!report.unverified);
-        let summary = report.pi_summary.expect("pi summary");
-        assert_eq!(summary.taken, vec!["mulch", "run-in-tmux"]);
-        assert_eq!(summary.docs, vec!["README.md"]);
-        assert!(summary.skipped_ext);
-        assert!(summary.skipped_themes);
 
         // `.md` only: skills + top-level doc land, code never does.
         assert_eq!(
@@ -2303,11 +2230,8 @@ pub(crate) mod tests {
         let report = install(parse_spec("npm:pi-foo"), InstallOpts::default())
             .await
             .unwrap();
-        let summary = report.pi_summary.expect("pi summary");
-        assert_eq!(summary.taken, vec!["weird"]);
-        assert!(summary.docs.is_empty());
-        assert!(!summary.skipped_ext);
-        assert!(!summary.skipped_themes);
+        assert_eq!(report.name, "pi-foo");
+        assert!(report.path.join("weird/SKILL.md").is_file());
     }
 
     #[test]
@@ -2426,12 +2350,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.name, key);
         assert_eq!(report.version, "0.0.0");
-        assert!(report.unverified);
-        let summary = report.pi_summary.expect("pi summary");
-        assert_eq!(summary.taken, vec!["mulch"]);
-        assert_eq!(summary.docs, vec!["README.md"]);
-        assert!(summary.skipped_ext);
-        assert!(!summary.skipped_themes);
 
         assert_eq!(
             std::fs::read(report.path.join("mulch/SKILL.md")).unwrap(),
@@ -3357,9 +3275,6 @@ pub(crate) mod tests {
         assert_eq!(report.version, "1.0.0");
         // No version file list from the stub → honest unverified path.
         // (The stub 429s the download once: success proves the retry.)
-        assert!(report.unverified);
-        let summary = report.pi_summary.expect("pi summary");
-        assert_eq!(summary.taken, vec!["greeter"]);
         assert!(report.path.join("greeter/SKILL.md").is_file());
         let entry = list().unwrap().remove("fixture-demo").expect("lock entry");
         assert_eq!(entry.ecosystem, "clawhub");
@@ -3388,7 +3303,6 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(report.name, "claude-foo");
         assert_eq!(report.version, "3.0.0");
-        assert!(report.unverified);
         assert!(report.path.join("greeter/SKILL.md").is_file());
         let entry = list().unwrap().remove("claude-foo").expect("lock entry");
         assert_eq!(entry.ecosystem, "claude");
