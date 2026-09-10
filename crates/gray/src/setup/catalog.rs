@@ -80,7 +80,7 @@ pub fn mask_key_pretty(key: &str) -> String {
 /// Default-tolerant on purpose: every field is optional and unknown fields
 /// are ignored so known fields survive hand-edits — never add
 /// `deny_unknown_fields` here (it would drop the whole file on one typo).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SavedConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
@@ -216,22 +216,44 @@ where
 /// Writes the config pretty-printed so users can hand-edit it too.
 /// Mode 0600: the file stores the plaintext api_key.
 pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()> {
+    let body = serde_json::to_string_pretty(cfg)?;
+    save_private_json(path, &serde_json::from_str::<serde_json::Value>(&body)?)
+}
+
+/// Single private atomic writer for credential-bearing JSON: serialize
+/// first, then write to a unique 0600 tmp in the same directory, sync,
+/// and rename. A crash can never leave a truncated live file, and a
+/// corrupt existing file is never read as empty-then-overwritten here —
+/// callers load (and refuse to clobber) before calling save.
+fn save_private_json(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
     use std::io::Write as _;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
+    let body = serde_json::to_vec_pretty(value)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".gray-{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    f.write_all(serde_json::to_string_pretty(cfg)?.as_bytes())?;
-    Ok(())
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = options.open(&tmp)?;
+        file.write_all(&body)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Per-provider API-key store (`~/.gray/auth.json`, mode 0600), mirroring
@@ -243,7 +265,7 @@ fn auth_store_path() -> anyhow::Result<PathBuf> {
 /// Persisted OAuth credential store. Lives here (not `gray-extras::oauth`)
 /// so API-key helpers can read through the mixed `auth.json` store without
 /// depending on the out-of-default-build OAuth signin flow.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredAuth {
     pub provider: String,
     pub access_token: String,
@@ -258,11 +280,39 @@ pub struct StoredAuth {
 /// file is a mixed map `{pid: String | StoredAuth}` (plus a legacy
 /// single-object form); key helpers and OAuth saves share it so neither
 /// writer clobbers the other's shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AuthEntry {
     Key(String),
     OAuth(StoredAuth),
+}
+
+// Hand-redacted Debug: these types carry plaintext keys and tokens, so the
+// derived impl would leak them into any log that formats config/auth.
+impl std::fmt::Debug for SavedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedConfig")
+            .field("model", &self.model)
+            .field("auth_mode", &self.auth_mode)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for StoredAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredAuth")
+            .field("provider", &self.provider)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for AuthEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Key(_) => f.write_str("Key(..)"),
+            Self::OAuth(a) => f.debug_tuple("OAuth").field(a).finish(),
+        }
+    }
 }
 
 pub fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
@@ -278,26 +328,10 @@ pub fn load_mixed_store(path: &Path) -> BTreeMap<String, AuthEntry> {
 }
 
 pub fn save_mixed_store(path: &Path, store: &BTreeMap<String, AuthEntry>) -> anyhow::Result<()> {
-    use std::io::Write as _;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-
-    let json = serde_json::to_string_pretty(&store)?;
-    file.write_all(json.as_bytes())?;
-    file.flush()?;
-    Ok(())
+    save_private_json(
+        path,
+        &serde_json::to_value(store).map_err(|e| anyhow::anyhow!("{e}"))?,
+    )
 }
 
 /// All stored keys keyed by provider id; missing file yields an empty map.

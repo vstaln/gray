@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthenticateRequest, CancelNotification, InitializeRequest, LoadSessionRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification,
+    AuthenticateRequest, CancelNotification, InitializeRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{
@@ -30,6 +30,16 @@ pub struct DenyAllPrompt;
 impl PermissionPrompt for DenyAllPrompt {
     fn ask(&self, _tool_call_title: &str, _options: Vec<String>) -> Option<String> {
         None
+    }
+}
+
+/// Aborts the task on drop: cancellation watchers must not outlive the
+/// turn that spawned them.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -64,6 +74,9 @@ fn answer_permission(
     prompt: &Arc<dyn PermissionPrompt>,
     responder: Responder<RequestPermissionResponse>,
 ) -> Result<(), agent_client_protocol::Error> {
+    use agent_client_protocol::schema::v1::PermissionOptionKind;
+    // Option IDs are opaque: choose by kind, never by ID string. Prefer the
+    // narrowest allow; unknown/unrepresentable outcomes deny.
     let title = req.tool_call.tool_call_id.0.to_string();
     let option_ids: Vec<String> = req
         .options
@@ -71,15 +84,19 @@ fn answer_permission(
         .map(|o| o.option_id.0.to_string())
         .collect();
     let chosen = if auto_approve {
-        option_ids
+        req.options
             .iter()
-            .find(|id| *id == "allow-always")
-            .or_else(|| option_ids.iter().find(|id| *id == "allow-once"))
-            .or_else(|| option_ids.first())
-            .cloned()
+            .find(|o| o.kind == PermissionOptionKind::AllowOnce)
+            .or_else(|| {
+                req.options
+                    .iter()
+                    .find(|o| o.kind == PermissionOptionKind::AllowAlways)
+            })
+            .map(|o| o.option_id.0.to_string())
     } else {
-        prompt.as_ref().ask(&title, option_ids)
+        prompt.as_ref().ask(&title, option_ids.clone())
     };
+    let chosen = chosen.filter(|id| option_ids.contains(id));
     match chosen {
         Some(id) => responder.respond(RequestPermissionResponse::new(
             RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
@@ -105,13 +122,20 @@ fn guard_path(cwd: &std::path::Path, path: &std::path::Path) -> Result<PathBuf, 
     if std::env::var("GRAY_ACP_ALLOW_ANY_PATH").as_deref() == Ok("1") {
         return Ok(path.to_path_buf());
     }
-    let canon_cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let canon_path = if path.is_absolute() {
+    // Strict on both sides: an unresolvable workspace or a not-yet-existing
+    // target denies. New-file creation through this path intentionally fails;
+    // a future safe version must authorize/open the parent directory.
+    let canon_cwd = cwd
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve workspace: {e}"))?;
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
         canon_cwd.join(path)
     };
-    let normalized = canon_path;
+    let normalized = joined
+        .canonicalize()
+        .map_err(|e| format!("cannot resolve existing target: {e}"))?;
     if normalized.starts_with(&canon_cwd) {
         Ok(normalized)
     } else {
@@ -134,14 +158,19 @@ fn client_builder(
     };
     let cwd_read = cwd.clone();
     let cwd_write = cwd.clone();
+    // One mapper per connection: tool result_sent state must persist across
+    // notifications, or results map twice / get lost.
+    let mapper = std::sync::Arc::new(tokio::sync::Mutex::new(EventMapper::new()));
+    let mapper_for_notifications = mapper.clone();
     Client
         .builder()
         .name("gray")
         .on_receive_notification(
             move |n: SessionNotification, _cx| {
                 let updates = updates.clone();
+                let mapper = mapper_for_notifications.clone();
                 async move {
-                    let mut mapper = EventMapper::new();
+                    let mut mapper = mapper.lock().await;
                     for ev in mapper.map_update(&n.update) {
                         let _ = updates.send(ev);
                     }
@@ -194,6 +223,17 @@ fn client_builder(
             move |req: WriteTextFileRequest, responder: Responder<WriteTextFileResponse>, _cx| {
                 let cwd_write = cwd_write.clone();
                 async move {
+                    // Host filesystem writes need explicit auto-approval:
+                    // rejecting request_permission is not itself a gate.
+                    if !auto_approve {
+                        return responder.respond_with_error(
+                            agent_client_protocol::Error::invalid_request().data(
+                                serde_json::json!(
+                                    "host filesystem writes require explicit auto-approval"
+                                ),
+                            ),
+                        );
+                    }
                     match guard_path(&cwd_write, &req.path) {
                         Err(e) => responder.respond_with_error(
                             agent_client_protocol::Error::invalid_request()
@@ -241,19 +281,26 @@ async fn open_session(
     if let Some(resume_id) = resume.as_deref()
         && init.agent_capabilities.load_session
     {
-        let req = LoadSessionRequest::new(SessionId::new(resume_id), cwd.clone());
-        if conn.send_request(req).block_task().await.is_ok() {
-            let session = conn
-                .build_session(cwd)
-                .block_task()
-                .start_session()
-                .await
-                .map_err(|e| AcpError::Request {
+        // Drive the LOADED session: a bare session/new here would orphan
+        // the restored history and start blank.
+        match conn
+            .load_session(SessionId::new(resume_id), cwd.clone())
+            .block_task()
+            .start_session()
+            .await
+        {
+            Ok(restored) => {
+                let id = restored.session().session_id().0.to_string();
+                return Ok((restored.into_session(), id));
+            }
+            Err(e) => {
+                // Starting blank would silently orphan the requested history;
+                // surface the failure instead.
+                return Err(AcpError::Request {
                     method: "session/load",
                     message: e.to_string(),
-                })?;
-            let id = session.session_id().0.to_string();
-            return Ok((session, id));
+                });
+            }
         }
     }
     match conn
@@ -379,7 +426,7 @@ impl AcpSession {
             .map_err(|e| AcpError::Other(anyhow::anyhow!(e.to_string())))?;
 
         Ok(Self {
-            spec: opts.spec,
+            spec,
             display,
             session_id,
             mode: None,
@@ -405,7 +452,7 @@ impl AcpSession {
     }
 
     pub fn agent_key(&self) -> &str {
-        self.spec.key
+        &self.spec.key
     }
 
     pub fn agent_display(&self) -> &str {
@@ -464,7 +511,9 @@ impl AcpSession {
                     let cancel_conn = conn.clone();
                     let cancel_flag_spawn = cancel_flag.clone();
                     let sid = session.session_id().clone();
-                    tokio::spawn(async move {
+                    // Scoped to this turn: abort on prompt completion instead
+                    // of polling forever on success.
+                    let _cancel_task = AbortOnDrop(tokio::spawn(async move {
                         loop {
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             if cancel_flag_spawn.load(std::sync::atomic::Ordering::SeqCst) {
@@ -473,7 +522,7 @@ impl AcpSession {
                                 break;
                             }
                         }
-                    });
+                    }));
                     session
                         .send_prompt(text)
                         .map_err(|e| err("session/prompt", e.to_string()))?;
@@ -486,13 +535,11 @@ impl AcpSession {
                         match msg {
                             SessionMessage::SessionMessage(dispatch) => {
                                 MatchDispatch::new(dispatch)
-                                    .if_notification(async |n: SessionNotification| {
-                                        let mut mapper = EventMapper::new();
-                                        for ev in mapper.map_update(&n.update) {
-                                            let _ = ev;
-                                        }
-                                        Ok(())
-                                    })
+                                    // Updates already flow through the
+                                    // connection-level mapper in
+                                    // client_builder; mapping them again
+                                    // here only to discard is dead code.
+                                    .if_notification(async |_n: SessionNotification| Ok(()))
                                     .await
                                     .otherwise_ignore()
                                     .map_err(|e| err("session/update", e.to_string()))?;
@@ -574,11 +621,32 @@ mod tests {
     #[test]
     fn guard_path_keeps_paths_inside_workspace() {
         use std::path::PathBuf;
-        let cwd = std::env::temp_dir()
-            .canonicalize()
-            .unwrap_or_else(|_| std::env::temp_dir());
-        let inside = cwd.join("sub").join("file.txt");
-        assert_eq!(guard_path(&cwd, &inside), Ok(inside));
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap();
+        // Existing file inside: ok.
+        let inside = cwd.join("file.txt");
+        std::fs::write(&inside, "x").unwrap();
+        assert_eq!(guard_path(&cwd, &inside), Ok(inside.clone()));
+        // Relative form of the same file: ok.
+        assert_eq!(guard_path(&cwd, &PathBuf::from("file.txt")), Ok(inside));
+        // Traversal and absolute escapes: denied.
+        assert!(guard_path(&cwd, &PathBuf::from("../outside.txt")).is_err());
+        assert!(guard_path(&cwd, &PathBuf::from("/etc/passwd")).is_err());
+        // Not-yet-existing target: denied (uncertainty never authorizes).
+        assert!(guard_path(&cwd, &PathBuf::from("new-file.txt")).is_err());
+        // Symlinked subdir pointing out: denied.
+        #[cfg(unix)]
+        {
+            let out = dir.path().parent().unwrap().join(format!(
+                "gray-acp-guard-test-outside-{}",
+                std::process::id()
+            ));
+            std::fs::write(&out, "x").unwrap();
+            std::os::unix::fs::symlink(&out, cwd.join("link-out.txt")).unwrap();
+            let denied = guard_path(&cwd, &PathBuf::from("link-out.txt")).is_err();
+            let _ = std::fs::remove_file(&out);
+            assert!(denied, "symlink escape must be rejected");
+        }
         if let Some(parent) = cwd.parent() {
             let outside: PathBuf = parent.join("definitely-outside-gray-workspace-xyz");
             assert!(

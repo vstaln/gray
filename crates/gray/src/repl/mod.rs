@@ -515,7 +515,7 @@ pub async fn run_repl_mode(
         config
             .permissions
             .as_deref()
-            .unwrap_or(gray_core::approvals::MODE_FULL),
+            .unwrap_or(gray_core::approvals::MODE_AUTO),
     );
     if let Some((shared, _)) = tui.as_ref() {
         shared
@@ -806,6 +806,7 @@ mod ctrl_c_policy_tests {
     #[test]
     fn totals_sum_durations_and_skip_untimed() {
         let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+            compaction_boundary: false,
             entry_id: id,
             parent_id: None,
             timestamp: 0,

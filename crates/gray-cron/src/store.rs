@@ -120,67 +120,71 @@ fn default_enabled() -> bool {
 /// (gateway gains the gray-cron dep in Task 3) — so gray-cron owns this copy
 /// and re-exports it. Do NOT add a third copy elsewhere.
 pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
+    use std::io::Write as _;
     let body = serde_json::to_string_pretty(value)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    // Unique private tmp: no predictable-name collisions, mode set at
+    // creation (not after a world-readable window), dir synced with data.
+    let tmp = parent.join(format!(".gray-{}.tmp", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = options.open(&tmp)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// Cross-process mutual exclusion for one load-modify-save pass. Same flock
 /// mechanism as `gray-gateway/src/lock.rs`, blocking variant: the critical
 /// section is milliseconds long, and the 30s deadline matches hermes
-/// `_JOBS_LOCK_TIMEOUT_SECONDS`. Degrades to run-through where locking is
-/// unsupported, like `lock.rs`.
-fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> T) -> T {
+/// `_JOBS_LOCK_TIMEOUT_SECONDS`. Lock open/timeout/unsupported errors abort
+/// the pass instead of running it unguarded: at-most-once claims require
+/// actual mutual exclusion, and a disabled scheduler is safer than an
+/// approximate one.
+fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
     if let Some(parent) = lock_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(lock_path)
-        .ok();
-    let mut held = file.is_none();
-    if let Some(ref f) = file {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            match f.try_lock_exclusive() {
-                Ok(()) => {
-                    held = true;
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() >= deadline {
-                        log::warn!(
-                            "cron store lock timeout on {}; proceeding without it",
-                            lock_path.display()
-                        );
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(_) => {
-                    held = true;
-                    break;
-                }
+        .open(lock_path)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "cron lock timeout on {}",
+                    lock_path.display()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            Err(e) => return Err(e.into()),
         }
     }
-    let out = f();
-    if held && let Some(f) = file {
-        let _ = FileExt::unlock(&f);
-    }
-    out
+    // Closing the file releases the lock, including on error/unwind.
+    f()
 }
 
 /// Gray-minimal lifecycle floor (documented as the floor, not the ceiling):
@@ -250,36 +254,26 @@ impl CronStore {
     }
 
     /// Raw records; supports the bare array we write plus the `{"jobs": [...]}`
-    /// envelope. Unparseable files warn and read empty (never crash the tick).
-    fn load_raw(&self) -> Vec<serde_json::Value> {
+    /// envelope. Missing/empty reads as empty; anything malformed or
+    /// unreadable is an error — a later save must never silently overwrite a
+    /// corrupt store with just the new record.
+    fn load_raw(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let data = match std::fs::read_to_string(self.jobs_path()) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-            Err(e) => {
-                log::warn!("cron store unreadable {}: {e}", self.jobs_path().display());
-                return Vec::new();
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
             Ok(d) => d,
         };
         if data.trim().is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         match serde_json::from_str::<serde_json::Value>(data.trim()) {
-            Ok(serde_json::Value::Array(items)) => items,
+            Ok(serde_json::Value::Array(items)) => Ok(items),
             Ok(serde_json::Value::Object(mut obj)) => match obj.remove("jobs") {
-                Some(serde_json::Value::Array(items)) => items,
-                _ => {
-                    log::warn!("cron store has no jobs array; reading empty");
-                    Vec::new()
-                }
+                Some(serde_json::Value::Array(items)) => Ok(items),
+                _ => anyhow::bail!("cron store has no jobs array"),
             },
-            Ok(_) => {
-                log::warn!("cron store is not a JSON array; reading empty");
-                Vec::new()
-            }
-            Err(e) => {
-                log::warn!("cron store is not JSON ({}); reading empty", e);
-                Vec::new()
-            }
+            Ok(_) => anyhow::bail!("cron store is not a JSON array"),
+            Err(e) => Err(anyhow::anyhow!("cron store is not JSON ({e})")),
         }
     }
 
@@ -359,7 +353,7 @@ impl CronStore {
         };
         let id = job.id.clone();
         with_jobs_lock(&self.lock_path(), || {
-            let mut raw = self.load_raw();
+            let mut raw = self.load_raw()?;
             self.save_jobs(&mut raw, &[job])
         })?;
         Ok(id)
@@ -367,26 +361,26 @@ impl CronStore {
 
     pub fn list(&self) -> anyhow::Result<Vec<CronJob>> {
         let lock = self.lock_path();
-        Ok(with_jobs_lock(&lock, || {
-            let mut jobs = Self::parse_jobs(&self.load_raw());
+        with_jobs_lock(&lock, || {
+            let mut jobs = Self::parse_jobs(&self.load_raw()?);
             jobs.sort_by_key(|j| j.next_run_at.unwrap_or(i64::MAX));
-            jobs
-        }))
+            Ok(jobs)
+        })
     }
 
     /// Lookup by id or name (CLI convenience, mirrors the old sidecar).
     pub fn get(&self, id_or_name: &str) -> anyhow::Result<Option<CronJob>> {
         let lock = self.lock_path();
-        Ok(with_jobs_lock(&lock, || {
-            Self::parse_jobs(&self.load_raw())
+        with_jobs_lock(&lock, || {
+            Ok(Self::parse_jobs(&self.load_raw()?)
                 .into_iter()
-                .find(|j| j.id == id_or_name || j.name == id_or_name)
-        }))
+                .find(|j| j.id == id_or_name || j.name == id_or_name))
+        })
     }
 
     pub fn remove(&self, id_or_name: &str) -> anyhow::Result<bool> {
         with_jobs_lock(&self.lock_path(), || {
-            let mut raw = self.load_raw();
+            let mut raw = self.load_raw()?;
             let before = raw.len();
             raw.retain(|x| {
                 let id_match = x.get("id").and_then(|i| i.as_str()) == Some(id_or_name);
@@ -409,7 +403,7 @@ impl CronStore {
     /// recurring jobs behave identically. Single save at end.
     pub fn claim_due(&self, now: i64, owner: &str) -> anyhow::Result<Vec<CronJob>> {
         with_jobs_lock(&self.lock_path(), || {
-            let mut raw = self.load_raw();
+            let mut raw = self.load_raw()?;
             let mut jobs = Self::parse_jobs(&raw);
             let mut due = Vec::new();
             let mut dirty = false;
@@ -417,10 +411,12 @@ impl CronStore {
                 if !job.enabled || job.state != JobState::Active {
                     continue;
                 }
-                if let Some(c) = &job.fire_claim
-                    && now - c.at < FIRE_CLAIM_TTL_SECS
-                {
-                    continue; // live claim: another ticker owns it
+                // Any outstanding claim blocks re-claim: a 300s TTL cannot
+                // prove a long run finished, and an old completion must not
+                // clear a newer worker's lease. Crashed claims need explicit
+                // offline recovery (liveness traded for no overlap).
+                if job.fire_claim.is_some() {
+                    continue;
                 }
                 if matches!(job.schedule, Schedule::Once { .. }) && job.last_run_at.is_some() {
                     continue; // completed one-shot, retained for inspection
@@ -489,7 +485,7 @@ impl CronStore {
         err: Option<&str>,
     ) -> anyhow::Result<()> {
         with_jobs_lock(&self.lock_path(), || {
-            let mut raw = self.load_raw();
+            let mut raw = self.load_raw()?;
             let mut jobs = Self::parse_jobs(&raw);
             let Some(job) = jobs
                 .iter_mut()
@@ -514,7 +510,7 @@ impl CronStore {
     #[cfg(test)]
     fn set_next_run_for_test(&self, id: &str, ts: i64) -> anyhow::Result<()> {
         with_jobs_lock(&self.lock_path(), || {
-            let mut raw = self.load_raw();
+            let mut raw = self.load_raw()?;
             let mut jobs = Self::parse_jobs(&raw);
             let Some(job) = jobs.iter_mut().find(|j| j.id == id) else {
                 anyhow::bail!("unknown cron job {id:?}");
@@ -550,6 +546,37 @@ mod tests {
         let got_a = a.claim_due(now_secs(), "owner-a").unwrap();
         let got_b = b.claim_due(now_secs(), "owner-b").unwrap();
         assert_eq!(got_a.len() + got_b.len(), 1, "exactly one claimant wins");
+    }
+
+    #[test]
+    fn expired_claim_never_reclaimed_automatically() {
+        let (_dir, store) = test_store();
+        let id = store
+            .add("hourly", "every 1h", "say hi", Deliver::Local)
+            .unwrap();
+        store.set_next_run_for_test(&id, 1).unwrap();
+        let t0 = 1_700_000_000;
+        let first = store.claim_due(t0, "owner-a").unwrap();
+        assert_eq!(first.len(), 1);
+        // Past the TTL and past the next schedule: still no second claim.
+        // A crashed owner needs offline recovery, not silent overlap.
+        let second = store
+            .claim_due(t0 + FIRE_CLAIM_TTL_SECS + 7200, "owner-b")
+            .unwrap();
+        assert!(second.is_empty(), "expired claim must not re-fire");
+    }
+
+    #[test]
+    fn corrupt_store_fails_loads_and_mutations() {
+        let (dir, store) = test_store();
+        std::fs::write(dir.path().join("jobs.json"), "{torn").unwrap();
+        assert!(store.list().is_err());
+        assert!(store.claim_due(1_700_000_000, "o").is_err());
+        assert!(store.add("x", "every 1h", "hi", Deliver::Local).is_err());
+        // Missing store still reads empty and accepts the first add.
+        std::fs::remove_file(dir.path().join("jobs.json")).unwrap();
+        assert!(store.list().unwrap().is_empty());
+        store.add("x", "every 1h", "hi", Deliver::Local).unwrap();
     }
 
     #[test]

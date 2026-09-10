@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct AgentSpec {
-    pub key: &'static str,
-    pub display: &'static str,
+    pub key: String,
+    pub display: String,
     pub command: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
-    pub install_hint: &'static str,
+    pub install_hint: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, Default)]
@@ -31,81 +31,83 @@ pub struct UserAcpFile {
 
 pub fn builtin() -> Vec<AgentSpec> {
     let npx = |pkg: &str| AgentSpec {
-        key: "",
-        display: "",
+        key: String::new(),
+        display: String::new(),
         command: "npx".to_string(),
         args: vec!["-y".to_string(), pkg.to_string()],
         env: vec![],
-        install_hint: "",
+        install_hint: String::new(),
     };
     let mut specs = vec![
         AgentSpec {
-            key: "codex",
-            display: "Codex",
-            install_hint: "npm i -g @zed-industries/codex-acp or ensure node is installed",
-            ..npx("-y @zed-industries/codex-acp")
+            key: "codex".to_string(),
+            display: "Codex".to_string(),
+            install_hint: "npm i -g @zed-industries/codex-acp or ensure node is installed"
+                .to_string(),
+            ..npx("@zed-industries/codex-acp")
         },
         AgentSpec {
-            key: "claude",
-            display: "Claude Code",
-            install_hint: "npm i -g @zed-industries/claude-code-acp or ensure node is installed",
-            ..npx("-y @zed-industries/claude-code-acp")
+            key: "claude".to_string(),
+            display: "Claude Code".to_string(),
+            install_hint: "npm i -g @zed-industries/claude-code-acp or ensure node is installed"
+                .to_string(),
+            ..npx("@zed-industries/claude-code-acp")
         },
         AgentSpec {
-            key: "opencode",
-            display: "opencode",
+            key: "opencode".to_string(),
+            display: "opencode".to_string(),
             command: "opencode".to_string(),
             args: vec!["acp".to_string()],
             env: vec![],
-            install_hint: "install opencode (https://opencode.ai)",
+            install_hint: "install opencode (https://opencode.ai)".to_string(),
         },
         AgentSpec {
-            key: "cursor",
-            display: "Cursor",
+            key: "cursor".to_string(),
+            display: "Cursor".to_string(),
             command: "cursor-agent".to_string(),
             args: vec!["acp".to_string()],
             env: vec![],
-            install_hint: "install cursor-agent",
+            install_hint: "install cursor-agent".to_string(),
         },
         AgentSpec {
-            key: "gemini",
-            display: "Gemini",
+            key: "gemini".to_string(),
+            display: "Gemini".to_string(),
             command: "gemini".to_string(),
             args: vec!["--experimental-acp".to_string()],
             env: vec![],
-            install_hint: "install the gemini CLI",
+            install_hint: "install the gemini CLI".to_string(),
         },
         AgentSpec {
-            key: "copilot",
-            display: "Copilot",
+            key: "copilot".to_string(),
+            display: "Copilot".to_string(),
             command: "copilot".to_string(),
             args: vec!["--acp".to_string()],
             env: vec![],
-            install_hint: "install the copilot CLI",
+            install_hint: "install the copilot CLI".to_string(),
         },
         AgentSpec {
-            key: "grok",
-            display: "Grok Build",
+            key: "grok".to_string(),
+            display: "Grok Build".to_string(),
             command: "grok".to_string(),
             args: vec!["agent".to_string(), "stdio".to_string()],
             env: vec![("GROK_OAUTH2_REFERRER".to_string(), "gray".to_string())],
-            install_hint: "install the grok CLI",
+            install_hint: "install the grok CLI".to_string(),
         },
     ];
     for extra in ["goose", "kimi", "kiro"] {
         specs.push(AgentSpec {
-            key: Box::leak(extra.to_string().into_boxed_str()),
-            display: Box::leak({
+            key: extra.to_string(),
+            display: {
                 let mut s = extra.to_string();
                 if let Some(c) = s.get_mut(0..1) {
                     c.make_ascii_uppercase();
                 }
-                s.into_boxed_str()
-            }),
+                s
+            },
             command: extra.to_string(),
             args: vec!["acp".to_string()],
             env: vec![],
-            install_hint: "install the agent CLI and ensure it supports ACP",
+            install_hint: "install the agent CLI and ensure it supports ACP".to_string(),
         });
     }
     specs
@@ -113,7 +115,7 @@ pub fn builtin() -> Vec<AgentSpec> {
 
 pub fn prefer_native_binary(mut spec: AgentSpec) -> AgentSpec {
     if spec.command == "npx" {
-        let bin = match spec.key {
+        let bin = match spec.key.as_str() {
             "codex" => "codex-acp",
             "claude" => "claude-code-acp",
             _ => return spec,
@@ -139,12 +141,12 @@ pub fn load_user_agents(gray_home: &Path) -> Vec<AgentSpec> {
     file.agent_servers
         .into_iter()
         .map(|(name, entry)| AgentSpec {
-            key: Box::leak(name.into_boxed_str()),
-            display: Box::leak(String::new().into_boxed_str()),
+            key: name,
+            display: String::new(),
             command: entry.command,
             args: entry.args,
             env: entry.env.into_iter().collect(),
-            install_hint: "custom agent from ~/.gray/acp.json",
+            install_hint: "custom agent from ~/.gray/acp.json".to_string(),
         })
         .collect()
 }
@@ -221,6 +223,20 @@ pub fn ensure_codex_home() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn npx_argv_is_tokenized() {
+        // Each argv element separate: no combined "-y package" strings.
+        for spec in builtin().iter().filter(|s| s.command == "npx") {
+            assert!(
+                spec.args.iter().all(|a| !a.contains(' ')),
+                "combined argv element in {}: {:?}",
+                spec.key,
+                spec.args
+            );
+            assert_eq!(spec.args.first().map(String::as_str), Some("-y"));
+        }
+    }
 
     #[test]
     fn codex_home_isolates_auth_and_avoids_user_config() {

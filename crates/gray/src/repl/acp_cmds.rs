@@ -65,9 +65,9 @@ fn acp_table(home: Option<&std::path::Path>) -> Vec<String> {
             "×"
         };
         let display = if spec.display.is_empty() {
-            spec.key
+            spec.key.clone()
         } else {
-            spec.display
+            spec.display.clone()
         };
         if gray_acp::installed(&spec) {
             lines.push(format!("  {mark} {:<10} {display}", spec.key));

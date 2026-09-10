@@ -17,6 +17,7 @@ pub mod skills;
 pub mod skills_tool;
 pub mod sys_editor;
 pub mod system_prompt;
+pub(crate) mod text_width;
 pub mod tool_fmt;
 pub mod tui;
 pub mod update;

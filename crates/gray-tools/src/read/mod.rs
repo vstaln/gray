@@ -93,7 +93,7 @@ impl Tool for ReadTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(READ_SNIPPET)
     }
 
@@ -133,6 +133,10 @@ impl Tool for ReadTool {
         let repaired = (full != given).then(|| {
             resolve::repaired_note(&full.display().to_string(), &given.display().to_string())
         });
+        // limit=0 shows nothing: exact edge, never a full view, no ledger entry.
+        if limit == Some(0) {
+            return ToolOutput::ok(with_repaired(&repaired, args::LIMIT_ZERO_NOTE.to_string()));
+        }
         // T2.3 device/FIFO/socket refusal before any content I/O. Missing paths
         // skip both gates (canonicalize/metadata fail) and keep today's error.
         // Directories fall through: today's I/O-error path handles them (T1.3 owns the note).
@@ -467,27 +471,26 @@ impl ReadTool {
         }
 
         // T3.3 ledger: record what was shown (a miss re-arms dedup).
-        // `full_view` = the window covered lines 1..=T with no line/byte cut
-        // (a clamped-but-complete read still counts as full — the T3.2
-        // relational fix; clamp never cuts the window, only shortens lines).
-        let covers_all = if tail_mode {
-            total.is_some_and(|t| raws.len() == t)
-        } else {
-            match limit {
-                Some(lim) => {
-                    total.is_some_and(|t| (first_n as u64 - 1).saturating_add(lim) >= t as u64)
-                }
-                None => first_n == 1,
-            }
-        };
+        // `full_view` = the entire byte representation was delivered: first
+        // line is 1, last line is exactly T, no line/byte cut, no clamped
+        // (shortened) lines, and the full-file hash is present. A
+        // clamped/shortened/previewed read is never full, a middle-to-EOF
+        // read is never full (first_n must be 1), and first_n/limit edges
+        // are exact (last == total, not limit arithmetic).
+        let content_hash = s.content_hash();
+        let full_view = first_n == 1
+            && total.is_some_and(|t| last == t)
+            && w.cut.is_none()
+            && w.clamped == 0
+            && content_hash.is_some();
         if let Ok(meta) = std::fs::metadata(full) {
             self.ledger.record_read(
                 full,
                 LedgerEntry {
                     mtime: meta.modified().unwrap_or_else(|_| SystemTime::now()),
                     size: file_size,
-                    content_hash: s.content_hash(),
-                    full_view: covers_all && w.cut.is_none(),
+                    content_hash,
+                    full_view,
                     window: (win_off, limit),
                     first_line: first_n,
                     last_line: last,
@@ -561,7 +564,14 @@ impl ReadTool {
         // Per-file render reuses the single-path path above (one recursive
         // call per file, offset/limit forwarded raw): guards, hygiene,
         // windowing, and per-file ledger/dedup (T3.2/T3.3) apply unchanged.
-        let mut rendered: Vec<(String, String)> = Vec::with_capacity(rels.len());
+        // The ledger authorizes destruction: it must record only what was
+        // actually DELIVERED. Files cut by the aggregate cap are rolled back
+        // below, and per-file error status is preserved (no always-ok envelope).
+        let mut prior: Vec<(String, Option<LedgerEntry>)> = Vec::with_capacity(rels.len());
+        for rel in &rels {
+            prior.push((rel.clone(), self.ledger.get(&ctx.cwd.join(rel))));
+        }
+        let mut rendered: Vec<(String, ToolOutput)> = Vec::with_capacity(rels.len());
         for (i, rel) in rels.iter().enumerate() {
             let mut obj = serde_json::Map::with_capacity(3);
             obj.insert("path".to_string(), Value::String(rel.clone()));
@@ -579,21 +589,42 @@ impl ReadTool {
             {
                 out = self.execute(ctx, single).await;
             }
-            rendered.push((rel.clone(), out.content));
+            rendered.push((rel.clone(), out));
         }
         let sizes: Vec<(String, u64)> = rendered
             .iter()
-            .map(|(n, c)| (n.clone(), c.len() as u64))
+            .map(|(n, o)| (n.clone(), o.content.len() as u64))
             .collect();
         let (shown, skipped) = bulk::fit_within_cap(&sizes);
+        // Roll back ledger observations for bodies never delivered (skipped by
+        // the aggregate cap): restore the prior entry, or forget when none.
+        for (rel, old) in &prior {
+            if skipped.contains(rel) {
+                let full = ctx.cwd.join(rel);
+                match old {
+                    Some(entry) => self.ledger.record_read(&full, entry.clone()),
+                    None => self.ledger.remove(&full),
+                }
+            }
+        }
         let mut blocks = Vec::with_capacity(shown.len());
+        let mut any_error = false;
         for name in &shown {
-            let body = rendered
+            let body = rendered.iter().find(|(n, _)| n == name).unwrap();
+            if body.1.is_error {
+                any_error = true;
+            }
+            blocks.push(format!("{}\n{}", bulk::header(name), body.1.content));
+        }
+        // Errors in skipped bodies were never delivered; still surface the
+        // failure so a bulk with any per-file error is never an always-ok
+        // envelope (bodies stay capped, status does not).
+        if !any_error
+            && rendered
                 .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, c)| c.as_str())
-                .unwrap_or("");
-            blocks.push(format!("{}\n{body}", bulk::header(name)));
+                .any(|(n, o)| skipped.contains(n) && o.is_error)
+        {
+            any_error = true;
         }
         let mut out = blocks.join("\n\n");
         if !skipped.is_empty() {
@@ -604,7 +635,11 @@ impl ReadTool {
                 format!("{out}\n\n{note}")
             };
         }
-        Some(ToolOutput::ok(out))
+        if any_error {
+            Some(ToolOutput::error(out))
+        } else {
+            Some(ToolOutput::ok(out))
+        }
     }
 }
 

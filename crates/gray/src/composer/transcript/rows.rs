@@ -1,6 +1,7 @@
 //! Transcript row helpers: wrapping, prompt formatting (split from `transcript`).
 
 use super::*;
+use crate::text_width::{chars_width, fit_char_count};
 
 pub(crate) fn thinking_style() -> Style {
     Style::default()
@@ -203,7 +204,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
             let mut byte_offset = w_range.start;
             let mut idx = 0;
             while idx < chars.len() {
-                let take = eff_max_w.min(chars.len() - idx);
+                let take = fit_char_count(&chars[idx..], eff_max_w);
                 let chunk_chars = &chars[idx..idx + take];
                 let chunk_str: String = chunk_chars.iter().collect();
                 let byte_len = chunk_str.len();
@@ -295,10 +296,10 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<
                     current_w = 0;
                     continue;
                 }
-                let take = avail.min(chars.len() - i);
+                let take = fit_char_count(&chars[i..], avail);
                 let chunk: String = chars[i..i + take].iter().collect();
                 current_spans.push(Span::styled(chunk, style));
-                current_w += take;
+                current_w += chars_width(&chars[i..i + take]);
                 i += take;
                 if current_w >= max_w {
                     result.push(Line::from(std::mem::take(&mut current_spans)).style(line_style));
@@ -317,11 +318,20 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<
 }
 
 /// Cut point for flushing the live thinking buffer: the last space within
-/// the first `max_w` chars so rows break between words, never mid-word
-/// ("r|espond"). Falls back to a hard cut at `max_w` when there is no
-/// space (single overlong word) — same as the wrapper's long-word path.
+/// the first `max_w` cells so rows break between words, never mid-word
+/// ("r|espond"). Falls back to a hard cut at the cell budget when there is
+/// no space (single overlong word) — same as the wrapper's long-word path.
 pub(crate) fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
-    let end = max_w.min(chars.len());
+    let mut end = 0usize;
+    let mut used = 0usize;
+    for (i, c) in chars.iter().enumerate() {
+        let w = crate::text_width::char_width(*c);
+        if used + w > max_w {
+            break;
+        }
+        used += w;
+        end = i + 1;
+    }
     if end < chars.len()
         && let Some(sp) = chars[..end].iter().rposition(|c| *c == ' ')
         && sp > 0
@@ -366,7 +376,7 @@ pub(crate) fn format_user_prompt_lines(
             while start < chars.len() {
                 // Prefer a word boundary (last space in the window) over a
                 // mid-word char cut; hard-cut only a single overlong word.
-                let mut end = (start + max_w).min(chars.len());
+                let mut end = start + fit_char_count(&chars[start..], max_w);
                 if end < chars.len()
                     && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
                     && sp > 0

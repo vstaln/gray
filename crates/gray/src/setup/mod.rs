@@ -1,3 +1,41 @@
+/// Owns the terminal modes an alternate-screen modal acquires. Create it
+/// after raw mode is enabled and before the first fallible terminal write:
+/// a `?` during setup then can never strand the user's terminal. Restoration
+/// is best-effort by design — `Drop` cannot report errors, and the callers'
+/// primary result must win (audit 24.03). `LeaveAlternateScreen` alone
+/// restores the main buffer: never emit `ClearType::All`/blank-line floods
+/// on the way out, they race the compositor's synchronized flush (ghost text).
+pub(crate) struct TuiSession {
+    was_raw: bool,
+}
+
+impl TuiSession {
+    pub(crate) fn acquire() -> std::io::Result<Self> {
+        let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+        if !was_raw {
+            crossterm::terminal::enable_raw_mode()?;
+        }
+        Ok(Self { was_raw })
+    }
+}
+
+impl Drop for TuiSession {
+    fn drop(&mut self) {
+        use std::io::Write as _;
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::cursor::Show,
+        );
+        if self.was_raw {
+            let _ = crossterm::terminal::enable_raw_mode();
+        } else {
+            let _ = crossterm::terminal::disable_raw_mode();
+        }
+        let _ = std::io::stdout().flush();
+    }
+}
+
 pub mod catalog;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{

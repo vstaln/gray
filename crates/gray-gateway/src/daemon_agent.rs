@@ -4,6 +4,8 @@
 //! session and streams deltas to the caller. Cron delivery lives in the
 //! external cron plugin now (in-gateway firing removed with `gray-cron`).
 
+use std::sync::Arc;
+
 use crate::authz::GatedExecutor;
 use crate::daemon::GatewayRunner;
 use crate::daemon_stream::ProgressMsg;
@@ -30,8 +32,7 @@ impl GatewayRunner {
         // Every sidecar gets the host runner so plugin-initiated `host/run`
         // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let host_handler = cron_host_handler(cwd.clone());
-        let denied = self.config.denied_tools.clone();
+        let host_handler = cron_host_handler();
         let workspace = cwd.clone();
         let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
             model,
@@ -51,7 +52,7 @@ impl GatewayRunner {
             // model gets the gate's accurate reason instead of "does not exist".
             wrap_executor: Some(Box::new(
                 move |inner: std::sync::Arc<dyn gray_core::agent::ToolExecutor>| {
-                    std::sync::Arc::new(GatedExecutor::new(inner, denied, workspace))
+                    std::sync::Arc::new(GatedExecutor::new(inner, workspace))
                         as std::sync::Arc<dyn gray_core::agent::ToolExecutor>
                 },
             )),
@@ -81,13 +82,27 @@ impl GatewayRunner {
         use gray_core::event::AgentEvent;
         use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
+        // Serialize turns per key for the whole body (load → build → run →
+        // persist → token removal): no overlapping runs, no cross-run token
+        // removal, no interleaved session appends.
+        let run_lock = self
+            .run_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _run_guard = run_lock.lock().await;
+
         let root = default_root().unwrap_or_else(|| std::path::PathBuf::from(".gray/sessions"));
         let store = JsonlSessionStore::new(root);
         let sid = SessionId::new(sid_str.to_string());
 
         let prior_messages: Vec<Message> = match store.load(&sid).await {
             Ok((_meta, entries)) => entries.into_iter().map(|e| e.message).collect(),
-            Err(_) => {
+            // Only a missing session is created: corruption or I/O errors
+            // must surface, not be paved over with a blank history.
+            Err(gray_session::SessionError::NotFound(_)) => {
                 let model = self
                     .resolve_model()
                     .unwrap_or_else(|| "unknown".to_string());
@@ -100,6 +115,11 @@ impl GatewayRunner {
                 );
                 let _ = store.create(meta).await;
                 Vec::new()
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "gateway cannot load session history: {e:#}"
+                ));
             }
         };
         let prior_len = prior_messages.len();
@@ -148,8 +168,16 @@ impl GatewayRunner {
             .remove(key);
 
         // Persist whatever the agent produced (also on cancel — partial turns are still history).
-        for m in agent.messages().iter().skip(prior_len) {
-            let _ = store.append(&sid, m).await;
+        // A shrink below the cursor means in-loop compaction ran: persist the
+        // active transcript behind a boundary marker instead of skipping it.
+        if agent.messages().len() < prior_len {
+            let _ = store
+                .append_compaction_replacement(&sid, agent.messages())
+                .await;
+        } else {
+            for m in agent.messages().iter().skip(prior_len) {
+                let _ = store.append(&sid, m).await;
+            }
         }
         run?;
 
@@ -171,9 +199,8 @@ impl GatewayRunner {
 /// `host/run` replays the prompt through a fresh `gray -p` child of the
 /// running binary (shared runner, no new deps); `host/say` is logged + saved
 /// under `cron/output` (kept: the external cron plugin reports here).
-fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
+fn cron_host_handler() -> gray_plugin::HostHandler {
     std::sync::Arc::new(move |method: String, params: serde_json::Value| {
-        let cwd = cwd.clone();
         let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
             Box::pin(async move {
                 match method.as_str() {
@@ -190,15 +217,14 @@ fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
                         serde_json::json!({"ok": true})
                     }
                     gray_plugin::HOST_RUN => {
-                        let prompt = params
-                            .get("prompt")
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if prompt.trim().is_empty() {
-                            return serde_json::json!({"error": "host/run: missing prompt"});
-                        }
-                        gray_plugin::host::run_prompt_child(&cwd, &prompt).await
+                        // Containment: a gateway-driven nested `gray -p`
+                        // child would inherit env/cwd with no executor
+                        // policy, principal, cancel, or recursion fence.
+                        // Re-enable only with an immutable policy snapshot
+                        // and depth bound (audit 5.5).
+                        serde_json::json!({
+                            "error": "host/run disabled in gateway mode until policy-fenced"
+                        })
                     }
                     _ => serde_json::json!({"error": format!("unknown host method {method}")}),
                 }

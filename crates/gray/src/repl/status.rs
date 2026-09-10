@@ -486,11 +486,14 @@ pub(crate) async fn handle_compact(
 
     match compact_res {
         Ok(Some(summary)) => {
-            // Record to session storage if active (helper already set_messages)
+            // Record to session storage if active (helper already set_messages):
+            // boundary marker + replacement so reload replays the active
+            // transcript instead of original + replacement duplicated.
             if let Some(state) = session_state {
-                for msg in ag.messages().to_vec() {
-                    let _ = state.store.append(&state.session_id, &msg).await;
-                }
+                let _ = state
+                    .store
+                    .append_compaction_replacement(&state.session_id, ag.messages())
+                    .await;
             }
 
             if let Some(shared) = tui {

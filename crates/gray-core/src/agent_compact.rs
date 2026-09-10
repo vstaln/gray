@@ -40,12 +40,17 @@ impl Agent {
         if self.messages.is_empty() {
             return Ok(false);
         }
+        // Clone-then-commit: trim/summarize/validate on a candidate so a
+        // failed call (provider error, blank summary, non-shrinking result)
+        // leaves the live history byte-identical — the single swap below is
+        // the only write to `self.messages`.
+        let mut candidate = self.messages.clone();
         // Stage 1 (v2): newest-first tool-output pre-trim, so the summary
         // call and the budget walk below both see the trimmed history.
-        trim_tool_results_to_fit(&mut self.messages, self.context_window);
+        trim_tool_results_to_fit(&mut candidate, self.context_window);
         // Stage 2 (v2): one trigger call over the full trimmed history with
         // the live system + tools; empty summary compacts nothing.
-        let summary = run_compaction_call(self, &self.messages).await?;
+        let summary = run_compaction_call(self, &candidate).await?;
         if summary.trim().is_empty() {
             return Ok(false);
         }
@@ -55,7 +60,7 @@ impl Agent {
             None => RETAINED_MESSAGE_TOKEN_BUDGET,
             Some(w) => RETAINED_MESSAGE_TOKEN_BUDGET.min(w.saturating_sub(COMPACT_RESERVE_TOKENS)),
         };
-        let retained = build_retained(&self.messages, budget);
+        let retained = build_retained(&candidate, budget);
         // Stage 4 (v2): summary appended LAST (order change from prepend).
         let mut next = retained;
         next.extend(summary_pair(&summary));
@@ -99,7 +104,7 @@ mod compact_tests {
     use super::*;
     use crate::agent::{Agent, Provider, ProviderStream, ToolContext, ToolExecutor, ToolOutput};
     use crate::event::StreamEvent;
-    use crate::message::ChatRequest;
+    use crate::message::{ChatRequest, ContentBlock, Role};
     use async_trait::async_trait;
     use futures::future::BoxFuture;
     use std::sync::Arc;
@@ -253,5 +258,68 @@ mod compact_tests {
         assert!(needs_pre_turn_compact(120_000, Some(128_000))); // 120k+16k >= 128k
         assert!(!needs_pre_turn_compact(100_000, Some(128_000)));
         assert!(!needs_pre_turn_compact(999_999_999, None)); // unknown window: never
+    }
+
+    /// Provider whose stream immediately fails: exercises the provider-error
+    /// path of `try_compact_budgeted` (same pre-swap early return as cancel).
+    struct FailingProvider;
+
+    #[async_trait]
+    impl Provider for FailingProvider {
+        fn stream(&self, _req: ChatRequest) -> ProviderStream {
+            Box::pin(futures::stream::iter(vec![Err(
+                crate::agent::ProviderError::Connection("boom".to_string()),
+            )]))
+        }
+    }
+
+    /// Trimmable history: 3 × 2500-token tool results over a 5100 window, so
+    /// an in-place pre-trim would rewrite the newest result before the
+    /// summary call runs.
+    fn trimmable_history() -> Vec<Message> {
+        ["c1", "c2", "c3"]
+            .into_iter()
+            .map(|id| Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    id: id.to_string(),
+                    content: "x".repeat(10_000),
+                    is_error: false,
+                }],
+            })
+            .collect()
+    }
+
+    fn transcript_bytes(msgs: &[Message]) -> String {
+        serde_json::to_string(msgs).expect("transcript serializes")
+    }
+
+    #[tokio::test]
+    async fn compact_error_leaves_history_byte_identical() {
+        let mut agent = Agent::new(Box::new(FailingProvider), Arc::new(NoopExecutor))
+            .with_context_window(Some(5100));
+        agent.set_messages(trimmable_history());
+        let before = transcript_bytes(agent.messages());
+        let err = agent.try_compact_budgeted().await;
+        assert!(err.is_err(), "provider failure must propagate");
+        assert_eq!(
+            transcript_bytes(agent.messages()),
+            before,
+            "failed compact must leave history byte-identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_blank_summary_leaves_history_byte_identical() {
+        let mut agent = test_agent("   ").with_context_window(Some(5100));
+        agent.set_messages(trimmable_history());
+        let before = transcript_bytes(agent.messages());
+        let ok = agent.try_compact_budgeted().await.unwrap();
+        assert!(!ok);
+        assert_eq!(
+            transcript_bytes(agent.messages()),
+            before,
+            "blank-summary compact must leave history byte-identical"
+        );
     }
 }

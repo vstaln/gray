@@ -68,6 +68,7 @@ fn totals_rebuild_from_stored_entries() {
     crate::setup::parse_litellm_context_json(&v);
     let entry =
         |id: u64, text: &str, usage: Option<gray_core::event::Usage>| gray_session::SessionEntry {
+            compaction_boundary: false,
             entry_id: id,
             parent_id: if id == 1 { None } else { Some(id - 1) },
             timestamp: 0,
@@ -91,6 +92,7 @@ fn totals_rebuild_from_stored_entries() {
 #[test]
 fn totals_sum_durations_and_skip_untimed() {
     let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+        compaction_boundary: false,
         entry_id: id,
         parent_id: None,
         timestamp: 0,

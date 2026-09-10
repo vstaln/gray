@@ -1576,6 +1576,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
@@ -1733,6 +1734,7 @@ dependencies = [
 name = "gray-session"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "gray-core",
  "log",
  "serde",

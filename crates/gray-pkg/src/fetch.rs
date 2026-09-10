@@ -7,13 +7,21 @@ use tokio::io::AsyncWriteExt;
 
 /// Max download size: 64 MiB.
 pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
-/// Max redirects followed.
-pub const MAX_REDIRECTS: usize = 5;
 
-/// HTTP client for plugin downloads: max 5 redirects.
+/// HTTP client for plugin downloads: redirects allowed only when every hop
+/// passes [`check_url`] (no https→http downgrade), with connect/total
+/// deadlines so slow bodies expire.
 pub fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if check_url(attempt.url().as_str()).is_ok() {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(120))
         .build()
 }
 
@@ -87,10 +95,24 @@ pub async fn download(
     expected: Option<&crate::index::HashSpec>,
 ) -> anyhow::Result<PathBuf> {
     check_url(url)?;
+    // An index entry that fails to pin a digest must not download: only an
+    // explicit direct-URL install (`expected == None`, warned at the call
+    // site) may skip verification.
+    if let Some(spec) = expected
+        && spec.primary().is_none_or(|s| s.is_empty())
+    {
+        anyhow::bail!("plugin download requires an expected digest");
+    }
     let tmp_dir = crate::plugins_dir().join("tmp");
     std::fs::create_dir_all(&tmp_dir)?;
     log::debug!("downloading plugin archive from {}", redact(url));
     let mut resp = client.get(url).send().await?.error_for_status()?;
+    // The redirect policy `stop()`s on a blocked hop and hands the 3xx back:
+    // `error_for_status` does not treat 3xx as an error, so reject it here
+    // instead of saving the redirect body as the archive.
+    if resp.status().is_redirection() {
+        anyhow::bail!("download redirected to a disallowed URL");
+    }
 
     let tmp = tempfile::NamedTempFile::new_in(&tmp_dir)?;
     let temppath = tmp.into_temp_path();
@@ -258,9 +280,12 @@ pub fn unpack_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
             bytes[data_start..data_end].to_vec()
         } else {
             use std::io::Read;
-            let mut dec = flate2::read::DeflateDecoder::new(&bytes[data_start..data_end]);
+            // Bound inflation *while* reading: a tiny compressed entry must
+            // not expand past the remaining budget before the check below.
+            let dec = flate2::read::DeflateDecoder::new(&bytes[data_start..data_end]);
             let mut v = Vec::new();
-            dec.read_to_end(&mut v)?;
+            dec.take(MAX_OUT.saturating_sub(total_out) + 1)
+                .read_to_end(&mut v)?;
             v
         };
         total_out += data.len() as u64;
@@ -277,18 +302,38 @@ pub fn unpack_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
 }
 
 /// Unpack a tar.gz, rejecting absolute paths and `..` entries.
+/// Total expanded output is capped at 256 MiB and entry counts/types are
+/// bounded (regular files and directories only).
 pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
+    use std::io::Read as _;
+    const MAX_OUT: u64 = 256 * 1024 * 1024;
+    const MAX_ENTRIES: usize = 10_000;
     let file = std::fs::File::open(archive)?;
-    let gz = flate2::read::GzDecoder::new(file);
+    let gz = flate2::read::GzDecoder::new(file).take(MAX_OUT + 1);
     let mut ar = tar::Archive::new(gz);
-    for entry in ar.entries()? {
+    let mut total = 0u64;
+    for (index, entry) in ar.entries()?.enumerate() {
+        anyhow::ensure!(index < MAX_ENTRIES, "too many archive entries");
         let mut entry = entry?;
+        let kind = entry.header().entry_type();
+        anyhow::ensure!(kind.is_file() || kind.is_dir(), "unsupported archive entry");
+        total = total
+            .checked_add(entry.size())
+            .ok_or_else(|| anyhow::anyhow!("archive size overflow"))?;
+        anyhow::ensure!(total <= MAX_OUT, "tar archive exceeds output cap");
         let path = entry.path()?.into_owned();
         if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
             anyhow::bail!("refusing unsafe archive entry: {}", path.display());
         }
         entry.unpack_in(dest)?;
     }
+    // Compressed-input ceiling (download caps apply earlier; this is
+    // belt-and-braces). Real output is bounded by the header-size
+    // accounting above: tar only ever emits header.size() bytes per entry.
+    anyhow::ensure!(
+        ar.into_inner().limit() != 0,
+        "tar archive exceeds input cap"
+    );
     Ok(())
 }
 
@@ -457,5 +502,49 @@ mod tests {
         assert!(unpack_tar_gz(&archive, dir.path()).is_err());
         std::fs::write(&archive, evil_tar_gz("/abs")).unwrap();
         assert!(unpack_tar_gz(&archive, dir.path()).is_err());
+    }
+
+    #[test]
+    fn tar_rejects_lying_size_and_special_entries() {
+        use std::io::Write;
+        // Header claims >256 MiB while carrying 4 bytes: must fail before
+        // writing anything.
+        let mut hdr = [0u8; 512];
+        hdr[..8].copy_from_slice(b"big.bin\0");
+        hdr[100..108].copy_from_slice(b"0000777\0");
+        hdr[124..136].copy_from_slice(b"20000000001\0"); // 2*8^9+1 > 256 MiB
+        hdr[148..156].copy_from_slice(b"        ");
+        hdr[156] = b'0';
+        hdr[257..262].copy_from_slice(b"ustar");
+        hdr[263..265].copy_from_slice(b"00");
+        let sum: u32 = hdr.iter().map(|&b| b as u32).sum();
+        hdr[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&hdr);
+        raw.extend_from_slice(&[0u8; 512]);
+        raw.extend_from_slice(&[0u8; 1024]);
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&raw).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("big.tar.gz");
+        std::fs::write(&archive, enc.finish().unwrap()).unwrap();
+        let dest = dir.path().join("out");
+        assert!(unpack_tar_gz(&archive, &dest).is_err());
+        assert!(!dest.join("big.bin").exists());
+        // Symlink entries are unsupported, even in-workspace ones.
+        let mut ar_bytes = Vec::new();
+        {
+            let mut ar = tar::Builder::new(&mut ar_bytes);
+            let mut h = tar::Header::new_gnu();
+            h.set_entry_type(tar::EntryType::Symlink);
+            h.set_size(0);
+            ar.append_link(&mut h, "link", "/etc/passwd").unwrap();
+            ar.finish().unwrap();
+        }
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        enc.write_all(&ar_bytes).unwrap();
+        std::fs::write(&archive, enc.finish().unwrap()).unwrap();
+        assert!(unpack_tar_gz(&archive, &dest).is_err());
+        assert!(!dest.join("link").exists());
     }
 }

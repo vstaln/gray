@@ -32,16 +32,13 @@ pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
 /// anything changed (uninstall or errors cleared).
 pub fn run_skills_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-    use crossterm::terminal::{
-        EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-    };
+    use crossterm::terminal::EnterAlternateScreen;
     use ratatui::Terminal;
     use ratatui::backend::CrosstermBackend;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Clear, Paragraph};
-    use std::io::Write as _;
     use std::time::Duration;
 
     let mut skills = gray_pkg::skills_ops::list().unwrap_or_default();
@@ -54,40 +51,17 @@ pub fn run_skills_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool>
     // removes it.
     let mut pending_remove: Option<String> = None;
 
-    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
-    if !was_raw {
-        enable_raw_mode()?;
-    }
-    // Roll back raw mode / alt screen manually: a `?` here would skip the
-    // cleanup at the end of the function and leak the terminal state.
+    let _session = TuiSession::acquire()?;
     let mut stdout_handle = std::io::stdout();
-    if let Err(e) = crossterm::execute!(
+    crossterm::execute!(
         stdout_handle,
         EnterAlternateScreen,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::Hide
-    ) {
-        if !was_raw {
-            let _ = disable_raw_mode();
-        }
-        return Err(e.into());
-    }
+    )?;
     let _ = crossterm::terminal::size();
     let backend = CrosstermBackend::new(stdout_handle);
-    let mut terminal = match Terminal::new(backend) {
-        Ok(t) => t,
-        Err(e) => {
-            let _ = crossterm::execute!(
-                std::io::stdout(),
-                LeaveAlternateScreen,
-                crossterm::cursor::Show
-            );
-            if !was_raw {
-                let _ = disable_raw_mode();
-            }
-            return Err(e.into());
-        }
-    };
+    let mut terminal = Terminal::new(backend)?;
 
     let box_bg = Color::Rgb(22, 22, 22);
     let accent_peach = Color::Rgb(246, 173, 126);
@@ -470,17 +444,6 @@ pub fn run_skills_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool>
         }
     })();
     let _ = terminal.clear();
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        LeaveAlternateScreen,
-        crossterm::cursor::Show
-    );
-    if !was_raw {
-        let _ = disable_raw_mode();
-    } else {
-        let _ = enable_raw_mode();
-    }
-    let _ = std::io::stdout().flush();
     result
 }
 
