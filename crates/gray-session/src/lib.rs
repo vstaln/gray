@@ -315,6 +315,32 @@ impl Default for JsonlSessionStore {
     }
 }
 
+/// One policy for session identifiers: 1..=128 bytes of ASCII alphanumerics,
+/// `-`, `_` — and never a Windows reserved device basename (case-insensitive):
+/// `CON.jsonl` opens the console device, not a file.
+fn valid_session_id(s: &str) -> bool {
+    if s.is_empty()
+        || s.len() > 128
+        || !s
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return false;
+    }
+    let lower = s.to_ascii_lowercase();
+    if matches!(lower.as_str(), "con" | "prn" | "aux" | "nul") {
+        return false;
+    }
+    if lower.len() == 4
+        && (lower.starts_with("com") || lower.starts_with("lpt"))
+        && lower.as_bytes()[3].is_ascii_digit()
+        && lower.as_bytes()[3] != b'0'
+    {
+        return false;
+    }
+    true
+}
+
 impl JsonlSessionStore {
     /// Creates a new JSONL session store rooted at the given directory path.
     pub fn new(root_dir: impl Into<PathBuf>) -> Self {
@@ -335,12 +361,7 @@ impl JsonlSessionStore {
     /// filesystem.
     fn session_path(&self, id: &SessionId) -> std::io::Result<PathBuf> {
         let s = id.as_str();
-        if s.is_empty()
-            || s.len() > 128
-            || !s
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        {
+        if !valid_session_id(s) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "invalid session identifier",
@@ -432,12 +453,17 @@ impl JsonlSessionStore {
     }
 
     /// Resolves an id prefix: exact stem wins, else exactly-one `starts_with` match, else None.
-    /// Prefixes containing `/`, `\`, or `..` are rejected (path traversal).
+    /// Only a valid session identifier can be resolved — the empty string,
+    /// traversal shapes, and Windows device names never become a `SessionId`.
     pub fn resolve_session_id(&self, prefix: &str) -> Option<SessionId> {
-        if prefix.contains('/') || prefix.contains('\\') || prefix.contains("..") {
+        if !valid_session_id(prefix) {
             return None;
         }
-        if self.root_dir.join(format!("{prefix}.jsonl")).is_file() {
+        let exact = self.root_dir.join(format!("{prefix}.jsonl"));
+        if std::fs::symlink_metadata(&exact)
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
             return Some(SessionId::new(prefix));
         }
         let mut hit = None;
@@ -446,10 +472,14 @@ impl JsonlSessionStore {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
+            // Never select a symlink as a session file.
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if !stem.starts_with(prefix) {
+            if !valid_session_id(stem) || !stem.starts_with(prefix) {
                 continue;
             }
             if hit.is_some() {
@@ -951,10 +981,23 @@ impl JsonlSessionStore {
         let mut summaries = Vec::new();
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
-            if !path.is_file() {
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            // Real file, not a symlink; stem must be a valid session id.
+            if !entry
+                .file_type()
+                .await
+                .map(|t| t.is_file())
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if !valid_session_id(stem) {
+                log::warn!("skipping session with invalid id: {}", path.display());
                 continue;
             }
 
@@ -983,6 +1026,13 @@ impl JsonlSessionStore {
                     continue;
                 }
             };
+            if header.id.as_str() != stem {
+                log::warn!(
+                    "skipping session whose header id does not match its filename: {}",
+                    path.display()
+                );
+                continue;
+            }
 
             let mut first_user_text = None;
             for line in lines {
@@ -1249,6 +1299,87 @@ mod tests {
         tokio::fs::write(&path, raw).await.unwrap();
         let (_, entries) = store.load(&id).await.unwrap();
         assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn device_names_rejected_at_storage_boundary() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        for bad in ["CON", "con", "PRN", "aux", "NUL", "com1", "COM9", "lpt1"] {
+            let id = SessionId::new(bad);
+            assert!(
+                store.session_path(&id).is_err(),
+                "device id accepted: {bad}"
+            );
+        }
+        for ok in ["com0", "console", "aux1", "nully", "companion"] {
+            assert!(
+                store.session_path(&SessionId::new(ok)).is_ok(),
+                "valid id rejected: {ok}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_empty_and_invalid_stems() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        tokio::fs::write(dir.path().join("s1.jsonl"), b"x")
+            .await
+            .unwrap();
+        assert!(store.resolve_session_id("").is_none());
+        assert!(store.resolve_session_id("s").is_some());
+        tokio::fs::write(dir.path().join("CON.jsonl"), b"x")
+            .await
+            .unwrap();
+        assert!(store.resolve_session_id("CO").is_none());
+        assert!(store.resolve_session_id("CON").is_none());
+    }
+
+    #[tokio::test]
+    async fn list_skips_header_filename_mismatch() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = SessionId::new("real");
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        let src = tokio::fs::read(dir.path().join("real.jsonl"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.path().join("other.jsonl"), &src)
+            .await
+            .unwrap();
+        let listed: Vec<String> = store
+            .list()
+            .await
+            .into_iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
+        assert_eq!(listed, vec!["real".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_and_resolve_skip_symlinked_sessions() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = SessionId::new("real");
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real.jsonl"), dir.path().join("link.jsonl"))
+            .unwrap();
+        assert!(store.resolve_session_id("link").is_none());
+        let listed: Vec<String> = store
+            .list()
+            .await
+            .into_iter()
+            .map(|s| s.id.as_str().to_string())
+            .collect();
+        assert_eq!(listed, vec!["real".to_string()]);
     }
 
     #[tokio::test]
