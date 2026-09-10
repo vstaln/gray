@@ -2830,7 +2830,11 @@ mod tests {
         };
         let _events: Vec<_> = provider.stream(req).collect().await;
         let received = server.received_requests().await.expect("requests recorded");
-        assert_eq!(received.len(), 3, "default retry burst POSTs once per attempt");
+        assert_eq!(
+            received.len(),
+            3,
+            "default retry burst POSTs once per attempt"
+        );
         for r in &received {
             let got = r
                 .headers
@@ -3611,7 +3615,11 @@ mod tests {
         };
         let _events: Vec<_> = provider.stream(req).collect().await;
         let received = server.received_requests().await.expect("requests recorded");
-        assert_eq!(received.len(), 3, "default retry burst POSTs once per attempt");
+        assert_eq!(
+            received.len(),
+            3,
+            "default retry burst POSTs once per attempt"
+        );
         let body: serde_json::Value = received[0].body_json().expect("json body");
         assert_eq!(
             body.get("prompt_cache_key").and_then(|k| k.as_str()),
