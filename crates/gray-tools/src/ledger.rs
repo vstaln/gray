@@ -10,13 +10,13 @@
 //! Contract:
 //! * Keyed by canonicalized [`PathBuf`]: `./a.rs` and `/abs/a.rs` map to one
 //!   entry (falls back to the literal path when it does not exist yet).
-//! * `content_hash` is over the RAW file bytes (post-stream, pre-clamp), so a
-//!   clamped-but-complete read still verifies as "what you saw == disk".
-//!   Files over [`MAX_HASH_BYTES`] (64 MiB) are never hashed (`None` → never
-//!   eligible for the T3.2 bytes-match or T3.3 dedup). NOTE: the card writes
-//!   `content_hash: u64`, but `None` needs `Option<u64>` — stored as such.
-//! * `full_view` = the window covered lines 1..=T with no line/byte cut.
-//!   Clamped lines still count as full (the T3.2 relational fix); the caller
+//! * `content_hash` is over the RAW file bytes. It gates freshness only
+//!   (unchanged on disk), never overwrite authorization — delivered coverage
+//!   does that. Files over [`MAX_HASH_BYTES`] (64 MiB) are never hashed
+//!   (`None`). NOTE: the card writes `content_hash: u64`, but `None` needs
+//!   `Option<u64>` — stored as such.
+//! * `full_view` = the entire byte representation was delivered: lines 1..=T
+//!   with no line/byte cut and no clamped (shortened) lines. The caller
 //!   computes the flag, the ledger only stores it.
 //! * Tools run sequentially; a std [`Mutex`] is enough (no async lock).
 //!
@@ -107,6 +107,14 @@ impl FileLedger {
             .expect("FileLedger lock poisoned")
             .get(&Self::key(path))
             .cloned()
+    }
+
+    /// Forget one entry (bulk rollback for bodies never delivered).
+    pub fn remove(&self, path: &Path) {
+        self.inner
+            .lock()
+            .expect("FileLedger lock poisoned")
+            .remove(&Self::key(path));
     }
 
     /// Record a successful write/edit so the next write is allowed without a
@@ -212,11 +220,12 @@ mod tests {
     #[test]
     fn full_view_flag_is_stored_verbatim() {
         let ledger = FileLedger::new();
-        // Clamped-but-complete reads count as full (caller sets true); a
-        // byte-cut read sets false. The ledger stores the flag, nothing more.
-        ledger.record_read(Path::new("clamped-min.js"), entry(true));
+        // The ledger stores the flag verbatim; the caller computes it. Under
+        // the current contract only fully delivered reads set true — clamped
+        // or cut reads set false.
+        ledger.record_read(Path::new("full-small.js"), entry(true));
         ledger.record_read(Path::new("cut-big.log"), entry(false));
-        assert!(ledger.get(Path::new("clamped-min.js")).unwrap().full_view);
+        assert!(ledger.get(Path::new("full-small.js")).unwrap().full_view);
         assert!(!ledger.get(Path::new("cut-big.log")).unwrap().full_view);
     }
 
