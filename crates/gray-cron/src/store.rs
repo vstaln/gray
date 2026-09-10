@@ -14,8 +14,6 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
-
 use crate::schedule::{ONESHOT_GRACE_SECS, Schedule, next_run, parse_schedule};
 
 /// Fire-claim TTL: a live claim blocks re-fire; a stale one is reclaimable
@@ -170,9 +168,9 @@ fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) ->
         .open(lock_path)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        match file.try_lock_exclusive() {
+        match file.try_lock() {
             Ok(()) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(std::fs::TryLockError::WouldBlock) => {
                 anyhow::ensure!(
                     std::time::Instant::now() < deadline,
                     "cron lock timeout on {}",
@@ -180,7 +178,7 @@ fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) ->
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            Err(e) => return Err(e.into()),
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
         }
     }
     // Closing the file releases the lock, including on error/unwind.
