@@ -30,7 +30,6 @@ pub fn get_user_context_window() -> Option<usize> {
     user_context_window_cell().read().ok().and_then(|g| *g)
 }
 
-pub const DEFAULT_RESERVE_TOKENS: usize = 16_384;
 pub const DEFAULT_KEEP_RECENT_TOKENS: usize = 20_000;
 
 static USER_RESERVE_TOKENS: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =
