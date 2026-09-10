@@ -30,7 +30,7 @@ impl GatewayRunner {
         // Every sidecar gets the host runner so plugin-initiated `host/run`
         // (cron fires) / `host/say` don't fall back to loud `{"error":…}`.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let host_handler = cron_host_handler(cwd.clone());
+        let host_handler = cron_host_handler();
         let workspace = cwd.clone();
         let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
             model,
@@ -170,9 +170,8 @@ impl GatewayRunner {
 /// `host/run` replays the prompt through a fresh `gray -p` child of the
 /// running binary (shared runner, no new deps); `host/say` is logged + saved
 /// under `cron/output` (kept: the external cron plugin reports here).
-fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
+fn cron_host_handler() -> gray_plugin::HostHandler {
     std::sync::Arc::new(move |method: String, params: serde_json::Value| {
-        let cwd = cwd.clone();
         let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
             Box::pin(async move {
                 match method.as_str() {
@@ -189,15 +188,14 @@ fn cron_host_handler(cwd: std::path::PathBuf) -> gray_plugin::HostHandler {
                         serde_json::json!({"ok": true})
                     }
                     gray_plugin::HOST_RUN => {
-                        let prompt = params
-                            .get("prompt")
-                            .and_then(|p| p.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if prompt.trim().is_empty() {
-                            return serde_json::json!({"error": "host/run: missing prompt"});
-                        }
-                        gray_plugin::host::run_prompt_child(&cwd, &prompt).await
+                        // Containment: a gateway-driven nested `gray -p`
+                        // child would inherit env/cwd with no executor
+                        // policy, principal, cancel, or recursion fence.
+                        // Re-enable only with an immutable policy snapshot
+                        // and depth bound (audit 5.5).
+                        serde_json::json!({
+                            "error": "host/run disabled in gateway mode until policy-fenced"
+                        })
                     }
                     _ => serde_json::json!({"error": format!("unknown host method {method}")}),
                 }
