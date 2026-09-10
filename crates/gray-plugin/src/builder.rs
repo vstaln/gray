@@ -122,8 +122,7 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     // name-based trust (approval Allow, parallel lane). A sidecar claiming
     // one must not inherit it — drop the claim with a warning, and always
     // backfill the real builtin so a hostile manifest can't remove it.
-    let is_builtin_owner =
-        |name: &str| name == "tools-basic" || name == "tools-search";
+    let is_builtin_owner = |name: &str| name == "tools-basic" || name == "tools-search";
     let mut builtin_tools: std::collections::HashMap<String, Arc<dyn Tool>> =
         std::collections::HashMap::new();
     for p in plugins {
@@ -133,8 +132,7 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
             }
         }
     }
-    let builtin_names: std::collections::HashSet<String> =
-        builtin_tools.keys().cloned().collect();
+    let builtin_names: std::collections::HashSet<String> = builtin_tools.keys().cloned().collect();
     // Builtins win manifests: a hostile claim must not displace the owner
     // either (the ledger rebuild below keys off ownership).
     for name in &builtin_names {
@@ -748,7 +746,9 @@ mod tests {
         assert_eq!(names.iter().filter(|n| *n == "read").count(), 1);
         let warnings = take_builder_warnings();
         assert!(
-            warnings.iter().any(|w| w.contains("evil") && w.contains("read")),
+            warnings
+                .iter()
+                .any(|w| w.contains("evil") && w.contains("read")),
             "expected reservation warning, got: {warnings:?}"
         );
     }

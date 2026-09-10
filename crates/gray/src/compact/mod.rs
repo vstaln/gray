@@ -166,9 +166,74 @@ pub async fn auto_compact_if_needed(
     Ok(compact_with_keep(agent, None, keep).await?.is_some())
 }
 
-/// Summary + recent tail: replaces history with `[summary_user, summary_assistant,
-/// ...tail]` where tail fits in `keep_tokens`. `keep_tokens == 0` = legacy 2-message result.
-/// Returns the summary text on success (`None` when there was nothing to compact).
+/// Collects the `ToolUse` ids in a message.
+fn tool_use_ids(m: &Message) -> std::collections::HashSet<&str> {
+    m.content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Collects the `ToolResult` ids in a message.
+fn tool_result_ids(m: &Message) -> Vec<&str> {
+    m.content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolResult { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// True when any `ToolResult` in `messages` has no matching `ToolUse` in the
+/// same slice — a transcript strict providers reject.
+fn has_orphaned_results(messages: &[Message]) -> bool {
+    let uses: std::collections::HashSet<&str> = messages.iter().flat_map(tool_use_ids).collect();
+    messages
+        .iter()
+        .flat_map(tool_result_ids)
+        .any(|id| !uses.contains(id))
+}
+
+/// Expands a token-budget `tail` (always a suffix of `messages`) backwards
+/// while its oldest message holds a `ToolResult` whose call sits just outside
+/// the tail — a budget cut splitting an assistant `ToolUse` from its result.
+/// Pairs stay atomic, mirroring core's `atomic_groups`. A result whose call is
+/// nowhere nearby is a pre-existing stray: left alone for the caller to refuse.
+fn repair_tail_boundary(messages: &[Message], mut tail: Vec<Message>) -> Vec<Message> {
+    loop {
+        if tail.is_empty() || tail.len() >= messages.len() {
+            break;
+        }
+        let uses: std::collections::HashSet<&str> = tail.iter().flat_map(tool_use_ids).collect();
+        let orphaned_in_oldest = tool_result_ids(&tail[0])
+            .into_iter()
+            .any(|id| !uses.contains(id));
+        if !orphaned_in_oldest {
+            break;
+        }
+        let prev = &messages[messages.len() - tail.len() - 1];
+        let prev_uses = tool_use_ids(prev);
+        if tool_result_ids(&tail[0])
+            .into_iter()
+            .any(|id| prev_uses.contains(id))
+        {
+            tail.insert(0, prev.clone());
+        } else {
+            break;
+        }
+    }
+    tail
+}
+
+/// Summary + recent tail: replaces history with `[tail..., summary_user,
+/// summary_assistant]`. Order matches core's `try_compact_budgeted`
+/// (retained history first, summary pair LAST) so the two paths never drift.
+/// Refuses (`None`, history untouched) on blank summaries, non-shrinking
+/// replacements, or orphaned tool results.
 pub async fn compact_with_keep(
     agent: &mut Agent,
     custom_instructions: Option<&str>,
@@ -184,39 +249,98 @@ pub async fn compact_with_keep(
     let summary = agent
         .complete_prompt(&prompt, Some(SUMMARIZATION_SYSTEM_PROMPT))
         .await?;
+    if summary.trim().is_empty() {
+        return Ok(None);
+    }
     let [summary_user, summary_asst] = gray_core::agent::summary_pair(&summary);
-    let mut next = vec![summary_user, summary_asst];
-    next.extend(tail);
+    let mut next = repair_tail_boundary(&messages, tail);
+    next.extend([summary_user, summary_asst]);
+    if has_orphaned_results(&next) {
+        return Ok(None);
+    }
+    if estimate_context_tokens(&next, None) >= estimate_context_tokens(&messages, None) {
+        return Ok(None);
+    }
+    let replaced = messages.len();
     agent.set_messages(next);
     // T3.4 lifecycle: entries stay for the write guard, but no dedup stub
     // may reference a compacted-away result.
     if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
         ledger.disarm_all_dedup();
     }
-    // Reversible checkpoint: full pre-compact transcript + summary on disk, so
-    // nothing is truly lost. Best-effort; compaction succeeds even if it fails.
-    let path = write_continuation_checkpoint(&transcript, &summary);
+    // Reversible checkpoint: summary on disk, so nothing is truly lost.
+    // Best-effort; compaction succeeds even if it fails.
+    let path = write_continuation_checkpoint(&summary, replaced);
     if let Some(p) = path {
         eprintln!("continuation checkpoint: {}", p.display());
     }
     Ok(Some(summary))
 }
 
-/// Best-effort snapshot of the pre-compact transcript plus the summary.
-/// Returns the file path on success. Lives in the OS temp dir, never the workspace.
+/// Best-effort snapshot of the compact summary for human recovery. Carries
+/// only the summary: the full pre-compact transcript stays durable in the
+/// session JSONL (pre-boundary entries) and nothing ever reads this file back
+/// into the model, so copying the transcript here only widened secret
+/// exposure. Lives under the gray home dir (never /tmp or the workspace) with
+/// an unpredictable uuid name, owner-only (0600) on unix; newest 5 kept.
 pub fn write_continuation_checkpoint(
-    transcript: &str,
     summary: &str,
+    replaced_messages: usize,
 ) -> Option<std::path::PathBuf> {
+    let dir = crate::setup::catalog::gray_home()
+        .ok()?
+        .join("continuation-checkpoints");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!(
+        "gray-continuation-{}.md",
+        uuid::Uuid::new_v4().as_simple()
+    ));
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("gray-continuation-{ts}.md"));
     let doc = format!(
-        "# Gray continuation checkpoint ({ts})\n\n## Summary\n\n{summary}\n\n## Suggested next capabilities\n\n- tdd: red-green-refactor at pre-agreed seams\n- diagnosing-bugs: red repro loop before fixing\n- code-review: standards + spec axes on the diff\n\n## Full pre-compact transcript\n\n{transcript}\n"
+        "# Gray continuation checkpoint ({ts})\n\nCompacted {replaced_messages} messages.\n\n## Summary\n\n{summary}\n"
     );
-    std::fs::write(&path, doc).ok().map(|_| path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path).ok()?;
+    use std::io::Write as _;
+    file.write_all(doc.as_bytes()).ok()?;
+    let _ = file.sync_all();
+    rotate_continuation_checkpoints(&dir);
+    Some(path)
+}
+
+/// Keeps the newest `KEEP` checkpoints; best-effort, failures ignored.
+fn rotate_continuation_checkpoints(dir: &std::path::Path) {
+    const KEEP: usize = 5;
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .ok()
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("gray-continuation-")
+                })
+                .filter_map(|e| {
+                    let mtime = e.metadata().ok()?.modified().ok()?;
+                    Some((mtime, e.path()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort_by_key(|(mtime, _)| *mtime);
+    files.reverse();
+    for (_, path) in files.into_iter().skip(KEEP) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// Core compaction primitive used by both manual `/compact` and auto paths.
@@ -234,8 +358,15 @@ pub async fn compact_with_instructions(
     let summary = agent
         .complete_prompt(&prompt, Some(SUMMARIZATION_SYSTEM_PROMPT))
         .await?;
-    let [summary_user, summary_asst] = gray_core::agent::summary_pair(&summary);
-    agent.set_messages(vec![summary_user, summary_asst]);
+    if summary.trim().is_empty() {
+        return Ok(false);
+    }
+    // The pair is Text-only by construction, so no orphan check applies.
+    let next = Vec::from(gray_core::agent::summary_pair(&summary));
+    if estimate_context_tokens(&next, None) >= estimate_context_tokens(&messages, None) {
+        return Ok(false);
+    }
+    agent.set_messages(next);
     // T3.4 lifecycle: see compact_with_keep.
     if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
         ledger.disarm_all_dedup();
@@ -414,6 +545,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)] // serializes against switch-flipping tests for the whole test
     async fn auto_compact_triggers_on_threshold() {
         let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+        let _home = TempGrayHome::set();
         use crate::config::Config;
         use async_trait::async_trait;
         use futures::stream::BoxStream;
@@ -463,10 +595,12 @@ mod tests {
         };
         let executor = NoopExecutor;
         crate::setup::set_user_keep_recent_tokens(Some(0));
+        // Large enough that the summary pair strictly shrinks history (the
+        // enforced shrink invariant refuses toy histories).
         let mut agent = Agent::new(Box::new(provider), Arc::new(executor)).with_messages(vec![
-            Message::user("hello"),
-            Message::assistant("hi there"),
-            Message::user("more context"),
+            Message::user("hello ".repeat(500)),
+            Message::assistant("hi there ".repeat(500)),
+            Message::user("more context ".repeat(500)),
         ]);
         let config = Config {
             model: None,
@@ -515,6 +649,250 @@ mod tests {
         assert_eq!(tail_all.len(), 3);
         let tail_none = tail_messages(&msgs, 0);
         assert!(tail_none.is_empty());
+    }
+
+    /// Redirects `GRAY_HOME` at a test-private dir (restored on drop) so
+    /// checkpoint writes never touch the real home. Mutates process env:
+    /// hold `COMPACT_SWITCH_SERIAL` for the whole test.
+    struct TempGrayHome {
+        prev: Option<String>,
+        _dir: tempfile::TempDir,
+    }
+    impl TempGrayHome {
+        fn set() -> Self {
+            let prev = std::env::var("GRAY_HOME").ok();
+            let dir = tempfile::TempDir::new().expect("temp gray home");
+            unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
+            Self { prev, _dir: dir }
+        }
+    }
+    impl Drop for TempGrayHome {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
+                None => unsafe { std::env::remove_var("GRAY_HOME") },
+            }
+        }
+    }
+
+    /// Scripted `complete_prompt` provider returning one fixed summary text.
+    fn scripted_agent(summary_text: &str) -> Agent {
+        use async_trait::async_trait;
+        use futures::stream::BoxStream;
+        use gray_core::agent::{Provider, ToolContext, ToolExecutor};
+        use gray_core::event::{StopReason, Usage};
+        use gray_core::message::ChatRequest;
+        struct P {
+            text: String,
+        }
+        #[async_trait]
+        impl Provider for P {
+            fn stream(
+                &self,
+                _req: ChatRequest,
+            ) -> BoxStream<
+                'static,
+                Result<gray_core::event::StreamEvent, gray_core::agent::ProviderError>,
+            > {
+                let text = self.text.clone();
+                Box::pin(futures::stream::iter(vec![
+                    Ok(gray_core::event::StreamEvent::TextDelta { delta: text }),
+                    Ok(gray_core::event::StreamEvent::MessageComplete {
+                        stop_reason: Some(StopReason::EndTurn),
+                        usage: Some(Usage::new(10, 5)),
+                    }),
+                ]))
+            }
+        }
+        struct E;
+        #[async_trait]
+        impl ToolExecutor for E {
+            fn execute(
+                &self,
+                _ctx: &ToolContext,
+                _name: &str,
+                _args: serde_json::Value,
+            ) -> futures::future::BoxFuture<'static, gray_core::agent::ToolOutput> {
+                Box::pin(async { gray_core::agent::ToolOutput::ok("") })
+            }
+        }
+        Agent::new(
+            Box::new(P {
+                text: summary_text.to_string(),
+            }),
+            Arc::new(E),
+        )
+    }
+
+    /// One ~100-token message by the estimator (bytes/4): 400 chars.
+    fn sized(tag: &str) -> Message {
+        Message::user(format!("{tag}:{}", "x".repeat(400 - tag.len() - 1)))
+    }
+
+    #[tokio::test]
+    async fn compact_with_keep_rejects_blank_summary() {
+        let mut ag = scripted_agent("   \n  ");
+        ag.set_messages(vec![Message::user("hello"), Message::assistant("hi")]);
+        let before = ag.messages().to_vec();
+        let out = compact_with_keep(&mut ag, None, 0)
+            .await
+            .expect("must not error on blank summary");
+        assert!(out.is_none(), "blank summary must refuse, not wipe history");
+        assert_eq!(ag.messages(), &before);
+    }
+
+    #[tokio::test]
+    async fn compact_with_instructions_rejects_blank_summary() {
+        let mut ag = scripted_agent("  ");
+        ag.set_messages(vec![Message::user("hello")]);
+        let before = ag.messages().to_vec();
+        let ok = compact_with_instructions(&mut ag, None)
+            .await
+            .expect("must not error on blank summary");
+        assert!(!ok);
+        assert_eq!(ag.messages(), &before);
+    }
+
+    #[tokio::test]
+    async fn compact_refuses_non_shrinking_replacement() {
+        // One tiny message vs a huge summary: the replacement is bigger, so
+        // both paths must leave history byte-identical (mirrors core's
+        // `budgeted_compact_false_when_summary_would_not_shrink`).
+        let long = "z".repeat(2000);
+        let mut ag = scripted_agent(&long);
+        ag.set_messages(vec![Message::user("hi")]);
+        let before = ag.messages().to_vec();
+        assert!(
+            compact_with_keep(&mut ag, None, 0)
+                .await
+                .expect("must not error")
+                .is_none()
+        );
+        assert_eq!(ag.messages(), &before);
+        let mut ag2 = scripted_agent(&long);
+        ag2.set_messages(vec![Message::user("hi")]);
+        assert!(!compact_with_instructions(&mut ag2, None).await.expect("ok"));
+        assert_eq!(ag2.messages(), &before);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (env + gray home)
+    async fn compact_order_is_tail_then_summary_last() {
+        let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+        let _home = TempGrayHome::set();
+        let mut ag = scripted_agent("S");
+        ag.set_messages(vec![sized("m1"), sized("m2"), sized("m3")]);
+        let out = compact_with_keep(&mut ag, None, 250)
+            .await
+            .expect("compact must succeed");
+        assert!(out.is_some());
+        // Core order (try_compact_budgeted): retained tail first, summary LAST.
+        let msgs = ag.messages();
+        assert_eq!(msgs.len(), 4, "2 tail + summary pair, got {}", msgs.len());
+        assert!(msgs[0].text_content().contains("m2"), "retained oldest");
+        assert!(msgs[1].text_content().contains("m3"), "retained newest");
+        assert!(msgs[2].text_content().contains('S'), "summary_user last");
+        assert!(msgs[3].text_content().contains("Understood"), "ack closes");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // see compact_order_is_tail_then_summary_last
+    async fn compact_repairs_split_tool_pair() {
+        let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+        let _home = TempGrayHome::set();
+        let mut ag = scripted_agent("S");
+        // Budget keeps result+new but not the 500-token ToolUse: the naive
+        // tail would orphan the result; repair must pull the call back in.
+        let use_msg = Message::new(
+            Role::Assistant,
+            vec![ContentBlock::tool_use(
+                "t1",
+                "sh",
+                serde_json::json!({"cmd": "x".repeat(2000)}),
+            )],
+        );
+        let res_msg = Message::new(
+            Role::User,
+            vec![ContentBlock::tool_result("t1", "ok", false)],
+        );
+        ag.set_messages(vec![
+            Message::user("o".repeat(2000)),
+            use_msg,
+            res_msg,
+            Message::user("new"),
+        ]);
+        let out = compact_with_keep(&mut ag, None, 250)
+            .await
+            .expect("compact must succeed");
+        assert!(out.is_some(), "repaired tail still shrinks, must compact");
+        let msgs = ag.messages();
+        assert_eq!(msgs.len(), 5, "[use, result, new, summary, ack]");
+        assert!(
+            msgs[0].content.iter().any(|b| matches!(b,
+                ContentBlock::ToolUse { id, .. } if id == "t1")),
+            "repaired tail must carry the call"
+        );
+        assert!(
+            msgs[1].content.iter().any(|b| matches!(b,
+                ContentBlock::ToolResult { id, .. } if id == "t1")),
+            "result keeps its mate"
+        );
+        assert!(msgs[3].text_content().contains('S'), "summary last");
+    }
+
+    #[tokio::test]
+    async fn compact_refuses_orphaned_tool_result() {
+        let mut ag = scripted_agent("short summary here");
+        // Stray result: no ToolUse "t9" anywhere in history (pre-existing
+        // corruption, not a boundary split) — refuse, don't brick providers.
+        ag.set_messages(vec![
+            Message::new(
+                Role::User,
+                vec![ContentBlock::tool_result("t9", "orphan output", false)],
+            ),
+            Message::user("hello"),
+        ]);
+        let before = ag.messages().to_vec();
+        let out = compact_with_keep(&mut ag, None, 10_000)
+            .await
+            .expect("must not error");
+        assert!(out.is_none(), "orphaned result must refuse compaction");
+        assert_eq!(ag.messages(), &before);
+    }
+
+    #[test]
+    fn checkpoint_is_private_unpredictable_and_rotated() {
+        let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+        let _home = TempGrayHome::set();
+        let a = write_continuation_checkpoint("summary A", 10).expect("write");
+        let b = write_continuation_checkpoint("summary B", 20).expect("write");
+        assert_ne!(a.file_name(), b.file_name(), "names must be unpredictable");
+        let home = std::env::var("GRAY_HOME").expect("test sets GRAY_HOME");
+        assert!(a.starts_with(&home), "under gray home, got {}", a.display());
+        assert_eq!(
+            a.parent().expect("parent"),
+            std::path::Path::new(&home).join("continuation-checkpoints"),
+            "per gray-home dir, never temp_dir(), got {}",
+            a.display()
+        );
+        let body = std::fs::read_to_string(&a).expect("read back");
+        assert!(body.contains("summary A"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&a).expect("stat").permissions().mode() & 0o777,
+                0o600,
+                "owner-only"
+            );
+        }
+        for i in 0..7 {
+            write_continuation_checkpoint(&format!("s{i}"), i);
+        }
+        let count = std::fs::read_dir(a.parent().expect("parent"))
+            .expect("read dir")
+            .count();
+        assert_eq!(count, 5, "rotation keeps newest 5, kept {count}");
     }
 
     /// Serializes tests that flip the global auto-compact switch; also guards
@@ -574,8 +952,12 @@ mod tests {
         }
 
         fn agent() -> Agent {
-            Agent::new(Box::new(FakeProvider), Arc::new(NoopExecutor))
-                .with_messages(vec![Message::user("hello"), Message::assistant("hi there")])
+            // Large enough that the summary pair strictly shrinks history
+            // (the enforced shrink invariant refuses toy histories).
+            Agent::new(Box::new(FakeProvider), Arc::new(NoopExecutor)).with_messages(vec![
+                Message::user("hello ".repeat(500)),
+                Message::assistant("hi there ".repeat(500)),
+            ])
         }
 
         fn config() -> Config {
@@ -635,14 +1017,19 @@ mod tests {
         #[tokio::test]
         async fn env_unset_leaves_auto_compact_enabled() {
             let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _home = TempGrayHome::set();
             let _guard = EnableGuard;
             let prev = std::env::var("GRAY_NO_AUTO_COMPACT").ok();
             unsafe { std::env::remove_var("GRAY_NO_AUTO_COMPACT") };
             init_auto_compact_from_env();
+            // Zero keep: with the default 20k keep budget the tail would hold
+            // everything and the shrink invariant would (correctly) refuse.
+            crate::setup::set_user_keep_recent_tokens(Some(0));
             let mut ag = agent();
             let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
                 .await
                 .expect("compact should succeed");
+            crate::setup::set_user_keep_recent_tokens(None);
             assert!(out);
             assert!(ag.messages()[0].text_content().contains("summarized"));
             match prev {
@@ -654,6 +1041,7 @@ mod tests {
         #[tokio::test]
         async fn manual_compact_bypasses_disabled_switch() {
             let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
+            let _home = TempGrayHome::set();
             let _guard = EnableGuard;
             set_auto_compact_enabled(false);
             let mut ag = agent();
