@@ -74,7 +74,7 @@ impl Tool for GrepTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(GREP_SNIPPET)
     }
 

@@ -279,7 +279,7 @@ impl Tool for EditTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(EDIT_SNIPPET)
     }
     fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {

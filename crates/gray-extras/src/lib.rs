@@ -323,7 +323,7 @@ impl Tool for WebfetchTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(WEBFETCH_SNIPPET)
     }
 

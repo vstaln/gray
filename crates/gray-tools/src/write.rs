@@ -122,7 +122,7 @@ impl Tool for WriteTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(WRITE_SNIPPET)
     }
 

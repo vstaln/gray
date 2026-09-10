@@ -141,7 +141,7 @@ pub trait Tool: Send + Sync {
 
     /// One-line snippet rendered in the system prompt's "Available tools" list.
     /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         None
     }
 

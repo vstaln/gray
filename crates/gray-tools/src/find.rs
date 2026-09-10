@@ -71,7 +71,7 @@ impl Tool for FindTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(FIND_SNIPPET)
     }
 
@@ -133,7 +133,7 @@ impl Tool for GlobTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(GLOB_SNIPPET)
     }
 

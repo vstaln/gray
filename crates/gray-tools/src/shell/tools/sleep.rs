@@ -45,7 +45,7 @@ impl Tool for SleepTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&'static str> {
+    fn prompt_snippet(&self) -> Option<&str> {
         Some(SLEEP_SNIPPET)
     }
 

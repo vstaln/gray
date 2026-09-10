@@ -466,24 +466,21 @@ impl Plugin for SidecarPlugin {
 
 struct SidecarTool {
     def: ToolDef,
-    snippet: Option<&'static str>,
+    snippet: Option<String>,
     transport: Arc<Transport>,
 }
 
 impl SidecarTool {
     fn new(entry: ManifestTool, transport: Arc<Transport>) -> Self {
-        // `Tool::prompt_snippet` returns `&'static str` but sidecar snippets
-        // arrive at runtime: one tiny leak per tool per spawn. Manifest
-        // snippet wins; description keeps snippet-less tools visible (the
-        // pre-v1 gap was `None` hiding every sidecar tool).
+        // Manifest snippet wins; description keeps snippet-less tools
+        // visible (the pre-v1 gap was `None` hiding every sidecar tool).
         let text = entry
             .snippet
             .filter(|s| !s.is_empty())
             .or_else(|| (!entry.def.description.is_empty()).then(|| entry.def.description.clone()));
-        let snippet = text.map(|s| Box::leak(s.into_boxed_str()) as &'static str);
         Self {
             def: entry.def,
-            snippet,
+            snippet: text,
             transport,
         }
     }
@@ -494,8 +491,8 @@ impl Tool for SidecarTool {
     fn def(&self) -> ToolDef {
         self.def.clone()
     }
-    fn prompt_snippet(&self) -> Option<&'static str> {
-        self.snippet
+    fn prompt_snippet(&self) -> Option<&str> {
+        self.snippet.as_deref()
     }
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let name = self.def.name.clone();
