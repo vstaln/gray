@@ -458,7 +458,7 @@ mod hyperlink_tests {
         };
         assert_eq!(
             extract(&full.hyperlinks),
-            extract(view.hyperlinks),
+            extract(&view.hyperlinks),
             "full-render and streaming+finish must produce the same hyperlinks",
         );
     }

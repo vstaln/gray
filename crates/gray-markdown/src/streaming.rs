@@ -29,7 +29,7 @@
 use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::{
     HyperlinkTarget, LatexDelimiterNormalizer, MarkdownBuffers, MarkdownRenderOutput,
-    MarkdownRenderView, MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,
+    MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,
 };
 
 /// Tracks the frozen state for truncation.
@@ -87,17 +87,12 @@ pub struct StreamingMarkdownRenderer {
     /// Maximum width for rendered tables (in display columns).
     max_table_width: Option<usize>,
 
-    /// Whether CommonMark soft breaks collapse to a space (default `true`).
-    /// Set `false` for source-faithful rendering (plan preview).
-    collapse_soft_breaks: bool,
-
     /// Incremental highlighter for the trailing still-open fenced code block.
     ///
     /// Persists syntect's resumable per-line state across `rerender_tail` calls
     /// so a large open code block is highlighted in O(N) total instead of O(N²).
     /// Created lazily on the first render with syntect, and cleared (so it
-    /// rebuilds) on any state reset that would change output — theme/style,
-    /// pretty mode, table width, soft-break mode, or `clear()`.
+    /// rebuilds) whenever `set_max_table_width` resets the frozen state.
     open_code: Option<OpenCodeHighlighter>,
 
     /// Streaming LaTeX delimiter normalizer. Rewrites `\(…\)` / `\[…\]` /
@@ -115,12 +110,6 @@ pub struct StreamingMarkdownRenderer {
     /// via `get_syntect()` when this is set — matching production, where
     /// every render passes `Some(get_syntect())`.
     highlighted: bool,
-
-    /// When the frozen boundary last advanced. Drives the age bound of
-    /// `should_force_checkpoint` (see `rerender_tail`): a tail that never
-    /// checkpoints is one long open block, and mid-block freezes stay
-    /// deferred until renderer resume support lands.
-    frozen_at: std::time::Instant,
 }
 
 impl std::fmt::Debug for StreamingMarkdownRenderer {
@@ -147,7 +136,6 @@ impl Clone for StreamingMarkdownRenderer {
         // clone.
         let mut new = Self::new(self.style, self.pretty);
         new.set_max_table_width(self.max_table_width);
-        new.set_collapse_soft_breaks(self.collapse_soft_breaks);
         // `self.source` is already normalized, so append it verbatim (do NOT
         // re-run the normalizer, which could hold back a trailing ambiguous
         // suffix and make the clone's source diverge). Copy the normalizer
@@ -179,29 +167,15 @@ impl StreamingMarkdownRenderer {
             style,
             pretty,
             max_table_width: None,
-            collapse_soft_breaks: true,
             open_code: None,
             normalizer: LatexDelimiterNormalizer::new(),
             highlighted: false,
-            frozen_at: std::time::Instant::now(),
         }
     }
 
     /// Number of frozen lines rendered so far.
     pub fn frozen_lines_len(&self) -> usize {
         self.frozen.lines_len
-    }
-
-    /// Replace the markdown style and trigger a full re-render.
-    ///
-    /// Used when the theme changes at runtime so existing blocks pick up
-    /// the new colors on the next render pass.
-    pub fn set_style(&mut self, style: MarkdownStyle) {
-        self.style = style;
-        self.frozen = FrozenState::default();
-        self.output.clear();
-        // Theme/style change alters colors, so any cached highlight is stale.
-        self.open_code = None;
     }
 
     /// Set the maximum width for rendered tables.
@@ -217,32 +191,6 @@ impl StreamingMarkdownRenderer {
             self.output.clear();
             self.open_code = None;
         }
-    }
-
-    /// Set whether CommonMark soft breaks collapse to a space.
-    ///
-    /// Defaults to `true`. Set `false` for source-faithful rendering (plan
-    /// preview) where each source line keeps its own visual line and
-    /// `line_source_map` entry. Resets frozen state when the mode changes.
-    pub fn set_collapse_soft_breaks(&mut self, collapse: bool) {
-        if self.collapse_soft_breaks != collapse {
-            self.collapse_soft_breaks = collapse;
-            self.frozen = FrozenState::default();
-            self.output.clear();
-            self.open_code = None;
-        }
-    }
-
-    /// Push a new chunk of markdown text (no rendering).
-    ///
-    /// The chunk is run through the streaming LaTeX delimiter normalizer and the
-    /// normalized result is appended to the internal buffer. A bounded ambiguous
-    /// suffix (a partial delimiter at the chunk boundary) may be held back until
-    /// the next `push`; `finish()` flushes it. Call `render()` to process
-    /// accumulated content, or use `push_and_render()` for convenience.
-    pub fn push(&mut self, chunk: &str) {
-        let normalized = self.normalizer.push(chunk);
-        self.source.push_str(&normalized);
     }
 
     /// Append already-normalized source text, bypassing the delimiter
@@ -262,17 +210,15 @@ impl StreamingMarkdownRenderer {
     ///
     /// Theme stability: a still-open fenced code block is highlighted
     /// incrementally, caching the colors of the `syntect` theme seen so far.
-    /// The `syntect` theme must stay stable between renders; switch themes via
-    /// [`set_style`](Self::set_style), which clears that cache. (Passing a
-    /// different theme without a reset would leave already-committed lines in
-    /// the old colors.)
+    /// The `syntect` theme must stay stable between renders. (Passing a
+    /// different theme would leave already-committed lines in the old colors.)
     pub fn render(&mut self, syntect: Option<&Syntect>) {
         self.rerender_tail(syntect);
     }
 
     /// Push a chunk and render immediately (convenience method).
     ///
-    /// Equivalent to `push(chunk)` followed by `render(syntect)`.
+    /// Normalizes and appends `chunk`, then rerenders the unfrozen tail.
     /// Use this for real-time streaming where you want to display after each chunk.
     pub fn push_and_render(&mut self, chunk: &str, syntect: Option<&Syntect>) {
         let normalized = self.normalizer.push(chunk);
@@ -333,7 +279,6 @@ impl StreamingMarkdownRenderer {
             syntect,
             self.max_table_width,
             self.frozen.next_link_id,
-            self.collapse_soft_breaks,
             open_code,
         );
 
@@ -372,10 +317,9 @@ impl StreamingMarkdownRenderer {
         //       during session replay) never call `finish()`, so without
         //       running url_scan here their URLs would never become
         //       HyperlinkTargets at all.
-        //   (b) State resets (`set_max_table_width`, `set_pretty`,
-        //       `set_style`) rebuild the output from scratch via a
-        //       subsequent `render()`; URL hyperlinks added by an earlier
-        //       `finish()` would otherwise be silently dropped here.
+        //   (b) State resets (`set_max_table_width`) rebuild the output from
+        //       scratch via a subsequent `render()`; URL hyperlinks added by
+        //       an earlier `finish()` would otherwise be silently dropped here.
         //
         // We scan only the newly-rendered tail (`frozen_lines..end`); URLs
         // already on frozen lines were kept by the `retain` filter above
@@ -408,7 +352,7 @@ impl StreamingMarkdownRenderer {
         // Style only tail lines: frozen lines were already styled when they
         // were tail, and styling is per-line so the frozen prefix is unaffected
         // by new tail links (links never cross a checkpoint block boundary).
-        // `patch_lines_with_link_style` indexes `lines` by absolute
+        // `apply_link_styling` indexes `lines` by absolute
         // `line_index`, so rebase tail targets to the slice origin. Only the
         // geometry fields are read — `url` stays empty to avoid cloning every
         // URL string on each pass.
@@ -433,24 +377,6 @@ impl StreamingMarkdownRenderer {
                 source_bytes: tail_start + cp.source_bytes,
                 next_link_id: post_scan_next_id,
             };
-            self.frozen_at = std::time::Instant::now();
-        } else if crate::checkpoint::should_force_checkpoint(
-            self.source.len().saturating_sub(tail_start),
-            self.output
-                .lines
-                .len()
-                .saturating_sub(self.frozen.lines_len),
-            self.frozen_at.elapsed(),
-        ) {
-            // Forced-checkpoint policy fired but the parser found no
-            // container-safe point: the whole tail is one long open block.
-            // CHOICE (documented in `checkpoint.rs`): freeze is DEFERRED.
-            // A tail starting mid-fence/list loses its container context, so
-            // naive freezing corrupts the streaming view until `finish()`
-            // heals it; true mid-block freezing waits on renderer resume
-            // support (which must also rebase `open_code`/`next_link_id`).
-            // The policy stays consulted every pass so the bounds go live
-            // the moment that support lands.
         }
     }
 
@@ -458,63 +384,8 @@ impl StreamingMarkdownRenderer {
     ///
     /// This is cheap - just returns a reference to cached output.
     /// The output was computed during `render()` or `push_and_render()`.
-    pub fn view(&self) -> MarkdownRenderView<'_> {
-        self.output.as_view()
-    }
-
-    /// Get the accumulated source text.
-    pub fn source(&self) -> &str {
-        &self.source
-    }
-
-    /// Get the number of frozen source bytes.
-    pub fn frozen_bytes(&self) -> usize {
-        self.frozen.source_bytes
-    }
-
-    /// Get the number of frozen output lines.
-    pub fn frozen_lines_count(&self) -> usize {
-        self.frozen.lines_len
-    }
-
-    /// Reset the renderer, clearing all accumulated content.
-    ///
-    /// Also resets `max_table_width` to `None` for symmetry with the
-    /// freshly-constructed state — otherwise a subsequent
-    /// `set_max_table_width(Some(prev_width))` is silently a no-op
-    /// (no state reset) because the inner equality check sees no change.
-    pub fn clear(&mut self) {
-        self.source.clear();
-        self.output.clear();
-        self.frozen = FrozenState::default();
-        self.max_table_width = None;
-        self.open_code = None;
-        self.normalizer.reset();
-    }
-
-    /// Set pretty mode (true = hide syntax, false = show raw markdown).
-    ///
-    /// If the mode changes, frozen state is reset to ensure consistent rendering.
-    pub fn set_pretty(&mut self, pretty: bool) {
-        if self.pretty != pretty {
-            self.pretty = pretty;
-            // Reset frozen state - need to re-render everything with new mode
-            self.frozen = FrozenState::default();
-            self.output.clear();
-            self.open_code = None;
-        }
-    }
-
-    /// Get current pretty mode.
-    pub fn pretty(&self) -> bool {
-        self.pretty
-    }
-
-    /// Consume the renderer and return the owned output.
-    ///
-    /// Use this when streaming is complete and you want owned data.
-    pub fn into_output(self) -> MarkdownRenderOutput {
-        self.output
+    pub fn view(&self) -> &MarkdownRenderOutput {
+        &self.output
     }
 
     /// Finalize streaming with a full re-render.
@@ -533,7 +404,7 @@ impl StreamingMarkdownRenderer {
     /// (independent of frozen-state truncation).
     ///
     /// Returns a view of the finalized output.
-    pub fn finish(&mut self, syntect: Option<&Syntect>) -> MarkdownRenderView<'_> {
+    pub fn finish(&mut self, syntect: Option<&Syntect>) -> &MarkdownRenderOutput {
         // Flush any bytes the normalizer held back at the last chunk boundary
         // (e.g. a trailing partial delimiter) so the full re-render sees the
         // complete, normalized source.
@@ -554,7 +425,6 @@ impl StreamingMarkdownRenderer {
             // NOTE: Since full render restarts link IDs at 0, we MUST also reset our
             // counter to the post-render value :sadge:
             0,
-            self.collapse_soft_breaks,
             // finish() is a full batch re-render: never use the incremental cache.
             None,
         );
@@ -591,19 +461,18 @@ impl StreamingMarkdownRenderer {
             source_bytes: self.source.len(),
             next_link_id: post_scan_next_id,
         };
-        self.frozen_at = std::time::Instant::now();
 
         // Streaming is over: release the highlighter caches (open-block state
         // + closed-fence memo) instead of retaining them for the lifetime of
         // the rendered block. Lazily rebuilt if rendering ever resumes.
         self.open_code = None;
 
-        self.output.as_view()
+        &self.output
     }
 
     /// Finalize streaming and return owned output.
     ///
-    /// Combines `finish()` and `into_output()` - does a full re-render
+    /// Combines `finish()` and consuming `self` - does a full re-render
     /// and returns the owned result.
     pub fn finish_into_output(mut self, syntect: Option<&Syntect>) -> MarkdownRenderOutput {
         self.finish(syntect);
@@ -639,9 +508,9 @@ mod streaming_torn_tests {
         r.push_and_render(b, None);
         let view = r.finish(None);
 
-        assert_eq!(lines_text(view.lines), lines_text(&expected.lines));
+        assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
         // latex passthrough: `\alpha + \beta` -> `α + β`, delimiters hidden
-        let joined = lines_text(view.lines).join("\n");
+        let joined = lines_text(&view.lines).join("\n");
         assert!(joined.contains("α + β"), "got: {joined:?}");
         assert!(
             !joined.contains("\\("),
@@ -659,7 +528,7 @@ mod streaming_torn_tests {
             r.push_and_render(&s, None);
         }
         let view = r.finish(None);
-        let flat: String = lines_text(view.lines).join("");
+        let flat: String = lines_text(&view.lines).join("");
         assert!(
             flat.contains("explanation. Separating"),
             "soft break must collapse to a space, got: {flat:?}"
@@ -682,7 +551,7 @@ mod streaming_torn_tests {
         r.push_and_render(b, None);
         let view = r.finish(None);
 
-        assert_eq!(lines_text(view.lines), lines_text(&expected.lines));
+        assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
 
         // Parser-produced link-text hyperlink must cover exactly "click" (4 cells)
         let line0: String = view.lines[0]
@@ -738,7 +607,7 @@ mod streaming_torn_tests {
             let mut sorted = keys.clone();
             sorted.sort_unstable();
             assert_eq!(keys, sorted, "hyperlinks must stay globally sorted");
-            let frozen = r.frozen_lines_count();
+            let frozen = r.frozen_lines_len();
             let cur: Vec<(usize, std::ops::Range<usize>, String)> = view
                 .hyperlinks
                 .iter()
@@ -753,13 +622,13 @@ mod streaming_torn_tests {
         }
         let view = r.finish(None);
         let (expected, _) = render_markdown_ratatui_full(&full, test_style::STYLE, true, None);
-        assert_eq!(lines_text(view.lines), lines_text(&expected.lines));
+        assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
         let geom = |hs: &[crate::HyperlinkTarget]| {
             hs.iter()
                 .map(|h| (h.line_index, h.column_range.clone(), h.url.clone()))
                 .collect::<Vec<_>>()
         };
-        assert_eq!(geom(view.hyperlinks), geom(&expected.hyperlinks));
+        assert_eq!(geom(&view.hyperlinks), geom(&expected.hyperlinks));
     }
 
     // UNRUN: marked #[ignore] — run explicitly, never in bulk.
@@ -777,12 +646,12 @@ mod streaming_torn_tests {
         let c = r.clone();
         // Exact equality: text AND styles (ratatui `Line: PartialEq`).
         assert_eq!(c.view().lines, r.view().lines);
-        assert_eq!(c.frozen_lines_count(), r.frozen_lines_count());
+        assert_eq!(c.frozen_lines_len(), r.frozen_lines_len());
         // And the clone actually carries highlight colors (not a `None` render).
         let mut plain = StreamingMarkdownRenderer::new(test_style::STYLE, true);
         plain.push_and_render(src, None);
         assert_ne!(c.view().lines, plain.view().lines);
-        assert_eq!(lines_text(c.view().lines), lines_text(r.view().lines));
+        assert_eq!(lines_text(&c.view().lines), lines_text(&r.view().lines));
     }
 
     // UNRUN: marked #[ignore] — run explicitly, never in bulk.
@@ -796,32 +665,5 @@ mod streaming_torn_tests {
         r.push_and_render(src, None);
         let c = r.clone();
         assert_eq!(c.view().lines, r.view().lines);
-    }
-
-    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
-    // (`cargo test` under X kills the session; see repo AGENTS.md.)
-    // Run: `cargo test -p gray-markdown forced_ -- --ignored`
-    //
-    // Wiring (2): `should_force_checkpoint` fires on the oversized open
-    // fence, but with no container-safe point the freeze DEFERS (frozen
-    // stays 0); closing the fence restores normal checkpointing.
-    #[test]
-    #[ignore]
-    fn unrun_forced_checkpoint_defers_mid_fence() {
-        use crate::checkpoint::{FORCED_CHECKPOINT_TAIL_BYTES, should_force_checkpoint};
-        let mut src = String::from("```rust\n");
-        while src.len() < FORCED_CHECKPOINT_TAIL_BYTES + 1024 {
-            src.push_str("let x = 1;\n");
-        }
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        r.push_and_render(&src, None);
-        assert!(should_force_checkpoint(
-            src.len(),
-            r.view().lines.len(),
-            std::time::Duration::ZERO
-        ));
-        assert_eq!(r.frozen_lines_count(), 0);
-        r.push_and_render("```\n\n", None);
-        assert!(r.frozen_lines_count() > 0);
     }
 }
