@@ -68,6 +68,7 @@ pub mod icons;
 pub use icons::{has_nerd_font, icon};
 pub mod tabs;
 
+#[cfg(feature = "acp")]
 mod acp_modal;
 mod context_modal;
 mod effort;
@@ -82,6 +83,7 @@ mod connect;
 mod connect_draw;
 mod connect_models;
 
+#[cfg(feature = "acp")]
 pub use acp_modal::run_acp_modal;
 pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;

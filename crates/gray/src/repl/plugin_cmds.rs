@@ -358,7 +358,7 @@ mod tests {
         let cwd = tempfile::tempdir().expect("tempdir").keep();
         let tui: super::TuiOpt = None;
         let mut agent: Option<super::Agent> = None;
-        let mut acp: Option<gray_acp::AcpSession> = None;
+        let mut acp: Option<super::AcpSession> = None;
         let mut session_state: Option<super::SessionState> = None;
         let mut totals = super::SessionTotals::default();
         let mut pending: Option<super::ReplCommand> = None;

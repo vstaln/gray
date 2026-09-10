@@ -67,7 +67,16 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(prompt) = cli.print.as_deref() {
         if let Some(agent) = cli.acp.as_deref() {
-            return run_acp_print_mode(agent, prompt).await;
+            #[cfg(feature = "acp")]
+            {
+                return run_acp_print_mode(agent, prompt).await;
+            }
+            #[cfg(not(feature = "acp"))]
+            {
+                anyhow::bail!(
+                    "this build has no ACP support — rebuild with `--features acp`; requested: {agent}"
+                );
+            }
         }
         run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
             .await?;
@@ -78,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "acp")]
 async fn run_acp_print_mode(agent: &str, prompt: &str) -> anyhow::Result<()> {
     let home = gray_acp::gray_home_dir();
     let Some(spec) = gray_acp::resolve(agent, Some(home.as_path())) else {

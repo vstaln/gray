@@ -52,7 +52,7 @@ gray-pkg = { path = "crates/gray-pkg" }
 # External dependencies
 agent-client-protocol = "2"
 which = "7"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "process", "signal", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 eventsource-stream = "0.2"
 serde = { version = "1.0", features = ["derive"] }

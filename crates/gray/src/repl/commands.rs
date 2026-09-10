@@ -322,11 +322,13 @@ fn complete_model_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
 
 /// Suffixes for `/acp`: subcommands plus installed agent names.
 fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
+    #[cfg_attr(not(feature = "acp"), allow(unused_mut))]
     let mut out: Vec<(String, String)> = vec![
         ("acp list".to_string(), "list agents".to_string()),
         ("acp status".to_string(), "show ACP session".to_string()),
         ("acp off".to_string(), "back to native".to_string()),
     ];
+    #[cfg(feature = "acp")]
     for spec in gray_acp::all_specs(None) {
         let status = if gray_acp::installed(&spec) {
             "installed"
