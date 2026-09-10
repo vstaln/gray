@@ -113,8 +113,26 @@ impl GatewayRunner {
                     cwd,
                     model,
                 );
-                let _ = store.create(meta).await;
-                Vec::new()
+                match store.create(meta).await {
+                    Ok(_) => Vec::new(),
+                    // Another writer won the race between load-NotFound and
+                    // create: use their history, never a blank in-memory one.
+                    Err(gray_session::SessionError::AlreadyExists(_)) => {
+                        match store.load(&sid).await {
+                            Ok((_meta, entries)) => {
+                                entries.into_iter().map(|e| e.message).collect()
+                            }
+                            Err(e) => {
+                                return Err(anyhow::anyhow!(
+                                    "gateway cannot re-load raced session: {e:#}"
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("gateway cannot create session: {e:#}"));
+                    }
+                }
             }
             Err(e) => {
                 return Err(anyhow::anyhow!(
@@ -170,16 +188,25 @@ impl GatewayRunner {
         // Persist whatever the agent produced (also on cancel — partial turns are still history).
         // A shrink below the cursor means in-loop compaction ran: persist the
         // active transcript behind a boundary marker instead of skipping it.
-        if agent.messages().len() < prior_len {
-            let _ = store
+        let persist_error = if agent.messages().len() < prior_len {
+            store
                 .append_compaction_replacement(&sid, agent.messages())
-                .await;
+                .await
+                .err()
         } else {
+            let mut err = None;
             for m in agent.messages().iter().skip(prior_len) {
-                let _ = store.append(&sid, m).await;
+                if let Err(e) = store.append(&sid, m).await {
+                    err = Some(e);
+                    break;
+                }
             }
-        }
+            err
+        };
         run?;
+        if let Some(e) = persist_error {
+            return Err(anyhow::anyhow!("gateway cannot persist session: {e:#}"));
+        }
 
         let mut reply = agent
             .messages()
