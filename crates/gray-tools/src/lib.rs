@@ -224,9 +224,21 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
     let Value::Object(ref mut map) = args else {
         return args;
     };
+    // Schema property names (for schema-gated aliases below).
+    let has_prop = |name: &str| {
+        def.parameters
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .is_some_and(|o| o.contains_key(name))
+    };
     for (old, new) in ALIASES {
+        // Rename only when the schema defines the new name and not the old
+        // one: a plugin whose schema legitimately declares `text` must keep
+        // it, not have it rewritten to `content`.
         if map.contains_key(*old)
             && !map.contains_key(*new)
+            && has_prop(new)
+            && !has_prop(old)
             && let Some(v) = map.remove(*old)
         {
             map.insert(new.to_string(), v);
@@ -266,7 +278,14 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
                 .parse::<i64>()
                 .ok()
                 .map(Value::from)
-                .or_else(|| s.trim().parse::<f64>().ok().map(|n| Value::from(n as i64)))
+                .or_else(|| {
+                    s.trim().parse::<f64>().ok().and_then(|n| {
+                        // No lossy truncation: only integral, in-range
+                        // floats convert ("2.0" ok; "2.5", overflow, NaN stay strings).
+                        (n.fract() == 0.0 && n.abs() < 9.223372036854776e18)
+                            .then_some(Value::from(n as i64))
+                    })
+                })
                 .unwrap_or(Value::String(s)),
             ("number", Value::String(s)) => s
                 .trim()
@@ -310,9 +329,9 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
     let drop: Vec<String> = map
         .iter()
         .filter_map(|(k, v)| {
-            let nullish = v.is_null()
-                || matches!(v, Value::String(s) if s.trim().eq_ignore_ascii_case("null"));
-            if nullish && !required.iter().any(|r| r == k) {
+            // Only real JSON nulls drop (and only when optional): the literal
+            // string "null" is a valid value and must survive.
+            if v.is_null() && !required.iter().any(|r| r == k) {
                 Some(k.clone())
             } else {
                 None
@@ -495,11 +514,39 @@ mod tests {
             out.get("limit").is_none(),
             "optional null must drop to None"
         );
+        // The literal string "null" is a value, not a null: it survives.
         let out2 = coerce_args(&scalar_def(), json!({"path": "/tmp/x", "limit": "null"}));
-        assert!(
-            out2.get("limit").is_none(),
-            "string 'null' for optional must drop, got {out2}"
+        assert_eq!(
+            out2.get("limit"),
+            Some(&json!("null")),
+            "string 'null' must be kept, got {out2}"
         );
+    }
+
+    #[test]
+    fn aliases_respect_schema_and_floats_stay_lossless() {
+        // Schema declaring only `text`: no rename to `content`.
+        let text_def = ToolDef::new(
+            "probe",
+            "probe",
+            json!({"type": "object", "properties": {"text": {"type": "string"}}, "required": []}),
+        );
+        let out = coerce_args(&text_def, json!({"text": "hi"}));
+        assert_eq!(out.get("text"), Some(&json!("hi")));
+        assert!(out.get("content").is_none());
+        // Fractional / overflowing / NaN integer strings stay strings.
+        let out = coerce_args(&scalar_def(), json!({"path": "x", "limit": "2.5"}));
+        assert_eq!(out.get("limit"), Some(&json!("2.5")));
+        let out = coerce_args(
+            &scalar_def(),
+            json!({"path": "x", "limit": "99999999999999999999999"}),
+        );
+        assert_eq!(out.get("limit"), Some(&json!("99999999999999999999999")));
+        let out = coerce_args(&scalar_def(), json!({"path": "x", "limit": "NaN"}));
+        assert_eq!(out.get("limit"), Some(&json!("NaN")));
+        // Integral float strings still convert.
+        let out = coerce_args(&scalar_def(), json!({"path": "x", "limit": "2.0"}));
+        assert_eq!(out.get("limit"), Some(&json!(2)));
     }
 
     #[test]
