@@ -16,7 +16,9 @@ fn nonempty(s: Option<&str>) -> Option<String> {
 /// scheme://host/path without userinfo, query, or fragment (for logs).
 fn scrub_url(url: &str) -> String {
     let after_scheme = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
-    let auth_end = after_scheme.find(['/', '?', '#']).unwrap_or(after_scheme.len());
+    let auth_end = after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len());
     let host = after_scheme[..auth_end].rsplit('@').next().unwrap_or("");
     let mut path: &str = &after_scheme[auth_end..];
     path = path.split(['?', '#']).next().unwrap_or("");

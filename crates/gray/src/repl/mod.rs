@@ -515,7 +515,7 @@ pub async fn run_repl_mode(
         config
             .permissions
             .as_deref()
-            .unwrap_or(gray_core::approvals::MODE_FULL),
+            .unwrap_or(gray_core::approvals::MODE_AUTO),
     );
     if let Some((shared, _)) = tui.as_ref() {
         shared

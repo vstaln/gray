@@ -572,9 +572,7 @@ mod tests {
         std::fs::write(dir.path().join("jobs.json"), "{torn").unwrap();
         assert!(store.list().is_err());
         assert!(store.claim_due(1_700_000_000, "o").is_err());
-        assert!(store
-            .add("x", "every 1h", "hi", Deliver::Local)
-            .is_err());
+        assert!(store.add("x", "every 1h", "hi", Deliver::Local).is_err());
         // Missing store still reads empty and accepts the first add.
         std::fs::remove_file(dir.path().join("jobs.json")).unwrap();
         assert!(store.list().unwrap().is_empty());
