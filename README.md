@@ -58,9 +58,7 @@ Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — c
 ## Quick start
 
 ```bash
-gray                                                    # interactive REPL — nothing forced at boot
-echo "hi" | gray -p "one-line summary of this repo"     # print mode for scripts
-gray -c                                                 # resume your last session
+gray
 ```
 
 First run drops you straight at the prompt. Configure whenever you feel like it:
@@ -76,8 +74,6 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 <div align="center">
   <img alt="gray building a complete single-file app in the terminal" src="assets/gray-demo.gif" width="100%" />
 </div>
-
-One prompt, one binary: gray plans, writes, runs, and checks its own work — here it builds a complete single-file app end to end.
 
 ## Commands
 
