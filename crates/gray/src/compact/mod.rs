@@ -142,9 +142,9 @@ pub fn serialize_conversation(messages: &[Message]) -> String {
 pub mod policy;
 
 pub use policy::{
-    CompactionSettings, DEFAULT_COMPACTION_SETTINGS, compaction_settings, compaction_settings_for,
-    estimate_context_tokens, estimate_tokens, init_auto_compact_from_env, is_auto_compact_enabled,
-    is_context_overflow_error, set_auto_compact_enabled, should_compact, tail_messages,
+    CompactionSettings, compaction_settings_for, estimate_context_tokens, estimate_tokens,
+    init_auto_compact_from_env, is_auto_compact_enabled, is_context_overflow_error,
+    set_auto_compact_enabled, should_compact, tail_messages,
 };
 /// Reusable auto-compact helper that mirrors manual `/compact` flow.
 ///
@@ -382,20 +382,11 @@ mod tests {
     #[test]
     fn should_compact_threshold() {
         let s = CompactionSettings {
-            enabled: true,
             reserve_tokens: 16384,
             keep_recent_tokens: 20000,
         };
         assert!(!should_compact(100_000, 128_000, &s));
         assert!(should_compact(115_000, 128_000, &s)); // 115k > 128k-16k
-        assert!(!should_compact(
-            200_000,
-            128_000,
-            &CompactionSettings {
-                enabled: false,
-                ..s
-            }
-        ));
     }
 
     #[test]
@@ -479,7 +470,6 @@ mod tests {
         assert_eq!(tokens, 20_480, "80 KiB of tool output measured as {tokens}");
 
         let s = CompactionSettings {
-            enabled: true,
             reserve_tokens: 16_384,
             keep_recent_tokens: 20_000,
         };
@@ -526,7 +516,11 @@ mod tests {
         let window = 128_000;
         let tokens = estimate_context_tokens(&[Message::user("hi")], Some(usage));
         assert_eq!(tokens, 120_000);
-        assert!(should_compact(tokens, window, &DEFAULT_COMPACTION_SETTINGS));
+        let s = CompactionSettings {
+            reserve_tokens: 16_384,
+            keep_recent_tokens: 20_000,
+        };
+        assert!(should_compact(tokens, window, &s));
         // 100k should NOT trigger
         let usage2 = Usage {
             input_tokens: 90_000,
@@ -534,11 +528,7 @@ mod tests {
             ..Default::default()
         };
         let tokens2 = estimate_context_tokens(&[Message::user("hi")], Some(usage2));
-        assert!(!should_compact(
-            tokens2,
-            window,
-            &DEFAULT_COMPACTION_SETTINGS
-        ));
+        assert!(!should_compact(tokens2, window, &s));
     }
 
     #[tokio::test]

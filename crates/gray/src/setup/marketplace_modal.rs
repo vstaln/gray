@@ -10,7 +10,7 @@
 //! handle (same thread+`block_on` shape as the provider live-fetch path)
 //! while the modal shows `* Loading...` / `installing...` / `checking...`.
 
-use super::tabs::{next_tab, prev_tab, tab_segments};
+use super::tabs::{tab_segments, wrapped_tab};
 use super::*;
 
 use gray_pkg::ops::{Report, SearchHit, SearchOutput};
@@ -26,33 +26,7 @@ enum MarketTab {
     Marketplaces,
 }
 
-impl MarketTab {
-    const COUNT: usize = 3;
-
-    fn index(self) -> usize {
-        match self {
-            MarketTab::Plugins => 0,
-            MarketTab::Skills => 1,
-            MarketTab::Marketplaces => 2,
-        }
-    }
-
-    fn from_index(i: usize) -> Self {
-        match i % Self::COUNT {
-            0 => MarketTab::Plugins,
-            1 => MarketTab::Skills,
-            _ => MarketTab::Marketplaces,
-        }
-    }
-
-    fn next(self) -> Self {
-        Self::from_index(next_tab(self.index(), Self::COUNT))
-    }
-
-    fn prev(self) -> Self {
-        Self::from_index(prev_tab(self.index(), Self::COUNT))
-    }
-}
+wrapped_tab!(MarketTab, 3, Plugins => 0, Skills => 1, Marketplaces => 2);
 
 /// Pure row split, shared by both search tabs:
 /// head `name version [source]`, tail ` - desc` (empty when desc blank).
@@ -70,19 +44,6 @@ pub(crate) fn split_market_row(
     } else {
         (head, format!(" - {desc}"))
     }
-}
-
-/// `split_market_row` concatenated (kept so existing callers/tests read
-/// the full row as one string).
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn format_market_row(
-    name: &str,
-    version: &str,
-    source_label: &str,
-    desc: &str,
-) -> String {
-    let (head, tail) = split_market_row(name, version, source_label, desc);
-    format!("{head}{tail}")
 }
 
 /// Short row chip for a plugin source (display only; install specs and
@@ -329,42 +290,44 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
             // Poll background flights (non-blocking): search results land
             // the hit list, installs land the inline status, statuses land
             // the Marketplaces rows.
-            if let Some(flight) = pending_search.take() {
-                match flight.try_recv() {
-                    SearchPoll::Pending(rx) => {
-                        pending_search = Some(match rx {
-                            SearchRx::Plugin(r) => SearchFlight::Plugin(r),
-                            SearchRx::Skill(r) => SearchFlight::Skill(r),
-                        })
+            if let Some(polled) = pending_search.as_mut().map(SearchFlight::poll) {
+                match polled {
+                    SearchPoll::Pending => {}
+                    SearchPoll::PluginReady(res) => {
+                        pending_search = None;
+                        match res {
+                            Ok(out) => {
+                                plugin_unreachable = unreachable_lines(&out);
+                                plugin_all = out.hits;
+                                plugin_hits =
+                                    apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
+                                plugin_dirty = false;
+                                search_err = None;
+                                sel = 0;
+                            }
+                            Err(e) => {
+                                search_err = Some(format!("{e:#}"));
+                                plugin_hits.clear();
+                                plugin_unreachable.clear();
+                            }
+                        }
                     }
-                    SearchPoll::PluginReady(res) => match res {
-                        Ok(out) => {
-                            plugin_unreachable = unreachable_lines(&out);
-                            plugin_all = out.hits;
-                            plugin_hits = apply_plugin_view(&plugin_all, plugin_filter, sort_mode);
-                            plugin_dirty = false;
-                            search_err = None;
-                            sel = 0;
+                    SearchPoll::SkillReady(res) => {
+                        pending_search = None;
+                        match res {
+                            Ok(hits) => {
+                                skill_all = hits;
+                                skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
+                                skill_dirty = false;
+                                search_err = None;
+                                sel = 0;
+                            }
+                            Err(e) => {
+                                search_err = Some(format!("{e:#}"));
+                                skill_hits.clear();
+                            }
                         }
-                        Err(e) => {
-                            search_err = Some(format!("{e:#}"));
-                            plugin_hits.clear();
-                            plugin_unreachable.clear();
-                        }
-                    },
-                    SearchPoll::SkillReady(res) => match res {
-                        Ok(hits) => {
-                            skill_all = hits;
-                            skill_hits = apply_skill_view(&skill_all, skill_filter, sort_mode);
-                            skill_dirty = false;
-                            search_err = None;
-                            sel = 0;
-                        }
-                        Err(e) => {
-                            search_err = Some(format!("{e:#}"));
-                            skill_hits.clear();
-                        }
-                    },
+                    }
                 }
             }
             if let Some(rx) = pending_install.take() {
@@ -1058,34 +1021,25 @@ enum SearchFlight {
     Skill(Receiver<anyhow::Result<Vec<SkillHit>>>),
 }
 
-enum SearchRx {
-    Plugin(Receiver<anyhow::Result<SearchOutput>>),
-    Skill(Receiver<anyhow::Result<Vec<SkillHit>>>),
-}
-
 enum SearchPoll {
-    Pending(SearchRx),
+    Pending,
     PluginReady(anyhow::Result<SearchOutput>),
     SkillReady(anyhow::Result<Vec<SkillHit>>),
 }
 
 impl SearchFlight {
-    fn try_recv(self) -> SearchPoll {
+    fn poll(&mut self) -> SearchPoll {
         match self {
             SearchFlight::Plugin(rx) => match rx.try_recv() {
                 Ok(res) => SearchPoll::PluginReady(res),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    SearchPoll::Pending(SearchRx::Plugin(rx))
-                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => SearchPoll::Pending,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     SearchPoll::PluginReady(Err(anyhow::anyhow!("background task ended")))
                 }
             },
             SearchFlight::Skill(rx) => match rx.try_recv() {
                 Ok(res) => SearchPoll::SkillReady(res),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
-                    SearchPoll::Pending(SearchRx::Skill(rx))
-                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => SearchPoll::Pending,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     SearchPoll::SkillReady(Err(anyhow::anyhow!("background task ended")))
                 }
@@ -1435,11 +1389,10 @@ fn footer_spans(
 mod tests {
     use super::{
         MarketTab, SortMode, apply_plugin_view, apply_skill_view, chip_color, filter_short,
-        format_install_status, format_market_row, format_preview, format_skill_preview,
-        format_source_row, install_spec_for_plugin, install_spec_for_skill,
-        install_status_covered_by_footer, installed_summary, next_plugin_filter, next_skill_filter,
-        scroll_top, skill_chip, sort_plugins_by_name, sort_skills_by_name, source_chip,
-        split_market_row,
+        format_install_status, format_preview, format_skill_preview, format_source_row,
+        install_spec_for_plugin, install_spec_for_skill, install_status_covered_by_footer,
+        installed_summary, next_plugin_filter, next_skill_filter, scroll_top, skill_chip,
+        sort_plugins_by_name, sort_skills_by_name, source_chip, split_market_row,
     };
     use gray_pkg::ops::{SearchHit, SearchSource};
     use gray_pkg::skills_ops::SkillHit;
@@ -1503,14 +1456,6 @@ mod tests {
         assert_eq!(chip_color("[pi]", peach), C::Rgb(125, 211, 252));
         assert_eq!(chip_color("[claw]", peach), C::Rgb(134, 239, 172));
         assert_eq!(chip_color("[claude]", peach), C::Rgb(196, 181, 253));
-    }
-
-    #[test]
-    fn market_row_shows_name_version_source_and_desc() {
-        let row = format_market_row("demo", "1.2.3", "Gray Index", "does things");
-        assert_eq!(row, "demo 1.2.3 [Gray Index] - does things");
-        let bare = format_market_row("demo", "1.2.3", "Gray Index", "");
-        assert_eq!(bare, "demo 1.2.3 [Gray Index]");
     }
 
     #[test]

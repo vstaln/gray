@@ -17,7 +17,7 @@ pub(crate) fn provider_models_for(
         } else {
             ("custom".to_string(), "Custom".to_string())
         };
-    let models = get_provider_models_with_live(&item_id, base_url, api_key, &catalog);
+    let models = fetch_live_provider_models(base_url, api_key);
     (item_id, item_name, models)
 }
 
@@ -43,10 +43,7 @@ pub fn run_model_modal(
         name: item_name.clone(),
         sublabel: String::new(),
         base_url: config.base_url.clone(),
-        category: "Providers",
-        env_key: String::new(),
         no_auth: false,
-        oauth_capable: crate::setup::catalog::OAUTH_CAPABLE.contains(&item_id.as_str()),
     };
 
     let _session = TuiSession::acquire()?;
@@ -400,7 +397,7 @@ pub fn run_model_modal(
 }
 
 /// Validates a directly-typed `/model <id>` against the picker's known list
-/// (live `/models` + catalog snapshot behind `get_provider_models_with_live`).
+/// (live `/models` + catalog snapshot behind `fetch_live_provider_models`).
 /// Exact id (or display name) wins; case-insensitive and unique `provider/`
 /// tail matches canonicalize. Unknown ids are rejected with a hint mirroring
 /// the picker empty-state (`type /model to browse ...`) instead of being

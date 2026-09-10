@@ -68,8 +68,3 @@ pub fn format_tool_result_plain_with_context(
     }
     out
 }
-
-/// Plain ANSI string formatting for tool output lines.
-pub fn format_tool_result_plain(tool_name: &str, output: &str, is_error: bool) -> String {
-    format_tool_result_plain_with_context(tool_name, None, output, is_error, None)
-}
