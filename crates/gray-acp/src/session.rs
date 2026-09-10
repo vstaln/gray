@@ -43,14 +43,6 @@ impl Drop for AbortOnDrop {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct SessionInfo {
-    pub agent_key: String,
-    pub agent_display: String,
-    pub session_id: String,
-    pub mode: Option<String>,
-}
-
 pub struct AcpSessionOptions {
     pub spec: AgentSpec,
     pub cwd: PathBuf,
@@ -359,7 +351,6 @@ pub struct AcpSession {
     spec: AgentSpec,
     display: String,
     session_id: String,
-    mode: Option<String>,
     usage_text: Option<String>,
     auto_approve: bool,
     permission_prompt: Arc<dyn PermissionPrompt>,
@@ -429,22 +420,12 @@ impl AcpSession {
             spec,
             display,
             session_id,
-            mode: None,
             usage_text: None,
             auto_approve: opts.auto_approve,
             permission_prompt: opts.permission_prompt,
             cwd: opts.cwd,
             cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
-    }
-
-    pub fn info(&self) -> SessionInfo {
-        SessionInfo {
-            agent_key: self.spec.key.to_string(),
-            agent_display: self.display.clone(),
-            session_id: self.session_id.clone(),
-            mode: self.mode.clone(),
-        }
     }
 
     pub fn session_id(&self) -> &str {

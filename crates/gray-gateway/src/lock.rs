@@ -56,10 +56,6 @@ pub fn try_acquire_gateway_lock_at(path: &Path) -> Option<std::fs::File> {
 }
 
 /// Probe without acquiring: true while another process holds the lock.
-pub fn gateway_locked_elsewhere() -> bool {
-    gateway_locked_elsewhere_at(&gateway_lock_path())
-}
-
 pub fn gateway_locked_elsewhere_at(path: &Path) -> bool {
     let Some(f) = open_lock_file(path) else {
         return false;

@@ -5,6 +5,8 @@
 //! sending, editing and deleting the bubble; this only decides WHAT text
 //! goes in it.
 
+use crate::platform::utf16_len;
+
 /// Max preview chars for tool args in one bubble line.
 pub const PROGRESS_PREVIEW_CAP: usize = 80;
 
@@ -36,10 +38,6 @@ fn truncate_chars(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-fn utf16_len(s: &str) -> usize {
-    s.encode_utf16().count()
-}
-
 /// Accumulated bubble lines with Hermes `(×N)` dedup.
 #[derive(Debug, Default)]
 pub struct ProgressLines {
@@ -67,10 +65,6 @@ impl ProgressLines {
             self.lines.pop();
         }
         self.push_dedup(tool_end_line(name, args));
-    }
-
-    pub fn text(&self) -> String {
-        self.lines.join("\n")
     }
 
     /// Hermes `split_overflow`: group lines so each joined group fits in
@@ -165,7 +159,10 @@ mod tests {
         let mut p = ProgressLines::new();
         p.push_start("terminal");
         p.push_end("terminal", &json!({"command": "ls"}));
-        assert_eq!(p.text(), "🔧 terminal: \"{\"command\":\"ls\"}\"");
+        assert_eq!(
+            p.split_groups(usize::MAX).join("\n"),
+            "🔧 terminal: \"{\"command\":\"ls\"}\""
+        );
     }
 
     #[test]
@@ -173,7 +170,10 @@ mod tests {
         let mut p = ProgressLines::new();
         p.push_start("read");
         p.push_end("terminal", &json!(null));
-        assert_eq!(p.text(), "⏳ read…\n🔧 terminal…");
+        assert_eq!(
+            p.split_groups(usize::MAX).join("\n"),
+            "⏳ read…\n🔧 terminal…"
+        );
     }
 
     #[test]
@@ -182,7 +182,10 @@ mod tests {
         p.push_start("execute_code");
         p.push_start("execute_code");
         p.push_start("execute_code");
-        assert_eq!(p.text(), "⏳ execute_code… (×3)");
+        assert_eq!(
+            p.split_groups(usize::MAX).join("\n"),
+            "⏳ execute_code… (×3)"
+        );
     }
 
     #[test]
@@ -192,7 +195,10 @@ mod tests {
         p.push_start("a");
         p.push_start("b");
         p.push_start("b");
-        assert_eq!(p.text(), "⏳ a… (×2)\n⏳ b… (×2)");
+        assert_eq!(
+            p.split_groups(usize::MAX).join("\n"),
+            "⏳ a… (×2)\n⏳ b… (×2)"
+        );
     }
 
     #[test]

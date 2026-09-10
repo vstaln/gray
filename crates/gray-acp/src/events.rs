@@ -4,7 +4,7 @@ use agent_client_protocol::schema::v1::{
     ContentBlock, ContentChunk, Plan, SessionUpdate, StopReason as AcpStopReason, ToolCall,
     ToolCallContent, ToolCallStatus, ToolCallUpdate,
 };
-use gray_core::event::{AgentEvent, StopReason, Usage};
+use gray_core::event::{AgentEvent, StopReason};
 
 #[derive(Debug, Default)]
 struct ToolState {
@@ -115,13 +115,6 @@ impl EventMapper {
             AcpStopReason::Cancelled => StopReason::Cancelled,
             _ => StopReason::EndTurn,
         }
-    }
-
-    pub fn finish(&self, reason: &AcpStopReason) -> Vec<AgentEvent> {
-        vec![AgentEvent::TurnEnd {
-            stop_reason: self.map_stop(reason),
-            usage: Usage::default(),
-        }]
     }
 }
 

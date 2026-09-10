@@ -16,7 +16,6 @@ use crate::platform::{
     BasePlatformAdapter, MessageEvent, SendOptions, SendResult, check_token_shape, utf16_len,
 };
 use crate::session::SessionSource;
-use crate::status::GatewayStatusBoard;
 use std::sync::atomic::AtomicBool;
 #[cfg(feature = "telegram")]
 use std::sync::atomic::Ordering;
@@ -47,23 +46,6 @@ pub fn heartbeat_should_respawn_error(err: &str, consecutive_failures: u32) -> b
     }
 }
 
-/// Fold a sequence of probe outcomes (`true` = ok) into
-/// (final miss count, respawn tripped). A success clears the count.
-pub fn drive_heartbeat<I: IntoIterator<Item = bool>>(probes: I) -> (u32, bool) {
-    let mut misses = 0u32;
-    for ok in probes {
-        if ok {
-            misses = 0;
-        } else {
-            misses += 1;
-            if heartbeat_should_respawn(misses) {
-                return (misses, true);
-            }
-        }
-    }
-    (misses, heartbeat_should_respawn(misses))
-}
-
 #[cfg(feature = "telegram")]
 type BotClient = teloxide::Bot;
 #[cfg(not(feature = "telegram"))]
@@ -80,8 +62,6 @@ pub struct TelegramAdapter {
     heartbeat: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Bot name from `get_me` (set on connect, read by the boot card).
     identity: Mutex<Option<String>>,
-    /// Status board for staged connect progress (wired by the daemon; None for send-only).
-    board: Mutex<Option<GatewayStatusBoard>>,
     /// False until the first `connect()` (cold boot drops the pending queue,
     /// reconnects resume the live queue — see `poller_initial_offset`).
     #[cfg_attr(not(feature = "telegram"), allow(dead_code))]
@@ -108,15 +88,8 @@ impl TelegramAdapter {
             poller: Arc::new(Mutex::new(None)),
             heartbeat: Mutex::new(None),
             identity: Mutex::new(None),
-            board: Mutex::new(None),
             booted: AtomicBool::new(false),
         })
-    }
-
-    fn stage(&self, stage: &'static str) {
-        if let Some(b) = self.board.lock().unwrap().clone() {
-            b.mark_stage(Platform::Telegram, stage);
-        }
     }
 
     pub fn is_authenticated(&self) -> bool {
@@ -255,7 +228,6 @@ fn spawn_poller(
                             text,
                             message_id: Some(m.id.0.to_string()),
                             source: source_for(m.chat.id.0, chat_type, user_id, thread_id, m.id.0),
-                            media_urls: vec![],
                             user_name,
                         };
                         if tx.send(ev).is_err() {
@@ -379,13 +351,11 @@ impl BasePlatformAdapter for TelegramAdapter {
     }
 
     async fn connect(&self) -> anyhow::Result<()> {
-        self.stage("validating token");
         validate_telegram_token(&self.token)?;
         #[cfg(feature = "telegram")]
         {
             use teloxide::prelude::*;
             let bot = teloxide::Bot::new(self.token.clone());
-            self.stage("identifying");
             // Fail fast on a rejected token.
             let me = bot
                 .get_me()
@@ -394,7 +364,6 @@ impl BasePlatformAdapter for TelegramAdapter {
             log::info!("[telegram] authenticated as @{}", me.username());
             *self.identity.lock().unwrap() = Some(format!("@{}", me.username()));
             *self.client.lock().unwrap() = Some(bot.clone());
-            self.stage("clearing webhook");
             // Polling and webhooks are mutually exclusive: clear any webhook so
             // getUpdates delivers. Best-effort — the poller surfaces real errors.
             if let Err(e) = bot.delete_webhook().await {
@@ -405,7 +374,6 @@ impl BasePlatformAdapter for TelegramAdapter {
                 Some(tx) => {
                     // Cold boot drops the pending queue, reconnects resume it.
                     let drop_pending = !self.booted.swap(true, Ordering::Relaxed);
-                    self.stage("polling");
                     let (ok_tx, ok_rx) = tokio::sync::oneshot::channel();
                     let handle = spawn_poller(bot.clone(), tx.clone(), drop_pending, Some(ok_tx));
                     if let Some(old) = self.poller.lock().unwrap().replace(handle) {
@@ -415,7 +383,6 @@ impl BasePlatformAdapter for TelegramAdapter {
                     if let Some(old) = self.heartbeat.lock().unwrap().replace(hb) {
                         old.abort();
                     }
-                    self.stage("confirming");
                     ok_rx.await.map_err(|_| {
                         anyhow::anyhow!("telegram poller ended before first updates batch")
                     })?;
@@ -449,10 +416,6 @@ impl BasePlatformAdapter for TelegramAdapter {
 
     fn set_event_tx(&mut self, tx: UnboundedSender<MessageEvent>) {
         *self.event_tx.lock().unwrap() = Some(tx);
-    }
-
-    fn set_status_board(&self, board: GatewayStatusBoard) {
-        *self.board.lock().unwrap() = Some(board);
     }
 
     async fn send_typing(&self, chat: &str) {
@@ -756,12 +719,6 @@ mod tests {
         assert!(!heartbeat_should_respawn(1));
         assert!(heartbeat_should_respawn(2));
         assert!(heartbeat_should_respawn(3));
-        // One success clears the miss count.
-        assert_eq!(drive_heartbeat([true, false, true, false]), (1, false));
-        // Two in a row trips respawn.
-        assert_eq!(drive_heartbeat([true, false, false]), (2, true));
-        assert_eq!(drive_heartbeat([false, false]), (2, true));
-        assert_eq!(drive_heartbeat([true]), (0, false));
     }
 
     #[test]
@@ -812,10 +769,7 @@ mod tests {
         // Stub-only: no network, connect must fail loudly, terminally.
         #[cfg(not(feature = "telegram"))]
         {
-            use crate::status::GatewayStatusBoard;
             let a = TelegramAdapter::new(cfg("123456:ABCDEFGHIJ1234567890")).unwrap();
-            let board = GatewayStatusBoard::new(&[Platform::Telegram]);
-            a.set_status_board(board.clone());
             let err = a.connect().await.unwrap_err();
             assert!(
                 err.to_string().contains("not compiled"),
