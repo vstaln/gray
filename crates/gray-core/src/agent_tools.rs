@@ -59,6 +59,10 @@ pub(crate) struct PendingToolCall {
     pub(crate) id: Option<String>,
     pub(crate) name: Option<String>,
     pub(crate) arguments: String,
+    /// True once the single `tool_call_start` has been emitted (requires
+    /// both id and name non-blank). Drives live progress gating so dispatch
+    /// never needs a positional side table.
+    pub(crate) started: bool,
 }
 
 impl PendingToolCall {

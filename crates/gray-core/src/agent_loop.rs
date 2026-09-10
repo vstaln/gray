@@ -202,7 +202,6 @@ impl Agent {
             // the next turn can replay it verbatim (cache warmth).
             let mut pending_reasoning: Option<(String, String)> = None;
             let mut pending: Vec<PendingToolCall> = Vec::new();
-            let mut pending_emitted_start: Vec<bool> = Vec::new();
             let (stop_reason, usage) = {
                 let mut stream = self.provider.stream(req);
                 loop {
@@ -261,25 +260,51 @@ impl Agent {
                             }
                             while pending.len() <= index {
                                 pending.push(PendingToolCall::default());
-                                pending_emitted_start.push(false);
                             }
                             let slot = &mut pending[index];
-                            let was_unnamed = slot.name.is_none();
-                            if slot.id.is_none() {
-                                slot.id = id;
+                            // Stream-identity hardening: id and name are
+                            // immutable once set (blank counts as unset). A
+                            // conflicting re-set is a provider protocol error.
+                            if let Some(new_id) = id
+                                && !new_id.trim().is_empty()
+                            {
+                                if let Some(existing) = slot.id.as_ref() {
+                                    if existing != &new_id {
+                                        self.emit_turn_end(&total_usage).await;
+                                        return Err(CoreError::Provider(format!(
+                                            "provider changed tool-call id for index {index}: {existing:?} -> {new_id:?}"
+                                        )));
+                                    }
+                                } else {
+                                    slot.id = Some(new_id);
+                                }
                             }
-                            if slot.name.is_none() {
-                                slot.name = name.clone();
+                            if let Some(new_name) = name
+                                && !new_name.trim().is_empty()
+                            {
+                                if let Some(existing) = slot.name.as_ref() {
+                                    if existing != &new_name {
+                                        self.emit_turn_end(&total_usage).await;
+                                        return Err(CoreError::Provider(format!(
+                                            "provider changed tool-call name for index {index}: {existing:?} -> {new_name:?}"
+                                        )));
+                                    }
+                                } else {
+                                    slot.name = Some(new_name);
+                                }
                             }
                             slot.arguments.push_str(&arguments_delta);
-                            // Live emit: as soon as we know the tool name, tell the UI
-                            // so it can show "Preparing tool: bash…" instead of "Thinking... 53s".
-                            if was_unnamed && slot.name.is_some() && !pending_emitted_start[index] {
-                                let live_id =
-                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
-                                let live_name = slot.name.clone().unwrap_or_default();
+                            // Live emit: only once BOTH id and name are known
+                            // non-blank, so the start ID can never mutate.
+                            // Args arriving early stay buffered in `slot`.
+                            if !slot.started
+                                && slot.id.as_ref().is_some_and(|s| !s.trim().is_empty())
+                                && slot.name.as_ref().is_some_and(|s| !s.trim().is_empty())
+                            {
+                                let live_id = slot.id.clone().unwrap();
+                                let live_name = slot.name.clone().unwrap();
                                 emit!(AgentEvent::tool_call_start(live_id, live_name));
-                                pending_emitted_start[index] = true;
+                                slot.started = true;
                             }
                             // pi `updateArgs`: keep streaming partial args so the
                             // TUI can render the tool call live instead of
@@ -288,10 +313,11 @@ impl Agent {
                             // only the latest snapshot per call: retaining each
                             // cumulative snapshot would grow quadratically
                             // under per-byte deltas.
-                            if pending_emitted_start[index] && !arguments_delta.is_empty() {
-                                let live_id =
-                                    slot.id.clone().unwrap_or_else(|| format!("call_{index}"));
-                                let live_name = slot.name.clone().unwrap_or_default();
+                            if slot.started && !arguments_delta.is_empty() {
+                                // Started implies both id and name are present
+                                // (start waits for both), so no fallback here.
+                                let live_id = slot.id.clone().unwrap();
+                                let live_name = slot.name.clone().unwrap();
                                 let ev = AgentEvent::tool_call_progress(
                                     live_id.clone(),
                                     live_name,
@@ -391,6 +417,27 @@ impl Agent {
             total_usage.reasoning_tokens += usage.reasoning_tokens;
             total_usage.total_tokens = 0;
             total_usage.normalize();
+            // Stream-identity hardening: calls that never got a provider ID
+            // get a conversation-unique fallback now and emit their single
+            // start here, so every dispatched call already has its start and
+            // dispatch never consults positional side tables.
+            {
+                let fallback_base = self.messages.len();
+                for (wire_index, slot) in pending.iter_mut().enumerate() {
+                    if !slot.name.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+                        continue;
+                    }
+                    if !slot.id.as_ref().is_some_and(|s| !s.trim().is_empty()) {
+                        slot.id = Some(format!("gray_call_{fallback_base}_{wire_index}"));
+                    }
+                    if !slot.started {
+                        let id = slot.id.clone().unwrap();
+                        let name = slot.name.clone().unwrap();
+                        emit!(AgentEvent::tool_call_start(id, name));
+                        slot.started = true;
+                    }
+                }
+            }
             emit!(AgentEvent::StepUsage { usage: total_usage });
 
             // Finalize the assistant message exactly as streamed.
@@ -411,13 +458,21 @@ impl Agent {
                 content.push(ContentBlock::Text { text });
             }
             for (index, call) in pending.iter().enumerate() {
-                let name = call.name.clone().unwrap_or_default();
-                if name.trim().is_empty() {
-                    log::warn!(target: "gray_agent", "dropping tool call index {index} with empty name (args: {})", call.arguments.chars().take(200).collect::<String>());
+                let name = match call.name.as_ref() {
+                    Some(n) if !n.trim().is_empty() => n.clone(),
+                    _ => {
+                        log::warn!(target: "gray_agent", "dropping tool call index {index} with empty name (args: {})", call.arguments.chars().take(200).collect::<String>());
+                        continue;
+                    }
+                };
+                // IDs are final here: provider IDs from the stream or the
+                // gray_call_* fallback assigned above — never a positional default.
+                let Some(id) = call.id.clone().filter(|s| !s.trim().is_empty()) else {
+                    log::warn!(target: "gray_agent", "dropping tool call index {index} with empty id after fallback");
                     continue;
-                }
+                };
                 content.push(ContentBlock::ToolUse {
-                    id: call.id.clone().unwrap_or_else(|| format!("call_{index}")),
+                    id,
                     name,
                     args: call.parsed_args(),
                 });
@@ -562,10 +617,9 @@ impl Agent {
                 // verdicts, `pre_tool` hooks. Only `executor.execute` runs
                 // concurrently — never `ApprovalGate::check`: batchable names
                 // are statically `Allow` in every mode. Post-pass (loop
-                // thread, input order): `tool_call_start/end` emission (kept
-                // here, not in the pre-pass, so a cancel-free parallel run is
-                // event-identical to the sequential path), `post_tool` hooks,
-                // `tool_result` events, history writes.
+                // thread, input order): `tool_call_end` emission (`start`
+                // already emitted live/at-finalize with the final ID),
+                // `post_tool` hooks, `tool_result` events, history writes.
                 if let crate::parallel::Segment::Parallel(idxs) = segment {
                     let (Some(run_start), Some(run_end)) =
                         (idxs.first().copied(), idxs.last().map(|i| *i + 1))
@@ -687,9 +741,8 @@ impl Agent {
                     for &idx in &idxs {
                         let (id, name, args) = &tool_uses[idx];
                         if let Some(err) = inline_errors.remove(&idx) {
-                            if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
-                                emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
-                            }
+                            // `start` already emitted with the final ID (live
+                            // or at finalize); dispatch only ends the call.
                             emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                             emit!(AgentEvent::tool_result(
                                 id.clone(),
@@ -710,9 +763,6 @@ impl Agent {
                             Some(Some(output)) => {
                                 for hook in &self.hooks {
                                     hook.post_tool(name, output).await;
-                                }
-                                if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
-                                    emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
                                 }
                                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
                                 emit!(AgentEvent::tool_result(
@@ -751,9 +801,9 @@ impl Agent {
                     self.emit_turn_end(&total_usage).await;
                     return Err(CoreError::Cancelled);
                 }
-                if !pending_emitted_start.get(idx).copied().unwrap_or(false) {
-                    emit!(AgentEvent::tool_call_start(id.clone(), name.clone()));
-                }
+                // `start` already emitted with the final ID (live or at
+                // finalize); dispatch only ends the call — no positional side
+                // tables (wire vs filtered index spaces must never mix).
                 emit!(AgentEvent::tool_call_end(id.clone(), args.clone()));
 
                 if !self.tools.iter().any(|t| t.name == *name) {
