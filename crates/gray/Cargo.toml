@@ -25,7 +25,7 @@ gray-supervise = { workspace = true }
 gray-markdown = { workspace = true }
 # Direct path dep: workspace table has no gray-cron entry (workspace Cargo.toml
 # is owned elsewhere); same version as workspace.package.
-gray-cron = { version = "0.1.0", path = "../gray-cron" }
+gray-cron = { version = "0.2.0", path = "../gray-cron" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
