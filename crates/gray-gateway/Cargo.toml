@@ -20,9 +20,7 @@ gray-provider = { workspace = true }
 gray-tools = { workspace = true }
 gray-plugin = { workspace = true }
 gray-supervise = { workspace = true }
-# Direct path dep: workspace table has no gray-cron entry (workspace Cargo.toml
-# is owned elsewhere); same version as workspace.package.
-gray-cron = { version = "0.1.0", path = "../gray-cron" }
+gray-cron = { workspace = true }
 futures = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { workspace = true }
