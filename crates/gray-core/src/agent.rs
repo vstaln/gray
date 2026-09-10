@@ -184,9 +184,10 @@ pub enum ToolBefore {
 }
 
 impl ToolBefore {
-    /// Parse a `tool/before` result. Lenient: unknown shapes fail open
-    /// (pre-v1 behavior) so a confused plugin can't wedge the agent loop.
-    pub fn from_result(v: &serde_json::Value, args: &serde_json::Value) -> Self {
+    /// Parse a `tool/before` result. Strict: only documented verdicts
+    /// authorize or rewrite; anything else denies (a claimed hook's
+    /// confusion must not become permission).
+    pub fn from_result(v: &serde_json::Value) -> Self {
         match v.get("decision").and_then(|d| d.as_str()) {
             Some("deny") => Self::Deny(
                 v.get("reason")
@@ -195,7 +196,10 @@ impl ToolBefore {
                     .unwrap_or("denied by plugin")
                     .to_string(),
             ),
-            Some("modify") => Self::Modify(v.get("args").cloned().unwrap_or_else(|| args.clone())),
+            Some("modify") => match v.get("args") {
+                Some(a) if a.is_object() => Self::Modify(a.clone()),
+                _ => Self::Deny("plugin modify verdict missing object args".to_string()),
+            },
             // A claimed hook's verdict must be explicit: anything but a
             // documented "allow" denies rather than silently authorizing.
             Some("allow") => Self::Allow,
