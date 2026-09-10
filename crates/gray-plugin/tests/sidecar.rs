@@ -87,29 +87,26 @@ async fn unclaimed_hooks_fail_open_without_rpc() {
 
 #[test]
 fn tool_before_parses_deny_modify_and_unknown() {
-    let args = serde_json::json!({"path": "/x"});
     assert_eq!(
-        ToolBefore::from_result(
-            &serde_json::json!({"decision": "deny", "reason": "no"}),
-            &args
-        ),
+        ToolBefore::from_result(&serde_json::json!({"decision": "deny", "reason": "no"})),
         ToolBefore::Deny("no".into())
     );
     assert_eq!(
-        ToolBefore::from_result(
-            &serde_json::json!({"decision": "modify", "args": {"path": "/y"}}),
-            &args
-        ),
+        ToolBefore::from_result(&serde_json::json!({"decision": "modify", "args": {"path": "/y"}})),
         ToolBefore::Modify(serde_json::json!({"path": "/y"}))
     );
-    // Unknown shapes fail open (pre-v1 behavior).
+    // Unknown shapes and arg-less modify fail closed.
     assert_eq!(
-        ToolBefore::from_result(&serde_json::json!({}), &args),
-        ToolBefore::Allow
+        ToolBefore::from_result(&serde_json::json!({})),
+        ToolBefore::Deny("plugin returned an unrecognized policy verdict".into())
     );
     assert_eq!(
-        ToolBefore::from_result(&serde_json::json!({"decision": "bogus"}), &args),
-        ToolBefore::Allow
+        ToolBefore::from_result(&serde_json::json!({"decision": "bogus"})),
+        ToolBefore::Deny("plugin returned an unrecognized policy verdict".into())
+    );
+    assert_eq!(
+        ToolBefore::from_result(&serde_json::json!({"decision": "modify"})),
+        ToolBefore::Deny("plugin modify verdict missing object args".into())
     );
 }
 

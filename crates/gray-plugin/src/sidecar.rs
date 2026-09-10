@@ -397,7 +397,7 @@ impl Plugin for SidecarPlugin {
             .request("tool/before", Some(params), Duration::from_secs(30))
             .await
         {
-            Ok(v) => ToolBefore::from_result(&v, args),
+            Ok(v) => ToolBefore::from_result(&v),
             Err(e) => {
                 log::warn!(target: "gray_plugin", "sidecar tool/before failed: {e}");
                 ToolBefore::Deny("plugin policy unavailable; tool not executed".to_string())
