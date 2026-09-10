@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use super::{MIN_VIEWPORT_H, PANEL_ROWS, Tui, VIEWPORT_H};
+use crate::text_width::display_width;
 
 mod widgets;
 
@@ -99,7 +100,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         std::io::stdout(),
         crossterm::terminal::BeginSynchronizedUpdate
     )?;
-    let _ = tui.terminal.set_viewport_height(desired, screen_size);
+    // Viewport geometry is a precondition for the frame: a swallowed failure
+    // would commit a frame against stale geometry (audit 24.01). Close the
+    // synchronized-update bracket before bailing out.
+    if let Err(e) = tui.terminal.set_viewport_height(desired, screen_size) {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::EndSynchronizedUpdate
+        );
+        return Err(e.into());
+    }
     tui.viewport_h = desired;
 
     let res = tui.terminal.draw(|frame| {
@@ -282,7 +292,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 let is_sel = i == tui.sel;
                 let cmd_str = format!(" /{name} ");
                 let desc_str = format!(" {desc} ");
-                let used_len = cmd_str.chars().count() + desc_str.chars().count();
+                let used_len = display_width(&cmd_str) + display_width(&desc_str);
                 // ponytail: single-char edge arrows, no extra row or layout.
                 let marker = match (
                     i == start && hidden_above > 0,
@@ -293,7 +303,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     (false, true) => "↓",
                     (false, false) => "",
                 };
-                let pad_len = w.saturating_sub(used_len + marker.chars().count());
+                let pad_len = w.saturating_sub(used_len + display_width(marker));
                 let line_bg = if is_sel {
                     Color::Rgb(246, 173, 126)
                 } else {
@@ -452,18 +462,18 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             if let Some((badge, color)) = &perm_badge {
                 v.push(Span::styled(badge.clone(), Style::default().fg(*color)));
             }
-            let badge_len = perm_badge.map(|(b, _)| b.chars().count()).unwrap_or(0);
+            let badge_len = perm_badge.map(|(b, _)| display_width(&b)).unwrap_or(0);
             (v, badge_len)
         };
         let (right_parts, badge_len) = right_parts;
         let right_len = if model_display.is_empty() {
-            effort_display.chars().count() + badge_len
+            display_width(&effort_display) + badge_len
         } else if effort_display.is_empty() {
-            model_display.chars().count() + badge_len
+            display_width(&model_display) + badge_len
         } else {
-            model_display.chars().count() + 3 + effort_display.chars().count() + badge_len
+            display_width(&model_display) + 3 + display_width(&effort_display) + badge_len
         };
-        let left_len = 1 + ctx_display.chars().count() + 3 + cache_display.chars().count();
+        let left_len = 1 + display_width(&ctx_display) + 3 + display_width(&cache_display);
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
@@ -511,11 +521,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             frame.set_cursor_position(Position::new(cur_x, cur_y));
         }
     });
-    let _ = crossterm::execute!(
+    let ended = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EndSynchronizedUpdate
     );
     res?;
+    ended?;
     Ok(())
 }
 

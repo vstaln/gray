@@ -1,6 +1,7 @@
 //! Question panel rendering for the inline viewport (split from `question`).
 
 use super::*;
+use crate::text_width::{display_width, fit_char_count};
 
 /// Builds the panel lines for the inline viewport (draw side). Rows are
 /// capped at `max_rows`; the option window scrolls around the selection.
@@ -184,7 +185,7 @@ pub(crate) fn option_rows(
         ])];
     };
     // wrap_plain reserves 4 for padding; desc starts after "head — ".
-    let desc_w = w.saturating_sub(head.chars().count() + 3 + 4).max(10);
+    let desc_w = w.saturating_sub(display_width(&head) + 3 + 4).max(10);
     let chunks = wrap_plain(d, desc_w + 4);
     let mut rows = vec![Line::from(vec![
         Span::styled(format!(" {prefix} {num}. "), accent),
@@ -194,7 +195,7 @@ pub(crate) fn option_rows(
             dim_style,
         ),
     ])];
-    let indent = " ".repeat(head.chars().count() + 3);
+    let indent = " ".repeat(display_width(&head) + 3);
     for c in chunks.iter().skip(1) {
         rows.push(Line::from(Span::styled(format!("{indent}{c}"), dim_style)));
     }
@@ -284,7 +285,7 @@ pub(crate) fn wrap_plain(s: &str, w: usize) -> Vec<String> {
             let mut rows = Vec::new();
             let mut start = 0usize;
             while start < chars.len() {
-                let mut end = (start + content_w).min(chars.len());
+                let mut end = start + fit_char_count(&chars[start..], content_w);
                 if end < chars.len()
                     && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
                     && sp > 0

@@ -9,6 +9,8 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use gray_markdown::HyperlinkTarget;
 
+use crate::text_width::display_width;
+
 use super::Tui;
 
 mod boxes;
@@ -113,7 +115,7 @@ impl Tui {
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
             self.thinking_lines.push(trimmed.to_string());
         }
-        if self.pending.chars().count() >= max_w {
+        if display_width(&self.pending) >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
@@ -315,6 +317,13 @@ mod tests {
     }
 
     #[test]
+    fn word_flush_cut_budgets_cells_not_chars() {
+        let chars: Vec<char> = "界界界界".chars().collect();
+        // 2×2 cells fit; a third wide char would overflow the 5-cell budget.
+        assert_eq!(word_flush_cut(&chars, 5), 2);
+    }
+
+    #[test]
     fn thought_duration_matches_opencode_locale() {
         assert_eq!(fmt_thought_duration(Duration::from_millis(198)), "198ms");
         assert_eq!(fmt_thought_duration(Duration::from_millis(5800)), "5.8s");
@@ -349,6 +358,27 @@ mod tests {
                 b.ends_with(' ') || b.chars().count() == max_w,
                 "mid-word break: {b:?}"
             );
+        }
+    }
+
+    #[test]
+    fn user_prompt_wraps_wide_chars_by_cells() {
+        let text = "界界界界界";
+        let lines = format_user_prompt_lines(text, &[], 6); // 2-cell budget
+        let bodies: Vec<Span<'static>> = lines
+            .iter()
+            .filter_map(|l| l.spans.get(1).cloned())
+            .collect();
+        assert_eq!(
+            bodies
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>(),
+            text
+        );
+        assert!(bodies.len() > 1);
+        for b in &bodies {
+            assert!(b.width() <= 2, "row overflows: {:?}", b.content);
         }
     }
 
