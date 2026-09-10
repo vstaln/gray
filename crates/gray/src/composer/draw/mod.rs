@@ -169,7 +169,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             && !question_active
         {
             let label_text = format!(" ⬡ {label}\u{2026}");
-            let mut spans = shimmer_spans(&label_text, started.elapsed(), tui.truecolor);
+            let mut spans = shimmer_spans(&label_text, started.elapsed());
             let elapsed = started.elapsed();
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
             let tok_suffix = if tui.is_task_running {

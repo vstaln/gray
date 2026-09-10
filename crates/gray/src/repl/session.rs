@@ -196,26 +196,7 @@ pub(crate) async fn persist_turn_messages(
     latest_usage: Option<gray_core::event::Usage>,
     duration_ms: Option<u64>,
 ) {
-    if session_state.is_none()
-        && let Some(root) = default_root()
-    {
-        let store = JsonlSessionStore::new(root);
-        let session_id = SessionId::generate();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        let meta = SessionMeta::new(
-            session_id.clone(),
-            timestamp,
-            cwd.to_path_buf(),
-            config.model.clone().unwrap_or_else(|| "unset".into()),
-        );
-        if let Err(e) = store.create(meta).await {
-            log::warn!(target: "gray_session", "session create failed: {e}");
-        }
-        *session_state = Some(SessionState { store, session_id });
-    }
+    ensure_session_state(session_state, config, cwd).await;
     if let Some(state) = session_state
         && agent.messages().len() > initial_count
     {

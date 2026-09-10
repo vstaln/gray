@@ -12,8 +12,6 @@
 //! panel renders in the fixed inline viewport instead of a dynamic bottom pane.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -101,10 +99,7 @@ mod tests {
             })
             .collect();
         let (tx, rx) = oneshot::channel();
-        (
-            QuestionSession::new(qs, true, tx, Arc::new(AtomicBool::new(false))),
-            rx,
-        )
+        (QuestionSession::new(qs, true, tx), rx)
     }
 
     #[test]
@@ -310,12 +305,7 @@ mod tests {
         ));
         // blocking never auto-resolves
         let (tx, _rx2) = oneshot::channel::<Vec<UserAnswer>>();
-        let mut nb = QuestionSession::new(
-            qb.questions.clone(),
-            false,
-            tx,
-            Arc::new(AtomicBool::new(false)),
-        );
+        let mut nb = QuestionSession::new(qb.questions.clone(), false, tx);
         nb.request_started_at = Instant::now() - Duration::from_secs(121);
         match nb.tick(Instant::now()) {
             TickOutcome::AutoResolved {
@@ -338,7 +328,6 @@ mod tests {
             questions: q.questions.clone(),
             blocking: false,
             tx: tx2,
-            resolved: Arc::new(AtomicBool::new(false)),
         });
         let mut ta = TextArea::new();
         let out = q.on_key(KeyCode::Char('1'), KeyModifiers::NONE, &mut ta);
