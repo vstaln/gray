@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AuthenticateRequest, CancelNotification, InitializeRequest, LoadSessionRequest,
+    AuthenticateRequest, CancelNotification, InitializeRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionId, SessionNotification,
 };
@@ -158,14 +158,19 @@ fn client_builder(
     };
     let cwd_read = cwd.clone();
     let cwd_write = cwd.clone();
+    // One mapper per connection: tool result_sent state must persist across
+    // notifications, or results map twice / get lost.
+    let mapper = std::sync::Arc::new(tokio::sync::Mutex::new(EventMapper::new()));
+    let mapper_for_notifications = mapper.clone();
     Client
         .builder()
         .name("gray")
         .on_receive_notification(
             move |n: SessionNotification, _cx| {
                 let updates = updates.clone();
+                let mapper = mapper_for_notifications.clone();
                 async move {
-                    let mut mapper = EventMapper::new();
+                    let mut mapper = mapper.lock().await;
                     for ev in mapper.map_update(&n.update) {
                         let _ = updates.send(ev);
                     }
@@ -276,19 +281,21 @@ async fn open_session(
     if let Some(resume_id) = resume.as_deref()
         && init.agent_capabilities.load_session
     {
-        let req = LoadSessionRequest::new(SessionId::new(resume_id), cwd.clone());
-        if conn.send_request(req).block_task().await.is_ok() {
-            let session = conn
-                .build_session(cwd)
-                .block_task()
-                .start_session()
-                .await
-                .map_err(|e| AcpError::Request {
-                    method: "session/load",
-                    message: e.to_string(),
-                })?;
-            let id = session.session_id().0.to_string();
-            return Ok((session, id));
+        // Drive the LOADED session: a bare session/new here would orphan
+        // the restored history and start blank.
+        match conn
+            .load_session(SessionId::new(resume_id), cwd.clone())
+            .block_task()
+            .start_session()
+            .await
+        {
+            Ok(restored) => {
+                let id = restored.session().session_id().0.to_string();
+                return Ok((restored.into_session(), id));
+            }
+            Err(e) => {
+                log::warn!(target: "gray_acp", "session/load failed, starting new session: {e}");
+            }
         }
     }
     match conn
@@ -440,7 +447,7 @@ impl AcpSession {
     }
 
     pub fn agent_key(&self) -> &str {
-        self.spec.key
+        &self.spec.key
     }
 
     pub fn agent_display(&self) -> &str {
