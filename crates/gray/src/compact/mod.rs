@@ -10,8 +10,6 @@ use gray_core::error::CoreError;
 use gray_core::event::Usage;
 use gray_core::message::{ContentBlock, Message, Role};
 
-use crate::config::Config;
-
 pub const SUMMARIZATION_SYSTEM_PROMPT: &str = r#"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a continuation summary for another LLM that will resume the task. Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary."#;
@@ -153,12 +151,7 @@ pub use policy::{
 /// `[summary_user, summary_assistant]` pair. YAGNI: no `findCutPoint` /
 /// `prepareCompaction` tail-keeping — Task 4 will add threshold/overflow
 /// callers; this is just the shared summarization primitive.
-pub async fn auto_compact_if_needed(
-    agent: &mut Agent,
-    _config: &Config,
-    _last_usage: Option<Usage>,
-    _reason: &str,
-) -> Result<bool, CoreError> {
+pub async fn auto_compact_if_needed(agent: &mut Agent) -> Result<bool, CoreError> {
     if !is_auto_compact_enabled() {
         return Ok(false);
     }
@@ -536,7 +529,6 @@ mod tests {
     async fn auto_compact_triggers_on_threshold() {
         let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
         let _home = TempGrayHome::set();
-        use crate::config::Config;
         use async_trait::async_trait;
         use futures::stream::BoxStream;
         use gray_core::agent::{Agent, Provider, ToolContext, ToolExecutor};
@@ -592,18 +584,7 @@ mod tests {
             Message::assistant("hi there ".repeat(500)),
             Message::user("more context ".repeat(500)),
         ]);
-        let config = Config {
-            model: None,
-            base_url: "https://example.com".to_string(),
-            api_key: None,
-            thinking_effort: None,
-            show_reasoning: None,
-            context_window: None,
-            context_reserve: None,
-            context_keep: None,
-            permissions: None,
-        };
-        let compacted = auto_compact_if_needed(&mut agent, &config, None, "threshold")
+        let compacted = auto_compact_if_needed(&mut agent)
             .await
             .expect("compact should succeed");
         crate::setup::set_user_keep_recent_tokens(None);
@@ -898,7 +879,6 @@ mod tests {
     mod switch_tests {
         #![allow(clippy::await_holding_lock)] // serial guard must cover each whole test (global switch + env)
         use super::*;
-        use crate::config::Config;
         use async_trait::async_trait;
         use futures::stream::BoxStream;
         use gray_core::agent::{Agent, Provider, ToolContext, ToolExecutor};
@@ -950,27 +930,13 @@ mod tests {
             ])
         }
 
-        fn config() -> Config {
-            Config {
-                model: None,
-                base_url: "https://example.com".to_string(),
-                api_key: None,
-                thinking_effort: None,
-                show_reasoning: None,
-                context_window: None,
-                context_reserve: None,
-                context_keep: None,
-                permissions: None,
-            }
-        }
-
         #[tokio::test]
         async fn auto_compact_disabled_is_noop() {
             let _serial = COMPACT_SWITCH_SERIAL.lock().unwrap();
             let _guard = EnableGuard;
             set_auto_compact_enabled(false);
             let mut ag = agent();
-            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
+            let out = auto_compact_if_needed(&mut ag)
                 .await
                 .expect("must not error when disabled");
             assert!(!out);
@@ -989,7 +955,7 @@ mod tests {
             unsafe { std::env::set_var("GRAY_NO_AUTO_COMPACT", "1") };
             init_auto_compact_from_env();
             let mut ag = agent();
-            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
+            let out = auto_compact_if_needed(&mut ag)
                 .await
                 .expect("must not error when disabled");
             assert!(!out);
@@ -1016,7 +982,7 @@ mod tests {
             // everything and the shrink invariant would (correctly) refuse.
             crate::setup::set_user_keep_recent_tokens(Some(0));
             let mut ag = agent();
-            let out = auto_compact_if_needed(&mut ag, &config(), None, "threshold")
+            let out = auto_compact_if_needed(&mut ag)
                 .await
                 .expect("compact should succeed");
             crate::setup::set_user_keep_recent_tokens(None);

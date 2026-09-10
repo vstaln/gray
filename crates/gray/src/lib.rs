@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn reload_path_keeps_session_cache_shard() {
-        // Steady-state builds (prompt_turn/empty_turn) and the reload path
+        // Steady-state builds (prompt_turn) and the reload path
         // must resolve the identical key for one session id; the pre-fix
         // reload passed None, rotating to the fallback shard (~0% hits).
         let sid = "cc5d154d-4c24-42ee-b8a8-6a5735bdcfc9";

@@ -12,7 +12,7 @@ use crate::config::Platform;
 /// Connection state of one platform, as tracked for the status snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlatformConnState {
-    Connecting { stage: &'static str },
+    Connecting,
     Connected { identity: Option<String> },
     Failed(String),
 }
@@ -30,14 +30,7 @@ impl GatewayStatusBoard {
     pub fn new(platforms: &[Platform]) -> Self {
         let inner = platforms
             .iter()
-            .map(|p| {
-                (
-                    *p,
-                    PlatformConnState::Connecting {
-                        stage: "connecting",
-                    },
-                )
-            })
+            .map(|p| (*p, PlatformConnState::Connecting))
             .collect();
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -74,7 +67,7 @@ impl GatewayStatusBoard {
             .map(|(p, s)| {
                 let v = match &s {
                     PlatformConnState::Connected { .. } => "connected",
-                    PlatformConnState::Connecting { .. } => "connecting",
+                    PlatformConnState::Connecting => "connecting",
                     PlatformConnState::Failed(_) => "failed",
                 };
                 (p.to_string(), v.to_string())
@@ -128,7 +121,7 @@ mod tests {
         assert_eq!(snap[1].0, Platform::Discord);
         assert!(
             snap.iter()
-                .all(|(_, s)| matches!(s, PlatformConnState::Connecting { .. }))
+                .all(|(_, s)| matches!(s, PlatformConnState::Connecting))
         );
 
         b.mark_connected(Platform::Discord, Some("GrayBot".into()));
@@ -164,19 +157,5 @@ mod tests {
         );
         std::fs::write(dir.path().join("gateway.yaml"), "not: [valid").unwrap();
         assert!(!gateway_config_parses(dir.path()));
-    }
-
-    #[test]
-    fn connecting_carries_default_stage() {
-        let b = GatewayStatusBoard::new(&[Platform::Discord]);
-        assert_eq!(
-            b.snapshot(),
-            vec![(
-                Platform::Discord,
-                PlatformConnState::Connecting {
-                    stage: "connecting"
-                }
-            )]
-        );
     }
 }
