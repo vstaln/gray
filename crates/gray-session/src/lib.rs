@@ -144,6 +144,10 @@ pub enum SessionError {
     #[error("session {0} not found")]
     NotFound(SessionId),
 
+    /// A session with this ID already exists (create never truncates).
+    #[error("session {0} already exists")]
+    AlreadyExists(SessionId),
+
     /// A corrupt or malformed entry was encountered in a session file.
     #[error("corrupt entry at {}:{}", path.display(), line)]
     Corrupt {
@@ -356,18 +360,26 @@ impl JsonlSessionStore {
 
         let json = serde_json::to_string(&header)?;
         let line = format!("{json}\n");
-        let mut file = tokio::fs::OpenOptions::new()
+        // create_new: an existing ID is AlreadyExists, never a silent
+        // truncation of live history.
+        match tokio::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(&path)
-            .await?;
-        use tokio::io::AsyncWriteExt;
-        file.write_all(line.as_bytes()).await?;
-        file.flush().await?;
-        file.sync_all().await?;
-
-        Ok(id)
+            .await
+        {
+            Ok(mut file) => {
+                use tokio::io::AsyncWriteExt;
+                file.write_all(line.as_bytes()).await?;
+                file.flush().await?;
+                file.sync_all().await?;
+                Ok(id)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(SessionError::AlreadyExists(id))
+            }
+            Err(e) => Err(SessionError::Io(e)),
+        }
     }
 
     pub async fn append(&self, id: &SessionId, msg: &Message) -> Result<SessionEntryId> {
@@ -406,15 +418,31 @@ impl JsonlSessionStore {
         if lines.next().is_none() {
             return Err(SessionError::NotFound(id.clone()));
         }
+        // Refuse a damaged tail instead of appending past it: without the
+        // trailing newline the last record is torn, and appending would
+        // merge with it (or strand it as interior corruption). Repair via
+        // the quarantine flow, then append.
+        if !content.ends_with('\n') {
+            return Err(SessionError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session has an incomplete tail; repair before appending",
+            )));
+        }
 
         let mut max_id: Option<u64> = None;
         let mut last_id: Option<u64> = None;
 
-        for line in lines {
-            if let Ok(entry) = serde_json::from_str::<SessionEntry>(line) {
-                max_id = Some(max_id.map_or(entry.entry_id, |m| m.max(entry.entry_id)));
-                last_id = Some(entry.entry_id);
-            }
+        for (n, line) in lines.enumerate() {
+            let entry = serde_json::from_str::<SessionEntry>(line).map_err(|source| {
+                SessionError::Corrupt {
+                    path: path.clone(),
+                    // +2: header line + 1-based.
+                    line: n + 2,
+                    source,
+                }
+            })?;
+            max_id = Some(max_id.map_or(entry.entry_id, |m| m.max(entry.entry_id)));
+            last_id = Some(entry.entry_id);
         }
 
         let next_id = max_id.map_or(0, |m| m + 1);
@@ -664,7 +692,33 @@ impl JsonlSessionStore {
         let mut out = serde_json::to_string(&header)?;
         out.push('\n');
         out.push_str(rest);
-        tokio::fs::write(&path, out).await?;
+        // Same-directory temp + rename: never truncate the live transcript
+        // in place. Mode 0600 at creation on unix.
+        let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+        let tmp_name = format!(".gray-title-{}.tmp", uuid::Uuid::new_v4());
+        let tmp = match parent {
+            Some(dir) => dir.join(tmp_name),
+            None => PathBuf::from(tmp_name),
+        };
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut tmp_file = options.open(&tmp)?;
+        use std::io::Write as _;
+        let result = (|| -> std::io::Result<()> {
+            tmp_file.write_all(out.as_bytes())?;
+            tmp_file.sync_all()?;
+            std::fs::rename(&tmp, &path)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result?;
         Ok(true)
     }
 
@@ -710,6 +764,61 @@ fn now_millis() -> u64 {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn create_never_truncates_existing_history() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = SessionId::new("s1");
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+            .await
+            .unwrap();
+        store.append(&id, &Message::user("keep me")).await.unwrap();
+        let err = store
+            .create(SessionMeta::new(id.clone(), 2, "/tmp", "t"))
+            .await
+            .expect_err("double create must fail, not wipe");
+        assert!(matches!(err, SessionError::AlreadyExists(_)));
+        let (_, entries) = store.load(&id).await.unwrap();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn append_refuses_damaged_tail() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = SessionId::new("s1");
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+            .await
+            .unwrap();
+        store.append(&id, &Message::user("one")).await.unwrap();
+        let path = store.session_path(&id).unwrap();
+        let mut raw = tokio::fs::read_to_string(&path).await.unwrap();
+        raw.push_str("{torn");
+        tokio::fs::write(&path, raw).await.unwrap();
+        assert!(store.append(&id, &Message::user("two")).await.is_err());
+        // History untouched by the refused append.
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(raw.ends_with("{torn"));
+    }
+
+    #[tokio::test]
+    async fn title_roundtrip_survives_atomic_replace() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = SessionId::new("s1");
+        store
+            .create(SessionMeta::new(id.clone(), 1, "/tmp", "t"))
+            .await
+            .unwrap();
+        store.append(&id, &Message::user("hi")).await.unwrap();
+        assert!(store.set_user_title(&id, "my title").await.is_ok());
+        let (meta, entries) = store.load(&id).await.unwrap();
+        assert_eq!(meta.title.as_deref(), Some("my title"));
+        assert_eq!(entries.len(), 1);
+    }
 
     #[tokio::test]
     async fn traversal_ids_rejected_at_storage_boundary() {
