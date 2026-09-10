@@ -76,35 +76,6 @@ pub fn disabled_sidecar_argvs(user: &LockFile, project: &LockFile) -> Vec<Vec<St
     out
 }
 
-/// Load the user lock + project overlay for boot filtering. Missing files
-/// are empty (not an error); corrupt files yield one warning each (paths
-/// only, never argv/URLs). `home` is `None` when no home resolves — the
-/// user scope is then skipped but the project overlay still applies.
-pub fn load_disabled_sidecar_argvs(
-    home: Option<&Path>,
-    cwd: &Path,
-) -> (Vec<Vec<String>>, Vec<String>) {
-    let mut warnings = Vec::new();
-    let mut load = |path: PathBuf| -> LockFile {
-        match LockFile::load(&path) {
-            Ok(lf) => lf,
-            Err(e) => {
-                warnings.push(format!("cannot load {} ({e:#}); ignoring", path.display()));
-                LockFile {
-                    schema: 1,
-                    plugins: BTreeMap::new(),
-                }
-            }
-        }
-    };
-    let user = home.map(|h| load(lock_path(h))).unwrap_or(LockFile {
-        schema: 1,
-        plugins: BTreeMap::new(),
-    });
-    let project = load(project_lock_path(cwd));
-    (disabled_sidecar_argvs(&user, &project), warnings)
-}
-
 impl LockFile {
     fn empty() -> Self {
         Self {

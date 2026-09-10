@@ -1,9 +1,7 @@
 //! `gray-pkg`: plugin package management — index client, fetch, verify.
 //!
 //! Networking lives here, never in `gray-plugin` (protocol only).
-//! Ecosystem adapters land in Task 2.3.
 
-pub mod adapter;
 pub mod errors;
 pub mod fetch;
 pub mod index;

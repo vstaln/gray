@@ -25,10 +25,6 @@ pub fn index_url() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Index {
     #[serde(default)]
-    pub schema: u32,
-    #[serde(default)]
-    pub generated: String,
-    #[serde(default)]
     pub plugins: BTreeMap<String, Entry>,
 }
 
@@ -39,13 +35,7 @@ pub struct Entry {
     pub source: Source,
     pub hash: HashSpec,
     #[serde(default)]
-    pub caps: Vec<String>,
-    #[serde(default)]
-    pub adapter_min: String,
-    #[serde(default)]
     pub scope: String,
-    #[serde(default)]
-    pub requires: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,8 +43,6 @@ pub struct Source {
     #[serde(rename = "type")]
     pub type_: String,
     pub url: String,
-    #[serde(default)]
-    pub subdir: Option<String>,
 }
 
 /// Index hash: either `"sha256:<hex>"` or a per-target map.
@@ -162,8 +150,6 @@ mod tests {
     #[test]
     fn miss_error_is_exact() {
         let index = Index {
-            schema: 1,
-            generated: String::new(),
             plugins: BTreeMap::new(),
         };
         let err = lookup(&index, "foo").unwrap_err().to_string();
