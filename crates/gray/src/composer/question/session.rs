@@ -39,14 +39,12 @@ pub(crate) struct QueuedRequest {
     pub questions: Vec<UserQuestion>,
     pub blocking: bool,
     pub tx: oneshot::Sender<Vec<UserAnswer>>,
-    pub resolved: Arc<AtomicBool>,
 }
 
 pub(crate) struct QuestionSession {
     pub questions: Vec<UserQuestion>,
     pub blocking: bool,
     current_tx: Option<oneshot::Sender<Vec<UserAnswer>>>,
-    current_resolved: Arc<AtomicBool>,
     pub queue: VecDeque<QueuedRequest>,
     pub(crate) answers: Vec<AnswerState>,
     pub(crate) current_idx: usize,
@@ -107,7 +105,6 @@ impl QuestionSession {
         questions: Vec<UserQuestion>,
         blocking: bool,
         tx: oneshot::Sender<Vec<UserAnswer>>,
-        resolved: Arc<AtomicBool>,
     ) -> Self {
         Self {
             answers: init_answers(&questions),
@@ -120,7 +117,6 @@ impl QuestionSession {
             questions,
             blocking,
             current_tx: Some(tx),
-            current_resolved: resolved,
             queue: VecDeque::new(),
         }
     }
@@ -158,8 +154,10 @@ impl QuestionSession {
         q.options.len() + usize::from(q.is_other && !q.options.is_empty())
     }
 
-    pub(crate) fn option_label_for_index(&self, idx: usize) -> Option<String> {
-        let q = self.current_question();
+    /// Option label for question `q_idx`, option index `idx` (includes the
+    /// auto-added "Other" row — codex other_option_enabled).
+    pub(crate) fn option_label_for_index(&self, q_idx: usize, idx: usize) -> Option<String> {
+        let q = &self.questions[q_idx];
         if idx < q.options.len() {
             Some(q.options[idx].label.clone())
         } else if idx == q.options.len() && q.is_other && !q.options.is_empty() {
@@ -238,7 +236,6 @@ impl QuestionSession {
         let mut answers = answers;
         loop {
             if let Some(tx) = self.current_tx.take() {
-                self.current_resolved.store(true, Ordering::Relaxed);
                 let _ = tx.send(answers);
             }
             let Some(next) = self.queue.pop_front() else {
@@ -248,7 +245,6 @@ impl QuestionSession {
                 // Degenerate request (model asked zero questions): resolve it
                 // empty at once so an empty session can never exist —
                 // current_question() indexes questions[current_idx].
-                next.resolved.store(true, Ordering::Relaxed);
                 let _ = next.tx.send(Vec::new());
                 answers = Vec::new();
                 continue;
@@ -256,7 +252,6 @@ impl QuestionSession {
             self.questions = next.questions;
             self.blocking = next.blocking;
             self.current_tx = Some(next.tx);
-            self.current_resolved = next.resolved;
             self.answers = init_answers(&self.questions);
             self.current_idx = 0;
             self.focus = Focus::Options;
@@ -352,7 +347,7 @@ impl QuestionSession {
             let mut list = Vec::new();
             if a.answer_committed
                 && let Some(sel) = a.selected_idx
-                && let Some(label) = self.option_label_for_index_for(idx, sel)
+                && let Some(label) = self.option_label_for_index(idx, sel)
             {
                 list.push(label);
             }
@@ -373,17 +368,6 @@ impl QuestionSession {
             questions: self.questions.clone(),
             blocking: self.blocking,
             session_done,
-        }
-    }
-
-    fn option_label_for_index_for(&self, idx: usize, sel: usize) -> Option<String> {
-        let q = &self.questions[idx];
-        if sel < q.options.len() {
-            Some(q.options[sel].label.clone())
-        } else if sel == q.options.len() && q.is_other && !q.options.is_empty() {
-            Some(OTHER_OPTION_LABEL.to_string())
-        } else {
-            None
         }
     }
 
@@ -624,12 +608,10 @@ pub(crate) fn attach_request(
     blocking: bool,
     tx: oneshot::Sender<Vec<UserAnswer>>,
 ) {
-    let resolved = Arc::new(AtomicBool::new(false));
     if questions.is_empty() {
         // Degenerate request (model asked zero questions): resolve empty at
         // once. A zero-question session would panic on the next draw —
         // current_question() indexes questions[current_idx].
-        resolved.store(true, Ordering::Relaxed);
         let _ = tx.send(Vec::new());
         return;
     }
@@ -638,7 +620,6 @@ pub(crate) fn attach_request(
             questions,
             blocking,
             tx,
-            resolved,
         });
         let _ = t.draw();
         return;
@@ -646,7 +627,7 @@ pub(crate) fn attach_request(
     t.matches.clear();
     t.sel = 0;
     t.textarea.set_text("");
-    t.active_question = Some(QuestionSession::new(questions, blocking, tx, resolved));
+    t.active_question = Some(QuestionSession::new(questions, blocking, tx));
     // Breathing room: a true blank transcript row above the panel so its gray
     // top edge never fuses with the tool echo above it. No-op when the
     // transcript already ends blank (e.g. queued activation after a summary).
@@ -706,7 +687,7 @@ fn finish_resolution(
     blocking: bool,
     session_done: bool,
 ) {
-    push_result_summary(t, &questions, &answers, answers.is_empty() && !blocking);
+    push_result_summary(t, &questions, &answers);
     if !blocking && answers.iter().any(|a| !a.answers.is_empty()) {
         t.pending_question_answers
             .push(format_answers_text(&questions, &answers));
@@ -766,12 +747,7 @@ pub(crate) fn result_summary_lines(
     lines
 }
 
-fn push_result_summary(
-    t: &mut Tui,
-    questions: &[UserQuestion],
-    answers: &[UserAnswer],
-    _auto: bool,
-) {
+fn push_result_summary(t: &mut Tui, questions: &[UserQuestion], answers: &[UserAnswer]) {
     let lines = result_summary_lines(questions, answers);
     if !lines.is_empty() {
         t.ensure_gap(1);
@@ -803,7 +779,7 @@ mod tests {
 
     fn empty_session() -> QuestionSession {
         let (tx, _rx) = oneshot::channel();
-        QuestionSession::new(Vec::new(), true, tx, Arc::new(AtomicBool::new(false)))
+        QuestionSession::new(Vec::new(), true, tx)
     }
 
     // UNRUN (cargo test banned under X): run in TTY/CI.
@@ -831,26 +807,18 @@ mod tests {
     #[test]
     fn empty_queued_request_resolves_without_session() {
         let (tx0, _rx0) = oneshot::channel();
-        let mut q = QuestionSession::new(
-            vec![one_question()],
-            true,
-            tx0,
-            Arc::new(AtomicBool::new(false)),
-        );
+        let mut q = QuestionSession::new(vec![one_question()], true, tx0);
         let (tx1, mut rx1) = oneshot::channel();
-        let resolved1 = Arc::new(AtomicBool::new(false));
         q.queue.push_back(QueuedRequest {
             questions: Vec::new(),
             blocking: true,
             tx: tx1,
-            resolved: resolved1.clone(),
         });
         let mut ta = TextArea::new();
         match q.on_key(KeyCode::Enter, KeyModifiers::NONE, &mut ta) {
             QuestionOutcome::Resolved { session_done, .. } => assert!(session_done),
             other => panic!("expected resolution, got {other:?}"),
         }
-        assert!(resolved1.load(Ordering::Relaxed));
         match rx1.try_recv() {
             Ok(answers) => assert!(answers.is_empty()),
             Err(_) => panic!("empty queued request must resolve immediately"),
@@ -862,7 +830,7 @@ mod tests {
     #[test]
     fn empty_session_tick_auto_resolves() {
         let (tx, _rx) = oneshot::channel();
-        let mut q = QuestionSession::new(Vec::new(), false, tx, Arc::new(AtomicBool::new(false)));
+        let mut q = QuestionSession::new(Vec::new(), false, tx);
         let late = q.request_started_at + Duration::from_secs(121);
         assert!(matches!(
             q.tick(late),

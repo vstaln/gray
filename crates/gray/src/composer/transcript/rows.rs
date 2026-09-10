@@ -18,23 +18,6 @@ pub(crate) fn strip_ansi(s: &str) -> String {
     crate::tui::strip_ansi(s)
 }
 
-/// Redact secrets from slash-command echo cards: `/gateway connect <platform> <token>`
-/// renders as `/gateway connect <platform> ••••`, same for `/gateway pairing approve`
-/// codes. Everything else passes through untouched. Execution always uses the raw
-/// string — only the visible card is redacted.
-pub fn redact_command_echo(text: &str) -> String {
-    let mut it = text.split_whitespace();
-    match (it.next(), it.next(), it.next(), it.next(), it.next()) {
-        (Some("/gateway"), Some("connect"), Some(plat), Some(_), _) => {
-            format!("/gateway connect {plat} ••••")
-        }
-        (Some("/gateway"), Some("pairing"), Some("approve"), Some(plat), Some(_)) => {
-            format!("/gateway pairing approve {plat} ••••")
-        }
-        _ => text.to_string(),
-    }
-}
-
 fn slice_line_spans<'a>(
     original: &'a Line<'a>,
     span_bounds: &[(Range<usize>, Style)],

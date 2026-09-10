@@ -271,13 +271,7 @@ pub(crate) async fn dispatch_command(
                 Ok(false) => {
                     if let Some((shared, _)) = tui {
                         let mut t = shared.lock().expect("tui lock");
-                        t.textarea.set_text("");
-                        t.matches.clear();
-                        t.sel = 0;
-                        t.history_idx = None;
-                        t.draft.clear();
-                        t.attachments.clear();
-                        t.pending_pastes.clear();
+                        t.clear_draft();
                         // Dismissed picker leaves the slash card with no
                         // feedback: gap so it doesn't jam the input box.
                         t.ensure_gap(1);

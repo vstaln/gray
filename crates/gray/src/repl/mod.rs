@@ -87,7 +87,6 @@ mod acp_cmds;
 pub mod attachments;
 pub mod commands;
 mod dispatch;
-mod empty_turn;
 pub mod format;
 mod handlers;
 mod key_watcher;
@@ -721,21 +720,27 @@ pub async fn run_repl_mode(
 
         match cmd {
             ReplCommand::Empty => {
-                empty_turn::run_empty_turn(
-                    &mut pending_images,
-                    &mut agent,
-                    config,
-                    &cwd,
-                    &tui,
-                    interactive,
-                    &mut session_state,
-                    &mut session_totals,
-                    &mut pending_history,
-                    &mut unconfigured,
-                    &question_bridge,
-                    &approval_gate,
-                )
-                .await?;
+                // Bare Enter (no images) is a no-op. An image-only submit runs
+                // the normal prompt turn with empty text.
+                if !pending_images.is_empty() {
+                    prompt_turn::run_prompt_turn(
+                        String::new(),
+                        &mut pending_images,
+                        &mut agent,
+                        config,
+                        &cwd,
+                        &tui,
+                        interactive,
+                        &mut session_state,
+                        &mut session_totals,
+                        &mut pending_command,
+                        &mut pending_history,
+                        &mut unconfigured,
+                        &question_bridge,
+                        &approval_gate,
+                    )
+                    .await?;
+                }
             }
             ReplCommand::Prompt(prompt_text) => {
                 #[cfg(feature = "acp")]

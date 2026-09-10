@@ -37,7 +37,7 @@ pub(crate) fn panel_lines(
         ];
         for (i, (label, desc)) in rows.iter().enumerate() {
             let prefix = if i == sel { icon("arrow") } else { " " };
-            lines.push(option_row(prefix, i + 1, label, Some(desc), i == sel));
+            lines.extend(option_rows(prefix, i + 1, label, Some(desc), i == sel, w));
         }
         lines.push(Line::from("").style(bg_style));
         return lines;
@@ -107,7 +107,9 @@ pub(crate) fn panel_lines(
     for i in start..len.min(start + visible) {
         let is_cursor = i == cursor;
         let prefix = if is_cursor { icon("arrow") } else { " " };
-        let label = q.option_label_for_index(i).unwrap_or_default();
+        let label = q
+            .option_label_for_index(q.current_idx, i)
+            .unwrap_or_default();
         let desc = if i < q.current_question().options.len() {
             Some(q.current_question().options[i].description.clone())
         } else {
@@ -200,33 +202,6 @@ pub(crate) fn option_rows(
         rows.push(Line::from(Span::styled(format!("{indent}{c}"), dim_style)));
     }
     rows
-}
-
-fn option_row(
-    prefix: &str,
-    num: usize,
-    label: &str,
-    desc: Option<&str>,
-    selected: bool,
-) -> Line<'static> {
-    let mut spans = vec![
-        Span::styled(
-            format!(" {prefix} {num}. "),
-            Style::default()
-                .fg(if selected { ACCENT } else { DIM })
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            label.to_string(),
-            Style::default()
-                .fg(if selected { ACCENT } else { TEXT })
-                .add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if let Some(d) = desc {
-        spans.push(Span::styled(format!(" — {d}"), Style::default().fg(DIM)));
-    }
-    Line::from(spans)
 }
 
 fn tips_line(q: &QuestionSession) -> Line<'static> {

@@ -13,17 +13,6 @@ impl Tui {
         let _ = std::io::stdout().flush();
     }
 
-    /// Tool box with no trailing gap: the card hugs the input box. Used for
-    /// the gateway boot card (its final state is committed once, in one message).
-    pub fn push_tool_box_no_gap(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
-        self.insert_tool_box(header, body);
-        if self.transcript.len() > 1000 {
-            self.transcript.drain(0..100);
-        }
-        cap_history_entries(&mut self.history_entries);
-        let _ = std::io::stdout().flush();
-    }
-
     fn insert_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.ensure_gap(1);
         let w = self.width().max(10);
@@ -41,10 +30,6 @@ impl Tui {
         self.transcript.extend(box_lines);
     }
 
-    pub fn push_line(&mut self, line: String) {
-        self.push_line_styled(line, Style::default());
-    }
-
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
         let l = Line::from(vec![Span::styled(line, style)]);
         self.push_styled_lines_with_hyperlinks(vec![l], &[], 0);
@@ -52,10 +37,6 @@ impl Tui {
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
-    }
-
-    pub fn push_styled_lines(&mut self, lines: Vec<Line<'static>>) {
-        self.push_styled_lines_with_hyperlinks(lines, &[], 0);
     }
 
     pub(crate) fn render_and_insert_styled_lines(
