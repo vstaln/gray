@@ -362,17 +362,9 @@ fn truncate_text_to_budget(text: &str, max_tokens: usize) -> String {
 
 fn split_head_tail(s: &str, usable: usize) -> (&str, &str) {
     let right = usable - usable / 2;
-    let mut head_end = (usable / 2).min(s.len());
-    while !s.is_char_boundary(head_end) {
-        head_end -= 1;
-    }
-    let mut tail_start = s.len().saturating_sub(right);
-    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    if tail_start < head_end {
-        tail_start = head_end;
-    }
+    let head_end = s.floor_char_boundary((usable / 2).min(s.len()));
+    let tail_start = s.ceil_char_boundary(s.len().saturating_sub(right));
+    let tail_start = tail_start.max(head_end);
     (&s[..head_end], &s[tail_start..])
 }
 

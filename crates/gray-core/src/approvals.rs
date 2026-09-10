@@ -50,7 +50,6 @@ pub enum Verdict {
 pub enum Decision {
     Accept,
     AcceptForSession,
-    AcceptAlways,
     Decline,
     Cancel,
 }
@@ -288,22 +287,6 @@ impl ApprovalGate {
                     Decision::Accept => Ok(()),
                     Decision::AcceptForSession => {
                         self.remember(tool, args, cwd);
-                        Ok(())
-                    }
-                    Decision::AcceptAlways => {
-                        // Bash "always" remembers the FULL raw command
-                        // for this session. Never the 2-token prefix: a prefix
-                        // allow lets `cargo test --lib` bless `cargo rm -rf`
-                        // siblings. Non-bash AcceptAlways keeps the existing
-                        // session-scoped `remember()` path (paths); neither
-                        // flips global mode.
-                        if tool == "bash"
-                            && let Some(cmd) = args.get("command").and_then(|v| v.as_str())
-                        {
-                            self.cache.remember_command(cmd.to_string());
-                        } else {
-                            self.remember(tool, args, cwd);
-                        }
                         Ok(())
                     }
                     Decision::Decline => Err(format!(
