@@ -180,8 +180,23 @@ impl Tui {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
         let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let mut terminal =
-            CustomTerminal::with_options(CrosstermBackend::new(std::io::stdout()), MIN_VIEWPORT_H)?;
+        // Roll back acquired terminal modes when construction fails: without
+        // a Tui there is no Drop to restore them.
+        let mut terminal = match CustomTerminal::with_options(
+            CrosstermBackend::new(std::io::stdout()),
+            MIN_VIEWPORT_H,
+        ) {
+            Ok(terminal) => terminal,
+            Err(e) => {
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::event::DisableBracketedPaste,
+                    crossterm::cursor::Show,
+                );
+                return Err(e.into());
+            }
+        };
 
         // Print welcome logo into scrollback once at startup
         let welcome_lines = build_welcome_lines(cols as usize);
