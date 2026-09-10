@@ -56,9 +56,11 @@ pub fn parse_schedule(input: &str) -> anyhow::Result<Schedule> {
     }
     if let Some(rest) = s.strip_prefix("in ").map(str::trim) {
         let secs = parse_duration_secs(rest)?;
+        let secs_i64 = i64::try_from(secs)
+            .map_err(|_| anyhow::anyhow!("one-shot time overflow"))?;
         let at = Utc::now()
             .timestamp()
-            .checked_add(secs as i64)
+            .checked_add(secs_i64)
             .ok_or_else(|| anyhow::anyhow!("one-shot time overflow"))?;
         return Ok(Schedule::Once { at });
     }
@@ -90,7 +92,10 @@ pub fn parse_schedule(input: &str) -> anyhow::Result<Schedule> {
 
 pub fn next_run(after: i64, s: &Schedule) -> Option<i64> {
     match s {
-        Schedule::Interval { secs } => after.checked_add(*secs as i64),
+        Schedule::Interval { secs } => {
+            let secs_i64 = i64::try_from(*secs).ok()?;
+            after.checked_add(secs_i64)
+        }
         Schedule::Once { at } => Some(*at),
         Schedule::Cron { expr } => {
             let sched = cron::Schedule::from_str(&format!("0 {}", expr)).ok()?;
