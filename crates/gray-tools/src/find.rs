@@ -11,7 +11,7 @@ use tokio::process::Command;
 
 use crate::{MAX_BYTES, Tool, fail, finish, get_opt_u64, get_str, resolve_path};
 
-use crate::truncate::truncate_head;
+use crate::truncate::{append_notices, truncate_head};
 
 const DEFAULT_LIMIT: usize = 1000;
 
@@ -261,9 +261,7 @@ async fn try_fd(
         ));
     }
     if !notices.is_empty() {
-        output.push_str("\n\n[");
-        output.push_str(&notices.join(". "));
-        output.push(']');
+        append_notices(&mut output, &notices);
     }
 
     Some(finish(output))
@@ -354,9 +352,7 @@ async fn fallback_walk(pattern: &str, search_path: &Path, effective_limit: usize
         ));
     }
     if !notices.is_empty() {
-        output.push_str("\n\n[");
-        output.push_str(&notices.join(". "));
-        output.push(']');
+        append_notices(&mut output, &notices);
     }
 
     finish(output)

@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::ledger::{FileLedger, LedgerEntry};
 use crate::read::notices;
-use crate::{Tool, fail, finish, get_opt_bool, resolve_path};
+use crate::{Tool, fail, finish, get_opt_bool, get_str, resolve_path};
 
 pub const WRITE_SNIPPET: &str = "Create or overwrite files";
 pub const WRITE_GUIDELINES: &[&str] = &["Use write only for new files or complete rewrites."];
@@ -145,10 +145,6 @@ impl Tool for WriteTool {
                         "type": "string",
                         "description": "File path (absolute or relative to cwd)"
                     },
-                    "file_path": {
-                        "type": "string",
-                        "description": "Alias for path"
-                    },
                     "content": {
                         "type": "string",
                         "description": "Full file contents (explicit empty string truncates)"
@@ -156,14 +152,6 @@ impl Tool for WriteTool {
                     "force": {
                         "type": "boolean",
                         "description": "Overwrite without having read the file (bypasses the read-before-write guard)"
-                    },
-                    "contents": {
-                        "type": "string",
-                        "description": "Alias for content"
-                    },
-                    "text": {
-                        "type": "string",
-                        "description": "Alias for content"
                     }
                 },
                 "required": ["path"]
@@ -180,32 +168,16 @@ impl Tool for WriteTool {
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = args
-            .get("path")
-            .or_else(|| args.get("file_path"))
-            .or_else(|| args.get("filePath"))
-            .or_else(|| args.get("file"))
-            .or_else(|| args.get("filename"))
-            .or_else(|| args.get("target"))
-            .or_else(|| args.get("destination"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let path = match path {
-            Some(p) => p,
-            None => return fail("missing required argument 'path'".to_string()),
+        // Legacy names (file_path/contents/…) are renamed by the ALIASES table
+        // in `crate` (coerce_args) before lookup — no per-tool chain here.
+        let path = match get_str(&args, "path") {
+            Ok(p) => p,
+            Err(e) => return e,
         };
 
         // Content must be an explicit string: missing or wrong-typed content
         // must never become an empty-string truncation. Explicit "" stays valid.
-        let content_value = args
-            .get("content")
-            .or_else(|| args.get("contents"))
-            .or_else(|| args.get("text"))
-            .or_else(|| args.get("code"))
-            .or_else(|| args.get("body"))
-            .or_else(|| args.get("data"));
-        let content = match content_value {
+        let content = match args.get("content") {
             None => {
                 return fail(
                     "missing required argument 'content' (provide an explicit empty string to truncate)".to_string(),
