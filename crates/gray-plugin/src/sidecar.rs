@@ -283,23 +283,21 @@ impl Transport {
         }
         let (tx, rx) = oneshot::channel();
         self.pending.lock().await.map.insert(id, tx);
-        let write_err = async {
-            let mut stdin = self.stdin.lock().await;
-            stdin.write_all(format!("{req}\n").as_bytes()).await
-        }
-        .await
-        .err();
-        if let Some(e) = write_err {
-            self.pending.lock().await.map.remove(&id);
-            return Err(e.into());
-        }
-        match timeout(ttl, rx).await {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(_)) => anyhow::bail!("sidecar child closed stdout (crashed?)"),
-            Err(_) => {
-                self.pending.lock().await.map.remove(&id);
-                anyhow::bail!("sidecar request timed out ({method})");
+        // One deadline for the whole lifecycle (write + reply): a child
+        // that stops reading must not wedge us past the advertised TTL.
+        let outcome = timeout(ttl, async {
+            {
+                let mut stdin = self.stdin.lock().await;
+                stdin.write_all(format!("{req}\n").as_bytes()).await?;
             }
+            rx.await
+                .map_err(|_| anyhow::anyhow!("sidecar child closed stdout"))
+        })
+        .await;
+        self.pending.lock().await.map.remove(&id);
+        match outcome {
+            Ok(result) => result,
+            Err(_) => anyhow::bail!("sidecar request timed out ({method})"),
         }
     }
 }
