@@ -88,7 +88,6 @@ pub struct SavedConfig {
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
 pub const AUTH_MODE_API_KEY: &str = "api_key";
-pub const AUTH_MODE_OAUTH: &str = "oauth";
 pub const AUTH_MODE_NONE: &str = "none";
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
