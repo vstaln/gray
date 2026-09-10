@@ -806,6 +806,7 @@ mod ctrl_c_policy_tests {
     #[test]
     fn totals_sum_durations_and_skip_untimed() {
         let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+            compaction_boundary: false,
             entry_id: id,
             parent_id: None,
             timestamp: 0,

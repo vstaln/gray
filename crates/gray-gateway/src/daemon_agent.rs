@@ -147,8 +147,16 @@ impl GatewayRunner {
             .remove(key);
 
         // Persist whatever the agent produced (also on cancel — partial turns are still history).
-        for m in agent.messages().iter().skip(prior_len) {
-            let _ = store.append(&sid, m).await;
+        // A shrink below the cursor means in-loop compaction ran: persist the
+        // active transcript behind a boundary marker instead of skipping it.
+        if agent.messages().len() < prior_len {
+            let _ = store
+                .append_compaction_replacement(&sid, agent.messages())
+                .await;
+        } else {
+            for m in agent.messages().iter().skip(prior_len) {
+                let _ = store.append(&sid, m).await;
+            }
         }
         run?;
 

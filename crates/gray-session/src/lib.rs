@@ -91,8 +91,17 @@ impl SessionMeta {
     }
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionEntry {
+    /// Compaction boundary marker: when true, all prior entries are superseded
+    /// and reload replays only the entries after the last marker. Old files
+    /// omit it (`default` = false), so they keep loading whole.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub compaction_boundary: bool,
     /// Monotonic sequence ID of this entry in the session.
     pub entry_id: u64,
     /// ID of the parent entry in the session tree or history, or `None` for the root entry.
@@ -449,6 +458,7 @@ impl JsonlSessionStore {
         let parent_id = last_id;
 
         let entry = SessionEntry {
+            compaction_boundary: false,
             entry_id: next_id,
             parent_id,
             timestamp: now_millis(),
@@ -479,6 +489,107 @@ impl JsonlSessionStore {
         file.sync_all().await?;
 
         Ok(next_id)
+    }
+
+    /// Appends a compaction replacement: one boundary marker plus the active
+    /// (post-compact) messages, in a single locked batch. Reload replays only
+    /// what follows the last marker, so the pre-compact history stays on disk
+    /// for recovery without re-entering the active transcript (previously the
+    /// replacement was appended bare, and reload replayed original +
+    /// replacement duplicated with compaction silently undone).
+    pub async fn append_compaction_replacement(
+        &self,
+        id: &SessionId,
+        replacement: &[Message],
+    ) -> Result<()> {
+        let _guard = self.lock.lock().await;
+        let path = self.session_path(id)?;
+
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SessionError::NotFound(id.clone()));
+            }
+            Err(e) => return Err(SessionError::Io(e)),
+        };
+
+        let mut lines = content.lines().filter(|l| !l.trim().is_empty());
+        if lines.next().is_none() {
+            return Err(SessionError::NotFound(id.clone()));
+        }
+        // Same damaged-tail refusal as `append_with_usage_and_duration`.
+        if !content.ends_with('\n') {
+            return Err(SessionError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "session has an incomplete tail; repair before appending",
+            )));
+        }
+
+        let mut max_id: Option<u64> = None;
+        let mut last_id: Option<u64> = None;
+        for (n, line) in lines.enumerate() {
+            let entry = serde_json::from_str::<SessionEntry>(line).map_err(|source| {
+                SessionError::Corrupt {
+                    path: path.clone(),
+                    // +2: header line + 1-based.
+                    line: n + 2,
+                    source,
+                }
+            })?;
+            max_id = Some(max_id.map_or(entry.entry_id, |m| m.max(entry.entry_id)));
+            last_id = Some(entry.entry_id);
+        }
+
+        let mut out = String::new();
+        let mut next_id = max_id.map_or(0, |m| m + 1);
+        let mut parent_id = last_id;
+        // Marker first, then the replacement, one entry per line.
+        let mut msgs = Vec::with_capacity(replacement.len() + 1);
+        msgs.push((
+            true,
+            Message::system(
+                "compaction boundary: entries before this point are superseded; replay starts after it",
+            ),
+        ));
+        for msg in replacement {
+            msgs.push((false, msg.clone()));
+        }
+        for (boundary, msg) in msgs {
+            let entry = SessionEntry {
+                compaction_boundary: boundary,
+                entry_id: next_id,
+                parent_id,
+                timestamp: now_millis(),
+                message: msg,
+                usage: None,
+                duration_ms: None,
+            };
+            let json = serde_json::to_string(&entry)?;
+            out.push_str(&json);
+            out.push('\n');
+            parent_id = Some(next_id);
+            next_id += 1;
+        }
+
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .create(false)
+            .open(&path)
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    SessionError::NotFound(id.clone())
+                } else {
+                    SessionError::Io(e)
+                }
+            })?;
+
+        file.write_all(out.as_bytes()).await?;
+        file.flush().await?;
+        file.sync_all().await?;
+
+        Ok(())
     }
 
     pub async fn load(&self, id: &SessionId) -> Result<(SessionMeta, Vec<SessionEntry>)> {
@@ -551,6 +662,12 @@ impl JsonlSessionStore {
             }
         }
 
+        // Compaction boundary: replay only the active transcript after the
+        // last marker. Old files carry no markers and load whole.
+        if let Some(last) = entries.iter().rposition(|e| e.compaction_boundary) {
+            entries.drain(..=last);
+        }
+
         Ok((meta, entries))
     }
 
@@ -607,14 +724,20 @@ impl JsonlSessionStore {
 
             let mut first_user_text = None;
             for line in lines {
-                if let Ok(entry) = serde_json::from_str::<SessionEntry>(line)
-                    && entry.message.role == Role::User
-                {
+                let Ok(entry) = serde_json::from_str::<SessionEntry>(line) else {
+                    continue;
+                };
+                if entry.compaction_boundary {
+                    // Replacement follows: the pre-compact opener no longer
+                    // describes the session.
+                    first_user_text = None;
+                    continue;
+                }
+                if first_user_text.is_none() && entry.message.role == Role::User {
                     let text = entry.message.text_content();
                     if !text.is_empty() {
                         first_user_text = Some(text);
                     }
-                    break;
                 }
             }
 
@@ -1005,6 +1128,52 @@ mod tests {
             .unwrap();
         store.set_user_title(&b, "Base #2").await.unwrap();
         assert_eq!(store.next_title_in_lineage("Base").await, "Base #3");
+    }
+
+    /// Compact -> reload roundtrip: the store must reproduce the ACTIVE
+    /// transcript (no duplication, compaction not undone), stay appendable
+    /// after the boundary, and let a second compaction supersede the first.
+    /// Old marker-less files load whole (covered by the pre-existing tests).
+    #[tokio::test]
+    async fn compaction_replacement_reloads_as_active_transcript() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store
+            .create(SessionMeta::new(SessionId::new("c1"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        for t in ["one", "two", "three"] {
+            store.append(&id, &Message::user(t)).await.unwrap();
+        }
+        let replacement = vec![Message::user("summary"), Message::assistant("ack")];
+        store
+            .append_compaction_replacement(&id, &replacement)
+            .await
+            .unwrap();
+        let (_, entries) = store.load(&id).await.unwrap();
+        let texts: Vec<String> = entries.iter().map(|e| e.message.text_content()).collect();
+        assert_eq!(
+            texts,
+            vec!["summary".to_string(), "ack".to_string()],
+            "reload must replay the active transcript only, got {texts:?}"
+        );
+        // Listing describes the post-compact session, not the buried opener.
+        let summaries = store.list().await;
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].first_user_text.as_deref(), Some("summary"));
+        // Post-compaction turns append after the boundary and still reload.
+        store.append(&id, &Message::user("after")).await.unwrap();
+        let (_, entries) = store.load(&id).await.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[2].message.text_content(), "after");
+        // A second compaction supersedes the first.
+        store
+            .append_compaction_replacement(&id, &[Message::user("s2")])
+            .await
+            .unwrap();
+        let (_, entries) = store.load(&id).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].message.text_content(), "s2");
     }
 
     #[tokio::test]
