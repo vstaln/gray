@@ -102,7 +102,7 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(feature = "clipboard")]
 fn arboard_text() -> Option<String> {
-    if let Ok(clipboard) = arboard::Clipboard::new()
+    if let Ok(mut clipboard) = arboard::Clipboard::new()
         && let Ok(text) = clipboard.get_text()
         && !text.trim().is_empty()
     {
