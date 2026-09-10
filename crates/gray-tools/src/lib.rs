@@ -30,8 +30,17 @@ pub(crate) use gray_core::tool_out::{
 };
 use serde_json::Value;
 
+/// Optional string argument (`null`/absent -> `None`; wrong type -> error).
+pub(crate) fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
+    }
+}
+
 pub use edit::EditTool;
-pub use find::{FindTool, GlobTool};
+pub use find::FindTool;
 pub use grep::GrepTool;
 pub use ledger::{FileLedger, LedgerEntry};
 pub use ls::LsTool;
@@ -66,7 +75,6 @@ impl Registry {
             Arc::new(RequestUserInputTool),
             Arc::new(GrepTool),
             Arc::new(FindTool),
-            Arc::new(GlobTool),
             Arc::new(LsTool),
         ]);
         out.file_ledger = ledger;

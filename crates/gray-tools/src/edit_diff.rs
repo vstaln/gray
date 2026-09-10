@@ -126,33 +126,6 @@ pub struct Edit {
     pub replace_all: Option<bool>,
 }
 
-impl Edit {
-    pub fn new(old_text: impl Into<String>, new_text: impl Into<String>) -> Self {
-        Self {
-            old_text: old_text.into(),
-            new_text: new_text.into(),
-            line_hint: None,
-            occurrence: None,
-            replace_all: None,
-        }
-    }
-
-    pub fn with_line_hint(mut self, line: usize) -> Self {
-        self.line_hint = Some(line);
-        self
-    }
-
-    pub fn with_occurrence(mut self, occ: isize) -> Self {
-        self.occurrence = Some(occ);
-        self
-    }
-
-    pub fn with_replace_all(mut self, replace_all: bool) -> Self {
-        self.replace_all = Some(replace_all);
-        self
-    }
-}
-
 /// Result of [`apply_edits_to_normalized_content`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AppliedEditsResult {
@@ -822,10 +795,6 @@ pub fn generate_unified_patch(
     out
 }
 
-pub fn generate_unified_patch_default(path: &str, old_content: &str, new_content: &str) -> String {
-    generate_unified_patch(path, old_content, new_content, 3)
-}
-
 // ---------------------------------------------------------------------------
 // T1.6: cat -n prefix tolerance (relational fix for T1.2)
 // ---------------------------------------------------------------------------
@@ -909,6 +878,14 @@ pub fn strip_edit_prefixes(edits: &[Edit]) -> Option<Vec<Edit>> {
 mod prefix_tests {
     use super::*;
 
+    fn e(old: &str, new: &str) -> Edit {
+        Edit {
+            old_text: old.to_string(),
+            new_text: new.to_string(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn strips_cat_n_prefixes_per_line() {
         assert_eq!(strip_cat_n_prefixes("   412\tfoo"), "foo");
@@ -928,10 +905,10 @@ mod prefix_tests {
     fn strip_set_gates_on_old_text_both_or_neither() {
         // oldText without a prefix → nothing to retry (None): newText alone
         // is never stripped.
-        let only_new = vec![Edit::new("foo", "   3\tbar")];
+        let only_new = vec![e("foo", "   3\tbar")];
         assert!(strip_edit_prefixes(&only_new).is_none());
         // oldText with a prefix → both stripped together.
-        let both = vec![Edit::new("   3\tfoo", "   3\tbar")];
+        let both = vec![e("   3\tfoo", "   3\tbar")];
         let got = strip_edit_prefixes(&both).unwrap();
         assert_eq!(got[0].old_text, "foo");
         assert_eq!(got[0].new_text, "bar");
@@ -941,11 +918,11 @@ mod prefix_tests {
     #[test]
     fn stripped_retry_order_exact_first() {
         let content = "12\tfoo\n";
-        let exact = vec![Edit::new("12\tfoo", "12\tbaz")];
+        let exact = vec![e("12\tfoo", "12\tbaz")];
         let applied = apply_edits_to_normalized_content(content, &exact, "f").unwrap();
         assert!(applied.new_content.contains("12\tbaz"));
 
-        let prefixed = vec![Edit::new("   412\tfoo", "   412\tbaz")];
+        let prefixed = vec![e("   412\tfoo", "   412\tbaz")];
         assert!(apply_edits_to_normalized_content(content, &prefixed, "f").is_err());
         let stripped = strip_edit_prefixes(&prefixed).unwrap();
         let repaired = apply_edits_to_normalized_content(content, &stripped, "f").unwrap();
@@ -955,7 +932,7 @@ mod prefix_tests {
     #[test]
     fn multiple_occurrences_defaults_to_first_with_note() {
         let content = "item\nother\nitem\n";
-        let edits = vec![Edit::new("item", "replaced")];
+        let edits = vec![e("item", "replaced")];
         let result = apply_edits_to_normalized_content(content, &edits, "f.txt").unwrap();
         assert_eq!(result.new_content, "replaced\nother\nitem\n");
         assert_eq!(result.notes.len(), 1);
@@ -967,7 +944,10 @@ mod prefix_tests {
     fn multiple_occurrences_disambiguated_by_line_hint() {
         let content = "line 1\nmatch\nline 3\nline 4\nmatch\nline 6\n";
         // Second match is at line 5
-        let edits = vec![Edit::new("match", "second").with_line_hint(5)];
+        let edits = vec![Edit {
+            line_hint: Some(5),
+            ..e("match", "second")
+        }];
         let result = apply_edits_to_normalized_content(content, &edits, "f.txt").unwrap();
         assert_eq!(
             result.new_content,
@@ -981,12 +961,18 @@ mod prefix_tests {
     fn multiple_occurrences_disambiguated_by_occurrence_index() {
         let content = "one\nmatch\ntwo\nmatch\nthree\nmatch\n";
         // Target 2nd occurrence
-        let edits2 = vec![Edit::new("match", "HIT").with_occurrence(2)];
+        let edits2 = vec![Edit {
+            occurrence: Some(2),
+            ..e("match", "HIT")
+        }];
         let res2 = apply_edits_to_normalized_content(content, &edits2, "f.txt").unwrap();
         assert_eq!(res2.new_content, "one\nmatch\ntwo\nHIT\nthree\nmatch\n");
 
         // Target last occurrence (-1)
-        let edits_last = vec![Edit::new("match", "LAST").with_occurrence(-1)];
+        let edits_last = vec![Edit {
+            occurrence: Some(-1),
+            ..e("match", "LAST")
+        }];
         let res_last = apply_edits_to_normalized_content(content, &edits_last, "f.txt").unwrap();
         assert_eq!(
             res_last.new_content,
@@ -997,7 +983,10 @@ mod prefix_tests {
     #[test]
     fn multiple_occurrences_replace_all() {
         let content = "foo a\nbar\nfoo b\n";
-        let edits = vec![Edit::new("foo", "qux").with_replace_all(true)];
+        let edits = vec![Edit {
+            replace_all: Some(true),
+            ..e("foo", "qux")
+        }];
         let result = apply_edits_to_normalized_content(content, &edits, "f.txt").unwrap();
         assert_eq!(result.new_content, "qux a\nbar\nqux b\n");
         assert!(result.notes[0].contains("replaced all 2 occurrences"));
@@ -1007,7 +996,7 @@ mod prefix_tests {
     fn cat_n_prefix_disambiguates_multiple_occurrences() {
         let content = "line 1\nfoo\nline 3\nline 4\nfoo\nline 6\n";
         // User passed cat -n prefix targeting line 5
-        let prefixed = vec![Edit::new("     5\tfoo", "     5\tbar")];
+        let prefixed = vec![e("     5\tfoo", "     5\tbar")];
         assert!(apply_edits_to_normalized_content(content, &prefixed, "f.txt").is_err());
         let stripped = strip_edit_prefixes(&prefixed).unwrap();
         assert_eq!(stripped[0].line_hint, Some(5));

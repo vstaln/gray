@@ -10,7 +10,6 @@ pub const EST_TOKENS_DIVISOR: u64 = 4;
 /// Values for [`ToolStats::truncated_by`].
 pub const CUT_LINES: &str = "lines";
 pub const CUT_BYTES: &str = "bytes";
-pub const CUT_CLAMP: &str = "clamp";
 pub const CUT_NONE: &str = "none";
 
 /// Approximate token count for `bytes` of tool-output text.
@@ -23,28 +22,26 @@ pub fn enabled() -> bool {
     matches!(std::env::var("GRAY_TOOL_STATS").as_deref(), Ok("1"))
 }
 
-/// One tool-call record. `notice` is the short kind (`empty`, `eof`, …) or `none`.
+/// One tool-call record.
 pub struct ToolStats<'a> {
     pub tool: &'a str,
     pub path: &'a str,
     pub bytes: u64,
     pub lines: u64,
     pub truncated_by: &'a str,
-    pub notice: &'a str,
 }
 
 impl ToolStats<'_> {
-    /// `tool=read path=… bytes=… lines=… est_tokens=… truncated_by=… notice=…`
+    /// `tool=read path=… bytes=… lines=… est_tokens=… truncated_by=…`
     pub fn line(&self) -> String {
         format!(
-            "tool={} path={} bytes={} lines={} est_tokens={} truncated_by={} notice={}",
+            "tool={} path={} bytes={} lines={} est_tokens={} truncated_by={}",
             self.tool,
             self.path,
             self.bytes,
             self.lines,
             est_tokens(self.bytes),
             self.truncated_by,
-            self.notice,
         )
     }
 
@@ -66,7 +63,7 @@ impl ToolStats<'_> {
             "tool": self.tool, "path": self.path,
             "bytes": self.bytes, "lines": self.lines,
             "est_tokens": est_tokens(self.bytes),
-            "truncated_by": self.truncated_by, "notice": self.notice,
+            "truncated_by": self.truncated_by,
         });
         use std::io::Write as _;
         if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -98,12 +95,11 @@ mod tests {
             bytes: 51_200,
             lines: 1846,
             truncated_by: CUT_BYTES,
-            notice: "none",
         };
         assert_eq!(
             s.line(),
             "tool=read path=long.txt bytes=51200 lines=1846 \
-             est_tokens=12800 truncated_by=bytes notice=none"
+             est_tokens=12800 truncated_by=bytes"
         );
     }
 }

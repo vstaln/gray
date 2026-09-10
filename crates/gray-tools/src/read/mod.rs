@@ -212,9 +212,9 @@ impl ReadTool {
             return ToolOutput::ok(with_repaired(repaired, note.to_string()));
         }
         let file_size = s.file_size();
-        let max_lines = window::max_lines();
-        let max_bytes = window::max_bytes();
-        let max_chars = window::max_line_chars();
+        let max_lines = window::MAX_LINES;
+        let max_bytes = window::MAX_BYTES;
+        let max_chars = window::MAX_LINE_CHARS;
         let win_off = offset.unwrap_or(1);
         // T1.3: empty files name the fact + recovery (is_error=false);
         // never return ok("").
@@ -510,7 +510,6 @@ impl ReadTool {
                 Some(window::Cut::Bytes) => crate::stats::CUT_BYTES,
                 None => crate::stats::CUT_NONE,
             },
-            notice: "none",
         }
         .report();
         // Windowed output already carries its actionable hint; bypass the

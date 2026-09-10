@@ -32,7 +32,7 @@ use crate::shell::pump::Pump;
 use crate::shell::registry::registry;
 use crate::shell::spawn::spawn;
 use crate::shell::view::{format_elapsed, header, home_relative, middle_out, resume_hint};
-use crate::{fail, get_opt_bool, get_opt_u64, get_str};
+use crate::{fail, get_opt_bool, get_opt_str, get_opt_u64, get_str};
 
 pub const BASH_SNIPPET: &str = "Execute bash commands (ls, grep, find, etc.)";
 /// Usage guidelines, ≤ 6 bullets by contract (brief 3D — every word here
@@ -280,16 +280,6 @@ impl Tool for BashTool {
     }
 }
 
-/// Optional string argument (`null`/absent -> `None`). Local until 4A
-/// centralizes arg parsing (same helper lives in shell_output.rs).
-fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
-    }
-}
-
 fn gray_home() -> PathBuf {
     std::env::var("GRAY_HOME")
         .ok()
@@ -391,12 +381,9 @@ async fn waiter(
                 &session,
                 id,
                 ExitReport {
-                    code: None,
-                    signal: None,
                     effective: 1,
                     label: "exit 1".to_string(),
                     note: Some(format!("failed to wait for process: {e}")),
-                    benign: false,
                 },
             );
             return;
