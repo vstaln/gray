@@ -1,13 +1,11 @@
 //! Built-in lightweight nano-like interactive editor for the Gray system prompt.
 
-use std::io::{Write, stdout};
+use std::io::stdout;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
-use crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use crossterm::terminal::EnterAlternateScreen;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
@@ -47,10 +45,7 @@ impl SysEditor {
     }
 
     pub fn run(&mut self) -> anyhow::Result<Option<String>> {
-        let composer_was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
-        if !composer_was_raw {
-            enable_raw_mode()?;
-        }
+        let _session = crate::setup::TuiSession::acquire()?;
 
         crossterm::execute!(
             stdout(),
@@ -68,22 +63,6 @@ impl SysEditor {
         let res = self.event_loop(&mut terminal);
 
         let _ = terminal.clear();
-        crossterm::execute!(
-            std::io::stdout(),
-            LeaveAlternateScreen,
-            crossterm::cursor::Show
-        )?;
-        // LeaveAlternateScreen already restores the main screen buffer — do NOT
-        // emit ClearType::All / blank-line floods here, they race the compositor's
-        // own synchronized-update flush and are exactly the ghost-text your 17:22
-        // screenshot shows (codex restore path is LeaveAlternateScreen → raw-mode
-        // resync only, see tui.rs restore_common).
-        if !composer_was_raw {
-            disable_raw_mode()?;
-        } else {
-            enable_raw_mode()?;
-        }
-        let _ = std::io::stdout().flush();
 
         res
     }
