@@ -1,7 +1,6 @@
 //! REPL prompt turn (split from `repl`).
 
 use super::*;
-use gray_core::questions::QuestionBridge;
 
 #[allow(clippy::too_many_arguments)]
 // Mechanical split of `run_repl_mode`: params are the loop state the turn borrows.
@@ -18,8 +17,6 @@ pub(crate) async fn run_prompt_turn(
     pending_command: &mut Option<ReplCommand>,
     pending_history: &mut Vec<Message>,
     unconfigured: &mut bool,
-    question_bridge: &QuestionBridge,
-    approval_gate: &gray_core::approvals::ApprovalGate,
 ) -> anyhow::Result<()> {
     let (shared, _) = if interactive {
         (Some(tui.as_ref().expect("interactive implies tui")), ())
@@ -135,12 +132,9 @@ pub(crate) async fn run_prompt_turn(
     let ctx = ToolContext {
         cwd: cwd.to_path_buf(),
         cancel: cancel.clone(),
-        questions: Some(question_bridge.clone()),
         session_id: session_state
             .as_ref()
             .map(|s| s.session_id.as_str().to_string()),
-        permission: PermissionMode::resolve(false),
-        approvals: Some(approval_gate.clone()),
     };
     let images = std::mem::take(&mut *pending_images);
     let user_msg = build_user_message_with_attachments(&prompt_text, &images);
@@ -242,12 +236,9 @@ pub(crate) async fn run_prompt_turn(
         let ctx2 = ToolContext {
             cwd: cwd.to_path_buf(),
             cancel: cancel.clone(),
-            questions: Some(question_bridge.clone()),
             session_id: session_state
                 .as_ref()
                 .map(|s| s.session_id.as_str().to_string()),
-            permission: PermissionMode::resolve(false),
-            approvals: Some(approval_gate.clone()),
         };
         let mut on_event2 = |ev: &AgentEvent| {
             dispatch_agent_event(

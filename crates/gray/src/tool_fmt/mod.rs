@@ -255,35 +255,6 @@ pub fn format_tool_call_header(
                 Span::styled(shorten_path(raw_path, cwd), path_style),
             ])
         }
-        "request_user_input" => {
-            let q_summary = args
-                .get("questions")
-                .and_then(|q| q.as_array())
-                .and_then(|arr| {
-                    if arr.len() == 1 {
-                        arr[0]
-                            .get("question")
-                            .and_then(|v| v.as_str())
-                            .map(|s| format!("\"{s}\""))
-                    } else if arr.len() > 1 {
-                        Some(format!("{} questions", arr.len()))
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| {
-                    args.get("question")
-                        .and_then(|v| v.as_str())
-                        .map(|s| format!("\"{s}\""))
-                })
-                .unwrap_or_else(|| "question".to_string());
-            let summary = truncate_cmd(&q_summary);
-            Line::from(vec![
-                bullet,
-                Span::styled("Asked ", action_style),
-                Span::styled(summary.to_string(), cmd_style),
-            ])
-        }
         "skill" => {
             let skill_name = skill_display_name(args);
             Line::from(vec![
@@ -567,7 +538,7 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    if tool_name == "read" || tool_name == "request_user_input" {
+    if tool_name == "read" {
         return Vec::new();
     }
 

@@ -1,4 +1,4 @@
-//! Feedback + permissions slash-commands (split from `repl`).
+//! Feedback slash-command (split from `repl`).
 
 use super::*;
 
@@ -54,81 +54,3 @@ pub(crate) fn handle_feedback(
     }
 }
 
-pub(crate) fn handle_permissions(
-    config: &mut Config,
-    direct: Option<String>,
-    gate: &gray_core::approvals::ApprovalGate,
-    tui: Option<&crate::composer::SharedTui>,
-) {
-    use gray_core::approvals::{normalize_mode, permission_modes};
-    fn persist(config: &Config) {
-        if let Ok(path) = crate::setup::saved_config_path() {
-            let mut saved = crate::setup::load_saved_config_at(&path);
-            saved.permissions = config.permissions.clone();
-            let _ = crate::setup::save_saved_config_at(&path, &saved);
-        }
-    }
-    fn announce(mode: &str, tui: Option<&crate::composer::SharedTui>) {
-        let (label, desc) = permission_modes()
-            .into_iter()
-            .find(|(id, _, _)| *id == mode)
-            .map(|(_, l, d)| (l, d))
-            .unwrap_or((mode, ""));
-        if let Some(shared) = tui {
-            let mut t = shared.lock().expect("tui lock");
-            t.push_action("Permissions updated to", Some(label));
-            t.push_dim(desc.to_string());
-            t.ensure_gap(1);
-        } else {
-            println!("✓ Permissions updated to {label}\n  {desc}");
-        }
-    }
-    if let Some(raw) = direct {
-        match normalize_mode(&raw) {
-            Some(mode) => {
-                config.permissions = Some(mode.to_string());
-                gate.set_mode(mode);
-                if let Some(shared) = tui {
-                    shared
-                        .lock()
-                        .expect("tui lock")
-                        .set_permission_mode(mode.to_string());
-                }
-                persist(config);
-                announce(mode, tui);
-            }
-            None => say(
-                tui,
-                &format!("unknown mode '{raw}' — use: read-only, auto, full"),
-            ),
-        }
-        return;
-    }
-    let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
-    let current = gate.mode();
-    let picked = with_modal_sync(tui, || {
-        crate::setup::run_permissions_modal(&current, bg.as_ref())
-    });
-    match picked {
-        Ok(Some(mode)) => {
-            config.permissions = Some(mode.clone());
-            gate.set_mode(&mode);
-            if let Some(shared) = tui {
-                shared
-                    .lock()
-                    .expect("tui lock")
-                    .set_permission_mode(mode.clone());
-            }
-            persist(config);
-            announce(&mode, tui);
-        }
-        Ok(None) => {
-            // Dismissed picker leaves the slash card with no feedback:
-            // gap so it doesn't jam the input box.
-            if let Some(shared) = tui {
-                shared.lock().expect("tui lock").ensure_gap(1);
-            }
-        }
-        Err(e) => say(tui, &format!("permissions error: {e}")),
-    }
-}

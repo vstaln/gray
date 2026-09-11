@@ -353,7 +353,6 @@ mod tests {
         let mut history = Vec::new();
         let mut unconfigured = false;
         let mut hide_thinking = false;
-        let gate = gray_core::approvals::ApprovalGate::new("auto");
         let flow = dispatch_command(
             super::ReplCommand::Plugin("/plugin list".to_string()),
             &mut agent,
@@ -367,7 +366,6 @@ mod tests {
             &mut history,
             &mut unconfigured,
             &mut hide_thinking,
-            &gate,
         )
         .await
         .expect("dispatch ok");

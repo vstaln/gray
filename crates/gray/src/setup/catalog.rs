@@ -81,9 +81,6 @@ pub struct SavedConfig {
     /// Tail budget kept alongside the summary after compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_keep: Option<usize>,
-    /// Tool approval mode: "read-only" | "auto" | "full".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permissions: Option<String>,
 }
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
@@ -156,7 +153,6 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         context_window: opt_field(obj, "context_window"),
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
-        permissions: opt_field(obj, "permissions"),
     }
 }
 

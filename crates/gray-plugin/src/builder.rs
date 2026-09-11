@@ -59,10 +59,31 @@ impl Plugin for ToolsBasicPlugin {
             Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
             Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
             Arc::new(gray_tools::shell::tools::sleep::SleepTool),
-            Arc::new(gray_tools::RequestUserInputTool),
         ];
         out.extend(self.extra.iter().cloned());
         out
+    }
+}
+
+/// `tools-minimal`: the default surface — exactly one persistent-shell tool.
+/// Mirrors dsh's `minimal` preset (one persistent shell, no editor/filesystem
+/// tool) and mini-swe-agent's bash-only bet. Everything the model needs to
+/// inspect/mutate files goes through `bash`.
+pub struct ToolsMinimalPlugin;
+
+impl Plugin for ToolsMinimalPlugin {
+    fn manifest(&self) -> Manifest {
+        let tools = self.tools();
+        Manifest {
+            name: "tools-minimal".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            tools: tools.iter().map(|t| t.def()).collect(),
+            ..Manifest::default()
+        }
+    }
+
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![Arc::new(gray_tools::BashTool)]
     }
 }
 
@@ -371,8 +392,13 @@ fn effective_enabled(
 /// `<home>/plugins/<name>` via [`resolve_argv`]; legacy entries
 /// with an explicit `argv` spawn it directly). See [`crate::boot`] (kept
 /// as a test-only harness) for the legacy split.
+/// `defaults` is the catalog of builtin plugins a `gray.yml` may name;
+/// `default_names` selects which of them is the no-profile fallback (the
+/// default surface). Decoupled so the catalog can offer opt-in plugins
+/// (`tools-basic`, `tools-search`) while booting `tools-minimal`.
 pub async fn active_plugins(
     defaults: Vec<Arc<dyn Plugin>>,
+    default_names: &[&str],
     profile_path: &str,
     handler: Option<HostHandler>,
     abort_on_spawn_failure: bool,
@@ -510,7 +536,11 @@ pub async fn active_plugins(
     }
 
     if plugins.is_empty() {
-        return Ok((defaults, true));
+        let fallback: Vec<Arc<dyn Plugin>> = defaults
+            .into_iter()
+            .filter(|p| default_names.contains(&p.manifest().name.as_str()))
+            .collect();
+        return Ok((fallback, true));
     }
     // Later manifests win on name conflict (same rule as `merge_manifests`
     // and the legacy boot harness).
@@ -622,12 +652,16 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         abort_on_spawn_failure,
         wrap_executor,
     } = opts;
+    // Catalog: any of these may be named in `gray.yml`. Fallback (no profile)
+    // is `tools-minimal` — one persistent shell, gray's default surface.
     let defaults: Vec<Arc<dyn Plugin>> = vec![
+        Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsBasicPlugin { extra: extra_tools }) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
     let (plugins, _) = active_plugins(
         defaults,
+        &["tools-minimal"],
         &profile_path,
         host_handler,
         abort_on_spawn_failure,

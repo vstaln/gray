@@ -256,7 +256,7 @@ fn pid_for_port_macos(port: u16) -> io::Result<Option<(u32, String)>> {
 }
 
 /// Kill per the frozen contract: task → group kill (verified); foreign
-/// pid/port → prompt, fail closed, single-pid signal only.
+/// pid/port → single-pid signal only.
 pub async fn kill(
     target: KillTarget,
     session: &str,
@@ -324,33 +324,18 @@ async fn kill_task(id: TaskId, session: &str) -> Result<KillReport, String> {
     Ok(KillReport { report, describe })
 }
 
-async fn kill_pid(pid: u32, session: &str, ctx: &ToolContext) -> Result<KillReport, String> {
+async fn kill_pid(pid: u32, session: &str, _ctx: &ToolContext) -> Result<KillReport, String> {
     let reg = registry();
     // Ours → the task path (group kill, start-time verified).
     if let Some(id) = reg.find_task_by_pid(session, pid) {
         return kill_task(id, session).await;
     }
-    // Foreign: prompt, fail closed; signal the single pid, never its group.
+    // Foreign: signal the single pid, never its group.
     let comm = comm_for(pid);
     let before = start_ticks_for(pid);
-    if !super::guard::ask_allow_once(
-        ctx,
-        &format!("kill pid {pid} ({comm})"),
-        "foreign-kill",
-        &format!(
-            "pid {pid} ({comm}) is not a gray task; it may belong to something you didn't start"
-        ),
-        "shell_kill(task_id=...) for gray tasks",
-    )
-    .await
-    {
-        return Err(format!(
-            "kill pid {pid} ({comm}) needs user approval (foreign process) — refusing"
-        ));
-    }
-    // The pid may have been recycled while the user was deciding.
+    // The pid may have been recycled between snapshot and signal.
     if before.is_some() && start_ticks_for(pid) != before {
-        return Err(format!("pid {pid} changed while asking; not signalling"));
+        return Err(format!("pid {pid} changed before signal; not signalling"));
     }
     let method = escalate(pid as i32, &format!("pid {pid}"), GRACE).await?;
     let describe = match &method {
@@ -673,96 +658,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn port_foreign_fail_closed_without_bridge() {
-        let _serial = serial();
-        let (listener, port) = hold_port().await;
-        let s = sess("port-deny");
-        let before = sig_calls();
-        let err = kill(KillTarget::Port(port), &s, &ToolContext::default())
-            .await
-            .err()
-            .expect("fail closed");
-        assert!(err.contains("approval"), "{err}");
-        assert_eq!(sig_calls(), before, "denied prompt signals nothing");
-        assert!(
-            pid_for_port(port).expect("lookup runs").is_some(),
-            "denied kill leaves the listener alone"
-        );
-        drop(listener);
-    }
-
-    #[tokio::test]
-    async fn foreign_pid_fail_closed_without_bridge() {
+    async fn foreign_pid_kills_without_approval() {
         let _serial = serial();
         let mut child = direct_child();
         let pid = child.id().expect("pid");
-        let s = sess("foreign-deny");
-        let before = sig_calls();
-        let err = kill(KillTarget::Pid(pid), &s, &ToolContext::default())
-            .await
-            .err()
-            .expect("fail closed");
-        assert!(err.contains("approval"), "{err}");
-        assert_eq!(sig_calls(), before, "denied prompt signals nothing");
-        assert_eq!(
-            unsafe { libc::kill(pid as i32, 0) },
-            0,
-            "foreign process untouched"
-        );
-        child.kill().await.ok();
-        let _ = child.wait().await;
-    }
-
-    struct YesAsker;
-    impl gray_core::questions::QuestionAsker for YesAsker {
-        fn ask(
-            &self,
-            _q: Vec<gray_core::questions::UserQuestion>,
-            _b: bool,
-        ) -> futures::future::BoxFuture<
-            'static,
-            Result<Vec<gray_core::questions::UserAnswer>, gray_core::error::CoreError>,
-        > {
-            Box::pin(async {
-                Ok(vec![gray_core::questions::UserAnswer {
-                    id: "q".to_string(),
-                    answers: vec!["Run once".to_string()],
-                }])
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn foreign_pid_kills_with_approval() {
-        let _serial = serial();
-        let mut child = direct_child();
-        let pid = child.id().expect("pid");
-        // Reap concurrently: no zombie window, so the probe is exact and the
-        // kill answers TERM instead of timing out into SIGKILL.
+        // Reap concurrently so the probe is exact and the kill answers TERM.
         let reaper = tokio::spawn(async move { child.wait().await });
-        let s = sess("foreign-yes");
-        let ctx = ToolContext {
-            cwd: std::env::temp_dir(),
-            questions: Some(gray_core::questions::QuestionBridge(std::sync::Arc::new(
-                YesAsker,
-            ))),
-            session_id: Some(s.clone()),
-            ..ToolContext::default()
-        };
+        let s = sess("foreign-direct");
         let rep = tokio::time::timeout(
             Duration::from_secs(10),
-            kill(KillTarget::Pid(pid), &s, &ctx),
+            kill(KillTarget::Pid(pid), &s, &ToolContext::default()),
         )
         .await
         .expect("kill returns")
-        .expect("approved kill ok");
-        assert!(
-            rep.describe.contains("terminated after"),
-            "{}",
-            rep.describe
-        );
+        .expect("foreign kill ok");
         assert!(rep.describe.contains("foreign pid"), "{}", rep.describe);
-        assert!(rep.describe.contains(&pid.to_string()), "{}", rep.describe);
         let st = tokio::time::timeout(Duration::from_secs(3), reaper)
             .await
             .expect("reaped after kill")

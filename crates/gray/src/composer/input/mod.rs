@@ -13,18 +13,6 @@ mod clipboard;
 pub(crate) use attach::{sync_attachments, try_attach_clipboard_image, try_attach_image_paste};
 pub(crate) use clipboard::paste_from_system_clipboard;
 
-/// Shift+Tab cycles ALL permission modes: Ask(auto) → ReadOnly → Full → Ask.
-/// Pure helper so the prompt loop and the mid-turn key watcher share one
-/// source of truth.
-pub(crate) fn next_permission_mode(current: &str) -> &'static str {
-    use gray_core::approvals::{MODE_AUTO, MODE_FULL, MODE_READ_ONLY, normalize_mode};
-    match normalize_mode(current).unwrap_or(MODE_AUTO) {
-        MODE_READ_ONLY => MODE_FULL,
-        MODE_FULL => MODE_AUTO,
-        _ => MODE_READ_ONLY,
-    }
-}
-
 /// Ctrl-C at the prompt never exits on the first press: it clears the draft.
 /// Only a second press on an already-empty prompt within the window exits
 /// (mirrors the SIGINT policy in `repl`; exit also via /quit or Ctrl-D).
@@ -355,20 +343,6 @@ pub(crate) fn read_line(
         let mut guard = shared.lock().expect("tui lock");
         let tui: &mut super::Tui = &mut guard;
         let ev = read()?;
-        if tui.active_question.is_some() {
-            if let Event::Key(KeyEvent {
-                code,
-                modifiers,
-                kind: KeyEventKind::Press,
-                ..
-            }) = ev
-            {
-                // Ctrl-C on the question overlay cancels via the overlay
-                // handler — it must not quit the app (same as mid-turn).
-                crate::composer::handle_question_key(tui, code, modifiers);
-            }
-            continue;
-        }
         match ev {
             Event::Resize(cols, rows) => {
                 if cols != tui.last_width || rows != tui.last_height {
@@ -607,12 +581,6 @@ pub(crate) fn read_line(
                         tui.push_user_prompt(&trimmed, &attached, !trimmed.starts_with('/'));
                         return Ok(Some((trimmed, attached)));
                     }
-                    KeyCode::BackTab => {
-                        let next = next_permission_mode(tui.permission_mode());
-                        tui.set_permission_mode(next.to_string());
-                        tui.pending_permission_mode = Some(next.to_string());
-                        let _ = tui.draw();
-                    }
                     KeyCode::Tab => {
                         if let Some((name, _)) = tui.matches.get(tui.sel) {
                             let fill = crate::repl::completion_fill(name);
@@ -649,25 +617,6 @@ pub(crate) fn read_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shift_tab_cycles_all_three_modes() {
-        use gray_core::approvals::{MODE_AUTO, MODE_FULL, MODE_READ_ONLY};
-        // Ask(auto) → ReadOnly → Full → Ask
-        assert_eq!(next_permission_mode(MODE_AUTO), MODE_READ_ONLY);
-        assert_eq!(next_permission_mode("ask"), MODE_READ_ONLY);
-        assert_eq!(next_permission_mode(MODE_READ_ONLY), MODE_FULL);
-        assert_eq!(next_permission_mode(MODE_FULL), MODE_AUTO);
-        assert_eq!(next_permission_mode("full-access"), MODE_AUTO);
-        // Full cycle returns to start (the stuck-two-mode bug never hit Full).
-        let mut m = MODE_AUTO;
-        for _ in 0..3 {
-            m = next_permission_mode(m);
-        }
-        assert_eq!(m, MODE_AUTO);
-        // Unknown falls back to auto → next is read-only.
-        assert_eq!(next_permission_mode("bogus"), MODE_READ_ONLY);
-    }
 
     #[test]
     fn ctrl_c_first_press_clears_second_within_window_exits() {

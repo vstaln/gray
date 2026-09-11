@@ -1,5 +1,9 @@
 # Gray shell tool — spec (WP0, frozen contract)
 
+> **Superseded (2026-09-11):** the destructive-command guard and the
+> approval/question overlay this spec describes were removed. `bash` now
+> runs what it is given; the guard sections below are historical.
+
 Status: spec + fixtures + baseline only. No behaviour change in this WP
 (`bash.rs` untouched, no new dependencies). Later WPs implement this
 document; where it disagrees with current code, this document wins.

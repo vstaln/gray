@@ -36,7 +36,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Any provider, your keys** | OpenRouter, DeepSeek, Groq, OpenAI, ollama, vLLM, LM Studio — anything OpenAI-compatible — plus OAuth sign-in for xAI/Grok and Codex/ChatGPT. Searchable model picker over the bundled models.dev catalog. |
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
-| **Batteries in, guard on** | read · write · edit · bash · find · grep · ls · glob · cron. A destructive-command guard asks before foot-guns; Ctrl-C cancels a runaway turn. |
+| **One tool, by default** | The default profile is a single persistent `bash` shell — the same bet as mini-swe-agent and dsh's `minimal` preset. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
 | **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. Release binary; from source add `--features all-platforms`. |
 | **Extend the harness** | Skills from `SKILL.md`, sidecar plugins over stdio (frozen wire v1), or `/acp` to *become* claude, codex, cursor, opencode… |
 
@@ -96,7 +96,6 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `/model [id]` · `/provider` · `/key [provider]` | models, providers, keys — without leaving the chat |
 | `/compact [instructions]` | summarize context (auto-compacts near the limit) |
 | `/context [tokens\|auto]` | inspect or set the window — `128k`, `1m`, `auto` to clear |
-| `/permissions [mode]` | read-only · auto · full — Shift+Tab cycles |
 | `/thinking` · `/effort [level]` | toggle reasoning, pick the effort |
 | `/usage` | session tokens & cost |
 | `/skills` · `/skills:<name> [args]` | list skills, run one |
@@ -127,7 +126,7 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
 
-**ACP agents** — `/acp` turns gray into any external coding agent over the [Agent Client Protocol](https://agentclientprotocol.com): bare `/acp` opens a picker, `/acp <agent> <prompt>` delegates one-shot, `/acp off` returns to native — and `gray -p '…' --acp opencode` works in print mode. Probed via `which`: `codex`, `claude`, `opencode`, `cursor`, `gemini`, `copilot`, `grok`, `goose` / `kimi` / `kiro`; customs go in `~/.gray/acp.json`. Permission requests are **denied by default** — `--yolo` (or `GRAY_ACP_AUTO_APPROVE=1`) auto-approves, and the external agent's own permission model applies: gray's bash guard does not run in ACP mode. Design doc: [docs/ACP_PLAN.md](docs/ACP_PLAN.md).
+**ACP agents** — `/acp` turns gray into any external coding agent over the [Agent Client Protocol](https://agentclientprotocol.com): bare `/acp` opens a picker, `/acp <agent> <prompt>` delegates one-shot, `/acp off` returns to native — and `gray -p '…' --acp opencode` works in print mode. Probed via `which`: `codex`, `claude`, `opencode`, `cursor`, `gemini`, `copilot`, `grok`, `goose` / `kimi` / `kiro`; customs go in `~/.gray/acp.json`. Permission requests are **denied by default** — `--yolo` (or `GRAY_ACP_AUTO_APPROVE=1`) auto-approves, and the external agent's own permission model applies. Design doc: [docs/ACP_PLAN.md](docs/ACP_PLAN.md).
 
 ## Gateway
 
@@ -143,7 +142,7 @@ Always-on: `gray gateway install` (systemd user service, `Restart=always`, survi
 
 ## Safety
 
-`gray` executes shell commands from the model. The destructive-command guard (`crates/gray-tools/src/shell/guard.rs`) blocks obvious foot-guns (`rm -rf /`, `mkfs`, fork bombs, `git reset --hard`) after an allow-prompt — it is prefix-based and **not a sandbox**: pipes, `&&` chains, `$(...)`, `eval`, `xargs rm`, `find -delete`, `python -c 'shutil.rmtree(...)'` and `curl … | sh` all pass through. `GRAY_GUARD_BYPASS=1` disables it entirely. There is no container or VM isolation: run gray in a container/VM for untrusted work. Security reports: [SECURITY.md](SECURITY.md).
+`gray` executes shell commands from the model. There is **no command guard and no approval prompt**: the model's `bash` runs what it writes, with your user's privileges. There is no container or VM isolation — run gray in a container/VM for untrusted work. Security reports: [SECURITY.md](SECURITY.md).
 
 Persistence note: gateway and REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting; set `persist_redacted: true` in `gateway.yaml` to scrub gateway transcripts too. Plan backups, snapshots, and disk access accordingly.
 
@@ -161,7 +160,7 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 | `gray-core` | agent loop · events · messages |
 | `gray-provider` | OpenAI-compatible SSE streaming, retries, prompt caching |
 | `gray-session` | JSONL session store with parent-id branching |
-| `gray-tools` | read · write · edit · bash · find · grep · ls · glob · cron_tool · plugin loader |
+| `gray-tools` | bash · read · write · edit · grep · find · ls · shell control (profile-selectable) |
 | `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
 | `gray-pkg` | plugin package management |
 | `gray-acp` | Agent Client Protocol client (external agents) |
@@ -182,8 +181,6 @@ The essentials — everything else is one `--help` or doc page away.
 | `GRAY_API_KEY` / `OPENAI_API_KEY` | API key — env beats stored keys |
 | `GRAY_MODEL` · `GRAY_BASE_URL` | defaults before `~/.gray/config.json` is consulted |
 | `GRAY_CONTEXT_WINDOW` | override the window in tokens — `128000`, `128k`, `1m`, or `auto` |
-| `GRAY_PERMISSION` | `read-only` · `auto` (default — commands and outside-workspace edits ask) · `full` (no prompts) |
-| `GRAY_GUARD_BYPASS=1` | disable the destructive-command guard entirely (CI / piped mode) |
 | `GRAY_NO_UPDATE_CHECK=1` · `GRAY_AUTO_UPDATE=1` | silence the startup update check, or background self-update |
 | `GRAY_LOG` | `error`…`trace` (default `info`) |
 | `GRAY_ACP_AUTO_APPROVE=1` | auto-approve ACP permission requests (same as `--yolo`) |

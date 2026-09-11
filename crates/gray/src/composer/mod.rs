@@ -40,10 +40,6 @@ pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 mod text_area;
 pub(crate) use text_area::TextArea;
 
-mod question;
-pub use question::ComposerQuestionAsker;
-pub(crate) use question::{handle_question_key, tick_question};
-
 pub struct Tui {
     pub(crate) terminal: Term,
     pub(crate) textarea: TextArea,
@@ -76,11 +72,9 @@ pub struct Tui {
     pub(crate) draft: String,
     pub(crate) attachments: Vec<(String, PathBuf)>,
     pub(crate) pending_pastes: Vec<(String, String)>,
-    pub(crate) pending_permission_mode: Option<String>,
     model_name: String,
     cwd: String,
     thinking_effort: String,
-    permission_mode: String,
     pub(crate) history_entries: Vec<TranscriptEntry>,
     pub transcript: Vec<Line<'static>>,
     pub(crate) last_width: u16,
@@ -100,9 +94,6 @@ pub struct Tui {
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
     /// popups can grow it back up.
     pub(crate) viewport_h: u16,
-    // request_user_input overlay (codex port) + late non-blocking answers
-    pub(crate) active_question: Option<question::QuestionSession>,
-    pub pending_question_answers: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -233,11 +224,9 @@ impl Tui {
             draft: String::new(),
             attachments: Vec::new(),
             pending_pastes: Vec::new(),
-            pending_permission_mode: None,
             model_name: String::new(),
             cwd,
             thinking_effort: String::new(),
-            permission_mode: gray_core::approvals::MODE_AUTO.to_string(),
             history_entries: vec![TranscriptEntry::Welcome],
             transcript: welcome_lines,
             last_width: cols,
@@ -253,8 +242,6 @@ impl Tui {
             live_streamed_tokens: 0,
             tool_progress_lens: std::collections::HashMap::new(),
             viewport_h: MIN_VIEWPORT_H,
-            active_question: None,
-            pending_question_answers: Vec::new(),
         })
     }
 
@@ -383,12 +370,6 @@ impl Tui {
     pub fn set_thinking_effort(&mut self, effort: String) {
         self.thinking_effort = effort;
     }
-    pub fn set_permission_mode(&mut self, mode: String) {
-        self.permission_mode = mode;
-    }
-    pub fn permission_mode(&self) -> &str {
-        &self.permission_mode
-    }
     /// Dismissed/cancelled modal: drop the typed slash draft, its completion
     /// popup and attachments so the next prompt starts clean.
     pub(crate) fn clear_draft(&mut self) {
@@ -503,11 +484,6 @@ impl Tui {
     }
 
     pub fn end_turn(&mut self) {
-        // Question overlay teardown: dropping the session fails any still-
-        // pending askers (queued senders) cleanly; cancelled turns land here.
-        if self.active_question.take().is_some() {
-            self.textarea.set_text("");
-        }
         // capture elapsed before clearing
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
@@ -601,10 +577,6 @@ impl Tui {
         // screen as duplicated/garbled chrome. Skip until it closes.
         if self.modal_open {
             return;
-        }
-        // Non-blocking question countdown rides the same ticker.
-        if self.active_question.is_some() {
-            tick_question(self);
         }
         // Sleep countdown: repaint once per second with the remaining time.
         let mut sleep_tick = false;
