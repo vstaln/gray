@@ -237,6 +237,12 @@ impl StreamingMarkdownRenderer {
         self.output
             .hyperlinks
             .retain(|h| h.line_index < self.frozen.lines_len);
+        // Discard stale tail code-block spans (keep frozen ones — those whose
+        // body lies entirely within the frozen prefix). A still-open fence in
+        // the tail has no span at all, so spans become stable only once frozen.
+        self.output
+            .code_blocks
+            .retain(|cb| cb.output_line_range.end <= self.frozen.lines_len);
         // Frozen hyperlinks are `[..frozen_hyperlinks]` from here on: already
         // sorted, all on lines `< frozen_lines`, so the tail sort below only
         // needs to order the suffix (frozen < tail on the sort key's major).
@@ -289,6 +295,19 @@ impl StreamingMarkdownRenderer {
             .extend(tail_output.hyperlinks.into_iter().map(|mut h| {
                 h.line_index += frozen_lines;
                 h
+            }));
+
+        // Append tail code-block spans, rebasing their tail-relative ranges to
+        // document coordinates (output lines by frozen line count, source bytes
+        // by the tail's start offset) — mirroring the hyperlink offsetting.
+        self.output
+            .code_blocks
+            .extend(tail_output.code_blocks.into_iter().map(|mut cb| {
+                cb.output_line_range.start += frozen_lines;
+                cb.output_line_range.end += frozen_lines;
+                cb.source_byte_range.start += tail_start;
+                cb.source_byte_range.end += tail_start;
+                cb
             }));
 
         // Detect plain URLs (e.g. the `(url)` suffix in pretty-mode
