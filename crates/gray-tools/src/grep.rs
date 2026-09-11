@@ -1,4 +1,5 @@
-//! The `grep` tool: content search via ripgrep (`rg --json`).
+//! The `grep` tool: content search via ripgrep (plain `--vimgrep` fast
+//! path for match-only searches, `rg --json` when context lines are needed).
 
 use std::path::Path;
 use std::process::Stdio;
@@ -20,6 +21,188 @@ pub const GREP_GUIDELINES: &[&str] = &[];
 
 /// Search file contents with ripgrep. Respects .gitignore.
 pub struct GrepTool;
+
+impl GrepTool {
+    /// Match-only fast path over `rg --vimgrep` (`path:line:col:text`).
+    ///
+    /// Returns `None` when the fast path declines (rg missing → caller falls
+    /// through to `--json`, which owns the "not installed" error; any other
+    /// spawn failure fails loudly here). Output contract is identical to the
+    /// `--json` path for match-only searches: same `rel:line: text` lines,
+    /// same limit notice, same truncation behavior.
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_vimgrep(
+        &self,
+        ctx: &ToolContext,
+        pattern: &str,
+        search_path: &Path,
+        is_dir: bool,
+        glob: &Option<String>,
+        ignore_case: bool,
+        literal: bool,
+        effective_limit: usize,
+    ) -> Option<ToolOutput> {
+        let mut cmd = Command::new("rg");
+        cmd.arg("--vimgrep").arg("--color=never").arg("--hidden");
+        if ignore_case {
+            cmd.arg("--ignore-case");
+        }
+        if literal {
+            cmd.arg("--fixed-strings");
+        }
+        if let Some(g) = glob {
+            cmd.arg("--glob").arg(g);
+        }
+        cmd.arg("--").arg(pattern).arg(search_path);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return None; // `--json` path reports "not installed".
+                }
+                return Some(fail(format!("Failed to run ripgrep: {e}")));
+            }
+        };
+        let stdout = child.stdout.take().expect("stdout piped");
+        let stderr = child.stderr.take().expect("stderr piped");
+        let stderr_handle = tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut buf = Vec::new();
+            let mut r = stderr;
+            let mut tmp = [0u8; 1024];
+            loop {
+                match r.read(&mut tmp).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                }
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        });
+
+        let mut matches: Vec<(String, usize, String)> = Vec::new();
+        let mut match_count = 0usize;
+        let mut match_limit_reached = false;
+        let mut cancelled = false;
+        let mut reader = tokio::io::BufReader::new(stdout).lines();
+        loop {
+            tokio::select! {
+                line_res = reader.next_line() => {
+                    let Some(line) = line_res.unwrap_or(None) else { break };
+                    if line.trim().is_empty() {
+                        continue;
+                    }
+                    if match_count >= effective_limit {
+                        break;
+                    }
+                    // `path:line:col:text` — split off the first three fields;
+                    // the text keeps any further colons. Mirrors the `--json`
+                    // path: only lines with a real path + line number survive.
+                    let mut parts = line.splitn(4, ':');
+                    let (Some(fp), Some(no), Some(_col), Some(text)) =
+                        (parts.next(), parts.next(), parts.next(), parts.next())
+                    else {
+                        continue;
+                    };
+                    let line_number: usize = match no.parse() {
+                        Ok(n) if n > 0 => n,
+                        _ => continue,
+                    };
+                    if fp.is_empty() {
+                        continue;
+                    }
+                    match_count += 1;
+                    matches.push((fp.to_string(), line_number, text.to_string()));
+                    if match_count >= effective_limit {
+                        match_limit_reached = true;
+                        let _ = child.kill().await;
+                        break;
+                    }
+                }
+                _ = ctx.cancel.cancelled() => {
+                    cancelled = true;
+                    let _ = child.kill().await;
+                    break;
+                }
+            }
+        }
+
+        let status = match child.wait().await {
+            Ok(s) => s,
+            Err(e) => return Some(fail(format!("ripgrep wait failed: {e}"))),
+        };
+        let stderr_str = if cancelled {
+            stderr_handle.abort();
+            String::new()
+        } else {
+            stderr_handle.await.unwrap_or_default()
+        };
+        if cancelled {
+            return Some(finish("cancelled by user".to_string()));
+        }
+        // rg exit codes: 0 = matches, 1 = no matches, 2+ = error. A limit
+        // kill reads as terminated: fine, same as the `--json` path.
+        if !match_limit_reached
+            && let Some(code) = status.code()
+            && code != 0
+            && code != 1
+        {
+            let msg = stderr_str.trim();
+            if msg.is_empty() {
+                return Some(fail(format!("ripgrep exited with code {code}")));
+            }
+            return Some(fail(msg.to_string()));
+        }
+
+        if matches.is_empty() {
+            return Some(finish("No matches found".to_string()));
+        }
+
+        // Same assembly as the `--json` path: `rel:line: text` + notices.
+        let mut output_lines: Vec<String> = Vec::new();
+        let mut lines_truncated = false;
+        for (file_path, line_number, raw) in &matches {
+            let rel = relativize(search_path, file_path, is_dir);
+            let sanitized = raw
+                .replace("\r\n", "\n")
+                .replace('\r', "")
+                .trim_end_matches('\n')
+                .to_string();
+            let (text, was_truncated) = truncate_line(&sanitized);
+            if was_truncated {
+                lines_truncated = true;
+            }
+            output_lines.push(format!("{rel}:{line_number}: {text}"));
+        }
+        let raw_output = output_lines.join("\n");
+        let trunc = truncate_head(&raw_output);
+        let mut output = trunc.content;
+        let mut notices: Vec<String> = Vec::new();
+        if match_limit_reached {
+            notices.push(format!(
+                "{effective_limit} matches limit reached. Use limit={} for more, or refine pattern",
+                effective_limit * 2
+            ));
+        }
+        if trunc.truncated {
+            notices.push(format!(
+                "{} limit reached",
+                crate::truncate::format_size(MAX_BYTES)
+            ));
+        }
+        if lines_truncated {
+            notices.push(format!(
+                "Some lines truncated to {GREP_MAX_LINE_LENGTH} chars. Use read tool to see full lines"
+            ));
+        }
+        append_notices(&mut output, &notices);
+        Some(finish(output))
+    }
+}
 
 fn truncate_line(line: &str) -> (String, bool) {
     if line.chars().count() <= GREP_MAX_LINE_LENGTH {
@@ -120,6 +303,27 @@ impl Tool for GrepTool {
             Ok(m) => m.is_dir(),
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         };
+
+        // Fast path (match-only searches): plain `--vimgrep` output parses
+        // with one split per line instead of one JSON document per match.
+        // Byte-identical output or this lane doesn't ship (see
+        // `fast_path_parity` test). Context searches keep `--json` below.
+        if context == 0
+            && let Some(output) = self
+                .execute_vimgrep(
+                    ctx,
+                    &pattern,
+                    &search_path,
+                    is_dir,
+                    &glob,
+                    ignore_case,
+                    literal,
+                    effective_limit,
+                )
+                .await
+        {
+            return output;
+        }
 
         let mut cmd = Command::new("rg");
         cmd.arg("--json")
