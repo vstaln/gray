@@ -48,7 +48,7 @@ pub use buffers::MarkdownBuffers;
 pub use checkpoint::{Checkpoint, CheckpointKind};
 pub use colors::{ColorLevel, adapt_color, adapt_style, detect_color_level};
 pub use latex_delimiters::{LatexDelimiterNormalizer, normalize_latex_delimiters};
-pub use output::{CodeBlockSpan, HyperlinkTarget, MarkdownRenderOutput};
+pub use output::{HyperlinkTarget, MarkdownRenderOutput};
 pub use parse::{MarkdownParser, ParsedMarkdown};
 pub use streaming::StreamingMarkdownRenderer;
 pub use style::{MarkdownStyle, TableBorders};
