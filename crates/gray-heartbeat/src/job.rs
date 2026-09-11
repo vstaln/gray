@@ -17,6 +17,17 @@ with exactly [SILENT] and nothing else."
     )
 }
 
+/// Map a config deliver string to its `Deliver` variant. `"local"`/`""` mean
+/// stay local; `"origin"` replies in the originating chat; anything else names
+/// an explicit target.
+fn deliver_from_str(s: &str) -> gray_cron::Deliver {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "" | "local" => gray_cron::Deliver::Local,
+        "origin" => gray_cron::Deliver::Origin,
+        _ => gray_cron::Deliver::Target(s.to_string()),
+    }
+}
+
 pub fn sync_job(cfg: &HeartbeatConfig, goal: &str) -> anyhow::Result<String> {
     let store = gray_cron::CronStore::open(cron_dir()?).context("open cron store")?;
     let _ = store.remove(JOB_NAME);
@@ -27,11 +38,29 @@ pub fn sync_job(cfg: &HeartbeatConfig, goal: &str) -> anyhow::Result<String> {
         JOB_NAME,
         &cfg.schedule,
         &render_prompt(goal),
-        gray_cron::Deliver::Target(cfg.deliver.clone()),
+        deliver_from_str(&cfg.deliver),
         None,
         None,
     )?;
     Ok(id)
+}
+
+/// Apply `on` overrides, persist the config, and (re)create the cron job.
+/// Returns the created job id (empty when the job could not be created).
+pub fn enable(
+    cfg: &mut HeartbeatConfig,
+    schedule: Option<String>,
+    deliver: Option<String>,
+) -> anyhow::Result<String> {
+    if let Some(s) = schedule {
+        cfg.schedule = s;
+    }
+    if let Some(d) = deliver {
+        cfg.deliver = d;
+    }
+    cfg.enabled = true;
+    crate::config::save_config(cfg)?;
+    sync_job(cfg, &crate::goal::read_goal()?)
 }
 
 pub enum JobStatus {
@@ -97,6 +126,35 @@ mod tests {
         cfg.enabled = false;
         assert_eq!(sync_job(&cfg, "goal two").unwrap(), "");
         assert!(store.get(JOB_NAME).unwrap().is_none());
+    }
+
+    #[test]
+    fn enable_applies_overrides_and_persists() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
+        let mut cfg = HeartbeatConfig::default();
+        enable(&mut cfg, Some("every 1h".into()), Some("telegram:9".into())).unwrap();
+        let saved = crate::config::load_config().unwrap();
+        assert!(saved.enabled);
+        assert_eq!(saved.schedule, "every 1h");
+        assert_eq!(saved.deliver, "telegram:9");
+    }
+
+    #[test]
+    fn sync_maps_local_deliver_to_local_variant() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
+        let cfg = HeartbeatConfig {
+            enabled: true,
+            schedule: "every 30m".into(),
+            deliver: "local".into(),
+        };
+        sync_job(&cfg, "g").unwrap();
+        let store = gray_cron::CronStore::open(cron_dir().unwrap()).unwrap();
+        let job = store.get(JOB_NAME).unwrap().unwrap();
+        assert_eq!(job.deliver, gray_cron::Deliver::Local);
     }
 
     #[test]

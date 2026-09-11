@@ -3,6 +3,8 @@ pub mod config;
 pub mod goal;
 pub mod job;
 
+pub use job::enable;
+
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
