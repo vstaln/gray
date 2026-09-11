@@ -41,7 +41,7 @@ pub(crate) struct ManagerSpec {
 
 const SKILLS_SPEC: ManagerSpec = ManagerSpec {
     title: "Skills",
-    empty_hint: "no skills installed",
+    empty_hint: "no skills installed — /marketplace to browse",
     error_verb: "remove failed",
     supports_toggle: false,
     keep_stale_on_relist_error: false,
@@ -713,7 +713,10 @@ mod tests {
         // must update this test deliberately.
         let skills = &super::SKILLS_SPEC;
         assert_eq!(skills.title, "Skills");
-        assert_eq!(skills.empty_hint, "no skills installed");
+        assert_eq!(
+            skills.empty_hint,
+            "no skills installed — /marketplace to browse"
+        );
         assert_eq!(skills.error_verb, "remove failed");
         assert!(!skills.supports_toggle);
         assert!(!skills.keep_stale_on_relist_error);

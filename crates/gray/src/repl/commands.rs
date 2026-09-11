@@ -77,6 +77,11 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["plugins"],
     },
     CmdDef {
+        name: "marketplace",
+        desc: "browse and install plugins/skills",
+        aliases: &[],
+    },
+    CmdDef {
         name: "help",
         desc: "show commands",
         aliases: &[],
@@ -338,6 +343,7 @@ fn complete_plugin_args(
 ) -> Vec<(String, String)> {
     const SUBS: &[(&str, &str)] = &[
         ("list", "list installed plugins"),
+        ("search", "search Gray Index"),
         ("install", "install a plugin"),
         ("remove", "remove a plugin"),
         ("update", "update plugins"),
@@ -460,9 +466,11 @@ pub enum ReplCommand {
     /// External ACP agent: /acp (picker), /acp <agent> switches sticky,
     /// /acp <agent> <prompt> delegates one-shot, /acp off|status|list
     Acp(String),
-    /// Plugin manager: /plugin <list|install|remove|update|enable|disable|check>.
+    /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
     /// `/plugins` is an alias.
     Plugin(String),
+    /// Store: /marketplace browses+installs plugins/skills.
+    Marketplace(String),
     /// Skills: /skills manages installed; /skills:<name> [args] or /skill <name> [args] runs a skill
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
@@ -567,6 +575,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
         Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
+        Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
             if lower_t == "/skills" || lower_t == "/skill" {
                 ReplCommand::Skill(None)
@@ -713,6 +722,7 @@ mod tests {
             "agentsmd",
             "skills",
             "plugin",
+            "marketplace",
             "help",
             "quit",
         ] {
@@ -777,7 +787,7 @@ mod tests {
                 "completion {alias} -> {target}"
             );
         }
-        // `/plug` surfaces `plugin`; bare `/plugin ` leads with itself + all 7 subcommands.
+        // `/plug` surfaces `plugin`; bare `/plugin ` leads with itself + all 8 subcommands.
         use std::path::Path;
         let cwd = Path::new(".");
         assert!(
@@ -786,7 +796,7 @@ mod tests {
                 .any(|(n, _)| n == "plugin")
         );
         let plugin_all = super::complete_command_args("plugin", "", cwd);
-        assert_eq!(plugin_all.len(), 8);
+        assert_eq!(plugin_all.len(), 9);
         assert_eq!(plugin_all[0].0, "plugin");
     }
 
@@ -808,7 +818,7 @@ mod tests {
         ));
         assert!(matches!(
             parse_command("/marketplace"),
-            ReplCommand::Unknown(_)
+            ReplCommand::Marketplace(_)
         ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
         // gateway left the TUI: /gateway and /gw are unknown (the `gray
