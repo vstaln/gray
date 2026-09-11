@@ -104,7 +104,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let queued_h = queued_preview.len() as u16;
         // Space left for the completion panel once the fixed rows
         // (status, queued, input, attachments, footer) are placed.
-        let avail = area.height.saturating_sub(status_h + queued_h + box_h + attach_h + 1);
+        let avail = area
+            .height
+            .saturating_sub(status_h + queued_h + box_h + attach_h + 1);
         let need = PANEL_ROWS as u16;
         let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
         let visible_count = if tui.matches.is_empty() {
@@ -332,31 +334,31 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             tui.thinking_effort.clone()
         };
         let right_parts = if model_display.is_empty() {
-                if effort_display.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![Span::styled(
-                        effort_display.clone(),
-                        Style::default().fg(Color::Rgb(108, 108, 108)),
-                    )]
-                }
-            } else if effort_display.is_empty() {
+            if effort_display.is_empty() {
+                Vec::new()
+            } else {
                 vec![Span::styled(
+                    effort_display.clone(),
+                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                )]
+            }
+        } else if effort_display.is_empty() {
+            vec![Span::styled(
+                model_display.clone(),
+                Style::default().fg(Color::Rgb(140, 140, 140)),
+            )]
+        } else {
+            vec![
+                Span::styled(
                     model_display.clone(),
                     Style::default().fg(Color::Rgb(140, 140, 140)),
-                )]
-            } else {
-                vec![
-                    Span::styled(
-                        model_display.clone(),
-                        Style::default().fg(Color::Rgb(140, 140, 140)),
-                    ),
-                    Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
-                    Span::styled(
-                        effort_display.clone(),
-                        Style::default().fg(Color::Rgb(108, 108, 108)),
-                    ),
-                ]
+                ),
+                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled(
+                    effort_display.clone(),
+                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                ),
+            ]
         };
         let right_len = if model_display.is_empty() {
             display_width(&effort_display)
