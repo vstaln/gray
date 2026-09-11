@@ -500,6 +500,14 @@ pub(crate) async fn maybe_threshold_compact(
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
             say(tui, &notice);
+            // History just shrank: the gauge still holds the pre-compact
+            // StepUsage (stale-high until the next turn's first StepUsage).
+            // Reseed from the post-compact estimate so the footer, /context,
+            // and the next trigger all see the compacted size immediately.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 // Boundary marker + replacement: reload replays the active
@@ -535,6 +543,11 @@ pub(crate) async fn maybe_overflow_compact(
     say(tui, "context overflow — compacting...");
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
+            // See threshold path: reseed the gauge to the compacted size.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 // Boundary marker + replacement (see threshold path).
