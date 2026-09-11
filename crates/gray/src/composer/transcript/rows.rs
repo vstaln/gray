@@ -5,7 +5,7 @@ use crate::text_width::{chars_width, fit_char_count};
 
 pub(crate) fn thinking_style() -> Style {
     Style::default()
-        .fg(Color::Rgb(140, 140, 140))
+        .fg(crate::theme::theme().text_muted)
         .add_modifier(Modifier::ITALIC)
 }
 
@@ -330,10 +330,10 @@ pub(crate) fn format_user_prompt_lines(
     width: usize,
 ) -> Vec<Line<'static>> {
     let sanitized = crate::tui::sanitize_user_text(text);
-    let prompt_color = Color::Rgb(180, 180, 180);
-    let text_primary = Color::Rgb(225, 225, 225);
-    let dim_color = Color::Rgb(140, 140, 140);
-    let bg_style = Style::default().bg(Color::Rgb(22, 22, 22));
+    let prompt_color = crate::theme::theme().text_soft;
+    let text_primary = crate::theme::theme().text_body;
+    let dim_color = crate::theme::theme().text_muted;
+    let bg_style = Style::default().bg(crate::theme::theme().surface_bg);
     let mut lines = Vec::new();
     lines.push(Line::from("").style(bg_style));
     let arrow_span = Span::styled(

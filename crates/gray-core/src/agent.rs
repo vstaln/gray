@@ -234,8 +234,7 @@ pub use super::agent_compact::summary_pair;
 /// tool calls through a [`ToolExecutor`] until the model stops requesting
 /// tools or cancellation fires.
 ///
-/// `max_rounds` (default 50) bounds total loop iterations. The loop
-/// terminates when a turn ends without tool calls (`TurnEnd`) or when
+/// The loop terminates when a turn ends without tool calls (`TurnEnd`) or when
 /// cancellation fires. A lightweight stall
 /// guard (3 identical consecutive tool calls) aborts runaway loops; provider
 /// context errors and user cancellation remain the other natural bounds.
@@ -252,7 +251,6 @@ pub struct Agent {
     pub(crate) system: String,
     pub(crate) tools: Vec<ToolDef>,
     pub(crate) messages: Vec<Message>,
-    pub(crate) max_rounds: Option<u32>,
     pub(crate) tool_timeout: Duration,
     pub(crate) pending_steer: Vec<String>,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
@@ -270,7 +268,6 @@ impl Agent {
             system: String::new(),
             tools: Vec::new(),
             messages: Vec::new(),
-            max_rounds: Some(50),
             tool_timeout: Duration::from_secs(120),
             pending_steer: Vec::new(),
             hooks: Vec::new(),
@@ -839,10 +836,12 @@ mod agent_tests {
                 AgentEvent::tool_result("call_1", "result payload", false),
                 AgentEvent::text_delta("all done"),
                 AgentEvent::StepUsage {
-                    usage: Usage::new(20, 15)
+                    usage: Usage::new(20, 10)
                 },
                 // turn_end carries billed sums across rounds (10+20 in,
-                // 5+10 out), not the latest report.
+                // 5+10 out), not the latest report (the StepUsage gauge
+                // above is latest-only: round 2's input already contains
+                // round 1's history).
                 AgentEvent::turn_end(
                     StopReason::EndTurn,
                     Usage {
@@ -1709,38 +1708,6 @@ mod agent_tests {
             })
             .count();
         assert_eq!(nudges, 2, "continuations must be capped");
-    }
-
-    #[tokio::test]
-    async fn max_rounds_bound_stops_gracefully_without_error() {
-        let provider = FakeProvider::new(vec![tool_script("c1"), tool_script("c2")]);
-        let mut agent = Agent::new(
-            Box::new(provider),
-            Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
-        )
-        .with_tools(vec![tool_def()]);
-        agent.max_rounds = Some(1);
-
-        // Budget stop is not a loop error: productive runs hit this while
-        // making progress, so the turn ends normally with a resume note.
-        let events = agent
-            .run(Message::user("loop"), ToolContext::default())
-            .await
-            .expect("max rounds must stop gracefully");
-
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, AgentEvent::TurnEnd { .. })),
-            "expected a TurnEnd event, got {events:?}"
-        );
-        assert!(
-            agent
-                .messages()
-                .last()
-                .is_some_and(|m| m.text_content().contains("Say 'continue'")),
-            "expected a resume note in history"
-        );
     }
 
     #[test]

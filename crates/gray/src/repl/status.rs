@@ -180,10 +180,25 @@ pub(crate) async fn handle_context_window(
             .map(|s| crate::setup::estimate_str_tokens(&s))
             .unwrap_or(0);
         let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
-        let messages = agent
+        // Provider `total` already bills system + tools + history as input,
+        // so adding their estimates on top double-counts (opencode parity:
+        // its context number is the last usage report alone). When a real
+        // report is in force, messages is the residual after the other
+        // estimates, keeping `used()` equal to the provider total;
+        // otherwise it is the plain history estimate.
+        let history_est = agent
             .as_ref()
-            .map(|a| crate::compact::estimate_context_tokens(a.messages(), latest))
+            .map(|a| {
+                a.messages()
+                    .iter()
+                    .map(crate::compact::estimate_tokens)
+                    .sum()
+            })
             .unwrap_or(0);
+        let messages = match latest.map(|u| u.total()).filter(|t| *t > 0) {
+            Some(total) => total.saturating_sub(sys.saturating_add(tools_toks)),
+            None => history_est,
+        };
         crate::setup::ContextParts {
             system_prompt: sys,
             project_context: 0,

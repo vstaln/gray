@@ -81,6 +81,9 @@ pub struct SavedConfig {
     /// Tail budget kept alongside the summary after compaction.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_keep: Option<usize>,
+    /// TUI color theme name (e.g. "tokyo-night"). None = default gray.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 /// Canonical `SavedConfig.auth_mode` values (kept as strings on disk).
@@ -151,6 +154,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         thinking_effort: opt_field(obj, "thinking_effort"),
         show_reasoning: opt_field(obj, "show_reasoning"),
         context_window: opt_field(obj, "context_window"),
+        theme: opt_field(obj, "theme"),
         context_reserve: opt_field(obj, "context_reserve"),
         context_keep: opt_field(obj, "context_keep"),
     }

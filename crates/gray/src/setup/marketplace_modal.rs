@@ -74,9 +74,9 @@ fn chip_color(chip: &str, accent_peach: ratatui::style::Color) -> ratatui::style
     use ratatui::style::Color;
     match chip {
         "[gray]" => accent_peach,
-        "[pi]" => Color::Rgb(125, 211, 252),
-        "[claw]" => Color::Rgb(134, 239, 172),
-        "[claude]" => Color::Rgb(196, 181, 253),
+        "[pi]" => crate::theme::theme().badge_pi,
+        "[claw]" => crate::theme::theme().badge_claw,
+        "[claude]" => crate::theme::theme().badge_claude,
         _ => Color::White,
     }
 }
@@ -278,9 +278,9 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
-    let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(246, 173, 126);
-    let text_dim = Color::Rgb(120, 120, 120);
+    let box_bg = crate::theme::theme().surface_bg;
+    let accent_peach = crate::theme::theme().accent;
+    let text_dim = crate::theme::theme().text_dim;
     let bg_snapshot = bg
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
@@ -653,7 +653,7 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
                         let fg = if msg == "active" || msg == "installing..." {
                             accent_peach
                         } else {
-                            Color::Rgb(220, 120, 120)
+                            crate::theme::theme().error_soft
                         };
                         let style = Style::default()
                             .fg(fg)
@@ -1324,7 +1324,7 @@ fn render_market_row(
         Line::from(Span::styled(
             format!("{visible}{}", " ".repeat(fill)),
             Style::default()
-                .fg(Color::Black)
+                .fg(crate::theme::theme().on_selection)
                 .bg(accent_peach)
                 .add_modifier(Modifier::BOLD),
         ))

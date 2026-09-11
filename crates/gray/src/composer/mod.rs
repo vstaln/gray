@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
@@ -129,8 +129,8 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
     let l_cols = (max_logo_w as f32).max(1.0);
     let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
-    let base = Color::Rgb(110, 110, 110);
-    let hilite = Color::Rgb(240, 240, 240);
+    let base = crate::theme::theme().text_dim;
+    let hilite = crate::theme::theme().text_bright;
 
     let mut welcome_lines: Vec<Line<'static>> = Vec::new();
     welcome_lines.push(Line::from(""));
@@ -159,14 +159,14 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
         Span::raw(" ".repeat(pad)),
         Span::styled(
             "gray",
-            Style::default().bold().fg(Color::Rgb(225, 225, 225)),
+            Style::default().bold().fg(crate::theme::theme().text_body),
         ),
         Span::styled(
             format!(
                 " {} \u{b7} Run /help for commands",
                 env!("CARGO_PKG_VERSION")
             ),
-            Style::default().fg(Color::Rgb(140, 140, 140)),
+            Style::default().fg(crate::theme::theme().text_muted),
         ),
     ]));
     welcome_lines.push(Line::from(""));
@@ -312,7 +312,8 @@ impl Tui {
                     let lines =
                         crate::composer::transcript::format_user_prompt_lines(text, attached, w);
                     let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let block = Block::default()
+                        .style(Style::default().bg(crate::theme::theme().surface_bg));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone())
                             .block(block)
@@ -324,7 +325,8 @@ impl Tui {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
                     let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let block = Block::default()
+                        .style(Style::default().bg(crate::theme::theme().surface_bg));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone())
                             .block(block)
@@ -546,11 +548,8 @@ impl Tui {
             };
             // Just `✻ Thought for … · N tok` (context size). Billed
             // Σ-per-round totals stay out of the TUI entirely.
-            let line = format_thought_line(
-                verb,
-                &elapsed_str,
-                self.latest_usage.map(|u| u.total()),
-            );
+            let line =
+                format_thought_line(verb, &elapsed_str, self.latest_usage.map(|u| u.total()));
             self.ensure_gap(1);
             self.push_dim(line);
             self.ensure_gap(1);

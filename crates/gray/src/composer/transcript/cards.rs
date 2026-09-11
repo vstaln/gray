@@ -7,7 +7,7 @@ pub(crate) fn format_tool_box_lines(
     body: &[Line<'static>],
     width: usize,
 ) -> Vec<Line<'static>> {
-    let bg_color = Color::Rgb(22, 22, 22);
+    let bg_color = crate::theme::theme().surface_bg;
     let bg_style = Style::default().bg(bg_color);
     let max_w = width.saturating_sub(4).max(1);
 

@@ -7,19 +7,45 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
 
-// ── Palette (GrokNight Theme) ──────────────────────────────────────────────
-pub const ACCENT_TOOL: Color = Color::Rgb(158, 206, 106); // #9ece6a (green bullet)
-pub const TEXT_PRIMARY: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (bold white)
-pub const PATH_COLOR: Color = Color::Rgb(255, 158, 100); // #ff9e64 (TokyoNight orange)
-pub const COMMAND_COLOR: Color = Color::Rgb(224, 175, 104); // #e0af68 (TokyoNight yellow)
-pub const DIM_COLOR: Color = Color::Rgb(108, 108, 108); // #6c6c6c (muted gray)
+// ── Palette (active theme) ─────────────────────────────────────────────────
+// GrokNight/TokyoNight heritage: green bullet, orange paths, yellow commands.
+// These read the live [`UiTheme`] so `/theme` recolors tool output without a
+// restart. The default `gray` theme seeds today's exact values, so output is
+// pixel-identical until the user switches.
+pub fn accent_tool() -> Color {
+    crate::theme::theme().tool_accent
+}
+pub fn text_primary() -> Color {
+    crate::theme::theme().text_body
+}
+pub fn path_color() -> Color {
+    crate::theme::theme().tool_path
+}
+pub fn command_color() -> Color {
+    crate::theme::theme().tool_command
+}
+pub fn dim_color() -> Color {
+    crate::theme::theme().tool_dim
+}
 
-pub const DIFF_DELETE_BG: Color = Color::Rgb(55, 25, 28); // #37191c (dark red diff tint)
-pub const DIFF_DELETE_FG: Color = Color::Rgb(247, 118, 142); // #f7768e (bright red)
-pub const DIFF_INSERT_BG: Color = Color::Rgb(24, 50, 32); // #183220 (dark green diff tint)
-pub const DIFF_INSERT_FG: Color = Color::Rgb(158, 206, 106); // #9ece6a (bright green)
-pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code text)
-pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
+pub fn diff_delete_bg() -> Color {
+    crate::theme::theme().diff_del_bg
+}
+pub fn diff_delete_fg() -> Color {
+    crate::theme::theme().diff_del_fg
+}
+pub fn diff_insert_bg() -> Color {
+    crate::theme::theme().diff_add_bg
+}
+pub fn diff_insert_fg() -> Color {
+    crate::theme::theme().diff_add_fg
+}
+pub fn diff_equal_fg() -> Color {
+    crate::theme::theme().text_body
+}
+pub fn diff_gutter_fg() -> Color {
+    crate::theme::theme().diff_gutter
+}
 
 fn arg_path(args: &serde_json::Value) -> &str {
     // Schemas emit only `path` + `file_path` (write.rs); dropped
@@ -156,19 +182,19 @@ pub fn format_tool_call_header(
     let bullet = Span::styled(
         "\u{2b22} ",
         Style::default()
-            .fg(ACCENT_TOOL)
+            .fg(accent_tool())
             .add_modifier(Modifier::BOLD),
     );
     let action_style = Style::default()
-        .fg(TEXT_PRIMARY)
+        .fg(text_primary())
         .add_modifier(Modifier::BOLD);
     let path_style = Style::default()
-        .fg(PATH_COLOR)
+        .fg(path_color())
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let cmd_style = Style::default()
-        .fg(COMMAND_COLOR)
+        .fg(command_color())
         .add_modifier(Modifier::BOLD);
-    let dim_style = Style::default().fg(DIM_COLOR);
+    let dim_style = Style::default().fg(dim_color());
 
     match name {
         "bash" => {
@@ -358,7 +384,7 @@ fn push_numbered_wrapped(
     let cont_indent_len = indent_count.min(content_w / 2);
     let cont_indent_str = " ".repeat(cont_indent_len);
 
-    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, DIFF_EQUAL_FG, None);
+    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, diff_equal_fg(), None);
     let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
 
     let gutter_str = format!("{:>width$} | ", line_num, width = gutter_width);
@@ -370,12 +396,12 @@ fn push_numbered_wrapped(
         if ci == 0 {
             spans.push(Span::styled(
                 gutter_str.clone(),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(diff_gutter_fg()),
             ));
         } else {
             spans.push(Span::styled(
                 cont_gutter_str.clone(),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(diff_gutter_fg()),
             ));
             if cont_indent_len > 0 {
                 spans.push(Span::raw(cont_indent_str.clone()));
@@ -432,7 +458,7 @@ fn render_numbered_lines(
             Span::styled(
                 format!("… +{omitted} lines"),
                 Style::default()
-                    .fg(DIM_COLOR)
+                    .fg(dim_color())
                     .add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -492,10 +518,10 @@ pub fn format_tool_result_lines_with_context(
                 Span::styled(
                     prefix,
                     Style::default()
-                        .fg(DIFF_DELETE_FG)
+                        .fg(diff_delete_fg())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled((*l).to_string(), Style::default().fg(DIFF_DELETE_FG)),
+                Span::styled((*l).to_string(), Style::default().fg(diff_delete_fg())),
             ]));
         }
         return lines;

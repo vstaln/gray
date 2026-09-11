@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let mut config = Config::resolve(&cli)?;
+    gray::theme::init_theme(config.theme.as_deref());
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);

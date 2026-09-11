@@ -203,8 +203,8 @@ impl Tui {
         self.ensure_gap(1);
         let lines = format_user_prompt_lines(text, attached, self.width().max(10));
         let height = lines.len() as u16;
-        let block =
-            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block = ratatui::widgets::Block::default()
+            .style(Style::default().bg(crate::theme::theme().surface_bg));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines.clone())
                 .block(block)
@@ -255,7 +255,7 @@ pub(crate) fn fmt_thought_duration(d: Duration) -> String {
 fn thought_summary_line(elapsed: Duration) -> Line<'static> {
     Line::from(vec![Span::styled(
         format!("⬡ Thought for {}", fmt_thought_duration(elapsed)),
-        Style::default().fg(Color::Rgb(140, 140, 140)),
+        Style::default().fg(crate::theme::theme().text_muted),
     )])
 }
 
@@ -305,7 +305,12 @@ mod tests {
         let line = thought_summary_line(Duration::from_millis(5800));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "⬡ Thought for 5.8s");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(140, 140, 140)));
+        assert_eq!(
+            line.spans[0].style.fg,
+            // Pure Gray preset (no `theme()` global read — keeps this test
+            // hermetic under parallel execution).
+            Some(crate::theme::ThemeId::Gray.ui_theme().text_muted)
+        );
     }
 
     #[test]
@@ -353,19 +358,19 @@ mod tests {
 
     #[test]
     fn diff_rows_pad_edge_to_edge() {
-        use crate::tool_fmt::{DIFF_DELETE_BG, DIFF_INSERT_BG};
+        use crate::tool_fmt::{diff_delete_bg, diff_insert_bg};
         let header = Line::from("Ran edit");
         let body = vec![
             Line::from(vec![Span::styled(
                 "  1 | - old",
-                Style::default().bg(DIFF_DELETE_BG),
+                Style::default().bg(diff_delete_bg()),
             )])
-            .style(Style::default().bg(DIFF_DELETE_BG)),
+            .style(Style::default().bg(diff_delete_bg())),
             Line::from(vec![Span::styled(
                 "  1 | + new",
-                Style::default().bg(DIFF_INSERT_BG),
+                Style::default().bg(diff_insert_bg()),
             )])
-            .style(Style::default().bg(DIFF_INSERT_BG)),
+            .style(Style::default().bg(diff_insert_bg())),
             Line::from(vec![Span::raw("  2 |   same")]),
         ];
         let lines = format_tool_box_lines(header, &body, 80);

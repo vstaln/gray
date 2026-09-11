@@ -9,7 +9,7 @@ use crossterm::terminal::EnterAlternateScreen;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -366,30 +366,30 @@ impl SysEditor {
             Span::styled(
                 title_left,
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(246, 173, 126))
+                    .fg(crate::theme::theme().on_selection)
+                    .bg(crate::theme::theme().accent)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 mod_tag,
                 Style::default()
                     .fg(if self.modified {
-                        Color::Rgb(180, 40, 40)
+                        crate::theme::theme().error
                     } else {
-                        Color::Rgb(40, 120, 40)
+                        crate::theme::theme().success
                     })
-                    .bg(Color::Rgb(246, 173, 126))
+                    .bg(crate::theme::theme().accent)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 " ".repeat(header_pad),
-                Style::default().bg(Color::Rgb(246, 173, 126)),
+                Style::default().bg(crate::theme::theme().accent),
             ),
             Span::styled(
                 title_right,
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(246, 173, 126)),
+                    .fg(crate::theme::theme().on_selection)
+                    .bg(crate::theme::theme().accent),
             ),
         ];
         frame.render_widget(
@@ -404,7 +404,7 @@ impl SysEditor {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 warn,
-                Style::default().fg(Color::Rgb(254, 205, 211)),
+                Style::default().fg(crate::theme::theme().rose),
             ))),
             Rect::new(area.x, area.y + 1, area.width, 1),
         );
@@ -422,14 +422,14 @@ impl SysEditor {
                     .collect();
 
                 body_lines.push(Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(Color::Rgb(90, 90, 90))),
+                    Span::styled(gutter, Style::default().fg(crate::theme::theme().text_dim)),
                     Span::raw(text),
                 ]));
             } else {
                 let gutter = format!(" {:>width$} \u{2502} ", "~", width = total_digits);
                 body_lines.push(Line::from(vec![Span::styled(
                     gutter,
-                    Style::default().fg(Color::Rgb(60, 60, 60)),
+                    Style::default().fg(crate::theme::theme().text_faint),
                 )]));
             }
         }
@@ -442,18 +442,21 @@ impl SysEditor {
         let status_y = area.y + area.height - footer_h;
         let status_line = if let Some((msg, _)) = &self.status_msg {
             Line::from(vec![
-                Span::styled(" \u{2022} ", Style::default().fg(Color::Rgb(246, 173, 126))),
+                Span::styled(
+                    " \u{2022} ",
+                    Style::default().fg(crate::theme::theme().accent),
+                ),
                 Span::styled(
                     msg.as_str(),
                     Style::default()
-                        .fg(Color::Rgb(230, 230, 230))
+                        .fg(crate::theme::theme().text_body)
                         .add_modifier(Modifier::BOLD),
                 ),
             ])
         } else {
             Line::from(Span::styled(
                 "\u{2500}".repeat(area.width as usize),
-                Style::default().fg(Color::Rgb(50, 50, 50)),
+                Style::default().fg(crate::theme::theme().text_faint),
             ))
         };
         frame.render_widget(
@@ -467,13 +470,13 @@ impl SysEditor {
                 Span::styled(
                     format!("^{key}"),
                     Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Rgb(200, 200, 200))
+                        .fg(crate::theme::theme().on_selection)
+                        .bg(crate::theme::theme().chip_bg)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(" {desc}  "),
-                    Style::default().fg(Color::Rgb(180, 180, 180)),
+                    Style::default().fg(crate::theme::theme().text_soft),
                 ),
             ]
         };
