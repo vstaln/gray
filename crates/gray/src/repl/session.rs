@@ -513,14 +513,12 @@ pub(crate) async fn maybe_threshold_compact(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn maybe_overflow_compact(
     agent: &mut Agent,
     config: &Config,
     session_state: &mut Option<SessionState>,
     cwd: &Path,
     tui: Option<&crate::composer::SharedTui>,
-    _latest: Option<gray_core::event::Usage>,
     initial_count: &mut usize,
     err: &CoreError,
 ) -> bool {
