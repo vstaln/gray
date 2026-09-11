@@ -32,7 +32,8 @@ pub fn run_connect_modal(
     use ratatui::backend::CrosstermBackend;
     use std::time::Duration;
 
-    let all_items = build_connect_items();
+    let catalog = load_catalog()?;
+    let all_items = build_connect_items(&catalog);
     let mut filter = String::new();
     let mut sel = 0usize;
     let mut scroll_top = 0usize;
