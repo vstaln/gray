@@ -11,10 +11,28 @@ struct FileLogger {
     path: std::path::PathBuf,
 }
 
+/// Size-capped log rotation: `gray.log` → `.1` → `.2`, best-effort, never panics.
+const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// If `path` exceeds `LOG_MAX_BYTES`, shift `.1`→`.2`, `path`→`.1`, truncate `path`.
+/// Missing/small files are left alone. All errors swallowed (logging must not crash boot).
+fn rotate_if_needed(path: &std::path::Path) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    if meta.len() <= LOG_MAX_BYTES {
+        return;
+    }
+    let _ = std::fs::remove_file(path.with_extension("log.2"));
+    let _ = std::fs::rename(path.with_extension("log.1"), path.with_extension("log.2"));
+    let _ = std::fs::rename(path, path.with_extension("log.1"));
+    let _ = std::fs::File::create(path);
+}
+
 /// Runtime size check: `rotate_if_needed` at boot covers restarts only, so
 /// the live logger must cap itself past 10MiB too.
 fn should_rotate(len: u64) -> bool {
-    len > gray_supervise::rotation::LOG_MAX_BYTES
+    len > LOG_MAX_BYTES
 }
 
 static INIT: OnceLock<()> = OnceLock::new();
@@ -150,7 +168,7 @@ pub fn init() {
             return;
         };
         let path = home.join("logs").join("gray.log");
-        gray_supervise::rotation::rotate_if_needed(&path);
+        rotate_if_needed(&path);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -207,7 +225,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("gray.log");
         std::fs::write(&log, vec![b'x'; (10 * 1024 * 1024 + 1) as usize]).unwrap();
-        gray_supervise::rotation::rotate_if_needed(&log);
+        rotate_if_needed(&log);
         assert!(std::fs::metadata(&log).unwrap().len() < 10 * 1024 * 1024);
     }
 
@@ -215,7 +233,7 @@ mod tests {
     #[test]
     fn runtime_rotation_threshold_matches_boot_cap() {
         assert!(!should_rotate(0));
-        assert!(!should_rotate(gray_supervise::rotation::LOG_MAX_BYTES));
-        assert!(should_rotate(gray_supervise::rotation::LOG_MAX_BYTES + 1));
+        assert!(!should_rotate(LOG_MAX_BYTES));
+        assert!(should_rotate(LOG_MAX_BYTES + 1));
     }
 }
