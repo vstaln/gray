@@ -165,9 +165,6 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 | `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
 | `gray-pkg` | plugin package management |
 | `gray-acp` | Agent Client Protocol client (external agents) |
-| `gray-cron` | cron scheduling · job store · ticker |
-| `gray-gateway` | Telegram / Discord / Slack gateway daemon |
-| `gray-supervise` | supervision core — restart contract, heartbeat, lifecycle, probe, rotation |
 | `gray-markdown` | streaming markdown renderer for the TUI |
 
 Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose). Benchmarks: [docs/read-tool-bench.md](docs/read-tool-bench.md). Shell-tool notes: [docs/harness/shell-tool.md](docs/harness/shell-tool.md).

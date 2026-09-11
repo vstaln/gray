@@ -1,12 +1,11 @@
 //! Shared plugin→host runner core (`host/run` over a `gray -p` child).
 //!
-//! Both hosts (REPL/`-p` in `gray`, daemon in `gray-gateway`) serve sidecar
+//! The host (REPL/`-p` in `gray`) serves sidecar
 //! `host/*` requests through this: a subprocess, not an in-process agent
 //! turn, because `Agent::run` futures are `!Send` (streaming sink) and the
 //! sidecar transport (`sidecar.rs` reader) needs `Send`. Spawning the running
 //! binary (`current_exe`) keeps dev and installed layouts working with no
-//! `PATH` setup; the process env (`GRAY_HOME`) is inherited so the cron
-//! sidecar and its runner see the same jobs.
+//! `PATH` setup; the process env (`GRAY_HOME`) is inherited by the child.
 //!
 //! Ceiling: the host enforces a 30 s TTL per request — this helper reaps the
 //! child at 28 s so a long turn reports a loud timeout instead of hanging

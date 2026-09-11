@@ -1,4 +1,4 @@
-//! One profile-aware agent builder for every surface (REPL, `-p`, gateway, cron).
+//! One profile-aware agent builder for every surface (REPL, `-p`).
 //!
 //! Lives here (not in `gray`) because the `gray → gray-gateway` edge forbids
 //! the gateway from calling `gray::build_agent` — this crate is the lowest
