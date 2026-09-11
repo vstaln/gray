@@ -453,7 +453,6 @@ mod tests {
                 cmd: CronCmd::Remove { .. },
             })
         ));
-
     }
 
     #[test]

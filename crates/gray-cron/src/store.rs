@@ -147,8 +147,8 @@ pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::
     result
 }
 
-/// Cross-process mutual exclusion for one load-modify-save pass. Same flock
-/// + 300s-claim shape the daemon used, blocking variant: the critical
+/// Cross-process mutual exclusion for one load-modify-save pass (same
+/// flock/claim shape the daemon used). Blocking variant: the critical
 /// section is milliseconds long, and the 30s deadline matches hermes
 /// `_JOBS_LOCK_TIMEOUT_SECONDS`. Lock open/timeout/unsupported errors abort
 /// the pass instead of running it unguarded: at-most-once claims require
