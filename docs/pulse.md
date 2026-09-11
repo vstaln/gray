@@ -78,3 +78,18 @@ to the installed `gray` binary.
 The agent can then read or set the goal, flip the pulse on/off, and check
 status in conversation. See [`plugins.md`](plugins.md) for the sidecar wire
 protocol.
+
+## Renamed from `heartbeat`
+
+An earlier, unreleased build called this feature "heartbeat" (crate
+`gray-heartbeat`, cron job name `heartbeat`, files `$GRAY_HOME/heartbeat.json`
+and `$GRAY_HOME/heartbeat/goal.md`). If you used it, remove the stale job and
+re-create it here:
+
+```bash
+gray cron remove heartbeat
+gray pulse goal set "…"
+gray pulse on --every 30m --deliver local
+```
+
+The old files are ignored by `gray pulse` and can be deleted.

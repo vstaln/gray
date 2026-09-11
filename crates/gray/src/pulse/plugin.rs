@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
+use std::path::Path;
 
 use crate::pulse::{config, goal, job};
 
@@ -36,6 +37,10 @@ fn manifest() -> Value {
 /// Handle one NDJSON request line, returning the JSON reply line when one is
 /// due. Returns `None` for `plugin/shutdown` and for notifications (no `id`).
 pub fn handle_line(line: &str) -> Option<String> {
+    handle_line_at(line, gray_gateway::config::gray_home_dir().ok().as_deref())
+}
+
+fn handle_line_at(line: &str, home: Option<&Path>) -> Option<String> {
     let req: Value = serde_json::from_str(line).ok()?;
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     if method == "plugin/shutdown" {
@@ -44,13 +49,13 @@ pub fn handle_line(line: &str) -> Option<String> {
     let id = req.get("id").and_then(Value::as_u64)?;
     let result = match method {
         "plugin/manifest" => manifest(),
-        "tool/call" => tool_call(req.get("params")),
+        "tool/call" => tool_call(req.get("params"), home),
         _ => return None,
     };
     Some(json!({"id": id, "result": result}).to_string())
 }
 
-fn tool_call(params: Option<&Value>) -> Value {
+fn tool_call(params: Option<&Value>, home: Option<&Path>) -> Value {
     let empty = Value::Null;
     let params = params.unwrap_or(&empty);
     let name = params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -58,7 +63,7 @@ fn tool_call(params: Option<&Value>) -> Value {
         return call_reply(Err(anyhow::anyhow!("unknown tool: {name}")));
     }
     let args = params.get("args").cloned().unwrap_or(Value::Null);
-    call_reply(run_action(&args))
+    call_reply(run_action_at(&args, home))
 }
 
 fn call_reply(result: Result<String>) -> Value {
@@ -68,7 +73,8 @@ fn call_reply(result: Result<String>) -> Value {
     }
 }
 
-fn run_action(args: &Value) -> Result<String> {
+fn run_action_at(args: &Value, home: Option<&Path>) -> Result<String> {
+    let home = home.ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
     let action = args
         .get("action")
         .and_then(Value::as_str)
@@ -76,8 +82,8 @@ fn run_action(args: &Value) -> Result<String> {
     let str_arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     match action {
         "status" => {
-            let cfg = config::load_config()?;
-            Ok(match job::job_status(&cfg)? {
+            let cfg = config::load_config_at(&config::config_path_at(home))?;
+            Ok(match job::job_status_at(&cfg, &job::cron_dir_at(home))? {
                 job::JobStatus::Disabled => "disabled".into(),
                 job::JobStatus::Missing => "enabled (job missing — run sync)".into(),
                 job::JobStatus::Live { next_run_at } => match next_run_at {
@@ -86,26 +92,29 @@ fn run_action(args: &Value) -> Result<String> {
                 },
             })
         }
-        "goal_get" => goal::read_goal(),
+        "goal_get" => goal::read_goal_at(&goal::goal_path_at(home)),
         "goal_set" => {
             let text = str_arg("text").context("text is required for goal_set")?;
-            goal::write_goal(&text)?;
+            goal::write_goal_at(&goal::goal_path_at(home), &text)?;
             Ok("goal set".into())
         }
         "on" => {
-            let mut cfg = config::load_config()?;
-            job::enable(&mut cfg, str_arg("schedule"), str_arg("deliver"))?;
+            let mut cfg = config::load_config_at(&config::config_path_at(home))?;
+            job::enable_at(&mut cfg, str_arg("schedule"), str_arg("deliver"), home)?;
             Ok(format!("pulse on ({})", cfg.schedule))
         }
         "off" => {
-            let mut cfg = config::load_config()?;
+            let mut cfg = config::load_config_at(&config::config_path_at(home))?;
             cfg.enabled = false;
-            job::sync_job(&cfg, &goal::read_goal()?)?;
-            config::save_config(&cfg)?;
+            let goal = goal::read_goal_at(&goal::goal_path_at(home))?;
+            job::sync_job_at(&cfg, &goal, &job::cron_dir_at(home))?;
+            config::save_config_at(&config::config_path_at(home), &cfg)?;
             Ok("pulse off".into())
         }
         "sync" => {
-            job::sync_job(&config::load_config()?, &goal::read_goal()?)?;
+            let cfg = config::load_config_at(&config::config_path_at(home))?;
+            let goal = goal::read_goal_at(&goal::goal_path_at(home))?;
+            job::sync_job_at(&cfg, &goal, &job::cron_dir_at(home))?;
             Ok("synced".into())
         }
         other => Err(anyhow::anyhow!("unknown action: {other}")),
@@ -156,11 +165,10 @@ pub fn serve_plugin() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pulse::ENV_LOCK;
 
     #[test]
     fn manifest_advertises_the_pulse_tool() {
-        let out = handle_line(r#"{"id":1,"method":"plugin/manifest"}"#).unwrap();
+        let out = handle_line_at(r#"{"id":1,"method":"plugin/manifest"}"#, None).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 1);
         assert_eq!(v["result"]["tools"][0]["name"], "pulse");
@@ -168,17 +176,22 @@ mod tests {
 
     #[test]
     fn tool_call_status_and_goal_set() {
-        let _g = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
-        unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
-        let out = handle_line(r#"{"id":2,"method":"tool/call","params":{"name":"pulse","args":{"action":"goal_set","text":"do x"}}}"#).unwrap();
+        let out = handle_line_at(
+            r#"{"id":2,"method":"tool/call","params":{"name":"pulse","args":{"action":"goal_set","text":"do x"}}}"#,
+            Some(dir.path()),
+        )
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["result"]["is_error"], false);
-        assert_eq!(crate::pulse::goal::read_goal().unwrap(), "do x");
+        assert_eq!(
+            goal::read_goal_at(&goal::goal_path_at(dir.path())).unwrap(),
+            "do x"
+        );
     }
 
     #[test]
     fn shutdown_is_a_notification_with_no_reply() {
-        assert!(handle_line(r#"{"method":"plugin/shutdown"}"#).is_none());
+        assert!(handle_line_at(r#"{"method":"plugin/shutdown"}"#, None).is_none());
     }
 }
