@@ -4,8 +4,11 @@ use gray_heartbeat::{config, enable, goal, job};
 #[derive(Parser)]
 #[command(name = "gray-heartbeat", about = "gray's 24/7 standing-goal heartbeat")]
 struct Cli {
+    /// Run as a gray sidecar plugin (NDJSON over stdio) instead of a one-shot CLI.
+    #[arg(long)]
+    plugin: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -39,7 +42,14 @@ enum GoalAction {
 }
 
 fn main() -> anyhow::Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    if cli.plugin {
+        return gray_heartbeat::plugin::serve_plugin();
+    }
+    let Some(command) = cli.command else {
+        anyhow::bail!("no command given (try --help)");
+    };
+    match command {
         Command::On { every, deliver } => {
             let mut cfg = config::load_config()?;
             enable(&mut cfg, every, deliver)?;
