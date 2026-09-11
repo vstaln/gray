@@ -8,9 +8,9 @@
 //! stream: ~8 KiB line scratch + 64 KiB reader = ~72 KiB, regardless of file
 //! size (a 200 MiB single line streams, it never materializes).
 //!
-//! Hygiene runs on the stream, mirroring `hygiene::prepare`: BOM stripped
+//! Hygiene runs on the stream via the `hygiene` helpers: BOM stripped
 //! from the first line only, one trailing `\r` stripped per line (CRLF).
-//! Known gap vs `prepare`: a lone interior `\r` (old-Mac endings) is kept,
+//! Known gap: a lone interior `\r` (old-Mac endings) is kept,
 //! not treated as a line break — no zoo fixture covers it, and splitting
 //! mid-line would break `line_no` accounting. Integrator: revisit if a
 //! lone-CR fixture lands.
@@ -52,7 +52,7 @@
 //! done and yields `None`; the driver renders `notices::cancelled_note`.
 //!
 //! Driver contract (`read/mod.rs::execute_streamed`, which replaced the
-//! `tokio::fs::read` → `prepare` → `text.lines()` chain in T2.2):
+//! pre-T2.2 whole-file read chain):
 //!
 //! 1. `LineStream::open` (open error → the `read failed …` path).
 //! 2. `binary_note()` → return as-is; `file_size() == 0` → the empty note.
@@ -151,7 +151,7 @@ pub struct RawLine {
 }
 
 impl RawLine {
-    /// Lossy-decode this line (mirrors `hygiene::prepare`'s decode step).
+    /// Lossy-decode this line (lossy UTF-8, like the whole-file path).
     /// Lines skipped before `offset` never call this: counted, not decoded.
     pub fn text(&self) -> Cow<'_, str> {
         String::from_utf8_lossy(&self.bytes)

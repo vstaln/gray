@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use gray_core::agent::ToolContext;
 use gray_core::event::Usage;
+use gray_plugin::builder::resolve_argv;
 use gray_plugin::sidecar::SidecarPlugin;
 use gray_plugin::{CoreEvent, Plugin};
 
@@ -24,58 +25,6 @@ impl Report {
     fn show(&self) {
         let mark = if self.pass { "PASS" } else { "FAIL" };
         println!("{mark} {} — {}", self.name, self.detail);
-    }
-}
-
-/// Resolve the spawn argv for a plugin dir: the dir itself when
-/// executable, else `plugin.sh`, else the single executable inside.
-fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-    let is_exec = |p: &Path| {
-        let Ok(m) = std::fs::metadata(p) else {
-            return false;
-        };
-        if !m.is_file() {
-            return false;
-        }
-        // Executable bit is unix-only; on Windows any file qualifies.
-        #[cfg(unix)]
-        {
-            m.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        {
-            true
-        }
-    };
-    if is_exec(dir) {
-        return Ok(vec![dir.to_string_lossy().into_owned()]);
-    }
-    if !dir.is_dir() {
-        anyhow::bail!("{} is not a directory (or executable)", dir.display());
-    }
-    let script = dir.join("plugin.sh");
-    if is_exec(&script) {
-        return Ok(vec![script.to_string_lossy().into_owned()]);
-    }
-    let mut execs = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        if is_exec(&path) {
-            execs.push(path);
-        }
-    }
-    match execs.len() {
-        1 => Ok(vec![execs[0].to_string_lossy().into_owned()]),
-        0 => anyhow::bail!(
-            "no executable in {} (expected plugin.sh or one executable)",
-            dir.display()
-        ),
-        _ => anyhow::bail!(
-            "ambiguous plugin dir {}: several executables, add plugin.sh",
-            dir.display()
-        ),
     }
 }
 

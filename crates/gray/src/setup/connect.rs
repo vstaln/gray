@@ -11,6 +11,14 @@ pub(crate) struct ConnectColors {
     pub text_dim: Color,
 }
 
+/// Bracketed-paste insertion for the modal's single-line fields. Key and
+/// filter input is one line: strip line breaks (clipboards often trail
+/// `\n`) so a paste lands whole and never submits. Otherwise identical to
+/// typing the same text character by character.
+fn insert_paste(buf: &mut String, pasted: &str) {
+    buf.push_str(&pasted.replace(['\r', '\n'], ""));
+}
+
 /// Interactive "Connect a provider" GUI modal with clean colored box styling.
 /// Floating container block matching the composer prompt text box, live search filter,
 /// peach selection highlight, and in-modal API key entry.
@@ -59,6 +67,10 @@ pub fn run_connect_modal(
         crossterm::cursor::Hide
     )?;
     let _ = crossterm::terminal::size();
+    // Bracketed paste is terminal-global (mode 2004): the composer asserts
+    // it every prompt turn, so a paste here arrives as `Event::Paste`.
+    // Re-assert for entries that never ran a prompt turn (e.g. onboarding).
+    let _ = crossterm::execute!(stdout_handle, crossterm::event::EnableBracketedPaste);
 
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
@@ -234,6 +246,10 @@ pub fn run_connect_modal(
                             }
                             _ => {}
                         },
+                        Event::Paste(pasted) => {
+                            insert_paste(&mut filter, &pasted);
+                            sel = 0;
+                        }
                         Event::Resize(_, _) => {}
                         _ => {}
                     }
@@ -329,6 +345,10 @@ pub fn run_connect_modal(
                         }
                         _ => {}
                     },
+                    Event::Paste(pasted) => {
+                        insert_paste(key_buf, &pasted);
+                        *status_msg = None;
+                    }
                     Event::Resize(_, _) => {}
                     _ => {}
                 },
@@ -431,6 +451,10 @@ pub fn run_connect_modal(
                             }
                             _ => {}
                         },
+                        Event::Paste(pasted) => {
+                            insert_paste(m_filter, &pasted);
+                            *m_sel = 0;
+                        }
                         Event::Resize(_, _) => {}
                         _ => {}
                     }
@@ -442,4 +466,30 @@ pub fn run_connect_modal(
     let _ = terminal.clear();
 
     result
+}
+
+#[cfg(test)]
+mod paste_tests {
+    use super::insert_paste;
+
+    #[test]
+    fn paste_appends_full_key() {
+        let mut buf = String::new();
+        insert_paste(&mut buf, "sk-opencode-go-abc123XYZ");
+        assert_eq!(buf, "sk-opencode-go-abc123XYZ");
+    }
+
+    #[test]
+    fn paste_strips_trailing_newline() {
+        let mut buf = String::new();
+        insert_paste(&mut buf, "sk-abc123\n");
+        assert_eq!(buf, "sk-abc123");
+    }
+
+    #[test]
+    fn paste_strips_crlf_and_interior_breaks() {
+        let mut buf = String::from("sk-");
+        insert_paste(&mut buf, "ab\r\ncd\nef");
+        assert_eq!(buf, "sk-abcdef");
+    }
 }

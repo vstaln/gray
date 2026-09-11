@@ -29,9 +29,7 @@ pub(crate) async fn dispatch_command(
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
         ReplCommand::Quit => {
             shutdown_hooks(agent.as_ref()).await;
-            if let Some(s) = acp.take() {
-                s.shutdown().await;
-            }
+            let _ = acp.take(); // AcpSession has no teardown.
             if let Some((shared, stop)) = tui {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut t = shared.lock().expect("tui lock");

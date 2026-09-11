@@ -70,11 +70,10 @@ pub mod tabs;
 mod acp_modal;
 mod context_modal;
 mod effort;
+mod install_manager;
 mod marketplace_modal;
 mod model_modal;
 mod permissions_modal;
-mod plugins_modal;
-mod skills_modal;
 
 pub use context_modal::run_context_modal;
 mod connect;
@@ -85,11 +84,10 @@ mod connect_models;
 pub use acp_modal::run_acp_modal;
 pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
+pub use install_manager::{run_plugins_modal, run_skills_modal};
 pub use marketplace_modal::run_marketplace_modal;
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 pub use permissions_modal::run_permissions_modal;
-pub use plugins_modal::run_plugins_modal;
-pub use skills_modal::run_skills_modal;
 
 use crate::{config::Config, tui::print_wrapped};
 
