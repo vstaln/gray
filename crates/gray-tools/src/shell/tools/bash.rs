@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use gray_core::agent::{PermissionMode, Tool, ToolContext, ToolOutput};
+use gray_core::agent::{Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 use serde_json::{Value, json};
 use tokio::process::Child;
@@ -26,7 +26,6 @@ use crate::shell::contract::{
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
-use crate::shell::guard;
 use crate::shell::kill::term_then_kill;
 use crate::shell::pump::Pump;
 use crate::shell::registry::registry;
@@ -117,31 +116,6 @@ impl Tool for BashTool {
             Ok(_) => None,
             Err(e) => return e,
         };
-
-        match guard::classify(&command) {
-            guard::Decision::Allow => {}
-            guard::Decision::Deny(msg) => return fail(msg),
-            guard::Decision::Prompt { rule, why, alt } => {
-                // Fail closed without an interactive user: -p/auto mode has
-                // no TTY to ask on, so a Prompt verdict denies here instead
-                // of auto-executing (Deny verdicts block above regardless).
-                if ctx.permission == PermissionMode::Auto {
-                    return fail(format!(
-                        "Blocked by destructive-command guard ({rule}): non-interactive mode cannot approve risky commands — have the user run it manually. {why} Safe alternative: {alt}."
-                    ));
-                }
-                if !guard::prompt_allowance(rule) {
-                    return fail(format!(
-                        "Blocked by destructive-command guard ({rule}): already asked twice this session — have the user run it manually. {why}"
-                    ));
-                }
-                if !guard::ask_allow_once(ctx, &command, rule, &why, &alt).await {
-                    return fail(format!(
-                        "Blocked by destructive-command guard ({rule}): user did not approve. {why} Safe alternative: {alt}."
-                    ));
-                }
-            }
-        }
 
         let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
         let id = registry().reserve(&session);
@@ -567,58 +541,6 @@ mod tests {
             d.display()
         );
         assert_eq!(d.file_name().and_then(|s| s.to_str()), Some("shell"));
-    }
-
-    #[tokio::test]
-    async fn prompt_verdicts_fail_closed_in_auto_mode() {
-        // -p/auto has no TTY to ask on: a Prompt-verdict command must be
-        // denied, never auto-executed.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
-            session_id: Some(sess("failclosed")),
-            permission: PermissionMode::Auto,
-            ..ToolContext::default()
-        };
-        let tool = BashTool;
-        // Prompt verdict (git-reset-hard), harmless to attempt: the bare
-        // tempdir is not a git repo, so even execution would just fail as data.
-        let r = tool
-            .execute(&ctx, json!({"command": "git reset --hard"}))
-            .await;
-        assert!(
-            r.is_error,
-            "Prompt must fail closed in auto mode: {}",
-            r.content
-        );
-        assert!(
-            r.content.contains("Blocked by destructive-command guard"),
-            "{}",
-            r.content
-        );
-    }
-
-    #[tokio::test]
-    async fn prompt_verdicts_still_ask_in_interactive_mode() {
-        // Ask mode without a reachable user fails closed too (no bridge),
-        // via the ask path — interactive behavior unchanged.
-        let dir = tempfile::tempdir().expect("tempdir");
-        let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
-            session_id: Some(sess("askclosed")),
-            permission: PermissionMode::Ask,
-            ..ToolContext::default()
-        };
-        let tool = BashTool;
-        let r = tool
-            .execute(&ctx, json!({"command": "git reset --hard"}))
-            .await;
-        assert!(r.is_error, "expected denial without a user: {}", r.content);
-        assert!(
-            r.content.contains("Blocked by destructive-command guard"),
-            "{}",
-            r.content
-        );
     }
 
     #[tokio::test]

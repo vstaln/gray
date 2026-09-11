@@ -77,7 +77,7 @@ impl GatewayRunner {
         sink: Option<tokio::sync::mpsc::UnboundedSender<ProgressMsg>>,
     ) -> anyhow::Result<String> {
         use gray_core::Message;
-        use gray_core::agent::{PermissionMode, ToolContext};
+        use gray_core::agent::ToolContext;
         use gray_core::event::AgentEvent;
         use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
@@ -151,10 +151,7 @@ impl GatewayRunner {
         let ctx = ToolContext {
             cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
             cancel: token,
-            questions: None, // no interactive user → request_user_input is denied anyway
             session_id: Some(sid_str.to_string()),
-            permission: PermissionMode::resolve(false),
-            approvals: None, // gateway daemon owns policy via DenyExecutor/authz instead
         };
         let mut on_event = |e: &AgentEvent| {
             if let Some(tx) = &sink {

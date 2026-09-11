@@ -1,5 +1,9 @@
 plugins:
-  - tools-basic
-  - tools-search
+  - tools-minimal
+# Default surface is one persistent shell (`tools-minimal`), mirroring the
+# dsh `minimal` preset and mini-swe-agent's bash-only bet. Opt back into the
+# richer sets by listing them here:
+#   - tools-basic    read/write/edit/bash/shell control (+ skill tool)
+#   - tools-search   grep/find/ls
 # NOTE: providers-become-plugins is Phase-2-adjacent work; `provider-openai`
 # is intentionally not listed here (no provider plugin exists yet).

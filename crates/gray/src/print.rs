@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{PermissionMode, ToolContext};
+use gray_core::agent::ToolContext;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_core::redaction::{redact_for_disclosure, redact_message};
@@ -166,29 +166,10 @@ pub async fn run_print_mode_with_session(
     };
     let initial_count = history.len();
     let cancel = tokio_util::sync::CancellationToken::new();
-    // Unified with Config::resolve: explicit env (canonical
-    // `GRAY_PERMISSION`, alias `GRAY_PERMISSIONS`) wins via
-    // config.permissions; saved file is the fallback.
-    let permissions = config.permissions.clone().or_else(|| {
-        crate::setup::load_saved_config_at(
-            &crate::setup::saved_config_path()
-                .unwrap_or_else(|_| std::path::PathBuf::from("/dev/null")),
-        )
-        .permissions
-    });
     let ctx = ToolContext {
         cwd: cwd.clone(),
         cancel: cancel.clone(),
-        questions: None,
         session_id: None, // one-shot print mode has no session
-        permission: PermissionMode::resolve(true), // auto for -p unless GRAY_PERMISSION=ask
-        // (guard Prompt verdicts fail closed at the tool seam in this mode —
-        // no TTY to ask on, so risky commands deny instead of auto-running).
-        approvals: Some(gray_core::approvals::ApprovalGate::new(
-            permissions
-                .as_deref()
-                .unwrap_or(gray_core::approvals::MODE_AUTO),
-        )),
     };
 
     let mut agent = build_agent(config, &cwd, resume_target.as_ref().map(|s| s.as_str())).await?;

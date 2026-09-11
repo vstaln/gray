@@ -250,15 +250,6 @@ async fn fence_escape_keeps_single_pair() {
 }
 
 #[tokio::test]
-async fn guard_deny_is_still_an_error() {
-    let out = BashTool
-        .execute(&ToolContext::default(), json!({"command": "rm -rf /"}))
-        .await;
-    assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("rm-rf-root"), "{}", out.content);
-}
-
-#[tokio::test]
 async fn empty_output_is_header_only() {
     let out = BashTool
         .execute(&ToolContext::default(), json!({"command": "true"}))

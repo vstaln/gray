@@ -47,11 +47,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["cost"],
     },
     CmdDef {
-        name: "permissions",
-        desc: "choose what gray is allowed to do",
-        aliases: &["perms", "access"],
-    },
-    CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
@@ -235,7 +230,6 @@ pub(crate) fn complete_command_args(
         "context" => complete_context_args(arg_text),
         "acp" => complete_acp_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
-        "permissions" | "perms" | "access" => complete_permissions_args(cmd, arg_text),
         "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
         "resume" => complete_resume_args(cmd, arg_text),
         "skill" => complete_skill_args(cmd, arg_text, cwd),
@@ -358,15 +352,6 @@ fn complete_plugin_args(
         .collect()
 }
 
-/// Suffixes for `/permissions` (aliases `/perms`, `/access`): approval modes.
-fn complete_permissions_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
-    gray_core::approvals::permission_modes()
-        .into_iter()
-        .filter(|(id, _, _)| arg_text.is_empty() || id.contains(&arg_text.to_lowercase()))
-        .map(|(id, label, _)| (format!("{cmd} {id}"), label.to_string()))
-        .collect()
-}
-
 /// Suffixes for `/context`: L1 (`[number]|auto|status|reserve|keep`) and L2
 /// (`reserve <16k|auto>`, `keep <20k|auto|off>`).
 fn complete_context_args(arg_text: &str) -> Vec<(String, String)> {
@@ -457,8 +442,6 @@ pub enum ReplCommand {
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
     Usage,
-    /// Choose what gray is allowed to do (`/permissions [read-only|auto|full]`).
-    Permissions(Option<String>),
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
     Feedback(Option<String>),
     /// Unknown slash command (`/word`).
@@ -566,7 +549,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
-        Some("permissions") => ReplCommand::Permissions(opt(rest)),
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Every connect alias accepts optional args like `/key openrouter`
@@ -716,7 +698,6 @@ mod tests {
             "new",
             "compact",
             "usage",
-            "permissions",
             "feedback",
             "acp",
             "agentsmd",
@@ -745,8 +726,6 @@ mod tests {
             ("compress", "compact"),
             ("sys", "agentsmd"),
             ("cost", "usage"),
-            ("perms", "permissions"),
-            ("access", "permissions"),
             ("plugins", "plugin"),
         ] {
             assert_eq!(super::resolve(alias).unwrap().name, target, "alias {alias}");
@@ -776,8 +755,6 @@ mod tests {
             ("compress", "compact"),
             ("sys", "agentsmd"),
             ("cost", "usage"),
-            ("perms", "permissions"),
-            ("access", "permissions"),
             ("plugins", "plugin"),
         ] {
             assert!(
@@ -849,28 +826,20 @@ mod tests {
     }
 
     #[test]
-    fn permissions_parses_with_and_without_mode() {
-        assert!(matches!(
-            parse_command("/permissions"),
-            ReplCommand::Permissions(None)
-        ));
-        assert!(matches!(
-            parse_command("/permissions full"),
-            ReplCommand::Permissions(Some(_))
-        ));
-        assert!(matches!(
-            parse_command("/perms read-only"),
-            ReplCommand::Permissions(Some(_))
-        ));
-        assert!(matches!(
-            parse_command("/access"),
-            ReplCommand::Permissions(None)
-        ));
-        assert!(matches!(
-            parse_command("/access full"),
-            ReplCommand::Permissions(Some(_))
-        ));
-        assert!(matches!(parse_command("/yolo"), ReplCommand::Unknown(_)));
+    fn permission_commands_are_gone() {
+        for cmd in [
+            "/permissions",
+            "/permissions full",
+            "/perms read-only",
+            "/access",
+            "/access full",
+            "/yolo",
+        ] {
+            assert!(
+                matches!(parse_command(cmd), ReplCommand::Unknown(_)),
+                "{cmd} must be unknown"
+            );
+        }
     }
 
     #[test]

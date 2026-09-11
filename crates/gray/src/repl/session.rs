@@ -346,7 +346,7 @@ pub(crate) fn dispatch_agent_event(
                     t.clear_sleep();
                     t.set_status(Some("Working"));
                 }
-                if name != "request_user_input" {
+                {
                     let lines = crate::tool_fmt::format_tool_result_lines_with_context(
                         &name,
                         args.as_ref(),
@@ -413,7 +413,7 @@ pub(crate) fn dispatch_agent_event(
                 } else {
                     entry.0.as_str()
                 };
-                if name != "request_user_input" {
+                {
                     println!(
                         "\n{}",
                         crate::tool_fmt::format_tool_call_header_plain(name, args, Some(cwd))

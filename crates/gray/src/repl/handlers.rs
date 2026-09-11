@@ -490,7 +490,6 @@ mod tests {
             context_window: None,
             context_reserve: None,
             context_keep: None,
-            permissions: None,
         };
         let mut agent: Option<Agent> = None;
         reload_agent(

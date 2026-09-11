@@ -6,7 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gray_core::agent::{Agent, CommandOutcome, PermissionMode, PluginHooks, ToolContext};
+use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
@@ -130,7 +130,7 @@ pub(crate) use session::{
 pub(crate) use status::{
     SessionTotals, handle_compact, handle_context_window, handle_usage, turn_footer,
 };
-pub(crate) use user_cmds::{handle_feedback, handle_permissions};
+pub(crate) use user_cmds::handle_feedback;
 
 /// Shared TUI handle: the composer plus its shutdown flag.
 pub(crate) type TuiOpt = Option<(
@@ -515,33 +515,6 @@ pub async fn run_repl_mode(
         None
     };
 
-    // request_user_input bridge: TUI overlay when interactive,
-    // stdin prompts when piped.
-    let question_bridge: gray_core::questions::QuestionBridge = if interactive {
-        let shared = tui
-            .as_ref()
-            .map(|(s, _)| s.clone())
-            .expect("interactive implies tui");
-        gray_core::questions::QuestionBridge(std::sync::Arc::new(
-            crate::composer::ComposerQuestionAsker { tui: shared },
-        ))
-    } else {
-        gray_core::questions::QuestionBridge(std::sync::Arc::new(gray_tools::StdinQuestionAsker))
-    };
-
-    let approval_gate = gray_core::approvals::ApprovalGate::new(
-        config
-            .permissions
-            .as_deref()
-            .unwrap_or(gray_core::approvals::MODE_AUTO),
-    );
-    if let Some((shared, _)) = tui.as_ref() {
-        shared
-            .lock()
-            .expect("tui lock")
-            .set_permission_mode(approval_gate.mode());
-    }
-
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Reasoning is ON by default — user wants to see thinking (high effort).
     // Bare /thinking toggles visibility; picker sets level persisted to config.
@@ -570,14 +543,6 @@ pub async fn run_repl_mode(
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();
 
     loop {
-        if pending_command.is_none()
-            && let Some((shared, _)) = tui.as_ref()
-            && let Ok(mut t) = shared.try_lock()
-            && !t.pending_question_answers.is_empty()
-        {
-            let texts = std::mem::take(&mut t.pending_question_answers);
-            pending_command = Some(ReplCommand::Prompt(texts.join("\n\n")));
-        }
         // Plugin-initiated `host/say` lines queued while a turn ran (cron
         // reports) surface here, through the composer when it owns the screen.
         for line in crate::host::take_host_say() {
@@ -631,34 +596,6 @@ pub async fn run_repl_mode(
                 (buf.trim().to_string(), Vec::new())
             };
             pending_images = images;
-            if let Some((shared, _)) = tui.as_ref() {
-                let pending = shared
-                    .lock()
-                    .expect("tui lock")
-                    .pending_permission_mode
-                    .take();
-                if let Some(mode) = pending {
-                    config.permissions = Some(mode.clone());
-                    approval_gate.set_mode(&mode);
-                    if let Ok(path) = crate::setup::saved_config_path() {
-                        let mut saved = crate::setup::load_saved_config_at(&path);
-                        saved.permissions = config.permissions.clone();
-                        let _ = crate::setup::save_saved_config_at(&path, &saved);
-                    }
-                } else {
-                    let gate_mode = approval_gate.mode();
-                    let mut t = shared.lock().expect("tui lock");
-                    if t.permission_mode() != gate_mode {
-                        t.set_permission_mode(gate_mode.clone());
-                        config.permissions = Some(gate_mode.clone());
-                        if let Ok(path) = crate::setup::saved_config_path() {
-                            let mut saved = crate::setup::load_saved_config_at(&path);
-                            saved.permissions = config.permissions.clone();
-                            let _ = crate::setup::save_saved_config_at(&path, &saved);
-                        }
-                    }
-                }
-            }
             expand_skill_command(
                 parse_command(&line_text),
                 cwd.as_path(),
@@ -731,8 +668,6 @@ pub async fn run_repl_mode(
                         &mut pending_command,
                         &mut pending_history,
                         &mut unconfigured,
-                        &question_bridge,
-                        &approval_gate,
                     )
                     .await?;
                 }
@@ -774,8 +709,6 @@ pub async fn run_repl_mode(
                         &mut pending_command,
                         &mut pending_history,
                         &mut unconfigured,
-                        &question_bridge,
-                        &approval_gate,
                     )
                     .await?;
                 }
@@ -794,7 +727,6 @@ pub async fn run_repl_mode(
                     &mut pending_history,
                     &mut unconfigured,
                     &mut hide_thinking,
-                    &approval_gate,
                 )
                 .await?
                     == dispatch::Flow::Break

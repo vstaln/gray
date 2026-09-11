@@ -16,7 +16,6 @@ use std::os::unix::process::ExitStatusExt;
 use super::contract::ExitReport;
 // Shared quote-aware `|` splitter (4B dedupes the NOTE(1A) local copy:
 // `||` stays literal, quotes/backslashes/$(…)/heredocs respected).
-use super::guard::normalize_guard_head;
 use super::split::split_pipeline;
 
 /// Build an honest [`ExitReport`] from a wait status and the command that
@@ -44,8 +43,7 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
         }
         (None, None) => (1, "exit unknown".to_string()),
     };
-    let normalized = normalize_guard_head(command);
-    let head = command_head(&normalized, command);
+    let head = command_head(command);
     // Signal notes key off the effective value, so a plain `exit 137`
     // (the shell's own 128+N spelling of SIGKILL) annotates the same way.
     let mut note: Option<String> = signal_note(effective).map(str::to_string);
@@ -108,12 +106,12 @@ fn benign_note(head: &str, effective: i32) -> Option<&'static str> {
 /// Head binary: first whitespace token, basename after `/`.
 /// `command -v foo` normalizes to `-v foo` (wrapper-strip), so the
 /// `command` head is recovered when the raw first token says so.
-fn command_head(normalized: &str, raw: &str) -> String {
-    let head = normalized.split_whitespace().next().unwrap_or("");
-    if head == "-v" && base_head(raw) == "command" {
+fn command_head(command: &str) -> String {
+    let head = command.split_whitespace().next().unwrap_or("");
+    if head == "-v" && base_head(command) == "command" {
         return "command".to_string();
     }
-    base_head(normalized).to_string()
+    base_head(command).to_string()
 }
 
 fn base_head(cmd: &str) -> &str {
@@ -208,9 +206,12 @@ mod exit_tests {
     }
 
     #[test]
-    fn sudo_env_wrapper_still_matches_benign_table() {
+    fn wrapped_heads_are_taken_literally_now() {
+        // The destructive-command guard owned wrapper stripping (`sudo`/`env`/
+        // `nice`/`timeout`). With the guard gone, exit reporting reads the
+        // literal head, so a wrapped benign command gets no benign note.
         let r = exit_report(code(1), "sudo env X=1 grep z f");
-        assert!(r.note.as_deref().unwrap_or("").contains("no matches"));
+        assert!(r.note.is_none());
     }
 
     #[test]

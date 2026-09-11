@@ -39,7 +39,7 @@ plugin manifest's `commands: ["/x"]` (routed via `command/run`).
 
 Edit `~/.gray/AGENTS.md` directly (or `/agentsmd show|reset`); project
 `AGENTS.md`/`CLAUDE.md` files append as context. `/model`, `/thinking`,
-`/context`, `/permissions` persist to `~/.gray/config.json`.
+`/context` persist to `~/.gray/config.json`.
 
 ## Honest gaps (not customizable today)
 

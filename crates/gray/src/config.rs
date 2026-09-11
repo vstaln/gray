@@ -50,8 +50,6 @@ pub struct Config {
     pub context_reserve: Option<usize>,
     /// Tail budget kept alongside the summary after compaction.
     pub context_keep: Option<usize>,
-    /// Tool approval mode ("read-only" | "auto" | "full"). None = auto default.
-    pub permissions: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -128,13 +126,6 @@ impl Config {
             })
             .or(saved.context_keep);
 
-        // Canonical env is `GRAY_PERMISSION` (singular, the name the guard
-        // reads); `GRAY_PERMISSIONS` stays accepted as an alias. Explicit
-        // env wins over the saved file.
-        let permissions = nonempty(env("GRAY_PERMISSION").as_deref())
-            .or_else(|| nonempty(env("GRAY_PERMISSIONS").as_deref()))
-            .or(saved.permissions);
-
         let config = Self {
             model,
             base_url,
@@ -144,7 +135,6 @@ impl Config {
             context_window,
             context_reserve,
             context_keep,
-            permissions,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)
