@@ -52,11 +52,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &[],
     },
     CmdDef {
-        name: "acp",
-        desc: "run as an external ACP agent (claude, codex, cursor…)",
-        aliases: &[],
-    },
-    CmdDef {
         name: "agentsmd",
         desc: "edit system prompt",
         aliases: &["sys"],
@@ -228,7 +223,6 @@ pub(crate) fn complete_command_args(
 ) -> Vec<(String, String)> {
     let mut out = match cmd {
         "context" => complete_context_args(arg_text),
-        "acp" => complete_acp_args(arg_text),
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
         "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
         "resume" => complete_resume_args(cmd, arg_text),
@@ -300,32 +294,6 @@ fn complete_model_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         .into_iter()
         .filter(|id| f.is_empty() || id.to_lowercase().contains(&f))
         .map(|id| (format!("{cmd} {id}"), "cached model".to_string()))
-        .collect()
-}
-
-/// Suffixes for `/acp`: subcommands plus installed agent names.
-fn complete_acp_args(arg_text: &str) -> Vec<(String, String)> {
-    #[cfg_attr(not(feature = "acp"), allow(unused_mut))]
-    let mut out: Vec<(String, String)> = vec![
-        ("acp list".to_string(), "list agents".to_string()),
-        ("acp status".to_string(), "show ACP session".to_string()),
-        ("acp off".to_string(), "back to native".to_string()),
-    ];
-    #[cfg(feature = "acp")]
-    for spec in gray_acp::all_specs(None) {
-        let status = if gray_acp::installed(&spec) {
-            "installed"
-        } else {
-            "not found"
-        };
-        out.push((
-            format!("acp {}", spec.key),
-            format!("{} ({status})", spec.display),
-        ));
-    }
-    let f = arg_text.to_lowercase();
-    out.into_iter()
-        .filter(|(n, _)| f.is_empty() || n.to_lowercase().contains(&f))
         .collect()
 }
 
@@ -446,9 +414,6 @@ pub enum ReplCommand {
     Feedback(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
-    /// External ACP agent: /acp (picker), /acp <agent> switches sticky,
-    /// /acp <agent> <prompt> delegates one-shot, /acp off|status|list
-    Acp(String),
     /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
     /// `/plugins` is an alias.
     Plugin(String),
@@ -555,7 +520,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         // (args are advisory; the provider menu always opens).
         Some("connect") => ReplCommand::Provider,
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
-        Some("acp") => ReplCommand::Acp(t.to_string()),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
         Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
@@ -699,7 +663,6 @@ mod tests {
             "compact",
             "usage",
             "feedback",
-            "acp",
             "agentsmd",
             "skills",
             "plugin",

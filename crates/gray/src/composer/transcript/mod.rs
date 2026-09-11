@@ -112,14 +112,14 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            self.thinking_lines.push(trimmed.to_string());
+            self.push_line_styled(trimmed.to_string(), thinking_style());
         }
         if display_width(&self.pending) >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
             self.pending = chars[cut..].iter().collect();
-            self.thinking_lines.push(line);
+            self.push_line_styled(line, thinking_style());
         }
         let _ = self.draw();
     }
@@ -165,37 +165,27 @@ impl Tui {
     }
 
     pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking && self.pending.is_empty() && self.thinking_lines.is_empty() {
+        if !self.thinking && self.pending.is_empty() {
             return;
         }
-        // Opencode parity (`Thought: <duration>` header + blank + body):
-        // rows buffer during the run and flush header-first here —
-        // scrollback is append-only (`insert_before`), so unlike opencode's
-        // re-rendered header it can't sit on top while streaming.
+        // Rows already streamed live; only the `⬡ Thought for <duration>`
+        // summary lands here, after the body (scrollback is append-only).
         let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
-        if !self.hide_thinking {
-            if !self.pending.is_empty() {
-                let rest = std::mem::take(&mut self.pending);
-                self.thinking_lines.push(rest);
-            }
-            if !self.thinking_lines.is_empty() {
-                self.ensure_gap(1);
-                let rows = std::mem::take(&mut self.thinking_lines);
-                for row in rows {
-                    self.push_line_styled(row, thinking_style());
-                }
-                if let Some(d) = elapsed {
-                    self.ensure_gap(1);
-                    self.push_line_spans(thought_summary_line(d));
-                }
-            }
-            if spacer {
-                self.ensure_gap(1);
-            }
-        } else {
+        if self.hide_thinking {
             self.pending.clear();
-            self.thinking_lines.clear();
+            return;
+        }
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, thinking_style());
+        }
+        if let Some(d) = elapsed {
+            self.ensure_gap(1);
+            self.push_line_spans(thought_summary_line(d));
+        }
+        if spacer {
+            self.ensure_gap(1);
         }
     }
 

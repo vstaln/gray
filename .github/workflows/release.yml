@@ -94,12 +94,10 @@ jobs:
           # all-platforms: the default build stubs the Telegram/Discord/Slack
           # adapters; the released binary must carry them or the advertised
           # gateway crash-loops on "not compiled" (audit B1).
-          # acp: ACP support is opt-in at the crate level and must stay in the
-          # released binary (GRY-001).
           if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
-            cross build --release -p gray --features all-platforms,acp --target ${{ matrix.target }}
+            cross build --release -p gray --features all-platforms --target ${{ matrix.target }}
           else
-            cargo build --release -p gray --features all-platforms,acp --target ${{ matrix.target }}
+            cargo build --release -p gray --features all-platforms --target ${{ matrix.target }}
           fi
 
       - name: release build must carry gateway adapters

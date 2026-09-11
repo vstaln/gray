@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     "crates/gray",
-    "crates/gray-acp",
     "crates/gray-core",
     "crates/gray-cron",
     "crates/gray-gateway",
@@ -35,7 +34,6 @@ license = "MIT"
 [workspace.dependencies]
 # Workspace crates
 gray = { path = "crates/gray" }
-gray-acp = { path = "crates/gray-acp" }
 gray-core = { path = "crates/gray-core" }
 gray-cron = { path = "crates/gray-cron" }
 gray-gateway = { path = "crates/gray-gateway" }

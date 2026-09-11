@@ -13,7 +13,6 @@ pub(crate) enum Flow {
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
     agent: &mut Option<Agent>,
-    acp: &mut Option<AcpSession>,
     config: &mut Config,
     cwd: &std::path::Path,
     tui: &TuiOpt,
@@ -28,7 +27,6 @@ pub(crate) async fn dispatch_command(
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
         ReplCommand::Quit => {
             shutdown_hooks(agent.as_ref()).await;
-            let _ = acp.take(); // AcpSession has no teardown.
             if let Some((shared, stop)) = tui {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut t = shared.lock().expect("tui lock");
@@ -106,14 +104,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::New(initial_prompt) => {
             shutdown_hooks(agent.as_ref()).await;
-            // Sticky ACP mode survives /new on a fresh agent thread.
-            if let Some(s) = acp.as_mut() {
-                let t = tui.as_ref().map(|(s, _)| s);
-                match s.new_session().await {
-                    Ok(()) => say(t, &format!("acp:{} new thread", s.agent_key())),
-                    Err(e) => say(t, &format!("acp new thread failed: {e:#}")),
-                }
-            }
             pending_history.clear();
             *session_totals = SessionTotals::default();
             *session_state = None;
@@ -286,26 +276,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Skill(_) => {
             // fully expanded into Prompt/Empty by expand_skill_command; defensive no-op
-            Flow::Continue
-        }
-        ReplCommand::Acp(raw) => {
-            #[cfg(feature = "acp")]
-            handle_acp_command(
-                &raw,
-                cwd,
-                tui.as_ref().map(|(s, _)| s),
-                &mut *acp,
-                config.model.as_deref(),
-            )
-            .await;
-            #[cfg(not(feature = "acp"))]
-            {
-                let _ = (&raw, &mut *acp, config);
-                say(
-                    tui.as_ref().map(|(s, _)| s),
-                    "acp support is not compiled in this build — rebuild with `--features acp`",
-                );
-            }
             Flow::Continue
         }
         ReplCommand::Plugin(raw) => {
