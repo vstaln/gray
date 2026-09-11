@@ -57,9 +57,6 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Cron { cmd } => {
                 return run_cron(cmd).await;
             }
-            gray::Commands::Pulse { cmd } => {
-                return run_pulse(cmd).await;
-            }
             gray::Commands::Send { target, text } => {
                 return run_send(&target, &text).await;
             }
@@ -462,52 +459,6 @@ async fn run_cron(cmd: gray::CronCmd) -> anyhow::Result<()> {
             }
         }
     }
-}
-
-async fn run_pulse(cmd: gray::PulseCmd) -> anyhow::Result<()> {
-    use gray::PulseCmd;
-    use gray::pulse::{config, goal, job};
-    match cmd {
-        PulseCmd::On { every, deliver } => {
-            let mut cfg = config::load_config()?;
-            job::enable(&mut cfg, every, deliver)?;
-            println!("pulse on ({}), deliver={}", cfg.schedule, cfg.deliver);
-        }
-        PulseCmd::Off => {
-            let mut cfg = config::load_config()?;
-            cfg.enabled = false;
-            // Remove the job before persisting disabled: a failed removal must
-            // not leave the job firing behind a config that says "off".
-            job::sync_job(&cfg, &goal::read_goal()?)?;
-            config::save_config(&cfg)?;
-            println!("pulse off");
-        }
-        PulseCmd::Status => {
-            let cfg = config::load_config()?;
-            match job::job_status(&cfg)? {
-                job::JobStatus::Disabled => println!("disabled"),
-                job::JobStatus::Missing => println!("enabled (job missing — run sync)"),
-                job::JobStatus::Live { next_run_at } => match next_run_at {
-                    Some(t) => println!("enabled, next run {}", fmt_ts(t)),
-                    None => println!("enabled"),
-                },
-            }
-        }
-        PulseCmd::Goal { text } => {
-            if text.is_empty() {
-                print!("{}", goal::read_goal()?);
-            } else {
-                goal::write_goal(&text.join(" "))?;
-                println!("goal set");
-            }
-        }
-        PulseCmd::Sync => {
-            job::sync_job(&config::load_config()?, &goal::read_goal()?)?;
-            println!("synced");
-        }
-        PulseCmd::Plugin => gray::pulse::plugin::serve_plugin()?,
-    }
-    Ok(())
 }
 
 async fn run_send(target: &str, text: &[String]) -> anyhow::Result<()> {
