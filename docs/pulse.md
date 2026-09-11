@@ -56,12 +56,21 @@ last line. The run doc is always saved either way.
 - The pulse uses the gateway's own platform credentials; there is no
   separate bot or token.
 
+## The built-in tool
+
+The default profile (`tools-minimal`) ships a built-in `pulse` tool, so the
+model can manage the pulse itself in conversation: ask it to set a standing
+goal, turn the pulse on with a schedule, check status, or sync after an edit.
+No plugin registration is needed — any profile that includes `tools-minimal`
+gets it.
+
 ## Running as a plugin
 
-`gray pulse plugin` speaks the sidecar NDJSON protocol and exposes a
-single `pulse` tool (`status`, `goal_get`, `goal_set`, `on`, `off`,
-`sync`) so the agent can manage the pulse itself. Register it in
-`gray.yml`:
+Custom profiles that do not use the built-in tool can instead register
+`gray pulse plugin` as a sidecar. It speaks the sidecar NDJSON protocol and
+exposes the same single `pulse` tool (`status`, `goal_get`, `goal_set`, `on`,
+`off`, `sync`). Register it in `gray.yml` (a sidecar `pulse` replaces the
+built-in one — later plugins win):
 
 ```yaml
 plugins:

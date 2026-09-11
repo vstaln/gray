@@ -5,6 +5,26 @@ use std::path::Path;
 use crate::pulse::{config, goal, job};
 
 const TOOL_NAME: &str = "pulse";
+pub(crate) const TOOL_DESCRIPTION: &str =
+    "Manage gray's 24/7 standing-goal pulse: status, goal, on/off, sync.";
+
+/// Parameters schema for the `pulse` tool, shared by the sidecar manifest and
+/// the built-in [`crate::pulse::tool::PulseTool`] (single definition).
+pub fn tool_parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["status", "goal_get", "goal_set", "on", "off", "sync"]
+            },
+            "text": {"type": "string", "description": "Goal text for goal_set."},
+            "schedule": {"type": "string", "description": "Schedule for on, e.g. 'every 30m'."},
+            "deliver": {"type": "string", "description": "Delivery target for on: local | origin | <target>."}
+        },
+        "required": ["action"]
+    })
+}
 
 /// The manifest reply advertised during the host handshake.
 fn manifest() -> Value {
@@ -14,20 +34,8 @@ fn manifest() -> Value {
         "protocol": "1.1",
         "tools": [{
             "name": TOOL_NAME,
-            "description": "Manage gray's 24/7 standing-goal pulse: status, goal, on/off, sync.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["status", "goal_get", "goal_set", "on", "off", "sync"]
-                    },
-                    "text": {"type": "string", "description": "Goal text for goal_set."},
-                    "schedule": {"type": "string", "description": "Schedule for on, e.g. 'every 30m'."},
-                    "deliver": {"type": "string", "description": "Delivery target for on: local | origin | <target>."}
-                },
-                "required": ["action"]
-            }
+            "description": TOOL_DESCRIPTION,
+            "parameters": tool_parameters()
         }],
         "commands": [],
         "hooks": []
@@ -38,6 +46,12 @@ fn manifest() -> Value {
 /// due. Returns `None` for `plugin/shutdown` and for notifications (no `id`).
 pub fn handle_line(line: &str) -> Option<String> {
     handle_line_at(line, gray_gateway::config::gray_home_dir().ok().as_deref())
+}
+
+/// Run one pulse action against the resolved gray home (the built-in tool's
+/// entry point; the sidecar shares [`run_action_at`]).
+pub fn run_action(args: &Value) -> Result<String> {
+    run_action_at(args, gray_gateway::config::gray_home_dir().ok().as_deref())
 }
 
 fn handle_line_at(line: &str, home: Option<&Path>) -> Option<String> {

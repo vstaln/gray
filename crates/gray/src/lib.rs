@@ -176,6 +176,9 @@ pub async fn build_agent(
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
         extra_tools: vec![Arc::new(SkillTool)],
+        default_tools: vec![
+            Arc::new(crate::pulse::tool::PulseTool) as Arc<dyn gray_core::agent::Tool>
+        ],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
