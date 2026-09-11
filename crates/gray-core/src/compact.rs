@@ -122,20 +122,27 @@ pub(crate) const COMPACTION_TRIGGER: &str = "Compact this conversation for conte
 
 /// One in-band summarization call over `history`: same system prompt + same
 /// tools as live turns, plus [`COMPACTION_TRIGGER`]. Identical request prefix
-/// → server prefix-cache hit on providers that support it. Takes `&[Message]`
-/// and builds the input locally — the caller's history is never mutated — and
-/// the trigger is popped from retained history after (mirroring v2's
-/// `prompt_input.pop()`), so it never pollutes the transcript.
+/// → server prefix-cache hit on providers that support it. Custom
+/// `instructions` (manual `/compact <text>`) ride the trigger with high
+/// priority. Takes `&[Message]` and builds the input locally — the caller's
+/// history is never mutated — and the trigger is popped from retained history
+/// after (mirroring v2's `prompt_input.pop()`), so it never pollutes the
+/// transcript.
 pub(crate) async fn run_compaction_call(
     agent: &Agent,
     history: &[Message],
+    instructions: Option<&str>,
 ) -> Result<String, CoreError> {
     let mut messages = history.to_vec();
     // Checkpoint-structure guidance rides the trigger so the summary
     // captures IDs/decisions/next-steps (shape from pi-codex-conversion).
-    messages.push(Message::user(format!(
-        "{COMPACTION_TRIGGER}\n\n{COMPACTION_MARKER_GUIDANCE}"
-    )));
+    let mut trigger = format!("{COMPACTION_TRIGGER}\n\n{COMPACTION_MARKER_GUIDANCE}");
+    if let Some(instructions) = instructions.map(str::trim).filter(|s| !s.is_empty()) {
+        trigger.push_str(&format!(
+            "\n\n<user-instructions>\nThe user provided these instructions for this summary. Follow them with high priority:\n{instructions}\n</user-instructions>"
+        ));
+    }
+    messages.push(Message::user(trigger));
     // Empty system maps to `None`, exactly like a live turn (`agent_loop.rs`):
     // the trigger request then carries byte-identical prefix fields.
     let system = agent.system_text();
@@ -761,7 +768,7 @@ mod tests {
         let m2 = Message::assistant("m2");
         let history = vec![m1.clone(), m2.clone()];
 
-        let out = run_compaction_call(&agent, &history).await.unwrap();
+        let out = run_compaction_call(&agent, &history, None).await.unwrap();
 
         assert_eq!(out, "SUMMARY");
         let reqs = seen.lock().expect("seen lock poisoned");
@@ -782,6 +789,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn compaction_call_appends_custom_instructions() {
+        let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
+        let calls: Arc<Mutex<Vec<String>>> = Arc::default();
+        let agent = trigger_test_agent(
+            vec![
+                StreamEvent::text_delta("S"),
+                StreamEvent::message_complete(Some(StopReason::EndTurn), None),
+            ],
+            seen.clone(),
+            calls,
+            Vec::new(),
+        );
+
+        let out = run_compaction_call(&agent, &[Message::user("hi")], Some("focus on auth"))
+            .await
+            .unwrap();
+
+        assert_eq!(out, "S");
+        let reqs = seen.lock().expect("seen lock poisoned");
+        let trigger = reqs[0].messages.last().expect("trigger message");
+        assert!(
+            trigger.text_content().contains("focus on auth"),
+            "custom instructions ride the trigger: {}",
+            trigger.text_content()
+        );
+    }
+
+    #[tokio::test]
     async fn compaction_call_drops_tool_use_blocks_from_reply() {
         let seen: Arc<Mutex<Vec<ChatRequest>>> = Arc::default();
         let calls: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -796,7 +831,7 @@ mod tests {
             Vec::new(),
         );
 
-        let out = run_compaction_call(&agent, &[Message::user("hi")])
+        let out = run_compaction_call(&agent, &[Message::user("hi")], None)
             .await
             .unwrap();
 

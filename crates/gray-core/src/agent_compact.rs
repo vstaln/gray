@@ -1,8 +1,9 @@
 //! Transcript compaction for context-overflow recovery (move-only split).
 //!
 //! [`summary_pair`] is the shared compaction envelope (`Agent` recovery and
-//! `gray::compact` can never drift); [`Agent::try_compact_budgeted`] summarizes
-//! history into that shape via [`Agent::complete_prompt`].
+//! `gray::compact` can never drift); [`Agent::compact_v2`] runs the codex-v2
+//! pipeline ([`Agent::try_compact_budgeted`] is its bool-shaped delegate) via
+//! [`Agent::complete_with_history`].
 
 use crate::agent::Agent;
 use crate::compact::{
@@ -37,8 +38,26 @@ impl Agent {
     /// Callers can therefore retry on `Ok(true)` knowing each success makes
     /// progress, and must stop on `Ok(false)`.
     pub(crate) async fn try_compact_budgeted(&mut self) -> Result<bool, CoreError> {
+        Ok(self.compact_v2(None, None).await?.is_some())
+    }
+
+    /// The v2 pipeline behind [`try_compact_budgeted`](Self::try_compact_budgeted),
+    /// shared with the gray crate's manual `/compact` and REPL auto paths so
+    /// every compaction surface runs the same codex-v2 logic.
+    ///
+    /// `instructions` are appended to the in-band trigger (manual `/compact
+    /// <text>` focus); `retained_budget` overrides the v2 default
+    /// (`min(64k, window − 16k)`, or 64k when the window is unknown) with the
+    /// user's keep-recent setting. Returns `Ok(Some(summary))` when history was
+    /// replaced; `Ok(None)` when nothing was gained (empty, blank summary, or
+    /// the replacement would not strictly shrink) with history byte-identical.
+    pub async fn compact_v2(
+        &mut self,
+        instructions: Option<&str>,
+        retained_budget: Option<usize>,
+    ) -> Result<Option<String>, CoreError> {
         if self.messages.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         // Clone-then-commit: trim/summarize/validate on a candidate so a
         // failed call (provider error, blank summary, non-shrinking result)
@@ -50,28 +69,29 @@ impl Agent {
         trim_tool_results_to_fit(&mut candidate, self.context_window);
         // Stage 2 (v2): one trigger call over the full trimmed history with
         // the live system + tools; empty summary compacts nothing.
-        let summary = run_compaction_call(self, &candidate).await?;
+        let summary = run_compaction_call(self, &candidate, instructions).await?;
         if summary.trim().is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
-        // Stage 3 (v2 + adaptation #2): retained budget is min(64k,
-        // window−16k reserve); unknown window keeps the 64k ceiling.
-        let budget = match self.context_window {
+        // Stage 3 (v2 + adaptation #2): retained budget defaults to min(64k,
+        // window−16k reserve); unknown window keeps the 64k ceiling. Callers
+        // (the user keep-recent setting) may override it.
+        let budget = retained_budget.unwrap_or(match self.context_window {
             None => RETAINED_MESSAGE_TOKEN_BUDGET,
             Some(w) => RETAINED_MESSAGE_TOKEN_BUDGET.min(w.saturating_sub(COMPACT_RESERVE_TOKENS)),
-        };
+        });
         let retained = build_retained(&candidate, budget);
         // Stage 4 (v2): summary appended LAST (order change from prepend).
         let mut next = retained;
         next.extend(summary_pair(&summary));
         // Enforced shrink: a replacement that is not strictly smaller is not
         // a compaction — leave history untouched so both the pre-turn retry
-        // and the overflow retry terminate on `false`.
+        // and the overflow retry terminate on `None`.
         if est_tokens(&next) >= est_tokens(&self.messages) {
-            return Ok(false);
+            return Ok(None);
         }
         self.messages = next;
-        Ok(true)
+        Ok(Some(summary))
     }
 }
 
@@ -221,6 +241,27 @@ mod compact_tests {
                 .text_content()
                 .contains(crate::compact::COMPACTION_TRIGGER)),
             "trigger must never leak into history"
+        );
+    }
+
+    #[tokio::test]
+    async fn compact_v2_returns_summary_and_honors_zero_budget() {
+        let mut agent = test_agent("FIXED-SUMMARY-123");
+        let bodies: Vec<String> = (1..=4).map(|i| format!("msg{i}")).collect();
+        agent.set_messages(bodies.iter().map(|t| sized_msg(t)).collect());
+        let out = agent.compact_v2(None, Some(0)).await.unwrap();
+        assert_eq!(out.as_deref(), Some("FIXED-SUMMARY-123"));
+        assert_eq!(
+            agent.messages().len(),
+            2,
+            "keep=0 → summary_pair only, got {}",
+            agent.messages().len()
+        );
+        assert!(
+            agent.messages()[0]
+                .text_content()
+                .contains("FIXED-SUMMARY-123"),
+            "returned summary is the installed summary"
         );
     }
 
