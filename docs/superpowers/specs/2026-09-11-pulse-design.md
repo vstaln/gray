@@ -1,10 +1,10 @@
-# Heartbeat — design
+# Pulse — design
 
 Status: approved direction (S1 of the gateway/24-7 discussion); being planned.
 
 ## Goal
 
-Give gray a **24/7 heartbeat**: a standing goal the agent works on its own, on
+Give gray a **24/7 pulse**: a standing goal the agent works on its own, on
 a schedule, reaching the user on a chat platform only when there is something
 to say. It is an **extra**, never `gray-core`.
 
@@ -17,33 +17,33 @@ to say. It is an **extra**, never `gray-core`.
 
 ## Architecture
 
-Reuse everything that exists; add one gated crate.
+Reuse everything that exists; add one core module.
 
 - **Scheduler**: the gateway already runs a 60s cron ticker
   (`gray-gateway/src/daemon_boot.rs:183` → `daemon.rs::spawn_cron_ticker`) and
   fires due `gray_cron` jobs through `GatewayRunner::run_cron_job`, delivering
   via `deliver_cron_outcome` and honoring `[SILENT]`
   (`daemon.rs::is_silent`) — whole output or first/last line suppresses
-  delivery. Heartbeat is therefore **a cron job**.
-- **State**: one goal file `$GRAY_HOME/heartbeat/goal.md` and one config file
-  `$GRAY_HOME/heartbeat.json` (`enabled`, `schedule`, `deliver`).
-- **Job**: one `gray_cron::CronJob` named `heartbeat` in the shared
-  `$GRAY_HOME/cron` store. Its prompt is the heartbeat template with the goal
+  delivery. Pulse is therefore **a cron job**.
+- **State**: one goal file `$GRAY_HOME/pulse/goal.md` and one config file
+  `$GRAY_HOME/pulse.json` (`enabled`, `schedule`, `deliver`).
+- **Job**: one `gray_cron::CronJob` named `pulse` in the shared
+  `$GRAY_HOME/cron` store. Its prompt is the pulse template with the goal
   embedded; `deliver` is the configured `Deliver::Target("<platform>[:chat[:thread]]")`.
-- **Control**: a standalone `gray-heartbeat` binary
-  (`on|off|status|goal|sync`) so `gray` (the core binary) gains nothing.
-- **Plugin configurability**: the same binary runs as a **sidecar plugin**
-  (`gray-heartbeat --plugin`), registerable in `gray.yml`, exposing a
-  `heartbeat` tool so the model can read/set its goal, cadence, and on/off from
-  inside a turn. The agent run a heartbeat triggers already uses the normal
+- **Control**: a core `gray pulse` subcommand
+  (`on|off|status|goal|sync`), living in `crates/gray/src/pulse`.
+- **Plugin configurability**: the same subcommand runs as a **sidecar plugin**
+  (`gray pulse plugin`), registerable in `gray.yml`, exposing a
+  `pulse` tool so the model can read/set its goal, cadence, and on/off from
+  inside a turn. The agent run a pulse triggers already uses the normal
   `gray.yml` profile, so all plugins/hooks apply to it.
 
 ## Data / interfaces
 
-- `HeartbeatConfig { enabled: bool, schedule: String, deliver: String }`
-  (serde JSON) at `$GRAY_HOME/heartbeat.json`.
-- Goal text at `$GRAY_HOME/heartbeat/goal.md`.
-- Cron job `name == "heartbeat"`; prompt = [`render_prompt(goal)`].
+- `PulseConfig { enabled: bool, schedule: String, deliver: String }`
+  (serde JSON) at `$GRAY_HOME/pulse.json`.
+- Goal text at `$GRAY_HOME/pulse/goal.md`.
+- Cron job `name == "pulse"`; prompt = [`render_prompt(goal)`].
 - `render_prompt` instructs: take the next useful step, and reply with exactly
   `[SILENT]` when nothing is worth reporting (the delivery layer already
   suppresses `[SILENT]`).
@@ -56,9 +56,9 @@ whole output or first/last line.)
 
 ## Packaging
 
-- `crates/gray-heartbeat` — library + `[[bin]] gray-heartbeat`.
-- Depends on `gray-cron` only (no `gray`, no `gray-core`, no cycle).
-- In workspace `members` + `[workspace.dependencies]`, **absent** from
-  `default-members` (like `gray-cron`/`gray-gateway`).
+- `crates/gray/src/pulse` — core module of the `gray` crate, exposed as
+  `gray pulse`.
+- Depends on `gray-cron` and `gray-gateway` (existing gray deps, no cycle).
+- Part of the default build.
 - Requires the gateway daemon to be running with a configured platform for
   delivery; without it the job still records output under `$GRAY_HOME/cron/output`.

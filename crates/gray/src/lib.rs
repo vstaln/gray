@@ -9,6 +9,7 @@ pub mod logging;
 pub mod plugin_check;
 pub mod print;
 pub mod profile;
+pub mod pulse;
 pub mod repl;
 pub mod resume;
 pub mod setup;
@@ -281,6 +282,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: CronCmd,
     },
+    /// Pulse: a standing goal run on a schedule by the gateway daemon
+    Pulse {
+        #[command(subcommand)]
+        cmd: PulseCmd,
+    },
     /// Send a one-shot chat message (no daemon needed; uses the gateway.yaml token)
     Send {
         /// Delivery target: <platform>[:chat[:thread]] (e.g. telegram:123)
@@ -340,6 +346,33 @@ pub enum CronCmd {
         /// Job id or name
         id: String,
     },
+}
+
+/// `gray pulse ...` — a standing goal run on a schedule by the gateway daemon.
+#[derive(Parser, Debug, Clone)]
+pub enum PulseCmd {
+    /// Turn the pulse on and create/refresh its cron job
+    On {
+        /// Schedule (e.g. "every 30m", "0 9 * * *")
+        #[arg(long)]
+        every: Option<String>,
+        /// Delivery target
+        #[arg(long)]
+        deliver: Option<String>,
+    },
+    /// Turn the pulse off (removes the cron job)
+    Off,
+    /// Show whether the pulse is enabled and its next run
+    Status,
+    /// Set the standing goal (words joined with spaces); omit to print it
+    Goal {
+        #[arg(trailing_var_arg = true)]
+        text: Vec<String>,
+    },
+    /// Re-render the cron job from the current goal and config
+    Sync,
+    /// Run as a gray sidecar plugin (NDJSON over stdio)
+    Plugin,
 }
 
 #[derive(Parser, Debug, Clone)]

@@ -1,15 +1,16 @@
-use crate::config::HeartbeatConfig;
+use crate::pulse::config::PulseConfig;
 use anyhow::Context;
+use gray_gateway::config::gray_home_dir;
 
-pub const JOB_NAME: &str = "heartbeat";
+pub const JOB_NAME: &str = "pulse";
 
 pub fn cron_dir() -> anyhow::Result<std::path::PathBuf> {
-    Ok(crate::gray_home()?.join("cron"))
+    Ok(gray_home_dir()?.join("cron"))
 }
 
 pub fn render_prompt(goal: &str) -> String {
     format!(
-        "Heartbeat wake-up. Your standing goal:\n\n{goal}\n\n\
+        "Pulse wake-up. Your standing goal:\n\n{goal}\n\n\
 You woke on your own; no user message triggered this. Take the next useful step \
 toward the goal using your tools, then reply for the user.\n\
 If there is nothing to do, nothing changed, or nothing worth reporting, reply \
@@ -28,7 +29,7 @@ fn deliver_from_str(s: &str) -> gray_cron::Deliver {
     }
 }
 
-pub fn sync_job(cfg: &HeartbeatConfig, goal: &str) -> anyhow::Result<String> {
+pub fn sync_job(cfg: &PulseConfig, goal: &str) -> anyhow::Result<String> {
     let store = gray_cron::CronStore::open(cron_dir()?).context("open cron store")?;
     store.remove(JOB_NAME)?;
     if !cfg.enabled {
@@ -48,7 +49,7 @@ pub fn sync_job(cfg: &HeartbeatConfig, goal: &str) -> anyhow::Result<String> {
 /// Apply `on` overrides, persist the config, and (re)create the cron job.
 /// Returns the created job id (empty when the job could not be created).
 pub fn enable(
-    cfg: &mut HeartbeatConfig,
+    cfg: &mut PulseConfig,
     schedule: Option<String>,
     deliver: Option<String>,
 ) -> anyhow::Result<String> {
@@ -61,8 +62,8 @@ pub fn enable(
     cfg.enabled = true;
     // Sync first: a failed sync must not persist `enabled: true`, or `off`
     // could silently leave the job firing.
-    let id = sync_job(cfg, &crate::goal::read_goal()?)?;
-    crate::config::save_config(cfg)?;
+    let id = sync_job(cfg, &crate::pulse::goal::read_goal()?)?;
+    crate::pulse::config::save_config(cfg)?;
     Ok(id)
 }
 
@@ -72,7 +73,7 @@ pub enum JobStatus {
     Live { next_run_at: Option<i64> },
 }
 
-pub fn job_status(cfg: &HeartbeatConfig) -> anyhow::Result<JobStatus> {
+pub fn job_status(cfg: &PulseConfig) -> anyhow::Result<JobStatus> {
     if !cfg.enabled {
         return Ok(JobStatus::Disabled);
     }
@@ -88,8 +89,8 @@ pub fn job_status(cfg: &HeartbeatConfig) -> anyhow::Result<JobStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ENV_LOCK;
-    use crate::config::HeartbeatConfig;
+    use crate::pulse::ENV_LOCK;
+    use crate::pulse::config::PulseConfig;
 
     #[test]
     fn render_prompt_embeds_goal_and_silence_token() {
@@ -103,7 +104,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
-        let mut cfg = HeartbeatConfig {
+        let mut cfg = PulseConfig {
             enabled: true,
             schedule: "every 30m".into(),
             deliver: "local".into(),
@@ -136,9 +137,9 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
-        let mut cfg = HeartbeatConfig::default();
+        let mut cfg = PulseConfig::default();
         enable(&mut cfg, Some("every 1h".into()), Some("telegram:9".into())).unwrap();
-        let saved = crate::config::load_config().unwrap();
+        let saved = crate::pulse::config::load_config().unwrap();
         assert!(saved.enabled);
         assert_eq!(saved.schedule, "every 1h");
         assert_eq!(saved.deliver, "telegram:9");
@@ -149,7 +150,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
-        let cfg = HeartbeatConfig {
+        let cfg = PulseConfig {
             enabled: true,
             schedule: "every 30m".into(),
             deliver: "local".into(),
@@ -165,9 +166,9 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
-        let cfg = HeartbeatConfig::default();
+        let cfg = PulseConfig::default();
         assert!(matches!(job_status(&cfg).unwrap(), JobStatus::Disabled));
-        let cfg = HeartbeatConfig {
+        let cfg = PulseConfig {
             enabled: true,
             schedule: "every 30m".into(),
             deliver: "local".into(),

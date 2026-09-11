@@ -318,7 +318,7 @@ impl CronStore {
     }
 
     /// Like [`add_full`], but skips [`reject_lifecycle_shape`]. For callers
-    /// that legitimately manage gray's own lifecycle — e.g. the heartbeat,
+    /// that legitimately manage gray's own lifecycle — e.g. the pulse,
     /// whose standing goal may mention restarting the gateway. Never feed
     /// this raw end-user input.
     pub fn add_full_unguarded(
@@ -731,7 +731,7 @@ mod tests {
                 .add("g", "every 1h", "systemctl restart gray", Deliver::Local)
                 .is_err()
         );
-        // Unguarded path accepts the same prompt (heartbeat standing goal).
+        // Unguarded path accepts the same prompt (pulse standing goal).
         let id = store
             .add_full_unguarded(
                 "u",

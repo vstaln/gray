@@ -5,7 +5,6 @@ members = [
     "crates/gray-core",
     "crates/gray-cron",
     "crates/gray-gateway",
-    "crates/gray-heartbeat",
     "crates/gray-markdown",
     "crates/gray-provider",
     "crates/gray-session",
@@ -38,7 +37,6 @@ gray = { path = "crates/gray" }
 gray-core = { path = "crates/gray-core" }
 gray-cron = { path = "crates/gray-cron" }
 gray-gateway = { path = "crates/gray-gateway" }
-gray-heartbeat = { path = "crates/gray-heartbeat" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }

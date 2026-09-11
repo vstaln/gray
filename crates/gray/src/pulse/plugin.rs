@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use crate::{config, goal, job};
+use crate::pulse::{config, goal, job};
 
-const TOOL_NAME: &str = "heartbeat";
+const TOOL_NAME: &str = "pulse";
 
 /// The manifest reply advertised during the host handshake.
 fn manifest() -> Value {
@@ -13,7 +13,7 @@ fn manifest() -> Value {
         "protocol": "1.1",
         "tools": [{
             "name": TOOL_NAME,
-            "description": "Manage gray's 24/7 standing-goal heartbeat: status, goal, on/off, sync.",
+            "description": "Manage gray's 24/7 standing-goal pulse: status, goal, on/off, sync.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -72,7 +72,7 @@ fn run_action(args: &Value) -> Result<String> {
     let action = args
         .get("action")
         .and_then(Value::as_str)
-        .context("heartbeat action is required")?;
+        .context("pulse action is required")?;
     let str_arg = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
     match action {
         "status" => {
@@ -95,14 +95,14 @@ fn run_action(args: &Value) -> Result<String> {
         "on" => {
             let mut cfg = config::load_config()?;
             job::enable(&mut cfg, str_arg("schedule"), str_arg("deliver"))?;
-            Ok(format!("heartbeat on ({})", cfg.schedule))
+            Ok(format!("pulse on ({})", cfg.schedule))
         }
         "off" => {
             let mut cfg = config::load_config()?;
             cfg.enabled = false;
             job::sync_job(&cfg, &goal::read_goal()?)?;
             config::save_config(&cfg)?;
-            Ok("heartbeat off".into())
+            Ok("pulse off".into())
         }
         "sync" => {
             job::sync_job(&config::load_config()?, &goal::read_goal()?)?;
@@ -156,14 +156,14 @@ pub fn serve_plugin() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ENV_LOCK;
+    use crate::pulse::ENV_LOCK;
 
     #[test]
-    fn manifest_advertises_the_heartbeat_tool() {
+    fn manifest_advertises_the_pulse_tool() {
         let out = handle_line(r#"{"id":1,"method":"plugin/manifest"}"#).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["id"], 1);
-        assert_eq!(v["result"]["tools"][0]["name"], "heartbeat");
+        assert_eq!(v["result"]["tools"][0]["name"], "pulse");
     }
 
     #[test]
@@ -171,10 +171,10 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
-        let out = handle_line(r#"{"id":2,"method":"tool/call","params":{"name":"heartbeat","args":{"action":"goal_set","text":"do x"}}}"#).unwrap();
+        let out = handle_line(r#"{"id":2,"method":"tool/call","params":{"name":"pulse","args":{"action":"goal_set","text":"do x"}}}"#).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["result"]["is_error"], false);
-        assert_eq!(crate::goal::read_goal().unwrap(), "do x");
+        assert_eq!(crate::pulse::goal::read_goal().unwrap(), "do x");
     }
 
     #[test]
