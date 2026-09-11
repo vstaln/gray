@@ -31,6 +31,7 @@
 - `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
 ### Changed
+- Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
 
 ### Fixed
@@ -52,6 +53,8 @@
 - Popup restore on resize/refocus
 - Unknown-tool fail-closed handling
 - Clipboard async copy path
+- History recall (Up/Down) while a turn is running, matching idle prompt behavior
+- `Thought for` line and live status counter are per-turn (count from zero, final at turn end); session context stays in the footer gauge
 - Log caps to bound disk/memory growth
 - Transcript bound for long sessions
 - Executor watchdog for hung tool runs

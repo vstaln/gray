@@ -290,7 +290,10 @@ pub fn render_diff_hunks(
         let p_display = shorten_path(&p.display().to_string(), cwd);
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Updated ", Style::default().fg(crate::theme::theme().text_soft)),
+            Span::styled(
+                "Updated ",
+                Style::default().fg(crate::theme::theme().text_soft),
+            ),
             Span::styled(
                 p_display,
                 Style::default()

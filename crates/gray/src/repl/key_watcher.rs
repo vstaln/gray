@@ -320,13 +320,58 @@ pub(crate) fn spawn_key_watcher_with_typing(
                                 t.sel = t.sel.saturating_sub(1);
                                 let _ = t.draw();
                             } else {
-                                t.textarea.move_up();
+                                // Idle parity (input.rs): recall history when
+                                // at the top of a single-line draft, so old
+                                // prompts stay reachable mid-turn.
+                                let has_multiline = t.textarea.text().contains('\n');
+                                let at_top = t.textarea.cursor() == 0 || !has_multiline;
+                                if at_top && !t.history.is_empty() {
+                                    if t.history_idx.is_none() {
+                                        let cur = t.textarea.text().to_string();
+                                        let len = t.history.len();
+                                        t.draft = cur;
+                                        t.history_idx = Some(len);
+                                    }
+                                    // Locals, not a held `history_idx` borrow:
+                                    // `t` is a lock guard, so the borrow
+                                    // checker won't split its fields.
+                                    let prev = match t.history_idx {
+                                        Some(idx) if idx > 0 => {
+                                            Some((idx - 1, t.history[idx - 1].clone()))
+                                        }
+                                        _ => None,
+                                    };
+                                    if let Some((prev_idx, h)) = prev {
+                                        t.history_idx = Some(prev_idx);
+                                        t.textarea.set_text(&h);
+                                        t.textarea.move_to_end();
+                                    }
+                                    sync_matches(&mut t);
+                                } else {
+                                    t.textarea.move_up();
+                                }
                                 let _ = t.draw();
                             }
                         }
                         KeyCode::Down => {
                             if t.matches.len() > 1 {
                                 t.sel = (t.sel + 1).min(t.matches.len().saturating_sub(1));
+                                let _ = t.draw();
+                            } else if t.history_idx.is_some() {
+                                // Idle parity: walk back down toward the draft.
+                                let idx = t.history_idx.unwrap();
+                                if idx + 1 >= t.history.len() {
+                                    let draft = t.draft.clone();
+                                    t.textarea.set_text(&draft);
+                                    t.textarea.move_to_end();
+                                    t.history_idx = None;
+                                } else {
+                                    t.history_idx = Some(idx + 1);
+                                    let h = t.history[idx + 1].clone();
+                                    t.textarea.set_text(&h);
+                                    t.textarea.move_to_end();
+                                }
+                                sync_matches(&mut t);
                                 let _ = t.draw();
                             } else {
                                 t.textarea.move_down();

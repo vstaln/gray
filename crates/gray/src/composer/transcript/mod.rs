@@ -168,7 +168,7 @@ impl Tui {
         if !self.thinking && self.pending.is_empty() {
             return;
         }
-        // Rows already streamed live; only the `⬡ Thought for <duration>`
+        // Rows already streamed live; only the `✻ Thought for <duration>`
         // summary lands here, after the body (scrollback is append-only).
         let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
@@ -250,11 +250,13 @@ pub(crate) fn fmt_thought_duration(d: Duration) -> String {
     }
 }
 
-/// Bottom summary: gray `⬡ Thought for <duration>` under the body, matching
-/// the thinking text above — same hexagon marker as the live status.
+/// Bottom summary: gray `✻ Thought for <duration>` under the body, matching
+/// the turn-end Thought line (same star marker; duration-only — the
+/// provider's true reasoning count isn't known until TurnEnd, and a
+/// streamed estimate here would under-report billed reasoning).
 fn thought_summary_line(elapsed: Duration) -> Line<'static> {
     Line::from(vec![Span::styled(
-        format!("⬡ Thought for {}", fmt_thought_duration(elapsed)),
+        format!("✻ Thought for {}", fmt_thought_duration(elapsed)),
         Style::default().fg(crate::theme::theme().text_muted),
     )])
 }
@@ -304,7 +306,7 @@ mod tests {
     fn thought_summary_line_names_duration() {
         let line = thought_summary_line(Duration::from_millis(5800));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "⬡ Thought for 5.8s");
+        assert_eq!(text, "✻ Thought for 5.8s");
         assert_eq!(
             line.spans[0].style.fg,
             // Pure Gray preset (no `theme()` global read — keeps this test

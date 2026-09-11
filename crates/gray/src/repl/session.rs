@@ -387,12 +387,18 @@ pub(crate) fn dispatch_agent_event(
                 t.end_thinking();
                 // Billed Σ-per-round totals are the cost basis (`totals`,
                 // `turn_footer`, persisted entry) — they must NOT overwrite
-                // the StepUsage context gauge (see `clear_live_counters`).
-                t.clear_live_counters();
+                // the StepUsage context gauge. The per-turn live counter is
+                // left intact too: `end_turn` captures it for the final
+                // `Thought for` line and does the single reset there. The
+                // billed reasoning count is the one exception: it is stashed
+                // for the Thought line's `· N reasoning tok` suffix (the
+                // provider reports it, the transcript persists it, but no TUI
+                // surface rendered it — display-only, never gauge input).
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
-                    // TUI Thought line shows context size only; billed
-                    // totals + cost live in `totals` / headless footer.
+                    t.set_turn_reasoning(usage.reasoning_tokens);
+                    // TUI Thought line shows streamed total + reasoning only;
+                    // billed totals + cost live in `totals` / headless footer.
                 }
             }
             _ => {}
