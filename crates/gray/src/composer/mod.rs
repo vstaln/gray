@@ -37,14 +37,24 @@ pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
-/// Single-line `✻ Thought for …`: `N tok` is the StepUsage context size.
-/// Billed Σ-per-round totals stay out of the TUI line entirely (cost basis
-/// lives in `totals` / headless `turn_footer` only). Pure for testability
-/// (`Tui::new` needs a TTY).
-pub(crate) fn format_thought_line(verb: &str, elapsed: &str, ctx_tokens: Option<usize>) -> String {
+/// Single-line `✻ Thought for …`: `N tok` is this turn's streamed token
+/// total (the same per-turn counter that ticked in the status line), with an
+/// optional billed-reasoning suffix (`· M reasoning tok`) from the TurnEnd
+/// usage report. The rest of the billed Σ-per-round totals stay out of the
+/// TUI line entirely (cost basis lives in `totals` / headless `turn_footer`
+/// only). Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn format_thought_line(
+    verb: &str,
+    elapsed: &str,
+    ctx_tokens: Option<usize>,
+    reasoning_tokens: Option<usize>,
+) -> String {
     let mut line = format!("✻ {verb} {elapsed}");
     if let Some(c) = ctx_tokens {
         line.push_str(&format!(" · {} tok", crate::repl::fmt_usage(c)));
+    }
+    if let Some(r) = reasoning_tokens.filter(|r| *r > 0) {
+        line.push_str(&format!(" · {} reasoning tok", crate::repl::fmt_usage(r)));
     }
     line
 }
@@ -95,6 +105,10 @@ pub struct Tui {
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
+    /// Billed reasoning tokens from this turn's TurnEnd usage (Σ-per-round).
+    /// Display-only: `end_turn` reads it into the Thought line. Never feeds
+    /// the context gauge (that stays `latest_usage`, latest-round size).
+    pub(crate) turn_reasoning_tokens: usize,
     pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
@@ -245,6 +259,7 @@ impl Tui {
             committed_markdown_lines: 0,
             pending_resize: None,
             live_streamed_tokens: 0,
+            turn_reasoning_tokens: 0,
             tool_progress_lens: std::collections::HashMap::new(),
             viewport_h: MIN_VIEWPORT_H,
         })
@@ -391,20 +406,9 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.cumulative_usage = Some(usage);
-        self.clear_live_counters();
-    }
-    /// Clears per-turn live counters WITHOUT touching the context gauge.
-    ///
-    /// `TurnEnd` carries billed Σ-per-round totals (the cost basis: every
-    /// provider round bills its full input), while the gauge
-    /// (`latest_usage`/`cumulative_usage`) is owned by `StepUsage`
-    /// (latest-round context size). Feeding billed into the gauge painted
-    /// `843.8k/200k`-style spikes on a 200k window that "healed" on the next
-    /// turn's first `StepUsage` — and poisoned `/context` plus the
-    /// auto-compact threshold in between.
-    pub fn clear_live_counters(&mut self) {
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        // The per-turn counter is NOT cleared here: `StepUsage` arrives
+        // every provider round, and wiping would reset the visible count
+        // mid-turn. It resets on `begin_turn` / `end_turn` / `reset_usage`.
     }
     /// Seeds the context gauge from a char-estimate when no provider
     /// `StepUsage` is in force: resume replay (persisted usage is billed
@@ -425,7 +429,15 @@ impl Tui {
         self.latest_usage = None;
         self.cumulative_usage = None;
         self.live_streamed_tokens = 0;
+        self.turn_reasoning_tokens = 0;
         self.tool_progress_lens.clear();
+    }
+
+    /// Stashes the TurnEnd billed reasoning count for the `end_turn` Thought
+    /// line. Called from the TurnEnd dispatch arm (which already holds the
+    /// billed usage); `end_turn` consumes it exactly once.
+    pub fn set_turn_reasoning(&mut self, reasoning_tokens: usize) {
+        self.turn_reasoning_tokens = reasoning_tokens;
     }
 
     pub(crate) fn width(&self) -> usize {
@@ -457,6 +469,7 @@ impl Tui {
             self.turn_had_thinking = false;
         }
         self.live_streamed_tokens = 0;
+        self.turn_reasoning_tokens = 0;
         self.tool_progress_lens.clear();
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
@@ -520,7 +533,14 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.sleep_until = None;
+        // Capture the per-turn counter BEFORE clearing: the `Thought for`
+        // line reports this turn's streamed tokens (the same number that
+        // was ticking in the status line), not session context size. Same
+        // for the stashed TurnEnd reasoning count (consumed exactly once).
+        let turn_toks = self.live_streamed_tokens;
+        let turn_reasoning = self.turn_reasoning_tokens;
         self.live_streamed_tokens = 0;
+        self.turn_reasoning_tokens = 0;
         self.tool_progress_lens.clear();
         if self.thinking {
             self.end_thinking_run(true);
@@ -546,10 +566,12 @@ impl Tui {
             } else {
                 "Worked for"
             };
-            // Just `✻ Thought for … · N tok` (context size). Billed
-            // Σ-per-round totals stay out of the TUI entirely.
-            let line =
-                format_thought_line(verb, &elapsed_str, self.latest_usage.map(|u| u.total()));
+            // `✻ Thought for … · N tok` is this turn's streamed total
+            // (counted from zero at `begin_turn`), plus the billed reasoning
+            // count when the provider reported one. Other billed Σ-per-round
+            // totals stay out of the TUI entirely.
+            let reasoning = (turn_reasoning > 0).then_some(turn_reasoning);
+            let line = format_thought_line(verb, &elapsed_str, Some(turn_toks), reasoning);
             self.ensure_gap(1);
             self.push_dim(line);
             self.ensure_gap(1);
@@ -664,15 +686,27 @@ mod thought_line_tests {
     use super::format_thought_line;
 
     #[test]
-    fn format_thought_line_is_just_verb_elapsed_and_ctx() {
-        let line = format_thought_line("Thought for", "1m 17s", Some(149_460));
+    fn format_thought_line_is_just_verb_elapsed_and_turn_toks() {
+        let line = format_thought_line("Thought for", "1m 17s", Some(149_460), None);
         assert_eq!(line, "✻ Thought for 1m 17s · 149,460 tok");
         assert_eq!(line.matches("1m 17s").count(), 1);
     }
 
     #[test]
     fn format_thought_line_no_ctx_is_bare() {
-        let line = format_thought_line("Worked for", "6s", None);
+        let line = format_thought_line("Worked for", "6s", None, None);
         assert_eq!(line, "✻ Worked for 6s");
+    }
+
+    #[test]
+    fn format_thought_line_appends_billed_reasoning() {
+        let line = format_thought_line("Thought for", "59s", Some(2_973), Some(1_270));
+        assert_eq!(line, "✻ Thought for 59s · 2,973 tok · 1,270 reasoning tok");
+    }
+
+    #[test]
+    fn format_thought_line_zero_reasoning_stays_bare() {
+        let line = format_thought_line("Thought for", "59s", Some(2_973), Some(0));
+        assert_eq!(line, "✻ Thought for 59s · 2,973 tok");
     }
 }

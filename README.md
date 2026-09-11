@@ -49,14 +49,10 @@ curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # bleeding edg
 or from source:
 
 ```bash
-cargo build --release -p gray                          # harness core
-cargo build --release -p gray --features clipboard     # + image paste in the TUI
+cargo build --release -p gray                          # harness core (image paste included)
 ```
 
-| build | adds |
-|---|---|
-| default | harness core: CLI, TUI, provider, sessions, tools, cron |
-| `--features clipboard` | image/paste attachments (arboard + image) |
+harness core: CLI, TUI (with image paste), provider, sessions, tools, cron.
 
 Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
