@@ -39,9 +39,9 @@ impl Drop for TuiSession {
 pub mod catalog;
 pub(crate) use catalog::save_auth_key;
 pub use catalog::{
-    AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectItem, PROVIDERS_JSON,
-    SavedConfig, build_connect_items, gray_home, load_auth_keys, load_catalog,
-    load_saved_config_at, mask_key_pretty, save_saved_config_at, saved_config_path,
+    AUTH_MODE_API_KEY, AUTH_MODE_NONE, ConnectItem, SavedConfig, build_connect_items, gray_home,
+    load_auth_keys, load_saved_config_at, mask_key_pretty, popular_provider_name,
+    save_saved_config_at, saved_config_path,
 };
 
 pub mod context;
@@ -68,13 +68,11 @@ pub mod tabs;
 
 #[cfg(feature = "acp")]
 mod acp_modal;
-mod context_modal;
 mod effort;
 mod install_manager;
 mod model_modal;
 mod permissions_modal;
 
-pub use context_modal::run_context_modal;
 mod connect;
 mod connect_draw;
 mod connect_models;

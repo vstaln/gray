@@ -251,32 +251,13 @@ pub(crate) async fn handle_context_window(
         )
     }
     let Some(val) = direct else {
-        // Bare `/context`: modal in the TUI, static breakdown on pipes.
-        if tui.is_some() {
-            let model = config.model.clone().unwrap_or_default();
-            let breakdown = collect_parts(cwd, agent, tui);
-            let bg = tui.map(|s| s.lock().expect("tui lock").snapshot());
-            let res = with_modal_sync(tui, || {
-                crate::setup::run_context_modal(config, &breakdown, &model, bg.as_ref())
-            });
-            match res {
-                Ok(Some(summary)) => emit(summary, tui, true),
-                Ok(None) => {
-                    // Dismissed modal leaves the slash card with no feedback:
-                    // gap so it doesn't jam the input box.
-                    if let Some(shared) = tui {
-                        shared.lock().expect("tui lock").ensure_gap(1);
-                    }
-                }
-                Err(e) => emit(format!("context error: {e}"), tui, false),
-            }
-        } else {
-            emit(
-                breakdown_text(config, &collect_parts(cwd, agent, tui)),
-                tui,
-                false,
-            );
-        }
+        // Bare `/context`: static breakdown everywhere (the `/context ...`
+        // subcommands edit window/reserve/keep; no interactive modal).
+        emit(
+            breakdown_text(config, &collect_parts(cwd, agent, tui)),
+            tui,
+            false,
+        );
         return;
     };
     let lower = val.trim().to_lowercase();
