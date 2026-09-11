@@ -202,9 +202,9 @@ pub(crate) fn run_install_manager(
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
-    let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(246, 173, 126);
-    let text_dim = Color::Rgb(120, 120, 120);
+    let box_bg = crate::theme::theme().surface_bg;
+    let accent_peach = crate::theme::theme().accent;
+    let text_dim = crate::theme::theme().text_dim;
     let bg_snapshot = bg
         .cloned()
         .unwrap_or_else(BackgroundSnapshot::default_initial);
@@ -358,7 +358,7 @@ pub(crate) fn run_install_manager(
                             Line::from(Span::styled(
                                 format!("{row}{}", " ".repeat(fill)),
                                 Style::default()
-                                    .fg(Color::Black)
+                                    .fg(crate::theme::theme().on_selection)
                                     .bg(accent_peach)
                                     .add_modifier(Modifier::BOLD),
                             ))
@@ -389,7 +389,7 @@ pub(crate) fn run_install_manager(
                                 Span::styled(
                                     text,
                                     Style::default()
-                                        .fg(Color::Rgb(220, 120, 120))
+                                        .fg(crate::theme::theme().error_soft)
                                         .add_modifier(Modifier::BOLD)
                                         .bg(box_bg),
                                 ),

@@ -18,8 +18,8 @@ impl Tui {
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
         let height = box_lines.len() as u16;
-        let block =
-            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block = ratatui::widgets::Block::default()
+            .style(Style::default().bg(crate::theme::theme().surface_bg));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(box_lines.clone())
                 .block(block)
@@ -162,7 +162,7 @@ impl Tui {
             Span::styled(
                 "✓ ",
                 Style::default()
-                    .fg(Color::Rgb(74, 222, 128))
+                    .fg(crate::theme::theme().success)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -176,7 +176,7 @@ impl Tui {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 d.to_string(),
-                Style::default().fg(Color::Rgb(140, 140, 140)),
+                Style::default().fg(crate::theme::theme().text_muted),
             ));
         }
         let line = Line::from(spans);

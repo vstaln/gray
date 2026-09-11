@@ -37,8 +37,8 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
 percent-encoding = { workspace = true }
-arboard = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
+arboard = { workspace = true }
+image = { workspace = true }
 tempfile = { workspace = true }
 base64 = { workspace = true }
 async-trait = { workspace = true }
@@ -48,7 +48,7 @@ ignore = { workspace = true }
 
 [features]
 default = []
-# Clipboard/image attachments (arboard + image). Off by default to keep the
-# default tree and binary lean; build with --features clipboard for paste.
-clipboard = ["dep:arboard", "dep:image"]
+# Deprecated no-op: clipboard/image paste (arboard + image) is core now and
+# always compiled in. Kept so old `--features clipboard` invocations still build.
+clipboard = []
 

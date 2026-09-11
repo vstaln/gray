@@ -50,6 +50,9 @@ pub struct Config {
     pub context_reserve: Option<usize>,
     /// Tail budget kept alongside the summary after compaction.
     pub context_keep: Option<usize>,
+    /// TUI color theme name ("gray" default; see `crate::theme::SELECTABLE_THEMES`).
+    /// Highest priority: `--theme` flag > `GRAY_THEME` env > saved config.
+    pub theme: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -126,6 +129,10 @@ impl Config {
             })
             .or(saved.context_keep);
 
+        let theme = nonempty(cli.theme.as_deref())
+            .or_else(|| nonempty(env("GRAY_THEME").as_deref()))
+            .or(saved.theme);
+
         let config = Self {
             model,
             base_url,
@@ -135,6 +142,7 @@ impl Config {
             context_window,
             context_reserve,
             context_keep,
+            theme,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)

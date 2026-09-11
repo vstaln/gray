@@ -18,6 +18,7 @@ pub mod skills_tool;
 pub mod sys_editor;
 pub mod system_prompt;
 pub(crate) mod text_width;
+pub mod theme;
 pub mod tool_fmt;
 pub mod tui;
 pub mod update;
@@ -48,7 +49,7 @@ to this default, Ctrl-X cancel). Deleting anything here disables nothing
 gray adds, because gray adds nothing.
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through a single tool: a persistent bash shell. Use it to read, search, edit, and run things.
+You work through a persistent bash shell (bash, shell_output, shell_kill, sleep). Use it to read, search, edit, and run things.
 Before working in a project, read its AGENTS.md / CLAUDE.md. When a task matches a skill, read the matching SKILL.md from the skill roots (e.g. ~/.gray/skills, ~/.agents/skills, ~/.claude/skills, and project .agents/skills).
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
@@ -234,6 +235,10 @@ pub struct Cli {
     /// Tail budget kept alongside the summary after compaction (e.g. 20k). Env: GRAY_CONTEXT_KEEP.
     #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
     pub context_keep: Option<usize>,
+
+    /// TUI color theme (gray, tokyo-night, dracula, catppuccin-mocha, gruvbox-dark, claude, terminal). Env: GRAY_THEME.
+    #[arg(long, value_name = "NAME")]
+    pub theme: Option<String>,
 
     /// Print the merged plugin manifest as JSON and exit
     #[arg(long = "dump-manifest")]

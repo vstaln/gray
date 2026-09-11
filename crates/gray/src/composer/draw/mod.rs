@@ -146,7 +146,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(
                 suffix,
-                Style::default().fg(Color::Rgb(108, 108, 108)),
+                Style::default().fg(crate::theme::theme().tool_dim),
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
@@ -166,7 +166,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 {
-            let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            let box_block =
+                Block::default().style(Style::default().bg(crate::theme::theme().surface_bg));
             frame.render_widget(
                 Paragraph::new(ibox.lines.clone()).block(box_block),
                 Rect::new(area.x, box_y, area.width, rendered_box_h),
@@ -212,13 +213,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 };
                 let pad_len = w.saturating_sub(used_len + display_width(marker));
                 let line_bg = if is_sel {
-                    Color::Rgb(246, 173, 126)
+                    crate::theme::theme().accent
                 } else {
-                    Color::Rgb(28, 28, 28)
+                    crate::theme::theme().raised_bg
                 };
                 let marker_style = if is_sel {
                     Style::default()
-                        .fg(Color::Black)
+                        .fg(crate::theme::theme().on_selection)
                         .bg(line_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
@@ -232,13 +233,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         Span::styled(
                             cmd_str,
                             Style::default()
-                                .fg(Color::Black)
+                                .fg(crate::theme::theme().on_selection)
                                 .bg(line_bg)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             desc_str,
-                            Style::default().fg(Color::Rgb(40, 40, 40)).bg(line_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_faint)
+                                .bg(line_bg),
                         ),
                         Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
                         Span::styled(marker.to_string(), marker_style),
@@ -254,7 +257,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         ),
                         Span::styled(
                             desc_str,
-                            Style::default().fg(Color::Rgb(140, 140, 140)).bg(line_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_muted)
+                                .bg(line_bg),
                         ),
                         Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
                         Span::styled(marker.to_string(), marker_style),
@@ -281,15 +286,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     " File ",
                     Style::default()
                         .fg(Color::White)
-                        .bg(Color::Rgb(59, 130, 246))
+                        .bg(crate::theme::theme().info)
                         .add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     fname,
                     Style::default()
-                        .fg(Color::Rgb(180, 180, 180))
-                        .bg(Color::Rgb(38, 38, 38)),
+                        .fg(crate::theme::theme().text_soft)
+                        .bg(crate::theme::theme().input_bg),
                 ));
                 spans.push(Span::raw("  "));
             }
@@ -339,24 +344,27 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             } else {
                 vec![Span::styled(
                     effort_display.clone(),
-                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                    Style::default().fg(crate::theme::theme().tool_dim),
                 )]
             }
         } else if effort_display.is_empty() {
             vec![Span::styled(
                 model_display.clone(),
-                Style::default().fg(Color::Rgb(140, 140, 140)),
+                Style::default().fg(crate::theme::theme().text_muted),
             )]
         } else {
             vec![
                 Span::styled(
                     model_display.clone(),
-                    Style::default().fg(Color::Rgb(140, 140, 140)),
+                    Style::default().fg(crate::theme::theme().text_muted),
                 ),
-                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled(
+                    " \u{b7} ",
+                    Style::default().fg(crate::theme::theme().text_faint),
+                ),
                 Span::styled(
                     effort_display.clone(),
-                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                    Style::default().fg(crate::theme::theme().tool_dim),
                 ),
             ]
         };
@@ -371,15 +379,21 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
-            Color::Rgb(130, 145, 130)
+            crate::theme::theme().cache_hit
         } else {
-            Color::Rgb(80, 80, 80)
+            crate::theme::theme().text_faint
         };
 
         let mut footer_spans = vec![
             Span::raw(" "),
-            Span::styled(ctx_display, Style::default().fg(Color::Rgb(108, 108, 108))),
-            Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))),
+            Span::styled(
+                ctx_display,
+                Style::default().fg(crate::theme::theme().tool_dim),
+            ),
+            Span::styled(
+                " \u{b7} ",
+                Style::default().fg(crate::theme::theme().text_faint),
+            ),
             Span::styled(cache_display, Style::default().fg(cache_color)),
         ];
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
@@ -435,13 +449,13 @@ mod tests {
 
     #[test]
     fn transcript_ends_blank_matches_ensure_gap() {
-        use ratatui::style::{Color, Style};
+        use ratatui::style::Style;
         assert!(!transcript_ends_blank(&[]));
         assert!(transcript_ends_blank(&[Line::from("")]));
         assert!(transcript_ends_blank(&[Line::from(" ")])); // left_pad-only row
         assert!(!transcript_ends_blank(&[Line::from("text")]));
         // card / code padding rows carry a bg: they are edges, not gaps
-        let bg = Style::default().bg(Color::Rgb(22, 22, 22));
+        let bg = Style::default().bg(crate::theme::GRAY_UI_THEME.surface_bg);
         assert!(!transcript_ends_blank(&[Line::from("").style(bg)]));
     }
 

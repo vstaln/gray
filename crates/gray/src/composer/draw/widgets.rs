@@ -3,7 +3,6 @@
 use super::*;
 
 pub(crate) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
-    use ratatui::style::Color;
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
@@ -13,8 +12,11 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>>
     let sweep_seconds = 2.0f32;
     let pos = ((elapsed.as_secs_f32() % sweep_seconds) / sweep_seconds * (period as f32)) as usize;
     let band_half_width = 5.0f32;
-    const BASE: (u8, u8, u8) = (150, 148, 144);
-    const HIGHLIGHT: (u8, u8, u8) = (255, 255, 255);
+    // Theme-driven sweep: base role → bright role. Non-Rgb theme colors
+    // (e.g. the `terminal` theme's Reset passthrough) fall back to the
+    // generic blender, which holds the base color steady.
+    let base = crate::theme::theme().shimmer_base;
+    let hilite = crate::theme::theme().text_bright;
     chars
         .iter()
         .enumerate()
@@ -26,13 +28,8 @@ pub(crate) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>>
                 0.0
             };
             let k = t.clamp(0.0, 1.0) * 0.9;
-            let lerp = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * k) as u8;
             let style = Style::default()
-                .fg(Color::Rgb(
-                    lerp(BASE.0, HIGHLIGHT.0),
-                    lerp(BASE.1, HIGHLIGHT.1),
-                    lerp(BASE.2, HIGHLIGHT.2),
-                ))
+                .fg(crate::tui::blend_color(base, hilite, k))
                 .add_modifier(if t > 0.3 {
                     Modifier::BOLD
                 } else {
@@ -58,8 +55,8 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
     let content_w = w.saturating_sub(4).max(1);
 
     // Neutral Gray palette (no blue, transparent bg — text only)
-    let prompt_color = Color::Rgb(180, 180, 180);
-    let text_primary = Color::Rgb(225, 225, 225);
+    let prompt_color = crate::theme::theme().text_soft;
+    let text_primary = crate::theme::theme().text_body;
 
     let mut box_lines: Vec<Line<'static>> = Vec::new();
 
@@ -232,9 +229,9 @@ pub(crate) fn queued_preview_lines(
     if queued.is_empty() {
         return Vec::new();
     }
-    let dim = Style::default().fg(Color::Rgb(140, 140, 140));
+    let dim = Style::default().fg(crate::theme::theme().text_muted);
     let dim_italic = Style::default()
-        .fg(Color::Rgb(140, 140, 140))
+        .fg(crate::theme::theme().text_muted)
         .add_modifier(Modifier::DIM)
         .add_modifier(Modifier::ITALIC);
     let mut lines = vec![Line::from(vec![

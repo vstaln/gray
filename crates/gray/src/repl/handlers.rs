@@ -364,6 +364,65 @@ pub(crate) async fn handle_model(
     }
 }
 
+/// Switch the TUI color theme (`/theme [name]`; bare lists themes).
+/// Live: call sites read `crate::theme::theme()` on every draw, so the switch
+/// applies instantly. Persists to saved config like thinking effort does.
+pub(crate) fn handle_theme(
+    config: &mut Config,
+    name: Option<String>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    use crate::theme::{SELECTABLE_THEMES, ThemeId};
+    let list = || {
+        SELECTABLE_THEMES
+            .iter()
+            .map(|t| t.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if let Some(n) = name {
+        match ThemeId::from_name(&n) {
+            Some(id) => {
+                crate::theme::set_theme(id);
+                config.theme = Some(id.name().to_string());
+                if let Ok(path) = crate::setup::saved_config_path() {
+                    let mut saved = crate::setup::load_saved_config_at(&path);
+                    saved.theme = Some(id.name().to_string());
+                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                }
+                let msg = format!("Theme set to {} ({})", id.display_name(), id.name());
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.push_action(&msg, None);
+                    t.ensure_gap(1);
+                } else {
+                    println!("\u{2713} {msg}");
+                }
+            }
+            None => {
+                let msg = format!("unknown theme '{n}' — try: {}", list());
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.push_dim(format!("\u{2514} {msg}"));
+                    t.ensure_gap(1);
+                } else {
+                    println!("{msg}");
+                }
+            }
+        }
+        return;
+    }
+    let cur = crate::theme::theme().name;
+    let msg = format!("theme {cur} — available: {}", list());
+    if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        t.push_dim(msg);
+        t.ensure_gap(1);
+    } else {
+        println!("{msg}");
+    }
+}
+
 /// Handles `/thinking` / `/effort`: direct set (`/thinking high`), toggle visibility (bare `/thinking`), or picker.
 pub(crate) async fn handle_thinking(
     config: &mut Config,
@@ -495,6 +554,7 @@ mod tests {
             context_window: None,
             context_reserve: None,
             context_keep: None,
+            theme: None,
         };
         let mut agent: Option<Agent> = None;
         reload_agent(

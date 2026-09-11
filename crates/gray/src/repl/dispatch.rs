@@ -202,6 +202,10 @@ pub(crate) async fn dispatch_command(
             .await;
             Flow::Continue
         }
+        ReplCommand::Theme(name) => {
+            handle_theme(config, name, tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
         ReplCommand::ContextWindow(val) => {
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue

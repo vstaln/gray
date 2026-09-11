@@ -30,9 +30,9 @@ pub fn run_effort_modal(
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
-    let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(246, 173, 126);
-    let text_dim = Color::Rgb(120, 120, 120);
+    let box_bg = crate::theme::theme().surface_bg;
+    let accent_peach = crate::theme::theme().accent;
+    let text_dim = crate::theme::theme().text_dim;
 
     let bg_snapshot = bg
         .cloned()
@@ -156,7 +156,7 @@ pub fn run_effort_modal(
                         Line::from(Span::styled(
                             full_row_str,
                             Style::default()
-                                .fg(Color::Black)
+                                .fg(crate::theme::theme().on_selection)
                                 .bg(accent_peach)
                                 .add_modifier(Modifier::BOLD),
                         ))
@@ -165,7 +165,7 @@ pub fn run_effort_modal(
                             Span::styled(
                                 " ✓ ",
                                 Style::default()
-                                    .fg(Color::Rgb(74, 222, 128))
+                                    .fg(crate::theme::theme().success)
                                     .add_modifier(Modifier::BOLD)
                                     .bg(box_bg),
                             )
@@ -181,7 +181,9 @@ pub fn run_effort_modal(
                         );
                         let desc_span = Span::styled(
                             desc,
-                            Style::default().fg(Color::Rgb(140, 140, 140)).bg(box_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_muted)
+                                .bg(box_bg),
                         );
                         let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(box_bg));
                         Line::from(vec![check_span, name_span, desc_span, pad_span])
