@@ -82,8 +82,6 @@ async fn spawn_ctrl_c_policy() {
 use crate::config::Config;
 use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
-#[cfg(feature = "acp")]
-mod acp_cmds;
 pub mod attachments;
 pub mod commands;
 mod dispatch;
@@ -96,25 +94,6 @@ mod session;
 mod status;
 mod user_cmds;
 
-/// Sticky ACP session handle. Without the `acp` feature the type is an inert
-/// stub so REPL state and dispatch stay unchanged; it is never constructed.
-#[cfg(feature = "acp")]
-pub(crate) use gray_acp::AcpSession;
-#[cfg(not(feature = "acp"))]
-#[derive(Default)]
-pub(crate) struct AcpSession;
-#[cfg(not(feature = "acp"))]
-impl AcpSession {
-    pub(crate) async fn new_session(&mut self) -> anyhow::Result<()> {
-        Ok(())
-    }
-    pub(crate) fn agent_key(&self) -> &str {
-        ""
-    }
-}
-
-#[cfg(feature = "acp")]
-pub(crate) use acp_cmds::{handle_acp_command, run_acp_turn};
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
@@ -359,9 +338,6 @@ pub async fn run_repl_mode(
     // The agent is built lazily so the REPL opens even with no model/key configured;
     // we surface a friendly hint on first use instead of refusing to start.
     let mut agent: Option<Agent> = None;
-    // Sticky ACP session: `/acp <agent>` parks one here; prompts route
-    // through it until `/acp off`. The native `agent` above sits idle meanwhile.
-    let mut acp: Option<AcpSession> = None;
     let mut session_state: Option<SessionState> = None;
     let mut session_totals = SessionTotals::default();
     let mut pending_history: Vec<Message> = Vec::new();
@@ -567,7 +543,6 @@ pub async fn run_repl_mode(
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
                             shutdown_hooks(agent.as_ref()).await;
-                            let _ = acp.take(); // AcpSession has no teardown.
                             shutdown_shell_tasks(&session_state, &tui).await;
                             print_exit_hint(&session_state);
                             break;
@@ -589,7 +564,6 @@ pub async fn run_repl_mode(
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     shutdown_hooks(agent.as_ref()).await;
-                    let _ = acp.take(); // AcpSession has no teardown.
                     shutdown_shell_tasks(&session_state, &tui).await;
                     break;
                 }
@@ -673,51 +647,26 @@ pub async fn run_repl_mode(
                 }
             }
             ReplCommand::Prompt(prompt_text) => {
-                #[cfg(feature = "acp")]
-                let routed_to_acp = if acp.is_some() {
-                    run_acp_turn(
-                        prompt_text.clone(),
-                        &mut pending_images,
-                        &mut acp,
-                        config,
-                        &cwd,
-                        &tui,
-                        interactive,
-                        &mut session_state,
-                        &mut session_totals,
-                        &mut pending_command,
-                        config.model.as_deref(),
-                    )
-                    .await?;
-                    true
-                } else {
-                    false
-                };
-                #[cfg(not(feature = "acp"))]
-                let routed_to_acp = false;
-                if !routed_to_acp {
-                    prompt_turn::run_prompt_turn(
-                        prompt_text,
-                        &mut pending_images,
-                        &mut agent,
-                        config,
-                        &cwd,
-                        &tui,
-                        interactive,
-                        &mut session_state,
-                        &mut session_totals,
-                        &mut pending_command,
-                        &mut pending_history,
-                        &mut unconfigured,
-                    )
-                    .await?;
-                }
+                prompt_turn::run_prompt_turn(
+                    prompt_text,
+                    &mut pending_images,
+                    &mut agent,
+                    config,
+                    &cwd,
+                    &tui,
+                    interactive,
+                    &mut session_state,
+                    &mut session_totals,
+                    &mut pending_command,
+                    &mut pending_history,
+                    &mut unconfigured,
+                )
+                .await?;
             }
             other => {
                 if dispatch::dispatch_command(
                     other,
                     &mut agent,
-                    &mut acp,
                     config,
                     &cwd,
                     &tui,

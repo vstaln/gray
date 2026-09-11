@@ -18,9 +18,7 @@ pub use policy::{
     init_auto_compact_from_env, is_auto_compact_enabled, is_context_overflow_error,
     set_auto_compact_enabled, should_compact,
 };
-/// Reusable auto-compact helper that mirrors manual `/compact` flow: the
-/// codex-v2 pipeline with the user's keep-recent budget, gated by the session
-/// auto-compact switch.
+
 pub async fn auto_compact_if_needed(agent: &mut Agent) -> Result<bool, CoreError> {
     if !is_auto_compact_enabled() {
         return Ok(false);

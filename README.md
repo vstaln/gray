@@ -38,7 +38,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
 | **One tool, by default** | The default profile is a single persistent `bash` shell — the same bet as mini-swe-agent and dsh's `minimal` preset. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
 | **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. Release binary; from source add `--features all-platforms`. |
-| **Extend the harness** | Skills from `SKILL.md`, sidecar plugins over stdio (frozen wire v1), or `/acp` to *become* claude, codex, cursor, opencode… |
+| **Extend the harness** | Skills from `SKILL.md`, or sidecar plugins over stdio (frozen wire v1). |
 
 ## Install
 
@@ -51,7 +51,7 @@ or from source:
 
 ```bash
 cargo build --release -p gray                             # harness core
-cargo build --release -p gray --features all-platforms,acp  # what release binaries ship
+cargo build --release -p gray --features all-platforms   # what release binaries ship
 cargo build --release -p gray --features clipboard        # + image paste in the TUI
 ```
 
@@ -59,10 +59,9 @@ cargo build --release -p gray --features clipboard        # + image paste in the
 |---|---|
 | default | harness core: CLI, TUI, provider, sessions, tools, cron |
 | `--features all-platforms` | Telegram + Discord + Slack gateway adapters |
-| `--features acp` | external agents over the Agent Client Protocol (`/acp`, `--acp`) |
 | `--features clipboard` | image/paste attachments (arboard + image) |
 
-Release binaries ship `all-platforms` + `acp`.
+Release binaries ship `all-platforms`.
 
 Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
@@ -101,7 +100,6 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `/skills` · `/skills:<name> [args]` | list skills, run one |
 | `/plugin <subcommand>` | list · search · install · remove · update · enable · disable · check |
 | `/agentsmd` | edit the full system prompt in the built-in editor (`show`, `reset` too) |
-| `/acp [agent] [prompt]` | run as an external ACP agent (claude, codex, cursor, opencode…) |
 | `/feedback <text>` | save feedback locally + open a prefilled GitHub issue |
 | `/help` · `/quit` | you know these |
 
@@ -116,7 +114,7 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
 | `gray update` | update gray to the latest release |
 
-Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--session <ID>`, `--acp <AGENT>`, `--context-window <TOKENS>`, `--context-reserve`, `--context-keep`, `--dump-manifest`.
+Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--session <ID>`, `--context-window <TOKENS>`, `--context-reserve`, `--context-keep`, `--dump-manifest`.
 
 ## Extend
 
@@ -125,8 +123,6 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 **Skills** — `SKILL.md` bodies discovered across opencode / claude / agent directories. `/skills` lists them, `/skills:<name> [args]` runs one. The prompt points the model at the skill roots; it reads the matching `SKILL.md` via bash.
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
-
-**ACP agents** — `/acp` turns gray into any external coding agent over the [Agent Client Protocol](https://agentclientprotocol.com): bare `/acp` opens a picker, `/acp <agent> <prompt>` delegates one-shot, `/acp off` returns to native — and `gray -p '…' --acp opencode` works in print mode. Probed via `which`: `codex`, `claude`, `opencode`, `cursor`, `gemini`, `copilot`, `grok`, `goose` / `kimi` / `kiro`; customs go in `~/.gray/acp.json`. Permission requests are **denied by default** — `--yolo` (or `GRAY_ACP_AUTO_APPROVE=1`) auto-approves, and the external agent's own permission model applies. Design doc: [docs/ACP_PLAN.md](docs/ACP_PLAN.md).
 
 ## Gateway
 
@@ -163,7 +159,6 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 | `gray-tools` | bash · read · write · edit · grep · find · ls · shell control (profile-selectable) |
 | `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
 | `gray-pkg` | plugin package management |
-| `gray-acp` | Agent Client Protocol client (external agents) |
 | `gray-cron` | cron scheduling · job store · ticker |
 | `gray-gateway` | Telegram / Discord / Slack gateway daemon |
 | `gray-supervise` | supervision core — restart contract, heartbeat, lifecycle, probe, rotation |
@@ -183,7 +178,6 @@ The essentials — everything else is one `--help` or doc page away.
 | `GRAY_CONTEXT_WINDOW` | override the window in tokens — `128000`, `128k`, `1m`, or `auto` |
 | `GRAY_NO_UPDATE_CHECK=1` · `GRAY_AUTO_UPDATE=1` | silence the startup update check, or background self-update |
 | `GRAY_LOG` | `error`…`trace` (default `info`) |
-| `GRAY_ACP_AUTO_APPROVE=1` | auto-approve ACP permission requests (same as `--yolo`) |
 | `GRAY_PARALLEL_READS` | `0` runs every tool sequentially (default: read-only tools concurrent, input order preserved) |
 
 ## Platform support

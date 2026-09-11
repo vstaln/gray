@@ -61,10 +61,6 @@ pub struct Tui {
     pending: String,
     thinking: bool,
     thinking_started: Option<Instant>,
-    /// Buffered thinking rows for the current run. Rendered header-first
-    /// (`Thought: <dur>` + blank + body, opencode parity) when the run ends —
-    /// scrollback is append-only so a top header can't be re-rendered live.
-    pub(crate) thinking_lines: Vec<String>,
     hide_thinking: bool,
     pending_tokens: Option<String>,
     pub(crate) history: Vec<String>,
@@ -216,7 +212,6 @@ impl Tui {
             pending: String::new(),
             thinking: false,
             thinking_started: None,
-            thinking_lines: Vec::new(),
             hide_thinking: false,
             pending_tokens: None,
             history: Vec::new(),
@@ -447,19 +442,14 @@ impl Tui {
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            if self.thinking {
-                // Thinking rows buffer for the header-first flush in
-                // `end_thinking_run`, never straight to the transcript.
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.thinking_lines.push(line.to_string());
-                    }
-                }
+            let style = if self.thinking {
+                crate::composer::transcript::thinking_style()
             } else {
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.push_line_styled(line.to_string(), Style::default());
-                    }
+                Style::default()
+            };
+            for line in rest.split('\n') {
+                if !line.is_empty() {
+                    self.push_line_styled(line.to_string(), style);
                 }
             }
         }
