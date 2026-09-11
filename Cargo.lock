@@ -1354,6 +1354,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gray-heartbeat"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "gray-cron",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "gray-markdown"
 version = "0.1.0"
 dependencies = [
