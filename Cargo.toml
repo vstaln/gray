@@ -4,7 +4,6 @@ members = [
     "crates/gray",
     "crates/gray-core",
     "crates/gray-cron",
-    "crates/gray-gateway",
     "crates/gray-markdown",
     "crates/gray-provider",
     "crates/gray-session",
@@ -13,9 +12,7 @@ members = [
     "crates/gray-plugin",
     "crates/gray-pkg",
 ]
-# Phase 1 scope cut: the default build is the harness core only.
-# gray-gateway stays a member (built via
-# --workspace or -p) but is out of the default tree.
+# Minimal core: no gateway member. Chat returns as a plugin, not a crate.
 default-members = [
     "crates/gray",
     "crates/gray-core",
@@ -36,7 +33,6 @@ license = "MIT"
 gray = { path = "crates/gray" }
 gray-core = { path = "crates/gray-core" }
 gray-cron = { path = "crates/gray-cron" }
-gray-gateway = { path = "crates/gray-gateway" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }
