@@ -15,8 +15,8 @@ use ratatui::text::{Line, Span};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::buffers::{
-    CodeBlockMeta, Highlight, LinkTarget, MarkdownBuffers, Replace, StyledCell, TableHyperlink,
-    TableReplace, TableState, Transform, unicode_display_width,
+    Highlight, LinkTarget, MarkdownBuffers, Replace, StyledCell, TableHyperlink, TableReplace,
+    TableState, Transform, unicode_display_width,
 };
 use crate::checkpoint::CheckpointKind;
 use crate::colors::anstyle_to_ratatui_style;
@@ -97,24 +97,6 @@ fn has_blank_line_after(text: &str, pos: usize) -> bool {
         == Some(b'\n')
 }
 
-/// Transient state for the fenced code block currently being parsed.
-///
-/// Fenced blocks never nest (an inner fence closes the outer), so a single
-/// `Option` suffices. Finalized in the `TagEnd::CodeBlock` arm, where the body
-/// range and the block range together decide whether the fence was closed.
-struct PendingCodeBlock {
-    info: String,
-    /// Body byte range in the raw source. Initialized to an empty range just
-    /// past the opening fence line, then widened to the merged body text range
-    /// as text events arrive (`body_seen` distinguishes the empty-body case).
-    body_range: Range<usize>,
-    /// De-prefixed body content: pulldown's merged text gives the logical code
-    /// with container markers (blockquote `>`, list indent) stripped and CRLF
-    /// normalized to `\n` — i.e. the clean diagram/code source.
-    body_text: String,
-    body_seen: bool,
-}
-
 /// Markdown parser that processes events and populates buffers.
 ///
 /// After calling `parse()`, the transient state (tag_stack, table_state, depth)
@@ -143,8 +125,6 @@ pub struct MarkdownParser<'a, 'b, 'syn, 'oc> {
     /// Monotonically increasing counter for assigning stable link IDs.
     /// Persisted across `rerender_tail` calls via the streaming renderer.
     link_id_counter: u32,
-    /// In-progress fenced code block, set between its start and end events.
-    pending_code_block: Option<PendingCodeBlock>,
 }
 
 /// Custom word separator for table cells.
@@ -360,7 +340,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             last_checkpoint: None,
             max_table_width: None,
             link_id_counter: 0,
-            pending_code_block: None,
         }
     }
 
@@ -403,7 +382,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         self.table_state = None;
         self.depth = 0;
         self.last_checkpoint = None;
-        self.pending_code_block = None;
 
         for (event, range) in
             TextMergeWithOffset::new(crate::markdown_core::offset_events(self.text))
@@ -501,22 +479,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 // Capture text into table cell if we're inside a table
                 if let Some(ref mut state) = self.table_state {
                     state.push_text(&text);
-                }
-
-                // Record the enclosing fenced block's raw byte range and its
-                // de-prefixed body content. pulldown merges the body into one
-                // text event, but accumulate defensively in case it is split.
-                if parent_code_block.is_some()
-                    && let Some(pending) = self.pending_code_block.as_mut()
-                {
-                    if pending.body_seen {
-                        pending.body_range.start = pending.body_range.start.min(range.start);
-                        pending.body_range.end = pending.body_range.end.max(range.end);
-                    } else {
-                        pending.body_range = range.clone();
-                        pending.body_seen = true;
-                    }
-                    pending.body_text.push_str(&text);
                 }
 
                 if let Some(parent_code_block) = parent_code_block {
@@ -837,25 +799,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 None
             }
             Tag::CodeBlock(code) => {
-                // Track the fenced block so its body span can be reported once
-                // the fence closes. The body starts just past the opening fence
-                // line; an empty-body fence keeps this empty range. Indented
-                // code blocks are not fences and report no span.
-                self.pending_code_block = match code {
-                    CodeBlockKind::Fenced(lang) => {
-                        let body_start = self.text[range.start..]
-                            .find('\n')
-                            .map_or(range.end, |nl| range.start + nl + 1);
-                        Some(PendingCodeBlock {
-                            info: lang.to_string(),
-                            body_range: body_start..body_start,
-                            body_text: String::new(),
-                            body_seen: false,
-                        })
-                    }
-                    CodeBlockKind::Indented => None,
-                };
-
                 // pulldown-cmark reports the code-block range starting at the
                 // fence marker (```), excluding any leading indentation on the
                 // opening-fence line. That indentation is present whenever the
@@ -1133,23 +1076,7 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 None
             }
             TagEnd::Strikethrough => None, // No highlight pushed
-            TagEnd::CodeBlock => {
-                // pulldown synthesizes a block end at end-of-input even for an
-                // unterminated fence, so the end event alone does not prove
-                // closure. A closing fence always sits after the body, so the
-                // block range extends past the body exactly when the fence
-                // closed. `take` clears the pending block in either case.
-                if let Some(pending) = self.pending_code_block.take()
-                    && pending.body_range.end < range.end
-                {
-                    self.buffers.code_blocks.push(CodeBlockMeta {
-                        info: pending.info,
-                        body: pending.body_text,
-                        body_source_range: pending.body_range,
-                    });
-                }
-                None
-            }
+            TagEnd::CodeBlock => None,     // No span reported
             TagEnd::Link | TagEnd::Image => {
                 // Clear link state for table cells so subsequent text in
                 // the same cell isn't tagged as part of this link.
