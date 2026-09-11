@@ -37,6 +37,44 @@ pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
+/// Billed turn total waiting to be merged into the `✻ Thought …` line.
+///
+/// `billed_tokens` is the Σ-per-round provider total (the cost basis —
+/// every round bills its full input, so a 5-tool turn bills ~5× context).
+/// `cost_suffix` is the preformatted ` · $X ($Y session)` tail (empty
+/// when the model rate is unknown). Stored structured — not as a
+/// `turn_footer` string — so `end_turn` can merge it onto the Thought
+/// line with the duration appearing exactly once.
+pub(crate) struct PendingTurnFooter {
+    pub(crate) billed_tokens: usize,
+    pub(crate) cost_suffix: String,
+}
+
+/// Single-line `✻ Thought for …`: duration appears once, the two token
+/// numbers are labeled (`N tok` = StepUsage context size, `M billed` =
+/// Σ-per-round cost basis) so `149,460 tok · 990,715 billed` never reads
+/// as a duplicated `tok` count again. Pure for testability (`Tui::new`
+/// needs a TTY).
+pub(crate) fn format_thought_line(
+    verb: &str,
+    elapsed: &str,
+    ctx_tokens: Option<usize>,
+    pending: Option<&PendingTurnFooter>,
+) -> String {
+    let mut line = format!("✻ {verb} {elapsed}");
+    if let Some(c) = ctx_tokens {
+        line.push_str(&format!(" · {} tok", crate::repl::fmt_usage(c)));
+    }
+    if let Some(p) = pending {
+        line.push_str(&format!(
+            " · {} billed",
+            crate::repl::fmt_usage(p.billed_tokens)
+        ));
+        line.push_str(&p.cost_suffix);
+    }
+    line
+}
+
 mod text_area;
 pub(crate) use text_area::TextArea;
 
@@ -62,7 +100,7 @@ pub struct Tui {
     thinking: bool,
     thinking_started: Option<Instant>,
     hide_thinking: bool,
-    pending_tokens: Option<String>,
+    pending_turn: Option<PendingTurnFooter>,
     pub(crate) history: Vec<String>,
     pub(crate) history_idx: Option<usize>,
     pub(crate) draft: String,
@@ -213,7 +251,7 @@ impl Tui {
             thinking: false,
             thinking_started: None,
             hide_thinking: false,
-            pending_tokens: None,
+            pending_turn: None,
             history: Vec::new(),
             history_idx: None,
             draft: String::new(),
@@ -525,7 +563,7 @@ impl Tui {
             }
         }
 
-        let pending_tok = self.pending_tokens.take();
+        let pending = self.pending_turn.take();
         if let Some(elapsed) = elapsed {
             let elapsed_str = crate::repl::format::fmt_duration_ms(
                 elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
@@ -535,36 +573,35 @@ impl Tui {
             } else {
                 "Worked for"
             };
-            let tok_suffix = if let Some(u) = self.latest_usage {
-                format!(" · {} tok", crate::repl::fmt_usage(u.total()))
-            } else {
-                String::new()
-            };
-            // Codex-style: ✻ Worked for 6s · N tok (dim)
-            let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
+            // Single dim line: duration once, context `tok` + billed labeled.
+            // (Previously two lines — `✻ Thought … tok` + `⬡ … tok · same
+            // duration` — which read as a duplicated count.)
+            let line = format_thought_line(
+                verb,
+                &elapsed_str,
+                self.latest_usage.map(|u| u.total()),
+                pending.as_ref(),
+            );
             self.ensure_gap(1);
             self.push_dim(line);
-            // The billed turn total (`turn_footer`, with cost) used to die
-            // here: the elapsed branch `take()`d it and dropped it, so the
-            // interactive TUI never showed per-turn cost while the headless
-            // path prints it. Render it as its own dim line so the two
-            // numbers stay distinct: Thought carries context size (the
-            // StepUsage gauge), ⬡ carries billed Σ-per-round plus cost.
-            if let Some(tok) = pending_tok {
-                self.push_dim(tok);
-            }
             self.ensure_gap(1);
-        } else if let Some(tok) = pending_tok {
+        } else if let Some(p) = pending {
+            // No turn clock (rare: `end_turn` without `begin_turn`) — no
+            // Thought line to merge onto, so keep the billed footer alone.
             self.ensure_gap(1);
-            self.push_dim(tok);
+            self.push_dim(format!(
+                "⬢ {} tok{}",
+                crate::repl::fmt_usage(p.billed_tokens),
+                p.cost_suffix
+            ));
             self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
     }
 
-    pub fn push_usage(&mut self, tok_line: String) {
-        self.pending_tokens = Some(tok_line);
+    pub(crate) fn push_usage(&mut self, pending: PendingTurnFooter) {
+        self.pending_turn = Some(pending);
     }
 
     /// pi `updateArgs` token accounting: `args_so_far` is the cumulative
@@ -665,5 +702,41 @@ impl Drop for Tui {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+    }
+}
+
+#[cfg(test)]
+mod thought_line_tests {
+    use super::{format_thought_line, PendingTurnFooter};
+
+    #[test]
+    fn format_thought_line_merges_ctx_and_billed_with_single_duration() {
+        let pending = PendingTurnFooter {
+            billed_tokens: 990_715,
+            cost_suffix: " · $0.42 ($3.10 session)".to_string(),
+        };
+        let line = format_thought_line("Thought for", "1m 17s", Some(149_460), Some(&pending));
+        assert_eq!(
+            line,
+            "✻ Thought for 1m 17s · 149,460 tok · 990,715 billed · $0.42 ($3.10 session)"
+        );
+        // duration exactly once — the old two-line bug printed it twice
+        assert_eq!(line.matches("1m 17s").count(), 1);
+    }
+
+    #[test]
+    fn format_thought_line_ctx_only_when_no_billed() {
+        let line = format_thought_line("Worked for", "6s", Some(12_400), None);
+        assert_eq!(line, "✻ Worked for 6s · 12,400 tok");
+    }
+
+    #[test]
+    fn format_thought_line_billed_only_when_no_gauge() {
+        let pending = PendingTurnFooter {
+            billed_tokens: 5_000,
+            cost_suffix: String::new(),
+        };
+        let line = format_thought_line("Thought for", "3s", None, Some(&pending));
+        assert_eq!(line, "✻ Thought for 3s · 5,000 billed");
     }
 }

@@ -391,7 +391,23 @@ pub(crate) fn dispatch_agent_event(
                 t.clear_live_counters();
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
-                    t.push_usage(turn_footer(usage, model, totals, Some(ms)));
+                    // Structured (not `turn_footer`): `end_turn` merges this
+                    // onto the Thought line so the duration prints once and
+                    // the two token numbers are labeled (ctx `tok` vs
+                    // billed). Same cost math as `turn_footer` (headless).
+                    let cost_suffix = match crate::setup::turn_cost(usage, model) {
+                        Some(c) if totals.turns > 1 => format!(
+                            " · {} ({} session)",
+                            crate::setup::format_cost(c),
+                            crate::setup::format_cost(totals.cost)
+                        ),
+                        Some(c) => format!(" · {}", crate::setup::format_cost(c)),
+                        None => String::new(),
+                    };
+                    t.push_usage(crate::composer::PendingTurnFooter {
+                        billed_tokens: usage.total(),
+                        cost_suffix,
+                    });
                 }
             }
             _ => {}
