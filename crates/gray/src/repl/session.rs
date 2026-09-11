@@ -385,7 +385,10 @@ pub(crate) fn dispatch_agent_event(
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
                 t.end_thinking();
-                t.set_usage(*usage);
+                // Billed Σ-per-round totals are the cost basis (`totals`,
+                // `turn_footer`, persisted entry) — they must NOT overwrite
+                // the StepUsage context gauge (see `clear_live_counters`).
+                t.clear_live_counters();
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
                     t.push_usage(turn_footer(usage, model, totals, Some(ms)));

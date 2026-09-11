@@ -323,9 +323,11 @@ impl Tui {
             let header = crate::tool_fmt::format_tool_call_header(&name, &args, Some(cwd));
             self.push_tool_box(header, Vec::new());
         }
-        if let Some(last_usage) = entries.iter().rev().find_map(|e| e.usage) {
-            self.set_usage(last_usage);
-        }
+        // NOTE: persisted turn usage is billed Σ-per-round (the cost basis),
+        // NOT context size — restoring it into the gauge repainted the
+        // `843.8k/200k`-style spike on every resume until the next turn's
+        // first StepUsage. Leave the gauge empty: it rebuilds live, and
+        // `/context` + the compact threshold fall back to char estimates.
         // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
     }
 }

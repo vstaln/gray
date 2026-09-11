@@ -378,9 +378,21 @@ impl Tui {
     }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
+        self.cumulative_usage = Some(usage);
+        self.clear_live_counters();
+    }
+    /// Clears per-turn live counters WITHOUT touching the context gauge.
+    ///
+    /// `TurnEnd` carries billed Σ-per-round totals (the cost basis: every
+    /// provider round bills its full input), while the gauge
+    /// (`latest_usage`/`cumulative_usage`) is owned by `StepUsage`
+    /// (latest-round context size). Feeding billed into the gauge painted
+    /// `843.8k/200k`-style spikes on a 200k window that "healed" on the next
+    /// turn's first `StepUsage` — and poisoned `/context` plus the
+    /// auto-compact threshold in between.
+    pub fn clear_live_counters(&mut self) {
         self.live_streamed_tokens = 0;
         self.tool_progress_lens.clear();
-        self.cumulative_usage = Some(usage);
     }
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
