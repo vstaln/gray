@@ -39,14 +39,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let cursor = tui.textarea.cursor().min(text.len());
     let ibox = build_input_box(&text, cursor, w);
     let box_h = ibox.lines.len().max(1) as u16;
-    let question_active = tui.active_question.is_some();
-    // While a question is up it IS the status: hide the shimmer and the
-    // attachments row so the panel gets the whole inline viewport.
-    let attach_h: u16 = u16::from(!tui.attachments.is_empty() && !question_active);
+    // Attachments row.
+    let attach_h: u16 = u16::from(!tui.attachments.is_empty());
     // Seam (only if scrollback didn't already end blank) + shimmer status
     // text + one bare breathing row below it.
     let needs_seam = !transcript_ends_blank(&tui.transcript);
-    let status_h: u16 = status_dock_h(tui.status.is_some(), question_active, needs_seam);
+    let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
     // Row offset of the status text inside its dock: below the seam when
     // one was reserved, else the very top of the viewport.
     let seam_h: u16 = if status_h > 0 {
@@ -60,30 +58,14 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // recreating the terminal or re-probing cursor position via CPR, preventing
     // prompt doubling and cursor drift.
     let n = tui.queued_inputs.len();
-    let queued_est: u16 = if question_active || n == 0 {
+    let queued_est: u16 = if n == 0 {
         0
     } else {
         1 + n.min(3) as u16 + u16::from(n > 3)
     };
-    let question_lines_need = if question_active {
-        tui.active_question
-            .as_ref()
-            .map(|q| super::question::panel_lines(q, tui.textarea.text(), w, 100).len() as u16)
-            .unwrap_or(PANEL_ROWS as u16)
-    } else {
-        0
-    };
-    let panel_est: u16 = if question_active {
-        question_lines_need
-    } else {
-        tui.matches.len().min(PANEL_ROWS) as u16
-    };
-    let box_rows_est: u16 = if question_active { 0 } else { box_h };
-    let max_viewport_h = if question_active {
-        rows.saturating_sub(1).max(VIEWPORT_H)
-    } else {
-        VIEWPORT_H
-    };
+    let panel_est: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
+    let box_rows_est: u16 = box_h;
+    let max_viewport_h = VIEWPORT_H;
     let desired = desired_viewport_h(
         status_h,
         queued_est,
@@ -117,57 +99,29 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let w = area.width as usize;
 
         let status_y = area.y;
-        // Queued preview sits between status and input (codex PendingInputPreview
-        // parity). Hidden while a question owns the viewport.
-        let queued_preview: Vec<Line<'static>> = if question_active {
-            Vec::new()
-        } else {
-            queued_preview_lines(&tui.queued_inputs, w)
-        };
+        // Queued preview sits between status and input.
+        let queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
         let queued_h = queued_preview.len() as u16;
-        // Space left for the completion/question panel once the fixed rows
+        // Space left for the completion panel once the fixed rows
         // (status, queued, input, attachments, footer) are placed.
-        let avail = area.height.saturating_sub(
-            status_h + queued_h + if question_active { 0 } else { box_h } + attach_h + 1,
-        );
-        // Grow viewport to fit full question; fall back to PANEL_ROWS min when short on space.
-        // Two-pass (uncapped then capped), no new layout engine.
-        let need = if question_active {
-            question_lines_need
-        } else {
-            PANEL_ROWS as u16
-        };
+        let avail = area
+            .height
+            .saturating_sub(status_h + queued_h + box_h + attach_h + 1);
+        let need = PANEL_ROWS as u16;
         let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
-        let question_lines: Option<Vec<Line<'static>>> = if question_active {
-            tui.active_question.as_ref().map(|q| {
-                super::question::panel_lines(q, tui.textarea.text(), w, panel_cap.max(1) as usize)
-            })
-        } else {
-            None
-        };
-        let visible_count = if let Some(qlines) = &question_lines {
-            qlines.len().min(panel_cap as usize)
-        } else if tui.matches.is_empty() {
+        let visible_count = if tui.matches.is_empty() {
             0
         } else {
             tui.matches.len().min(panel_cap as usize)
         };
         let panel_h = visible_count as u16;
-        let box_rows = if question_active { 0 } else { box_h };
+        let box_rows = box_h;
         let box_y = status_y + status_h + queued_h;
-        // Codex parity: while a question is active the question surface REPLACES
-        // the composer — no input box, the panel occupies its slot.
-        let panel_y = if question_active {
-            box_y
-        } else {
-            box_y + box_rows
-        };
+        let panel_y = box_y + box_rows;
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
 
-        if let Some((started, label)) = &tui.status
-            && !question_active
-        {
+        if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed());
             let elapsed = started.elapsed();
@@ -211,7 +165,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
-        if rendered_box_h > 0 && !question_active {
+        if rendered_box_h > 0 {
             let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
             frame.render_widget(
                 Paragraph::new(ibox.lines.clone()).block(box_block),
@@ -219,54 +173,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        if let Some(qlines) = &question_lines
-            && visible_count > 0
-        {
-            // ponytail: clipped option window shows a count, no extra row.
-            let q_hidden = (need as usize).saturating_sub(visible_count);
-            for (i, line) in qlines.iter().enumerate().take(visible_count) {
-                let item_y = panel_y + i as u16;
-                if item_y < area.y || item_y >= area.y + area.height {
-                    continue;
-                }
-                let is_last = i + 1 == visible_count;
-                let rendered: Line<'static> = if is_last && q_hidden > 0 {
-                    Line::from(vec![Span::styled(
-                        format!(" … ↓ +{} more", q_hidden),
-                        Style::default()
-                            .fg(Color::Rgb(140, 140, 140))
-                            .bg(Color::Rgb(22, 22, 22)),
-                    )])
-                } else {
-                    line.clone()
-                };
-                frame.render_widget(
-                    Paragraph::new(rendered)
-                        .block(Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)))),
-                    Rect::new(area.x, item_y, area.width, 1),
-                );
-            }
-            // Notes editing owns the cursor: park it on the notes row
-            // (second-to-last content row: notes, tips, bottom margin).
-            // Without this, Tab opens notes but typing lands invisibly.
-            if let Some(q) = tui.active_question.as_ref()
-                && q.notes_focused()
-                && q.notes_editor_visible()
-            {
-                let notes_at = qlines.len().saturating_sub(3);
-                if notes_at < visible_count {
-                    let y = panel_y + notes_at as u16;
-                    if y < area.y + area.height {
-                        let text = tui.textarea.text();
-                        let cursor = tui.textarea.cursor().min(text.len());
-                        let col = 2 + unicode_width::UnicodeWidthStr::width(
-                            text.get(..cursor).unwrap_or(""),
-                        );
-                        frame.set_cursor_position(Position::new(area.x + col as u16, y));
-                    }
-                }
-            }
-        } else if visible_count > 0 {
+        if visible_count > 0 {
             let start = tui
                 .sel
                 .saturating_sub(visible_count.saturating_sub(1))
@@ -426,52 +333,39 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         } else {
             tui.thinking_effort.clone()
         };
-        let right_parts = {
-            let perm_badge: Option<(String, Color)> = match tui.permission_mode.as_str() {
-                "full" => Some((" · full access".to_string(), Color::Rgb(200, 120, 120))),
-                "read-only" => Some((" · read-only".to_string(), Color::Rgb(130, 145, 160))),
-                _ => None,
-            };
-            let mut v = if model_display.is_empty() {
-                if effort_display.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![Span::styled(
-                        effort_display.clone(),
-                        Style::default().fg(Color::Rgb(108, 108, 108)),
-                    )]
-                }
-            } else if effort_display.is_empty() {
+        let right_parts = if model_display.is_empty() {
+            if effort_display.is_empty() {
+                Vec::new()
+            } else {
                 vec![Span::styled(
+                    effort_display.clone(),
+                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                )]
+            }
+        } else if effort_display.is_empty() {
+            vec![Span::styled(
+                model_display.clone(),
+                Style::default().fg(Color::Rgb(140, 140, 140)),
+            )]
+        } else {
+            vec![
+                Span::styled(
                     model_display.clone(),
                     Style::default().fg(Color::Rgb(140, 140, 140)),
-                )]
-            } else {
-                vec![
-                    Span::styled(
-                        model_display.clone(),
-                        Style::default().fg(Color::Rgb(140, 140, 140)),
-                    ),
-                    Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
-                    Span::styled(
-                        effort_display.clone(),
-                        Style::default().fg(Color::Rgb(108, 108, 108)),
-                    ),
-                ]
-            };
-            if let Some((badge, color)) = &perm_badge {
-                v.push(Span::styled(badge.clone(), Style::default().fg(*color)));
-            }
-            let badge_len = perm_badge.map(|(b, _)| display_width(&b)).unwrap_or(0);
-            (v, badge_len)
+                ),
+                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled(
+                    effort_display.clone(),
+                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                ),
+            ]
         };
-        let (right_parts, badge_len) = right_parts;
         let right_len = if model_display.is_empty() {
-            display_width(&effort_display) + badge_len
+            display_width(&effort_display)
         } else if effort_display.is_empty() {
-            display_width(&model_display) + badge_len
+            display_width(&model_display)
         } else {
-            display_width(&model_display) + 3 + display_width(&effort_display) + badge_len
+            display_width(&model_display) + 3 + display_width(&effort_display)
         };
         let left_len = 1 + display_width(&ctx_display) + 3 + display_width(&cache_display);
         let pad_len = w.saturating_sub(left_len + right_len);
@@ -511,9 +405,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        // A parked question owns the cursor (notes row above); never park it
-        // on the hidden composer box instead.
-        if tui.status.is_none() && !tui.is_task_running && tui.active_question.is_none() {
+        if tui.status.is_none() && !tui.is_task_running {
             let cur_x =
                 (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
             let cur_y =
@@ -536,10 +428,9 @@ mod tests {
 
     #[test]
     fn status_dock_seam_is_dynamic() {
-        assert_eq!(status_dock_h(false, false, true), 0);
-        assert_eq!(status_dock_h(true, true, true), 0); // question owns the viewport
-        assert_eq!(status_dock_h(true, false, false), 2); // scrollback already blank: status + breath
-        assert_eq!(status_dock_h(true, false, true), 3); // seam + status + breath
+        assert_eq!(status_dock_h(false, true), 0);
+        assert_eq!(status_dock_h(true, false), 2); // scrollback already blank: status + breath
+        assert_eq!(status_dock_h(true, true), 3); // seam + status + breath
     }
 
     #[test]

@@ -10,13 +10,18 @@ use std::sync::Arc;
 
 use gray_plugin::Plugin;
 
-pub use gray_plugin::builder::{ToolsBasicPlugin, ToolsSearchPlugin, from_plugins};
+pub use gray_plugin::builder::{
+    ToolsBasicPlugin, ToolsMinimalPlugin, ToolsSearchPlugin, from_plugins,
+};
 
 use crate::skills_tool::SkillTool;
 
-/// Gray-surface defaults: shared builtins with the `skill` tool.
+/// Builtin plugin catalog: what a `gray.yml` may name. The no-profile
+/// fallback is `tools-minimal` (see [`active_plugins`]); `tools-basic` and
+/// `tools-search` are opt-in.
 fn gray_defaults() -> Vec<Arc<dyn Plugin>> {
     vec![
+        Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsBasicPlugin {
             extra: vec![Arc::new(SkillTool)],
         }) as Arc<dyn Plugin>,
@@ -61,14 +66,21 @@ fn drain_builder_warnings() {
 /// the profile is missing/unparseable/empty. Manifest-only boot (no host
 /// handler); a sidecar spawn failure aborts boot with entry index + argv.
 pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
-    let out = gray_plugin::builder::active_plugins(gray_defaults(), "gray.yml", None, true).await?;
+    let out = gray_plugin::builder::active_plugins(
+        gray_defaults(),
+        &["tools-minimal"],
+        "gray.yml",
+        None,
+        true,
+    )
+    .await?;
     drain_builder_warnings();
     Ok(out)
 }
 
-/// The default builtin registry (no profile file).
+/// The default builtin registry (no profile file): `tools-minimal` only.
 pub fn builtin_registry() -> gray_tools::Registry {
-    from_plugins(&gray_defaults()).0
+    from_plugins(&[Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>]).0
 }
 
 /// Builds the tool registry from the `gray.yml` profile plugin order,

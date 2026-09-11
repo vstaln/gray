@@ -83,9 +83,15 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
     // Both disabled: skipped before spawning. abort=true would Err on any
     // spawn attempt, so Ok proves the dead binary was never spawned.
     save(false, false);
-    let (plugins, fallback) = active_plugins(default_plugins(), profile_str.as_str(), None, true)
-        .await
-        .unwrap();
+    let (plugins, fallback) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        profile_str.as_str(),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
     let warnings = take_builder_warnings();
     assert!(fallback);
     assert!(manifest_names(&plugins).contains(&"tools-basic".to_string()));
@@ -108,9 +114,15 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
 
     // Re-enable echo: present; dead entry still warns + skips.
     save(true, false);
-    let (plugins, fallback) = active_plugins(default_plugins(), profile_str.as_str(), None, true)
-        .await
-        .unwrap();
+    let (plugins, fallback) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        profile_str.as_str(),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
     let warnings = take_builder_warnings();
     assert!(!fallback);
     assert!(manifest_names(&plugins).contains(&"echo".to_string()));
@@ -124,9 +136,15 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
     // Re-enable dead too (no abort): the spawn is re-armed, fails, and the
     // daemon-style path warns + skips while echo stays present.
     save(true, true);
-    let (plugins, _) = active_plugins(default_plugins(), profile_str.as_str(), None, false)
-        .await
-        .unwrap();
+    let (plugins, _) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        profile_str.as_str(),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     let warnings = take_builder_warnings();
     assert!(manifest_names(&plugins).contains(&"echo".to_string()));
     assert!(
@@ -190,10 +208,15 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     };
 
     save_user(true);
-    let (plugins, fallback) =
-        active_plugins(default_plugins(), missing_profile.as_str(), None, false)
-            .await
-            .unwrap();
+    let (plugins, fallback) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        missing_profile.as_str(),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     assert!(!fallback, "{:?}", manifest_names(&plugins));
     assert!(
         manifest_names(&plugins).contains(&"echo".to_string()),
@@ -204,10 +227,15 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
 
     // Disable → absent (back to builtin fallback).
     save_user(false);
-    let (plugins, fallback) =
-        active_plugins(default_plugins(), missing_profile.as_str(), None, false)
-            .await
-            .unwrap();
+    let (plugins, fallback) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        missing_profile.as_str(),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     assert!(fallback, "{:?}", manifest_names(&plugins));
     assert!(
         !manifest_names(&plugins).contains(&"echo".to_string()),
@@ -218,9 +246,15 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
 
     // Re-enable → present again.
     save_user(true);
-    let (plugins, _) = active_plugins(default_plugins(), missing_profile.as_str(), None, false)
-        .await
-        .unwrap();
+    let (plugins, _) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        missing_profile.as_str(),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     assert!(
         manifest_names(&plugins).contains(&"echo".to_string()),
         "{:?}",
@@ -235,9 +269,15 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     }
     .save(&project_lock_path(work.path()))
     .unwrap();
-    let (plugins, _) = active_plugins(default_plugins(), missing_profile.as_str(), None, false)
-        .await
-        .unwrap();
+    let (plugins, _) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        missing_profile.as_str(),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     assert!(
         !manifest_names(&plugins).contains(&"echo".to_string()),
         "project overlay must win: {:?}",
@@ -256,9 +296,15 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     )
     .unwrap();
     let profile_str = profile.to_string_lossy().into_owned();
-    let (plugins, fallback) = active_plugins(default_plugins(), profile_str.as_str(), None, true)
-        .await
-        .unwrap();
+    let (plugins, fallback) = active_plugins(
+        default_plugins(),
+        &["tools-basic", "tools-search"],
+        profile_str.as_str(),
+        None,
+        true,
+    )
+    .await
+    .unwrap();
     assert!(fallback, "{:?}", manifest_names(&plugins));
     let warnings = take_builder_warnings();
     assert!(

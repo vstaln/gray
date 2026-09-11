@@ -215,8 +215,8 @@ pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
 /// no seam (current) jams thinking rows, list items, code fences and
 /// partial paragraphs flush against `⬡ Working…`. Deciding per frame gives
 /// exactly one blank row above the status — `ensure_gap(1)` for the dock.
-pub(crate) fn status_dock_h(has_status: bool, question_active: bool, needs_seam: bool) -> u16 {
-    if !has_status || question_active {
+pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {
+    if !has_status {
         return 0;
     }
     2 + u16::from(needs_seam)

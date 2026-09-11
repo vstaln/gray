@@ -12,7 +12,6 @@ pub mod grep;
 pub mod ledger;
 pub mod ls;
 pub mod read;
-pub mod request_user_input;
 pub mod shell;
 pub mod stats;
 pub mod truncate;
@@ -45,9 +44,6 @@ pub use grep::GrepTool;
 pub use ledger::{FileLedger, LedgerEntry};
 pub use ls::LsTool;
 pub use read::ReadTool;
-pub use request_user_input::{
-    REQUEST_USER_INPUT_TOOL_NAME, RequestUserInputTool, StdinQuestionAsker,
-};
 pub use shell::tools::bash::BashTool;
 pub use write::WriteTool;
 
@@ -72,7 +68,6 @@ impl Registry {
             Arc::new(WriteTool::new(ledger.clone())),
             Arc::new(EditTool::new(ledger.clone())),
             Arc::new(BashTool),
-            Arc::new(RequestUserInputTool),
             Arc::new(GrepTool),
             Arc::new(FindTool),
             Arc::new(LsTool),
@@ -361,22 +356,6 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
     args
 }
 
-/// Human summary of a tool call for the approval prompt: command text for
-/// bash, path for file tools.
-fn approval_label(name: &str, args: &Value) -> String {
-    if name == "bash" {
-        return args
-            .get("command")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-    }
-    if matches!(name, "write" | "edit") {
-        return gray_core::approvals::tool_path(args).unwrap_or_default();
-    }
-    String::new()
-}
-
 #[async_trait]
 impl ToolExecutor for Registry {
     fn execute(
@@ -395,16 +374,6 @@ impl ToolExecutor for Registry {
         let name = name.to_string();
         Box::pin(async move {
             log::info!(target: "gray_tools", "tool start: {name}");
-            if let Some(gate) = &ctx.approvals {
-                let label = approval_label(&name, &coerced);
-                if let Err(denial) = gate
-                    .check(&name, &coerced, &ctx.cwd, &label, ctx.questions.as_ref())
-                    .await
-                {
-                    log::warn!(target: "gray_tools", "tool {name} denied: {denial}");
-                    return ToolOutput::error(denial);
-                }
-            }
             let out = match tool {
                 Some(tool) => tool.execute(&ctx, coerced).await,
                 None => ToolOutput::error(format!(
@@ -643,34 +612,6 @@ mod tests {
         let args = seen.lock().unwrap().clone().expect("tool should see args");
         assert_eq!(args.get("path"), Some(&json!("/tmp/x")), "{args}");
         assert_eq!(args.get("limit"), Some(&json!(7)), "{args}");
-    }
-
-    #[tokio::test]
-    async fn gate_denies_read_only_write_and_asks_bash_fail_closed() {
-        use gray_core::approvals::ApprovalGate;
-        let reg = Registry::builtin();
-        let gate = ApprovalGate::new("read-only");
-        let ctx = ToolContext {
-            approvals: Some(gate),
-            ..ToolContext::default()
-        };
-        let out = ToolExecutor::execute(
-            &reg,
-            &ctx,
-            "write",
-            json!({"path": "x.rs", "content": "hi"}),
-        )
-        .await;
-        assert!(out.is_error, "{out:?}");
-        assert!(out.content.contains("read-only"), "{out:?}");
-        let gate = ApprovalGate::new("auto");
-        let ctx = ToolContext {
-            approvals: Some(gate),
-            ..ToolContext::default()
-        };
-        let out = ToolExecutor::execute(&reg, &ctx, "bash", json!({"command": "ls"})).await;
-        assert!(out.is_error, "{out:?}");
-        assert!(out.content.contains("declined"), "{out:?}");
     }
 
     #[tokio::test]
