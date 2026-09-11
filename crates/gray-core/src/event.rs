@@ -49,6 +49,21 @@ impl Usage {
         }
     }
 
+    /// Synthetic context-size estimate for the TUI gauge before the first
+    /// real `StepUsage` lands (resume replay, post-compaction reseed).
+    ///
+    /// Shaped so every gauge consumer agrees: `total()`/`input_tokens` carry
+    /// the estimate, breakdown fields stay zero (unknown — not zero cache).
+    /// Real `StepUsage` overwrites it wholesale via `set_usage`.
+    pub fn estimated_context(tokens: usize) -> Self {
+        Self {
+            input_tokens: tokens,
+            non_cached_input_tokens: tokens,
+            total_tokens: tokens,
+            ..Self::default()
+        }
+    }
+
     /// Add another report into this cumulative total (saturating).
     /// Every provider request bills its full input, so billable turn
     /// totals sum every round's report — unlike the context gauge, which
@@ -353,5 +368,23 @@ impl StreamEvent {
             message: message.into(),
             details: details.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod estimated_context_tests {
+    use super::Usage;
+
+    #[test]
+    fn estimated_context_carries_estimate_as_total_and_input() {
+        let u = Usage::estimated_context(39_000);
+        assert_eq!(u.total(), 39_000);
+        assert_eq!(u.input_tokens, 39_000);
+        // breakdown unknown, not zero-cache: must stay zero so no
+        // consumer mistakes the seed for a measured cache report.
+        assert_eq!(u.cache_read_input_tokens, 0);
+        assert_eq!(u.cache_write_input_tokens, 0);
+        assert_eq!(u.output_tokens, 0);
+        assert_eq!(u.cache_hit_rate(), 0.0);
     }
 }

@@ -394,6 +394,21 @@ impl Tui {
         self.live_streamed_tokens = 0;
         self.tool_progress_lens.clear();
     }
+    /// Seeds the context gauge from a char-estimate when no provider
+    /// `StepUsage` is in force: resume replay (persisted usage is billed
+    /// Σ-per-round, unrestorable as context size) and post-compaction
+    /// (history just shrank; the pre-compact `StepUsage` is stale).
+    ///
+    /// No-op on zero so callers never blank a live gauge with an empty
+    /// estimate. First real `StepUsage` overwrites via `set_usage`.
+    pub fn seed_estimate_usage(&mut self, tokens: usize) {
+        if tokens == 0 {
+            return;
+        }
+        let u = gray_core::event::Usage::estimated_context(tokens);
+        self.latest_usage = Some(u);
+        self.cumulative_usage = Some(u);
+    }
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
         self.cumulative_usage = None;
@@ -529,6 +544,15 @@ impl Tui {
             let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
             self.ensure_gap(1);
             self.push_dim(line);
+            // The billed turn total (`turn_footer`, with cost) used to die
+            // here: the elapsed branch `take()`d it and dropped it, so the
+            // interactive TUI never showed per-turn cost while the headless
+            // path prints it. Render it as its own dim line so the two
+            // numbers stay distinct: Thought carries context size (the
+            // StepUsage gauge), ⬡ carries billed Σ-per-round plus cost.
+            if let Some(tok) = pending_tok {
+                self.push_dim(tok);
+            }
             self.ensure_gap(1);
         } else if let Some(tok) = pending_tok {
             self.ensure_gap(1);

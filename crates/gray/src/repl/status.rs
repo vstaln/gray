@@ -491,6 +491,13 @@ pub(crate) async fn handle_compact(
                     .await;
             }
 
+            // History just shrank (see session.rs threshold path): reseed
+            // the gauge to the compacted size instead of the stale StepUsage.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(ag.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
+
             if let Some(shared) = tui {
                 let mut tui = shared.lock().expect("tui lock");
                 tui.ensure_gap(1);

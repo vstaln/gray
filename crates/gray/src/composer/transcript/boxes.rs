@@ -326,8 +326,15 @@ impl Tui {
         // NOTE: persisted turn usage is billed Σ-per-round (the cost basis),
         // NOT context size — restoring it into the gauge repainted the
         // `843.8k/200k`-style spike on every resume until the next turn's
-        // first StepUsage. Leave the gauge empty: it rebuilds live, and
-        // `/context` + the compact threshold fall back to char estimates.
+        // first StepUsage. Seed the gauge from the replayed messages instead:
+        // same char-estimate `/context` + the compact threshold fall back to,
+        // so footer, `/context`, and trigger agree from the first paint.
+        // First real StepUsage overwrites (see `seed_estimate_usage`).
+        let replay_estimate: usize = entries
+            .iter()
+            .map(|e| crate::compact::estimate_tokens(&e.message))
+            .sum();
+        self.seed_estimate_usage(replay_estimate);
         // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
     }
 }
