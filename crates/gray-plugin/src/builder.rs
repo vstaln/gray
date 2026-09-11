@@ -251,13 +251,12 @@ fn plugins_dir() -> Option<PathBuf> {
     gray_home().map(|h| h.join("plugins"))
 }
 
-/// Resolve the spawn argv for an installed plugin dir: the dir itself when
+/// Resolve the spawn argv for a plugin dir: the dir itself when
 /// executable, else `plugin.sh`, else the single executable inside.
 ///
-/// Mirrors `gray::plugin_check::resolve_argv` (private to `gray`; this crate
-/// must not depend on it). Keep the two in sync — do not invent a third
-/// resolution rule.
-fn resolve_install_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
+/// Single definition shared by the host (`active_plugins` below) and
+/// `gray::plugin_check` — do not invent a second resolution rule.
+pub fn resolve_argv(dir: &Path) -> anyhow::Result<Vec<String>> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     let is_exec = |p: &Path| {
@@ -369,7 +368,7 @@ fn effective_enabled(
 ///
 /// This is the single production host: profile entries first, then enabled
 /// lock entries (real installs resolve their executable from
-/// `<home>/plugins/<name>` via [`resolve_install_argv`]; legacy entries
+/// `<home>/plugins/<name>` via [`resolve_argv`]; legacy entries
 /// with an explicit `argv` spawn it directly). See [`crate::boot`] (kept
 /// as a test-only harness) for the legacy split.
 pub async fn active_plugins(
@@ -417,7 +416,7 @@ pub async fn active_plugins(
         if let Some(pd) = &pdir {
             let dir = pd.join(name);
             disabled_dirs.push(dir.to_string_lossy().into_owned());
-            if let Ok(argv) = resolve_install_argv(&dir) {
+            if let Ok(argv) = resolve_argv(&dir) {
                 disabled_paths.extend(argv);
             }
         }
@@ -432,7 +431,7 @@ pub async fn active_plugins(
             if disabled_paths.contains(&spec[0]) || disabled_dirs.contains(&spec[0]) {
                 return true;
             }
-            if let Ok(argv) = resolve_install_argv(Path::new(&spec[0]))
+            if let Ok(argv) = resolve_argv(Path::new(&spec[0]))
                 && argv.iter().any(|a| disabled_paths.contains(a))
             {
                 return true;
@@ -492,7 +491,7 @@ pub async fn active_plugins(
             entry.argv.clone()
         } else {
             let Some(pd) = &pdir else { continue };
-            match resolve_install_argv(&pd.join(name)) {
+            match resolve_argv(&pd.join(name)) {
                 Ok(a) => a,
                 Err(_) => continue,
             }

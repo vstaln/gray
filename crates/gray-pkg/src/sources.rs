@@ -1257,12 +1257,10 @@ async fn install_git_source(
     } else {
         Some(git_ref.trim())
     };
-    let mut extra: Vec<&str> = Vec::new();
-    if let Some(b) = branch {
-        extra.push("--branch");
-        extra.push(b);
-    }
-    let (staging, repo_dir) = clone_into_tmp(url, &extra, true)?;
+    // Shared shallow-clone helper (same `--branch` rule + tmp placement as
+    // the `ops::install_git` arm); the pre-checkout sha it returns is
+    // discarded — `head` below must be post-checkout.
+    let (staging, repo_dir, _) = crate::ops::clone_git_repo(url, branch)?;
     if !sha.trim().is_empty() {
         checkout_pinned_commit(&repo_dir, plugin, sha.trim())?;
     }
