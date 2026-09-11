@@ -498,6 +498,29 @@ pub fn tool_may_render_body(tool_name: &str) -> bool {
     )
 }
 
+/// Strip the `<untrusted-output>` shell fence for *display* only.
+///
+/// `bash`/`shell_output` wrap process output in the fence so the model can
+/// tell tool output from user text (prompt-injection boundary). The tags are
+/// harness plumbing: the transcript keeps them, but rendering them as
+/// numbered output lines confuses humans. Strip the opener iff it is the
+/// first line and the closer iff it is the last line, independently — a
+/// budget-truncated body may carry only one half.
+fn strip_shell_fence(trimmed: &str) -> &str {
+    let mut s = trimmed;
+    if let Some(first_end) = s.find('\n')
+        && s[..first_end].trim_start().starts_with("<untrusted-output")
+    {
+        s = &s[first_end + 1..];
+    }
+    if let Some(last_start) = s.rfind('\n')
+        && s[last_start + 1..].trim() == "</untrusted-output>"
+    {
+        s = &s[..last_start];
+    }
+    s
+}
+
 /// Formats tool output lines with Codex/Grok-style rendering.
 pub fn format_tool_result_lines_with_context(
     tool_name: &str,
@@ -572,7 +595,7 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    let trimmed = output.trim();
+    let trimmed = strip_shell_fence(output.trim());
     if trimmed.is_empty() {
         return Vec::new();
     }
@@ -614,6 +637,38 @@ mod tests {
         );
         assert!(row_text(&lines[0]).contains("hello"));
         assert!(row_text(&lines[1]).contains("2 | "));
+    }
+
+    #[test]
+    fn bash_shell_fence_is_stripped_for_display() {
+        let out = "<untrusted-output task=\"t72\">\nexit 0 · hi\n</untrusted-output>";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(!text.contains("untrusted-output"), "fence leaked: {text:?}");
+        assert!(text.contains("exit 0 · hi"), "body lost: {text:?}");
+    }
+
+    #[test]
+    fn bash_half_fence_from_truncation_still_strips() {
+        // Budget truncation may keep only one half of the fence.
+        let open_only = "<untrusted-output task=\"t3\">\npartial body";
+        let text: String =
+            format_tool_result_lines_with_context("bash", None, open_only, false, None)
+                .iter()
+                .map(row_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+        assert!(!text.contains("untrusted-output"), "got {text:?}");
+
+        let close_only = "partial body\n</untrusted-output>";
+        let text: String =
+            format_tool_result_lines_with_context("bash", None, close_only, false, None)
+                .iter()
+                .map(row_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+        assert!(!text.contains("untrusted-output"), "got {text:?}");
+        assert!(text.contains("partial body"), "body lost: {text:?}");
     }
 
     #[test]
