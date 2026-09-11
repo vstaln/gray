@@ -64,7 +64,7 @@ fn tool_call(params: Option<&Value>) -> Value {
 fn call_reply(result: Result<String>) -> Value {
     match result {
         Ok(content) => json!({"content": content, "is_error": false}),
-        Err(e) => json!({"content": e.to_string(), "is_error": true}),
+        Err(e) => json!({"content": format!("{e:#}"), "is_error": true}),
     }
 }
 
@@ -100,8 +100,8 @@ fn run_action(args: &Value) -> Result<String> {
         "off" => {
             let mut cfg = config::load_config()?;
             cfg.enabled = false;
-            config::save_config(&cfg)?;
             job::sync_job(&cfg, &goal::read_goal()?)?;
+            config::save_config(&cfg)?;
             Ok("heartbeat off".into())
         }
         "sync" => {

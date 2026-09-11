@@ -1361,7 +1361,6 @@ dependencies = [
  "chrono",
  "clap",
  "gray-cron",
- "log",
  "serde",
  "serde_json",
  "tempfile",
