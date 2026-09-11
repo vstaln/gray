@@ -116,7 +116,7 @@ fn arboard_text() -> Option<String> {
 const CLIPBOARD_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 
 /// `Command::output` on a spawned thread (`std::thread::spawn` + mpsc, same
-/// shape as the marketplace modal flights) with a bounded wait so a hung
+/// shape as the modal flights) with a bounded wait so a hung
 /// helper can't block the UI thread. `None` on spawn failure/timeout —
 /// same as the old blocking `.ok()?` path. The orphaned thread exits on
 /// its own when the helper does; its send then fails silently.

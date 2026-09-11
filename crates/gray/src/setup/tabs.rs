@@ -1,9 +1,9 @@
-//! Shared tab-bar scaffolding for manager modals (`/plugins`, Task 6 store).
+//! Shared tab-bar scaffolding for manager modals (`/plugins`, `/skills`).
 //!
 //! Pure, unit-testable, no crossterm/ratatui: helpers return plain data and
 //! the caller applies styling. The free functions are tab-agnostic (they
-//! operate on `&[(&str, Option<usize>)]`) so Task 6 reuses them as-is; the
-//! [`Tab`] enum covers this modal's tabs and grows then.
+//! operate on `&[(&str, Option<usize)]`); the [`Tab`] enum covers this
+//! modal's tabs and grows then.
 
 /// Generates the wrapped-index tab machinery for an enum whose variants map
 /// to `0..COUNT` in declaration order: `COUNT`, `index`, `from_index`, `next`,
@@ -41,7 +41,6 @@ macro_rules! wrapped_tab {
         }
     };
 }
-pub(crate) use wrapped_tab;
 
 /// Tabs of the plugins manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

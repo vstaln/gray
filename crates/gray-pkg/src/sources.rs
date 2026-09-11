@@ -1,9 +1,6 @@
-//! ClawHub + Claude marketplace sources (search + install adapters).
+//! ClawHub + Claude marketplace sources (install adapters).
 //!
 //! Live shapes verified 2026-09-06 (read-only):
-//! - ClawHub `GET /api/v1/search?q=&limit=` → `{results:[{slug,
-//!   displayName,summary,version,ownerHandle,official,...}]}` (bare slugs
-//!   409 on detail/download: pass `ownerHandle` when known).
 //! - ClawHub detail `GET /api/v1/skills/{slug}[?ownerHandle=]` → extended
 //!   shape (not the doc's minimal sketch: `{skill,latestVersion,owner,
 //!   moderation}`); per-file hashes live at
@@ -11,108 +8,16 @@
 //! - ClawHub download `GET /api/v1/download?slug=&version=[&ownerHandle=]`
 //!   streams a ZIP (`SKILL.md` at root); GitHub-backed skills answer the
 //!   same route with a JSON handoff (`sourceRef: "public-github"` +
-//!   `archiveUrl`) instead of bytes.
-//! - ClawHub trust `POST /api/v1/skills/-/security-verdicts`
-//!   (`{items:[{slug,ownerHandle?,version}]}`); 429s carry `Retry-After`.
+//!   `archiveUrl`) instead of bytes. 429s carry `Retry-After`.
 //! - Claude `marketplace.json` source kinds: relative-path string,
 //!   `github`, `url`, `git-subdir`, `npm`, `archive`, `command` (skip).
-//! - pi.dev: SSR HTML only (no listing `/api/*` — `/api/packages` 501s,
-//!   `preview-media` is per-package media; no embedded JSON), so the npm
-//!   `/-/v1/search` proxy stays the listing layer and npm stays the
-//!   artifact resolver. No HTML scraping (fragile, forbidden).
+//! - pi.dev has no listing API, so the npm registry stays the artifact
+//!   resolver. No HTML scraping (fragile, forbidden).
 //!
 //! No auth anywhere here (public read endpoints only). No new runtime
 //! dependencies: reqwest/serde_json/git-CLI/std-fs only.
 
 use std::path::{Path, PathBuf};
-
-// ---------------------------------------------------------------------------
-// Source identity + reachability
-// ---------------------------------------------------------------------------
-
-/// Search/install source. Labels are display-time copy (match
-/// [`crate::ops::SearchSource`] labels exactly).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    GrayIndex,
-    PiGallery,
-    ClawHub,
-    ClaudeRepo,
-}
-
-impl Source {
-    pub fn label(self) -> &'static str {
-        match self {
-            Source::GrayIndex => "Gray Index",
-            Source::PiGallery => "Pi Gallery (preview)",
-            Source::ClawHub => "ClawHub",
-            Source::ClaudeRepo => "Claude",
-        }
-    }
-}
-
-/// Lightweight reachability per source: one short-timeout request each,
-/// never an error (any failure is `false`, never a hard fail).
-pub async fn status(source: Source) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    match source {
-        Source::GrayIndex => {
-            let url = crate::index::index_url();
-            client
-                .head(&url)
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false)
-        }
-        Source::PiGallery => {
-            let url = crate::ops::npm_registry_base();
-            client
-                .get(&url)
-                .send()
-                .await
-                .map(|r| r.status().is_success() || r.status().is_redirection())
-                .unwrap_or(false)
-        }
-        Source::ClawHub => {
-            let url = format!("{}/search", clawhub_base().trim_end_matches('/'));
-            client
-                .get(&url)
-                .query(&[("q", "ping"), ("limit", "1")])
-                .send()
-                .await
-                .map(|r| r.status().is_success())
-                .unwrap_or(false)
-        }
-        Source::ClaudeRepo => {
-            let markets = claude_marketplaces();
-            let Some(first) = markets.first() else {
-                return false;
-            };
-            if let Some(dir) = local_marketplace_dir(first) {
-                return dir.join(".claude-plugin/marketplace.json").is_file();
-            }
-            // `ls-remote`-style would shell to git; a HEAD on the repo page
-            // answers the same question in one short request.
-            let url = match marketplace_repo_parts(first) {
-                Ok((o, r)) => format!("https://github.com/{o}/{r}"),
-                Err(_) => return false,
-            };
-            client
-                .head(&url)
-                .send()
-                .await
-                .map(|r| r.status().is_success() || r.status().is_redirection())
-                .unwrap_or(false)
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // ClawHub adapter
@@ -130,102 +35,6 @@ pub fn clawhub_base() -> String {
         .unwrap_or_else(|| DEFAULT_CLAWHUB_BASE.to_string())
 }
 
-/// One search hit: `name` is `owner/slug` when the owner is known (that is
-/// the installable `clawhub:` spec), else the bare slug.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClawHubEntry {
-    pub name: String,
-    pub slug: String,
-    pub owner: String,
-    pub summary: String,
-    pub version: String,
-    pub official: bool,
-    pub scan: String,
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClawHubResult {
-    #[serde(default)]
-    slug: String,
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    owner_handle: Option<String>,
-    #[serde(default)]
-    official: bool,
-    #[serde(default)]
-    trust: serde_json::Value,
-    /// Older/alternate shapes nest the same fields one level down.
-    #[serde(default)]
-    tags: serde_json::Value,
-}
-
-/// Parse a `GET /search` body (`{results:[...]}`). Tolerant: missing
-/// version/official/trust degrade to empty/false, nameless rows drop.
-pub fn parse_clawhub_search(raw: &serde_json::Value) -> Vec<ClawHubEntry> {
-    let results = raw
-        .get("results")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for r in &results {
-        let r: ClawHubResult = serde_json::from_value(r.clone()).unwrap_or_default();
-        let slug = r.slug.trim().to_string();
-        if slug.is_empty() {
-            continue;
-        }
-        let owner = r.owner_handle.as_deref().unwrap_or("").trim().to_string();
-        let name = if owner.is_empty() || slug.contains('/') {
-            slug.clone()
-        } else {
-            format!("{owner}/{slug}")
-        };
-        let version = r
-            .version
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| {
-                r.tags
-                    .get("latest")
-                    .and_then(|v| v.as_str())
-                    .filter(|v| !v.trim().is_empty())
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
-        let scan = r
-            .trust
-            .get("clawHubVerdict")
-            .or_else(|| r.trust.get("verdict"))
-            .and_then(|v| v.as_str())
-            .filter(|v| !v.trim().is_empty() && *v != "null")
-            .unwrap_or("")
-            .to_string();
-        out.push(ClawHubEntry {
-            name,
-            slug,
-            owner,
-            summary: r.summary,
-            version,
-            official: r.official,
-            scan,
-        });
-    }
-    out
-}
-
-/// Display trust: `official|community` plus ` + scan:<status>` when known.
-pub fn clawhub_trust(official: bool, scan: &str) -> String {
-    let base = if official { "official" } else { "community" };
-    if scan.trim().is_empty() {
-        base.to_string()
-    } else {
-        format!("{base} + scan:{}", scan.trim())
-    }
-}
-
 /// Split `owner/slug` (install reference form) from a bare slug.
 pub fn split_clawhub_slug(slug: &str) -> (Option<String>, String) {
     match slug.trim().split_once('/') {
@@ -237,7 +46,7 @@ pub fn split_clawhub_slug(slug: &str) -> (Option<String>, String) {
 }
 
 /// GET with one 429 → honor `Retry-After` (capped) → retry once.
-/// Shared by search, detail, versions, and the artifact download.
+/// Shared by detail, versions, and the artifact download.
 async fn clawhub_get(
     client: &reqwest::Client,
     url: &str,
@@ -267,32 +76,6 @@ async fn clawhub_get(
     log::debug!("clawhub 429, retrying after {wait}s");
     tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
     Ok(send().await?)
-}
-
-/// Search ClawHub (`limit=20`). Any failure is `Err` for the caller to
-/// downgrade to the advisory path.
-pub async fn clawhub_search(
-    client: &reqwest::Client,
-    query: &str,
-) -> anyhow::Result<Vec<ClawHubEntry>> {
-    let url = format!("{}/search", clawhub_base().trim_end_matches('/'));
-    let resp = clawhub_get(client, &url, &[("q", query), ("limit", "20")], 10).await?;
-    let body: serde_json::Value = resp.error_for_status()?.json().await?;
-    let mut entries = parse_clawhub_search(&body);
-    entries.truncate(20);
-    // Exact-version verdicts (one batch POST, best-effort) are fresher
-    // than the search-payload scan; the payload stays the fallback.
-    let keys: Vec<(String, String, String)> = entries
-        .iter()
-        .map(|e| (e.slug.clone(), e.owner.clone(), e.version.clone()))
-        .collect();
-    let verdicts = clawhub_verdicts_batch(client, &keys).await;
-    for e in &mut entries {
-        if let Some(scan) = verdicts.get(&(e.slug.clone(), e.owner.clone(), e.version.clone())) {
-            e.scan = scan.clone();
-        }
-    }
-    Ok(entries)
 }
 
 /// Resolved ClawHub skill: pinned version plus the versions-endpoint file
@@ -361,8 +144,6 @@ pub async fn clawhub_detail(client: &reqwest::Client, slug: &str) -> anyhow::Res
     });
     // Version files (install-time hashes); soft-fail to empty — the
     // install arm treats "no file list" as unverified, not fatal.
-    // Trust display is served by the verdicts batch at search time, not
-    // by this endpoint's security snapshot.
     let mut files = Vec::new();
     if !version.is_empty() {
         let ver_url = format!(
@@ -420,8 +201,8 @@ pub fn clawhub_canonical_url(owner: &str, slug: &str) -> String {
 }
 
 /// Lock/dir key input for a ClawHub skill: `owner/slug` when the owner is
-/// known (the shared sanitizer turns it into `owner-slug`, matching the
-/// owner-qualified search display name), else the bare slug.
+/// known (the shared sanitizer turns it into `owner-slug`), else the
+/// bare slug.
 pub fn clawhub_key_input(owner: &str, slug: &str) -> String {
     if owner.trim().is_empty() {
         slug.to_string()
@@ -555,128 +336,6 @@ pub(crate) async fn stage_clawhub_bundle(
         detail,
         verified,
     })
-}
-
-/// Batch trust verdicts (`POST /skills/-/security-verdicts`, up to 100
-/// `(slug, owner, version)` items in one call). Returns the scan status
-/// for the items the endpoint answers `ok` on, keyed by the request
-/// triple. Best-effort: any failure is an empty map and callers keep the
-/// search-payload scan. Versionless entries are never queried.
-pub async fn clawhub_verdicts_batch(
-    client: &reqwest::Client,
-    items: &[(String, String, String)],
-) -> std::collections::BTreeMap<(String, String, String), String> {
-    let mut out = std::collections::BTreeMap::new();
-    let items: Vec<&(String, String, String)> = items
-        .iter()
-        .filter(|(_, _, v)| !v.trim().is_empty())
-        .take(100)
-        .collect();
-    if items.is_empty() {
-        return out;
-    }
-    let url = format!(
-        "{}/skills/-/security-verdicts",
-        clawhub_base().trim_end_matches('/')
-    );
-    if crate::fetch::check_url(&url).is_err() {
-        return out;
-    }
-    let req_items: Vec<serde_json::Value> = items
-        .iter()
-        .map(|(slug, owner, version)| {
-            let mut o = serde_json::json!({"slug": slug, "version": version});
-            if !owner.trim().is_empty() {
-                o["ownerHandle"] = serde_json::Value::String(owner.clone());
-            }
-            o
-        })
-        .collect();
-    let resp = match client
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(10))
-        .json(&serde_json::json!({"items": req_items}))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            log::debug!("clawhub verdicts failed: {e:#}");
-            return out;
-        }
-    };
-    // 429 on the write-bucket twin: honor and retry once like reads.
-    let resp = match resp.status() {
-        reqwest::StatusCode::TOO_MANY_REQUESTS => {
-            let wait = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(2)
-                .min(30);
-            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-            match client
-                .post(&url)
-                .timeout(std::time::Duration::from_secs(10))
-                .json(&serde_json::json!({"items": req_items}))
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    log::debug!("clawhub verdicts retry failed: {e:#}");
-                    return out;
-                }
-            }
-        }
-        _ => resp,
-    };
-    let body: serde_json::Value = match resp.error_for_status() {
-        Ok(r) => match r.json().await {
-            Ok(b) => b,
-            Err(_) => return out,
-        },
-        Err(_) => return out,
-    };
-    let results = body
-        .get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for r in &results {
-        if r.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-            continue;
-        }
-        let status = r
-            .get("security")
-            .and_then(|s| s.get("status"))
-            .and_then(|v| v.as_str())
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or("");
-        if status.is_empty() {
-            continue;
-        }
-        let (Some(rs), Some(rv)) = (
-            r.get("requestedSlug").and_then(|v| v.as_str()),
-            r.get("requestedVersion").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        let ro = r
-            .get("requestedOwnerHandle")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        // Match back to the request triple (owner echoes only when the
-        // request qualified it).
-        if let Some(key) = items
-            .iter()
-            .find(|(s, o, v)| s == rs && v == rv && (ro.is_empty() || o == ro))
-        {
-            out.insert((**key).clone(), status.to_string());
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -814,8 +473,8 @@ pub struct MarketplaceCatalog {
 }
 
 /// Parse `marketplace.json` text. Nameless plugins and unknown source
-/// shapes are skipped (search stays total); `command` plugins are kept
-/// for the install arm's explicit refusal.
+/// shapes are skipped; `command` plugins are kept for the install arm's
+/// explicit refusal.
 pub fn parse_marketplace_json(raw: &str) -> anyhow::Result<MarketplaceCatalog> {
     let v: serde_json::Value = serde_json::from_str(raw)?;
     let name = v
@@ -842,37 +501,6 @@ pub fn parse_marketplace_json(raw: &str) -> anyhow::Result<MarketplaceCatalog> {
         }
     }
     Ok(MarketplaceCatalog { name, plugins })
-}
-
-/// Compact source qualifier for `version_detail` (preview+confirm pane).
-pub fn claude_qualifier(source: &PluginSource) -> String {
-    match source {
-        PluginSource::Path(s) => s.clone(),
-        PluginSource::Github { repo, ref_, .. } if !ref_.is_empty() => {
-            format!("github:{repo}@{ref_}")
-        }
-        PluginSource::Github { repo, .. } => format!("github:{repo}"),
-        PluginSource::Url { url, ref_, .. } if !ref_.is_empty() => format!("{url}@{ref_}"),
-        PluginSource::Url { url, .. } => url.clone(),
-        PluginSource::GitSubdir { url, path, .. } => format!("{url}#{path}"),
-        PluginSource::Npm {
-            package, version, ..
-        } if !version.is_empty() => {
-            format!("npm:{package}@{version}")
-        }
-        PluginSource::Npm { package, .. } => format!("npm:{package}"),
-        PluginSource::Archive { url, .. } => url.clone(),
-        PluginSource::Command { .. } => "command source (not installable)".to_string(),
-    }
-}
-
-/// A Claude search hit (mapped to [`crate::ops::SearchHit`] by the caller).
-#[derive(Debug, Clone)]
-pub struct ClaudeEntry {
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub qualifier: String,
 }
 
 /// Split an `owner/repo` spec (exactly two non-empty parts).
@@ -985,45 +613,6 @@ fn fetch_catalog(spec: &str) -> anyhow::Result<MarketplaceCatalog> {
     let cat = parse_marketplace_json(&raw)?;
     drop(tmp);
     Ok(cat)
-}
-
-/// Search all configured marketplaces (substring over name/description,
-/// mirroring the Gray arm). `command` plugins are skipped (not
-/// installable — the install arm refuses them with the warning string).
-/// Returns `(entries, any_failed)`: any single-marketplace failure sets
-/// the flag (partial results stay usable).
-pub fn claude_search_entries(query: &str) -> (Vec<ClaudeEntry>, bool) {
-    let mut out = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut any_failed = false;
-    for spec in claude_marketplaces() {
-        let cat = match fetch_catalog(&spec) {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("claude marketplace {spec} failed: {e:#}");
-                any_failed = true;
-                continue;
-            }
-        };
-        for p in &cat.plugins {
-            if matches!(p.source, PluginSource::Command { .. }) {
-                continue;
-            }
-            if !p.name.contains(query) && !p.description.contains(query) {
-                continue;
-            }
-            if !seen.insert(p.name.clone()) {
-                continue;
-            }
-            out.push(ClaudeEntry {
-                name: p.name.clone(),
-                description: p.description.clone(),
-                version: p.version.clone(),
-                qualifier: claude_qualifier(&p.source),
-            });
-        }
-    }
-    (out, any_failed)
 }
 
 /// Does `plugin`'s marketplace filter match this catalog? The filter is
@@ -1294,54 +883,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn source_labels_are_exact() {
-        assert_eq!(Source::GrayIndex.label(), "Gray Index");
-        assert_eq!(Source::PiGallery.label(), "Pi Gallery (preview)");
-        assert_eq!(Source::ClawHub.label(), "ClawHub");
-        assert_eq!(Source::ClaudeRepo.label(), "Claude");
-    }
-
-    #[test]
-    fn clawhub_search_fixture_parses_brief_shape() {
-        let v: serde_json::Value = serde_json::from_str(
-            r#"{"results":[
-                {"slug":"gifgrep","displayName":"GifGrep","summary":"grep gifs","version":"1.2.3"},
-                {"slug":"bare","displayName":"Bare","summary":"no version"},
-                {"slug":"","displayName":"Nameless","summary":"dropped"}
-            ]}"#,
-        )
-        .unwrap();
-        let entries = parse_clawhub_search(&v);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].slug, "gifgrep");
-        assert_eq!(entries[0].name, "gifgrep");
-        assert_eq!(entries[0].version, "1.2.3");
-        assert_eq!(entries[0].summary, "grep gifs");
-        assert!(!entries[0].official);
-        assert_eq!(entries[1].version, "");
-    }
-
-    #[test]
-    fn clawhub_search_keeps_owner_and_scan() {
-        let v: serde_json::Value = serde_json::from_str(
-            r#"{"results":[
-                {"slug":"test","displayName":"Test","summary":"s","version":"0.0.1",
-                 "ownerHandle":"arein","official":true,
-                 "trust":{"clawHubVerdict":"clean"}}
-            ]}"#,
-        )
-        .unwrap();
-        let entries = parse_clawhub_search(&v);
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].name, "arein/test");
-        assert_eq!(entries[0].owner, "arein");
-        assert!(entries[0].official);
-        assert_eq!(entries[0].scan, "clean");
-        assert_eq!(clawhub_trust(true, "clean"), "official + scan:clean");
-        assert_eq!(clawhub_trust(false, ""), "community");
-    }
-
-    #[test]
     fn clawhub_key_input_qualifies_owner() {
         assert_eq!(clawhub_key_input("arein", "test"), "arein/test");
         assert_eq!(clawhub_key_input("", "test"), "test");
@@ -1398,7 +939,6 @@ mod tests {
             cat.plugins[6].source,
             PluginSource::Command { .. }
         ));
-        assert_eq!(claude_qualifier(&cat.plugins[4].source), "npm:@o/p@2.0.0");
     }
 
     #[test]
@@ -1494,28 +1034,5 @@ mod tests {
         assert!(!resolved.unverified);
         assert!(resolved.root.join("a.txt").is_file());
         assert!(!resolved.root.join("b.txt").exists());
-    }
-
-    #[tokio::test]
-    async fn status_never_hard_fails() {
-        // Closed loopback port: every source reports false, none panics.
-        // SAFETY: serialized by ENV_GUARD (process-global env).
-        let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
-        unsafe {
-            std::env::set_var(CLAUDE_MARKETPLACES_ENV, "127.0.0.1:9/none");
-            std::env::set_var(CLAWHUB_BASE_ENV, "http://127.0.0.1:9");
-            std::env::set_var(crate::ops::NPM_REGISTRY_ENV, "http://127.0.0.1:9");
-            std::env::set_var(crate::index::INDEX_URL_ENV, "http://127.0.0.1:9/i.json");
-        }
-        assert!(!status(Source::GrayIndex).await);
-        assert!(!status(Source::PiGallery).await);
-        assert!(!status(Source::ClawHub).await);
-        assert!(!status(Source::ClaudeRepo).await);
-        unsafe {
-            std::env::remove_var(CLAUDE_MARKETPLACES_ENV);
-            std::env::remove_var(CLAWHUB_BASE_ENV);
-            std::env::remove_var(crate::ops::NPM_REGISTRY_ENV);
-            std::env::remove_var(crate::index::INDEX_URL_ENV);
-        }
     }
 }

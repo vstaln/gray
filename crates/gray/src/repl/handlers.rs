@@ -58,7 +58,7 @@ pub(crate) fn expand_skill_command(
         };
         match gray_pkg::skills_ops::list() {
             Ok(skills) if skills.is_empty() => {
-                say(tui, "no skills installed — /marketplace to browse");
+                say(tui, "no skills installed");
             }
             Ok(skills) => {
                 for s in &skills {

@@ -296,11 +296,6 @@ pub enum SessionsCmd {
 pub enum PluginCmd {
     /// List installed plugins
     List,
-    /// Search the Gray Index by substring
-    Search {
-        /// Substring to match against index names
-        query: String,
-    },
     /// Install a plugin by index name or https URL
     Install {
         /// Index name or https URL

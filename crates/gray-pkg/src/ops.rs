@@ -1085,8 +1085,7 @@ async fn install_clawhub(
         detail.version.clone()
     };
     // Owner-qualified key (`owner-slug` after sanitizing): two owners
-    // shipping the same slug no longer collide on one `pi/<slug>` dir,
-    // and the key derives from the searched display name.
+    // shipping the same slug no longer collide on one `pi/<slug>` dir.
     let key = install_key(&crate::sources::clawhub_key_input(
         &detail.owner,
         &detail.slug,
@@ -1145,6 +1144,7 @@ async fn install_index(
     ensure_gray_native(&entry.ecosystem, &entry.source.type_)?;
     let archive = crate::fetch::download(client, &entry.source.url, Some(&entry.hash)).await?;
     let dest = crate::plugins_dir().join(name);
+    std::fs::create_dir_all(&dest)?;
     if let Err(e) = crate::fetch::unpack_tar_gz(&archive, &dest) {
         let _ = std::fs::remove_dir_all(&dest);
         let _ = std::fs::remove_file(&archive);
@@ -1190,6 +1190,7 @@ async fn install_url(
     }
     let archive = crate::fetch::download(client, url, None).await?;
     let dest = crate::plugins_dir().join(&name);
+    std::fs::create_dir_all(&dest)?;
     if let Err(e) = crate::fetch::unpack_tar_gz(&archive, &dest) {
         let _ = std::fs::remove_dir_all(&dest);
         let _ = std::fs::remove_file(&archive);
@@ -1309,269 +1310,6 @@ async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
         out.push(install_index(&client, name, InstallOpts { argv, scope }).await?);
     }
     Ok(out)
-}
-
-// --- P2-3 `search` fan-out (Gray Index + Pi Gallery preview) ---
-//
-// Probe 2026-09-06: pi.dev/packages is SSR HTML (no JSON search API);
-// npm `/-/v1/search` recalls known pi packages 3/3
-// (@braintrust/pi-extension, bigpowers, context-mode), so the pi side
-// reads npm search on the shared registry base. No per-hit filtering:
-// matches are listed labeled `(preview)`; install stays skills-only.
-
-/// Where a search hit came from. Labels are display-time copy only:
-/// pi hits read exactly `Pi Gallery (preview)` (never stored).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchSource {
-    Gray,
-    Pi,
-    Claude,
-    ClawHub,
-}
-
-impl SearchSource {
-    /// Display label for a source (`Pi Gallery (preview)` is exact copy).
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchSource::Gray => "Gray Index",
-            SearchSource::Pi => "Pi Gallery (preview)",
-            SearchSource::Claude => "Claude",
-            SearchSource::ClawHub => "ClawHub",
-        }
-    }
-}
-
-/// One merged search hit. Gray entries carry no description (the index
-/// has none); pi hits carry npm's description (possibly empty).
-/// `version_detail` (e.g. a source qualifier), `files`, and `trust`
-/// (e.g. ClawHub `official/community + scan status`) feed the
-/// preview+confirm pane; [`format_search_hit`] ignores them by design.
-/// `popularity` is npm's `score.detail.popularity` (0..1) on pi hits,
-/// 0.0 everywhere else (never fails a search on a stat).
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchHit {
-    pub name: String,
-    pub version: String,
-    pub desc: String,
-    pub source: SearchSource,
-    pub version_detail: String,
-    pub files: Vec<String>,
-    pub trust: String,
-    pub popularity: f32,
-}
-
-/// Advisory line printed when the pi side fails; search still exits 0.
-pub const PI_UNREACHABLE_LINE: &str = "Pi Gallery (preview): unreachable";
-
-/// Advisory line printed when the Gray Index fetch fails (network error,
-/// 404, timeout); search continues with pi hits and still exits 0.
-/// Exact mirror of the pi-side voice.
-pub const GRAY_UNREACHABLE_LINE: &str = "Gray Index: unreachable";
-
-/// Advisory line printed when the ClawHub side fails; search still exits 0.
-pub const CLAWHUB_UNREACHABLE_LINE: &str = "ClawHub: unreachable";
-
-/// Advisory line printed when the Claude side fails; search still exits 0.
-pub const CLAUDE_UNREACHABLE_LINE: &str = "Claude: unreachable";
-
-/// Render one hit: `name version [source] - desc`, with the desc suffix
-/// omitted when empty (always the case for Gray Index hits). Pi and
-/// ClawHub hits whose lock key differs from the display name (e.g.
-/// `@scope/bar` → `scope-bar`, `arein/test` → `arein-test`) append
-/// `(install as <key>)` via the shared sanitizer.
-pub fn format_search_hit(hit: &SearchHit) -> String {
-    let mut base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
-    if hit.source == SearchSource::Pi || hit.source == SearchSource::ClawHub {
-        let key = sanitize_npm_key(&hit.name);
-        if key != hit.name {
-            base.push_str(&format!(" (install as {key})"));
-        }
-    }
-    let desc = hit.desc.trim();
-    if desc.is_empty() {
-        base
-    } else {
-        format!("{base} - {desc}")
-    }
-}
-
-/// Outcome of [`search_all`]: merged hits (Gray, Pi, Claude, ClawHub —
-/// Gray wins name collisions, first wins thereafter) plus whether any
-/// side failed. Callers print the `*_UNREACHABLE_LINE` consts when the
-/// corresponding flag is set — never an error exit for a fetch failure.
-#[derive(Debug)]
-pub struct SearchOutput {
-    pub hits: Vec<SearchHit>,
-    pub pi_unreachable: bool,
-    pub gray_unreachable: bool,
-    pub clawhub_unreachable: bool,
-    pub claude_unreachable: bool,
-}
-
-/// Query the pi side via npm search (`/-/v1/search`, `size=20`) on the
-/// shared registry base ([`npm_registry_base`], so tests point this at
-/// loopback). Any failure is an `Err` for [`search_all`] to downgrade
-/// to the advisory path.
-async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<SearchHit>> {
-    let url = format!("{}/-/v1/search", npm_registry_base().trim_end_matches('/'));
-    crate::fetch::check_url(&url)?;
-    log::debug!("searching pi gallery via {}", crate::fetch::redact(&url));
-    let resp: serde_json::Value = client
-        .get(&url)
-        .query(&[("text", query), ("size", "20")])
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let mut hits = Vec::new();
-    if let Some(objects) = resp.get("objects").and_then(|v| v.as_array()) {
-        for obj in objects {
-            let pkg = obj.get("package");
-            let name = pkg
-                .and_then(|p| p.get("name"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .trim();
-            if name.is_empty() {
-                continue;
-            }
-            let version = pkg
-                .and_then(|p| p.get("version"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let desc = pkg
-                .and_then(|p| p.get("description"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            // Free npm signal (`score.detail.popularity`, 0..1); missing
-            // or odd shapes degrade to 0.0, never fail the search.
-            let popularity = obj
-                .get("score")
-                .and_then(|s| s.get("detail"))
-                .and_then(|d| d.get("popularity"))
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0) as f32;
-            let popularity = popularity.clamp(0.0, 1.0);
-            hits.push(SearchHit {
-                name: name.to_string(),
-                version,
-                desc,
-                source: SearchSource::Pi,
-                version_detail: String::new(),
-                files: Vec::new(),
-                trust: String::new(),
-                popularity,
-            });
-        }
-    }
-    hits.truncate(20);
-    Ok(hits)
-}
-
-/// Fan out `query` over Gray Index (substring over the `fetch_index`
-/// cache), pi ([`search_pi`]), Claude marketplaces, and ClawHub. Order is
-/// Gray, Pi, Claude, ClawHub; Gray wins name collisions and every later
-/// duplicate is suppressed (first wins). A fetch failure on any side sets
-/// the corresponding `*_unreachable` flag instead of erroring; only
-/// corrupt local state (not a fetch failure) still returns `Err`.
-pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
-    let client = crate::fetch::client()?;
-    let (index, gray_unreachable) = match crate::index::fetch_index(&client).await {
-        Ok(index) => (index, false),
-        Err(e) => {
-            log::debug!("gray index fetch failed: {e:#}");
-            (
-                crate::index::Index {
-                    plugins: Default::default(),
-                },
-                true,
-            )
-        }
-    };
-    // `plugins` is a BTreeMap, so gray hits come out name-sorted.
-    let mut hits: Vec<SearchHit> = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for (name, entry) in index.plugins.iter().filter(|(n, _)| n.contains(query)) {
-        seen.insert(name.clone());
-        hits.push(SearchHit {
-            name: name.clone(),
-            version: entry.version.clone(),
-            desc: String::new(),
-            source: SearchSource::Gray,
-            version_detail: String::new(),
-            files: Vec::new(),
-            trust: String::new(),
-            popularity: 0.0,
-        });
-    }
-    let pi_unreachable = match search_pi(&client, query).await {
-        Ok(pi_hits) => {
-            for hit in pi_hits {
-                if seen.insert(hit.name.clone()) {
-                    hits.push(hit);
-                }
-            }
-            false
-        }
-        Err(e) => {
-            log::debug!("pi gallery search failed: {e:#}");
-            true
-        }
-    };
-    // Claude (local catalog reads; git clones stay inside the adapter).
-    let (claude_entries, claude_unreachable) = crate::sources::claude_search_entries(query);
-    for e in claude_entries {
-        if seen.insert(e.name.clone()) {
-            hits.push(SearchHit {
-                name: e.name,
-                version: e.version,
-                desc: e.description,
-                source: SearchSource::Claude,
-                version_detail: e.qualifier,
-                files: Vec::new(),
-                trust: String::new(),
-                popularity: 0.0,
-            });
-        }
-    }
-    if claude_unreachable {
-        log::debug!("claude marketplace search partially or fully failed");
-    }
-    // ClawHub (HTTP; 429 honored inside the adapter).
-    let clawhub_unreachable = match crate::sources::clawhub_search(&client, query).await {
-        Ok(entries) => {
-            for e in entries {
-                if seen.insert(e.name.clone()) {
-                    hits.push(SearchHit {
-                        name: e.name,
-                        version: e.version,
-                        desc: e.summary,
-                        source: SearchSource::ClawHub,
-                        version_detail: String::new(),
-                        files: Vec::new(),
-                        trust: crate::sources::clawhub_trust(e.official, &e.scan),
-                        popularity: 0.0,
-                    });
-                }
-            }
-            false
-        }
-        Err(e) => {
-            log::debug!("clawhub search failed: {e:#}");
-            true
-        }
-    };
-    Ok(SearchOutput {
-        hits,
-        pi_unreachable,
-        gray_unreachable,
-        clawhub_unreachable,
-        claude_unreachable,
-    })
 }
 
 #[cfg(test)]
@@ -2613,7 +2351,7 @@ pub(crate) mod tests {
         assert!(!dir.exists());
     }
 
-    // --- P2-3 search fan-out fixtures (loopback only, no live network) ---
+    // --- Install fixtures (loopback only, no live network) ---
 
     async fn spawn_index_stub(index: serde_json::Value) -> String {
         use axum::{Json, Router, routing::get};
@@ -2632,35 +2370,6 @@ pub(crate) mod tests {
         format!("http://127.0.0.1:{port}/index.json")
     }
 
-    /// Gray Index stub that always 404s (the unpublished production index).
-    async fn spawn_index_404_stub() -> String {
-        use axum::{Router, http::StatusCode, routing::get};
-        let router = Router::new().route("/index.json", get(|| async { StatusCode::NOT_FOUND }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
-        format!("http://127.0.0.1:{port}/index.json")
-    }
-
-    async fn spawn_search_stub(objects: serde_json::Value) -> String {
-        use axum::{Json, Router, routing::get};
-        let router = Router::new().route(
-            "/-/v1/search",
-            get(move || {
-                let objects = objects.clone();
-                async move { Json(serde_json::json!({"objects": objects})) }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.unwrap();
-        });
-        format!("http://127.0.0.1:{port}")
-    }
-
     fn index_fixture(names: &[(&str, &str)]) -> serde_json::Value {
         let mut plugins = serde_json::Map::new();
         for (name, version) in names {
@@ -2677,28 +2386,7 @@ pub(crate) mod tests {
         serde_json::json!({"schema": 1, "generated": "", "plugins": plugins})
     }
 
-    fn search_objects(pkgs: &[(&str, &str, &str)]) -> serde_json::Value {
-        pkgs.iter()
-            .map(|(name, version, desc)| {
-                serde_json::json!({"package": {"name": name, "version": version, "description": desc}})
-            })
-            .collect()
-    }
-
-    /// Point `GRAY_HOME` at a fresh tempdir and the index + npm search at
-    /// stubs. ClawHub + Claude point at guaranteed-unreachable endpoints
-    /// so these pre-Task-2 tests stay hermetic (no live network).
-    /// Must be called under `ENV_GUARD`.
-    fn use_search_env(index_url: &str, registry_base: &str) -> tempfile::TempDir {
-        use_market_env(
-            index_url,
-            registry_base,
-            "http://127.0.0.1:1",
-            "file:///nonexistent-gray-fixture",
-        )
-    }
-
-    /// Full search env: index + npm registry + ClawHub base + Claude
+    /// Full install env: index + npm registry + ClawHub base + Claude
     /// marketplace specs. Must be called under `ENV_GUARD`.
     fn use_market_env(
         index_url: &str,
@@ -2716,228 +2404,6 @@ pub(crate) mod tests {
             std::env::set_var(crate::sources::CLAUDE_MARKETPLACES_ENV, claude_markets);
         }
         home
-    }
-
-    #[tokio::test]
-    async fn search_merges_gray_first_with_source_labels() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
-        let registry =
-            spawn_search_stub(search_objects(&[("pi-bar", "2.0.0", "does things")])).await;
-        let _home = use_search_env(&index_url, &registry);
-
-        let out = search_all("gray").await.unwrap();
-        assert!(!out.pi_unreachable);
-        assert_eq!(out.hits.len(), 2);
-        assert_eq!(out.hits[0].source, SearchSource::Gray);
-        assert_eq!(out.hits[0].name, "gray-foo");
-        assert_eq!(out.hits[1].source, SearchSource::Pi);
-        assert_eq!(out.hits[1].name, "pi-bar");
-        assert_eq!(
-            format_search_hit(&out.hits[0]),
-            "gray-foo 1.0.0 [Gray Index]"
-        );
-        assert_eq!(
-            format_search_hit(&out.hits[1]),
-            "pi-bar 2.0.0 [Pi Gallery (preview)] - does things"
-        );
-    }
-
-    #[tokio::test]
-    async fn search_pi_reports_npm_popularity() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[])).await;
-        let objects = serde_json::json!([
-            {"package": {"name": "pi", "version": "1.0.0", "description": "d"},
-             "score": {"detail": {"popularity": 0.83}}}
-        ]);
-        let registry = spawn_search_stub(objects).await;
-        let _home = use_search_env(&index_url, &registry);
-
-        let out = search_all("pi").await.unwrap();
-        let hit = out
-            .hits
-            .iter()
-            .find(|h| h.source == SearchSource::Pi)
-            .unwrap();
-        assert!((hit.popularity - 0.83).abs() < 1e-6);
-    }
-
-    #[tokio::test]
-    async fn search_collision_prefers_gray() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
-        let registry = spawn_search_stub(search_objects(&[("gray-foo", "9.9.9", "pi copy")])).await;
-        let _home = use_search_env(&index_url, &registry);
-
-        let out = search_all("gray").await.unwrap();
-        assert!(!out.pi_unreachable);
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].name, "gray-foo");
-        assert_eq!(out.hits[0].version, "1.0.0");
-        assert_eq!(out.hits[0].source, SearchSource::Gray);
-    }
-
-    #[tokio::test]
-    async fn search_pi_unreachable_is_advisory_not_error() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        // Closed loopback port: connection refused, instantly.
-        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
-        let _home = use_search_env(&index_url, "http://127.0.0.1:1");
-
-        let out = search_all("gray").await.unwrap();
-        assert!(out.pi_unreachable);
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].source, SearchSource::Gray);
-        assert_eq!(PI_UNREACHABLE_LINE, "Pi Gallery (preview): unreachable");
-    }
-
-    #[tokio::test]
-    async fn search_pi_unreachable_with_gray_miss_still_ok() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[])).await;
-        let _home = use_search_env(&index_url, "http://127.0.0.1:1");
-
-        // Ok (not Err): callers print the advisory line and exit 0.
-        let out = search_all("nothing-matches").await.unwrap();
-        assert!(out.pi_unreachable);
-        assert!(out.hits.is_empty());
-    }
-
-    #[tokio::test]
-    async fn search_gray_404_is_advisory_with_pi_hits() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_404_stub().await;
-        let registry =
-            spawn_search_stub(search_objects(&[("pi-bar", "2.0.0", "does things")])).await;
-        let _home = use_search_env(&index_url, &registry);
-
-        let out = search_all("pi").await.unwrap();
-        assert!(out.gray_unreachable);
-        assert!(!out.pi_unreachable);
-        assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].source, SearchSource::Pi);
-        assert_eq!(GRAY_UNREACHABLE_LINE, "Gray Index: unreachable");
-    }
-
-    #[tokio::test]
-    async fn search_gray_404_and_pi_down_is_advisory_not_error() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_404_stub().await;
-        // Closed loopback port: connection refused, instantly.
-        let _home = use_search_env(&index_url, "http://127.0.0.1:1");
-
-        // Ok (not Err): callers print both advisories and exit 0.
-        let out = search_all("nothing-matches").await.unwrap();
-        assert!(out.gray_unreachable);
-        assert!(out.pi_unreachable);
-        assert!(out.hits.is_empty());
-    }
-
-    #[tokio::test]
-    async fn search_corrupt_cache_still_degrades_not_errors() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_404_stub().await;
-        let registry =
-            spawn_search_stub(search_objects(&[("pi-bar", "2.0.0", "does things")])).await;
-        let home = use_search_env(&index_url, &registry);
-        // Ruling 1b: corrupt local cache stays swallowed (`.ok()`), so a
-        // fetch failure still degrades to advisory instead of erroring.
-        let cache = home.path().join("plugins/index-cache.json");
-        std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
-        std::fs::write(&cache, "{not json").unwrap();
-
-        let out = search_all("pi").await.unwrap();
-        assert!(out.gray_unreachable);
-        assert_eq!(out.hits.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn search_empty_both_sides_reports_no_hits() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[])).await;
-        let registry = spawn_search_stub(search_objects(&[])).await;
-        let _home = use_search_env(&index_url, &registry);
-
-        // Ok + empty + reachable: callers keep the `not in index` miss.
-        let out = search_all("nothing-matches").await.unwrap();
-        assert!(!out.pi_unreachable);
-        assert!(out.hits.is_empty());
-    }
-
-    #[test]
-    fn search_copy_rules_are_exact() {
-        assert_eq!(SearchSource::Gray.label(), "Gray Index");
-        assert_eq!(SearchSource::Pi.label(), "Pi Gallery (preview)");
-        assert!(SearchSource::Pi.label().contains("(preview)"));
-        assert_eq!(PI_UNREACHABLE_LINE, "Pi Gallery (preview): unreachable");
-        // Empty desc omits the suffix; surrounding whitespace is trimmed.
-        let bare = SearchHit {
-            name: "n".to_string(),
-            version: "1.0.0".to_string(),
-            desc: String::new(),
-            source: SearchSource::Gray,
-            version_detail: String::new(),
-            files: Vec::new(),
-            trust: String::new(),
-            popularity: 0.0,
-        };
-        assert_eq!(format_search_hit(&bare), "n 1.0.0 [Gray Index]");
-        let padded = SearchHit {
-            desc: "  padded  ".to_string(),
-            source: SearchSource::Pi,
-            ..bare
-        };
-        assert_eq!(
-            format_search_hit(&padded),
-            "n 1.0.0 [Pi Gallery (preview)] - padded"
-        );
-    }
-
-    #[test]
-    fn search_pi_scoped_hit_hints_install_key() {
-        // Same shared sanitizer, no duplication: raw `@scope/bar` hints the
-        // lock key `scope-bar`; unsanitized names stay bare.
-        let scoped = SearchHit {
-            name: "@scope/bar".to_string(),
-            version: "1.2.3".to_string(),
-            desc: "does things".to_string(),
-            source: SearchSource::Pi,
-            version_detail: String::new(),
-            files: Vec::new(),
-            trust: String::new(),
-            popularity: 0.0,
-        };
-        assert_eq!(
-            format_search_hit(&scoped),
-            "@scope/bar 1.2.3 [Pi Gallery (preview)] (install as scope-bar) - does things"
-        );
-        let plain = SearchHit {
-            name: "pi-bar".to_string(),
-            version: "2.0.0".to_string(),
-            desc: String::new(),
-            source: SearchSource::Pi,
-            version_detail: String::new(),
-            files: Vec::new(),
-            trust: String::new(),
-            popularity: 0.0,
-        };
-        assert_eq!(
-            format_search_hit(&plain),
-            "pi-bar 2.0.0 [Pi Gallery (preview)]"
-        );
-        // Gray hits never hint (index names install verbatim).
-        let gray = SearchHit {
-            name: "@scope/bar".to_string(),
-            version: "1.0.0".to_string(),
-            desc: String::new(),
-            source: SearchSource::Gray,
-            version_detail: String::new(),
-            files: Vec::new(),
-            trust: String::new(),
-            popularity: 0.0,
-        };
-        assert_eq!(format_search_hit(&gray), "@scope/bar 1.0.0 [Gray Index]");
     }
 
     #[test]
@@ -2983,27 +2449,7 @@ pub(crate) mod tests {
         }
     }
 
-    #[test]
-    fn new_source_labels_and_lines_are_exact() {
-        assert_eq!(SearchSource::Claude.label(), "Claude");
-        assert_eq!(SearchSource::ClawHub.label(), "ClawHub");
-        assert_eq!(CLAWHUB_UNREACHABLE_LINE, "ClawHub: unreachable");
-        assert_eq!(CLAUDE_UNREACHABLE_LINE, "Claude: unreachable");
-        // New fields never leak into the rendered hit (Task 1 copy frozen).
-        let hit = SearchHit {
-            name: "x".to_string(),
-            version: "1.0.0".to_string(),
-            desc: "d".to_string(),
-            source: SearchSource::ClawHub,
-            version_detail: "github:o/r@main".to_string(),
-            files: vec!["SKILL.md".to_string()],
-            trust: "community".to_string(),
-            popularity: 0.0,
-        };
-        assert_eq!(format_search_hit(&hit), "x 1.0.0 [ClawHub] - d");
-    }
-
-    // --- Task 2 search/install fixtures (loopback + local dirs only) ---
+    // --- Task 2 install fixtures (loopback + local dirs only) ---
 
     /// Minimal stored-ZIP builder (ClawHub serves ZIPs, not tarballs).
     fn skill_zip(files: &[(&str, &str)]) -> Vec<u8> {
@@ -3056,11 +2502,9 @@ pub(crate) mod tests {
         out
     }
 
-    /// ClawHub stub: fixed `/search` results plus a `fixture/demo` skill
-    /// (detail + empty version files + ZIP download). The download 429s
-    /// once (with `Retry-After: 0`) to prove the retry routing; the
-    /// verdicts endpoint answers for `claw-foo` only, so `claw-bar` pins
-    /// the search-payload fallback path.
+    /// ClawHub stub: a `fixture/demo` skill (detail + empty version
+    /// files + ZIP download). The download 429s once (with
+    /// `Retry-After: 0`) to prove the retry routing.
     #[derive(Clone)]
     struct ClawStub {
         zip: Vec<u8>,
@@ -3072,26 +2516,9 @@ pub(crate) mod tests {
             Json, Router,
             extract::State,
             http::{HeaderMap, StatusCode},
-            routing::{get, post},
+            routing::get,
         };
         use std::sync::atomic::Ordering;
-        // `claw-foo` carries NO payload trust: its `scan:clean` must come
-        // from the verdicts batch or the test fails.
-        let search = serde_json::json!({"results": [
-            {"slug": "claw-foo", "displayName": "Claw Foo",
-             "summary": "does claw things", "version": "4.0.0",
-             "ownerHandle": "fixture", "official": false},
-            {"slug": "claw-bar", "displayName": "Claw Bar",
-             "summary": "payload trust only", "version": "1.0.0",
-             "official": false, "trust": {"clawHubVerdict": "clean"}},
-            {"slug": "gray-foo", "displayName": "Gray Copy",
-             "summary": "suppressed duplicate", "version": "9.9.9"},
-        ]});
-        let verdicts = serde_json::json!({"items": [
-            {"ok": true, "decision": "pass", "requestedSlug": "claw-foo",
-             "requestedOwnerHandle": "fixture", "requestedVersion": "4.0.0",
-             "version": "4.0.0", "security": {"status": "clean", "passed": true}},
-        ]});
         let detail = serde_json::json!({
             "skill": {"slug": "demo", "displayName": "Demo", "summary": "demo skill"},
             "latestVersion": {"version": "1.0.0"},
@@ -3101,13 +2528,6 @@ pub(crate) mod tests {
             {"version": {"version": "1.0.0", "files": [], "security": {"status": "clean"}}}
         );
         let router = Router::new()
-            .route(
-                "/api/v1/search",
-                get(move || {
-                    let search = search.clone();
-                    async move { Json(search) }
-                }),
-            )
             .route(
                 "/api/v1/skills/demo",
                 get(move || {
@@ -3131,13 +2551,6 @@ pub(crate) mod tests {
                         return (StatusCode::TOO_MANY_REQUESTS, h, Vec::new());
                     }
                     (StatusCode::OK, HeaderMap::new(), st.zip.clone())
-                }),
-            )
-            .route(
-                "/api/v1/skills/-/security-verdicts",
-                post(move || {
-                    let verdicts = verdicts.clone();
-                    async move { Json(verdicts) }
                 }),
             )
             .with_state(ClawStub {
@@ -3175,83 +2588,6 @@ pub(crate) mod tests {
         )
         .unwrap();
         dir
-    }
-
-    #[tokio::test]
-    async fn search_fans_out_gray_pi_claude_clawhub_in_order() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
-        let registry =
-            spawn_search_stub(search_objects(&[("pi-foo", "2.0.0", "does pi things")])).await;
-        let clawhub = spawn_clawhub_stub(skill_zip(&[("skills/a/SKILL.md", MULCH_SKILL)])).await;
-        let market = init_claude_fixture();
-        let markets = format!("file://{}", market.path().display());
-        let _home = use_market_env(&index_url, &registry, &clawhub, &markets);
-
-        let out = search_all("foo").await.unwrap();
-        assert!(!out.pi_unreachable);
-        assert!(!out.gray_unreachable);
-        assert!(!out.clawhub_unreachable);
-        assert!(!out.claude_unreachable);
-        // Order Gray, Pi, Claude, ClawHub; the clawhub `gray-foo`
-        // duplicate is suppressed (Gray wins).
-        let names: Vec<_> = out
-            .hits
-            .iter()
-            .map(|h| (h.name.as_str(), h.source))
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                ("gray-foo", SearchSource::Gray),
-                ("pi-foo", SearchSource::Pi),
-                ("claude-foo", SearchSource::Claude),
-                ("fixture/claw-foo", SearchSource::ClawHub),
-                ("claw-bar", SearchSource::ClawHub),
-            ]
-        );
-        // `claw-foo` ships no payload trust: `scan:clean` proves the
-        // verdicts batch ran. `claw-bar` has no verdict: payload fallback.
-        let claw = out
-            .hits
-            .iter()
-            .find(|h| h.name == "fixture/claw-foo")
-            .unwrap();
-        assert_eq!(claw.trust, "community + scan:clean");
-        assert_eq!(
-            format_search_hit(claw),
-            "fixture/claw-foo 4.0.0 [ClawHub] (install as fixture-claw-foo) - does claw things"
-        );
-        let bar = out.hits.iter().find(|h| h.name == "claw-bar").unwrap();
-        assert_eq!(bar.trust, "community + scan:clean");
-        let claude = out.hits.iter().find(|h| h.name == "claude-foo").unwrap();
-        assert_eq!(claude.version, "3.0.0");
-        assert_eq!(claude.version_detail, "./plugins/claude-foo");
-        // Command plugins never surface (not installable).
-        assert!(!out.hits.iter().any(|h| h.name == "claude-cmd"));
-    }
-
-    #[tokio::test]
-    async fn search_clawhub_and_claude_down_is_advisory() {
-        let _guard = ENV_GUARD.lock().unwrap();
-        let index_url = spawn_index_stub(index_fixture(&[("gray-foo", "1.0.0")])).await;
-        let registry =
-            spawn_search_stub(search_objects(&[("pi-foo", "2.0.0", "does pi things")])).await;
-        let _home = use_market_env(
-            &index_url,
-            &registry,
-            "http://127.0.0.1:1",
-            "file:///nonexistent-gray-fixture",
-        );
-
-        let out = search_all("foo").await.unwrap();
-        assert!(out.clawhub_unreachable);
-        assert!(out.claude_unreachable);
-        assert!(!out.pi_unreachable);
-        assert!(!out.gray_unreachable);
-        assert_eq!(out.hits.len(), 2);
-        assert_eq!(CLAWHUB_UNREACHABLE_LINE, "ClawHub: unreachable");
-        assert_eq!(CLAUDE_UNREACHABLE_LINE, "Claude: unreachable");
     }
 
     #[tokio::test]
@@ -3330,5 +2666,29 @@ pub(crate) mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("not in claude marketplaces"), "miss: {err}");
+    }
+
+    #[tokio::test]
+    async fn install_url_unpacks_tarball_and_writes_lock() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let url = spawn_tarball(tiny_tgz()).await;
+        let home = tempfile::tempdir().unwrap();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var("GRAY_HOME", home.path());
+        }
+
+        let report = install(parse_spec(&url), InstallOpts::default())
+            .await
+            .unwrap();
+        assert_eq!(report.name, "pi-foo");
+        assert_eq!(report.version, "0.0.0");
+        assert_eq!(
+            std::fs::read(report.path.join("package/package.json")).unwrap(),
+            br#"{"name":"pi-foo"}"#
+        );
+        let entry = list().unwrap().remove("pi-foo").expect("lock entry");
+        assert_eq!(entry.ecosystem, "url");
+        assert_eq!(entry.source, url);
     }
 }
