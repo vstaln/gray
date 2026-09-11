@@ -26,7 +26,7 @@ Reuse everything that exists; add one gated crate.
   (`daemon.rs::is_silent`) — whole output or first/last line suppresses
   delivery. Heartbeat is therefore **a cron job**.
 - **State**: one goal file `$GRAY_HOME/heartbeat/goal.md` and one config file
-  `$GRAY_HOME/heartbeat.yaml` (`enabled`, `schedule`, `deliver`).
+  `$GRAY_HOME/heartbeat.json` (`enabled`, `schedule`, `deliver`).
 - **Job**: one `gray_cron::CronJob` named `heartbeat` in the shared
   `$GRAY_HOME/cron` store. Its prompt is the heartbeat template with the goal
   embedded; `deliver` is the configured `Deliver::Target("<platform>[:chat[:thread]]")`.
@@ -41,9 +41,9 @@ Reuse everything that exists; add one gated crate.
 ## Data / interfaces
 
 - `HeartbeatConfig { enabled: bool, schedule: String, deliver: String }`
-  (serde yaml) at `$GRAY_HOME/heartbeat.yaml`.
+  (serde JSON) at `$GRAY_HOME/heartbeat.json`.
 - Goal text at `$GRAY_HOME/heartbeat/goal.md`.
-- Cron job `name == "heartbeat"`; prompt = [`render_prompt(goal, now)`].
+- Cron job `name == "heartbeat"`; prompt = [`render_prompt(goal)`].
 - `render_prompt` instructs: take the next useful step, and reply with exactly
   `[SILENT]` when nothing is worth reporting (the delivery layer already
   suppresses `[SILENT]`).

@@ -10,7 +10,6 @@ anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
 gray-cron.workspace = true
-log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

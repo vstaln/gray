@@ -71,8 +71,16 @@ single `heartbeat` tool (`status`, `goal_get`, `goal_set`, `on`, `off`,
 ```yaml
 plugins:
   - tools-minimal
-  - sidecar: ~/.gray/plugins/heartbeat
+  - sidecar: [/abs/path/gray-heartbeat, --plugin]
 ```
+
+Register the sidecar as an argv list: a bare path form spawns the binary with
+no arguments, so the plugin mode (`--plugin`) never starts. `gray-heartbeat`
+must be installed at (or copied to) the absolute path you list, and the argv
+list form does not expand `~` — spell the path out. For example, after
+`cargo build --release -p gray-heartbeat`, copy
+`target/release/gray-heartbeat` to `~/.gray/plugins/gray-heartbeat` and write
+`- sidecar: [/home/you/.gray/plugins/gray-heartbeat, --plugin]`.
 
 The agent can then read or set the goal, flip the heartbeat on/off, and check
 status in conversation. See [`plugins.md`](plugins.md) for the sidecar wire

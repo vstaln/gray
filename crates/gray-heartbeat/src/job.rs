@@ -30,11 +30,11 @@ fn deliver_from_str(s: &str) -> gray_cron::Deliver {
 
 pub fn sync_job(cfg: &HeartbeatConfig, goal: &str) -> anyhow::Result<String> {
     let store = gray_cron::CronStore::open(cron_dir()?).context("open cron store")?;
-    let _ = store.remove(JOB_NAME);
+    store.remove(JOB_NAME)?;
     if !cfg.enabled {
         return Ok(String::new());
     }
-    let id = store.add_full(
+    let id = store.add_full_unguarded(
         JOB_NAME,
         &cfg.schedule,
         &render_prompt(goal),
@@ -59,8 +59,11 @@ pub fn enable(
         cfg.deliver = d;
     }
     cfg.enabled = true;
+    // Sync first: a failed sync must not persist `enabled: true`, or `off`
+    // could silently leave the job firing.
+    let id = sync_job(cfg, &crate::goal::read_goal()?)?;
     crate::config::save_config(cfg)?;
-    sync_job(cfg, &crate::goal::read_goal()?)
+    Ok(id)
 }
 
 pub enum JobStatus {

@@ -58,8 +58,10 @@ fn main() -> anyhow::Result<()> {
         Command::Off => {
             let mut cfg = config::load_config()?;
             cfg.enabled = false;
-            config::save_config(&cfg)?;
+            // Remove the job before persisting disabled: a failed removal must
+            // not leave the job firing behind a config that says "off".
             job::sync_job(&cfg, &goal::read_goal()?)?;
+            config::save_config(&cfg)?;
             println!("heartbeat off");
         }
         Command::Status => {

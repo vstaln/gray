@@ -303,6 +303,8 @@ impl CronStore {
         atomic_write_json(&self.jobs_path(), raw)
     }
 
+    /// Add a job with the lifecycle-shape guard applied (default for
+    /// untrusted prompts).
     pub fn add_full(
         &self,
         name: &str,
@@ -312,8 +314,40 @@ impl CronStore {
         origin: Option<Origin>,
         workdir: Option<PathBuf>,
     ) -> anyhow::Result<String> {
+        self.add_full_inner(name, schedule, prompt, deliver, origin, workdir, true)
+    }
+
+    /// Like [`add_full`], but skips [`reject_lifecycle_shape`]. For callers
+    /// that legitimately manage gray's own lifecycle — e.g. the heartbeat,
+    /// whose standing goal may mention restarting the gateway. Never feed
+    /// this raw end-user input.
+    pub fn add_full_unguarded(
+        &self,
+        name: &str,
+        schedule: &str,
+        prompt: &str,
+        deliver: Deliver,
+        origin: Option<Origin>,
+        workdir: Option<PathBuf>,
+    ) -> anyhow::Result<String> {
+        self.add_full_inner(name, schedule, prompt, deliver, origin, workdir, false)
+    }
+
+    #[allow(clippy::too_many_arguments)] // mirrors add_full plus the guard flag
+    fn add_full_inner(
+        &self,
+        name: &str,
+        schedule: &str,
+        prompt: &str,
+        deliver: Deliver,
+        origin: Option<Origin>,
+        workdir: Option<PathBuf>,
+        guard: bool,
+    ) -> anyhow::Result<String> {
         validate_new_job(name, prompt, workdir.as_deref())?;
-        reject_lifecycle_shape(prompt)?;
+        if guard {
+            reject_lifecycle_shape(prompt)?;
+        }
         let sched = parse_schedule(schedule)?;
         let now = now_secs();
         if let Schedule::Once { at } = &sched
@@ -686,6 +720,29 @@ mod tests {
             .add("ok", "every 1h", "check CI and report", Deliver::Local)
             .unwrap();
         assert_eq!(store.get(&id).unwrap().unwrap().name, "ok");
+    }
+
+    #[test]
+    fn add_full_unguarded_bypasses_lifecycle_guard() {
+        let (_dir, store) = test_store();
+        // Guarded path still rejects a lifecycle-shaped prompt.
+        assert!(
+            store
+                .add("g", "every 1h", "systemctl restart gray", Deliver::Local)
+                .is_err()
+        );
+        // Unguarded path accepts the same prompt (heartbeat standing goal).
+        let id = store
+            .add_full_unguarded(
+                "u",
+                "every 1h",
+                "systemctl restart gray",
+                Deliver::Local,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(store.get(&id).unwrap().unwrap().name, "u");
     }
 
     #[test]
