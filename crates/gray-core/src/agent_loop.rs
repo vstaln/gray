@@ -15,12 +15,25 @@ use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
 use crate::message::{ChatRequest, ContentBlock, Message, Role};
-use crate::turn_queue::{Submission, SubmitMode, TurnState};
 
 /// Empty-turn provider retries before nudging or ending on `(empty)`.
 const MAX_EMPTY_RETRIES: u8 = 2;
 /// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
 const MAX_CONTINUATIONS: u8 = 2;
+
+/// Empty-input gate (folded in from the deleted turn-admission seam): an
+/// empty vec or all-Text-blank message is a no-op. Thinking/ToolUse/
+/// ToolResult/Image blocks are never "empty input"; any unknown variant
+/// admits fail-open (never silently drop user input).
+fn is_empty_input(msg: &Message) -> bool {
+    if msg.content.is_empty() {
+        return true;
+    }
+    msg.content.iter().all(|b| match b {
+        ContentBlock::Text { text } => text.trim().is_empty(),
+        _ => false,
+    })
+}
 
 impl Agent {
     /// Best-effort `turn_end` fan-out: hook failures must never fail the turn
@@ -76,8 +89,8 @@ impl Agent {
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///
-    /// Admission first: `input` goes through [`Agent::submit`] (empty input
-    /// rejected before it touches history), then the admitted turn executes.
+    /// Empty input is a no-op returning `Ok(vec![])` before it touches
+    /// history; otherwise `input` opens the turn and the loop executes.
     ///
     /// Per turn: build a [`ChatRequest`], stream the response while
     /// forwarding `TextDelta`s in arrival order, finalize the assistant
@@ -94,19 +107,11 @@ impl Agent {
         input: Message,
         ctx: ToolContext,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        match self.submit(input, SubmitMode::StartOrSteer) {
-            Submission::Started { turn_id } => {
-                self.turn_state = TurnState::Busy { turn_id };
-                let out = self.run_inner(ctx, None).await;
-                self.turn_state = TurnState::Idle;
-                out
-            }
-            // Defensive only: Busy needs reentrancy, impossible under `&mut`
-            // today — no turn ran, the input is already queued as steer.
-            Submission::Steered { .. } => Ok(vec![]),
-            // Defensive only (see above): rejection mutated nothing.
-            Submission::NotSubmitted(_) => Ok(vec![]),
+        if is_empty_input(&input) {
+            return Ok(vec![]);
         }
+        self.messages.push(input);
+        self.run_inner(ctx, None).await
     }
 
     /// Streaming variant of [`run`]: every [`AgentEvent`] is handed to
@@ -118,19 +123,11 @@ impl Agent {
         ctx: ToolContext,
         on_event: &mut dyn FnMut(&AgentEvent),
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        match self.submit(input, SubmitMode::StartOrSteer) {
-            Submission::Started { turn_id } => {
-                self.turn_state = TurnState::Busy { turn_id };
-                let out = self.run_inner(ctx, Some(on_event)).await;
-                self.turn_state = TurnState::Idle;
-                out
-            }
-            // Defensive only: Busy needs reentrancy, impossible under `&mut`
-            // today — no turn ran, the input is already queued as steer.
-            Submission::Steered { .. } => Ok(vec![]),
-            // Defensive only (see above): rejection mutated nothing.
-            Submission::NotSubmitted(_) => Ok(vec![]),
+        if is_empty_input(&input) {
+            return Ok(vec![]);
         }
+        self.messages.push(input);
+        self.run_inner(ctx, Some(on_event)).await
     }
 
     async fn run_inner(

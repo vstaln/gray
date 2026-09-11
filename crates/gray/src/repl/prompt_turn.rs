@@ -209,18 +209,15 @@ pub(crate) async fn run_prompt_turn(
                 // Cooperative cancel: ctx shares this token, so the run is
                 // already signalled — give it a bounded window to observe
                 // cancel and execute its own cleanup/transcript-repair paths
-                // (partial-text salvage, turn_end, Idle reset) instead of
+                // (partial-text salvage, turn_end) instead of
                 // dropping it mid-flight.
                 cancel.cancel();
                 let _ =
                     tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future)
                         .await;
-                // Idempotent safety + fallback: when the run returned, its
-                // Idle reset already ran (this is a no-op); when it ignored
-                // cancel and is still pending, the drop preempts it and this
-                // releases admission.
+                // Fallback: when the run returned this is a no-op; when it
+                // ignored cancel and is still pending, the drop preempts it.
                 drop(run_future);
-                agent.abort_turn();
                 Err(CoreError::Cancelled)
             }
         }
@@ -279,7 +276,6 @@ pub(crate) async fn run_prompt_turn(
                         tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future2)
                             .await;
                     drop(run_future2);
-                    agent.abort_turn();
                     Err(CoreError::Cancelled)
                 }
             };
