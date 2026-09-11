@@ -811,7 +811,8 @@ mod tests {
             ReplCommand::Unknown(_)
         ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-        // gateway left the TUI: /gateway and /gw are unknown.
+        // gateway left the TUI: /gateway and /gw are unknown (the `gray
+        // gateway` CLI still runs the preserved gray-gateway crate).
         assert!(matches!(parse_command("/gw"), ReplCommand::Unknown(_)));
         assert!(matches!(
             parse_command("/gateway status"),

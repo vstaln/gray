@@ -20,7 +20,9 @@ gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
+gray-supervise = { workspace = true }
 gray-markdown = { workspace = true }
+gray-cron = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
@@ -41,7 +43,11 @@ image = { workspace = true, optional = true }
 tempfile = { workspace = true }
 base64 = { workspace = true }
 async-trait = { workspace = true }
-# Phase 1 scope cut: the harness core ships no platform adapters.
+# Phase 1 scope cut: platform adapters are opt-in (default build is the
+# harness core with gateway config/status only, no twilight/teloxide/slack).
+# The workspace edge disables gateway default features
+# out of the default tree; opt back in below.
+gray-gateway = { workspace = true }
 unicode-width = { workspace = true }
 ignore = { workspace = true }
 
@@ -53,3 +59,8 @@ acp = ["dep:gray-acp"]
 # Clipboard/image attachments (arboard + image). Off by default to keep the
 # default tree and binary lean; build with --features clipboard for paste.
 clipboard = ["dep:arboard", "dep:image"]
+# Platform passthroughs (opt-in; default build carries no platform deps).
+telegram = ["gray-gateway/telegram"]
+discord = ["gray-gateway/discord"]
+slack = ["gray-gateway/slack"]
+all-platforms = ["gray-gateway/all-platforms"]

@@ -48,8 +48,17 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Update => {
                 return gray::update::update_now().await;
             }
+            gray::Commands::Gateway { cmd } => {
+                return run_gateway(cmd).await;
+            }
             gray::Commands::Plugin { cmd } => {
                 return run_plugin(cmd).await;
+            }
+            gray::Commands::Cron { cmd } => {
+                return run_cron(cmd).await;
+            }
+            gray::Commands::Send { target, text } => {
+                return run_send(&target, &text).await;
             }
             gray::Commands::Sessions { cmd } => {
                 return run_sessions(cmd).await;
@@ -169,6 +178,56 @@ async fn run_resume_subcommand(
     Ok(())
 }
 
+async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
+    use gray::GatewayCmd;
+    match cmd {
+        None | Some(GatewayCmd::Status { probe: false }) => gray_gateway::systemd::status(),
+        Some(GatewayCmd::Status { probe: true }) => {
+            let home = std::env::var("GRAY_HOME")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| {
+                    std::env::var("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".gray"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"))
+                });
+            let h = gray_supervise::health::probe_full(
+                &home,
+                gray_gateway::status::read_board_healthy(&home),
+                gray_gateway::status::gateway_config_parses(&home),
+            );
+            println!("{}", h.reason);
+            if !h.healthy {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Some(GatewayCmd::Run) => match gray_gateway::daemon::run_gateway().await {
+            Err(e) if format!("{e:#}").contains("no gateway platforms enabled") => {
+                eprintln!("{e:#}");
+                std::process::exit(gray_supervise::exit::EXIT_FATAL);
+            }
+            r => r,
+        },
+        Some(GatewayCmd::Install) => gray_gateway::systemd::install(),
+        Some(GatewayCmd::Uninstall) => gray_gateway::systemd::uninstall(),
+        Some(GatewayCmd::Invite { platform }) => print_invite(&platform),
+        Some(GatewayCmd::Pairing { cmd }) => run_pairing(cmd),
+    }
+}
+
+fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
+    use gray::PairingCmd;
+    use gray_gateway::pairing::{pairing_approve, pairing_list, pairing_revoke};
+    match cmd {
+        PairingCmd::Approve { platform, code } => {
+            println!("{}", pairing_approve(&platform, &code)?)
+        }
+        PairingCmd::List { platform } => println!("{}", pairing_list(Some(&platform))?),
+        PairingCmd::Revoke { platform, user } => println!("{}", pairing_revoke(&platform, &user)?),
+    }
+    Ok(())
+}
+
 async fn run_plugin(cmd: gray::PluginCmd) -> anyhow::Result<()> {
     // Uniform with `Check`: user-facing errors go to stderr as
     // `error: …` with exit 1 (not anyhow's `Error: …` dump).
@@ -231,6 +290,91 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
     }
 }
 
+/// `gray cron ...` + `gray send ...` (cron plan Task 5).
+///
+/// File-only surface: the store lives at `$GRAY_HOME/cron/jobs.json` and
+/// `send_once` builds a throw-away send-only adapter from `gateway.yaml`,
+/// so neither verb needs the daemon running.
+fn cron_store() -> anyhow::Result<gray_cron::CronStore> {
+    let home = gray_gateway::config::gray_home_dir()?;
+    gray_cron::CronStore::open(home.join("cron"))
+}
+
+fn fmt_ts(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .unwrap_or_else(|| ts.to_string())
+}
+
+fn fmt_ts_opt(ts: Option<i64>) -> String {
+    ts.map(fmt_ts).unwrap_or_else(|| "-".to_string())
+}
+
+fn fmt_dur(mut secs: u64) -> String {
+    if secs.is_multiple_of(86400) {
+        return format!("{}d", secs / 86400);
+    }
+    if secs.is_multiple_of(3600) {
+        return format!("{}h", secs / 3600);
+    }
+    // Interval floor is 60s, so minutes are exact here.
+    secs /= 60;
+    format!("{secs}m")
+}
+
+fn fmt_schedule(s: &gray_cron::Schedule) -> String {
+    match s {
+        gray_cron::Schedule::Interval { secs } => format!("every {}", fmt_dur(*secs)),
+        gray_cron::Schedule::Cron { expr } => expr.clone(),
+        gray_cron::Schedule::Once { at } => format!("once {}", fmt_ts(*at)),
+    }
+}
+
+fn fmt_deliver(d: &gray_cron::Deliver) -> String {
+    match d {
+        gray_cron::Deliver::Origin => "origin".to_string(),
+        gray_cron::Deliver::Local => "local".to_string(),
+        gray_cron::Deliver::Target(s) => s.clone(),
+    }
+}
+
+fn fmt_status(s: Option<gray_cron::RunStatus>) -> &'static str {
+    match s {
+        None => "-",
+        Some(gray_cron::RunStatus::Ok) => "ok",
+        Some(gray_cron::RunStatus::Error) => "error",
+        Some(gray_cron::RunStatus::DeliveryFailed) => "delivery_failed",
+    }
+}
+
+/// `--deliver` flag: `origin`/`local` keywords (case-insensitive), anything
+/// else rides `Deliver::Target` and resolves at fire time (unknown shapes
+/// fail safe to save-only in the daemon, never misdeliver).
+fn parse_deliver_flag(raw: Option<&str>) -> gray_cron::Deliver {
+    match raw.map(str::trim).unwrap_or("local") {
+        s if s.eq_ignore_ascii_case("origin") => gray_cron::Deliver::Origin,
+        s if s.eq_ignore_ascii_case("local") || s.is_empty() => gray_cron::Deliver::Local,
+        s => gray_cron::Deliver::Target(s.to_string()),
+    }
+}
+
+/// Default job name: prompt's first line, truncated to the store's 50-char cap.
+fn default_job_name(prompt: &str) -> String {
+    let name: String = prompt
+        .lines()
+        .next()
+        .unwrap_or("job")
+        .trim()
+        .chars()
+        .take(40)
+        .collect();
+    if name.trim().is_empty() {
+        "job".to_string()
+    } else {
+        name.trim().to_string()
+    }
+}
+
 async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
     match cmd {
         gray::SessionsCmd::Prune { older_than_days } => {
@@ -248,6 +392,120 @@ async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
             );
             Ok(())
         }
+    }
+}
+
+async fn run_cron(cmd: gray::CronCmd) -> anyhow::Result<()> {
+    use gray::CronCmd;
+    match cmd {
+        CronCmd::List => {
+            let jobs = cron_store()?.list()?;
+            if jobs.is_empty() {
+                println!("no cron jobs");
+                return Ok(());
+            }
+            for j in &jobs {
+                println!(
+                    "{} {} {} next={} last={}",
+                    j.id,
+                    j.name,
+                    fmt_schedule(&j.schedule),
+                    fmt_ts_opt(j.next_run_at),
+                    fmt_status(j.last_status)
+                );
+            }
+            Ok(())
+        }
+        CronCmd::Add {
+            schedule,
+            prompt,
+            deliver,
+            name,
+            workdir,
+        } => {
+            let store = cron_store()?;
+            let name = name.unwrap_or_else(|| default_job_name(&prompt));
+            let id = store.add_full(
+                &name,
+                &schedule,
+                &prompt,
+                parse_deliver_flag(deliver.as_deref()),
+                None,
+                workdir,
+            )?;
+            let next = store
+                .get(&id)?
+                .map(|j| fmt_ts_opt(j.next_run_at))
+                .unwrap_or_else(|| "-".to_string());
+            println!("added {id} next {next}");
+            Ok(())
+        }
+        CronCmd::Show { id } => {
+            let Some(j) = cron_store()?.get(&id)? else {
+                anyhow::bail!("unknown cron job {id:?}");
+            };
+            println!("id: {}", j.id);
+            println!("name: {}", j.name);
+            println!("schedule: {}", fmt_schedule(&j.schedule));
+            println!("deliver: {}", fmt_deliver(&j.deliver));
+            println!("enabled: {} state: {:?}", j.enabled, j.state);
+            println!("created: {}", fmt_ts(j.created_at));
+            println!("next run: {}", fmt_ts_opt(j.next_run_at));
+            println!(
+                "last run: {} status: {}",
+                fmt_ts_opt(j.last_run_at),
+                fmt_status(j.last_status)
+            );
+            if let Some(e) = &j.last_error {
+                println!("last error: {e}");
+            }
+            if let Some(e) = &j.last_delivery_error {
+                println!("last delivery error: {e}");
+            }
+            if let Some(o) = &j.origin {
+                let thread = o.thread.as_deref().unwrap_or("-");
+                println!("origin: {}:{} thread:{thread}", o.platform, o.chat);
+            }
+            if let Some(w) = &j.workdir {
+                println!("workdir: {}", w.display());
+            }
+            println!("prompt: {}", j.prompt);
+            Ok(())
+        }
+        CronCmd::Remove { id } => {
+            if cron_store()?.remove(&id)? {
+                println!("removed {id}");
+                Ok(())
+            } else {
+                anyhow::bail!("unknown cron job {id:?}");
+            }
+        }
+    }
+}
+
+async fn run_send(target: &str, text: &[String]) -> anyhow::Result<()> {
+    let cfg = gray_gateway::config::load_gateway_config();
+    gray_gateway::delivery::send_once(&cfg, target, &text.join(" ")).await?;
+    println!("sent to {target}");
+    Ok(())
+}
+
+fn print_invite(platform: &str) -> anyhow::Result<()> {
+    match platform.to_ascii_lowercase().as_str() {
+        "discord" => {
+            let cfg = gray_gateway::config::load_gateway_config();
+            let plat = cfg.platforms.get(&gray_gateway::config::Platform::Discord);
+            // client_id is derived from the token.
+            let id = plat
+                .and_then(|c| c.token.clone())
+                .and_then(|t| gray_gateway::discord::client_id_from_token(&t))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("set platforms.discord.token in ~/.gray/gateway.yaml")
+                })?;
+            println!("{}", gray_gateway::discord::invite_url(&id)?);
+            Ok(())
+        }
+        other => anyhow::bail!("no invite URL for platform {other:?} (only discord)"),
     }
 }
 

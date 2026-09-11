@@ -1,0 +1,349 @@
+//! BasePlatformAdapter + utf16 helpers + truncation/splitting
+
+use crate::config::Platform;
+use async_trait::async_trait;
+
+#[derive(Debug, Clone)]
+pub struct MessageEvent {
+    pub text: String,
+    pub message_id: Option<String>,
+    pub source: crate::session::SessionSource,
+    /// Display name of the sender, for pairing prompts / operator listings.
+    pub user_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SendResult {
+    pub success: bool,
+    pub message_id: Option<String>,
+    pub error: Option<String>,
+    pub retryable: bool,
+}
+
+impl SendResult {
+    pub fn ok(message_id: Option<String>) -> Self {
+        Self {
+            success: true,
+            message_id,
+            error: None,
+            retryable: false,
+        }
+    }
+    pub fn fail(error: impl Into<String>, retryable: bool) -> Self {
+        Self {
+            success: false,
+            message_id: None,
+            error: Some(error.into()),
+            retryable,
+        }
+    }
+}
+
+/// Delivery hints for [`BasePlatformAdapter::send_ext`].
+#[derive(Debug, Clone, Default)]
+pub struct SendOptions {
+    /// Platform message id to reply to (first chunk only).
+    pub reply_to: Option<String>,
+    /// Thread to post into (Slack `thread_ts`, Telegram forum topic id).
+    pub thread_id: Option<String>,
+}
+
+#[async_trait]
+pub trait BasePlatformAdapter: Send + Sync {
+    fn platform(&self) -> Platform;
+    fn is_authenticated(&self) -> bool;
+    /// Connect. When no event channel was wired via [`set_event_tx`] the
+    /// adapter must come up in *send-only* mode (no inbound polling) so the
+    /// `gray send` CLI can reuse the same code path.
+    async fn connect(&self) -> anyhow::Result<()>;
+    async fn disconnect(&self) -> anyhow::Result<()>;
+    /// Bot display name learned during [`BasePlatformAdapter::connect`]
+    /// (`get_me` / `current_user` / `auth.test`). Shown on the REPL boot card
+    /// as `connected as <name>`. None for stubs or before connect.
+    fn bot_identity(&self) -> Option<String> {
+        None
+    }
+    async fn send(&self, chat: &str, text: &str) -> SendResult;
+
+    /// Send with reply/thread hints. Default ignores the hints.
+    async fn send_ext(&self, chat: &str, text: &str, _opts: &SendOptions) -> SendResult {
+        self.send(chat, text).await
+    }
+
+    /// Wire the inbound event channel. Default no-op (stub adapters never receive).
+    fn set_event_tx(&mut self, _tx: tokio::sync::mpsc::UnboundedSender<MessageEvent>) {}
+
+    /// Best-effort typing indicator (Discord typing trigger). Default no-op.
+    async fn send_typing(&self, _chat: &str) {}
+
+    /// Whether [`edit_message`] works (streaming edit-in-place). Default false.
+    fn supports_edit(&self) -> bool {
+        false
+    }
+
+    /// Replace the text of a previously sent message (must fit in one chunk).
+    async fn edit_message(&self, _chat: &str, _message_id: &str, _text: &str) -> SendResult {
+        SendResult::fail(
+            format!("{} does not support message edits", self.platform()),
+            false,
+        )
+    }
+
+    /// Delete a previously sent message (progress-bubble cleanup). Default
+    /// fails non-retryable; platforms with a delete API override it.
+    /// Best-effort at call sites — a failed delete never fails the turn.
+    async fn delete_message(&self, _chat: &str, _message_id: &str) -> SendResult {
+        SendResult::fail(
+            format!("{} does not support message deletion", self.platform()),
+            false,
+        )
+    }
+}
+
+/// Exponential reconnect backoff: 1s, 2s, 4s … capped at 60s.
+pub fn backoff_delay(attempt: u32) -> std::time::Duration {
+    let secs = 1u64.checked_shl(attempt.min(6)).unwrap_or(64).min(60);
+    std::time::Duration::from_secs(secs)
+}
+
+// ---------------------------------------------------------------------------
+// Inbound dedup: reconnect/RESUME redelivery guard (checked before authz).
+// ---------------------------------------------------------------------------
+
+/// How long a seen `(platform, chat, msg_id)` suppresses redelivery.
+pub const DEDUP_TTL_SECS: u64 = 3600;
+/// Upper bound on tracked ids; the oldest entry is evicted past this.
+pub const DEDUP_CAP: usize = 1000;
+
+/// Remembers recent inbound ids and reports repeats so the event-entry fn can
+/// drop them BEFORE authz/routing (no double-turns). Thread-agnostic by
+/// design: the key is chat-level, no thread-vs-chat split.
+pub struct InboundDedup {
+    ttl: std::time::Duration,
+    cap: usize,
+    seen: std::sync::Mutex<std::collections::HashMap<(String, String, String), std::time::Instant>>,
+}
+
+impl Default for InboundDedup {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InboundDedup {
+    pub fn new() -> Self {
+        Self::with_limits(std::time::Duration::from_secs(DEDUP_TTL_SECS), DEDUP_CAP)
+    }
+
+    pub fn with_limits(ttl: std::time::Duration, cap: usize) -> Self {
+        Self {
+            ttl,
+            cap: std::cmp::max(cap, 1),
+            seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// True when `(platform, chat, msg_id)` arrived within the TTL → drop it.
+    /// First sightings (and expired ones, re-admitted) return false.
+    pub fn is_duplicate(&self, platform: &str, chat: &str, msg_id: &str) -> bool {
+        let key = (platform.to_string(), chat.to_string(), msg_id.to_string());
+        let mut seen = self.seen.lock().unwrap();
+        if let Some(t) = seen.get(&key)
+            && t.elapsed() < self.ttl
+        {
+            return true;
+        }
+        seen.insert(key, std::time::Instant::now());
+        if seen.len() > self.cap {
+            // O(n) oldest scan, inbound-only at ~1000 entries; a heap if this ever matters
+            if let Some(oldest) = seen.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) {
+                seen.remove(&oldest);
+            }
+        }
+        false
+    }
+
+    /// Event-level helper for the inbound entry fn: unkeyed events (no
+    /// message id) can never be duplicates. Call BEFORE authz/routing.
+    pub fn is_duplicate_event(&self, ev: &MessageEvent) -> bool {
+        let Some(id) = ev.message_id.as_ref().or(ev.source.message_id.as_ref()) else {
+            return false;
+        };
+        self.is_duplicate(&ev.source.platform.to_string(), &ev.source.chat_id, id)
+    }
+}
+
+/// Count UTF-16 code units (Telegram/Discord limits are in utf16).
+pub fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+/// First ~80 bytes of `s` for log previews, never splitting a char.
+/// (`&s[..s.len().min(80)]` panics on multi-byte UTF-8 at the boundary.)
+pub fn preview_80(s: &str) -> &str {
+    &s[..s.floor_char_boundary(s.len().min(80))]
+}
+
+/// Shared token preamble: trim, reject empty/whitespace. Returns trimmed token.
+pub fn check_token_shape(token: &str, what: &str) -> anyhow::Result<String> {
+    let t = token.trim();
+    if t.is_empty() {
+        anyhow::bail!("{what} empty");
+    }
+    if t.contains(' ') || t.contains('\n') {
+        anyhow::bail!("{what} must not contain whitespace");
+    }
+    Ok(t.to_string())
+}
+
+/// Longest prefix of `s` whose utf16_len <= limit, without slicing a char.
+pub fn prefix_within_utf16_limit(s: &str, limit: usize) -> String {
+    if utf16_len(s) <= limit {
+        return s.to_string();
+    }
+    // Linear scan — max 39000 chars, negligible; correct for surrogate pairs.
+    let mut cur = String::new();
+    let mut cu = 0usize;
+    for c in s.chars() {
+        let cl = c.len_utf16();
+        if cu + cl > limit {
+            break;
+        }
+        cur.push(c);
+        cu += cl;
+    }
+    cur
+}
+
+/// Split text into chunks each <= max_utf16 (measured in utf16 units),
+/// preferring the last newline (then space) inside the window so code blocks
+/// and paragraphs stay readable. Falls back to a hard split when no boundary
+/// exists.
+pub fn split_message_smart(s: &str, max_utf16: usize) -> Vec<String> {
+    if max_utf16 == 0 || s.is_empty() {
+        return vec![];
+    }
+    if utf16_len(s) <= max_utf16 {
+        return vec![s.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut remaining = s;
+    while !remaining.is_empty() {
+        if utf16_len(remaining) <= max_utf16 {
+            out.push(remaining.to_string());
+            break;
+        }
+        let window = prefix_within_utf16_limit(remaining, max_utf16);
+        let mut cut = window.len();
+        // Only accept a soft boundary if it keeps at least half the window.
+        let min_keep = window.len() / 2;
+        if let Some(i) = window.rfind('\n').filter(|i| *i >= min_keep) {
+            cut = i + 1;
+        } else if let Some(i) = window.rfind(' ').filter(|i| *i >= min_keep) {
+            cut = i + 1;
+        }
+        if cut == 0 {
+            cut = remaining.chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+        }
+        out.push(remaining[..cut].to_string());
+        remaining = &remaining[cut..];
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utf16_len_ascii() {
+        assert_eq!(utf16_len("hello"), 5);
+    }
+
+    #[test]
+    fn utf16_len_emoji_is_two() {
+        // 😀 is outside BMP -> surrogate pair -> 2 units
+        assert_eq!(utf16_len("😀"), 2);
+        assert_eq!(utf16_len("a😀b"), 4);
+    }
+
+    #[test]
+    fn prefix_emoji_boundary() {
+        let s = "😀😀😀"; // 6 units
+        let p = prefix_within_utf16_limit(s, 3);
+        // can fit only 1 emoji (2 units) within 3
+        assert_eq!(utf16_len(&p), 2);
+        assert_eq!(p, "😀");
+    }
+
+    #[test]
+    fn preview_80_never_splits_char() {
+        assert_eq!(preview_80("hi"), "hi");
+        assert_eq!(preview_80(&"a".repeat(80)), "a".repeat(80));
+        // 79 ascii + emoji: byte 80 is mid-emoji, old `&s[..80]` panicked here
+        let s = "a".repeat(79) + "😀";
+        let p = preview_80(&s);
+        assert!(p.len() <= 80);
+        assert!(s.is_char_boundary(p.len()));
+        assert_eq!(p, "a".repeat(79));
+    }
+
+    #[test]
+    fn smart_split_prefers_newlines() {
+        let s = format!("{}\n{}", "a".repeat(60), "b".repeat(60));
+        let chunks = split_message_smart(&s, 100);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], format!("{}\n", "a".repeat(60)));
+        assert_eq!(chunks.concat(), s);
+        for c in &chunks {
+            assert!(utf16_len(c) <= 100);
+        }
+    }
+
+    #[test]
+    fn smart_split_hard_fallback_and_emoji() {
+        let s = "😀".repeat(10);
+        let chunks = split_message_smart(&s, 5);
+        assert_eq!(chunks.concat(), s);
+        for c in &chunks {
+            assert!(utf16_len(c) <= 5);
+        }
+        let s = "x".repeat(250);
+        assert_eq!(split_message_smart(&s, 100).len(), 3);
+    }
+
+    #[test]
+    fn backoff_caps() {
+        assert_eq!(backoff_delay(0).as_secs(), 1);
+        assert_eq!(backoff_delay(3).as_secs(), 8);
+        assert_eq!(backoff_delay(20).as_secs(), 60);
+    }
+
+    #[test]
+    fn dedup_suppresses_repeats() {
+        let d = InboundDedup::new();
+        assert!(!d.is_duplicate("telegram", "100", "1"));
+        assert!(d.is_duplicate("telegram", "100", "1"));
+        // Distinct keys pass.
+        assert!(!d.is_duplicate("telegram", "100", "2"));
+        assert!(!d.is_duplicate("telegram", "101", "1"));
+        assert!(!d.is_duplicate("discord", "100", "1"));
+    }
+
+    #[test]
+    fn dedup_expired_re_admitted() {
+        let d = InboundDedup::with_limits(std::time::Duration::from_secs(0), 1000);
+        assert!(!d.is_duplicate("telegram", "100", "1"));
+        // TTL 0 → everything is already expired, so repeats are re-admitted.
+        assert!(!d.is_duplicate("telegram", "100", "1"));
+    }
+
+    #[test]
+    fn dedup_bounded_evicts_oldest() {
+        let d = InboundDedup::with_limits(std::time::Duration::from_secs(3600), 2);
+        assert!(!d.is_duplicate("t", "c", "1"));
+        assert!(!d.is_duplicate("t", "c", "2"));
+        assert!(!d.is_duplicate("t", "c", "3")); // over cap → evicts oldest (m1)
+        assert!(!d.is_duplicate("t", "c", "1")); // m1 was evicted → treated as new
+    }
+}
