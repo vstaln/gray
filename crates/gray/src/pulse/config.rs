@@ -1,17 +1,16 @@
 use std::path::PathBuf;
 
+use gray_gateway::config::gray_home_dir;
 use serde::{Deserialize, Serialize};
 
-use crate::gray_home;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HeartbeatConfig {
+pub struct PulseConfig {
     pub enabled: bool,
     pub schedule: String,
     pub deliver: String,
 }
 
-impl Default for HeartbeatConfig {
+impl Default for PulseConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -22,19 +21,19 @@ impl Default for HeartbeatConfig {
 }
 
 pub fn config_path() -> anyhow::Result<PathBuf> {
-    Ok(gray_home()?.join("heartbeat.json"))
+    Ok(gray_home_dir()?.join("pulse.json"))
 }
 
-pub fn load_config() -> anyhow::Result<HeartbeatConfig> {
+pub fn load_config() -> anyhow::Result<PulseConfig> {
     let path = config_path()?;
     match std::fs::read_to_string(&path) {
         Ok(s) => Ok(serde_json::from_str(&s)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HeartbeatConfig::default()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PulseConfig::default()),
         Err(e) => Err(e.into()),
     }
 }
 
-pub fn save_config(cfg: &HeartbeatConfig) -> anyhow::Result<()> {
+pub fn save_config(cfg: &PulseConfig) -> anyhow::Result<()> {
     let path = config_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -49,11 +48,11 @@ mod tests {
 
     #[test]
     fn config_round_trips_and_defaults() {
-        let _guard = crate::ENV_LOCK.lock().unwrap();
+        let _guard = crate::pulse::ENV_LOCK.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("GRAY_HOME", dir.path()) };
         assert_eq!(load_config().unwrap().schedule, "every 30m");
-        let cfg = HeartbeatConfig {
+        let cfg = PulseConfig {
             enabled: true,
             schedule: "every 1h".into(),
             deliver: "telegram:1".into(),
