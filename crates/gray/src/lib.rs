@@ -9,7 +9,6 @@ pub mod logging;
 pub mod plugin_check;
 pub mod print;
 pub mod profile;
-pub mod pulse;
 pub mod repl;
 pub mod resume;
 pub mod setup;
@@ -49,8 +48,9 @@ to this default, Ctrl-X cancel). Deleting anything here disables nothing
 gray adds, because gray adds nothing.
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through a persistent bash shell, plus a `pulse` tool that sets a standing goal the gateway wakes you to work on. Use the shell to read, search, edit, and run things.
+You work through a single tool: a persistent bash shell. Use it to read, search, edit, and run things.
 Before working in a project, read its AGENTS.md / CLAUDE.md. When a task matches a skill, read the matching SKILL.md from the skill roots (e.g. ~/.gray/skills, ~/.agents/skills, ~/.claude/skills, and project .agents/skills).
+To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>" --deliver <target>` (manage with `gray cron list/show/remove`); the gateway daemon fires jobs and delivers results to chat. Have the job reply `[SILENT]` when there is nothing worth reporting.
 
 Guidelines:
 - Be concise.
@@ -176,9 +176,6 @@ pub async fn build_agent(
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
         extra_tools: vec![Arc::new(SkillTool)],
-        default_tools: vec![
-            Arc::new(crate::pulse::tool::PulseTool) as Arc<dyn gray_core::agent::Tool>
-        ],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -285,11 +282,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: CronCmd,
     },
-    /// Pulse: a standing goal run on a schedule by the gateway daemon
-    Pulse {
-        #[command(subcommand)]
-        cmd: PulseCmd,
-    },
     /// Send a one-shot chat message (no daemon needed; uses the gateway.yaml token)
     Send {
         /// Delivery target: <platform>[:chat[:thread]] (e.g. telegram:123)
@@ -349,33 +341,6 @@ pub enum CronCmd {
         /// Job id or name
         id: String,
     },
-}
-
-/// `gray pulse ...` — a standing goal run on a schedule by the gateway daemon.
-#[derive(Parser, Debug, Clone)]
-pub enum PulseCmd {
-    /// Turn the pulse on and create/refresh its cron job
-    On {
-        /// Schedule (e.g. "every 30m", "0 9 * * *")
-        #[arg(long)]
-        every: Option<String>,
-        /// Delivery target
-        #[arg(long)]
-        deliver: Option<String>,
-    },
-    /// Turn the pulse off (removes the cron job)
-    Off,
-    /// Show whether the pulse is enabled and its next run
-    Status,
-    /// Set the standing goal (words joined with spaces); omit to print it
-    Goal {
-        #[arg(trailing_var_arg = true)]
-        text: Vec<String>,
-    },
-    /// Re-render the cron job from the current goal and config
-    Sync,
-    /// Run as a gray sidecar plugin (NDJSON over stdio)
-    Plugin,
 }
 
 #[derive(Parser, Debug, Clone)]

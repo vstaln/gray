@@ -8,7 +8,6 @@
 
 use std::sync::Arc;
 
-use gray_core::agent::Tool;
 use gray_plugin::Plugin;
 
 pub use gray_plugin::builder::{
@@ -17,19 +16,12 @@ pub use gray_plugin::builder::{
 
 use crate::skills_tool::SkillTool;
 
-/// `tools-minimal` with the built-in default surface: bash + `pulse`.
-fn minimal_plugin() -> Arc<dyn Plugin> {
-    Arc::new(ToolsMinimalPlugin {
-        extra: vec![Arc::new(crate::pulse::tool::PulseTool) as Arc<dyn Tool>],
-    })
-}
-
 /// Builtin plugin catalog: what a `gray.yml` may name. The no-profile
 /// fallback is `tools-minimal` (see [`active_plugins`]); `tools-basic` and
 /// `tools-search` are opt-in.
 fn gray_defaults() -> Vec<Arc<dyn Plugin>> {
     vec![
-        minimal_plugin(),
+        Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsBasicPlugin {
             extra: vec![Arc::new(SkillTool)],
         }) as Arc<dyn Plugin>,
@@ -86,9 +78,9 @@ pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bo
     Ok(out)
 }
 
-/// The default builtin registry (no profile file): `tools-minimal` (bash + pulse).
+/// The default builtin registry (no profile file): `tools-minimal` only.
 pub fn builtin_registry() -> gray_tools::Registry {
-    from_plugins(&[minimal_plugin()]).0
+    from_plugins(&[Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>]).0
 }
 
 /// Builds the tool registry from the `gray.yml` profile plugin order,
@@ -101,16 +93,4 @@ pub async fn build_registry()
     let (plugins, fallback) = active_plugins().await?;
     let (registry, manifests) = from_plugins(&plugins);
     Ok((registry, manifests, fallback))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn builtin_registry_has_bash_and_pulse() {
-        let names = builtin_registry().tool_names();
-        assert!(names.iter().any(|n| n == "bash"), "{names:?}");
-        assert!(names.iter().any(|n| n == "pulse"), "{names:?}");
-    }
 }

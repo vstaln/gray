@@ -36,7 +36,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Any provider, your keys** | OpenRouter, DeepSeek, Groq, OpenAI, ollama, vLLM, LM Studio — anything OpenAI-compatible — plus OAuth sign-in for xAI/Grok and Codex/ChatGPT. Searchable model picker over the bundled models.dev catalog. |
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
-| **Bash + pulse, by default** | The default profile is a persistent `bash` shell plus a built-in `pulse` tool the agent uses to manage its own standing goal and schedule. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
+| **Bash only, by default** | The default profile is a single persistent `bash` shell — the mini-swe-agent / dsh `minimal` stance. The model schedules its own recurring work by running `gray cron add …` through bash. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
 | **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. Release binary; from source add `--features all-platforms`. |
 | **Extend the harness** | Skills from `SKILL.md`, or sidecar plugins over stdio (frozen wire v1). |
 
@@ -130,7 +130,7 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 
 Always-on: `gray gateway install` (systemd user service, `Restart=always`, survives reboot with linger) or `gray gateway run` under your own supervisor. `gray gateway status --probe` reports heartbeat health; heartbeats live in `~/.gray/state/gateway.heartbeat`, lifecycle in `state/gateway.lifecycle.json`, logs rotate at 10 MB × 3.
 
-**Pulse** — a standing goal the agent works on a cron schedule and reports to chat only when there is something to say. Configure with `gray pulse on --every 30m --deliver telegram:123`. See [docs/pulse.md](docs/pulse.md).
+**Scheduling** — the agent sets up recurring work for you: it runs `gray cron add "<schedule>" "<prompt>" --deliver <target>` through bash, and the gateway daemon fires the job and delivers the result to chat. Manage with `gray cron list/show/remove`; jobs that should stay quiet reply `[SILENT]`.
 
 <div align="center">
   <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />

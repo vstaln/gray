@@ -44,7 +44,6 @@ impl GatewayRunner {
             cwd,
             system_prompt: gray_plugin::builder::SystemPrompt::Literal(load_system_prompt()),
             extra_tools: Vec::new(),
-            default_tools: Vec::new(),
             host_handler: Some(host_handler),
             profile_path: "gray.yml".to_string(),
             abort_on_spawn_failure: false,

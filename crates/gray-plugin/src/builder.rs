@@ -65,14 +65,11 @@ impl Plugin for ToolsBasicPlugin {
     }
 }
 
-/// `tools-minimal`: the default surface — a persistent-shell tool plus any
-/// built-in surface extras (`extra`, e.g. gray's `PulseTool`). Mirrors dsh's
-/// `minimal` preset (one persistent shell, no editor/filesystem tool) and
-/// mini-swe-agent's bash-only bet. Everything else the model needs to
+/// `tools-minimal`: the default surface — exactly one persistent-shell tool.
+/// Mirrors dsh's `minimal` preset (one persistent shell, no editor/filesystem
+/// tool) and mini-swe-agent's bash-only bet. Everything the model needs to
 /// inspect/mutate files goes through `bash`.
-pub struct ToolsMinimalPlugin {
-    pub extra: Vec<Arc<dyn Tool>>,
-}
+pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
     fn manifest(&self) -> Manifest {
@@ -86,9 +83,7 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        let mut out: Vec<Arc<dyn Tool>> = vec![Arc::new(gray_tools::BashTool)];
-        out.extend(self.extra.iter().cloned());
-        out
+        vec![Arc::new(gray_tools::BashTool)]
     }
 }
 
@@ -630,8 +625,6 @@ pub struct BuilderOptions {
     pub system_prompt: SystemPrompt,
     /// Surface tools baked into `tools-basic` (gray: `SkillTool`).
     pub extra_tools: Vec<Arc<dyn Tool>>,
-    /// Built-in surface tools baked into `tools-minimal` (gray: `PulseTool`).
-    pub default_tools: Vec<Arc<dyn Tool>>,
     pub host_handler: Option<HostHandler>,
     pub profile_path: String,
     pub abort_on_spawn_failure: bool,
@@ -654,18 +647,15 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         cwd,
         system_prompt,
         extra_tools,
-        default_tools,
         host_handler,
         profile_path,
         abort_on_spawn_failure,
         wrap_executor,
     } = opts;
     // Catalog: any of these may be named in `gray.yml`. Fallback (no profile)
-    // is `tools-minimal` — bash plus any `default_tools`, the default surface.
+    // is `tools-minimal` — one persistent shell, gray's default surface.
     let defaults: Vec<Arc<dyn Plugin>> = vec![
-        Arc::new(ToolsMinimalPlugin {
-            extra: default_tools,
-        }) as Arc<dyn Plugin>,
+        Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsBasicPlugin { extra: extra_tools }) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
