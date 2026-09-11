@@ -50,7 +50,7 @@ gray adds, because gray adds nothing.
 You are gray, a minimal agent running on the user's machine.
 You work through a single tool: a persistent bash shell. Use it to read, search, edit, and run things.
 Before working in a project, read its AGENTS.md / CLAUDE.md. When a task matches a skill, read the matching SKILL.md from the skill roots (e.g. ~/.gray/skills, ~/.agents/skills, ~/.claude/skills, and project .agents/skills).
-To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>" --deliver <target>` (manage with `gray cron list/show/remove`); the gateway daemon fires jobs and delivers results to chat. Have the job reply `[SILENT]` when there is nothing worth reporting.
+To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Guidelines:
 - Be concise.
@@ -125,7 +125,7 @@ pub use gray_plugin::builder::{
 
 /// Builds the interactive [`gray_core::agent::Agent`]: thin surface wrapper
 /// over [`gray_plugin::builder::build_agent`] (the single profile-aware
-/// builder for REPL, `-p`, and gateway).
+/// builder for REPL and `-p`).
 ///
 /// Surface policy owned here: missing-model help text, `AGENTS.md` body,
 /// skills + context-file discovery, the `skill` tool default, and the
@@ -264,11 +264,6 @@ pub enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
-    Gateway {
-        #[command(subcommand)]
-        cmd: Option<GatewayCmd>,
-    },
     /// Plugin tools (conformance check)
     Plugin {
         #[command(subcommand)]
@@ -281,13 +276,6 @@ pub enum Commands {
     Cron {
         #[command(subcommand)]
         cmd: CronCmd,
-    },
-    /// Send a one-shot chat message (no daemon needed; uses the gateway.yaml token)
-    Send {
-        /// Delivery target: <platform>[:chat[:thread]] (e.g. telegram:123)
-        target: String,
-        /// Message text (words are joined with spaces)
-        text: Vec<String>,
     },
     /// Session store maintenance
     Sessions {
@@ -321,7 +309,7 @@ pub enum CronCmd {
         schedule: String,
         /// Prompt the daemon runs at fire time
         prompt: String,
-        /// Delivery target (default `local` = save-only): origin | local | <platform>[:chat[:thread]]
+        /// Delivery target, stored with the job (no delivery backend yet): origin | local | <target>
         #[arg(long)]
         deliver: Option<String>,
         /// Job name (default: prompt's first line, truncated)
@@ -340,33 +328,6 @@ pub enum CronCmd {
     Remove {
         /// Job id or name
         id: String,
-    },
-}
-
-#[derive(Parser, Debug, Clone)]
-pub enum GatewayCmd {
-    /// Run the gateway daemon (foreground)
-    Run,
-    /// Show gateway status
-    Status {
-        /// File-based health probe (heartbeat freshness), exit 0/1
-        #[arg(long)]
-        probe: bool,
-    },
-    /// Install systemd user service (gray-gateway.service)
-    Install,
-    /// Uninstall systemd service
-    Uninstall,
-    /// Print the OAuth2 invite URL for a platform (discord)
-    Invite {
-        /// Platform to invite (discord)
-        #[arg(default_value = "discord")]
-        platform: String,
-    },
-    /// Approve/deny chat pairing requests (bind the owner without editing gateway.yaml)
-    Pairing {
-        #[command(subcommand)]
-        cmd: PairingCmd,
     },
 }
 
@@ -411,31 +372,6 @@ pub enum PluginCmd {
     Check {
         /// Plugin directory (executable, plugin.sh, or single executable)
         dir: String,
-    },
-}
-
-/// `gray gateway pairing ...` — runtime owner binding without editing gateway.yaml.
-#[derive(Parser, Debug, Clone)]
-pub enum PairingCmd {
-    /// Approve a pending DM code (`pairing approve discord ABC12345`)
-    Approve {
-        /// Platform the code came from
-        platform: String,
-        /// Pairing code the user received
-        code: String,
-    },
-    /// Show pending + approved users (`pairing list [discord|all]`)
-    List {
-        /// Platform or `all`
-        #[arg(default_value = "all")]
-        platform: String,
-    },
-    /// Drop a user's approval
-    Revoke {
-        /// Platform
-        platform: String,
-        /// Approved user id
-        user: String,
     },
 }
 
@@ -518,14 +454,6 @@ mod tests {
             })
         ));
 
-        let cli = Cli::try_parse_from(["gray", "send", "telegram:123", "hello", "world"]).unwrap();
-        match cli.command {
-            Some(Commands::Send { target, text }) => {
-                assert_eq!(target, "telegram:123");
-                assert_eq!(text, vec!["hello".to_string(), "world".to_string()]);
-            }
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     #[test]
