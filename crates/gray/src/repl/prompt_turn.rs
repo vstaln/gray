@@ -46,13 +46,7 @@ pub(crate) async fn run_prompt_turn(
                             t.set_model(m.clone());
                         }
                         let model_str = config.model.as_deref().unwrap_or("default");
-                        let prov_name = crate::setup::load_catalog()
-                            .ok()
-                            .and_then(|c| {
-                                c.values()
-                                    .find(|p| p.base_url == config.base_url)
-                                    .map(|p| p.name.clone())
-                            })
+                        let prov_name = crate::setup::popular_provider_name(&config.base_url)
                             .unwrap_or_else(|| "provider".to_string());
                         t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
                         let _ = t.draw();
