@@ -294,6 +294,8 @@ pub struct Agent {
     pub(crate) tool_timeout: Duration,
     pub(crate) pending_steer: Vec<String>,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
+    pub(crate) turn_state: crate::turn_queue::TurnState,
+    pub(crate) next_turn_id: u64,
     pub(crate) context_window: Option<usize>,
 }
 
@@ -310,6 +312,8 @@ impl Agent {
             tool_timeout: Duration::from_secs(120),
             pending_steer: Vec::new(),
             hooks: Vec::new(),
+            turn_state: crate::turn_queue::TurnState::Idle,
+            next_turn_id: 1,
             context_window: None,
         }
     }
@@ -373,6 +377,51 @@ impl Agent {
     /// cancelling the [`ToolContext`] token, then calling this.
     pub fn steer(&mut self, s: String) {
         self.pending_steer.push(s);
+    }
+
+    /// Admit one input WITHOUT executing. Rejections mutate nothing.
+    pub fn submit(
+        &mut self,
+        input: Message,
+        mode: crate::turn_queue::SubmitMode,
+    ) -> crate::turn_queue::Submission {
+        use crate::turn_queue::{RejectReason, Submission, SubmitMode, TurnState, is_empty_input};
+        if is_empty_input(&input) {
+            return Submission::NotSubmitted(RejectReason::EmptyInput);
+        }
+        match (mode, self.turn_state) {
+            (_, TurnState::Idle) => {
+                let turn_id = self.next_turn_id;
+                self.next_turn_id += 1;
+                self.messages.push(input);
+                Submission::Started { turn_id }
+            }
+            (SubmitMode::StartOrSteer, TurnState::Busy { turn_id }) => {
+                self.pending_steer.push(input.context_text());
+                Submission::Steered { turn_id }
+            }
+            (SubmitMode::StartIfIdle, TurnState::Busy { turn_id }) => {
+                Submission::NotSubmitted(RejectReason::NotIdle { turn_id })
+            }
+        }
+    }
+
+    /// Live turn id, if a turn is executing.
+    pub fn current_turn(&self) -> Option<u64> {
+        match self.turn_state {
+            crate::turn_queue::TurnState::Idle => None,
+            crate::turn_queue::TurnState::Busy { turn_id } => Some(turn_id),
+        }
+    }
+
+    /// Releases a turn whose future was dropped instead of awaited. The
+    /// REPL preempts on Ctrl-C by dropping `run_streaming` inside an
+    /// outer `select!`, so the `Idle` reset at the end of `run` never
+    /// executes — without this, every later submit degrades to `Steered`
+    /// into a turn that never runs (instant no-op turns, stale usage).
+    /// Idempotent: safe on an already-idle agent.
+    pub fn abort_turn(&mut self) {
+        self.turn_state = crate::turn_queue::TurnState::Idle;
     }
 
     /// Read-only view of the accumulated conversation so far.
@@ -1163,22 +1212,67 @@ mod agent_tests {
         );
     }
 
+    /// Provider that never yields: the turn stays inside `run_inner` until
+    /// the caller drops its future (what the REPL does on Ctrl-C).
+    struct PendingProvider;
+
+    #[async_trait]
+    impl Provider for PendingProvider {
+        fn stream(&self, _req: ChatRequest) -> ProviderStream {
+            Box::pin(futures::stream::pending())
+        }
+    }
+
     #[tokio::test]
-    async fn empty_input_run_is_noop_without_touching_history() {
-        // The turn-admission seam is gone; the empty-input gate lives in
-        // run/run_streaming directly. Blank input must not reach the
-        // provider or mutate history.
+    async fn dropped_turn_future_blocks_admission_until_abort() {
+        // Regression: the REPL preempts a turn by dropping its
+        // `run_streaming` future (outer `select!` on the cancel token), so
+        // the `Idle` reset at the end of `run` never executes. Admission
+        // must be recoverable via `abort_turn`, or every later prompt
+        // degrades to an instant no-op steer (ms footer, stale tokens).
+        //
+        // NOTE: this drops the live future directly instead of racing a
+        // cancel token through `select!` — the inner stream loop has its
+        // own cancel arm, so a raced token resolves either way
+        // nondeterministically. The drop is what the outer arm does when
+        // it wins that race (e.g. preemption during tool execution, where
+        // the inner arm isn't on the stack).
+        use crate::turn_queue::{Submission, SubmitMode};
         let mut agent = Agent::new(
-            Box::new(FakeProvider::new(vec![])),
+            Box::new(PendingProvider),
             Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
-        agent.messages.push(Message::user("prior"));
-        let events = agent
-            .run(Message::user("   "), ToolContext::default())
-            .await
-            .expect("empty input must not error");
-        assert!(events.is_empty());
-        assert_eq!(agent.messages.len(), 1, "rejection must not record");
+        let mut on_event = |_: &AgentEvent| {};
+        let mut run_future = Box::pin(agent.run_streaming(
+            Message::user("hi"),
+            ToolContext::default(),
+            &mut on_event,
+        ));
+        // Park the turn inside its provider poll, then drop it mid-turn.
+        futures::future::poll_fn(|cx| {
+            use futures::FutureExt as _;
+            let _ = run_future.poll_unpin(cx);
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(run_future);
+        // The dropped future never reset its admission flag...
+        assert!(
+            matches!(
+                agent.submit(Message::user("next"), SubmitMode::StartOrSteer),
+                Submission::Steered { .. }
+            ),
+            "dropped turn must leave admission busy (the trap)"
+        );
+        // ...until the preempting layer releases it.
+        agent.abort_turn();
+        assert!(
+            matches!(
+                agent.submit(Message::user("next"), SubmitMode::StartOrSteer),
+                Submission::Started { .. }
+            ),
+            "abort_turn must restore admission"
+        );
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ pub mod parallel;
 pub mod questions;
 pub mod redaction;
 pub mod tool_out;
+pub mod turn_queue;
 
 pub use agent::{
     Agent, CommandOutcome, PluginCommand, PluginHooks, Provider, ProviderError, ProviderStream,
