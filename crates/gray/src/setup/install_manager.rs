@@ -1,17 +1,69 @@
-//! Interactive `/plugins` manager modal: toggle/uninstall installed plugins,
-//! plus a read-only Errors tab fed by `gray_pkg::errors`.
+//! Interactive install-manager modal backing `/skills` and `/plugins`:
+//! navigate installed items, two-press `u`/`Delete` uninstalls, plus a
+//! read-only Errors tab fed by `gray_pkg::errors`.
 //!
-//! Sync modal returning whether anything changed, mirroring the
-//! `permissions_modal` chrome with the effort-modal toggle-stays-open
-//! pattern (Enter/Space flips `enabled` via `gray_pkg::ops` and re-reads).
-//! Tab rendering goes through the shared [`super::tabs`] scaffolding so the
-//! Task 6 store reuses the same code path.
+//! The two managers were ~85% identical (same chrome, tabs, keys, confirm
+//! flow), so they share one parameterized loop ([`run_install_manager`]).
+//! Only what differs lives in [`ManagerSpec`] plus the per-manager
+//! list/remove/toggle closures: title, empty hint, error verb, whether
+//! Enter/Space toggles, and whether a failed re-list after an op keeps the
+//! stale list (plugins) or clears it (skills). Sync modal returning whether
+//! anything changed.
 
 use super::tabs::{Tab, tab_segments};
 use super::*;
 
 use gray_pkg::errors::ErrorEntry;
 use gray_pkg::ops::LockEntry;
+use gray_pkg::skills_ops::InstalledSkill;
+
+/// One installed row in the manager's own display terms.
+pub(crate) struct ManagerItem {
+    pub name: String,
+    pub row: String,
+    /// Lit rows render white; dim rows (disabled plugins) render dim.
+    pub lit: bool,
+    /// Current toggle state; only read when the spec supports toggling.
+    pub enabled: bool,
+}
+
+/// The only axes the skills and plugins managers differ on.
+pub(crate) struct ManagerSpec {
+    pub title: &'static str,
+    pub empty_hint: &'static str,
+    /// Verb prefix for the op-error line: "remove failed" / "toggle failed".
+    pub error_verb: &'static str,
+    pub supports_toggle: bool,
+    /// After a successful op, when re-listing fails: keep the stale list
+    /// (plugins) or clear it (skills).
+    pub keep_stale_on_relist_error: bool,
+}
+
+const SKILLS_SPEC: ManagerSpec = ManagerSpec {
+    title: "Skills",
+    empty_hint: "no skills installed — /marketplace to browse",
+    error_verb: "remove failed",
+    supports_toggle: false,
+    keep_stale_on_relist_error: false,
+};
+
+const PLUGINS_SPEC: ManagerSpec = ManagerSpec {
+    title: "Plugins",
+    empty_hint: "no plugins installed — /plugin install <spec>",
+    error_verb: "toggle failed",
+    supports_toggle: true,
+    keep_stale_on_relist_error: true,
+};
+
+/// Pure row renderer: `name version [source]`, version omitted when empty
+/// (hand-placed skills without an origin sidecar).
+pub(crate) fn format_skill_row(skill: &InstalledSkill) -> String {
+    if skill.version.trim().is_empty() {
+        format!("{} [{}]", skill.name, skill.source)
+    } else {
+        format!("{} {} [{}]", skill.name, skill.version, skill.source)
+    }
+}
 
 /// Display label for a lockfile ecosystem: known sources get friendly
 /// names, anything else shows the raw ecosystem string.
@@ -45,10 +97,69 @@ pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
     format!("{} {}: {}", entry.source, entry.item, entry.message)
 }
 
+/// Bare `/skills` manager: navigate installed skills, `u`/`Delete`
+/// two-press uninstalls via `skills_ops::remove`. Returns true when
+/// anything changed (uninstall or errors cleared).
+pub fn run_skills_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
+    run_install_manager(
+        bg,
+        &SKILLS_SPEC,
+        || {
+            gray_pkg::skills_ops::list().ok().map(|skills| {
+                skills
+                    .iter()
+                    .map(|skill| ManagerItem {
+                        name: skill.name.clone(),
+                        row: format_skill_row(skill),
+                        lit: true,
+                        enabled: true,
+                    })
+                    .collect()
+            })
+        },
+        gray_pkg::skills_ops::remove,
+        // Never called: the skills manager is remove-only.
+        |_, _| Ok(()),
+    )
+}
+
 /// Bare `/plugin` picker: navigate installed plugins, Enter/Space toggles
 /// `enabled` and stays open. Returns true when anything changed (toggle,
 /// uninstall, or errors cleared).
 pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
+    run_install_manager(
+        bg,
+        &PLUGINS_SPEC,
+        || {
+            gray_pkg::ops::list().ok().map(|entries| {
+                entries
+                    .keys()
+                    .map(|name| {
+                        let entry = entries.get(name);
+                        ManagerItem {
+                            row: entry
+                                .map(|entry| format_plugin_row(name, entry))
+                                .unwrap_or_else(|| name.clone()),
+                            lit: entry.map(|entry| entry.enabled).unwrap_or(true),
+                            enabled: entry.map(|entry| entry.enabled).unwrap_or(true),
+                            name: name.clone(),
+                        }
+                    })
+                    .collect()
+            })
+        },
+        gray_pkg::ops::remove,
+        gray_pkg::ops::set_enabled,
+    )
+}
+
+pub(crate) fn run_install_manager(
+    bg: Option<&BackgroundSnapshot>,
+    spec: &ManagerSpec,
+    load: impl Fn() -> Option<Vec<ManagerItem>>,
+    remove: impl Fn(&str) -> anyhow::Result<()>,
+    set_enabled: impl Fn(&str, bool) -> anyhow::Result<()>,
+) -> anyhow::Result<bool> {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll, read};
     use crossterm::terminal::EnterAlternateScreen;
     use ratatui::Terminal;
@@ -59,16 +170,25 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
     use ratatui::widgets::{Block, Clear, Paragraph};
     use std::time::Duration;
 
-    let mut entries = gray_pkg::ops::list().unwrap_or_default();
-    let mut names: Vec<String> = entries.keys().cloned().collect();
+    let mut items = load().unwrap_or_default();
     let mut error_entries = gray_pkg::errors::list();
     let mut tab = Tab::Installed;
     let mut sel = 0usize;
     let mut changed = false;
-    let mut toggle_err: Option<String> = None;
+    let mut op_err: Option<String> = None;
     // Armed uninstall confirm: first `u` arms, second `u` on the same entry
     // removes it.
     let mut pending_remove: Option<String> = None;
+
+    // Refresh after a successful op; a failed re-list keeps the stale list
+    // or clears it depending on the spec.
+    let relist = |items: &mut Vec<ManagerItem>| {
+        if let Some(fresh) = load() {
+            *items = fresh;
+        } else if !spec.keep_stale_on_relist_error {
+            *items = Vec::new();
+        }
+    };
 
     let _session = TuiSession::acquire()?;
     let mut stdout_handle = std::io::stdout();
@@ -104,7 +224,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                 let inner_w = modal_w.saturating_sub(pad_x * 2);
                 // Row count of the active tab (empty states render one line).
                 let tab_count = match tab {
-                    Tab::Installed => names.len(),
+                    Tab::Installed => items.len(),
                     Tab::Errors => error_entries.len(),
                 };
                 let rows = tab_count.max(1) as u16;
@@ -125,7 +245,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                 );
                 let inner_h = modal_h.saturating_sub(2);
                 let inner = Rect::new(modal_x + pad_x, modal_y + 1, inner_w, inner_h);
-                let title_str = "Plugins";
+                let title_str = spec.title;
                 let esc_str = "esc";
                 let pad_len = (inner.width as usize)
                     .saturating_sub(title_str.chars().count() + esc_str.chars().count());
@@ -190,9 +310,9 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                 let mut cur_y = inner.y + 2;
                 let bottom = inner.y + inner_h;
                 let footer_y = (inner.y + inner_h).saturating_sub(1);
-                // Reserve the line above the footer for a toggle error or an
+                // Reserve the line above the footer for an op error or an
                 // armed uninstall confirm, if any.
-                let rows_cap = if toggle_err.is_some() || pending_remove.is_some() {
+                let rows_cap = if op_err.is_some() || pending_remove.is_some() {
                     footer_y.saturating_sub(1).max(inner.y + 2)
                 } else {
                     bottom
@@ -200,26 +320,19 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                 // Row texts + lit flag (installed rows dim when disabled)
                 // for the active tab; one shared render loop below.
                 let tab_rows: Vec<(String, bool)> = match tab {
-                    Tab::Installed => names
+                    Tab::Installed => items
                         .iter()
-                        .map(|name| {
-                            let text = entries
-                                .get(name)
-                                .map(|e| format_plugin_row(name, e))
-                                .unwrap_or_else(|| name.clone());
-                            let lit = entries.get(name).map(|e| e.enabled).unwrap_or(true);
-                            (text, lit)
-                        })
+                        .map(|item| (item.row.clone(), item.lit))
                         .collect(),
                     Tab::Errors => error_entries
                         .iter()
-                        .map(|e| (format_error_row(e), true))
+                        .map(|entry| (format_error_row(entry), true))
                         .collect(),
                 };
                 if tab_rows.is_empty() {
                     if cur_y < rows_cap {
                         let text = match tab {
-                            Tab::Installed => "no plugins installed — /plugin install <spec>",
+                            Tab::Installed => spec.empty_hint,
                             Tab::Errors => "no errors recorded",
                         };
                         let fill = (inner.width as usize).saturating_sub(text.chars().count());
@@ -263,10 +376,10 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                         cur_y += 1;
                     }
                 }
-                if let Some(msg) = toggle_err.as_deref() {
+                if let Some(msg) = op_err.as_deref() {
                     let err_y = footer_y.saturating_sub(1);
                     if err_y > inner.y + 1 {
-                        let text: String = format!("toggle failed: {msg}")
+                        let text: String = format!("{}: {msg}", spec.error_verb)
                             .chars()
                             .take(inner.width as usize)
                             .collect();
@@ -309,7 +422,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     }
                 }
                 let footer_line = match tab {
-                    Tab::Installed => Line::from(vec![
+                    Tab::Installed if spec.supports_toggle => Line::from(vec![
                         Span::styled(
                             "↑↓ ",
                             Style::default()
@@ -326,6 +439,40 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                                 .bg(box_bg),
                         ),
                         Span::styled("toggle · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "u ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("remove · ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Tab ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("· ", Style::default().fg(text_dim).bg(box_bg)),
+                        Span::styled(
+                            "Esc ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("close", Style::default().fg(text_dim).bg(box_bg)),
+                    ]),
+                    Tab::Installed => Line::from(vec![
+                        Span::styled(
+                            "↑↓ ",
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                                .bg(box_bg),
+                        ),
+                        Span::styled("nav · ", Style::default().fg(text_dim).bg(box_bg)),
                         Span::styled(
                             "u ",
                             Style::default()
@@ -438,7 +585,7 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     KeyCode::Down | KeyCode::Char('j') => {
                         pending_remove = None;
                         let max = match tab {
-                            Tab::Installed => names.len(),
+                            Tab::Installed => items.len(),
                             Tab::Errors => error_entries.len(),
                         }
                         .saturating_sub(1);
@@ -446,55 +593,56 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
                     }
                     KeyCode::Esc => return Ok(changed),
                     KeyCode::Enter | KeyCode::Char(' ') => {
-                        pending_remove = None;
-                        if tab != Tab::Installed {
-                            // Errors tab is read-only.
+                        if !spec.supports_toggle {
+                            // Manager is remove-only: Enter/Space never run
+                            // anything (no toggle like the plugins manager).
+                            pending_remove = None;
                         } else {
-                            if names.is_empty() {
-                                return Ok(changed);
-                            }
-                            let name = names[sel].clone();
-                            let enabled = entries.get(&name).map(|e| e.enabled).unwrap_or(true);
-                            match gray_pkg::ops::set_enabled(&name, !enabled) {
-                                Ok(()) => {
-                                    changed = true;
-                                    toggle_err = None;
-                                    // Re-read and stay open (toggle-stays-open pattern);
-                                    // entries only ever come from a fresh list().
-                                    if let Ok(fresh) = gray_pkg::ops::list() {
-                                        entries = fresh;
-                                        names = entries.keys().cloned().collect();
+                            pending_remove = None;
+                            if tab != Tab::Installed {
+                                // Errors tab is read-only.
+                            } else {
+                                if items.is_empty() {
+                                    return Ok(changed);
+                                }
+                                let name = items[sel].name.clone();
+                                let enabled =
+                                    items.get(sel).map(|item| item.enabled).unwrap_or(true);
+                                match set_enabled(&name, !enabled) {
+                                    Ok(()) => {
+                                        changed = true;
+                                        op_err = None;
+                                        // Re-read and stay open (toggle-stays-open pattern);
+                                        // items only ever come from a fresh list().
+                                        relist(&mut items);
+                                    }
+                                    Err(e) => {
+                                        op_err = Some(format!("{e:#}"));
                                     }
                                 }
-                                Err(e) => {
-                                    toggle_err = Some(format!("{e:#}"));
-                                }
+                                sel = sel.min(items.len().saturating_sub(1));
                             }
-                            sel = sel.min(names.len().saturating_sub(1));
                         }
                     }
                     KeyCode::Char('u') | KeyCode::Delete => {
-                        if tab == Tab::Installed && !names.is_empty() {
-                            let name = names[sel].clone();
+                        if tab == Tab::Installed && !items.is_empty() {
+                            let name = items[sel].name.clone();
                             if pending_remove.as_deref() == Some(name.as_str()) {
-                                match gray_pkg::ops::remove(&name) {
+                                match remove(&name) {
                                     Ok(()) => {
                                         changed = true;
-                                        toggle_err = None;
+                                        op_err = None;
                                         pending_remove = None;
-                                        if let Ok(fresh) = gray_pkg::ops::list() {
-                                            entries = fresh;
-                                            names = entries.keys().cloned().collect();
-                                        }
+                                        relist(&mut items);
                                     }
                                     Err(e) => {
-                                        toggle_err = Some(format!("{e:#}"));
+                                        op_err = Some(format!("{e:#}"));
                                         pending_remove = None;
                                     }
                                 }
-                                sel = sel.min(names.len().saturating_sub(1));
+                                sel = sel.min(items.len().saturating_sub(1));
                             } else {
-                                toggle_err = None;
+                                op_err = None;
                                 pending_remove = Some(name);
                             }
                         }
@@ -518,9 +666,36 @@ pub fn run_plugins_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool
 
 #[cfg(test)]
 mod tests {
-    use super::{format_error_row, format_plugin_row};
+    use super::{format_error_row, format_plugin_row, format_skill_row};
     use gray_pkg::errors::ErrorEntry;
     use gray_pkg::ops::LockEntry;
+    use gray_pkg::skills_ops::{InstalledSkill, SkillOrigin};
+
+    fn installed(name: &str, version: &str, source: &str) -> InstalledSkill {
+        InstalledSkill {
+            name: name.to_string(),
+            version: version.to_string(),
+            source: source.to_string(),
+            origin: None,
+        }
+    }
+
+    fn with_origin() -> InstalledSkill {
+        InstalledSkill {
+            name: "demo-skill".to_string(),
+            version: "1.2.3".to_string(),
+            source: "clawhub".to_string(),
+            origin: Some(SkillOrigin {
+                version: 1,
+                registry: "clawhub".to_string(),
+                slug: "demo-skill".to_string(),
+                owner: "arein".to_string(),
+                installed_version: "1.2.3".to_string(),
+                installed_at: "0".to_string(),
+                source_url: "https://clawhub.ai/arein/skills/demo-skill".to_string(),
+            }),
+        }
+    }
 
     fn entry(ecosystem: &str, enabled: bool) -> LockEntry {
         LockEntry {
@@ -529,6 +704,89 @@ mod tests {
             scope: "user".to_string(),
             enabled,
             ..LockEntry::default()
+        }
+    }
+
+    #[test]
+    fn manager_specs_differ_only_where_expected() {
+        // Contract pin: the two managers share one loop; any new divergence
+        // must update this test deliberately.
+        let skills = &super::SKILLS_SPEC;
+        assert_eq!(skills.title, "Skills");
+        assert_eq!(
+            skills.empty_hint,
+            "no skills installed — /marketplace to browse"
+        );
+        assert_eq!(skills.error_verb, "remove failed");
+        assert!(!skills.supports_toggle);
+        assert!(!skills.keep_stale_on_relist_error);
+
+        let plugins = &super::PLUGINS_SPEC;
+        assert_eq!(plugins.title, "Plugins");
+        assert_eq!(
+            plugins.empty_hint,
+            "no plugins installed — /plugin install <spec>"
+        );
+        assert_eq!(plugins.error_verb, "toggle failed");
+        assert!(plugins.supports_toggle);
+        assert!(plugins.keep_stale_on_relist_error);
+    }
+
+    #[test]
+    fn row_shows_name_version_and_source() {
+        assert_eq!(
+            format_skill_row(&installed("demo-skill", "1.2.3", "clawhub")),
+            "demo-skill 1.2.3 [clawhub]"
+        );
+    }
+
+    #[test]
+    fn row_omits_empty_version_for_hand_placed_skills() {
+        assert_eq!(
+            format_skill_row(&installed("local-skill", "", "local")),
+            "local-skill [local]"
+        );
+    }
+
+    #[test]
+    fn row_shows_origin_version_when_known() {
+        // `list()` carries the origin version in `version`; the row shows it.
+        let skill = with_origin();
+        let row = format_skill_row(&skill);
+        assert!(row.contains("demo-skill 1.2.3 [clawhub]"), "row: {row:?}");
+        let origin = skill.origin.as_ref().expect("origin");
+        assert_eq!(origin.installed_version, "1.2.3");
+    }
+
+    #[test]
+    fn error_row_matches_plugins_format() {
+        let row = format_skill_row(&installed("x", "0.0.0", "local"));
+        assert_eq!(row, "x 0.0.0 [local]");
+        let err = format_error_row(&ErrorEntry {
+            ts_secs: 0,
+            source: "skills".to_string(),
+            item: "demo".to_string(),
+            message: "boom".to_string(),
+        });
+        assert_eq!(err, "skills demo: boom");
+    }
+
+    #[test]
+    fn error_row_holds_for_varied_entries() {
+        // The old skills modal delegated to the plugins formatter; the
+        // single shared renderer must keep parity for any input.
+        for (source, item, message) in [
+            ("skills", "demo", "boom"),
+            ("index", "some-plugin", "fetch failed: 404"),
+            ("registry", "", ""),
+        ] {
+            let row = format_error_row(&ErrorEntry {
+                ts_secs: 0,
+                source: source.to_string(),
+                item: item.to_string(),
+                message: message.to_string(),
+            });
+            assert_eq!(row, format!("{source} {item}: {message}"));
         }
     }
 
@@ -567,5 +825,21 @@ mod tests {
             message: "boom".to_string(),
         });
         assert_eq!(row, "index demo: boom");
+    }
+
+    #[test]
+    fn enabled_row_exact_string() {
+        assert_eq!(
+            format_plugin_row("demo", &entry("gray-native", true)),
+            "✓ demo 1.2.3 (user) [Gray Index]"
+        );
+    }
+
+    #[test]
+    fn disabled_row_exact_string() {
+        assert_eq!(
+            format_plugin_row("demo", &entry("pi-gallery", false)),
+            "○ demo 1.2.3 (user) [Pi Gallery (preview)] [disabled]"
+        );
     }
 }
