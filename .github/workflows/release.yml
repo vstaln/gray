@@ -91,21 +91,12 @@ jobs:
           GRAY_CHANNEL: ${{ steps.meta.outputs.channel }}
         shell: bash
         run: |
-          # all-platforms: the default build stubs the Telegram/Discord/Slack
-          # adapters; the released binary must carry them or the advertised
-          # gateway crash-loops on "not compiled" (audit B1).
+          # Single binary. No gateway features exist anymore.
           if [ "${{ matrix.plat }}" = "aarch64-linux" ]; then
-            cross build --release -p gray --features all-platforms --target ${{ matrix.target }}
+            cross build --release -p gray --target ${{ matrix.target }}
           else
-            cargo build --release -p gray --features all-platforms --target ${{ matrix.target }}
+            cargo build --release -p gray --target ${{ matrix.target }}
           fi
-
-      - name: release build must carry gateway adapters
-        if: matrix.plat == 'x86_64-linux'
-        run: |
-          cargo tree -p gray --features all-platforms -e normal \
-            | grep -Eq 'teloxide|twilight-gateway|slack-morphism' \
-            || { echo "::error::release binary would ship stub adapters"; exit 1; }
 
       - name: smoke test (native platforms)
         if: matrix.plat == 'x86_64-linux' || matrix.plat == 'aarch64-darwin'
