@@ -21,18 +21,6 @@ use crate::registry::AgentSpec;
 pub const SESSION_START_TIMEOUT: Duration = Duration::from_secs(90);
 pub const PROMPT_TIMEOUT: Duration = Duration::from_secs(600);
 
-pub trait PermissionPrompt: Send + Sync {
-    fn ask(&self, tool_call_title: &str, options: Vec<String>) -> Option<String>;
-}
-
-pub struct DenyAllPrompt;
-
-impl PermissionPrompt for DenyAllPrompt {
-    fn ask(&self, _tool_call_title: &str, _options: Vec<String>) -> Option<String> {
-        None
-    }
-}
-
 /// Aborts the task on drop: cancellation watchers must not outlive the
 /// turn that spawned them.
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -48,7 +36,6 @@ pub struct AcpSessionOptions {
     pub cwd: PathBuf,
     pub resume_session_id: Option<String>,
     pub auto_approve: bool,
-    pub permission_prompt: Arc<dyn PermissionPrompt>,
     pub display: String,
 }
 
@@ -63,13 +50,11 @@ fn agent_transport(spec: &AgentSpec) -> AcpAgent {
 fn answer_permission(
     req: RequestPermissionRequest,
     auto_approve: bool,
-    prompt: &Arc<dyn PermissionPrompt>,
     responder: Responder<RequestPermissionResponse>,
 ) -> Result<(), agent_client_protocol::Error> {
     use agent_client_protocol::schema::v1::PermissionOptionKind;
     // Option IDs are opaque: choose by kind, never by ID string. Prefer the
     // narrowest allow; unknown/unrepresentable outcomes deny.
-    let title = req.tool_call.tool_call_id.0.to_string();
     let option_ids: Vec<String> = req
         .options
         .iter()
@@ -86,7 +71,8 @@ fn answer_permission(
             })
             .map(|o| o.option_id.0.to_string())
     } else {
-        prompt.as_ref().ask(&title, option_ids.clone())
+        // No interactive prompt exists: every caller denied, so deny here.
+        None
     };
     let chosen = chosen.filter(|id| option_ids.contains(id));
     match chosen {
@@ -137,7 +123,6 @@ fn guard_path(cwd: &std::path::Path, path: &std::path::Path) -> Result<PathBuf, 
 
 fn client_builder(
     auto_approve: bool,
-    prompt_impl: Arc<dyn PermissionPrompt>,
     updates: tokio::sync::mpsc::UnboundedSender<gray_core::event::AgentEvent>,
     cwd: PathBuf,
 ) -> Builder<
@@ -172,9 +157,8 @@ fn client_builder(
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            move |req: RequestPermissionRequest, responder, _cx| {
-                let prompt_impl = prompt_impl.clone();
-                async move { answer_permission(req, auto_approve, &prompt_impl, responder) }
+            move |req: RequestPermissionRequest, responder, _cx| async move {
+                answer_permission(req, auto_approve, responder)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -351,9 +335,7 @@ pub struct AcpSession {
     spec: AgentSpec,
     display: String,
     session_id: String,
-    usage_text: Option<String>,
     auto_approve: bool,
-    permission_prompt: Arc<dyn PermissionPrompt>,
     cwd: PathBuf,
     cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -389,7 +371,6 @@ impl AcpSession {
         let spec = spec;
         let cwd = opts.cwd.clone();
         let resume = opts.resume_session_id.clone();
-        let prompt_impl = opts.permission_prompt.clone();
         let auto_approve = opts.auto_approve;
         let (updates_tx, _updates_rx) =
             tokio::sync::mpsc::unbounded_channel::<gray_core::event::AgentEvent>();
@@ -397,19 +378,18 @@ impl AcpSession {
         let spec_for_connect = spec.clone();
         let cwd_for_connect = cwd.clone();
         let cwd_for_builder = cwd.clone();
-        let run = client_builder(auto_approve, prompt_impl, updates_tx, cwd_for_builder)
-            .connect_with(
-                agent_transport(&spec_for_connect),
-                |conn: ConnectionTo<agent_client_protocol::Agent>| async move {
-                    let (_session, session_id) = open_session(&conn, cwd_for_connect, resume, None)
-                        .await
-                        .map_err(|e| {
-                            agent_client_protocol::Error::internal_error()
-                                .data(serde_json::json!(e.to_string()))
-                        })?;
-                    Ok(session_id)
-                },
-            );
+        let run = client_builder(auto_approve, updates_tx, cwd_for_builder).connect_with(
+            agent_transport(&spec_for_connect),
+            |conn: ConnectionTo<agent_client_protocol::Agent>| async move {
+                let (_session, session_id) = open_session(&conn, cwd_for_connect, resume, None)
+                    .await
+                    .map_err(|e| {
+                        agent_client_protocol::Error::internal_error()
+                            .data(serde_json::json!(e.to_string()))
+                    })?;
+                Ok(session_id)
+            },
+        );
 
         let session_id = tokio::time::timeout(SESSION_START_TIMEOUT, run)
             .await
@@ -420,9 +400,7 @@ impl AcpSession {
             spec,
             display,
             session_id,
-            usage_text: None,
             auto_approve: opts.auto_approve,
-            permission_prompt: opts.permission_prompt,
             cwd: opts.cwd,
             cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
@@ -438,10 +416,6 @@ impl AcpSession {
 
     pub fn agent_display(&self) -> &str {
         &self.display
-    }
-
-    pub fn usage_text(&self) -> Option<&str> {
-        self.usage_text.as_deref()
     }
 
     /// Whether this session auto-approves permission requests
@@ -473,70 +447,68 @@ impl AcpSession {
         let resume = Some(self.session_id.clone());
         let text = text.to_string();
         let auto_approve = self.auto_approve;
-        let prompt_impl = self.permission_prompt.clone();
         let (updates_tx, mut updates_rx) =
             tokio::sync::mpsc::unbounded_channel::<gray_core::event::AgentEvent>();
 
         let cwd_for_builder = cwd.clone();
-        let driver = client_builder(auto_approve, prompt_impl, updates_tx, cwd_for_builder)
-            .connect_with(
-                agent_transport(&spec),
-                |conn: ConnectionTo<agent_client_protocol::Agent>| async move {
-                    let err = |method: &'static str, message: String| {
-                        agent_client_protocol::Error::internal_error()
-                            .data(serde_json::json!(format!("{method}: {message}")))
-                    };
-                    let (mut session, opened_id) = open_session(&conn, cwd, resume, None)
-                        .await
-                        .map_err(|e| err("session/new", e.to_string()))?;
-                    let cancel_conn = conn.clone();
-                    let cancel_flag_spawn = cancel_flag.clone();
-                    let sid = session.session_id().clone();
-                    // Scoped to this turn: abort on prompt completion instead
-                    // of polling forever on success.
-                    let _cancel_task = AbortOnDrop(tokio::spawn(async move {
-                        loop {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            if cancel_flag_spawn.load(std::sync::atomic::Ordering::SeqCst) {
-                                let _ = cancel_conn
-                                    .send_notification(CancelNotification::new(sid.clone()));
-                                break;
-                            }
-                        }
-                    }));
-                    session
-                        .send_prompt(text)
-                        .map_err(|e| err("session/prompt", e.to_string()))?;
-                    let mapper = EventMapper::new();
+        let driver = client_builder(auto_approve, updates_tx, cwd_for_builder).connect_with(
+            agent_transport(&spec),
+            |conn: ConnectionTo<agent_client_protocol::Agent>| async move {
+                let err = |method: &'static str, message: String| {
+                    agent_client_protocol::Error::internal_error()
+                        .data(serde_json::json!(format!("{method}: {message}")))
+                };
+                let (mut session, opened_id) = open_session(&conn, cwd, resume, None)
+                    .await
+                    .map_err(|e| err("session/new", e.to_string()))?;
+                let cancel_conn = conn.clone();
+                let cancel_flag_spawn = cancel_flag.clone();
+                let sid = session.session_id().clone();
+                // Scoped to this turn: abort on prompt completion instead
+                // of polling forever on success.
+                let _cancel_task = AbortOnDrop(tokio::spawn(async move {
                     loop {
-                        let msg = session
-                            .read_update()
-                            .await
-                            .map_err(|e| err("session/prompt", e.to_string()))?;
-                        match msg {
-                            SessionMessage::SessionMessage(dispatch) => {
-                                MatchDispatch::new(dispatch)
-                                    // Updates already flow through the
-                                    // connection-level mapper in
-                                    // client_builder; mapping them again
-                                    // here only to discard is dead code.
-                                    .if_notification(async |_n: SessionNotification| Ok(()))
-                                    .await
-                                    .otherwise_ignore()
-                                    .map_err(|e| err("session/update", e.to_string()))?;
-                            }
-                            SessionMessage::StopReason(stop) => {
-                                if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                                    return Err(agent_client_protocol::Error::internal_error()
-                                        .data(serde_json::json!("cancelled")));
-                                }
-                                return Ok((mapper.map_stop(&stop), opened_id));
-                            }
-                            _ => {}
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        if cancel_flag_spawn.load(std::sync::atomic::Ordering::SeqCst) {
+                            let _ =
+                                cancel_conn.send_notification(CancelNotification::new(sid.clone()));
+                            break;
                         }
                     }
-                },
-            );
+                }));
+                session
+                    .send_prompt(text)
+                    .map_err(|e| err("session/prompt", e.to_string()))?;
+                let mapper = EventMapper::new();
+                loop {
+                    let msg = session
+                        .read_update()
+                        .await
+                        .map_err(|e| err("session/prompt", e.to_string()))?;
+                    match msg {
+                        SessionMessage::SessionMessage(dispatch) => {
+                            MatchDispatch::new(dispatch)
+                                // Updates already flow through the
+                                // connection-level mapper in
+                                // client_builder; mapping them again
+                                // here only to discard is dead code.
+                                .if_notification(async |_n: SessionNotification| Ok(()))
+                                .await
+                                .otherwise_ignore()
+                                .map_err(|e| err("session/update", e.to_string()))?;
+                        }
+                        SessionMessage::StopReason(stop) => {
+                            if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                                return Err(agent_client_protocol::Error::internal_error()
+                                    .data(serde_json::json!("cancelled")));
+                            }
+                            return Ok((mapper.map_stop(&stop), opened_id));
+                        }
+                        _ => {}
+                    }
+                }
+            },
+        );
 
         let pump = async {
             for ev in EventMapper::new().begin() {
@@ -585,8 +557,6 @@ impl AcpSession {
         self.session_id = String::new();
         Ok(())
     }
-
-    pub async fn shutdown(self) {}
 }
 
 #[cfg(test)]

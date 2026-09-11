@@ -100,20 +100,11 @@ pub(crate) fn switch_message(key: &str, auto_approve: bool) -> String {
 
 /// Display-only: `/acp status` line with `auto_approve: on/off` so the
 /// permission posture is visible. No approval effect.
-pub(crate) fn status_line(
-    agent_key: &str,
-    session_prefix: &str,
-    usage: Option<&str>,
-    auto_approve: bool,
-) -> String {
-    let mut line = format!(
+pub(crate) fn status_line(agent_key: &str, session_prefix: &str, auto_approve: bool) -> String {
+    format!(
         "acp:{agent_key} · session {session_prefix}… · auto_approve: {}",
         gray_acp::session::auto_approve_label(auto_approve)
-    );
-    if let Some(u) = usage {
-        line.push_str(&format!(" · {u}"));
-    }
-    line
+    )
 }
 
 /// Shared spawn path for one-shot delegates and sticky switches: resolves,
@@ -142,7 +133,6 @@ async fn start_session(
         cwd: cwd.to_path_buf(),
         resume_session_id: None,
         auto_approve,
-        permission_prompt: std::sync::Arc::new(gray_acp::DenyAllPrompt),
         display,
     };
     match gray_acp::AcpSession::start(opts).await {
@@ -229,10 +219,7 @@ pub(crate) async fn handle_acp_command(
             if let Some(s) = acp.as_ref() {
                 let sid = s.session_id().to_string();
                 let prefix: String = sid.chars().take(8).collect();
-                say(
-                    tui,
-                    &status_line(s.agent_key(), &prefix, s.usage_text(), s.auto_approve()),
-                );
+                say(tui, &status_line(s.agent_key(), &prefix, s.auto_approve()));
             } else {
                 say(tui, "acp: native mode — /acp <agent> to switch");
             }
@@ -240,7 +227,6 @@ pub(crate) async fn handle_acp_command(
         AcpAction::Off => {
             if let Some(s) = acp.take() {
                 let key = s.agent_key().to_string();
-                s.shutdown().await;
                 set_model_label(tui, native_model.unwrap_or("default"));
                 say(tui, &format!("acp:{key} off — back to native"));
             } else {
@@ -261,9 +247,7 @@ pub(crate) async fn handle_acp_command(
                 say(tui, &format!("acp:{} already active", spec.key));
                 return;
             }
-            if let Some(old) = acp.take() {
-                old.shutdown().await;
-            }
+            drop(acp.take());
             if let Some(s) = start_session(spec, display, cwd, yolo, tui).await {
                 let key = s.agent_key().to_string();
                 let msg = switch_message(&key, s.auto_approve());
@@ -321,7 +305,6 @@ pub(crate) async fn handle_acp_command(
                 Err(gray_acp::AcpError::Cancelled) => say(tui, "acp: cancelled"),
                 Err(e) => say(tui, &format!("acp error: {e:#}")),
             }
-            session.shutdown().await;
         }
     }
 }
@@ -464,9 +447,7 @@ pub(crate) async fn run_acp_turn(
         // The agent died mid-turn: fall back to native rather than wedging
         // the REPL on a dead session.
         Err(gray_acp::AcpError::ProcessExited { code, stderr_tail }) => {
-            if let Some(dead) = acp.take() {
-                dead.shutdown().await;
-            }
+            drop(acp.take());
             set_model_label(
                 tui.as_ref().map(|(s, _)| s),
                 native_model.unwrap_or("default"),
@@ -593,16 +574,12 @@ mod acp_tests {
     #[test]
     fn status_line_includes_auto_approve() {
         assert_eq!(
-            status_line("codex", "abc12345", None, false),
+            status_line("codex", "abc12345", false),
             "acp:codex · session abc12345… · auto_approve: off"
         );
         assert_eq!(
-            status_line("codex", "abc12345", None, true),
+            status_line("codex", "abc12345", true),
             "acp:codex · session abc12345… · auto_approve: on"
-        );
-        assert_eq!(
-            status_line("codex", "abc12345", Some("1k tok"), true),
-            "acp:codex · session abc12345… · auto_approve: on · 1k tok"
         );
     }
 }

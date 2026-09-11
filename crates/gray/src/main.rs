@@ -108,7 +108,6 @@ async fn run_acp_print_mode(agent: &str, prompt: &str) -> anyhow::Result<()> {
         cwd,
         resume_session_id: None,
         auto_approve,
-        permission_prompt: std::sync::Arc::new(gray_acp::DenyAllPrompt),
         display,
     };
     let mut session = gray_acp::AcpSession::start(opts).await?;
@@ -120,7 +119,6 @@ async fn run_acp_print_mode(agent: &str, prompt: &str) -> anyhow::Result<()> {
         }
     };
     let res = session.prompt(prompt, &mut on_event).await;
-    session.shutdown().await;
     println!();
     res?;
     Ok(())

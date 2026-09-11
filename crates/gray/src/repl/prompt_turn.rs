@@ -226,65 +226,59 @@ pub(crate) async fn run_prompt_turn(
         }
     };
     // overflow recovery (one retry only)
-    if let Err(ref e) = run_result {
-        let latest = tui
-            .as_ref()
-            .and_then(|(s, _)| s.lock().ok().and_then(|t| t.latest_usage))
-            .or(turn_usage);
-        if maybe_overflow_compact(
+    if let Err(ref e) = run_result
+        && maybe_overflow_compact(
             agent,
             config,
             &mut *session_state,
             cwd,
             tui.as_ref().map(|(s, _)| s),
-            latest,
             &mut initial_count,
             e,
         )
         .await
-        {
-            pending_tools.clear();
-            let ctx2 = ToolContext {
-                cwd: cwd.to_path_buf(),
-                cancel: cancel.clone(),
-                questions: Some(question_bridge.clone()),
-                session_id: session_state
-                    .as_ref()
-                    .map(|s| s.session_id.as_str().to_string()),
-                permission: PermissionMode::resolve(false),
-                approvals: Some(approval_gate.clone()),
-            };
-            let mut on_event2 = |ev: &AgentEvent| {
-                dispatch_agent_event(
-                    ev,
-                    tui_stream.as_ref(),
-                    interactive,
-                    &mut pending_tools,
-                    &mut turn_usage,
-                    cwd,
-                    config.model.as_deref().unwrap_or(""),
-                    &mut *session_totals,
-                    turn_start,
-                    &mut turn_duration_ms,
-                );
-            };
-            let mut run_future2 =
-                Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
-            let retry_res = tokio::select! {
-                res = &mut run_future2 => res,
-                _ = cancel.cancelled() => {
-                    // Same cooperative-cancel contract as the main turn above.
-                    cancel.cancel();
-                    let _ =
-                        tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future2)
-                            .await;
-                    drop(run_future2);
-                    agent.abort_turn();
-                    Err(CoreError::Cancelled)
-                }
-            };
-            run_result = retry_res;
-        }
+    {
+        pending_tools.clear();
+        let ctx2 = ToolContext {
+            cwd: cwd.to_path_buf(),
+            cancel: cancel.clone(),
+            questions: Some(question_bridge.clone()),
+            session_id: session_state
+                .as_ref()
+                .map(|s| s.session_id.as_str().to_string()),
+            permission: PermissionMode::resolve(false),
+            approvals: Some(approval_gate.clone()),
+        };
+        let mut on_event2 = |ev: &AgentEvent| {
+            dispatch_agent_event(
+                ev,
+                tui_stream.as_ref(),
+                interactive,
+                &mut pending_tools,
+                &mut turn_usage,
+                cwd,
+                config.model.as_deref().unwrap_or(""),
+                &mut *session_totals,
+                turn_start,
+                &mut turn_duration_ms,
+            );
+        };
+        let mut run_future2 =
+            Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
+        let retry_res = tokio::select! {
+            res = &mut run_future2 => res,
+            _ = cancel.cancelled() => {
+                // Same cooperative-cancel contract as the main turn above.
+                cancel.cancel();
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future2)
+                        .await;
+                drop(run_future2);
+                agent.abort_turn();
+                Err(CoreError::Cancelled)
+            }
+        };
+        run_result = retry_res;
     }
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
     // signal the watcher to exit; it dies within one 100ms tick.

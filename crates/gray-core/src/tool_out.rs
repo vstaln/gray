@@ -3,7 +3,7 @@
 //! Truncation policy (applied to every tool output): results are capped at
 //! 2000 lines / 50 KiB, keeping head + tail with a `[truncated ...]`
 //! annotation; error outputs are additionally hard-capped at 2 KiB.
-//! (Moved from `gray-tools` so non-core tool crates like `gray-cron` share
+//! (Moved from `gray-tools` so non-core tool crates share
 //! the policy without depending on the whole builtin toolset.)
 
 use serde_json::Value;

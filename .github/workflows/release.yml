@@ -16,8 +16,8 @@ name: release
 #
 # Rollback: re-point the manifest at the previous set. Old tarballs are never
 # deleted by deploy, so: echo '<prev-ver>' | ssh <host> "sudo tee
-# /var/www/gray/dl/latest-<channel>.txt". scripts/deploy.sh (manual single-leg
-# path) is NOT atomic — re-run the finalize job after any manual upload.
+# /var/www/gray/dl/latest-<channel>.txt". Manual single-leg uploads are
+# NOT atomic — re-run the finalize job after any manual upload.
 
 on:
   push:

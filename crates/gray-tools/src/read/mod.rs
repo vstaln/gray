@@ -176,7 +176,7 @@ impl Tool for ReadTool {
             return ToolOutput::ok(with_repaired(&repaired, stub.content));
         }
         // T2.1/T2.2 streaming driver: a bounded-memory `LineStream` replaces
-        // `tokio::fs::read` + `prepare` + `text.lines()`. Hygiene runs on the
+        // the pre-T2.2 whole-file read. Hygiene runs on the
         // stream (BOM on the first line, one trailing `\r` per line); the
         // T1.4 sniff already ran at open. No line past the window is ever
         // claimed before it is observed (T2.2 deferred cut).

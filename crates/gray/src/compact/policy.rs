@@ -4,7 +4,6 @@ use super::*;
 
 pub struct CompactionSettings {
     pub reserve_tokens: usize,
-    pub keep_recent_tokens: usize,
 }
 
 /// Master switch for *automatic* compaction only (`should_compact` callers and
@@ -46,35 +45,7 @@ pub fn should_compact(tokens: usize, window: usize, s: &CompactionSettings) -> b
 pub fn compaction_settings_for(window: usize) -> CompactionSettings {
     CompactionSettings {
         reserve_tokens: crate::setup::user_reserve_tokens_for(window),
-        keep_recent_tokens: crate::setup::user_keep_for(window),
     }
-}
-
-/// Recent tail of `messages` whose estimated tokens fit in `keep_tokens`.
-/// Walks from the newest message backwards; `0` keeps nothing.
-pub fn tail_messages(messages: &[Message], keep_tokens: usize) -> Vec<Message> {
-    if keep_tokens == 0 {
-        return Vec::new();
-    }
-    let mut kept = Vec::new();
-    let mut acc = 0usize;
-    for msg in messages.iter().rev() {
-        let t = estimate_tokens(msg);
-        if kept.is_empty() && acc == 0 {
-            // Always keep at least the newest message when budget > 0,
-            // even if that single message exceeds the budget.
-            kept.push(msg.clone());
-            acc += t;
-            continue;
-        }
-        if acc + t > keep_tokens {
-            break;
-        }
-        kept.push(msg.clone());
-        acc += t;
-    }
-    kept.reverse();
-    kept
 }
 
 pub fn estimate_tokens(msg: &Message) -> usize {
