@@ -176,9 +176,13 @@ pub(crate) async fn handle_sys(
                     return;
                 }
             };
-            if crate::sys_editor::should_use_external_editor(
-                std::env::var("EDITOR").ok().as_deref(),
-            ) {
+            // Interactive: the built-in bracket editor, never `$EDITOR`/vim.
+            // External editors remain for non-TUI (piped) callers.
+            if tui.is_none()
+                && crate::sys_editor::should_use_external_editor(
+                    std::env::var("EDITOR").ok().as_deref(),
+                )
+            {
                 match crate::sys_editor::run_external_editor(&path, &initial) {
                     Ok(Some(_)) => {
                         say(
@@ -218,6 +222,7 @@ pub(crate) async fn handle_sys(
             }
             match res {
                 Ok(Some(saved)) => {
+                    let _ = crate::sys_editor::backup_before_overwrite(&path);
                     if let Err(e) = std::fs::write(&path, &saved) {
                         say(tui, &format!("failed to save {}: {e}", path.display()));
                         return;

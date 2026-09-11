@@ -36,8 +36,20 @@ use crate::skills_tool::SkillTool;
 
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
-pub const DEFAULT_SYS_PROMPT: &str = r#"You are gray, a minimal agent running on the user's machine.
+pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
+Unreadable note: this HTML comment stays in the file but is stripped before
+the prompt reaches the model. Nothing here is sent verbatim except the text
+outside <!-- --> comments.
+
+This file IS the complete system prompt — gray injects nothing else: no
+discovered project files, no skills list, no working directory. The model
+finds them itself. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset
+to this default, Ctrl-X cancel). Deleting anything here disables nothing
+gray adds, because gray adds nothing.
+-->
+You are gray, a minimal agent running on the user's machine.
 You work through a single tool: a persistent bash shell. Use it to read, search, edit, and run things.
+Before working in a project, read its AGENTS.md / CLAUDE.md. When a task matches a skill, read the matching SKILL.md from the skill roots (e.g. ~/.gray/skills, ~/.agents/skills, ~/.claude/skills, and project .agents/skills).
 
 Guidelines:
 - Be concise.
@@ -144,12 +156,6 @@ pub async fn build_agent(
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
 
-    // Discover skills + AGENTS.md / CLAUDE.md context (prompt needs the
-    // resolved registry, so this becomes a builder closure below).
-    let discovered = skills::discover_skills(cwd);
-    let context_files = system_prompt::discover_context_files(cwd);
-    let prompt_cwd = cwd.to_path_buf();
-
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
         api_key: api_key.to_string(),
@@ -158,15 +164,11 @@ pub async fn build_agent(
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
+        // The file IS the system prompt: sent verbatim (comments stripped).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |registry: &gray_tools::Registry| {
-                let selected_tools = registry.tool_names();
+            move |_registry: &gray_tools::Registry| {
                 system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
                     custom_prompt: Some(body),
-                    selected_tools: Some(selected_tools),
-                    cwd: prompt_cwd,
-                    context_files: Some(context_files),
-                    skills: Some(discovered.skills),
                 })
             },
         )),
