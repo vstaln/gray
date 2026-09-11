@@ -247,8 +247,12 @@ pub(crate) async fn dispatch_command(
                             t.set_model(m.clone());
                         }
                         let model_str = config.model.as_deref().unwrap_or("default");
-                        let prov_name = crate::setup::popular_provider_name(&config.base_url)
-                            .unwrap_or_else(|| "provider".to_string());
+                        let catalog = crate::setup::load_catalog().ok();
+                        let prov_name = catalog
+                            .as_ref()
+                            .and_then(|c| c.values().find(|p| p.base_url == config.base_url))
+                            .map(|p| p.name.as_str())
+                            .unwrap_or("provider");
                         t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
                         t.ensure_gap(1);
                         let _ = t.draw();

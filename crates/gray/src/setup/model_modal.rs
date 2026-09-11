@@ -10,11 +10,13 @@ pub(crate) fn provider_models_for(
     base_url: &str,
     api_key: Option<&str>,
 ) -> (String, String, Vec<(String, String)>) {
-    let (item_id, item_name) = build_connect_items()
-        .into_iter()
-        .find(|i| i.base_url == base_url)
-        .map(|i| (i.id, i.name))
-        .unwrap_or_else(|| ("custom".to_string(), "Custom".to_string()));
+    let catalog = load_catalog().unwrap_or_default();
+    let (item_id, item_name) =
+        if let Some((pid, p)) = catalog.iter().find(|(_, p)| p.base_url == base_url) {
+            (pid.clone(), p.name.clone())
+        } else {
+            ("custom".to_string(), "Custom".to_string())
+        };
     let models = fetch_live_provider_models(base_url, api_key);
     (item_id, item_name, models)
 }

@@ -1,13 +1,35 @@
-//! First-run onboarding: persisting to ~/.gray/config.json. Provider
-//! selection is flags (`--base-url`/`--model`) + live `/models` fetch; the
-//! connect modal offers a hardcoded popular-provider bootstrap (it cannot be
-//! live-fetched — the list is the bootstrap), everything else via flags.
+//! First-run onboarding: a searchable provider picker fed by the bundled
+//! catalog (models.dev snapshot), persisting
+//! to ~/.gray/config.json. Flow: nothing forced at boot; the
+//! picker appears the moment credentials are actually needed.
 // 3 modals (connect/model/effort) share 80% render + nav logic (662+287+163 lines); extract generic list_picker when adding fourth modal.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Provider entry from the vendored catalog.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CatalogProvider {
+    pub name: String,
+    pub base_url: String,
+    /// True when the upstream serves a keyless/free tier (9router noAuth).
+    #[serde(default)]
+    pub no_auth: bool,
+}
+
+/// The full catalog, keyed by provider id (`openrouter`, `deepseek`, ...).
+pub type Catalog = BTreeMap<String, CatalogProvider>;
+
+/// Bundled models.dev snapshot.
+pub const PROVIDERS_JSON: &str = include_str!("../../assets/providers.json");
+
+/// Parses the embedded catalog. Infinitely unlikely to fail (compiled in),
+/// but returns a Result so callers can degrade gracefully.
+pub fn load_catalog() -> anyhow::Result<Catalog> {
+    Ok(serde_json::from_str(PROVIDERS_JSON)?)
+}
 
 /// Pretty masked display for an existing key: `sk-••••Jh8a` (prettier dots, last 4 visible).
 pub fn mask_key_pretty(key: &str) -> String {
@@ -304,10 +326,9 @@ pub struct ConnectItem {
     pub no_auth: bool,
 }
 
-/// Builds the provider list for the connect modal: hardcoded popular
-/// bootstrap only (flags `--base-url`/`--model` + live `/models` cover the
-/// long tail; the list cannot be live-fetched, it is the bootstrap).
-pub fn build_connect_items() -> Vec<ConnectItem> {
+/// Builds the full list of providers for the connect modal:
+/// Popular section on top, followed by all catalog providers under Providers.
+pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
         (
             "openai",
@@ -382,28 +403,39 @@ pub fn build_connect_items() -> Vec<ConnectItem> {
     ];
 
     let mut items = Vec::new();
+    let mut popular_ids = std::collections::HashSet::new();
 
     for (id, name, sublabel, base_url, no_auth) in popular_defs {
+        popular_ids.insert(id.to_string());
+        let url = catalog.get(id).map_or(base_url, |p| p.base_url.as_str());
         items.push(ConnectItem {
             id: id.to_string(),
             name: name.to_string(),
             sublabel: sublabel.to_string(),
-            base_url: base_url.to_string(),
+            base_url: url.to_string(),
             no_auth,
         });
     }
 
-    items
-}
+    // All catalog providers in alphabetical order
+    let mut catalog_entries: Vec<_> = catalog.iter().collect();
+    catalog_entries.sort_by_key(|(_, p)| p.name.to_lowercase());
 
-/// Provider display name for a base URL, from the same popular bootstrap
-/// behind the connect modal. `None` when the URL is not a popular provider
-/// (flags-configured long tail) — callers fall back to a generic label.
-pub fn popular_provider_name(base_url: &str) -> Option<String> {
-    build_connect_items()
-        .into_iter()
-        .find(|i| i.base_url == base_url)
-        .map(|i| i.name)
+    for (id, p) in catalog_entries {
+        if popular_ids.contains(id) {
+            continue;
+        }
+
+        items.push(ConnectItem {
+            id: id.clone(),
+            name: p.name.clone(),
+            sublabel: String::new(),
+            base_url: p.base_url.clone(),
+            no_auth: p.no_auth,
+        });
+    }
+
+    items
 }
 
 #[cfg(test)]
