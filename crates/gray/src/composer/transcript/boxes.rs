@@ -183,61 +183,6 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }
 
-    /// Re-renders a `request_user_input` Q&A from stored history so resumed
-    /// sessions show what was asked and answered (previously skipped).
-    pub fn push_question_replay(&mut self, args: Option<&serde_json::Value>, content: &str) {
-        let questions = args
-            .and_then(|a| a.get("questions"))
-            .and_then(|q| q.as_array())
-            .cloned()
-            .unwrap_or_default();
-        // ToolResult content is `{"answers":{id:{"answers":[...]}}}`.
-        let answer_map: HashMap<String, Vec<String>> =
-            serde_json::from_str::<serde_json::Value>(content)
-                .ok()
-                .and_then(|v| v.get("answers").cloned())
-                .and_then(|v| v.as_object().cloned())
-                .map(|obj| {
-                    obj.into_iter()
-                        .map(|(k, v)| {
-                            let list = v
-                                .get("answers")
-                                .and_then(|a| a.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                                        .collect()
-                                })
-                                .unwrap_or_default();
-                            (k, list)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-        let mut lines = Vec::new();
-        for q in &questions {
-            let id = q.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let text = q
-                .get("question")
-                .and_then(|v| v.as_str())
-                .unwrap_or("question");
-            match answer_map.get(id) {
-                Some(list) if !list.is_empty() => {
-                    lines.push(format!("• {text}"));
-                    lines.push(format!("  {} answered: {}", "↳", list.join(" · ")));
-                }
-                // Stacked like answered: outcome on its own row, never inline.
-                _ => {
-                    lines.push(format!("• {text}"));
-                    lines.push("  ↳ skipped".to_string());
-                }
-            }
-        }
-        if !lines.is_empty() {
-            self.push_dim(lines.join("\n"));
-        }
-    }
-
     /// Replays a previous session's message history into the TUI scrollback.
     pub fn replay_session_history(
         &mut self,
@@ -266,9 +211,7 @@ impl Tui {
                                     .remove(id)
                                     .map(|(n, a)| (n, Some(a)))
                                     .unwrap_or_else(|| ("tool".to_string(), None));
-                                if name == "request_user_input" {
-                                    self.push_question_replay(args.as_ref(), content);
-                                } else {
+                                {
                                     let header = args
                                         .as_ref()
                                         .map(|a| {
@@ -351,9 +294,7 @@ impl Tui {
                                 .remove(id)
                                 .map(|(n, a)| (n, Some(a)))
                                 .unwrap_or_else(|| ("tool".to_string(), None));
-                            if name == "request_user_input" {
-                                self.push_question_replay(args.as_ref(), content);
-                            } else {
+                            {
                                 let header = args
                                     .as_ref()
                                     .map(|a| {
@@ -379,10 +320,6 @@ impl Tui {
             }
         }
         for (_id, (name, args)) in tool_calls {
-            if name == "request_user_input" {
-                self.push_question_replay(Some(&args), "{}");
-                continue;
-            }
             let header = crate::tool_fmt::format_tool_call_header(&name, &args, Some(cwd));
             self.push_tool_box(header, Vec::new());
         }

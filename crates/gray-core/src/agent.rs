@@ -65,47 +65,12 @@ impl ToolOutput {
     }
 }
 
-/// Tool permission mode for guard `Prompt` verdicts (the destructive-command
-/// guard in gray-tools asks at the tool/before seam, before the executor runs).
-/// `Ask` prompts the interactive user and fails closed without one; `Auto`
-/// runs without asking. `Deny` verdicts always block regardless of mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PermissionMode {
-    #[default]
-    Ask,
-    Auto,
-}
-
-impl PermissionMode {
-    /// `GRAY_PERMISSION=ask|auto` wins; otherwise interactive defaults to
-    /// `Ask` and print/`-p` mode to `Auto` (no TTY to ask on).
-    pub fn resolve(print_mode: bool) -> Self {
-        match std::env::var("GRAY_PERMISSION").as_deref() {
-            Ok("auto") => Self::Auto,
-            Ok("ask") => Self::Ask,
-            _ => {
-                if print_mode {
-                    Self::Auto
-                } else {
-                    Self::Ask
-                }
-            }
-        }
-    }
-}
-
 /// Per-execution context handed to tools.
 #[derive(Debug, Clone)]
 pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancel: CancellationToken,
-    /// Bridge for user-question tools (`request_user_input`); `None` means
-    /// no interactive user is reachable.
-    pub questions: Option<crate::questions::QuestionBridge>,
     pub session_id: Option<String>,
-    pub permission: PermissionMode,
-    /// Tool approval gate; `None` means everything runs ungated.
-    pub approvals: Option<crate::approvals::ApprovalGate>,
 }
 
 impl Default for ToolContext {
@@ -113,10 +78,7 @@ impl Default for ToolContext {
         Self {
             cwd: PathBuf::from("."),
             cancel: CancellationToken::new(),
-            questions: None,
             session_id: None,
-            permission: PermissionMode::default(),
-            approvals: None,
         }
     }
 }
@@ -1196,10 +1158,7 @@ mod agent_tests {
                 ToolContext {
                     cwd: ".".into(),
                     cancel: cancel_token,
-                    questions: None,
                     session_id: None,
-                    permission: PermissionMode::Ask,
-                    approvals: None,
                 },
             )
             .await

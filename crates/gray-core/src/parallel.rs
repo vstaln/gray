@@ -210,23 +210,6 @@ mod tests {
         );
     }
     #[test]
-    fn batchable_set_is_statically_allowed_in_every_mode() {
-        for tool in ["read", "ls", "find", "grep"] {
-            for mode in ["read-only", "auto", "full"] {
-                assert_eq!(
-                    crate::approvals::verdict(
-                        mode,
-                        tool,
-                        &json!({}),
-                        std::path::Path::new("/work")
-                    ),
-                    crate::approvals::Verdict::Allow,
-                    "{tool} in {mode}"
-                );
-            }
-        }
-    }
-    #[test]
     fn kill_switch_parses() {
         let _g = ENV_LOCK.lock().unwrap();
         let prev = std::env::var("GRAY_PARALLEL_READS").ok();

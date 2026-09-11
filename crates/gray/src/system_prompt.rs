@@ -105,11 +105,13 @@ pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
         prompt.push_str("</project_context>\n");
     }
     let selected = options.selected_tools.clone();
-    let has_read = selected
+    // Skills are loadable whenever the model has a shell or a reader: both can
+    // read `SKILL.md`. Under the default `tools-minimal` surface that is `bash`.
+    let has_reader = selected
         .as_ref()
-        .map(|t| t.iter().any(|n| n == "read"))
+        .map(|t| t.iter().any(|n| n == "read" || n == "bash"))
         .unwrap_or(true);
-    if has_read && !skills.is_empty() {
+    if has_reader && !skills.is_empty() {
         prompt.push_str(&format_skills_for_prompt(&skills));
     }
     prompt.push_str(&format!("\nCurrent working directory: {prompt_cwd}\n"));
