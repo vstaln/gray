@@ -390,13 +390,14 @@ pub(crate) fn dispatch_agent_event(
                 // the StepUsage context gauge. The per-turn live counter is
                 // left intact too: `end_turn` captures it for the final
                 // `Thought for` line and does the single reset there. The
-                // billed reasoning count is the one exception: it is stashed
-                // for the Thought line's `· N reasoning tok` suffix (the
-                // provider reports it, the transcript persists it, but no TUI
-                // surface rendered it — display-only, never gauge input).
+                // billed output + reasoning are the one exception: stashed
+                // for the Thought line (`· N tok · M reasoning tok`). The
+                // streamed estimate misses tool results and input, so without
+                // this the final line reads absurdly low — display-only,
+                // never gauge input.
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
-                    t.set_turn_reasoning(usage.reasoning_tokens);
+                    t.set_turn_billed(usage.output_tokens, usage.reasoning_tokens);
                     // TUI Thought line shows streamed total + reasoning only;
                     // billed totals + cost live in `totals` / headless footer.
                 }

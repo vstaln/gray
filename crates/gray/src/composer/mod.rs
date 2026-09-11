@@ -37,20 +37,21 @@ pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
-/// Single-line `✻ Thought for …`: `N tok` is this turn's streamed token
-/// total (the same per-turn counter that ticked in the status line), with an
-/// optional billed-reasoning suffix (`· M reasoning tok`) from the TurnEnd
-/// usage report. The rest of the billed Σ-per-round totals stay out of the
-/// TUI line entirely (cost basis lives in `totals` / headless `turn_footer`
-/// only). Pure for testability (`Tui::new` needs a TTY).
+/// Single-line `✻ Thought for …`: `N tok` is this turn's billed output
+/// token count (exact, from the TurnEnd usage report), with an optional
+/// billed-reasoning suffix (`· M reasoning tok`, a subset of output).
+/// Falls back to the streamed estimate when no usage report arrived
+/// (cancelled/errored turns). Other billed Σ-per-round totals stay out of
+/// the TUI line entirely (cost basis lives in `totals` / headless
+/// `turn_footer` only). Pure for testability (`Tui::new` needs a TTY).
 pub(crate) fn format_thought_line(
     verb: &str,
     elapsed: &str,
-    ctx_tokens: Option<usize>,
+    out_tokens: Option<usize>,
     reasoning_tokens: Option<usize>,
 ) -> String {
     let mut line = format!("✻ {verb} {elapsed}");
-    if let Some(c) = ctx_tokens {
+    if let Some(c) = out_tokens {
         line.push_str(&format!(" · {} tok", crate::repl::fmt_usage(c)));
     }
     if let Some(r) = reasoning_tokens.filter(|r| *r > 0) {
@@ -105,9 +106,13 @@ pub struct Tui {
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
     pub(crate) live_streamed_tokens: usize,
-    /// Billed reasoning tokens from this turn's TurnEnd usage (Σ-per-round).
-    /// Display-only: `end_turn` reads it into the Thought line. Never feeds
-    /// the context gauge (that stays `latest_usage`, latest-round size).
+    /// Billed output tokens from this turn's TurnEnd usage (Σ-per-round).
+    /// Display-only: `end_turn` prefers this over the streamed estimate for
+    /// the Thought line (the estimate misses tool results and input, so it
+    /// reads absurdly low next to real bills). Never feeds the context gauge
+    /// (that stays `latest_usage`, latest-round size).
+    pub(crate) turn_billed_output: Option<usize>,
+    /// Billed reasoning tokens, stashed alongside `turn_billed_output`.
     pub(crate) turn_reasoning_tokens: usize,
     pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
@@ -259,6 +264,7 @@ impl Tui {
             committed_markdown_lines: 0,
             pending_resize: None,
             live_streamed_tokens: 0,
+            turn_billed_output: None,
             turn_reasoning_tokens: 0,
             tool_progress_lens: std::collections::HashMap::new(),
             viewport_h: MIN_VIEWPORT_H,
@@ -429,14 +435,16 @@ impl Tui {
         self.latest_usage = None;
         self.cumulative_usage = None;
         self.live_streamed_tokens = 0;
+        self.turn_billed_output = None;
         self.turn_reasoning_tokens = 0;
         self.tool_progress_lens.clear();
     }
 
-    /// Stashes the TurnEnd billed reasoning count for the `end_turn` Thought
-    /// line. Called from the TurnEnd dispatch arm (which already holds the
-    /// billed usage); `end_turn` consumes it exactly once.
-    pub fn set_turn_reasoning(&mut self, reasoning_tokens: usize) {
+    /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
+    /// Thought line. Called from the TurnEnd dispatch arm (which already holds
+    /// the billed usage); `end_turn` consumes both exactly once.
+    pub fn set_turn_billed(&mut self, output_tokens: usize, reasoning_tokens: usize) {
+        self.turn_billed_output = Some(output_tokens);
         self.turn_reasoning_tokens = reasoning_tokens;
     }
 
@@ -469,6 +477,7 @@ impl Tui {
             self.turn_had_thinking = false;
         }
         self.live_streamed_tokens = 0;
+        self.turn_billed_output = None;
         self.turn_reasoning_tokens = 0;
         self.tool_progress_lens.clear();
         self.is_task_running = true;
@@ -533,13 +542,16 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.sleep_until = None;
-        // Capture the per-turn counter BEFORE clearing: the `Thought for`
-        // line reports this turn's streamed tokens (the same number that
-        // was ticking in the status line), not session context size. Same
-        // for the stashed TurnEnd reasoning count (consumed exactly once).
-        let turn_toks = self.live_streamed_tokens;
+        // Capture the billed counts BEFORE clearing: the `Thought for`
+        // line reports billed output tokens (exact), falling back to the
+        // streamed estimate only when no usage report arrived. The estimate
+        // misses tool results and input entirely, so printing it next to a
+        // real bill reads absurdly low — it stays a live progress pulse in
+        // the status line, never the final word.
+        let turn_toks = self.turn_billed_output.unwrap_or(self.live_streamed_tokens);
         let turn_reasoning = self.turn_reasoning_tokens;
         self.live_streamed_tokens = 0;
+        self.turn_billed_output = None;
         self.turn_reasoning_tokens = 0;
         self.tool_progress_lens.clear();
         if self.thinking {
@@ -566,10 +578,9 @@ impl Tui {
             } else {
                 "Worked for"
             };
-            // `✻ Thought for … · N tok` is this turn's streamed total
-            // (counted from zero at `begin_turn`), plus the billed reasoning
-            // count when the provider reported one. Other billed Σ-per-round
-            // totals stay out of the TUI entirely.
+            // `✻ Thought for … · N tok` is billed output (exact), plus the
+            // billed reasoning count when the provider reported one. Other
+            // billed Σ-per-round totals stay out of the TUI entirely.
             let reasoning = (turn_reasoning > 0).then_some(turn_reasoning);
             let line = format_thought_line(verb, &elapsed_str, Some(turn_toks), reasoning);
             self.ensure_gap(1);
@@ -687,8 +698,13 @@ mod thought_line_tests {
 
     #[test]
     fn format_thought_line_is_just_verb_elapsed_and_turn_toks() {
-        let line = format_thought_line("Thought for", "1m 17s", Some(149_460), None);
-        assert_eq!(line, "✻ Thought for 1m 17s · 149,460 tok");
+        // `N tok` is billed output (exact); same shape as the old estimate,
+        // now backed by the TurnEnd report instead of chars/4.
+        let line = format_thought_line("Thought for", "1m 17s", Some(4_045), Some(2_834));
+        assert_eq!(
+            line,
+            "✻ Thought for 1m 17s · 4,045 tok · 2,834 reasoning tok"
+        );
         assert_eq!(line.matches("1m 17s").count(), 1);
     }
 
