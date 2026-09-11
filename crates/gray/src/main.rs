@@ -257,6 +257,33 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
             }
             Ok(())
         }
+        PluginCmd::Search { query } => {
+            let out = gray_pkg::ops::search_all(&query).await?;
+            if out.hits.is_empty()
+                && !out.pi_unreachable
+                && !out.gray_unreachable
+                && !out.clawhub_unreachable
+                && !out.claude_unreachable
+            {
+                anyhow::bail!("not in index: {query} (try /plugin install <https-url>)");
+            }
+            for hit in &out.hits {
+                println!("{}", gray_pkg::ops::format_search_hit(hit));
+            }
+            if out.gray_unreachable {
+                println!("{}", gray_pkg::ops::GRAY_UNREACHABLE_LINE);
+            }
+            if out.pi_unreachable {
+                println!("{}", gray_pkg::ops::PI_UNREACHABLE_LINE);
+            }
+            if out.clawhub_unreachable {
+                println!("{}", gray_pkg::ops::CLAWHUB_UNREACHABLE_LINE);
+            }
+            if out.claude_unreachable {
+                println!("{}", gray_pkg::ops::CLAUDE_UNREACHABLE_LINE);
+            }
+            Ok(())
+        }
         PluginCmd::Install { spec } => {
             let r = gray_pkg::ops::install(spec, gray_pkg::ops::InstallOpts::default()).await?;
             println!("installed {} {} at {}", r.name, r.version, r.path.display());

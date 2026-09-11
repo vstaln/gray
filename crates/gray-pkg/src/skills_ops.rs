@@ -1,11 +1,59 @@
-//! Agent skills backend: install/list/remove over `<agent_dir>/skills/`.
+//! Agent skills backend: search/install/list/remove over `<agent_dir>/skills/`.
 //!
-//! Install resolves `clawhub:` / `github:` / `url:` / local-path specs
-//! into `<agent_dir>/skills/<slug>/` (agent dir is [`crate::gray_home`],
-//! exactly like [`crate::ops`]), reusing the Task 2 download/verify
-//! paths. `update` is OUT (later task).
+//! Search is a skill-shaped view over [`crate::ops::search_all`] (ClawHub
+//! skills + Claude bundles containing skills; one fan-out, never re-fetched
+//! per source). Install resolves `clawhub:` / `github:` / `url:` /
+//! local-path specs into `<agent_dir>/skills/<slug>/` (agent dir is
+//! [`crate::gray_home`], exactly like [`crate::ops`]), reusing the Task 2
+//! download/verify paths. `update` is OUT (later task).
 
 use std::path::{Path, PathBuf};
+
+/// Skill-shaped search hit: [`crate::ops::SearchHit`] projected onto the
+/// skill-bearing sources (ClawHub skills, Claude bundles). `popularity`
+/// rides along but both sources report 0.0, so popularity sort on the
+/// Skills tab is a documented name-fallback.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillHit {
+    pub name: String,
+    pub version: String,
+    pub desc: String,
+    pub source: String,
+    pub trust: String,
+    pub popularity: f32,
+}
+
+/// Skill-shaped view over [`crate::ops::search_all`]: one fan-out, then keep
+/// ClawHub + Claude hits only (Gray Index / Pi hits are plugin packages,
+/// installed via the ops arms). Never errors on a fetch failure — only on
+/// corrupt local state, like the underlying fan-out.
+pub async fn search(query: &str) -> anyhow::Result<Vec<SkillHit>> {
+    search_inner(query).await.map_err(|e| {
+        crate::errors::record("skills", query, format!("{e:#}"));
+        e
+    })
+}
+
+async fn search_inner(query: &str) -> anyhow::Result<Vec<SkillHit>> {
+    let out = crate::ops::search_all(query).await?;
+    Ok(out
+        .hits
+        .into_iter()
+        .filter_map(|h| match h.source {
+            crate::ops::SearchSource::ClawHub | crate::ops::SearchSource::Claude => {
+                Some(SkillHit {
+                    name: h.name,
+                    version: h.version,
+                    desc: h.desc,
+                    source: h.source.label().to_string(),
+                    trust: h.trust,
+                    popularity: h.popularity,
+                })
+            }
+            crate::ops::SearchSource::Gray | crate::ops::SearchSource::Pi => None,
+        })
+        .collect())
+}
 
 /// Install origin, written to `<skill>/.gray-origin.json` (mirrors ClawHub's
 /// origin.json shape: version + registry/slug/owner + pinned version +
@@ -825,5 +873,109 @@ mod tests {
         let skills = list().unwrap();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].source, "url");
+    }
+
+    /// Combined stub: index + npm search + ClawHub search on one loopback
+    /// port (all other routes 404, which the fan-out treats as unreachable).
+    async fn spawn_skill_search_stub() -> String {
+        use axum::{Json, Router, routing::get};
+        let router = Router::new()
+            .route(
+                "/index.json",
+                get(|| async {
+                    Json(serde_json::json!({"schema": 1, "generated": "", "plugins": {}}))
+                }),
+            )
+            .route(
+                "/-/v1/search",
+                get(|| async { Json(serde_json::json!({"objects": []})) }),
+            )
+            .route(
+                "/search",
+                get(|| async {
+                    Json(serde_json::json!({"results": [{
+                        "slug": "gifgrep",
+                        "displayName": "GifGrep",
+                        "summary": "grep gifs",
+                        "version": "1.2.3",
+                        "ownerHandle": "arein",
+                        "official": false
+                    }]}))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[tokio::test]
+    async fn search_maps_clawhub_and_claude_hits() {
+        let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+        let base = spawn_skill_search_stub().await;
+        // Claude fixture marketplace with one query-matching plugin.
+        let market = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(market.path().join(".claude-plugin")).unwrap();
+        std::fs::write(
+            market.path().join(".claude-plugin/marketplace.json"),
+            r#"{"name":"fix","plugins":[
+                {"name":"grep-skills","description":"grep helpers","source":"./plugins/grep-skills"}
+            ]}"#,
+        )
+        .unwrap();
+        let _home = use_skills_env();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var(crate::index::INDEX_URL_ENV, format!("{base}/index.json"));
+            std::env::set_var(crate::ops::NPM_REGISTRY_ENV, &base);
+            std::env::set_var(crate::sources::CLAWHUB_BASE_ENV, &base);
+            std::env::set_var(
+                crate::sources::CLAUDE_MARKETPLACES_ENV,
+                format!("file://{}", market.path().display()),
+            );
+        }
+
+        let hits = search("grep").await.unwrap();
+        assert_eq!(hits.len(), 2);
+        let clawhub = hits
+            .iter()
+            .find(|h| h.source == "ClawHub")
+            .expect("clawhub");
+        assert_eq!(clawhub.name, "arein/gifgrep");
+        assert_eq!(clawhub.version, "1.2.3");
+        assert_eq!(clawhub.desc, "grep gifs");
+        assert_eq!(clawhub.trust, "community");
+        let claude = hits.iter().find(|h| h.source == "Claude").expect("claude");
+        assert_eq!(claude.name, "grep-skills");
+        assert_eq!(claude.desc, "grep helpers");
+        assert_eq!(claude.trust, "");
+        unsafe {
+            std::env::remove_var(crate::sources::CLAUDE_MARKETPLACES_ENV);
+            std::env::remove_var(crate::sources::CLAWHUB_BASE_ENV);
+        }
+    }
+
+    #[tokio::test]
+    async fn search_empty_when_all_sources_unreachable() {
+        let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+        let _home = use_skills_env();
+        // SAFETY: serialized by ENV_GUARD.
+        unsafe {
+            std::env::set_var(crate::index::INDEX_URL_ENV, "http://127.0.0.1:1/i.json");
+            std::env::set_var(crate::ops::NPM_REGISTRY_ENV, "http://127.0.0.1:1");
+            std::env::set_var(crate::sources::CLAWHUB_BASE_ENV, "http://127.0.0.1:1");
+            std::env::set_var(
+                crate::sources::CLAUDE_MARKETPLACES_ENV,
+                "file:///nonexistent-gray-fixture",
+            );
+        }
+        let hits = search("anything").await.unwrap();
+        assert!(hits.is_empty());
+        unsafe {
+            std::env::remove_var(crate::sources::CLAUDE_MARKETPLACES_ENV);
+            std::env::remove_var(crate::sources::CLAWHUB_BASE_ENV);
+        }
     }
 }
