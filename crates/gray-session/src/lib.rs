@@ -34,7 +34,7 @@
 //!   blocks are redacted (paths in the same block go too), secret-free blocks
 //!   persist verbatim for resume fidelity.
 //! - REPL (`repl::session::persist_turn_messages`, compaction paths,
-//!   `acp_cmds`) and gateway (`daemon_agent::run_agent`) persist RAW messages
+//!   `acp_cmds`) persists RAW messages
 //!   for exact replay fidelity (tool args/results, secrets needed to reproduce
 //!   the turn). Safety comes from the 0700/0600 store, not from scrubbing.
 //!

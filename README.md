@@ -28,7 +28,7 @@
   <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
 </div>
 
-Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron, a messaging gateway. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — the release binary ships the gateway adapters; from-source builds are feature-gated (see [Install](#install)).
+Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — no native messaging gateway (chat returns as a plugin).
 
 | | |
 |---|---|
@@ -37,7 +37,6 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
 | **Bash only, by default** | The default profile is a single persistent `bash` shell — the mini-swe-agent / dsh `minimal` stance. The model schedules its own recurring work by running `gray cron add …` through bash. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
-| **Lives where you do** | Telegram / Discord / Slack gateway daemon — deny-by-default, pairing flow, heartbeats — plus cron jobs the agent can self-schedule. Release binary; from source add `--features all-platforms`. |
 | **Extend the harness** | Skills from `SKILL.md`, or sidecar plugins over stdio (frozen wire v1). |
 
 ## Install
@@ -50,18 +49,14 @@ curl -fsSL https://gray.alignment.id/install.sh | sh -s -- beta   # bleeding edg
 or from source:
 
 ```bash
-cargo build --release -p gray                             # harness core
-cargo build --release -p gray --features all-platforms   # what release binaries ship
-cargo build --release -p gray --features clipboard        # + image paste in the TUI
+cargo build --release -p gray                          # harness core
+cargo build --release -p gray --features clipboard     # + image paste in the TUI
 ```
 
 | build | adds |
 |---|---|
 | default | harness core: CLI, TUI, provider, sessions, tools, cron |
-| `--features all-platforms` | Telegram + Discord + Slack gateway adapters |
 | `--features clipboard` | image/paste attachments (arboard + image) |
-
-Release binaries ship `all-platforms`.
 
 Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
@@ -105,13 +100,14 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 
 ### CLI surface
 
-`gray` itself plus four subcommands — everything else is a slash command away:
+`gray` itself plus five subcommands — everything else is a slash command away:
 
 | subcommand | what it does |
 |---|---|
 | `gray resume [--last\|--all] [SESSION_ID]` | resume a conversation — picker, most-recent, or by id/prefix |
-| `gray gateway run\|status\|install\|uninstall\|invite\|pairing` | messaging gateway daemon (systemd user service, Linux-only) |
 | `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
+| `gray cron <list\|add\|remove\|show>` | recurring/one-shot jobs (file-only, no daemon needed) |
+| `gray sessions prune` | session store maintenance |
 | `gray update` | update gray to the latest release |
 
 Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--session <ID>`, `--context-window <TOKENS>`, `--context-reserve`, `--context-keep`, `--dump-manifest`.
@@ -126,11 +122,9 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 
 ## Gateway
 
-`gray gateway` exposes gray over Telegram, Discord, and Slack — meant to run as a daemon on a VPS. Config lives in `~/.gray/gateway.yaml`, written `0600` (owner-only). The security model is deny-by-default: nobody talks to the agent unless allowlisted — or paired: the user DMs the bot, gray prints a code, you run `gray gateway pairing approve <platform> <CODE>` (`pairing list` / `revoke` manage the rest).
+Removed: gray ships no native messaging gateway — no `gray gateway`, no `gray send`, no platform adapters. Chat (Telegram/Discord/Slack) returns as a plugin.
 
-Always-on: `gray gateway install` (systemd user service, `Restart=always`, survives reboot with linger) or `gray gateway run` under your own supervisor. `gray gateway status --probe` reports heartbeat health; heartbeats live in `~/.gray/state/gateway.heartbeat`, lifecycle in `state/gateway.lifecycle.json`, logs rotate at 10 MB × 3.
-
-**Scheduling** — the agent sets up recurring work for you: it runs `gray cron add "<schedule>" "<prompt>" --deliver <target>` through bash, and the gateway daemon fires the job and delivers the result to chat. Manage with `gray cron list/show/remove`; jobs that should stay quiet reply `[SILENT]`.
+**Scheduling** — the agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`); execution and delivery arrive with the core scheduler (in progress).
 
 <div align="center">
   <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
@@ -142,7 +136,7 @@ Always-on: `gray gateway install` (systemd user service, `Restart=always`, survi
 
 `gray` executes shell commands from the model. There is **no command guard and no approval prompt**: the model's `bash` runs what it writes, with your user's privileges. There is no container or VM isolation — run gray in a container/VM for untrusted work. Security reports: [SECURITY.md](SECURITY.md).
 
-Persistence note: gateway and REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting; set `persist_redacted: true` in `gateway.yaml` to scrub gateway transcripts too. Plan backups, snapshots, and disk access accordingly.
+Persistence note: REPL sessions keep raw transcripts at `0600` under `~/.gray/sessions` for exact resume — including any secret that crossed a tool call. `gray -p` print mode scrubs secrets before persisting. Plan backups, snapshots, and disk access accordingly.
 
 ## Context window & auto-compact
 
@@ -162,7 +156,6 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 | `gray-plugin` | plugin trait · manifest · `gray.yml` profile loader |
 | `gray-pkg` | plugin package management |
 | `gray-cron` | cron scheduling · job store · ticker |
-| `gray-gateway` | Telegram / Discord / Slack gateway daemon |
 | `gray-supervise` | supervision core — restart contract, heartbeat, lifecycle, probe, rotation |
 | `gray-markdown` | streaming markdown renderer for the TUI |
 
@@ -186,7 +179,7 @@ The essentials — everything else is one `--help` or doc page away.
 
 | OS / arch | binary | notes |
 |---|---|---|
-| Linux x86_64 / aarch64 | musl-static | fully supported — `gray gateway install` (systemd user service) is Linux-only |
+| Linux x86_64 / aarch64 | musl-static | fully supported — systemd user service (Linux-only) |
 | macOS arm64 / x86_64 | Rust-static, **not notarized** | curl-installed binaries run fine; browser downloads may hit Gatekeeper quarantine |
 | Windows | via WSL only | native Windows unsupported |
 

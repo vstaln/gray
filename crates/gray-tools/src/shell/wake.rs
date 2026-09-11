@@ -11,7 +11,7 @@
 //! - call [`should_inject`] first: `UserInput` only wakes `sleep` (3B).
 //! - turn running → `agent.steer(format_wake(&ev, &info))`; idle at the
 //!   prompt with config `shell.wake_on_exit` (default true; false in `-p`
-//!   and gateway unless configured) → synthetic user message + turn, shown
+//!   unless configured) → synthetic user message + turn, shown
 //!   as a system notice, not as if the user typed it.
 //! - coalesce events within 500 ms into one multi-line message;
 //!   `RecvError::Lagged(n)` → one line `"[shell] {n} task events were

@@ -10,7 +10,7 @@
 //! Bare names (`- tools-basic`) are accepted as builtins.
 
 // Hand-rolled line parser instead of a YAML dependency;
-// switch to serde_yaml_ng if profiles grow beyond a flat entry list.
+// switch to a YAML dependency if profiles grow beyond a flat entry list.
 
 /// A sidecar plugin spec: argv to spawn.
 #[derive(Debug, Clone, PartialEq, Eq)]
