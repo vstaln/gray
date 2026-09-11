@@ -298,7 +298,7 @@ pub enum SessionsCmd {
 /// `gray cron ...` — recurring/one-shot job management.
 ///
 /// Thin CLI over `gray-cron::CronStore`: `add` runs the store's validation
-/// (schedule shape, lifecycle-reject) inline, so no daemon round-trip.
+/// (schedule shape) inline, so no daemon round-trip.
 #[derive(Parser, Debug, Clone)]
 pub enum CronCmd {
     /// List jobs (id, name, schedule, next run, last status)

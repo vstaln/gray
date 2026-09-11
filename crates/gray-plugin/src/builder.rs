@@ -1,15 +1,12 @@
-//! One profile-aware agent builder for every surface (REPL, `-p`, gateway, cron).
+//! One profile-aware agent builder for every surface (REPL, `-p`, cron).
 //!
-//! Lives here (not in `gray`) because historically the `gray → gray-gateway`
-//! edge forbade the gateway from calling `gray::build_agent` — this crate is
-//! the lowest common crate all hosts already depend on. `gray-tools` stays core-only
-//! (no tools→cron/gateway edges); the direction here is plugin→tools/provider.
+//! Lives here (not in `gray`) so every host shares one builder without depending on the binary.
 //!
-//! Surface policy stays with the callers: the system prompt (skills/context
-//! vs gateway suffix), the executor wrapper (plain vs `DenyExecutor`), the
+//! Surface policy stays with the callers: the system prompt (skills/context),
+//! the executor wrapper (plain vs `DenyExecutor`), the
 //! host handler, and abort-vs-warn on sidecar spawn failure all arrive via
 //! [`BuilderOptions`]. Cron needs no direct call — the sidecar fires through
-//! `host/run` (`gray -p`) and gateway delivery runs through `run_agent`.
+//! `host/run` (`gray -p`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -594,7 +591,7 @@ pub fn provider_cache_key(session_id: Option<&str>) -> String {
 // The single builder
 // ---------------------------------------------------------------------------
 
-/// Builds the `system` prompt: either a ready string (gateway) or a
+/// Builds the `system` prompt: either a ready string or a
 /// registry-aware closure (REPL/`-p` tool snippets + guidelines need the
 /// resolved registry, which only exists after profile resolution).
 pub enum SystemPrompt {
@@ -606,7 +603,7 @@ pub enum SystemPrompt {
 /// registry (snippets, names, guidelines).
 pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
 
-/// Wraps the profile-built registry executor (gateway: `DenyExecutor`;
+/// Wraps the profile-built registry executor (a `DenyExecutor` wrap;
 /// `None` = plain registry).
 pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 
@@ -618,8 +615,8 @@ pub struct BuilderOptions {
     /// Known model context window in tokens (`None` = unknown: only
     /// overflow-recovery compaction runs).
     pub context_window: Option<usize>,
-    /// Pins the Responses cache shard; gateway threads its session id so
-    /// daemon sessions don't all collide on the per-process fallback key.
+    /// Pins the Responses cache shard; callers thread their session id so
+    /// sessions don't all collide on the per-process fallback key.
     pub session_id: Option<String>,
     pub cwd: PathBuf,
     pub system_prompt: SystemPrompt,
