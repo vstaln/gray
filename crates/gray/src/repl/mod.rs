@@ -105,7 +105,6 @@ pub(crate) use gray_acp::AcpSession;
 pub(crate) struct AcpSession;
 #[cfg(not(feature = "acp"))]
 impl AcpSession {
-    pub(crate) async fn shutdown(self) {}
     pub(crate) async fn new_session(&mut self) -> anyhow::Result<()> {
         Ok(())
     }
@@ -602,9 +601,7 @@ pub async fn run_repl_mode(
                             stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             shared.lock().expect("tui lock").shutdown();
                             shutdown_hooks(agent.as_ref()).await;
-                            if let Some(s) = acp.take() {
-                                s.shutdown().await;
-                            }
+                            let _ = acp.take(); // AcpSession has no teardown.
                             shutdown_shell_tasks(&session_state, &tui).await;
                             print_exit_hint(&session_state);
                             break;
@@ -626,9 +623,7 @@ pub async fn run_repl_mode(
                 let mut buf = String::new();
                 if std::io::stdin().read_line(&mut buf)? == 0 {
                     shutdown_hooks(agent.as_ref()).await;
-                    if let Some(s) = acp.take() {
-                        s.shutdown().await;
-                    }
+                    let _ = acp.take(); // AcpSession has no teardown.
                     shutdown_shell_tasks(&session_state, &tui).await;
                     break;
                 }

@@ -1,8 +1,8 @@
 //! One profile-aware agent builder for every surface (REPL, `-p`).
 //!
-//! Lives here (not in `gray`) because the `gray → gray-gateway` edge forbids
-//! the gateway from calling `gray::build_agent` — this crate is the lowest
-//! common crate all hosts already depend on. `gray-tools` stays core-only
+//! Lives here (not in `gray`) because historically the `gray → gray-gateway`
+//! edge forbade the gateway from calling `gray::build_agent` — this crate is
+//! the lowest common crate all hosts already depend on. `gray-tools` stays core-only
 //! (no tools→cron/gateway edges); the direction here is plugin→tools/provider.
 //!
 //! Surface policy stays with the callers: the system prompt (skills/context
