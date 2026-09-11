@@ -1583,31 +1583,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gray-extras"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "gray",
- "gray-core",
- "log",
- "percent-encoding",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
- "tower",
- "tower-http",
- "uuid",
-]
-
-[[package]]
 name = "gray-gateway"
 version = "0.1.0"
 dependencies = [
@@ -4284,7 +4259,6 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
- "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",
