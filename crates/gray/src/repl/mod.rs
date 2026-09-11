@@ -123,7 +123,7 @@ pub use format::{THINKING_STYLE, fmt_event, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
-pub(crate) use plugin_cmds::{handle_marketplace_command, handle_plugin_command};
+pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
     dispatch_agent_event, handle_resume, maybe_overflow_compact, maybe_threshold_compact,
     persist_turn_messages, print_exit_hint,
