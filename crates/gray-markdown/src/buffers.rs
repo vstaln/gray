@@ -43,6 +43,23 @@ pub struct LinkTarget {
     pub id: u32,
 }
 
+/// Parse-time record of a closed fenced code block.
+///
+/// Populated in the `Tag::CodeBlock` arm of `MarkdownParser`; consumed during
+/// rendering (see `output::build_code_block_spans`) to produce the public
+/// [`crate::CodeBlockSpan`] once the output line range is known. Only **closed**
+/// fences are recorded — an unterminated trailing fence yields no entry.
+#[derive(Debug, Clone)]
+pub struct CodeBlockMeta {
+    /// Fence info string (e.g. `"mermaid"`), verbatim from pulldown-cmark.
+    pub info: String,
+    /// De-prefixed body content (container markers stripped, CRLF normalized) —
+    /// pulldown's merged body text, i.e. the clean code/diagram source.
+    pub body: String,
+    /// Source byte range of the fence body (delimiter lines excluded).
+    pub body_source_range: Range<usize>,
+}
+
 /// Text transformation for substituting characters (e.g., bullets).
 #[derive(Debug, Clone)]
 pub struct Transform {
@@ -268,6 +285,8 @@ pub struct MarkdownBuffers {
     pub untagged_code_ranges: Vec<Range<usize>>,
     pub table_replaces: Vec<TableReplace>,
     pub link_targets: Vec<LinkTarget>,
+    /// Closed fenced code blocks, in document order (see [`CodeBlockMeta`]).
+    pub code_blocks: Vec<CodeBlockMeta>,
 
     // Render scratch buffers (used only during render())
     pub current_spans: Vec<Span<'static>>,
@@ -283,6 +302,7 @@ impl MarkdownBuffers {
             untagged_code_ranges: Vec::new(),
             table_replaces: Vec::new(),
             link_targets: Vec::new(),
+            code_blocks: Vec::new(),
             current_spans: Vec::new(),
             active_highlights: Vec::new(),
         }
@@ -296,6 +316,7 @@ impl MarkdownBuffers {
         self.untagged_code_ranges.clear();
         self.table_replaces.clear();
         self.link_targets.clear();
+        self.code_blocks.clear();
         self.current_spans.clear();
         self.active_highlights.clear();
     }

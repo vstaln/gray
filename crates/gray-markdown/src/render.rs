@@ -697,11 +697,21 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             _ => None,
         };
 
+        // Now that `line_source_map` is final, map each parsed code block's
+        // body onto its rendered (pre-wrap) line range.
+        let text = self.text;
+        let code_blocks = crate::output::build_code_block_spans(
+            text,
+            &line_source_map,
+            std::mem::take(&mut self.buffers.code_blocks),
+        );
+
         (
             MarkdownRenderOutput {
                 lines,
                 line_source_map,
                 hyperlinks,
+                code_blocks,
             },
             checkpoint,
         )
