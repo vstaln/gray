@@ -30,6 +30,9 @@
 - prompt_cache_key passthrough for chat requests
 - `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
+### Changed
+- Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
+
 ### Fixed
 - Synthesize tool outputs for orphaned function calls (unbricks sessions after mid-turn cancel)
 - Classify upstream 5xx as ServerError; connection-safe errors with 10s timeout
