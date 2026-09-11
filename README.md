@@ -130,6 +130,8 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 
 Always-on: `gray gateway install` (systemd user service, `Restart=always`, survives reboot with linger) or `gray gateway run` under your own supervisor. `gray gateway status --probe` reports heartbeat health; heartbeats live in `~/.gray/state/gateway.heartbeat`, lifecycle in `state/gateway.lifecycle.json`, logs rotate at 10 MB × 3.
 
+**Heartbeat** — a standing goal the agent works on a cron schedule and reports to chat only when there is something to say. Configure with `gray-heartbeat on --every 30m --deliver telegram:123` (a gated extra: `cargo build -p gray-heartbeat`). See [docs/heartbeat.md](docs/heartbeat.md).
+
 <div align="center">
   <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
   <img alt="Dithered Jupiter storm" src="assets/space/jupiter-dither.png" width="31%" />
