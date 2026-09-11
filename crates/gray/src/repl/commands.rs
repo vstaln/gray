@@ -761,8 +761,8 @@ mod tests {
             ReplCommand::Marketplace(_)
         ));
         assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
-        // gateway left the TUI: /gateway and /gw are unknown (the `gray
-        // gateway` CLI still runs the preserved gray-gateway crate).
+        // gateway left the TUI: /gateway and /gw are unknown (the deleted
+        // native gateway no longer provides any chat surface).
         assert!(matches!(parse_command("/gw"), ReplCommand::Unknown(_)));
         assert!(matches!(
             parse_command("/gateway status"),

@@ -512,8 +512,8 @@ pub async fn run_repl_mode(
             }
         }
     }
-    // The messaging gateway left gray core (the gray-gateway crate is
-    // preserved and still runs via the `gray gateway` CLI): no autostart,
+    // The messaging gateway was deleted from gray core (chat returns as a
+    // plugin): no autostart,
     // no boot card — the TUI starts clean.
     let mut pending_command: Option<ReplCommand> = None;
     let mut pending_images: Vec<std::path::PathBuf> = Vec::new();

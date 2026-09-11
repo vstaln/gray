@@ -311,13 +311,13 @@ pub(crate) async fn dispatch_command(
                 handled = true;
             }
             if !handled {
-                // The gateway left the TUI (kept as the `gray gateway` CLI):
+                // The gateway left the TUI (native gateway deleted; chat returns as a plugin):
                 // point muscle memory at it instead of the generic unknown.
                 let first = cmd[1..].split_whitespace().next().unwrap_or("");
                 if first == "gateway" || first == "gw" {
                     say(
                         tui.as_ref().map(|(s, _)| s),
-                        "the TUI gateway is gone — run `gray gateway …` outside gray",
+                        "the TUI gateway is gone — native chat support was removed",
                     );
                 } else {
                     say(
