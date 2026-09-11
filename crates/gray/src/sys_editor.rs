@@ -321,7 +321,7 @@ impl SysEditor {
             return;
         }
 
-        let header_h = 1u16;
+        let header_h = 2u16;
         let footer_h = 2u16;
         let view_h = area.height.saturating_sub(header_h + footer_h) as usize;
 
@@ -395,6 +395,18 @@ impl SysEditor {
         frame.render_widget(
             Paragraph::new(Line::from(header_spans)),
             Rect::new(area.x, area.y, area.width, 1),
+        );
+
+        // 1b. Consequence warning — every time the editor opens. Gray injects
+        // nothing into this prompt, so deleting/leaving things out has no
+        // hidden effect; the model reads project files and skills via bash.
+        let warn = " Full prompt — gray adds nothing else: project files, skills, and cwd are read via bash. <!-- comments --> are stripped.";
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                warn,
+                Style::default().fg(Color::Rgb(254, 205, 211)),
+            ))),
+            Rect::new(area.x, area.y + 1, area.width, 1),
         );
 
         // 2. Render Text Editor Viewport

@@ -165,22 +165,17 @@ pub(crate) async fn handle_context_window(
         }
     }
     fn collect_parts(
-        cwd: &Path,
+        _cwd: &Path,
         agent: &Option<Agent>,
         tui: Option<&crate::composer::SharedTui>,
     ) -> crate::setup::ContextParts {
+        // The prompt file is the whole system prompt (comments stripped); gray
+        // no longer appends project context or a skills list, so those are 0.
         let sys = crate::sys_prompt_path()
             .ok()
             .and_then(|p| load_or_create_system_prompt_at(&p).ok())
-            .map(|s| crate::setup::estimate_str_tokens(&s))
+            .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
             .unwrap_or(0);
-        let ctx_bytes: usize = crate::system_prompt::discover_context_files(cwd)
-            .iter()
-            .map(|f| f.content.len())
-            .sum::<usize>();
-        let skills = crate::skills::discover_skills(cwd).skills;
-        let skills_toks =
-            crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(&skills));
         let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
             .map(|s| crate::setup::estimate_str_tokens(&s))
             .unwrap_or(0);
@@ -191,9 +186,9 @@ pub(crate) async fn handle_context_window(
             .unwrap_or(0);
         crate::setup::ContextParts {
             system_prompt: sys,
-            project_context: (ctx_bytes as f64 / 4.0).ceil() as usize,
+            project_context: 0,
             tools: tools_toks,
-            skills: skills_toks,
+            skills: 0,
             messages,
         }
     }
