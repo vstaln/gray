@@ -287,12 +287,12 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                // Live args streaming: count tokens so the `· N tok`
-                // counter grows, and show a truncated preview on status.
+                // Live args streaming: truncated preview on the status dock.
                 // ponytail: status-line preview only, no in-place box update.
+                // (No token accounting: the pill carries no estimate — exact
+                // counts come from usage reports, never chars/4.)
                 let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
-                t.live_progress_tokens(id, args_so_far);
                 pending_tools.insert(id.clone(), (name.clone(), None));
                 if preview.is_empty() {
                     t.set_status(Some(&format!("Preparing tool: {name}")));

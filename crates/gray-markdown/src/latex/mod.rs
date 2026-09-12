@@ -11,7 +11,8 @@
 //! - Roots (`\sqrt{x}` → `√x`, `\sqrt[3]{x}` → `∛x`)
 //! - Alphabets (`\mathbb{R}` → `ℝ`, `\mathcal{L}` → `ℒ`, `\mathbf{v}` → `𝐯`)
 //! - Accents via combining marks (`\hat{x}` → `x̂`, `\vec{v}` → `v⃗`)
-//! - Environments (`aligned`, `cases`, `pmatrix`, …) → multi-line layout
+//! - Environments: `aligned`-style → one line per `\\` row; matrices/`cases`
+//!   → single-line (`(1  2; 3  4)`, `{…}`)
 //!
 //! The converter is total: it never panics and always produces *some* output
 //! (unknown commands degrade to their bare name). Callers decide whether to
@@ -61,10 +62,9 @@ pub(crate) fn latex_to_unicode_inline(src: &str) -> Option<String> {
 
 /// Convert display math to one or more Unicode lines.
 ///
-/// Lines come from `\\` row separators and multi-row environments, which lay
-/// out as 2D boxes anchored to the surrounding flow (see [`MathBox`]).
-/// Leading whitespace is structural (box alignment) and preserved; only line
-/// ends are trimmed. Returns `None` when the source is too large to convert,
+/// Lines come from `\\` row separators and multi-row (`aligned`-style)
+/// environments. Matrices/`cases` render single-line. Only line ends are
+/// trimmed. Returns `None` when the source is too large to convert,
 /// and an empty `Vec` when the math has no visible content (callers should
 /// fall back in both cases).
 pub(crate) fn latex_to_unicode_display(src: &str) -> Option<Vec<String>> {

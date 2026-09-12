@@ -52,11 +52,23 @@ pub(crate) fn format_thought_line(verb: &str, elapsed: &str, out_tokens: Option<
     line
 }
 
-/// Live `Working… · N tok` value: the billed turn total so far, floored by
-/// the streamed char-estimate so the pill still ticks before the first
-/// `StepUsage` report lands.
-pub(crate) fn working_live_tokens(turn_billed_total: usize, live_streamed_tokens: usize) -> usize {
-    turn_billed_total.max(live_streamed_tokens)
+/// Elapsed time for the working pill: anchored to the turn start so the
+/// per-tool `set_status` re-stamps (`Preparing tool:` -> `Working`) never
+/// reset the visible clock mid-turn. omp parity
+/// (`packages/coding-agent/src/session/agent-session.ts` stamps prompt->yield
+/// locally at completion, never from the provider, and tool events don't
+/// touch it). Falls back to the status stamp outside turns.
+/// Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn pill_elapsed(
+    turn_started: Option<Instant>,
+    status_started: Instant,
+    running: bool,
+) -> Duration {
+    if running {
+        turn_started.map(|t| t.elapsed()).unwrap_or_else(|| status_started.elapsed())
+    } else {
+        status_started.elapsed()
+    }
 }
 
 mod text_area;
@@ -104,20 +116,12 @@ pub struct Tui {
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
-    pub(crate) live_streamed_tokens: usize,
-    /// Billed turn total accumulated live from each `StepUsage` report
-    /// (Σ-per-round, same basis as the TurnEnd bill). The status pill shows
-    /// `max(billed, streamed)` so it reads the turn's real total instead of
-    /// the chars/4 output-only estimate. Reset per turn; never feeds the
-    /// context gauge (that stays `latest_usage`, latest-round size).
-    pub(crate) turn_billed_total: usize,
     /// Billed output tokens from this turn's TurnEnd usage (Σ-per-round).
-    /// Display-only: `end_turn` prefers this over the streamed estimate for
-    /// the Thought line (the estimate misses tool results and input, so it
-    /// reads absurdly low next to real bills). Never feeds the context gauge
+    /// Display-only: the `Thought for · N tok` line. `None` (cancelled /
+    /// errored before any usage report) prints the bare elapsed, like an
+    /// omp turn with no reported usage. Never feeds the context gauge
     /// (that stays `latest_usage`, latest-round size).
     pub(crate) turn_billed_output: Option<usize>,
-    pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
@@ -266,10 +270,7 @@ impl Tui {
             ),
             committed_markdown_lines: 0,
             pending_resize: None,
-            live_streamed_tokens: 0,
-            turn_billed_total: 0,
             turn_billed_output: None,
-            tool_progress_lens: std::collections::HashMap::new(),
             viewport_h: MIN_VIEWPORT_H,
         })
     }
@@ -415,13 +416,13 @@ impl Tui {
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
         self.cumulative_usage = Some(usage);
-        // Live turn total for the `Working… · N tok` pill: same Σ-per-round
-        // basis as the TurnEnd bill, so the pill converges to the final
-        // `Thought for · N tok` total instead of the output-only estimate.
-        self.turn_billed_total = self.turn_billed_total.saturating_add(usage.total());
-        // The per-turn counter is NOT cleared here: `StepUsage` arrives
-        // every provider round, and wiping would reset the visible count
-        // mid-turn. It resets on `begin_turn` / `end_turn` / `reset_usage`.
+        // NOTE: no per-turn accumulation here. `StepUsage` carries the
+        // latest context size (each round's input already contains the full
+        // history), so summing `usage.total()` across rounds grows
+        // superlinearly (e.g. 16 rounds x ~120k = ~1.9M). The context gauge
+        // stays `latest_usage`; exact turn/session bills live in the TurnEnd
+        // totals. The pill itself carries no estimate at all (omp's loader
+        // is tokens-free; opencode reads the last report, never a sum).
     }
     /// Seeds the context gauge from a char-estimate when no provider
     /// `StepUsage` is in force: resume replay (persisted usage is billed
@@ -441,10 +442,7 @@ impl Tui {
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
         self.cumulative_usage = None;
-        self.live_streamed_tokens = 0;
-        self.turn_billed_total = 0;
         self.turn_billed_output = None;
-        self.tool_progress_lens.clear();
     }
 
     /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
@@ -482,10 +480,7 @@ impl Tui {
             self.turn_started = Some(now);
             self.turn_had_thinking = false;
         }
-        self.live_streamed_tokens = 0;
-        self.turn_billed_total = 0;
         self.turn_billed_output = None;
-        self.tool_progress_lens.clear();
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
@@ -548,17 +543,11 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.sleep_until = None;
-        // Capture the billed counts BEFORE clearing: the `Thought for`
-        // line reports billed output tokens (exact), falling back to the
-        // streamed estimate only when no usage report arrived. The estimate
-        // misses tool results and input entirely, so printing it next to a
-        // real bill reads absurdly low — it stays a live progress pulse in
-        // the status line, never the final word.
-        let turn_toks = self.turn_billed_output.unwrap_or(self.live_streamed_tokens);
-        self.live_streamed_tokens = 0;
-        self.turn_billed_total = 0;
+        // Billed output only (exact, reasoning included). `None` prints the
+        // bare elapsed — a chars/4 fallback here would reintroduce the very
+        // inflation the pill just dropped (2.5M on a 14s turn).
+        let turn_toks = self.turn_billed_output;
         self.turn_billed_output = None;
-        self.tool_progress_lens.clear();
         if self.thinking {
             self.end_thinking_run(true);
         }
@@ -586,26 +575,13 @@ impl Tui {
             // `✻ Thought for … · N tok` is billed output (exact, reasoning
             // included). Other billed Σ-per-round totals stay out of the TUI
             // entirely.
-            let line = format_thought_line(verb, &elapsed_str, Some(turn_toks));
+            let line = format_thought_line(verb, &elapsed_str, turn_toks);
             self.ensure_gap(1);
             self.push_dim(line);
             self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
-    }
-
-    /// pi `updateArgs` token accounting: `args_so_far` is the cumulative
-    /// buffer, so only the delta since the last call counts toward the
-    /// live `· N tok` counter.
-    pub fn live_progress_tokens(&mut self, id: &str, args_so_far: &str) {
-        let prev = self.tool_progress_lens.get(id).copied().unwrap_or(0);
-        let cur = args_so_far.len();
-        if cur > prev {
-            let delta_chars = cur - prev;
-            self.live_streamed_tokens += (delta_chars.div_ceil(4)).max(1);
-            self.tool_progress_lens.insert(id.to_string(), cur);
-        }
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
@@ -724,16 +700,23 @@ mod thought_line_tests {
     }
 
     #[test]
-    fn working_live_tokens_prefers_billed_total() {
-        // Provider-reported turn total beats the chars/4 estimate.
-        assert_eq!(super::working_live_tokens(12_500, 109), 12_500);
+    fn pill_clock_ignores_tool_status_restamps() {
+        // Every tool event re-stamps the status (`Preparing tool:` ->
+        // `Working`); the visible clock must keep counting from the turn
+        // start instead of restarting at 0.0s per tool call.
+        let turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(14));
+        let restamped = std::time::Instant::now();
+        let elapsed = super::pill_elapsed(turn_started, restamped, true);
+        assert!(
+            elapsed.as_secs() >= 13,
+            "clock reset mid-turn: {elapsed:?}"
+        );
     }
 
     #[test]
-    fn working_live_tokens_floors_at_stream_estimate() {
-        // Before the first StepUsage the billed total is 0 — the pill
-        // still ticks on the stream estimate instead of reading 0.
-        assert_eq!(super::working_live_tokens(0, 109), 109);
-        assert_eq!(super::working_live_tokens(0, 0), 0);
+    fn pill_clock_falls_back_outside_turns() {
+        let status = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let elapsed = super::pill_elapsed(None, status, false);
+        assert!((1..=5).contains(&elapsed.as_secs()), "{elapsed:?}");
     }
 }

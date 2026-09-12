@@ -124,24 +124,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed());
-            let elapsed = started.elapsed();
+            // Turn-anchored clock (tool re-stamps never restart it) and no
+            // token estimate: omp's loader is tokens-free, opencode reads
+            // the last usage report. Exact counts live in the footer gauge
+            // (context), the Thought line (turn output) and `/usage`.
+            let elapsed = super::pill_elapsed(tui.turn_started, *started, tui.is_task_running);
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
-            let tok_suffix = if tui.is_task_running {
-                // Per-turn counter: streamed-output estimate only (chars/4
-                // + tool-args deltas). Never Σ `StepUsage` totals: each
-                // round's input already contains the full history, so that
-                // sum grows superlinearly (121k context -> 1.9M pill).
-                // Session context lives in the footer gauge, never here.
-                format!(
-                    " · {} tok",
-                    crate::repl::fmt_usage(tui.live_streamed_tokens)
-                )
-            } else if let Some(u) = tui.latest_usage {
-                format!(" · {} tok", crate::repl::fmt_usage(u.total()))
-            } else {
-                String::new()
-            };
-            let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
+            let suffix = format!(" {elapsed_str} (esc to interrupt)");
             spans.push(Span::styled(
                 suffix,
                 Style::default().fg(crate::theme::theme().tool_dim),

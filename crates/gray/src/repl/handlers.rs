@@ -2,11 +2,12 @@
 
 use super::*;
 
-/// Expands `/skills:<name> [args]` (or the `/skill <name> [args]` alias —
+/// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). Bare `/skills` opens the installed-skills manager (TTY) or
-/// prints the text list (headless). `/skill <name>` runs one (Task 4).
+/// appended). Bare `/skills` opens the skills manager (TTY) or prints the
+/// text list (headless). Both list *discovered* skills (global + project),
+/// not just `~/.gray/skills` installs.
 /// With `local` set (Esc mid-turn), the skill is announced but never expanded
 /// into an AI prompt — the turn was cancelled, nothing talks to the model.
 pub(crate) fn expand_skill_command(
@@ -28,11 +29,10 @@ pub(crate) fn expand_skill_command(
     };
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
-        // Bare /skills — installed manager on TTY (like /plugins),
-        // text list headless.
+        // Bare /skills — manager on TTY (like /plugins), text list headless.
         if tui.is_some() {
             let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-            match with_modal_sync(tui, || crate::setup::run_skills_modal(bg.as_ref())) {
+            match with_modal_sync(tui, || crate::setup::run_skills_modal(bg.as_ref(), cwd)) {
                 Ok(true) => {
                     if let Some(shared) = tui {
                         let mut t = shared.lock().expect("tui lock");
@@ -55,21 +55,12 @@ pub(crate) fn expand_skill_command(
                     say(tui, &format!("skills error: {e}"));
                 }
             }
-        };
-        match gray_pkg::skills_ops::list() {
-            Ok(skills) if skills.is_empty() => {
-                say(tui, "no skills installed — /marketplace to browse");
+        } else if discovered.skills.is_empty() {
+            say(tui, "no skills discovered — /marketplace to browse");
+        } else {
+            for s in &discovered.skills {
+                say(tui, &crate::skills::format_discovered_skill_row(s));
             }
-            Ok(skills) => {
-                for s in &skills {
-                    if s.version.trim().is_empty() {
-                        say(tui, &format!("{} [{}]", s.name, s.source));
-                    } else {
-                        say(tui, &format!("{} {} [{}]", s.name, s.version, s.source));
-                    }
-                }
-            }
-            Err(e) => say(tui, &format!("skills list failed: {e:#}")),
         }
         return ReplCommand::Empty;
     };

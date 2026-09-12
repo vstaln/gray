@@ -256,6 +256,28 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// One-line row for a discovered skill: `name — description`
+/// (description single-lined and capped at 100 chars; the modal truncates
+/// to width, the headless list needs its own cap).
+pub fn format_discovered_skill_row(skill: &Skill) -> String {
+    const MAX_DESC: usize = 100;
+    let desc: String = skill
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let short = if desc.chars().count() > MAX_DESC {
+        format!("{}…", desc.chars().take(MAX_DESC - 1).collect::<String>())
+    } else {
+        desc
+    };
+    if short.is_empty() {
+        skill.name.clone()
+    } else {
+        format!("{} — {}", skill.name, short)
+    }
+}
+
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     let visible: Vec<&Skill> = skills
         .iter()
@@ -291,11 +313,11 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Invocation-arg validation (Bug1: `/skills:<name> <bogus-args>` silently
-// ignored args while `/skills:bogus-name` errored). Skills declare args via
+// Invocation-arg validation (Bug1: `/skills <name> <bogus-args>` silently
+// ignored args while `/skills bogus-name` errored). Skills declare args via
 // frontmatter `args:`/`arguments:` (see `load::parse_declared_args`); empty
 // means the skill takes no arguments, so any passed arg is an error naming
-// the valid args. Callers (REPL `/skills:` expansion, `SkillTool`) must
+// the valid args. Callers (REPL skill expansion, `SkillTool`) must
 // surface the Err string locally instead of invoking the model.
 // ---------------------------------------------------------------------------
 

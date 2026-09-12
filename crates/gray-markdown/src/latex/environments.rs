@@ -1,6 +1,4 @@
-//! `\\begin{env}...\\end{env}` environments: matrices, cases, alignments.
-
-use crate::buffers::unicode_display_width;
+//! `\begin{env}...\end{env}` environments: matrices, cases, alignments.
 
 use super::Mode;
 use super::commands::{render_atom, take_brace_arg};
@@ -76,8 +74,23 @@ pub(super) fn render_environment(
             body = &body[probe.pos..];
         }
     }
-    let rows = env_rows_to_strings(body, env_name, out.flat, depth, mode);
-    out.hcat_rows(rows);
+    let rows = env_rows_to_strings(body, env_name, depth, mode);
+    if rows.is_empty() {
+        return;
+    }
+    // ponytail: single-column flow, no 2D box attach. Matrices/cases arrive
+    // as one row so prefix/suffix stay on the same line; aligned-style envs
+    // split lines in display mode and join with `; ` inline.
+    if out.flat {
+        out.push_str(&rows.join("; "));
+    } else {
+        for (i, row) in rows.into_iter().enumerate() {
+            if i > 0 {
+                out.push('\n');
+            }
+            out.push_str(&row);
+        }
+    }
 }
 
 /// `true` if `rest` starts with command word `word` NOT followed by another
@@ -91,17 +104,11 @@ fn command_at(rest: &str, word: &str) -> bool {
 }
 
 /// Split an environment body into rows (`\\`) and cells (`&`) at brace and
-/// environment depth 0, render each cell, then lay the rows out according to
-/// the environment. Returns one string per visual row; the caller attaches
-/// them as a box. In `flat` mode, matrix/cases environments render as a
-/// single row with `; ` between matrix rows.
-fn env_rows_to_strings(
-    body: &str,
-    env_name: &str,
-    flat: bool,
-    depth: usize,
-    mode: Mode,
-) -> Vec<String> {
+/// environment depth 0, render each cell, then lay the rows out. Matrices and
+/// `cases` always render as a single row with `; ` between source rows —
+/// `(1  2; 3  4)`, `{x  x > 0; 0  e}` — in both inline and display math.
+/// Aligned-style environments return one string per row.
+fn env_rows_to_strings(body: &str, env_name: &str, depth: usize, mode: Mode) -> Vec<String> {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
     let mut cell_start = 0usize;
@@ -174,78 +181,41 @@ fn env_rows_to_strings(
             | "smallmatrix"
             | "array"
     );
-    let n_rows = rendered_rows.len();
 
     if is_matrix {
-        // Flat (inline) mode: one row, single delimiter pair, rows joined
-        // with `; ` — `(1  2; 3  4)`.
-        if flat {
-            let inner = rendered_rows
-                .iter()
-                .map(|cells| cells.join("  "))
-                .collect::<Vec<_>>()
-                .join("; ");
-            // Single-row delimiter pair; plain `matrix` has none (' ').
-            let (l, r) = matrix_delims(env_name, 0, 1);
-            let mut s = String::new();
-            if l != ' ' {
-                s.push(l);
-            }
-            s.push_str(&inner);
-            if r != ' ' {
-                s.push(r);
-            }
-            return vec![s];
-        }
-        // Pad columns to equal width so rows align.
-        let n_cols = rendered_rows.iter().map(Vec::len).max().unwrap_or(0);
-        let mut widths = vec![0usize; n_cols];
-        for cells in &rendered_rows {
-            for (i, cell) in cells.iter().enumerate() {
-                widths[i] = widths[i].max(unicode_display_width(cell));
-            }
-        }
-        rendered_rows
+        let inner = rendered_rows
             .iter()
-            .enumerate()
-            .map(|(row_idx, cells)| {
-                let mut content = String::new();
-                for (i, cell) in cells.iter().enumerate() {
-                    if i > 0 {
-                        content.push_str("  ");
-                    }
-                    content.push_str(cell);
-                    if i + 1 < cells.len() {
-                        let pad = widths[i].saturating_sub(unicode_display_width(cell));
-                        content.push_str(&" ".repeat(pad));
-                    }
-                }
-                let (l, r) = matrix_delims(env_name, row_idx, n_rows);
-                format!("{l}{content}{r}")
-            })
-            .collect()
+            .map(|cells| cells.join("  "))
+            .collect::<Vec<_>>()
+            .join("; ");
+        // ponytail: single delimiter pair only; 2D per-row box chars deleted.
+        let (l, r) = match env_name {
+            "pmatrix" => ('(', ')'),
+            "bmatrix" | "array" => ('[', ']'),
+            "Bmatrix" => ('{', '}'),
+            "vmatrix" | "Vmatrix" => ('│', '│'),
+            _ => (' ', ' '),
+        };
+        let mut s = String::new();
+        if l != ' ' {
+            s.push(l);
+        }
+        s.push_str(&inner);
+        if r != ' ' {
+            s.push(r);
+        }
+        return vec![s];
     } else if env_name == "cases" {
-        if flat {
-            let inner = rendered_rows
-                .iter()
-                .map(|cells| cells.join("  "))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return vec![format!("{{{inner}}}")];
-        }
-        rendered_rows
+        let inner = rendered_rows
             .iter()
-            .enumerate()
-            .map(|(row_idx, cells)| {
-                let brace = cases_brace(row_idx, n_rows);
-                format!("{brace} {}", cells.join("  "))
-            })
-            .collect()
+            .map(|cells| cells.join("  "))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return vec![format!("{{{inner}}}")];
     } else {
         // aligned/align/gather/split/equation/…: `&` is an invisible
         // alignment marker; rejoin cells with a single space. One string per
-        // row; the caller's box attachment (or flat `; ` join) handles the
-        // rest.
+        // row.
         rendered_rows
             .iter()
             .map(|cells| {
@@ -262,64 +232,5 @@ fn env_rows_to_strings(
                 s
             })
             .collect()
-    }
-}
-
-/// Per-row delimiters for matrix-family environments.
-fn matrix_delims(env: &str, row: usize, n_rows: usize) -> (char, char) {
-    let single = n_rows == 1;
-    let first = row == 0;
-    let last = row + 1 == n_rows;
-    match env {
-        "pmatrix" => {
-            if single {
-                ('(', ')')
-            } else if first {
-                ('⎛', '⎞')
-            } else if last {
-                ('⎝', '⎠')
-            } else {
-                ('⎜', '⎟')
-            }
-        }
-        "bmatrix" | "array" => {
-            if single {
-                ('[', ']')
-            } else if first {
-                ('⎡', '⎤')
-            } else if last {
-                ('⎣', '⎦')
-            } else {
-                ('⎢', '⎥')
-            }
-        }
-        "Bmatrix" => {
-            if single {
-                ('{', '}')
-            } else if first {
-                ('⎧', '⎫')
-            } else if last {
-                ('⎩', '⎭')
-            } else {
-                ('⎨', '⎬')
-            }
-        }
-        "vmatrix" | "Vmatrix" => ('│', '│'),
-        _ => (' ', ' '),
-    }
-}
-
-/// Left-brace column char for `cases` rows.
-fn cases_brace(row: usize, n_rows: usize) -> char {
-    if n_rows == 1 {
-        '{'
-    } else if row == 0 {
-        '⎧'
-    } else if row + 1 == n_rows {
-        '⎩'
-    } else if row == n_rows / 2 {
-        '⎨'
-    } else {
-        '⎪'
     }
 }
