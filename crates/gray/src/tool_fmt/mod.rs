@@ -503,22 +503,35 @@ pub fn tool_may_render_body(tool_name: &str) -> bool {
 /// `bash`/`shell_output` wrap process output in the fence so the model can
 /// tell tool output from user text (prompt-injection boundary). The tags are
 /// harness plumbing: the transcript keeps them, but rendering them as
-/// numbered output lines confuses humans. Strip the opener iff it is the
-/// first line and the closer iff it is the last line, independently — a
-/// budget-truncated body may carry only one half.
-fn strip_shell_fence(trimmed: &str) -> &str {
-    let mut s = trimmed;
-    if let Some(first_end) = s.find('\n')
-        && s[..first_end].trim_start().starts_with("<untrusted-output")
+/// numbered output lines confuses humans.
+///
+/// Real shell output is `header + fence(body)` — e.g. `exit 0 …` on line 1,
+/// `<untrusted-output …>` on line 2, body, `</untrusted-output>`, then an
+/// optional trailer (`…more available…`, `for the rest`, wake text, …).
+/// Strip the first opener near the top and the last closer near the bottom,
+/// independently — a budget-truncated body may carry only one half. Body
+/// closers are escaped as `<\\/…`, so an exact `</untrusted-output>` match
+/// is the real fence; opener matches are position-guarded so a body line
+/// that happens to look like a tag is left alone.
+fn strip_shell_fence(trimmed: &str) -> String {
+    let mut lines: Vec<&str> = trimmed.lines().collect();
+    if let Some(idx) = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("<untrusted-output"))
+        && idx <= 3
     {
-        s = &s[first_end + 1..];
+        lines.remove(idx);
     }
-    if let Some(last_start) = s.rfind('\n')
-        && s[last_start + 1..].trim() == "</untrusted-output>"
+    if let Some(idx) = lines
+        .iter()
+        .rposition(|l| l.trim() == "</untrusted-output>")
+        && lines.len().saturating_sub(idx) <= 5
     {
-        s = &s[..last_start];
+        lines.remove(idx);
     }
-    s
+    lines
+        .join("\n")
+        .replace("<\\/untrusted-output", "</untrusted-output>")
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.
@@ -603,7 +616,7 @@ pub fn format_tool_result_lines_with_context(
     // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
     // full output stays in model context, TUI only renders a window.
     // ponytail: reuse render_code_block cap, no new collapsing system.
-    let (pretty, token) = prettify_output(trimmed);
+    let (pretty, token) = prettify_output(&trimmed);
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
     render_numbered_lines(
@@ -669,6 +682,58 @@ mod tests {
                 .join("\n");
         assert!(!text.contains("untrusted-output"), "got {text:?}");
         assert!(text.contains("partial body"), "body lost: {text:?}");
+    }
+
+    #[test]
+    fn bash_header_plus_fence_is_stripped_for_display() {
+        // Real bash shape is header + fence(body), not fence-first:
+        // `exit …` on line 1, opener on line 2, body, closer last.
+        // The old stripper only handled fence-first and leaked the opener.
+        let out = "exit 0 \u{00b7} 0.0s \u{00b7} 1 lines \u{00b7} log ~/.gray/shell/nosession/t1.log\n<untrusted-output task=\"t1\">\nhi\n</untrusted-output>";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !rendered.contains("untrusted-output"),
+            "fence leaked: {rendered:?}"
+        );
+        assert!(rendered.contains("exit 0"), "header lost: {rendered:?}");
+        assert!(rendered.contains("hi"), "body lost: {rendered:?}");
+    }
+
+    #[test]
+    fn bash_promotion_trailer_keeps_body_but_drops_fence() {
+        // Promotion shape: header, fence, trailer after the closer.
+        // Closer is not the last line, so end-anchored stripping missed it.
+        let out = "still running after 1s \u{2192} promoted to background as t6 \u{00b7} pid 4242 \u{00b7} log ~/.gray/shell/nosession/t6.log\n<untrusted-output task=\"t6\">\ntick 1\n</untrusted-output>\nshell_output(task_id=\"t6\", from_offset=12) for the rest \u{00b7} next_offset=12";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !rendered.contains("untrusted-output"),
+            "fence leaked: {rendered:?}"
+        );
+        assert!(rendered.contains("tick 1"), "body lost: {rendered:?}");
+        assert!(
+            rendered.contains("still running"),
+            "header lost: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("shell_output"),
+            "trailer lost: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn bash_escaped_closer_in_body_is_restored() {
+        // Body containing a literal closer is escaped as `<\\/` by fence();
+        // display should restore the original text, not leak plumbing.
+        let out = "exit 0 \u{00b7} 0.0s \u{00b7} 2 lines \u{00b7} log ~/.gray/shell/nosession/t1.log\n<untrusted-output task=\"t1\">\nfirst\n<\\/untrusted-output> tail\n</untrusted-output>";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !rendered.contains("untrusted-output task="),
+            "fence leaked: {rendered:?}"
+        );
+        assert!(rendered.contains("tail"), "body lost: {rendered:?}");
     }
 
     #[test]

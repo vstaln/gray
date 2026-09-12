@@ -12,11 +12,6 @@ use tokio::task::JoinSet;
 
 use crate::agent::ToolOutput;
 
-/// Max calls per parallel run (Toolrush `MAX_BATCH`).
-pub const MAX_BATCH: usize = 16;
-/// Max concurrent in-flight tool executions (Toolrush `MAX_WORKERS`).
-pub const MAX_WORKERS: usize = 4;
-
 /// Shared env-var guard for tests that flip `GRAY_PARALLEL_READS`. Lives at
 /// module scope (not inside `mod tests`) so the `agent.rs` lane tests reuse
 /// the same lock — env is process-global.
@@ -51,9 +46,9 @@ pub enum Segment {
 }
 
 /// Split `tool_uses` into ordered segments. A maximal contiguous run of
-/// batchable-known-object-args calls of length ≥ 2 becomes `Parallel`
-/// (capped at `MAX_BATCH` per run — longer runs split); everything else
-/// (barrier tool, unknown tool, non-object args, singleton) is `Single`.
+/// batchable-known-object-args calls of length ≥ 2 becomes one `Parallel`
+/// segment (no size cap); everything else (barrier tool, unknown tool,
+/// non-object args, singleton) is `Single`.
 /// Flattened indices always equal emission order.
 pub fn plan_segments(
     tool_uses: &[(String, String, Value)],
@@ -62,14 +57,11 @@ pub fn plan_segments(
     let mut out = Vec::new();
     let mut run: Vec<usize> = Vec::new();
     let flush = |run: &mut Vec<usize>, out: &mut Vec<Segment>| {
-        for chunk in run.chunks(MAX_BATCH) {
-            if chunk.len() >= 2 {
-                out.push(Segment::Parallel(chunk.to_vec()));
-            } else {
-                out.extend(chunk.iter().map(|&i| Segment::Single(i)));
-            }
+        if run.len() >= 2 {
+            out.push(Segment::Parallel(std::mem::take(run)));
+        } else {
+            out.extend(run.drain(..).map(Segment::Single));
         }
-        run.clear();
     };
     for (idx, (_, name, args)) in tool_uses.iter().enumerate() {
         if is_batchable(name) && known.contains(name) && args.is_object() {
@@ -83,29 +75,22 @@ pub fn plan_segments(
     out
 }
 
-/// Run `futs` with at most `max_workers` in flight, returning
-/// `(input_index, output)` in input-index order — one entry per input.
+/// Run `futs` concurrently, returning `(input_index, output)` in
+/// input-index order — one entry per input. No cap: every call in the
+/// batch is in flight at once.
 /// `None` output means the call never completed (cancel fired first).
 /// Task panics become `is_error` outputs under the panicking call's real
 /// input index — tool failures are data, never crashes.
 pub async fn join_ordered(
     futs: Vec<(usize, BoxFuture<'static, ToolOutput>)>,
-    max_workers: usize,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Vec<(usize, Option<ToolOutput>)> {
     use futures::FutureExt as _;
     use std::panic::AssertUnwindSafe;
-    use std::sync::Arc;
     let inputs: Vec<usize> = futs.iter().map(|(idx, _)| *idx).collect();
-    let sem = Arc::new(tokio::sync::Semaphore::new(max_workers.max(1)));
     let mut set: JoinSet<(usize, ToolOutput)> = JoinSet::new();
     for (idx, fut) in futs {
-        let permit_owner = sem.clone();
         set.spawn(async move {
-            let _permit = permit_owner
-                .acquire_owned()
-                .await
-                .expect("semaphore closed");
             // Panics are data: catch inside the wrapper so the real input
             // index survives — no sentinel, Task 4 reconciles by index.
             match AssertUnwindSafe(fut).catch_unwind().await {
@@ -199,14 +184,14 @@ mod tests {
         assert_eq!(plan_segments(&u, &known()), vec![Segment::Single(0)]);
     }
     #[test]
-    fn seventeen_batchable_splits_at_max_batch() {
+    fn long_batchable_run_stays_one_segment() {
         let u: Vec<(String, String, Value)> = (0..17)
             .map(|i| (format!("c{i}"), "read".into(), json!({"path": "x"})))
             .collect();
         let k: HashSet<String> = ["read"].iter().map(|s| s.to_string()).collect();
         assert_eq!(
             plan_segments(&u, &k),
-            vec![Segment::Parallel((0..16).collect()), Segment::Single(16)]
+            vec![Segment::Parallel((0..17).collect())]
         );
     }
     #[test]
@@ -248,7 +233,7 @@ mod tests {
         let futs = vec![mk(0), mk(1), mk(2), mk(3)];
         let cancel = tokio_util::sync::CancellationToken::new();
         let t0 = std::time::Instant::now();
-        let got = join_ordered(futs, 4, &cancel).await;
+        let got = join_ordered(futs, &cancel).await;
         let dt = t0.elapsed();
         assert_eq!(
             got.into_iter()
@@ -279,7 +264,7 @@ mod tests {
             }) as BoxFuture<'static, ToolOutput>,
         )];
         let cancel = tokio_util::sync::CancellationToken::new();
-        let got = join_ordered(futs, 4, &cancel).await;
+        let got = join_ordered(futs, &cancel).await;
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].0, 0, "panic keeps its real input index");
         let (_, out) = &got[0];
@@ -308,7 +293,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             c2.cancel();
         });
-        let got = join_ordered(vec![mk(0), mk(1)], 4, &cancel).await;
+        let got = join_ordered(vec![mk(0), mk(1)], &cancel).await;
         assert_eq!(
             got.len(),
             2,
