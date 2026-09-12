@@ -127,13 +127,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let elapsed = started.elapsed();
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
             let tok_suffix = if tui.is_task_running {
-                // Turn total so far: billed Σ-per-round usage accumulated
-                // from each StepUsage, floored by the streamed estimate so
-                // the pill still ticks pre-report. Session context lives in
-                // the footer gauge, never here.
-                let live =
-                    super::working_live_tokens(tui.turn_billed_total, tui.live_streamed_tokens);
-                format!(" · {} tok", crate::repl::fmt_usage(live))
+                // Per-turn counter: streamed-output estimate only (chars/4
+                // + tool-args deltas). Never Σ `StepUsage` totals: each
+                // round's input already contains the full history, so that
+                // sum grows superlinearly (121k context -> 1.9M pill).
+                // Session context lives in the footer gauge, never here.
+                format!(
+                    " · {} tok",
+                    crate::repl::fmt_usage(tui.live_streamed_tokens)
+                )
             } else if let Some(u) = tui.latest_usage {
                 format!(" · {} tok", crate::repl::fmt_usage(u.total()))
             } else {
@@ -415,13 +417,14 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        if tui.status.is_none() && !tui.is_task_running {
-            let cur_x =
-                (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y =
-                (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
-            frame.set_cursor_position(Position::new(cur_x, cur_y));
-        }
+        // The caret lives in the input box on every frame. Follow-up input
+        // stays editable mid-turn (typed into `queued_inputs`), so gating on
+        // idle hides the caret exactly while the user is typing blind. Modals
+        // own the screen and return before this point, so no other consumer
+        // competes for the cursor.
+        let cur_x = (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
+        let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+        frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
     let ended = crossterm::execute!(
         std::io::stdout(),
