@@ -198,17 +198,15 @@ fn aligned_environment_strips_markers() {
 }
 
 #[test]
-fn cases_environment_renders_brace_column() {
+fn cases_environment_renders_flat() {
     let lines = display("f(x) = \\begin{cases} x & x > 0 \\\\ 0 & \\text{otherwise} \\end{cases}");
-    assert_eq!(lines.len(), 2);
-    assert!(lines[0].starts_with("f(x) = ⎧ x"), "got {lines:?}");
-    assert!(lines[1].trim_start().starts_with("⎩ 0"), "got {lines:?}");
+    assert_eq!(lines, vec!["f(x) = {x  x > 0; 0  otherwise}"]);
 }
 
 #[test]
-fn pmatrix_pads_columns() {
+fn pmatrix_renders_flat() {
     let lines = display("\\begin{pmatrix} 1 & 22 \\\\ 333 & 4 \\end{pmatrix}");
-    assert_eq!(lines, vec!["⎛1    22⎞", "⎝333  4⎠"]);
+    assert_eq!(lines, vec!["(1  22; 333  4)"]);
 }
 
 #[test]
@@ -222,34 +220,32 @@ fn bmatrix_single_row_uses_flat_brackets() {
 #[test]
 fn vmatrix_uses_bars() {
     let lines = display("\\begin{vmatrix} a & b \\\\ c & d \\end{vmatrix}");
-    assert_eq!(lines, vec!["│a  b│", "│c  d│"]);
+    assert_eq!(lines, vec!["│a  b; c  d│"]);
 }
 
 #[test]
-fn matrix_with_prefix_aligns_as_box() {
-    // The prefix must stay on the anchor row with the matrix body
-    // aligned beneath — not glued to the first row only.
+fn matrix_with_prefix_stays_on_one_line() {
     let lines = display("A = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}");
-    assert_eq!(lines, vec!["A = ⎛1  2⎞", "    ⎝3  4⎠"]);
+    assert_eq!(lines, vec!["A = (1  2; 3  4)"]);
 }
 
 #[test]
-fn matrix_with_prefix_and_suffix_flows_on_anchor_row() {
+fn matrix_with_prefix_and_suffix_stays_on_one_line() {
     let lines =
         display("A = \\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}, \\quad \\det(A) = -2");
-    assert_eq!(lines, vec!["A = ⎛1  2⎞,   det(A) = −2", "    ⎝3  4⎠"]);
+    assert_eq!(lines, vec!["A = (1  2; 3  4),   det(A) = −2"]);
 }
 
 #[test]
-fn three_row_matrix_anchors_on_middle_row() {
+fn three_row_matrix_renders_flat() {
     let lines = display("v = \\begin{pmatrix} 1 \\\\ 2 \\\\ 3 \\end{pmatrix} x");
-    assert_eq!(lines, vec!["    ⎛1⎞", "v = ⎜2⎟ x", "    ⎝3⎠"]);
+    assert_eq!(lines, vec!["v = (1; 2; 3) x"]);
 }
 
 #[test]
-fn cases_with_prefix_aligns_as_box() {
+fn cases_with_prefix_renders_flat() {
     let lines = display("f(x) = \\begin{cases} x & x > 0 \\\\ 0 & e \\end{cases}");
-    assert_eq!(lines, vec!["f(x) = ⎧ x  x > 0", "       ⎩ 0  e"]);
+    assert_eq!(lines, vec!["f(x) = {x  x > 0; 0  e}"]);
 }
 
 #[test]
@@ -270,17 +266,17 @@ fn inline_cases_renders_flat() {
 }
 
 #[test]
-fn two_matrices_on_one_line_share_rows() {
+fn two_matrices_on_one_line_render_flat() {
     let lines = display(
         "\\begin{pmatrix} 1 \\\\ 2 \\end{pmatrix} + \\begin{pmatrix} 3 \\\\ 4 \\end{pmatrix}",
     );
-    assert_eq!(lines, vec!["⎛1⎞ + ⎛3⎞", "⎝2⎠   ⎝4⎠"]);
+    assert_eq!(lines, vec!["(1; 2) + (3; 4)"]);
 }
 
 #[test]
 fn row_break_then_matrix_does_not_disturb_previous_line() {
     let lines = display("a \\\\ B = \\begin{pmatrix} 1 \\\\ 2 \\end{pmatrix}");
-    assert_eq!(lines, vec!["a", "B = ⎛1⎞", "    ⎝2⎠"]);
+    assert_eq!(lines, vec!["a", "B = (1; 2)"]);
 }
 
 #[test]

@@ -88,7 +88,7 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 | `/context [tokens\|auto]` | inspect or set the window — `128k`, `1m`, `auto` to clear |
 | `/thinking` · `/effort [level]` | toggle reasoning, pick the effort |
 | `/usage` | session tokens & cost |
-| `/skills` · `/skills:<name> [args]` | list skills, run one |
+| `/skills` · `/skills [name] [args]` | list skills, run one |
 | `/plugin <subcommand>` | list · search · install · remove · update · enable · disable · check |
 | `/agentsmd` | edit the full system prompt in the built-in editor (`show`, `reset` too) |
 | `/feedback <text>` | save feedback locally + open a prefilled GitHub issue |
@@ -112,7 +112,7 @@ Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--sessi
 
 Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, providers, config) · [docs/plugins.md](docs/plugins.md) (plugin authoring) · [docs/protocol-v1.md](docs/protocol-v1.md) (frozen wire spec).
 
-**Skills** — `SKILL.md` bodies discovered across opencode / claude / agent directories. `/skills` lists them, `/skills:<name> [args]` runs one. The prompt points the model at the skill roots; it reads the matching `SKILL.md` via bash.
+**Skills** — `SKILL.md` bodies discovered across opencode / claude / agent directories. `/skills` lists them, `/skills [name] [args]` runs one (`/skill` is an alias). The prompt points the model at the skill roots; it reads the matching `SKILL.md` via bash.
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
 

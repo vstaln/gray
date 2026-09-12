@@ -66,8 +66,6 @@ impl Tui {
     }
 
     pub fn stream(&mut self, chunk: &str) {
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
@@ -92,8 +90,6 @@ impl Tui {
 
     pub fn stream_thinking(&mut self, chunk: &str) {
         self.turn_had_thinking = true;
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         if self.hide_thinking {
             let _ = self.draw();
             return;
@@ -129,8 +125,6 @@ impl Tui {
     }
 
     pub fn stream_text(&mut self, chunk: &str) {
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
             self.set_status(Some("Working"));

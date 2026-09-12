@@ -9,7 +9,7 @@ Every axis below works in the real binary today — see the
 Drop a directory with a `SKILL.md` (frontmatter `description:` required)
 into `~/.gray/skills` (global) or `.gray/skills` (project, walks up to
 git root; also `~/.config/opencode/skills`, `~/.agents/skills`,
-`~/.claude/skills`). Run it with `/skills:<name>`.
+`~/.claude/skills`). Run it with `/skills <name>` (`/skill <name>` works too).
 Loader: `crates/gray/src/skills/`. Copy me: `examples/hello-skill/SKILL.md`.
 
 ## Plugins — add tools and slash commands

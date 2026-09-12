@@ -35,6 +35,8 @@
 - Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
 
 ### Fixed
+- Working pill: clock anchors to the turn start (tool `Preparing tool:`/`Working` re-stamps no longer restart it at 0.0s) and the spinner carries no token estimate — exact counts stay in the footer gauge (context), the `Thought for · N tok` line (billed turn output) and `/usage` (session). Removes the chars/4 live estimator that read 2.5M on a 14s turn
+- Skills: `/skills [name] [args]` (alias `/skill`) replaces the `/skills:<name>` colon form; bare `/skills` lists all discovered skills (global + project), not just `~/.gray/skills` installs, and no longer prints the text list on top of the TTY manager
 - Synthesize tool outputs for orphaned function calls (unbricks sessions after mid-turn cancel)
 - Classify upstream 5xx as ServerError; connection-safe errors with 10s timeout
 - Detach bash tool with setsid to prevent password-prompt hangs; char-safe log preview (emoji byte-slice panic)

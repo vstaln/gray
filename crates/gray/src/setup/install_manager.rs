@@ -1,6 +1,9 @@
 //! Interactive install-manager modal backing `/skills` and `/plugins`:
-//! navigate installed items, two-press `u`/`Delete` uninstalls, plus a
-//! read-only Errors tab fed by `gray_pkg::errors`.
+//! navigate items, two-press `u`/`Delete` uninstalls, plus a read-only
+//! Errors tab fed by `gray_pkg::errors`. The skills manager lists all
+//! *discovered* skills (global + project dirs); only `~/.gray/skills`
+//! entries are removable — `u` on an externally-managed skill says where
+//! it lives instead.
 //!
 //! The two managers were ~85% identical (same chrome, tabs, keys, confirm
 //! flow), so they share one parameterized loop ([`run_install_manager`]).
@@ -15,7 +18,6 @@ use super::*;
 
 use gray_pkg::errors::ErrorEntry;
 use gray_pkg::ops::LockEntry;
-use gray_pkg::skills_ops::InstalledSkill;
 
 /// One installed row in the manager's own display terms.
 pub(crate) struct ManagerItem {
@@ -41,7 +43,7 @@ pub(crate) struct ManagerSpec {
 
 const SKILLS_SPEC: ManagerSpec = ManagerSpec {
     title: "Skills",
-    empty_hint: "no skills installed — /marketplace to browse",
+    empty_hint: "no skills discovered — /marketplace to browse",
     error_verb: "remove failed",
     supports_toggle: false,
     keep_stale_on_relist_error: false,
@@ -54,16 +56,6 @@ const PLUGINS_SPEC: ManagerSpec = ManagerSpec {
     supports_toggle: true,
     keep_stale_on_relist_error: true,
 };
-
-/// Pure row renderer: `name version [source]`, version omitted when empty
-/// (hand-placed skills without an origin sidecar).
-pub(crate) fn format_skill_row(skill: &InstalledSkill) -> String {
-    if skill.version.trim().is_empty() {
-        format!("{} [{}]", skill.name, skill.source)
-    } else {
-        format!("{} {} [{}]", skill.name, skill.version, skill.source)
-    }
-}
 
 /// Display label for a lockfile ecosystem: known sources get friendly
 /// names, anything else shows the raw ecosystem string.
@@ -97,27 +89,52 @@ pub(crate) fn format_error_row(entry: &ErrorEntry) -> String {
     format!("{} {}: {}", entry.source, entry.item, entry.message)
 }
 
-/// Bare `/skills` manager: navigate installed skills, `u`/`Delete`
-/// two-press uninstalls via `skills_ops::remove`. Returns true when
-/// anything changed (uninstall or errors cleared).
-pub fn run_skills_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<bool> {
+/// Bare `/skills` manager: navigate discovered skills, `u`/`Delete`
+/// two-press uninstalls `~/.gray/skills` entries via `skills_ops::remove`.
+/// Returns true when anything changed (uninstall or errors cleared).
+pub fn run_skills_modal(
+    bg: Option<&BackgroundSnapshot>,
+    cwd: &std::path::Path,
+) -> anyhow::Result<bool> {
     run_install_manager(
         bg,
         &SKILLS_SPEC,
         || {
-            gray_pkg::skills_ops::list().ok().map(|skills| {
-                skills
+            Some(
+                crate::skills::discover_skills(cwd)
+                    .skills
                     .iter()
                     .map(|skill| ManagerItem {
                         name: skill.name.clone(),
-                        row: format_skill_row(skill),
+                        row: crate::skills::format_discovered_skill_row(skill),
                         lit: true,
                         enabled: true,
                     })
-                    .collect()
-            })
+                    .collect(),
+            )
         },
-        gray_pkg::skills_ops::remove,
+        |name| {
+            match gray_pkg::skills_ops::remove(name) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    // Discovered-but-external skills (opencode/agents/claude
+                    // dirs) aren't managed here — point at the directory
+                    // instead of reporting "not installed".
+                    if let Some(hit) = crate::skills::discover_skills(cwd)
+                        .skills
+                        .iter()
+                        .find(|s| s.name == name)
+                    {
+                        anyhow::bail!(
+                            "'{}' lives outside ~/.gray/skills ({}) — delete it manually",
+                            name,
+                            hit.file_path.display()
+                        );
+                    }
+                    Err(e)
+                }
+            }
+        },
         // Never called: the skills manager is remove-only.
         |_, _| Ok(()),
     )
@@ -666,34 +683,22 @@ pub(crate) fn run_install_manager(
 
 #[cfg(test)]
 mod tests {
-    use super::{format_error_row, format_plugin_row, format_skill_row};
+    use super::{format_error_row, format_plugin_row};
+    use crate::skills::Skill;
     use gray_pkg::errors::ErrorEntry;
     use gray_pkg::ops::LockEntry;
-    use gray_pkg::skills_ops::{InstalledSkill, SkillOrigin};
 
-    fn installed(name: &str, version: &str, source: &str) -> InstalledSkill {
-        InstalledSkill {
+    fn discovered(name: &str, description: &str) -> Skill {
+        Skill {
             name: name.to_string(),
-            version: version.to_string(),
-            source: source.to_string(),
-            origin: None,
-        }
-    }
-
-    fn with_origin() -> InstalledSkill {
-        InstalledSkill {
-            name: "demo-skill".to_string(),
-            version: "1.2.3".to_string(),
-            source: "clawhub".to_string(),
-            origin: Some(SkillOrigin {
-                version: 1,
-                registry: "clawhub".to_string(),
-                slug: "demo-skill".to_string(),
-                owner: "arein".to_string(),
-                installed_version: "1.2.3".to_string(),
-                installed_at: "0".to_string(),
-                source_url: "https://clawhub.ai/arein/skills/demo-skill".to_string(),
-            }),
+            description: description.to_string(),
+            file_path: std::path::PathBuf::from("/tmp/skills")
+                .join(name)
+                .join("SKILL.md"),
+            base_dir: std::path::PathBuf::from("/tmp/skills").join(name),
+            disable_model_invocation: false,
+            source: "user".to_string(),
+            args: Vec::new(),
         }
     }
 
@@ -715,7 +720,7 @@ mod tests {
         assert_eq!(skills.title, "Skills");
         assert_eq!(
             skills.empty_hint,
-            "no skills installed — /marketplace to browse"
+            "no skills discovered — /marketplace to browse"
         );
         assert_eq!(skills.error_verb, "remove failed");
         assert!(!skills.supports_toggle);
@@ -733,35 +738,34 @@ mod tests {
     }
 
     #[test]
-    fn row_shows_name_version_and_source() {
+    fn row_shows_name_and_description() {
         assert_eq!(
-            format_skill_row(&installed("demo-skill", "1.2.3", "clawhub")),
-            "demo-skill 1.2.3 [clawhub]"
+            crate::skills::format_discovered_skill_row(&discovered("demo-skill", "Do demo things")),
+            "demo-skill — Do demo things"
         );
     }
 
     #[test]
-    fn row_omits_empty_version_for_hand_placed_skills() {
+    fn row_falls_back_to_name_without_description() {
         assert_eq!(
-            format_skill_row(&installed("local-skill", "", "local")),
-            "local-skill [local]"
+            crate::skills::format_discovered_skill_row(&discovered("plain", "")),
+            "plain"
         );
     }
 
     #[test]
-    fn row_shows_origin_version_when_known() {
-        // `list()` carries the origin version in `version`; the row shows it.
-        let skill = with_origin();
-        let row = format_skill_row(&skill);
-        assert!(row.contains("demo-skill 1.2.3 [clawhub]"), "row: {row:?}");
-        let origin = skill.origin.as_ref().expect("origin");
-        assert_eq!(origin.installed_version, "1.2.3");
+    fn row_caps_long_descriptions() {
+        let long = "x".repeat(500);
+        let row = crate::skills::format_discovered_skill_row(&discovered("big", &long));
+        assert!(row.starts_with("big — "), "row: {row:?}");
+        assert!(row.chars().count() <= "big — ".len() + 100, "row: {row:?}");
     }
 
     #[test]
     fn error_row_matches_plugins_format() {
-        let row = format_skill_row(&installed("x", "0.0.0", "local"));
-        assert_eq!(row, "x 0.0.0 [local]");
+        let row =
+            crate::skills::format_discovered_skill_row(&discovered("x", "Does x things"));
+        assert_eq!(row, "x — Does x things");
         let err = format_error_row(&ErrorEntry {
             ts_secs: 0,
             source: "skills".to_string(),

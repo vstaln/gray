@@ -63,8 +63,8 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
     },
     CmdDef {
         name: "skills",
-        desc: "manage installed skills (/skill <name> [args] or /skills:<name> [args] to run one)",
-        aliases: &[],
+        desc: "list skills (/skills [name] [args] to run one)",
+        aliases: &["skill"],
     },
     CmdDef {
         name: "plugin",
@@ -155,21 +155,12 @@ pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static st
 }
 
 /// Completion for the composer prompt: static commands, skill names after
-/// `/skills:` or `/skill `, or per-command suffixes after `/cmd ` (Minecraft-style).
-/// Owned here so every read_loop call site stays in sync.
+/// `/skills ` (alias `/skill `), or per-command suffixes after `/cmd `
+/// (Minecraft-style). Owned here so every read_loop call site stays in sync.
 pub(crate) fn completion_matches_dyn(
     cur_text: &str,
     cwd: &std::path::Path,
 ) -> Vec<(String, String)> {
-    if cur_text.starts_with("/skills:") && !cur_text[8..].contains(char::is_whitespace) {
-        let filter = &cur_text[8..];
-        return crate::skills::discover_skills(cwd)
-            .skills
-            .iter()
-            .filter(|s| s.name.contains(filter))
-            .map(|s| (format!("skills:{}", s.name), s.description.clone()))
-            .collect();
-    }
     if let Some(inner) = cur_text.strip_prefix('/') {
         if let Some(idx) = inner.find(char::is_whitespace) {
             let (cmd, _) = inner.split_at(idx);
@@ -196,18 +187,15 @@ pub(crate) fn completion_matches_dyn(
     Vec::new()
 }
 
-/// Fill text for an accepted popup row. Built-ins, aliases and `cmd args`
-/// rows fill `/{name} ` as before; anything else is a skill name and fills
-/// `/skills:{name} ` so the existing skill dispatch runs it — skills never
-/// become real top-level commands.
+/// Fill text for an accepted popup row. Built-ins and `cmd args` rows
+/// fill `/{name} ` as before; a bare skill name fills `/skills {name} ` so
+/// the existing skill dispatch runs it — skills never become real
+/// top-level commands.
 pub(crate) fn completion_fill(name: &str) -> String {
-    if name == "skills" {
-        return "/skills:".to_string();
-    }
-    if name.contains([' ', ':']) || resolve(name).is_some() {
+    if name.contains(' ') || resolve(name).is_some() {
         return format!("/{name} ");
     }
-    format!("/skills:{name} ")
+    format!("/skills {name} ")
 }
 
 /// Universal per-command suffix completion hook.
@@ -231,7 +219,7 @@ pub(crate) fn complete_command_args(
         "plugin" | "plugins" => complete_plugin_args(cmd, arg_text, cwd),
         "thinking" | "effort" | "reasoning" => complete_thinking_args(cmd, arg_text),
         "resume" => complete_resume_args(cmd, arg_text),
-        "skill" => complete_skill_args(cmd, arg_text, cwd),
+        "skill" | "skills" => complete_skill_args(cmd, arg_text, cwd),
         "agentsmd" | "sys" => complete_agentsmd_args(cmd, arg_text),
         "model" => complete_model_args(cmd, arg_text),
         _ => Vec::new(),
@@ -269,8 +257,8 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Suffixes for `/skill`: installed skill names (space-separated alias for
-/// the `/skills:<name>` prefix form; rows fill `/skill <name> `).
+/// Suffixes for `/skills` (alias `/skill`): discovered skill names;
+/// rows fill `/skills <name> ` (or `/skill <name> `).
 fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<(String, String)> {
     let f = arg_text.trim().to_lowercase();
     crate::skills::discover_skills(cwd)
@@ -426,7 +414,7 @@ pub enum ReplCommand {
     Plugin(String),
     /// Store: /marketplace browses+installs plugins/skills.
     Marketplace(String),
-    /// Skills: /skills manages installed; /skills:<name> [args] or /skill <name> [args] runs a skill
+    /// Skills: bare /skills lists discovered; /skills <name> [args] (alias /skill <name>) runs one
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
     Prompt(String),
@@ -490,7 +478,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
     let lower_t = t.to_lowercase();
     let lower_cmd = cmd.to_lowercase();
     let canon: Option<&str> =
-        if lower_cmd == "/skills" || lower_cmd == "/skill" || lower_t.starts_with("/skills:") {
+        if lower_cmd == "/skills" || lower_cmd == "/skill" {
             Some("skills")
         } else if let Some(d) = resolve(cmd) {
             Some(d.name)
@@ -531,16 +519,12 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
         Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
-            if lower_t == "/skills" || lower_t == "/skill" {
+            if rest.is_empty() {
                 ReplCommand::Skill(None)
-            } else if lower_t.starts_with("/skills:") {
-                ReplCommand::Skill(Some(t[8..].to_string()))
-            } else if lower_cmd == "/skill" {
-                // Singular space-separated alias: identical payload shape as
-                // `/skills:<name> [args]` so expansion/validation match exactly.
-                ReplCommand::Skill(Some(rest.to_string()))
             } else {
-                ReplCommand::Unknown(t.to_string())
+                // `/skills <name> [args]` (or the `/skill` alias): identical
+                // payload shape so expansion/validation match exactly.
+                ReplCommand::Skill(Some(rest.to_string()))
             }
         }
         _ => {
@@ -800,6 +784,17 @@ mod tests {
         ));
         assert!(matches!(
             parse_command("/skills foo"),
+            ReplCommand::Skill(Some(_))
+        ));
+        assert!(matches!(
+            parse_command("/skill foo"),
+            ReplCommand::Skill(Some(_))
+        ));
+        assert!(matches!(parse_command("/skills"), ReplCommand::Skill(None)));
+        assert!(matches!(parse_command("/skill"), ReplCommand::Skill(None)));
+        // The `/skills:<name>` colon form is gone: now an unknown command.
+        assert!(matches!(
+            parse_command("/skills:commit"),
             ReplCommand::Unknown(_)
         ));
     }
@@ -899,11 +894,11 @@ mod tests {
             !top.iter().any(|(n, _)| n == "commit"),
             "skill must not appear in / completion: {top:?}"
         );
-        // …but the /skills: prefix still completes it
-        let scoped = completion_matches_dyn("/skills:com", cwd);
+        // …but `/skills ` still completes it
+        let scoped = completion_matches_dyn("/skills com", cwd);
         assert!(
-            scoped.iter().any(|(n, _)| n == "skills:commit"),
-            "skill must complete under /skills:: {scoped:?}"
+            scoped.iter().any(|(n, _)| n == "skills commit"),
+            "skill must complete under /skills : {scoped:?}"
         );
     }
 
@@ -965,7 +960,7 @@ mod tests {
     }
 
     #[test]
-    fn skill_singular_is_alias_for_skills_colon() {
+    fn skill_singular_is_alias_for_skills_space() {
         use super::super::handlers::expand_skill_command;
         use super::completion_matches_dyn;
         let dir = temp_skill_cwd("commit");
@@ -973,31 +968,31 @@ mod tests {
         // Parse parity: identical payloads.
         assert_eq!(
             parse_command("/skill commit"),
-            parse_command("/skills:commit")
+            parse_command("/skills commit")
         );
         assert_eq!(
             parse_command("/skill commit extra"),
-            parse_command("/skills:commit extra")
+            parse_command("/skills commit extra")
         );
         assert_eq!(parse_command("/skill"), parse_command("/skills"));
         assert_eq!(parse_command("/SKILL"), parse_command("/skills"));
         assert_eq!(
             parse_command("/SKILL commit"),
-            parse_command("/skills:commit")
+            parse_command("/skills commit")
         );
         // Expansion parity: same Prompt out.
         let a = expand_skill_command(parse_command("/skill commit"), cwd, None, false);
-        let b = expand_skill_command(parse_command("/skills:commit"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills commit"), cwd, None, false);
         assert!(matches!(a, ReplCommand::Prompt(_)));
         assert_eq!(a, b);
         // Bad args fail identically (skill takes no args): both expand to Empty.
         let a = expand_skill_command(parse_command("/skill commit bogus-arg"), cwd, None, false);
-        let b = expand_skill_command(parse_command("/skills:commit bogus-arg"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills commit bogus-arg"), cwd, None, false);
         assert_eq!(a, ReplCommand::Empty);
         assert_eq!(a, b);
         // Unknown skill fails identically.
         let a = expand_skill_command(parse_command("/skill nope"), cwd, None, false);
-        let b = expand_skill_command(parse_command("/skills:nope"), cwd, None, false);
+        let b = expand_skill_command(parse_command("/skills nope"), cwd, None, false);
         assert_eq!(a, ReplCommand::Empty);
         assert_eq!(a, b);
         // `/skill <partial>` completes installed skill names…
@@ -1008,9 +1003,17 @@ mod tests {
         );
         let rows = completion_matches_dyn("/skill ", cwd);
         assert!(rows.iter().any(|(n, _)| n == "skill commit"));
-        // …while `/skills foo` (plural + space) stays unknown, as before.
+        // …and so does the plural space form.
+        let rows = completion_matches_dyn("/skills com", cwd);
+        assert!(
+            rows.iter().any(|(n, _)| n == "skills commit"),
+            "skill must complete under /skills : {rows:?}"
+        );
+        let rows = completion_matches_dyn("/skills ", cwd);
+        assert!(rows.iter().any(|(n, _)| n == "skills commit"));
+        // The colon form is gone.
         assert!(matches!(
-            parse_command("/skills foo"),
+            parse_command("/skills:commit"),
             ReplCommand::Unknown(_)
         ));
     }
