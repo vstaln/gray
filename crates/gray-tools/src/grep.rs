@@ -225,65 +225,32 @@ fn assemble_matches(
     finish(output)
 }
 
-/// In-process literal lane: no `rg` spawn (~3ms exec tax saved), and
-/// early stop without kill/wait/reap: the scan checks the match budget
-/// inline, so small limits return after a few files. `rg` wins full-tree
-/// scans (parallel walker + SIMD); this lane wins small-limit lookups.
-/// Only for `literal:true + context:0` searches — substring matching needs
-/// no regex engine, so this lane has no new semantics to get wrong. Walk
-/// honors ignore files via the `ignore` crate (the same library `rg`
-/// itself uses, same flags: `--hidden` == `hidden(false)`, gitignore only
-/// inside repos) and, like `rg --hidden`, does NOT prune `.git` or
-/// `node_modules`. Binary files (NUL in the first 8 KiB) are skipped.
-/// Output goes through [`assemble_matches`]: byte-identical contract or
-/// the lane doesn't ship. The blocking walk runs under `spawn_blocking`;
-/// cancel is honored between files and every 1k lines.
-#[allow(clippy::too_many_arguments)]
+/// In-process literal lane: no `rg` spawn, early stop without
+/// kill/wait/reap. Narrow by design: `literal:true + context:0`, no glob,
+/// case-sensitive, small limit. Anything fancier (glob, folding, regex,
+/// full-tree scans) stays on `rg`, whose semantics this lane must not
+/// reimplement. Walk honors ignore files via the `ignore` crate (the same
+/// library `rg` itself uses: `--hidden` == `hidden(false)`, gitignore only
+/// inside repos). Binary files (NUL in the first 8 KiB) and files over
+/// ~50 KiB are skipped back to `rg`. Output goes through
+/// [`assemble_matches`]: byte-identical contract or the lane doesn't ship.
+/// The blocking scan runs under `spawn_blocking`; cancel is honored
+/// between files.
 async fn execute_in_process(
     ctx: &ToolContext,
     pattern: &str,
     search_path: &Path,
     is_dir: bool,
-    glob: &Option<String>,
-    ignore_case: bool,
     effective_limit: usize,
 ) -> Option<ToolOutput> {
     use std::io::Read as _;
     if pattern.is_empty() {
         return None; // empty pattern: rg semantics, not worth replicating.
     }
-    // ASCII-only folding: unicode case-insensitivity stays on `rg`, whose
-    // folding rules this lane must not reimplement.
-    if ignore_case && !pattern.is_ascii() {
-        return None;
-    }
-    let matcher = match glob {
-        Some(g) => match globset::GlobBuilder::new(g).literal_separator(true).build() {
-            Ok(g) => Some(g.compile_matcher()),
-            Err(_) => return Some(fail(format!("invalid glob pattern: {g}"))),
-        },
-        None => None,
-    };
-    // Lowercased once: the hot loop compares bytes, never allocates.
-    let needle: Vec<u8> = if ignore_case {
-        pattern.as_bytes().to_ascii_lowercase()
-    } else {
-        pattern.as_bytes().to_vec()
-    };
-    let no_slash = glob.as_deref().is_some_and(|g| !g.contains('/'));
-    // Basename-only fast reject: slash-less globs (the common `*.ext`
-    // shape) compile to a suffix check, skipping globset's per-file
-    // Candidate build entirely.
-    let suffix: Option<String> = match glob.as_deref() {
-        Some(g) if no_slash && g.starts_with("*.") && !g[2..].contains(['*', '?', '[']) => {
-            Some(g[2..].to_string())
-        }
-        _ => None,
-    };
+    let needle: Vec<u8> = pattern.as_bytes().to_vec();
     let files: Vec<std::path::PathBuf> = if !is_dir {
         vec![search_path.to_path_buf()]
     } else {
-        // Collected up front: the walker borrows nothing the scan needs.
         let root = search_path.to_path_buf();
         let walker = ignore::WalkBuilder::new(&root)
             .hidden(false)
@@ -298,55 +265,9 @@ async fn execute_in_process(
             if !entry.file_type().is_some_and(|t| t.is_file()) {
                 continue;
             }
-            if let Some(sfx) = &suffix {
-                let name = entry.file_name().to_string_lossy();
-                if name.len() < sfx.len() || !name.ends_with(sfx.as_str()) {
-                    continue;
-                }
-            }
-            if let Some(m) = &matcher {
-                // No `/` in glob = basename match (fd parity).
-                let hit = if no_slash && suffix.is_none() {
-                    m.is_match_candidate(&globset::Candidate::new(entry.file_name()))
-                } else if no_slash {
-                    true // suffix check above already decided
-                } else {
-                    let rel = entry
-                        .path()
-                        .strip_prefix(&root)
-                        .map(|r| r.to_string_lossy().replace('\\', "/"))
-                        .unwrap_or_default();
-                    m.is_match(&rel)
-                };
-                if !hit {
-                    continue;
-                }
-            }
             out.push(entry.path().to_path_buf());
         }
         out
-    };
-    // Single-file search + glob: `rg` still filters by name.
-    let files: Vec<std::path::PathBuf> = if !is_dir && matcher.is_some() {
-        files
-            .into_iter()
-            .filter(|f| {
-                let m = matcher.as_ref().expect("checked above");
-                if let Some(sfx) = &suffix {
-                    f.file_name().is_some_and(|n| {
-                        let n = n.to_string_lossy();
-                        n.len() >= sfx.len() && n.ends_with(sfx.as_str())
-                    })
-                } else if no_slash {
-                    f.file_name()
-                        .is_some_and(|n| m.is_match_candidate(&globset::Candidate::new(n)))
-                } else {
-                    m.is_match(f.to_string_lossy().as_ref())
-                }
-            })
-            .collect()
-    } else {
-        files
     };
     let cancel = ctx.cancel.clone();
     let hits = tokio::task::spawn_blocking(move || {
@@ -365,12 +286,10 @@ async fn execute_in_process(
             if head[..n].contains(&0) {
                 continue;
             }
-            // Whole-file memmem: find match offsets first (SIMD), then
-            // map only matched offsets to line numbers. Lines without
-            // matches are never materialized — the per-line loop only runs
-            // over hits. `take` enforces the ~50 KiB/file ceiling (same
-            // order as the read tool): a giant minified bundle must not pin
-            // the turn. rg owns big files.
+            // Whole-file memmem: match offsets first (SIMD), then map only
+            // matched offsets to line numbers. Unmatched lines are never
+            // materialized. `take` caps the read at ~50 KiB: bigger files
+            // go back to `rg`.
             let mut content: Vec<u8> = head[..n].to_vec();
             if f.take(50 * 1024).read_to_end(&mut content).is_err() {
                 continue;
@@ -378,21 +297,14 @@ async fn execute_in_process(
             if content.len() > 50 * 1024 + 8192 {
                 continue;
             }
-            let hay;
-            let haystack: &[u8] = if ignore_case {
-                hay = content.to_ascii_lowercase();
-                &hay
-            } else {
-                &content
-            };
-            // Newline index: rank(line) = count of \n before offset + 1.
+            // Newline index: rank(line) = count of `\\n` before offset + 1.
             let mut newlines: Vec<usize> = Vec::new();
-            for (i, b) in haystack.iter().enumerate() {
+            for (i, b) in content.iter().enumerate() {
                 if *b == b'\n' {
                     newlines.push(i);
                 }
             }
-            for m in memmem::find_iter(haystack, needle.as_slice()) {
+            for m in memmem::find_iter(&content, needle.as_slice()) {
                 if hits.len() >= effective_limit {
                     break 'files;
                 }
@@ -405,7 +317,7 @@ async fn execute_in_process(
                 } else {
                     0
                 };
-                let end = newlines.get(line_no - 1).copied().unwrap_or(haystack.len());
+                let end = newlines.get(line_no - 1).copied().unwrap_or(content.len());
                 let mut line = &content[start..end.min(content.len()).max(start)];
                 while line.last() == Some(&b'\n') {
                     line = &line[..line.len() - 1];
@@ -537,23 +449,17 @@ impl Tool for GrepTool {
         // In-process literal lane: `literal:true + context:0` skips the
         // `rg` spawn entirely (~3ms exec tax). Regex/ignoreCase searches
         // keep the `--vimgrep` fast path below.
-        // Small-limit literal lookups go in-process (early stop beats
-        // spawn+full-scan); full-tree literal scans stay on `rg`, whose
-        // parallel walker wins past a handful of matches.
+        // Small-limit plain-literal lookups go in-process (early stop
+        // beats spawn+full-scan); full-tree scans and anything with glob
+        // or folding stay on `rg`, whose semantics this lane won't mirror.
         const IN_PROCESS_LIMIT: usize = 10;
         if literal
             && context == 0
+            && glob.is_none()
+            && !ignore_case
             && effective_limit <= IN_PROCESS_LIMIT
-            && let Some(output) = execute_in_process(
-                ctx,
-                &pattern,
-                &search_path,
-                is_dir,
-                &glob,
-                ignore_case,
-                effective_limit,
-            )
-            .await
+            && let Some(output) =
+                execute_in_process(ctx, &pattern, &search_path, is_dir, effective_limit).await
         {
             return output;
         }
