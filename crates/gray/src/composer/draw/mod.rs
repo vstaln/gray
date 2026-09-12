@@ -127,11 +127,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             let elapsed = started.elapsed();
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
             let tok_suffix = if tui.is_task_running {
-                // Per-turn counter: starts at 0 on `begin_turn`, grows with
-                // streamed output, and `end_turn` prints the same value as
-                // the final `Thought for` total. Session context lives in
+                // Turn total so far: billed Σ-per-round usage accumulated
+                // from each StepUsage, floored by the streamed estimate so
+                // the pill still ticks pre-report. Session context lives in
                 // the footer gauge, never here.
-                let live = tui.live_streamed_tokens;
+                let live =
+                    super::working_live_tokens(tui.turn_billed_total, tui.live_streamed_tokens);
                 format!(" · {} tok", crate::repl::fmt_usage(live))
             } else if let Some(u) = tui.latest_usage {
                 format!(" · {} tok", crate::repl::fmt_usage(u.total()))
