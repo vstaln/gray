@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
@@ -36,6 +36,40 @@ pub(crate) mod input;
 pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
+
+/// Single-line `✻ Thought for …`: `N tok` is this turn's billed output
+/// token count (exact, from the TurnEnd usage report; reasoning is already
+/// included in output, never split out). Falls back to the streamed estimate
+/// when no usage report arrived (cancelled/errored turns). Other billed
+/// Σ-per-round totals stay out of the TUI line entirely (cost basis lives in
+/// `totals` / headless `turn_footer` only). Pure for testability
+/// (`Tui::new` needs a TTY).
+pub(crate) fn format_thought_line(verb: &str, elapsed: &str, out_tokens: Option<usize>) -> String {
+    let mut line = format!("✻ {verb} {elapsed}");
+    if let Some(c) = out_tokens {
+        line.push_str(&format!(" · {} tok", crate::repl::fmt_usage(c)));
+    }
+    line
+}
+
+/// Elapsed time for the working pill: anchored to the turn start so the
+/// per-tool `set_status` re-stamps (`Preparing tool:` -> `Working`) never
+/// reset the visible clock mid-turn. omp parity
+/// (`packages/coding-agent/src/session/agent-session.ts` stamps prompt->yield
+/// locally at completion, never from the provider, and tool events don't
+/// touch it). Falls back to the status stamp outside turns.
+/// Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn pill_elapsed(
+    turn_started: Option<Instant>,
+    status_started: Instant,
+    running: bool,
+) -> Duration {
+    if running {
+        turn_started.map(|t| t.elapsed()).unwrap_or_else(|| status_started.elapsed())
+    } else {
+        status_started.elapsed()
+    }
+}
 
 mod text_area;
 pub(crate) use text_area::TextArea;
@@ -61,12 +95,7 @@ pub struct Tui {
     pending: String,
     thinking: bool,
     thinking_started: Option<Instant>,
-    /// Buffered thinking rows for the current run. Rendered header-first
-    /// (`Thought: <dur>` + blank + body, opencode parity) when the run ends —
-    /// scrollback is append-only so a top header can't be re-rendered live.
-    pub(crate) thinking_lines: Vec<String>,
     hide_thinking: bool,
-    pending_tokens: Option<String>,
     pub(crate) history: Vec<String>,
     pub(crate) history_idx: Option<usize>,
     pub(crate) draft: String,
@@ -87,8 +116,12 @@ pub struct Tui {
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
-    pub(crate) live_streamed_tokens: usize,
-    pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
+    /// Billed output tokens from this turn's TurnEnd usage (Σ-per-round).
+    /// Display-only: the `Thought for · N tok` line. `None` (cancelled /
+    /// errored before any usage report) prints the bare elapsed, like an
+    /// omp turn with no reported usage. Never feeds the context gauge
+    /// (that stays `latest_usage`, latest-round size).
+    pub(crate) turn_billed_output: Option<usize>,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
@@ -122,8 +155,8 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
     let l_cols = (max_logo_w as f32).max(1.0);
     let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
-    let base = Color::Rgb(110, 110, 110);
-    let hilite = Color::Rgb(240, 240, 240);
+    let base = crate::theme::theme().text_dim;
+    let hilite = crate::theme::theme().text_bright;
 
     let mut welcome_lines: Vec<Line<'static>> = Vec::new();
     welcome_lines.push(Line::from(""));
@@ -152,14 +185,14 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
         Span::raw(" ".repeat(pad)),
         Span::styled(
             "gray",
-            Style::default().bold().fg(Color::Rgb(225, 225, 225)),
+            Style::default().bold().fg(crate::theme::theme().text_body),
         ),
         Span::styled(
             format!(
                 " {} \u{b7} Run /help for commands",
                 env!("CARGO_PKG_VERSION")
             ),
-            Style::default().fg(Color::Rgb(140, 140, 140)),
+            Style::default().fg(crate::theme::theme().text_muted),
         ),
     ]));
     welcome_lines.push(Line::from(""));
@@ -216,9 +249,7 @@ impl Tui {
             pending: String::new(),
             thinking: false,
             thinking_started: None,
-            thinking_lines: Vec::new(),
             hide_thinking: false,
-            pending_tokens: None,
             history: Vec::new(),
             history_idx: None,
             draft: String::new(),
@@ -239,8 +270,7 @@ impl Tui {
             ),
             committed_markdown_lines: 0,
             pending_resize: None,
-            live_streamed_tokens: 0,
-            tool_progress_lens: std::collections::HashMap::new(),
+            turn_billed_output: None,
             viewport_h: MIN_VIEWPORT_H,
         })
     }
@@ -307,7 +337,8 @@ impl Tui {
                     let lines =
                         crate::composer::transcript::format_user_prompt_lines(text, attached, w);
                     let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let block = Block::default()
+                        .style(Style::default().bg(crate::theme::theme().surface_bg));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone())
                             .block(block)
@@ -319,7 +350,8 @@ impl Tui {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
                     let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let block = Block::default()
+                        .style(Style::default().bg(crate::theme::theme().surface_bg));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone())
                             .block(block)
@@ -383,15 +415,41 @@ impl Tui {
     }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
         self.cumulative_usage = Some(usage);
+        // NOTE: no per-turn accumulation here. `StepUsage` carries the
+        // latest context size (each round's input already contains the full
+        // history), so summing `usage.total()` across rounds grows
+        // superlinearly (e.g. 16 rounds x ~120k = ~1.9M). The context gauge
+        // stays `latest_usage`; exact turn/session bills live in the TurnEnd
+        // totals. The pill itself carries no estimate at all (omp's loader
+        // is tokens-free; opencode reads the last report, never a sum).
+    }
+    /// Seeds the context gauge from a char-estimate when no provider
+    /// `StepUsage` is in force: resume replay (persisted usage is billed
+    /// Σ-per-round, unrestorable as context size) and post-compaction
+    /// (history just shrank; the pre-compact `StepUsage` is stale).
+    ///
+    /// No-op on zero so callers never blank a live gauge with an empty
+    /// estimate. First real `StepUsage` overwrites via `set_usage`.
+    pub fn seed_estimate_usage(&mut self, tokens: usize) {
+        if tokens == 0 {
+            return;
+        }
+        let u = gray_core::event::Usage::estimated_context(tokens);
+        self.latest_usage = Some(u);
+        self.cumulative_usage = Some(u);
     }
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
         self.cumulative_usage = None;
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        self.turn_billed_output = None;
+    }
+
+    /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
+    /// Thought line. Called from the TurnEnd dispatch arm (which already holds
+    /// the billed usage); `end_turn` consumes both exactly once.
+    pub fn set_turn_billed(&mut self, output_tokens: usize) {
+        self.turn_billed_output = Some(output_tokens);
     }
 
     pub(crate) fn width(&self) -> usize {
@@ -422,8 +480,7 @@ impl Tui {
             self.turn_started = Some(now);
             self.turn_had_thinking = false;
         }
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        self.turn_billed_output = None;
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
@@ -447,19 +504,14 @@ impl Tui {
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            if self.thinking {
-                // Thinking rows buffer for the header-first flush in
-                // `end_thinking_run`, never straight to the transcript.
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.thinking_lines.push(line.to_string());
-                    }
-                }
+            let style = if self.thinking {
+                crate::composer::transcript::thinking_style()
             } else {
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.push_line_styled(line.to_string(), Style::default());
-                    }
+                Style::default()
+            };
+            for line in rest.split('\n') {
+                if !line.is_empty() {
+                    self.push_line_styled(line.to_string(), style);
                 }
             }
         }
@@ -491,8 +543,11 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.sleep_until = None;
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        // Billed output only (exact, reasoning included). `None` prints the
+        // bare elapsed — a chars/4 fallback here would reintroduce the very
+        // inflation the pill just dropped (2.5M on a 14s turn).
+        let turn_toks = self.turn_billed_output;
+        self.turn_billed_output = None;
         if self.thinking {
             self.end_thinking_run(true);
         }
@@ -508,7 +563,6 @@ impl Tui {
             }
         }
 
-        let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
             let elapsed_str = crate::repl::format::fmt_duration_ms(
                 elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
@@ -518,40 +572,16 @@ impl Tui {
             } else {
                 "Worked for"
             };
-            let tok_suffix = if let Some(u) = self.latest_usage {
-                format!(" · {} tok", crate::repl::fmt_usage(u.total()))
-            } else {
-                String::new()
-            };
-            // Codex-style: ✻ Worked for 6s · N tok (dim)
-            let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
+            // `✻ Thought for … · N tok` is billed output (exact, reasoning
+            // included). Other billed Σ-per-round totals stay out of the TUI
+            // entirely.
+            let line = format_thought_line(verb, &elapsed_str, turn_toks);
             self.ensure_gap(1);
             self.push_dim(line);
-            self.ensure_gap(1);
-        } else if let Some(tok) = pending_tok {
-            self.ensure_gap(1);
-            self.push_dim(tok);
             self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
-    }
-
-    pub fn push_usage(&mut self, tok_line: String) {
-        self.pending_tokens = Some(tok_line);
-    }
-
-    /// pi `updateArgs` token accounting: `args_so_far` is the cumulative
-    /// buffer, so only the delta since the last call counts toward the
-    /// live `· N tok` counter.
-    pub fn live_progress_tokens(&mut self, id: &str, args_so_far: &str) {
-        let prev = self.tool_progress_lens.get(id).copied().unwrap_or(0);
-        let cur = args_so_far.len();
-        if cur > prev {
-            let delta_chars = cur - prev;
-            self.live_streamed_tokens += (delta_chars.div_ceil(4)).max(1);
-            self.tool_progress_lens.insert(id.to_string(), cur);
-        }
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
@@ -639,5 +669,54 @@ impl Drop for Tui {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+    }
+}
+
+#[cfg(test)]
+mod thought_line_tests {
+    use super::format_thought_line;
+
+    #[test]
+    fn format_thought_line_is_just_verb_elapsed_and_turn_toks() {
+        // `N tok` is billed output (exact, reasoning included — never split
+        // out); backed by the TurnEnd report instead of chars/4.
+        let line = format_thought_line("Thought for", "1m 17s", Some(4_045));
+        assert_eq!(line, "✻ Thought for 1m 17s · 4,045 tok");
+        assert_eq!(line.matches("1m 17s").count(), 1);
+    }
+
+    #[test]
+    fn format_thought_line_no_ctx_is_bare() {
+        let line = format_thought_line("Worked for", "6s", None);
+        assert_eq!(line, "✻ Worked for 6s");
+    }
+
+    #[test]
+    fn format_thought_line_never_splits_reasoning() {
+        // Reasoning is a subset of output — one united count, no suffix.
+        let line = format_thought_line("Thought for", "59s", Some(2_973));
+        assert_eq!(line, "✻ Thought for 59s · 2,973 tok");
+        assert!(!line.contains("reasoning"));
+    }
+
+    #[test]
+    fn pill_clock_ignores_tool_status_restamps() {
+        // Every tool event re-stamps the status (`Preparing tool:` ->
+        // `Working`); the visible clock must keep counting from the turn
+        // start instead of restarting at 0.0s per tool call.
+        let turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(14));
+        let restamped = std::time::Instant::now();
+        let elapsed = super::pill_elapsed(turn_started, restamped, true);
+        assert!(
+            elapsed.as_secs() >= 13,
+            "clock reset mid-turn: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn pill_clock_falls_back_outside_turns() {
+        let status = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let elapsed = super::pill_elapsed(None, status, false);
+        assert!((1..=5).contains(&elapsed.as_secs()), "{elapsed:?}");
     }
 }

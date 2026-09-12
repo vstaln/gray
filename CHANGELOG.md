@@ -30,7 +30,13 @@
 - prompt_cache_key passthrough for chat requests
 - `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
+### Changed
+- Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
+- Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
+
 ### Fixed
+- Working pill: clock anchors to the turn start (tool `Preparing tool:`/`Working` re-stamps no longer restart it at 0.0s) and the spinner carries no token estimate — exact counts stay in the footer gauge (context), the `Thought for · N tok` line (billed turn output) and `/usage` (session). Removes the chars/4 live estimator that read 2.5M on a 14s turn
+- Skills: `/skills [name] [args]` (alias `/skill`) replaces the `/skills:<name>` colon form; bare `/skills` lists all discovered skills (global + project), not just `~/.gray/skills` installs, and no longer prints the text list on top of the TTY manager
 - Synthesize tool outputs for orphaned function calls (unbricks sessions after mid-turn cancel)
 - Classify upstream 5xx as ServerError; connection-safe errors with 10s timeout
 - Detach bash tool with setsid to prevent password-prompt hangs; char-safe log preview (emoji byte-slice panic)
@@ -49,6 +55,8 @@
 - Popup restore on resize/refocus
 - Unknown-tool fail-closed handling
 - Clipboard async copy path
+- History recall (Up/Down) while a turn is running, matching idle prompt behavior
+- `Thought for` line and live status counter are per-turn (count from zero, final at turn end); session context stays in the footer gauge
 - Log caps to bound disk/memory growth
 - Transcript bound for long sessions
 - Executor watchdog for hung tool runs

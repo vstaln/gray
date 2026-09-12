@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let mut config = Config::resolve(&cli)?;
+    gray::theme::init_theme(config.theme.as_deref());
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
@@ -48,17 +49,11 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Update => {
                 return gray::update::update_now().await;
             }
-            gray::Commands::Gateway { cmd } => {
-                return run_gateway(cmd).await;
-            }
             gray::Commands::Plugin { cmd } => {
                 return run_plugin(cmd).await;
             }
             gray::Commands::Cron { cmd } => {
                 return run_cron(cmd).await;
-            }
-            gray::Commands::Send { target, text } => {
-                return run_send(&target, &text).await;
             }
             gray::Commands::Sessions { cmd } => {
                 return run_sessions(cmd).await;
@@ -66,61 +61,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
-        if let Some(agent) = cli.acp.as_deref() {
-            #[cfg(feature = "acp")]
-            {
-                return run_acp_print_mode(agent, prompt).await;
-            }
-            #[cfg(not(feature = "acp"))]
-            {
-                anyhow::bail!(
-                    "this build has no ACP support — rebuild with `--features acp`; requested: {agent}"
-                );
-            }
-        }
         run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
             .await?;
     } else {
         gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
     }
-    Ok(())
-}
-
-#[cfg(feature = "acp")]
-async fn run_acp_print_mode(agent: &str, prompt: &str) -> anyhow::Result<()> {
-    let home = gray_acp::gray_home_dir();
-    let Some(spec) = gray_acp::resolve(agent, Some(home.as_path())) else {
-        anyhow::bail!("unknown acp agent '{agent}' (try /acp list in the REPL)");
-    };
-    if !gray_acp::installed(&spec) {
-        anyhow::bail!("agent '{}' not installed ({})", spec.key, spec.install_hint);
-    }
-    let cwd = std::env::current_dir()?;
-    let auto_approve = std::env::var("GRAY_ACP_AUTO_APPROVE").as_deref() == Ok("1");
-    let display = if spec.display.is_empty() {
-        spec.key.to_string()
-    } else {
-        spec.display.to_string()
-    };
-    let opts = gray_acp::AcpSessionOptions {
-        spec,
-        cwd,
-        resume_session_id: None,
-        auto_approve,
-        display,
-    };
-    let mut session = gray_acp::AcpSession::start(opts).await?;
-    let mut on_event = |ev: &gray_core::event::AgentEvent| {
-        use gray_core::event::AgentEvent;
-        if let AgentEvent::TextDelta { delta } = ev {
-            print!("{delta}");
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-        }
-    };
-    let res = session.prompt(prompt, &mut on_event).await;
-    println!();
-    res?;
     Ok(())
 }
 
@@ -175,56 +121,6 @@ async fn run_resume_subcommand(
     // it was accepted and then discarded. To send a first message on resume,
     // pipe it in or type it after the REPL opens.
     run_repl_mode(config, false, Some(target_id.as_str())).await?;
-    Ok(())
-}
-
-async fn run_gateway(cmd: Option<gray::GatewayCmd>) -> anyhow::Result<()> {
-    use gray::GatewayCmd;
-    match cmd {
-        None | Some(GatewayCmd::Status { probe: false }) => gray_gateway::systemd::status(),
-        Some(GatewayCmd::Status { probe: true }) => {
-            let home = std::env::var("GRAY_HOME")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    std::env::var("HOME")
-                        .map(|h| std::path::PathBuf::from(h).join(".gray"))
-                        .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/.gray"))
-                });
-            let h = gray_supervise::health::probe_full(
-                &home,
-                gray_gateway::status::read_board_healthy(&home),
-                gray_gateway::status::gateway_config_parses(&home),
-            );
-            println!("{}", h.reason);
-            if !h.healthy {
-                std::process::exit(1);
-            }
-            Ok(())
-        }
-        Some(GatewayCmd::Run) => match gray_gateway::daemon::run_gateway().await {
-            Err(e) if format!("{e:#}").contains("no gateway platforms enabled") => {
-                eprintln!("{e:#}");
-                std::process::exit(gray_supervise::exit::EXIT_FATAL);
-            }
-            r => r,
-        },
-        Some(GatewayCmd::Install) => gray_gateway::systemd::install(),
-        Some(GatewayCmd::Uninstall) => gray_gateway::systemd::uninstall(),
-        Some(GatewayCmd::Invite { platform }) => print_invite(&platform),
-        Some(GatewayCmd::Pairing { cmd }) => run_pairing(cmd),
-    }
-}
-
-fn run_pairing(cmd: gray::PairingCmd) -> anyhow::Result<()> {
-    use gray::PairingCmd;
-    use gray_gateway::pairing::{pairing_approve, pairing_list, pairing_revoke};
-    match cmd {
-        PairingCmd::Approve { platform, code } => {
-            println!("{}", pairing_approve(&platform, &code)?)
-        }
-        PairingCmd::List { platform } => println!("{}", pairing_list(Some(&platform))?),
-        PairingCmd::Revoke { platform, user } => println!("{}", pairing_revoke(&platform, &user)?),
-    }
     Ok(())
 }
 
@@ -317,13 +213,12 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
     }
 }
 
-/// `gray cron ...` + `gray send ...` (cron plan Task 5).
+/// `gray cron ...` (cron plan Task 5).
 ///
-/// File-only surface: the store lives at `$GRAY_HOME/cron/jobs.json` and
-/// `send_once` builds a throw-away send-only adapter from `gateway.yaml`,
-/// so neither verb needs the daemon running.
+/// File-only surface: the store lives at `$GRAY_HOME/cron/jobs.json`.
+/// Delivery targets ride the record opaquely; no backend interprets them yet.
 fn cron_store() -> anyhow::Result<gray_cron::CronStore> {
-    let home = gray_gateway::config::gray_home_dir()?;
+    let home = gray::setup::gray_home()?;
     gray_cron::CronStore::open(home.join("cron"))
 }
 
@@ -375,8 +270,7 @@ fn fmt_status(s: Option<gray_cron::RunStatus>) -> &'static str {
 }
 
 /// `--deliver` flag: `origin`/`local` keywords (case-insensitive), anything
-/// else rides `Deliver::Target` and resolves at fire time (unknown shapes
-/// fail safe to save-only in the daemon, never misdeliver).
+/// else rides `Deliver::Target`, stored opaquely until a delivery backend exists.
 fn parse_deliver_flag(raw: Option<&str>) -> gray_cron::Deliver {
     match raw.map(str::trim).unwrap_or("local") {
         s if s.eq_ignore_ascii_case("origin") => gray_cron::Deliver::Origin,
@@ -507,32 +401,6 @@ async fn run_cron(cmd: gray::CronCmd) -> anyhow::Result<()> {
                 anyhow::bail!("unknown cron job {id:?}");
             }
         }
-    }
-}
-
-async fn run_send(target: &str, text: &[String]) -> anyhow::Result<()> {
-    let cfg = gray_gateway::config::load_gateway_config();
-    gray_gateway::delivery::send_once(&cfg, target, &text.join(" ")).await?;
-    println!("sent to {target}");
-    Ok(())
-}
-
-fn print_invite(platform: &str) -> anyhow::Result<()> {
-    match platform.to_ascii_lowercase().as_str() {
-        "discord" => {
-            let cfg = gray_gateway::config::load_gateway_config();
-            let plat = cfg.platforms.get(&gray_gateway::config::Platform::Discord);
-            // client_id is derived from the token.
-            let id = plat
-                .and_then(|c| c.token.clone())
-                .and_then(|t| gray_gateway::discord::client_id_from_token(&t))
-                .ok_or_else(|| {
-                    anyhow::anyhow!("set platforms.discord.token in ~/.gray/gateway.yaml")
-                })?;
-            println!("{}", gray_gateway::discord::invite_url(&id)?);
-            Ok(())
-        }
-        other => anyhow::bail!("no invite URL for platform {other:?} (only discord)"),
     }
 }
 

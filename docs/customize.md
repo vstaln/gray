@@ -9,7 +9,7 @@ Every axis below works in the real binary today — see the
 Drop a directory with a `SKILL.md` (frontmatter `description:` required)
 into `~/.gray/skills` (global) or `.gray/skills` (project, walks up to
 git root; also `~/.config/opencode/skills`, `~/.agents/skills`,
-`~/.claude/skills`). Run it with `/skills:<name>`.
+`~/.claude/skills`). Run it with `/skills <name>` (`/skill <name>` works too).
 Loader: `crates/gray/src/skills/`. Copy me: `examples/hello-skill/SKILL.md`.
 
 ## Plugins — add tools and slash commands
@@ -37,9 +37,13 @@ plugin manifest's `commands: ["/x"]` (routed via `command/run`).
 
 ## System prompt and pickers — tune behavior without code
 
-Edit `~/.gray/AGENTS.md` directly (or `/agentsmd show|reset`); project
-`AGENTS.md`/`CLAUDE.md` files append as context. `/model`, `/thinking`,
-`/context` persist to `~/.gray/config.json`.
+`~/.gray/AGENTS.md` **is** the complete system prompt — sent to the model
+verbatim, minus HTML comments (`<!-- ... -->`), which stay in the file as
+unreadable notes. Gray appends nothing: project instructions (`AGENTS.md`/
+`CLAUDE.md`) and skills are found by the model via bash, and the default
+prompt says where. `/agentsmd` opens the built-in editor (Ctrl-S save, Ctrl-R
+reset, Ctrl-X cancel); `/agentsmd show|reset` print and restore. `/model`,
+`/thinking`, `/context` persist to `~/.gray/config.json`.
 
 ## Honest gaps (not customizable today)
 

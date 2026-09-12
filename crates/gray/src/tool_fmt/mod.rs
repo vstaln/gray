@@ -7,19 +7,45 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::path::Path;
 
-// ── Palette (GrokNight Theme) ──────────────────────────────────────────────
-pub const ACCENT_TOOL: Color = Color::Rgb(158, 206, 106); // #9ece6a (green bullet)
-pub const TEXT_PRIMARY: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (bold white)
-pub const PATH_COLOR: Color = Color::Rgb(255, 158, 100); // #ff9e64 (TokyoNight orange)
-pub const COMMAND_COLOR: Color = Color::Rgb(224, 175, 104); // #e0af68 (TokyoNight yellow)
-pub const DIM_COLOR: Color = Color::Rgb(108, 108, 108); // #6c6c6c (muted gray)
+// ── Palette (active theme) ─────────────────────────────────────────────────
+// GrokNight/TokyoNight heritage: green bullet, orange paths, yellow commands.
+// These read the live [`UiTheme`] so `/theme` recolors tool output without a
+// restart. The default `gray` theme seeds today's exact values, so output is
+// pixel-identical until the user switches.
+pub fn accent_tool() -> Color {
+    crate::theme::theme().tool_accent
+}
+pub fn text_primary() -> Color {
+    crate::theme::theme().text_body
+}
+pub fn path_color() -> Color {
+    crate::theme::theme().tool_path
+}
+pub fn command_color() -> Color {
+    crate::theme::theme().tool_command
+}
+pub fn dim_color() -> Color {
+    crate::theme::theme().tool_dim
+}
 
-pub const DIFF_DELETE_BG: Color = Color::Rgb(55, 25, 28); // #37191c (dark red diff tint)
-pub const DIFF_DELETE_FG: Color = Color::Rgb(247, 118, 142); // #f7768e (bright red)
-pub const DIFF_INSERT_BG: Color = Color::Rgb(24, 50, 32); // #183220 (dark green diff tint)
-pub const DIFF_INSERT_FG: Color = Color::Rgb(158, 206, 106); // #9ece6a (bright green)
-pub const DIFF_EQUAL_FG: Color = Color::Rgb(225, 225, 225); // #e1e1e1 (code text)
-pub const DIFF_GUTTER_FG: Color = Color::Rgb(108, 108, 108); // #6c6c6c (line numbers)
+pub fn diff_delete_bg() -> Color {
+    crate::theme::theme().diff_del_bg
+}
+pub fn diff_delete_fg() -> Color {
+    crate::theme::theme().diff_del_fg
+}
+pub fn diff_insert_bg() -> Color {
+    crate::theme::theme().diff_add_bg
+}
+pub fn diff_insert_fg() -> Color {
+    crate::theme::theme().diff_add_fg
+}
+pub fn diff_equal_fg() -> Color {
+    crate::theme::theme().text_body
+}
+pub fn diff_gutter_fg() -> Color {
+    crate::theme::theme().diff_gutter
+}
 
 fn arg_path(args: &serde_json::Value) -> &str {
     // Schemas emit only `path` + `file_path` (write.rs); dropped
@@ -156,19 +182,19 @@ pub fn format_tool_call_header(
     let bullet = Span::styled(
         "\u{2b22} ",
         Style::default()
-            .fg(ACCENT_TOOL)
+            .fg(accent_tool())
             .add_modifier(Modifier::BOLD),
     );
     let action_style = Style::default()
-        .fg(TEXT_PRIMARY)
+        .fg(text_primary())
         .add_modifier(Modifier::BOLD);
     let path_style = Style::default()
-        .fg(PATH_COLOR)
+        .fg(path_color())
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let cmd_style = Style::default()
-        .fg(COMMAND_COLOR)
+        .fg(command_color())
         .add_modifier(Modifier::BOLD);
-    let dim_style = Style::default().fg(DIM_COLOR);
+    let dim_style = Style::default().fg(dim_color());
 
     match name {
         "bash" => {
@@ -358,7 +384,7 @@ fn push_numbered_wrapped(
     let cont_indent_len = indent_count.min(content_w / 2);
     let cont_indent_str = " ".repeat(cont_indent_len);
 
-    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, DIFF_EQUAL_FG, None);
+    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, diff_equal_fg(), None);
     let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
 
     let gutter_str = format!("{:>width$} | ", line_num, width = gutter_width);
@@ -370,12 +396,12 @@ fn push_numbered_wrapped(
         if ci == 0 {
             spans.push(Span::styled(
                 gutter_str.clone(),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(diff_gutter_fg()),
             ));
         } else {
             spans.push(Span::styled(
                 cont_gutter_str.clone(),
-                Style::default().fg(DIFF_GUTTER_FG),
+                Style::default().fg(diff_gutter_fg()),
             ));
             if cont_indent_len > 0 {
                 spans.push(Span::raw(cont_indent_str.clone()));
@@ -432,7 +458,7 @@ fn render_numbered_lines(
             Span::styled(
                 format!("… +{omitted} lines"),
                 Style::default()
-                    .fg(DIM_COLOR)
+                    .fg(dim_color())
                     .add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -472,6 +498,42 @@ pub fn tool_may_render_body(tool_name: &str) -> bool {
     )
 }
 
+/// Strip the `<untrusted-output>` shell fence for *display* only.
+///
+/// `bash`/`shell_output` wrap process output in the fence so the model can
+/// tell tool output from user text (prompt-injection boundary). The tags are
+/// harness plumbing: the transcript keeps them, but rendering them as
+/// numbered output lines confuses humans.
+///
+/// Real shell output is `header + fence(body)` — e.g. `exit 0 …` on line 1,
+/// `<untrusted-output …>` on line 2, body, `</untrusted-output>`, then an
+/// optional trailer (`…more available…`, `for the rest`, wake text, …).
+/// Strip the first opener near the top and the last closer near the bottom,
+/// independently — a budget-truncated body may carry only one half. Body
+/// closers are escaped as `<\\/…`, so an exact `</untrusted-output>` match
+/// is the real fence; opener matches are position-guarded so a body line
+/// that happens to look like a tag is left alone.
+fn strip_shell_fence(trimmed: &str) -> String {
+    let mut lines: Vec<&str> = trimmed.lines().collect();
+    if let Some(idx) = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("<untrusted-output"))
+        && idx <= 3
+    {
+        lines.remove(idx);
+    }
+    if let Some(idx) = lines
+        .iter()
+        .rposition(|l| l.trim() == "</untrusted-output>")
+        && lines.len().saturating_sub(idx) <= 5
+    {
+        lines.remove(idx);
+    }
+    lines
+        .join("\n")
+        .replace("<\\/untrusted-output", "</untrusted-output>")
+}
+
 /// Formats tool output lines with Codex/Grok-style rendering.
 pub fn format_tool_result_lines_with_context(
     tool_name: &str,
@@ -492,10 +554,10 @@ pub fn format_tool_result_lines_with_context(
                 Span::styled(
                     prefix,
                     Style::default()
-                        .fg(DIFF_DELETE_FG)
+                        .fg(diff_delete_fg())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled((*l).to_string(), Style::default().fg(DIFF_DELETE_FG)),
+                Span::styled((*l).to_string(), Style::default().fg(diff_delete_fg())),
             ]));
         }
         return lines;
@@ -546,7 +608,7 @@ pub fn format_tool_result_lines_with_context(
         return Vec::new();
     }
 
-    let trimmed = output.trim();
+    let trimmed = strip_shell_fence(output.trim());
     if trimmed.is_empty() {
         return Vec::new();
     }
@@ -554,7 +616,7 @@ pub fn format_tool_result_lines_with_context(
     // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
     // full output stays in model context, TUI only renders a window.
     // ponytail: reuse render_code_block cap, no new collapsing system.
-    let (pretty, token) = prettify_output(trimmed);
+    let (pretty, token) = prettify_output(&trimmed);
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
     render_numbered_lines(
@@ -588,6 +650,90 @@ mod tests {
         );
         assert!(row_text(&lines[0]).contains("hello"));
         assert!(row_text(&lines[1]).contains("2 | "));
+    }
+
+    #[test]
+    fn bash_shell_fence_is_stripped_for_display() {
+        let out = "<untrusted-output task=\"t72\">\nexit 0 · hi\n</untrusted-output>";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(!text.contains("untrusted-output"), "fence leaked: {text:?}");
+        assert!(text.contains("exit 0 · hi"), "body lost: {text:?}");
+    }
+
+    #[test]
+    fn bash_half_fence_from_truncation_still_strips() {
+        // Budget truncation may keep only one half of the fence.
+        let open_only = "<untrusted-output task=\"t3\">\npartial body";
+        let text: String =
+            format_tool_result_lines_with_context("bash", None, open_only, false, None)
+                .iter()
+                .map(row_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+        assert!(!text.contains("untrusted-output"), "got {text:?}");
+
+        let close_only = "partial body\n</untrusted-output>";
+        let text: String =
+            format_tool_result_lines_with_context("bash", None, close_only, false, None)
+                .iter()
+                .map(row_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+        assert!(!text.contains("untrusted-output"), "got {text:?}");
+        assert!(text.contains("partial body"), "body lost: {text:?}");
+    }
+
+    #[test]
+    fn bash_header_plus_fence_is_stripped_for_display() {
+        // Real bash shape is header + fence(body), not fence-first:
+        // `exit …` on line 1, opener on line 2, body, closer last.
+        // The old stripper only handled fence-first and leaked the opener.
+        let out = "exit 0 \u{00b7} 0.0s \u{00b7} 1 lines \u{00b7} log ~/.gray/shell/nosession/t1.log\n<untrusted-output task=\"t1\">\nhi\n</untrusted-output>";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !rendered.contains("untrusted-output"),
+            "fence leaked: {rendered:?}"
+        );
+        assert!(rendered.contains("exit 0"), "header lost: {rendered:?}");
+        assert!(rendered.contains("hi"), "body lost: {rendered:?}");
+    }
+
+    #[test]
+    fn bash_promotion_trailer_keeps_body_but_drops_fence() {
+        // Promotion shape: header, fence, trailer after the closer.
+        // Closer is not the last line, so end-anchored stripping missed it.
+        let out = "still running after 1s \u{2192} promoted to background as t6 \u{00b7} pid 4242 \u{00b7} log ~/.gray/shell/nosession/t6.log\n<untrusted-output task=\"t6\">\ntick 1\n</untrusted-output>\nshell_output(task_id=\"t6\", from_offset=12) for the rest \u{00b7} next_offset=12";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !rendered.contains("untrusted-output"),
+            "fence leaked: {rendered:?}"
+        );
+        assert!(rendered.contains("tick 1"), "body lost: {rendered:?}");
+        assert!(
+            rendered.contains("still running"),
+            "header lost: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("shell_output"),
+            "trailer lost: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn bash_escaped_closer_in_body_is_restored() {
+        // Body containing a literal closer is escaped as `<\\/` by fence();
+        // display should restore the original text, not leak plumbing.
+        let out = "exit 0 \u{00b7} 0.0s \u{00b7} 2 lines \u{00b7} log ~/.gray/shell/nosession/t1.log\n<untrusted-output task=\"t1\">\nfirst\n<\\/untrusted-output> tail\n</untrusted-output>";
+        let lines = format_tool_result_lines_with_context("bash", None, out, false, None);
+        let rendered: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            !rendered.contains("untrusted-output task="),
+            "fence leaked: {rendered:?}"
+        );
+        assert!(rendered.contains("tail"), "body lost: {rendered:?}");
     }
 
     #[test]

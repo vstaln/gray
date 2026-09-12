@@ -287,12 +287,12 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                // Live args streaming: count tokens so the `· N tok`
-                // counter grows, and show a truncated preview on status.
+                // Live args streaming: truncated preview on the status dock.
                 // ponytail: status-line preview only, no in-place box update.
+                // (No token accounting: the pill carries no estimate — exact
+                // counts come from usage reports, never chars/4.)
                 let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
-                t.live_progress_tokens(id, args_so_far);
                 pending_tools.insert(id.clone(), (name.clone(), None));
                 if preview.is_empty() {
                     t.set_status(Some(&format!("Preparing tool: {name}")));
@@ -385,10 +385,22 @@ pub(crate) fn dispatch_agent_event(
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
                 t.end_thinking();
-                t.set_usage(*usage);
+                // Billed Σ-per-round totals are the cost basis (`totals`,
+                // `turn_footer`, persisted entry) — they must NOT overwrite
+                // the StepUsage context gauge. The per-turn live counter is
+                // left intact too: `end_turn` captures it for the final
+                // `Thought for` line and does the single reset there. The
+                // billed output is the one exception: stashed for the Thought
+                // line (`· N tok`, reasoning included). The
+                // streamed estimate misses tool results and input, so without
+                // this the final line reads absurdly low — display-only,
+                // never gauge input.
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
-                    t.push_usage(turn_footer(usage, model, totals, Some(ms)));
+                    t.set_turn_billed(usage.output_tokens);
+                    // TUI Thought line shows billed output only (reasoning
+                    // included); billed totals + cost live in `totals` /
+                    // headless footer.
                 }
             }
             _ => {}
@@ -497,6 +509,14 @@ pub(crate) async fn maybe_threshold_compact(
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
             say(tui, &notice);
+            // History just shrank: the gauge still holds the pre-compact
+            // StepUsage (stale-high until the next turn's first StepUsage).
+            // Reseed from the post-compact estimate so the footer, /context,
+            // and the next trigger all see the compacted size immediately.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 // Boundary marker + replacement: reload replays the active
@@ -532,6 +552,11 @@ pub(crate) async fn maybe_overflow_compact(
     say(tui, "context overflow — compacting...");
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
+            // See threshold path: reseed the gauge to the compacted size.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 // Boundary marker + replacement (see threshold path).

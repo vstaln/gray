@@ -124,29 +124,16 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed());
-            let elapsed = started.elapsed();
+            // Turn-anchored clock (tool re-stamps never restart it) and no
+            // token estimate: omp's loader is tokens-free, opencode reads
+            // the last usage report. Exact counts live in the footer gauge
+            // (context), the Thought line (turn output) and `/usage`.
+            let elapsed = super::pill_elapsed(tui.turn_started, *started, tui.is_task_running);
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
-            let tok_suffix = if tui.is_task_running {
-                let base = tui
-                    .latest_usage
-                    .or(tui.cumulative_usage)
-                    .map(|u| u.total())
-                    .unwrap_or(0);
-                let live = base + tui.live_streamed_tokens;
-                if live > 0 {
-                    format!(" · {} tok", crate::repl::fmt_usage(live))
-                } else {
-                    String::new()
-                }
-            } else if let Some(u) = tui.latest_usage {
-                format!(" · {} tok", crate::repl::fmt_usage(u.total()))
-            } else {
-                String::new()
-            };
-            let suffix = format!(" {elapsed_str}{tok_suffix} (esc to interrupt)");
+            let suffix = format!(" {elapsed_str} (esc to interrupt)");
             spans.push(Span::styled(
                 suffix,
-                Style::default().fg(Color::Rgb(108, 108, 108)),
+                Style::default().fg(crate::theme::theme().tool_dim),
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
@@ -166,7 +153,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         }
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 {
-            let box_block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+            let box_block =
+                Block::default().style(Style::default().bg(crate::theme::theme().surface_bg));
             frame.render_widget(
                 Paragraph::new(ibox.lines.clone()).block(box_block),
                 Rect::new(area.x, box_y, area.width, rendered_box_h),
@@ -212,13 +200,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 };
                 let pad_len = w.saturating_sub(used_len + display_width(marker));
                 let line_bg = if is_sel {
-                    Color::Rgb(246, 173, 126)
+                    crate::theme::theme().accent
                 } else {
-                    Color::Rgb(28, 28, 28)
+                    crate::theme::theme().raised_bg
                 };
                 let marker_style = if is_sel {
                     Style::default()
-                        .fg(Color::Black)
+                        .fg(crate::theme::theme().on_selection)
                         .bg(line_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
@@ -232,13 +220,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         Span::styled(
                             cmd_str,
                             Style::default()
-                                .fg(Color::Black)
+                                .fg(crate::theme::theme().on_selection)
                                 .bg(line_bg)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             desc_str,
-                            Style::default().fg(Color::Rgb(40, 40, 40)).bg(line_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_faint)
+                                .bg(line_bg),
                         ),
                         Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
                         Span::styled(marker.to_string(), marker_style),
@@ -254,7 +244,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                         ),
                         Span::styled(
                             desc_str,
-                            Style::default().fg(Color::Rgb(140, 140, 140)).bg(line_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_muted)
+                                .bg(line_bg),
                         ),
                         Span::styled(" ".repeat(pad_len), Style::default().bg(line_bg)),
                         Span::styled(marker.to_string(), marker_style),
@@ -281,15 +273,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                     " File ",
                     Style::default()
                         .fg(Color::White)
-                        .bg(Color::Rgb(59, 130, 246))
+                        .bg(crate::theme::theme().info)
                         .add_modifier(Modifier::BOLD),
                 ));
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(
                     fname,
                     Style::default()
-                        .fg(Color::Rgb(180, 180, 180))
-                        .bg(Color::Rgb(38, 38, 38)),
+                        .fg(crate::theme::theme().text_soft)
+                        .bg(crate::theme::theme().input_bg),
                 ));
                 spans.push(Span::raw("  "));
             }
@@ -339,24 +331,27 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             } else {
                 vec![Span::styled(
                     effort_display.clone(),
-                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                    Style::default().fg(crate::theme::theme().tool_dim),
                 )]
             }
         } else if effort_display.is_empty() {
             vec![Span::styled(
                 model_display.clone(),
-                Style::default().fg(Color::Rgb(140, 140, 140)),
+                Style::default().fg(crate::theme::theme().text_muted),
             )]
         } else {
             vec![
                 Span::styled(
                     model_display.clone(),
-                    Style::default().fg(Color::Rgb(140, 140, 140)),
+                    Style::default().fg(crate::theme::theme().text_muted),
                 ),
-                Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(80, 80, 80))),
+                Span::styled(
+                    " \u{b7} ",
+                    Style::default().fg(crate::theme::theme().text_faint),
+                ),
                 Span::styled(
                     effort_display.clone(),
-                    Style::default().fg(Color::Rgb(108, 108, 108)),
+                    Style::default().fg(crate::theme::theme().tool_dim),
                 ),
             ]
         };
@@ -371,15 +366,21 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let pad_len = w.saturating_sub(left_len + right_len);
 
         let cache_color = if hit_rate > 0.0 {
-            Color::Rgb(130, 145, 130)
+            crate::theme::theme().cache_hit
         } else {
-            Color::Rgb(80, 80, 80)
+            crate::theme::theme().text_faint
         };
 
         let mut footer_spans = vec![
             Span::raw(" "),
-            Span::styled(ctx_display, Style::default().fg(Color::Rgb(108, 108, 108))),
-            Span::styled(" \u{b7} ", Style::default().fg(Color::Rgb(65, 65, 65))),
+            Span::styled(
+                ctx_display,
+                Style::default().fg(crate::theme::theme().tool_dim),
+            ),
+            Span::styled(
+                " \u{b7} ",
+                Style::default().fg(crate::theme::theme().text_faint),
+            ),
             Span::styled(cache_display, Style::default().fg(cache_color)),
         ];
         footer_spans.push(Span::raw(" ".repeat(pad_len)));
@@ -405,13 +406,14 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             );
         }
 
-        if tui.status.is_none() && !tui.is_task_running {
-            let cur_x =
-                (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
-            let cur_y =
-                (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
-            frame.set_cursor_position(Position::new(cur_x, cur_y));
-        }
+        // The caret lives in the input box on every frame. Follow-up input
+        // stays editable mid-turn (typed into `queued_inputs`), so gating on
+        // idle hides the caret exactly while the user is typing blind. Modals
+        // own the screen and return before this point, so no other consumer
+        // competes for the cursor.
+        let cur_x = (area.x + 3 + ibox.cur_col as u16).min(area.x + area.width.saturating_sub(1));
+        let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
+        frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
     let ended = crossterm::execute!(
         std::io::stdout(),
@@ -435,13 +437,13 @@ mod tests {
 
     #[test]
     fn transcript_ends_blank_matches_ensure_gap() {
-        use ratatui::style::{Color, Style};
+        use ratatui::style::Style;
         assert!(!transcript_ends_blank(&[]));
         assert!(transcript_ends_blank(&[Line::from("")]));
         assert!(transcript_ends_blank(&[Line::from(" ")])); // left_pad-only row
         assert!(!transcript_ends_blank(&[Line::from("text")]));
         // card / code padding rows carry a bg: they are edges, not gaps
-        let bg = Style::default().bg(Color::Rgb(22, 22, 22));
+        let bg = Style::default().bg(crate::theme::GRAY_UI_THEME.surface_bg);
         assert!(!transcript_ends_blank(&[Line::from("").style(bg)]));
     }
 

@@ -50,7 +50,7 @@ pub(super) fn render_sequence(
                     out.push_str(cursor.read_group_body());
                 } else {
                     // Render the group body into the same box so environments
-                    // inside groups keep their 2D layout.
+                    // inside groups flow inline.
                     let body = cursor.read_group_body();
                     let mut sub = Cursor::new(body);
                     render_sequence(&mut sub, out, depth + 1, mode, None);

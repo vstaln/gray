@@ -45,7 +45,7 @@ pub struct Manifest {
     /// is a later pass (see `docs/plugins.md`).
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// Host-owned namespaces this plugin extends (`cron`, `gateway`, …).
+    /// Host-owned namespaces this plugin extends (`cron`, …).
     /// Entries route argv through the same `command/run` wire as `commands`
     /// (the adapter merges both into [`PluginHooks::commands`]).
     #[serde(default)]

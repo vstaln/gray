@@ -2,11 +2,12 @@
 
 use super::*;
 
-/// Expands `/skills:<name> [args]` (or the `/skill <name> [args]` alias —
+/// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). Bare `/skills` opens the installed-skills manager (TTY) or
-/// prints the text list (headless). `/skill <name>` runs one (Task 4).
+/// appended). Bare `/skills` opens the skills manager (TTY) or prints the
+/// text list (headless). Both list *discovered* skills (global + project),
+/// not just `~/.gray/skills` installs.
 /// With `local` set (Esc mid-turn), the skill is announced but never expanded
 /// into an AI prompt — the turn was cancelled, nothing talks to the model.
 pub(crate) fn expand_skill_command(
@@ -28,11 +29,10 @@ pub(crate) fn expand_skill_command(
     };
     let discovered = crate::skills::discover_skills(cwd);
     let Some(rest) = payload else {
-        // Bare /skills — installed manager on TTY (like /plugins),
-        // text list headless.
+        // Bare /skills — manager on TTY (like /plugins), text list headless.
         if tui.is_some() {
             let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-            match with_modal_sync(tui, || crate::setup::run_skills_modal(bg.as_ref())) {
+            match with_modal_sync(tui, || crate::setup::run_skills_modal(bg.as_ref(), cwd)) {
                 Ok(true) => {
                     if let Some(shared) = tui {
                         let mut t = shared.lock().expect("tui lock");
@@ -55,21 +55,12 @@ pub(crate) fn expand_skill_command(
                     say(tui, &format!("skills error: {e}"));
                 }
             }
-        };
-        match gray_pkg::skills_ops::list() {
-            Ok(skills) if skills.is_empty() => {
-                say(tui, "no skills installed — /marketplace to browse");
+        } else if discovered.skills.is_empty() {
+            say(tui, "no skills discovered — /marketplace to browse");
+        } else {
+            for s in &discovered.skills {
+                say(tui, &crate::skills::format_discovered_skill_row(s));
             }
-            Ok(skills) => {
-                for s in &skills {
-                    if s.version.trim().is_empty() {
-                        say(tui, &format!("{} [{}]", s.name, s.source));
-                    } else {
-                        say(tui, &format!("{} {} [{}]", s.name, s.version, s.source));
-                    }
-                }
-            }
-            Err(e) => say(tui, &format!("skills list failed: {e:#}")),
         }
         return ReplCommand::Empty;
     };
@@ -176,9 +167,13 @@ pub(crate) async fn handle_sys(
                     return;
                 }
             };
-            if crate::sys_editor::should_use_external_editor(
-                std::env::var("EDITOR").ok().as_deref(),
-            ) {
+            // Interactive: the built-in bracket editor, never `$EDITOR`/vim.
+            // External editors remain for non-TUI (piped) callers.
+            if tui.is_none()
+                && crate::sys_editor::should_use_external_editor(
+                    std::env::var("EDITOR").ok().as_deref(),
+                )
+            {
                 match crate::sys_editor::run_external_editor(&path, &initial) {
                     Ok(Some(_)) => {
                         say(
@@ -218,6 +213,7 @@ pub(crate) async fn handle_sys(
             }
             match res {
                 Ok(Some(saved)) => {
+                    let _ = crate::sys_editor::backup_before_overwrite(&path);
                     if let Err(e) = std::fs::write(&path, &saved) {
                         say(tui, &format!("failed to save {}: {e}", path.display()));
                         return;
@@ -359,6 +355,65 @@ pub(crate) async fn handle_model(
     }
 }
 
+/// Switch the TUI color theme (`/theme [name]`; bare lists themes).
+/// Live: call sites read `crate::theme::theme()` on every draw, so the switch
+/// applies instantly. Persists to saved config like thinking effort does.
+pub(crate) fn handle_theme(
+    config: &mut Config,
+    name: Option<String>,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    use crate::theme::{SELECTABLE_THEMES, ThemeId};
+    let list = || {
+        SELECTABLE_THEMES
+            .iter()
+            .map(|t| t.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    if let Some(n) = name {
+        match ThemeId::from_name(&n) {
+            Some(id) => {
+                crate::theme::set_theme(id);
+                config.theme = Some(id.name().to_string());
+                if let Ok(path) = crate::setup::saved_config_path() {
+                    let mut saved = crate::setup::load_saved_config_at(&path);
+                    saved.theme = Some(id.name().to_string());
+                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                }
+                let msg = format!("Theme set to {} ({})", id.display_name(), id.name());
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.push_action(&msg, None);
+                    t.ensure_gap(1);
+                } else {
+                    println!("\u{2713} {msg}");
+                }
+            }
+            None => {
+                let msg = format!("unknown theme '{n}' — try: {}", list());
+                if let Some(shared) = tui {
+                    let mut t = shared.lock().expect("tui lock");
+                    t.push_dim(format!("\u{2514} {msg}"));
+                    t.ensure_gap(1);
+                } else {
+                    println!("{msg}");
+                }
+            }
+        }
+        return;
+    }
+    let cur = crate::theme::theme().name;
+    let msg = format!("theme {cur} — available: {}", list());
+    if let Some(shared) = tui {
+        let mut t = shared.lock().expect("tui lock");
+        t.push_dim(msg);
+        t.ensure_gap(1);
+    } else {
+        println!("{msg}");
+    }
+}
+
 /// Handles `/thinking` / `/effort`: direct set (`/thinking high`), toggle visibility (bare `/thinking`), or picker.
 pub(crate) async fn handle_thinking(
     config: &mut Config,
@@ -490,6 +545,7 @@ mod tests {
             context_window: None,
             context_reserve: None,
             context_keep: None,
+            theme: None,
         };
         let mut agent: Option<Agent> = None;
         reload_agent(

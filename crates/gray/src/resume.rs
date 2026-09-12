@@ -323,9 +323,9 @@ fn run_picker_sync(
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
-    let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(246, 173, 126);
-    let text_dim = Color::Rgb(120, 120, 120);
+    let box_bg = crate::theme::theme().surface_bg;
+    let accent_peach = crate::theme::theme().accent;
+    let text_dim = crate::theme::theme().text_dim;
 
     let mut query = String::new();
     let mut sel: usize = 0;
@@ -411,7 +411,9 @@ fn run_picker_sync(
                         ),
                         Span::styled(
                             "Type to filter…",
-                            Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_dim)
+                                .bg(box_bg),
                         ),
                     ])
                 } else {
@@ -521,7 +523,7 @@ fn run_picker_sync(
                             Line::from(Span::styled(
                                 row_str,
                                 Style::default()
-                                    .fg(Color::Black)
+                                    .fg(crate::theme::theme().on_selection)
                                     .bg(accent_peach)
                                     .add_modifier(Modifier::BOLD),
                             ))

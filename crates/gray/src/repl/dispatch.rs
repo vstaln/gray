@@ -13,7 +13,6 @@ pub(crate) enum Flow {
 pub(crate) async fn dispatch_command(
     cmd: ReplCommand,
     agent: &mut Option<Agent>,
-    acp: &mut Option<AcpSession>,
     config: &mut Config,
     cwd: &std::path::Path,
     tui: &TuiOpt,
@@ -28,7 +27,6 @@ pub(crate) async fn dispatch_command(
         ReplCommand::Empty | ReplCommand::Prompt(_) => Flow::Continue,
         ReplCommand::Quit => {
             shutdown_hooks(agent.as_ref()).await;
-            let _ = acp.take(); // AcpSession has no teardown.
             if let Some((shared, stop)) = tui {
                 stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 let mut t = shared.lock().expect("tui lock");
@@ -106,14 +104,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::New(initial_prompt) => {
             shutdown_hooks(agent.as_ref()).await;
-            // Sticky ACP mode survives /new on a fresh agent thread.
-            if let Some(s) = acp.as_mut() {
-                let t = tui.as_ref().map(|(s, _)| s);
-                match s.new_session().await {
-                    Ok(()) => say(t, &format!("acp:{} new thread", s.agent_key())),
-                    Err(e) => say(t, &format!("acp new thread failed: {e:#}")),
-                }
-            }
             pending_history.clear();
             *session_totals = SessionTotals::default();
             *session_state = None;
@@ -212,6 +202,10 @@ pub(crate) async fn dispatch_command(
             .await;
             Flow::Continue
         }
+        ReplCommand::Theme(name) => {
+            handle_theme(config, name, tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
         ReplCommand::ContextWindow(val) => {
             handle_context_window(config, cwd, agent, val, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
@@ -288,26 +282,6 @@ pub(crate) async fn dispatch_command(
             // fully expanded into Prompt/Empty by expand_skill_command; defensive no-op
             Flow::Continue
         }
-        ReplCommand::Acp(raw) => {
-            #[cfg(feature = "acp")]
-            handle_acp_command(
-                &raw,
-                cwd,
-                tui.as_ref().map(|(s, _)| s),
-                &mut *acp,
-                config.model.as_deref(),
-            )
-            .await;
-            #[cfg(not(feature = "acp"))]
-            {
-                let _ = (&raw, &mut *acp, config);
-                say(
-                    tui.as_ref().map(|(s, _)| s),
-                    "acp support is not compiled in this build — rebuild with `--features acp`",
-                );
-            }
-            Flow::Continue
-        }
         ReplCommand::Plugin(raw) => {
             handle_plugin_command(&raw, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
@@ -341,13 +315,13 @@ pub(crate) async fn dispatch_command(
                 handled = true;
             }
             if !handled {
-                // The gateway left the TUI (kept as the `gray gateway` CLI):
+                // The gateway left the TUI (native gateway deleted; chat returns as a plugin):
                 // point muscle memory at it instead of the generic unknown.
                 let first = cmd[1..].split_whitespace().next().unwrap_or("");
                 if first == "gateway" || first == "gw" {
                     say(
                         tui.as_ref().map(|(s, _)| s),
-                        "the TUI gateway is gone — run `gray gateway …` outside gray",
+                        "the TUI gateway is gone — native chat support was removed",
                     );
                 } else {
                     say(

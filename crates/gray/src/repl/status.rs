@@ -165,35 +165,45 @@ pub(crate) async fn handle_context_window(
         }
     }
     fn collect_parts(
-        cwd: &Path,
+        _cwd: &Path,
         agent: &Option<Agent>,
         tui: Option<&crate::composer::SharedTui>,
     ) -> crate::setup::ContextParts {
+        // The prompt file is the whole system prompt (comments stripped); gray
+        // no longer appends project context or a skills list, so those are 0.
         let sys = crate::sys_prompt_path()
             .ok()
             .and_then(|p| load_or_create_system_prompt_at(&p).ok())
-            .map(|s| crate::setup::estimate_str_tokens(&s))
+            .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
             .unwrap_or(0);
-        let ctx_bytes: usize = crate::system_prompt::discover_context_files(cwd)
-            .iter()
-            .map(|f| f.content.len())
-            .sum::<usize>();
-        let skills = crate::skills::discover_skills(cwd).skills;
-        let skills_toks =
-            crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(&skills));
         let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
             .map(|s| crate::setup::estimate_str_tokens(&s))
             .unwrap_or(0);
         let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
-        let messages = agent
+        // Provider `total` already bills system + tools + history as input,
+        // so adding their estimates on top double-counts (opencode parity:
+        // its context number is the last usage report alone). When a real
+        // report is in force, messages is the residual after the other
+        // estimates, keeping `used()` equal to the provider total;
+        // otherwise it is the plain history estimate.
+        let history_est = agent
             .as_ref()
-            .map(|a| crate::compact::estimate_context_tokens(a.messages(), latest))
+            .map(|a| {
+                a.messages()
+                    .iter()
+                    .map(crate::compact::estimate_tokens)
+                    .sum()
+            })
             .unwrap_or(0);
+        let messages = match latest.map(|u| u.total()).filter(|t| *t > 0) {
+            Some(total) => total.saturating_sub(sys.saturating_add(tools_toks)),
+            None => history_est,
+        };
         crate::setup::ContextParts {
             system_prompt: sys,
-            project_context: (ctx_bytes as f64 / 4.0).ceil() as usize,
+            project_context: 0,
             tools: tools_toks,
-            skills: skills_toks,
+            skills: 0,
             messages,
         }
     }
@@ -494,6 +504,13 @@ pub(crate) async fn handle_compact(
                     .store
                     .append_compaction_replacement(&state.session_id, ag.messages())
                     .await;
+            }
+
+            // History just shrank (see session.rs threshold path): reseed
+            // the gauge to the compacted size instead of the stale StepUsage.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(ag.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
             }
 
             if let Some(shared) = tui {

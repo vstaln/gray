@@ -1,6 +1,6 @@
 //! Shared plugin→host runner core (`host/run` over a `gray -p` child).
 //!
-//! Both hosts (REPL/`-p` in `gray`, daemon in `gray-gateway`) serve sidecar
+//! The host (REPL/`-p` in `gray`) serves sidecar
 //! `host/*` requests through this: a subprocess, not an in-process agent
 //! turn, because `Agent::run` futures are `!Send` (streaming sink) and the
 //! sidecar transport (`sidecar.rs` reader) needs `Send`. Spawning the running

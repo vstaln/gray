@@ -94,7 +94,7 @@ pub(crate) fn render_selecting(
             Span::styled(
                 "Type to filter providers...",
                 Style::default()
-                    .fg(Color::Rgb(90, 90, 90))
+                    .fg(crate::theme::theme().text_dim)
                     .bg(colors.box_bg),
             ),
         ])
@@ -171,7 +171,7 @@ pub(crate) fn render_selecting(
                 Line::from(Span::styled(
                     full_row_str,
                     Style::default()
-                        .fg(Color::Black)
+                        .fg(crate::theme::theme().on_selection)
                         .bg(colors.accent_peach)
                         .add_modifier(Modifier::BOLD),
                 ))
@@ -180,7 +180,7 @@ pub(crate) fn render_selecting(
                     Span::styled(
                         " ✓ ",
                         Style::default()
-                            .fg(Color::Rgb(74, 222, 128))
+                            .fg(crate::theme::theme().success)
                             .add_modifier(Modifier::BOLD)
                             .bg(colors.box_bg),
                     )
@@ -197,7 +197,7 @@ pub(crate) fn render_selecting(
                 let sub_span = Span::styled(
                     sub,
                     Style::default()
-                        .fg(Color::Rgb(130, 130, 130))
+                        .fg(crate::theme::theme().text_dim)
                         .bg(colors.box_bg),
                 );
                 let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(colors.box_bg));
@@ -314,13 +314,13 @@ pub(crate) fn render_entering_key(
                 Span::styled(
                     format!(" {masked}"),
                     Style::default()
-                        .fg(Color::Rgb(210, 210, 210))
+                        .fg(crate::theme::theme().text_soft)
                         .bg(colors.input_bg),
                 ),
                 Span::styled(
                     "  \u{00b7} Enter to keep, paste to replace",
                     Style::default()
-                        .fg(Color::Rgb(110, 110, 110))
+                        .fg(crate::theme::theme().text_dim)
                         .bg(colors.input_bg),
                 ),
             ])
@@ -328,7 +328,7 @@ pub(crate) fn render_entering_key(
             Line::from(vec![Span::styled(
                 " Paste or type API key...",
                 Style::default()
-                    .fg(Color::Rgb(110, 110, 110))
+                    .fg(crate::theme::theme().text_dim)
                     .bg(colors.input_bg),
             )])
         }
@@ -355,14 +355,14 @@ pub(crate) fn render_entering_key(
         Line::from(Span::styled(
             format!(" \u{2022} {msg}"),
             Style::default()
-                .fg(Color::Rgb(239, 68, 68))
+                .fg(crate::theme::theme().error)
                 .bg(colors.box_bg),
         ))
     } else {
         Line::from(Span::styled(
             " (Key stored securely in ~/.gray/auth.json)",
             Style::default()
-                .fg(Color::Rgb(90, 90, 90))
+                .fg(crate::theme::theme().text_dim)
                 .bg(colors.box_bg),
         ))
     };

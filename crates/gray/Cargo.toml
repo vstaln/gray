@@ -14,7 +14,6 @@ name = "gray"
 path = "src/main.rs"
 
 [dependencies]
-gray-acp = { workspace = true, optional = true }
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }
@@ -38,29 +37,18 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
 percent-encoding = { workspace = true }
-arboard = { workspace = true, optional = true }
-image = { workspace = true, optional = true }
+arboard = { workspace = true }
+image = { workspace = true }
 tempfile = { workspace = true }
 base64 = { workspace = true }
 async-trait = { workspace = true }
-# Phase 1 scope cut: platform adapters are opt-in (default build is the
-# harness core with gateway config/status only, no twilight/teloxide/slack).
-# The workspace edge disables gateway default features
-# out of the default tree; opt back in below.
-gray-gateway = { workspace = true }
+# No gateway edge: gray ships no messaging adapters.
 unicode-width = { workspace = true }
 ignore = { workspace = true }
 
 [features]
 default = []
-# External agents over the Agent Client Protocol (`/acp`, `--acp`). Off by
-# default: the default graph carries no ACP client.
-acp = ["dep:gray-acp"]
-# Clipboard/image attachments (arboard + image). Off by default to keep the
-# default tree and binary lean; build with --features clipboard for paste.
-clipboard = ["dep:arboard", "dep:image"]
-# Platform passthroughs (opt-in; default build carries no platform deps).
-telegram = ["gray-gateway/telegram"]
-discord = ["gray-gateway/discord"]
-slack = ["gray-gateway/slack"]
-all-platforms = ["gray-gateway/all-platforms"]
+# Deprecated no-op: clipboard/image paste (arboard + image) is core now and
+# always compiled in. Kept so old `--features clipboard` invocations still build.
+clipboard = []
+

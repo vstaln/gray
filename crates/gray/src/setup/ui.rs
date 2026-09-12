@@ -82,9 +82,11 @@ pub fn dim_color(c: ratatui::style::Color) -> ratatui::style::Color {
             let b2 = ((b as f32) * k).round() as u8;
             Color::Rgb(r2, g2, b2)
         }
+        // Named brights dim to the arithmetic blend, same as before
+        // (was: White→(85,85,85)); Reset reads through to the theme's text.
         Color::White => Color::Rgb(85, 85, 85),
         Color::Gray => Color::Rgb(60, 60, 60),
-        Color::DarkGray => Color::Rgb(40, 40, 40),
+        Color::DarkGray => crate::theme::theme().text_faint,
         Color::Black => Color::Rgb(8, 8, 8),
         Color::Green => Color::Rgb(30, 90, 50),
         Color::Yellow => Color::Rgb(95, 80, 30),
@@ -92,7 +94,7 @@ pub fn dim_color(c: ratatui::style::Color) -> ratatui::style::Color {
         Color::Magenta => Color::Rgb(70, 35, 70),
         Color::Cyan => Color::Rgb(35, 70, 70),
         Color::Red => Color::Rgb(90, 35, 35),
-        Color::Reset => Color::Rgb(60, 60, 60),
+        Color::Reset => crate::theme::theme().text_faint,
         other => other,
     }
 }
@@ -106,18 +108,18 @@ pub fn dim_color(c: ratatui::style::Color) -> ratatui::style::Color {
 pub(crate) const BACKDROP_BG: ratatui::style::Color = ratatui::style::Color::Reset;
 
 pub fn dim_style(style: ratatui::style::Style) -> ratatui::style::Style {
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
     let mut s = Style::default().add_modifier(Modifier::DIM);
     if let Some(fg) = style.fg {
         s = s.fg(dim_color(fg));
     } else {
-        s = s.fg(Color::Rgb(70, 70, 70));
+        s = s.fg(crate::theme::theme().text_faint);
     }
     if let Some(bg) = style.bg {
         // Composer gray: user prompt cards and the input box share Rgb(22, 22, 22).
         // Preserving this background ensures user message cards retain their
         // visible card box ("overlay") behind modals instead of crushing to near-black.
-        if bg == Color::Rgb(22, 22, 22) {
+        if bg == crate::theme::theme().surface_bg {
             s = s.bg(bg);
         } else {
             s = s.bg(dim_color(bg));
@@ -163,7 +165,7 @@ fn pad_backdrop_line(
 
 pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnapshot) {
     use ratatui::layout::Rect;
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::widgets::{Block, Clear, Paragraph};
 
@@ -185,12 +187,12 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     // The backdrop's copy of the INPUT BOX is chrome, not content: paint it
     // dimmed so the textarea visibly drops behind modals. Transcript user
     // cards keep full gray via dim_style's preservation branch below.
-    let box_bg = Color::Rgb(22, 22, 22);
+    let box_bg = crate::theme::theme().surface_bg;
     let input_bg = dim_color(box_bg);
-    let prompt_arrow_color = Color::Rgb(70, 70, 70);
-    let text_dimmed_color = Color::Rgb(85, 85, 85);
-    let footer_cwd_color = Color::Rgb(48, 48, 48);
-    let footer_model_color = Color::Rgb(58, 58, 58);
+    let prompt_arrow_color = crate::theme::theme().text_faint;
+    let text_dimmed_color = crate::theme::theme().text_faint;
+    let footer_cwd_color = crate::theme::theme().text_faint;
+    let footer_model_color = crate::theme::theme().text_faint;
 
     let arrow_span = Span::styled(
         " ❯ ",
@@ -441,7 +443,7 @@ mod tests {
         let card_bg = terminal.backend().buffer()[(0, 1)].bg;
         assert_eq!(
             card_bg,
-            ratatui::style::Color::Rgb(22, 22, 22),
+            crate::theme::GRAY_UI_THEME.surface_bg,
             "card matches composer gray overlay"
         );
         // Row 3 is the gap row between card and input box

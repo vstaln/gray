@@ -1,8 +1,8 @@
 //! Plugin profile: gray-surface policy over the shared builder.
 //!
 //! Profile→registry→hooks assembly lives once in
-//! [`gray_plugin::builder`] (lowest common crate — the `gray → gray-gateway`
-//! edge forbids a `gray`-owned shared builder). This module keeps gray's
+//! [`gray_plugin::builder`] (lowest common crate — keeps the shared builder
+//! out of any single binary). This module keeps gray's
 //! surface policy: the [`SkillTool`] default baked into `tools-basic`, the
 //! transcript-safe warning queue, and the `--dump-manifest` registry view.
 

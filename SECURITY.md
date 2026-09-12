@@ -3,8 +3,7 @@
 ## Threat model
 
 `gray` executes shell commands from the model. The threat surface is:
-malicious or confused model output, untrusted tool/plugin results, and
-(over the gateway) untrusted chat users. There is no container or VM
+malicious or confused model output and untrusted tool/plugin results. There is no container or VM
 isolation — run gray in a container/VM for untrusted work.
 
 ## Destructive-command guard (scope, not a sandbox)
@@ -28,14 +27,6 @@ Plugins are sidecar processes running with your user privileges — only
 install plugins you trust. `capabilities[]` in the manifest is advisory
 (not enforced); a `tool/before` deny from any plugin blocks the call.
 Audit a plugin with `gray plugin check <dir>` before installing.
-
-## Gateway allowlist
-
-The gateway (`gray gateway`) is deny-by-default: nobody talks to the agent
-unless allowlisted. Keep `platforms.<p>.token` secret, `gateway.yaml` is
-written `0600` (owner-only), and prefer `dm_policy: pairing` over `open`
-(`allowed_users: "*"` admits everyone). Extra `denied_tools` merge with
-the built-in gateway deny set.
 
 ## Update trust model
 

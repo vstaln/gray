@@ -76,10 +76,10 @@ pub fn run_connect_modal(
     let mut terminal = Terminal::new(backend)?;
 
     let colors = ConnectColors {
-        box_bg: Color::Rgb(22, 22, 22),
-        input_bg: Color::Rgb(32, 32, 32),
-        accent_peach: Color::Rgb(246, 173, 126),
-        text_dim: Color::Rgb(120, 120, 120),
+        box_bg: crate::theme::theme().surface_bg,
+        input_bg: crate::theme::theme().input_bg,
+        accent_peach: crate::theme::theme().accent,
+        text_dim: crate::theme::theme().text_dim,
     };
 
     let bg_snapshot = bg

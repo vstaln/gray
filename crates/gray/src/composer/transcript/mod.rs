@@ -66,8 +66,6 @@ impl Tui {
     }
 
     pub fn stream(&mut self, chunk: &str) {
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
@@ -92,8 +90,6 @@ impl Tui {
 
     pub fn stream_thinking(&mut self, chunk: &str) {
         self.turn_had_thinking = true;
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         if self.hide_thinking {
             let _ = self.draw();
             return;
@@ -112,14 +108,14 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            self.thinking_lines.push(trimmed.to_string());
+            self.push_line_styled(trimmed.to_string(), thinking_style());
         }
         if display_width(&self.pending) >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
             self.pending = chars[cut..].iter().collect();
-            self.thinking_lines.push(line);
+            self.push_line_styled(line, thinking_style());
         }
         let _ = self.draw();
     }
@@ -129,8 +125,6 @@ impl Tui {
     }
 
     pub fn stream_text(&mut self, chunk: &str) {
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
             self.set_status(Some("Working"));
@@ -165,37 +159,27 @@ impl Tui {
     }
 
     pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking && self.pending.is_empty() && self.thinking_lines.is_empty() {
+        if !self.thinking && self.pending.is_empty() {
             return;
         }
-        // Opencode parity (`Thought: <duration>` header + blank + body):
-        // rows buffer during the run and flush header-first here —
-        // scrollback is append-only (`insert_before`), so unlike opencode's
-        // re-rendered header it can't sit on top while streaming.
+        // Rows already streamed live; only the `✻ Thought for <duration>`
+        // summary lands here, after the body (scrollback is append-only).
         let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
-        if !self.hide_thinking {
-            if !self.pending.is_empty() {
-                let rest = std::mem::take(&mut self.pending);
-                self.thinking_lines.push(rest);
-            }
-            if !self.thinking_lines.is_empty() {
-                self.ensure_gap(1);
-                let rows = std::mem::take(&mut self.thinking_lines);
-                for row in rows {
-                    self.push_line_styled(row, thinking_style());
-                }
-                if let Some(d) = elapsed {
-                    self.ensure_gap(1);
-                    self.push_line_spans(thought_summary_line(d));
-                }
-            }
-            if spacer {
-                self.ensure_gap(1);
-            }
-        } else {
+        if self.hide_thinking {
             self.pending.clear();
-            self.thinking_lines.clear();
+            return;
+        }
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, thinking_style());
+        }
+        if let Some(d) = elapsed {
+            self.ensure_gap(1);
+            self.push_line_spans(thought_summary_line(d));
+        }
+        if spacer {
+            self.ensure_gap(1);
         }
     }
 
@@ -213,8 +197,8 @@ impl Tui {
         self.ensure_gap(1);
         let lines = format_user_prompt_lines(text, attached, self.width().max(10));
         let height = lines.len() as u16;
-        let block =
-            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block = ratatui::widgets::Block::default()
+            .style(Style::default().bg(crate::theme::theme().surface_bg));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines.clone())
                 .block(block)
@@ -260,12 +244,14 @@ pub(crate) fn fmt_thought_duration(d: Duration) -> String {
     }
 }
 
-/// Bottom summary: gray `⬡ Thought for <duration>` under the body, matching
-/// the thinking text above — same hexagon marker as the live status.
+/// Bottom summary: gray `✻ Thought for <duration>` under the body, matching
+/// the turn-end Thought line (same star marker; duration-only — the
+/// provider's true reasoning count isn't known until TurnEnd, and a
+/// streamed estimate here would under-report billed reasoning).
 fn thought_summary_line(elapsed: Duration) -> Line<'static> {
     Line::from(vec![Span::styled(
-        format!("⬡ Thought for {}", fmt_thought_duration(elapsed)),
-        Style::default().fg(Color::Rgb(140, 140, 140)),
+        format!("✻ Thought for {}", fmt_thought_duration(elapsed)),
+        Style::default().fg(crate::theme::theme().text_muted),
     )])
 }
 
@@ -314,8 +300,13 @@ mod tests {
     fn thought_summary_line_names_duration() {
         let line = thought_summary_line(Duration::from_millis(5800));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "⬡ Thought for 5.8s");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(140, 140, 140)));
+        assert_eq!(text, "✻ Thought for 5.8s");
+        assert_eq!(
+            line.spans[0].style.fg,
+            // Pure Gray preset (no `theme()` global read — keeps this test
+            // hermetic under parallel execution).
+            Some(crate::theme::ThemeId::Gray.ui_theme().text_muted)
+        );
     }
 
     #[test]
@@ -363,19 +354,19 @@ mod tests {
 
     #[test]
     fn diff_rows_pad_edge_to_edge() {
-        use crate::tool_fmt::{DIFF_DELETE_BG, DIFF_INSERT_BG};
+        use crate::tool_fmt::{diff_delete_bg, diff_insert_bg};
         let header = Line::from("Ran edit");
         let body = vec![
             Line::from(vec![Span::styled(
                 "  1 | - old",
-                Style::default().bg(DIFF_DELETE_BG),
+                Style::default().bg(diff_delete_bg()),
             )])
-            .style(Style::default().bg(DIFF_DELETE_BG)),
+            .style(Style::default().bg(diff_delete_bg())),
             Line::from(vec![Span::styled(
                 "  1 | + new",
-                Style::default().bg(DIFF_INSERT_BG),
+                Style::default().bg(diff_insert_bg()),
             )])
-            .style(Style::default().bg(DIFF_INSERT_BG)),
+            .style(Style::default().bg(diff_insert_bg())),
             Line::from(vec![Span::raw("  2 |   same")]),
         ];
         let lines = format_tool_box_lines(header, &body, 80);

@@ -290,7 +290,10 @@ pub fn render_diff_hunks(
         let p_display = shorten_path(&p.display().to_string(), cwd);
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled("Updated ", Style::default().fg(Color::Rgb(160, 160, 160))),
+            Span::styled(
+                "Updated ",
+                Style::default().fg(crate::theme::theme().text_soft),
+            ),
             Span::styled(
                 p_display,
                 Style::default()
@@ -299,7 +302,7 @@ pub fn render_diff_hunks(
             ),
             Span::styled(
                 format!(" with {additions} additions and {deletions} removals"),
-                Style::default().fg(Color::Rgb(160, 160, 160)),
+                Style::default().fg(crate::theme::theme().text_soft),
             ),
         ]));
     }
@@ -346,7 +349,7 @@ pub fn render_diff_hunks(
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::raw(gutter_pad),
-                Span::styled(gap_text, Style::default().fg(DIFF_GUTTER_FG)),
+                Span::styled(gap_text, Style::default().fg(diff_gutter_fg())),
             ]));
         }
 
@@ -360,8 +363,8 @@ pub fn render_diff_hunks(
         for line in hunk {
             let bg_color = match line.tag {
                 DiffTag::Equal => None,
-                DiffTag::Delete => Some(DIFF_DELETE_BG),
-                DiffTag::Insert => Some(DIFF_INSERT_BG),
+                DiffTag::Delete => Some(diff_delete_bg()),
+                DiffTag::Insert => Some(diff_insert_bg()),
             };
             let prefix_style = if let Some(bg) = bg_color {
                 Style::default().bg(bg)
@@ -380,20 +383,20 @@ pub fn render_diff_hunks(
             };
 
             let gutter_num_style = if let Some(bg) = bg_color {
-                Style::default().fg(DIFF_GUTTER_FG).bg(bg)
+                Style::default().fg(diff_gutter_fg()).bg(bg)
             } else {
-                Style::default().fg(DIFF_GUTTER_FG)
+                Style::default().fg(diff_gutter_fg())
             };
             let gutter_pipe_style = gutter_num_style;
             let gutter_sign_style = match line.tag {
                 DiffTag::Equal => gutter_num_style,
                 DiffTag::Delete => Style::default()
-                    .fg(DIFF_DELETE_FG)
-                    .bg(DIFF_DELETE_BG)
+                    .fg(diff_delete_fg())
+                    .bg(diff_delete_bg())
                     .add_modifier(Modifier::BOLD),
                 DiffTag::Insert => Style::default()
-                    .fg(DIFF_INSERT_FG)
-                    .bg(DIFF_INSERT_BG)
+                    .fg(diff_insert_fg())
+                    .bg(diff_insert_bg())
                     .add_modifier(Modifier::BOLD),
             };
 
@@ -413,14 +416,14 @@ pub fn render_diff_hunks(
                     &expanded,
                     &mut old_highlighter,
                     syntect,
-                    DIFF_EQUAL_FG,
+                    diff_equal_fg(),
                     bg_color,
                 ),
                 DiffTag::Insert => highlight_line_spans(
                     &expanded,
                     &mut new_highlighter,
                     syntect,
-                    DIFF_EQUAL_FG,
+                    diff_equal_fg(),
                     bg_color,
                 ),
                 DiffTag::Equal => {
@@ -428,7 +431,7 @@ pub fn render_diff_hunks(
                         &expanded,
                         &mut new_highlighter,
                         syntect,
-                        DIFF_EQUAL_FG,
+                        diff_equal_fg(),
                         None,
                     );
                     if let Some(hl) = old_highlighter.as_mut() {
