@@ -27,6 +27,11 @@ jobs:
         run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
       - run: python3 docs/schema/validate.py
+      - name: startup latency budget (release binary)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo build --release -p gray --quiet
+          python3 scripts/startup-budget.py --quick
       - run: cargo test --workspace --quiet
       - if: matrix.os == 'ubuntu-latest'
         uses: rustsec/audit-check@v2

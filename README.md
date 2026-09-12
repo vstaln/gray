@@ -36,7 +36,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Any provider, your keys** | OpenRouter, DeepSeek, Groq, OpenAI, ollama, vLLM, LM Studio — anything OpenAI-compatible — plus OAuth sign-in for xAI/Grok and Codex/ChatGPT. Searchable model picker over the bundled models.dev catalog. |
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
-| **Bash only, by default** | The default profile is a single persistent `bash` shell — the mini-swe-agent / dsh `minimal` stance. The model schedules its own recurring work by running `gray cron add …` through bash. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
+| **Bash only, by default** | The default profile is a single `bash` tool (fresh `sh -c` spawn per call, no persistent shell) — the mini-swe-agent / dsh `minimal` stance. The model schedules its own recurring work by running `gray cron add …` through bash. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
 | **Extend the harness** | Skills from `SKILL.md`, or sidecar plugins over stdio (frozen wire v1). |
 
 ## Install

@@ -1115,6 +1115,7 @@ dependencies = [
  "infer",
  "libc",
  "log",
+ "memchr",
  "regex",
  "serde",
  "serde_json",
