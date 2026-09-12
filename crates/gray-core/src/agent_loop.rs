@@ -727,12 +727,7 @@ impl Agent {
                                 as futures::future::BoxFuture<'static, ToolOutput>,
                         ));
                     }
-                    let joined = crate::parallel::join_ordered(
-                        futs,
-                        crate::parallel::MAX_WORKERS,
-                        &ctx.cancel,
-                    )
-                    .await;
+                    let joined = crate::parallel::join_ordered(futs, &ctx.cancel).await;
                     // Reconcile by real index (no sentinel exists: every
                     // entry carries its input index; panics arrive as error
                     // outputs). `None`/absent means cancelled
