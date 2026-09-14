@@ -61,7 +61,7 @@ pub use context::{
 };
 
 pub mod ui;
-pub use ui::{BackgroundSnapshot, render_dimmed_background};
+pub use ui::{BackgroundSnapshot, dim_color, render_dimmed_background};
 pub mod icons;
 pub use icons::icon;
 pub mod tabs;
