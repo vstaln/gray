@@ -1,8 +1,0 @@
-plugins:
-  - tools-minimal
-# Blocking-`bash`-only profile (`tools-minimal` = `bash`).
-# The context-only `skills` plugin (per-turn <available_skills> list, no tools)
-# is always on regardless of this profile.
-# Opt back into the richer sets by listing them here:
-#   - tools-basic    read/write/edit + shell tools
-#   - tools-search   grep/find/ls
