@@ -155,10 +155,13 @@ mod tests {
         let spawned = spawn("sleep 30", &std::env::temp_dir()).expect("spawn");
         let pgid = spawned.pgid;
         let mut child = spawned.child;
-        term_then_kill(pgid, Duration::from_secs(2))
-            .await
-            .expect("group kill ok");
-        let st = child.wait().await.expect("reap");
+        // Reap concurrently, like the real caller: a zombie left unreaped
+        // makes kill(-pgid, SIGKILL) return EPERM on macOS (nothing
+        // signalable remains), which is not a kill failure. Reaping as soon
+        // as the child dies empties the group before escalation fires.
+        let (res, st) = tokio::join!(term_then_kill(pgid, Duration::from_secs(2)), child.wait());
+        res.expect("group kill ok");
+        let st = st.expect("reap");
         assert!(
             st.signal() == Some(libc::SIGTERM) || st.signal() == Some(libc::SIGKILL),
             "child died by signal, got {st:?}"
