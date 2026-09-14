@@ -78,31 +78,61 @@ fn find_closing_delim(s: &str) -> Option<usize> {
 
 fn parse_yaml_like(s: &str) -> SkillFrontmatter {
     let mut fm = SkillFrontmatter::default();
-    for line in s.lines() {
-        let line = line.trim();
+    let lines: Vec<&str> = s.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        i += 1;
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        if let Some(colon) = line.find(':') {
-            let key = line[..colon].trim().trim_matches('"').trim_matches('\'');
-            let mut val = line[colon + 1..].trim().to_string();
+        let Some(colon) = line.find(':') else {
+            continue;
+        };
+        let key = line[..colon].trim().trim_matches('"').trim_matches('\'');
+        let mut val = line[colon + 1..].trim().to_string();
+        // Block scalars (`description: >` / `|` with optional chomping
+        // `+`/`-`): gather the indented continuation lines YAML folds into
+        // the value. Without this a folded description parses as the bare
+        // marker (`">"`), silently breaking skill discovery text.
+        // ponytail: chomping nuances ignored, descriptions are trimmed downstream.
+        let folded = val == ">" || val == ">-" || val == ">+";
+        let literal = val == "|" || val == "|-" || val == "|+";
+        if folded || literal {
+            let mut parts: Vec<String> = Vec::new();
+            while i < lines.len() {
+                let next = lines[i];
+                if next.trim().is_empty() {
+                    i += 1;
+                    continue;
+                }
+                if !next.starts_with([' ', '\t']) {
+                    break;
+                }
+                parts.push(next.trim().to_string());
+                i += 1;
+            }
+            val = if folded {
+                parts.join(" ")
+            } else {
+                parts.join("\n")
+            };
+        } else if (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
+            || (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
+        {
             // strip quotes
-            if (val.starts_with('"') && val.ends_with('"') && val.len() >= 2)
-                || (val.starts_with('\'') && val.ends_with('\'') && val.len() >= 2)
-            {
-                val = val[1..val.len() - 1].to_string();
+            val = val[1..val.len() - 1].to_string();
+        }
+        match key {
+            "name" => fm.name = Some(val),
+            "description" => fm.description = Some(val),
+            "disable-model-invocation" | "disable_model_invocation" => {
+                fm.disable_model_invocation = val == "true" || val == "True" || val == "TRUE"
             }
-            match key {
-                "name" => fm.name = Some(val),
-                "description" => fm.description = Some(val),
-                "disable-model-invocation" | "disable_model_invocation" => {
-                    fm.disable_model_invocation = val == "true" || val == "True" || val == "TRUE"
-                }
-                "args" | "arguments" => {
-                    fm.args = parse_declared_args(&val);
-                }
-                _ => {}
+            "args" | "arguments" => {
+                fm.args = parse_declared_args(&val);
             }
+            _ => {}
         }
     }
     fm
@@ -414,5 +444,38 @@ mod tests {
         let (skill, _) = load_skill_from_file(f.path(), "path");
         let skill = skill.expect("loads");
         assert!(skill.args.is_empty());
+    }
+
+    #[test]
+    fn folded_description_joins_continuation_lines() {
+        // ponytail-style `description: >` frontmatter: the indented lines
+        // fold into one description (previously parsed as the bare `">"`).
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            f,
+            "---\nname: ponytail\ndescription: >\n  Forces the laziest solution\n  that actually works.\nargs: lite, full\n---\nBody"
+        )
+        .unwrap();
+        let (skill, diags) = load_skill_from_file(f.path(), "path");
+        let skill = skill.expect("loads");
+        assert_eq!(
+            skill.description,
+            "Forces the laziest solution that actually works."
+        );
+        assert_eq!(skill.args, vec!["lite".to_string(), "full".to_string()]);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    }
+
+    #[test]
+    fn literal_and_chomped_markers_parse() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "---\ndescription: |-\n  line one\n  line two\n---\nBody").unwrap();
+        let (skill, _) = load_skill_from_file(f.path(), "path");
+        assert_eq!(skill.expect("loads").description, "line one\nline two");
+
+        let mut g = tempfile::NamedTempFile::new().unwrap();
+        writeln!(g, "---\ndescription: >-\n  folded here\n---\nBody").unwrap();
+        let (skill, _) = load_skill_from_file(g.path(), "path");
+        assert_eq!(skill.expect("loads").description, "folded here");
     }
 }

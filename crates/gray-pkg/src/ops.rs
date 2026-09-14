@@ -146,7 +146,9 @@ pub fn parse_spec(s: &str) -> NameOrUrl {
     if t.starts_with("ssh://") || t.starts_with("git://") || t.starts_with("git@") {
         return parse_git_spec(t);
     }
-    if (t.starts_with("http://") || t.starts_with("https://")) && https_has_git_suffix(t) {
+    if (t.starts_with("http://") || t.starts_with("https://"))
+        && (https_has_git_suffix(t) || https_is_bare_github_repo(t))
+    {
         return parse_git_spec(t);
     }
     if t.starts_with("http://") || t.starts_with("https://") {
@@ -204,6 +206,37 @@ fn https_has_git_suffix(t: &str) -> bool {
         .next()
         .unwrap_or(path)
         .ends_with(".git")
+}
+
+/// Raw `http(s)` URL pointing at a bare `github.com/<owner>/<repo>`
+/// repo page (what users paste): a git source, so
+/// `gray plugin install https://github.com/<owner>/<repo>` clones like the
+/// `git:` form. Deeper paths (releases, trees, blobs — e.g. tarball download
+/// URLs) stay tarball [`NameOrUrl::Url`].
+fn https_is_bare_github_repo(t: &str) -> bool {
+    let Some((head, remainder)) = split_authority(t) else {
+        return false;
+    };
+    let host = head
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host != "github.com" {
+        return false;
+    }
+    // Strip `@ref` (R16) then query/fragment; allow an optional `.git`.
+    let path = match remainder.rfind('@') {
+        Some(i) => &remainder[..i],
+        None => remainder,
+    };
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() != 2 {
+        return false;
+    }
+    let repo = segs[1].strip_suffix(".git").unwrap_or(segs[1]);
+    !segs[0].is_empty() && !repo.is_empty()
 }
 
 /// Install name from a git URL: last path segment minus `.git`.
@@ -1688,6 +1721,40 @@ pub(crate) mod tests {
         // `@ref` alone never flips a tarball URL to git (R15).
         assert!(matches!(
             parse_spec("https://h/x.tar.gz@main"),
+            NameOrUrl::Url(_)
+        ));
+        // Bare github.com repo pages (what users paste) are git sources.
+        match parse_spec("https://github.com/DietrichGebert/ponytail") {
+            NameOrUrl::Git { url, git_ref } => {
+                assert_eq!(url, "https://github.com/DietrichGebert/ponytail");
+                assert_eq!(git_ref, None);
+            }
+            other => panic!("unexpected spec: {other:?}"),
+        }
+        // Trailing slash / `.git` / case variants stay git; deeper paths
+        // (release tarballs, trees, blobs) stay tarball Url.
+        assert!(matches!(
+            parse_spec("https://github.com/o/r/"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("https://github.com/o/r.git"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("https://GitHub.com/o/r"),
+            NameOrUrl::Git { .. }
+        ));
+        assert!(matches!(
+            parse_spec("https://github.com/o/r/releases/download/v1/x.tar.gz"),
+            NameOrUrl::Url(_)
+        ));
+        assert!(matches!(
+            parse_spec("https://github.com/o/r/tree/main/skills"),
+            NameOrUrl::Url(_)
+        ));
+        assert!(matches!(
+            parse_spec("https://example.com/o/r"),
             NameOrUrl::Url(_)
         ));
     }
