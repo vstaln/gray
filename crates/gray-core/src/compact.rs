@@ -123,26 +123,26 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
     }
     let to_elide = tool_result_indices.len() - keep_last_n;
     for &(m_idx, b_idx) in &tool_result_indices[..to_elide] {
-        if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx] {
-            if content.len() > 120 {
-                let lines = content.lines().count();
-                // Keep the header's `log <path>` so the elided output stays
-                // recoverable (`tail`/`grep` the file) instead of a dead end.
-                let log_path = content
-                    .lines()
-                    .next()
-                    .and_then(|h| h.split_once(" · log "))
-                    .map(|(_, p)| p.trim())
-                    .filter(|p| !p.is_empty());
-                *content = match log_path {
-                    Some(p) => {
-                        format!(
-                            "Old command output: ({lines} lines omitted; full output logged at {p})"
-                        )
-                    }
-                    None => format!("Old command output: ({lines} lines omitted)"),
-                };
-            }
+        if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx]
+            && content.len() > 120
+        {
+            let lines = content.lines().count();
+            // Keep the header's `log <path>` so the elided output stays
+            // recoverable (`tail`/`grep` the file) instead of a dead end.
+            let log_path = content
+                .lines()
+                .next()
+                .and_then(|h| h.split_once(" · log "))
+                .map(|(_, p)| p.trim())
+                .filter(|p| !p.is_empty());
+            *content = match log_path {
+                Some(p) => {
+                    format!(
+                        "Old command output: ({lines} lines omitted; full output logged at {p})"
+                    )
+                }
+                None => format!("Old command output: ({lines} lines omitted)"),
+            };
         }
     }
 }
