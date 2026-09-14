@@ -296,7 +296,10 @@ async fn fast_path_parity() {
         if *hits_limit {
             // No matches at all means rg is missing (both lanes return the
             // same "not installed" error and compare equal) — fail loud.
-            assert!(!fm.is_empty(), "no matches at all for {args} — is rg installed?");
+            assert!(
+                !fm.is_empty(),
+                "no matches at all for {args} — is rg installed?"
+            );
             // Same count (both stop at the limit), same notices; the *set*
             // may differ by rg file order, so content is not compared.
             assert_eq!(fm.len(), sm.len(), "match count diverges for {args}");
