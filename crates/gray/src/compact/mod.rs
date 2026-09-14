@@ -375,7 +375,7 @@ mod tests {
         }
     }
 
-    /// Scripted `complete_prompt` provider returning one fixed summary text.
+    /// Scripted provider returning one fixed summary text.
     fn scripted_agent(summary_text: &str) -> Agent {
         use async_trait::async_trait;
         use futures::stream::BoxStream;

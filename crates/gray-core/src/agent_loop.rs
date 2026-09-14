@@ -15,12 +15,21 @@ use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
 use crate::event::{AgentEvent, StopReason, StreamEvent, Usage, append_thinking_chunk};
 use crate::message::{ChatRequest, ContentBlock, Message, Role};
-use crate::turn_queue::{Submission, SubmitMode, TurnState};
 
 /// Empty-turn provider retries before nudging or ending on `(empty)`.
 const MAX_EMPTY_RETRIES: u8 = 2;
 /// Truncated-turn (`MaxTokens`) continuations before keeping the partial.
 const MAX_CONTINUATIONS: u8 = 2;
+
+/// True when a message carries no billable input: empty content, or nothing
+/// but blank `Text` blocks. Any non-text block (image, tool use/result,
+/// thinking) counts as input — never silently dropped.
+fn is_blank_input(msg: &Message) -> bool {
+    msg.content.iter().all(|b| match b {
+        ContentBlock::Text { text } => text.trim().is_empty(),
+        _ => false,
+    })
+}
 
 impl Agent {
     /// Best-effort `turn_end` fan-out: hook failures must never fail the turn
@@ -76,8 +85,7 @@ impl Agent {
     /// Runs the agent loop starting from `input`, returning every event
     /// emitted along the way.
     ///
-    /// Admission first: `input` goes through [`Agent::submit`] (empty input
-    /// rejected before it touches history), then the admitted turn executes.
+    /// Blank input is a no-op: rejected before it touches history.
     ///
     /// Per turn: build a [`ChatRequest`], stream the response while
     /// forwarding `TextDelta`s in arrival order, finalize the assistant
@@ -94,19 +102,11 @@ impl Agent {
         input: Message,
         ctx: ToolContext,
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        match self.submit(input, SubmitMode::StartOrSteer) {
-            Submission::Started { turn_id } => {
-                self.turn_state = TurnState::Busy { turn_id };
-                let out = self.run_inner(ctx, None).await;
-                self.turn_state = TurnState::Idle;
-                out
-            }
-            // Defensive only: Busy needs reentrancy, impossible under `&mut`
-            // today — no turn ran, the input is already queued as steer.
-            Submission::Steered { .. } => Ok(vec![]),
-            // Defensive only (see above): rejection mutated nothing.
-            Submission::NotSubmitted(_) => Ok(vec![]),
+        if is_blank_input(&input) {
+            return Ok(vec![]);
         }
+        self.messages.push(input);
+        self.run_inner(ctx, None).await
     }
 
     /// Streaming variant of [`run`]: every [`AgentEvent`] is handed to
@@ -118,19 +118,11 @@ impl Agent {
         ctx: ToolContext,
         on_event: &mut dyn FnMut(&AgentEvent),
     ) -> Result<Vec<AgentEvent>, CoreError> {
-        match self.submit(input, SubmitMode::StartOrSteer) {
-            Submission::Started { turn_id } => {
-                self.turn_state = TurnState::Busy { turn_id };
-                let out = self.run_inner(ctx, Some(on_event)).await;
-                self.turn_state = TurnState::Idle;
-                out
-            }
-            // Defensive only: Busy needs reentrancy, impossible under `&mut`
-            // today — no turn ran, the input is already queued as steer.
-            Submission::Steered { .. } => Ok(vec![]),
-            // Defensive only (see above): rejection mutated nothing.
-            Submission::NotSubmitted(_) => Ok(vec![]),
+        if is_blank_input(&input) {
+            return Ok(vec![]);
         }
+        self.messages.push(input);
+        self.run_inner(ctx, Some(on_event)).await
     }
 
     async fn run_inner(
@@ -165,7 +157,6 @@ impl Agent {
         // whole history, so summing outputs across rounds double-counts
         // and the gauge blows up superlinearly).
         let mut billed = Usage::default();
-        let mut first_round = true;
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
@@ -195,8 +186,6 @@ impl Agent {
                 self.emit_turn_end(&billed).await;
                 return Err(CoreError::Cancelled);
             }
-            self.drain_steer(first_round);
-            first_round = false;
 
             // mini-SWE-agent / SWE-agent parity: keep the recent tool observations
             // in full; elide older historical command outputs so bloated compiler/test
@@ -409,14 +398,12 @@ impl Agent {
                                     self.provider.model_id(),
                                 );
                             }
-                            // Context overflow: compact via budgeted complete_prompt,
-                            // then retry the turn; otherwise surface the error.
+                            // Context overflow: compact via the budgeted
+                            // compaction pipeline, then retry the turn;
+                            // otherwise surface the error.
                             if e.should_compress() {
                                 match self.try_compact_budgeted().await {
                                     Ok(true) => {
-                                        // Steer queued while compacting joins the
-                                        // retried turn — never one reply late.
-                                        self.drain_steer(true);
                                         continue 'turn;
                                     }
                                     _ => {

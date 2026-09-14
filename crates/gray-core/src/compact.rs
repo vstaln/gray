@@ -69,20 +69,15 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 /// - each `ToolResult` block is independently replaceable: `id`/`is_error`
 ///   are kept, so pairing and alternation are untouched.
 ///
-/// Unknown window (`None`) returns `(0, 0)` immediately, mirroring v2's early
-/// return. Returns (rewritten block count, estimated deleted tokens).
+/// Unknown window (`None`) returns immediately, mirroring v2's early
+/// return.
 // Slice (not `&mut Vec`): only iteration is needed, so the narrower type
 // keeps `ptr_arg` clean without an allow.
-pub(crate) fn trim_tool_results_to_fit(
-    messages: &mut [Message],
-    window: Option<usize>,
-) -> (usize, u64) {
+pub(crate) fn trim_tool_results_to_fit(messages: &mut [Message], window: Option<usize>) {
     let Some(window) = window else {
-        return (0, 0);
+        return;
     };
     let mut estimated: usize = messages.iter().map(message_tokens).sum();
-    let initial = estimated;
-    let mut rewritten = 0;
     for msg in messages.iter_mut().rev() {
         if estimated <= window {
             break;
@@ -104,10 +99,8 @@ pub(crate) fn trim_tool_results_to_fit(
                 *content = CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string();
             }
             estimated = estimated - old_msg_tokens + message_tokens(msg);
-            rewritten += 1;
         }
     }
-    (rewritten, initial.saturating_sub(estimated) as u64)
 }
 
 /// Default number of recent tool observations to keep in full (mini-SWE-agent / SWE-agent parity).
@@ -116,7 +109,7 @@ pub const DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS: usize = 5;
 /// Mini-SWE-agent / SWE-agent parity: keeps the last `keep_last_n` tool observations
 /// in full; older tool observations are elided to a concise line since the agent
 /// already acted on them in previous rounds.
-pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n: usize) -> usize {
+pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n: usize) {
     let mut tool_result_indices = Vec::new();
     for (m_idx, msg) in messages.iter().enumerate() {
         for (b_idx, block) in msg.content.iter().enumerate() {
@@ -126,10 +119,9 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
         }
     }
     if tool_result_indices.len() <= keep_last_n {
-        return 0;
+        return;
     }
     let to_elide = tool_result_indices.len() - keep_last_n;
-    let mut pruned = 0;
     for &(m_idx, b_idx) in &tool_result_indices[..to_elide] {
         if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx] {
             if content.len() > 120 {
@@ -150,11 +142,9 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
                     }
                     None => format!("Old command output: ({lines} lines omitted)"),
                 };
-                pruned += 1;
             }
         }
     }
-    pruned
 }
 
 /// In-band compaction trigger: chat-shaped equivalent of codex v2's
@@ -450,8 +440,7 @@ mod tests {
     fn trim_replaces_newest_tool_results_first_keeping_ids() {
         let mut msgs = tool_msgs();
         // Total estimate: 3 × 2500 = 7500. One trim lands at 5000 + 14 = 5014.
-        let (rewritten, _deleted) = trim_tool_results_to_fit(&mut msgs, Some(5100));
-        assert_eq!(rewritten, 1);
+        trim_tool_results_to_fit(&mut msgs, Some(5100));
         for (msg, id) in msgs.iter().zip(["c1", "c2", "c3"]) {
             let ContentBlock::ToolResult {
                 id: got_id,
@@ -474,20 +463,32 @@ mod tests {
     fn trim_unknown_window_is_noop() {
         let mut msgs = tool_msgs();
         let before = msgs.clone();
-        assert_eq!(trim_tool_results_to_fit(&mut msgs, None), (0, 0));
+        trim_tool_results_to_fit(&mut msgs, None);
         assert_eq!(msgs, before);
     }
 
     #[test]
-    fn trim_reports_deleted_tokens() {
+    fn trim_shrinks_the_estimate_to_fit() {
         let mut msgs = tool_msgs();
-        let (_rewritten, deleted) = trim_tool_results_to_fit(&mut msgs, Some(5100));
-        let expected = (10_000 - CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.len()) as u64 / 4;
+        trim_tool_results_to_fit(&mut msgs, Some(5100));
+        let replaced = msgs
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::ToolResult { content, .. }
+                            if content == CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE
+                    )
+                })
+            })
+            .count();
+        assert_eq!(replaced, 1, "exactly the newest tool result is rewritten");
+        let estimated: usize = msgs.iter().map(message_tokens).sum();
         assert!(
-            deleted.abs_diff(expected) <= 2,
-            "deleted {deleted} ≈ expected {expected}"
+            estimated <= 5100,
+            "estimate {estimated} must fit the window"
         );
-        assert!(deleted > 0);
     }
 
     // --- Task 2 (RED): retention grouping + budget walk --------------------
@@ -983,8 +984,7 @@ mod tests {
             })
             .collect();
 
-        let pruned = prune_old_tool_observations(&mut msgs, 3);
-        assert_eq!(pruned, 5); // 8 total - 3 kept = 5 pruned
+        prune_old_tool_observations(&mut msgs, 3);
 
         // First 5 should be elided
         for i in 0..5 {
@@ -1023,8 +1023,7 @@ mod tests {
             })
             .collect();
 
-        let pruned = prune_old_tool_observations(&mut msgs, 1);
-        assert_eq!(pruned, 1);
+        prune_old_tool_observations(&mut msgs, 1);
 
         let ContentBlock::ToolResult { content, .. } = &msgs[0].content[0] else {
             panic!()
