@@ -342,12 +342,15 @@ pub(crate) async fn handle_context_window(
             .map(|s| crate::setup::estimate_str_tokens(&s))
             .unwrap_or(0);
         let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
-        // Provider `total` already bills system + tools + history as input,
-        // so adding their estimates on top double-counts (opencode parity:
-        // its context number is the last usage report alone). When a real
-        // report is in force, messages is the residual after the other
-        // estimates, keeping `used()` equal to the provider total;
-        // otherwise it is the plain history estimate.
+        let project = crate::skills_tool::project_context_block(cwd)
+            .map(|b| crate::setup::estimate_str_tokens(&b))
+            .unwrap_or(0);
+        // Provider `total` already bills system + hook blocks + tools +
+        // history as input, so adding their estimates on top double-counts
+        // (opencode parity: its context number is the last usage report
+        // alone). When a real report is in force, messages is the residual
+        // after the other estimates, keeping `used()` equal to the provider
+        // total; otherwise it is the plain history estimate.
         let history_est = agent
             .as_ref()
             .map(|a| {
@@ -358,12 +361,13 @@ pub(crate) async fn handle_context_window(
             })
             .unwrap_or(0);
         let messages = match latest.map(|u| u.total()).filter(|t| *t > 0) {
-            Some(total) => total.saturating_sub(sys.saturating_add(tools_toks)),
+            Some(total) => total.saturating_sub(
+                sys.saturating_add(project)
+                    .saturating_add(tools_toks)
+                    .saturating_add(skills),
+            ),
             None => history_est,
         };
-        let project = crate::skills_tool::project_context_block(cwd)
-            .map(|b| crate::setup::estimate_str_tokens(&b))
-            .unwrap_or(0);
         crate::setup::ContextParts {
             system_prompt: sys,
             project_context: project,

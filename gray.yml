@@ -1,6 +1,6 @@
 plugins:
   - tools-minimal
-# Bash-only tools (`tools-minimal` = `bash` + `shell_output` + `shell_kill` + `sleep`).
+# Blocking-`bash`-only profile (`tools-minimal` = `bash`).
 # The context-only `skills` plugin (per-turn <available_skills> list, no tools)
 # is always on regardless of this profile.
 # Opt back into the richer sets by listing them here:

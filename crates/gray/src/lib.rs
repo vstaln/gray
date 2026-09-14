@@ -48,8 +48,8 @@ bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
 default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through one tool family: bash (`bash`, `shell_output`, `shell_kill`, `sleep`). Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
-Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
+You work through one tool: blocking `bash`. Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
+Project AGENTS.md / CLAUDE.md files (cwd up to git root) attach automatically as project context each turn — no need to cat them for the rules, only to re-check a file mid-task. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Guidelines:
@@ -182,7 +182,10 @@ pub async fn build_agent(
         // Bash-only tools; the context-only skills plugin is always on
         // (every profile, including the default `tools-minimal`).
         extra_tools: vec![],
-        extra_plugins: vec![Arc::new(crate::skills_tool::SkillsPlugin)],
+        extra_plugins: vec![
+            Arc::new(crate::skills_tool::SkillsPlugin),
+            Arc::new(crate::skills_tool::ProjectContextPlugin),
+        ],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,

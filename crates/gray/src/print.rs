@@ -242,10 +242,6 @@ pub async fn run_print_mode_with_session(
         .map(|_| ())
     };
 
-    // Print mode has no later turn: background tasks would orphan, so stop
-    // the one-shot session unconditionally (exit code unaffected).
-    let _ = crate::shell_drain::shutdown_shell_session("nosession").await;
-
     let render_broken = render_err
         .as_ref()
         .is_some_and(|e| e.kind() == ErrorKind::BrokenPipe);

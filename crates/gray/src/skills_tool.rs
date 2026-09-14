@@ -1,7 +1,7 @@
 //! Skill context for the bash-only surface + paste helpers for `/skills <name>`.
 //!
-//! No `skill` tool — tools stay bash-only (`bash`, `shell_output`,
-//! `shell_kill`, `sleep`). Skills work through context + bash:
+//! No `skill` tool — the tool surface stays blocking-`bash`-only.
+//! Skills work through context + bash:
 //! [`SkillsPlugin`] serves the per-turn `<available_skills>` list (names,
 //! descriptions, exact `<location>` paths) via the `prompt/context` hook,
 //! and the model reads one with bash (`cat <location>`).
@@ -46,6 +46,126 @@ impl gray_plugin::Plugin for SkillsPlugin {
         } else {
             Some(block)
         }
+    }
+}
+
+/// Project context for the bash-only surface (`ProjectContextPlugin`).
+///
+/// Gray never injects project files into the stored system prompt (that
+/// prefix must stay byte-stable for provider prefix caching). Instead,
+/// project `AGENTS.md` / `CLAUDE.md` files attach as ephemeral per-turn
+/// context through the `prompt/context` hook — the same seam as
+/// [`SkillsPlugin`]. The model no longer needs to `cat` them manually;
+/// `/context` bills the same block it actually receives, so the
+/// "Project context" row stays honest.
+///
+/// Discovery mirrors skill project roots: `cwd` up to (and including) the
+/// git root, nearest directory last so the most specific file reads last.
+/// The stored system prompt itself (`~/.gray/AGENTS.md`) is excluded so it
+/// is never billed twice. Each file is capped at
+/// [`PROJECT_CONTEXT_MAX_CHARS`] with a truncation note — an unbounded
+/// read here would blow the context window it reports to.
+pub(crate) const PROJECT_CONTEXT_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md"];
+pub(crate) const PROJECT_CONTEXT_MAX_CHARS: usize = 16_000;
+
+/// Project context files for `cwd`, git-root-first so the nearest reads last.
+pub fn discover_project_context_files(cwd: &Path) -> Vec<PathBuf> {
+    let resolved = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let self_prompt = crate::sys_prompt_path()
+        .ok()
+        .and_then(|p| std::fs::canonicalize(&p).ok());
+    let git_root = crate::skills::find_git_root(&resolved);
+    // Same ancestor shape as skill project roots: cwd up, git root inclusive.
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut cur = Some(resolved);
+    while let Some(dir) = cur {
+        dirs.push(dir.clone());
+        if let Some(root) = &git_root
+            && &dir == root
+        {
+            break;
+        }
+        cur = dir.parent().map(|p| p.to_path_buf());
+    }
+    let mut out = Vec::new();
+    for dir in dirs.iter().rev() {
+        for name in PROJECT_CONTEXT_FILES {
+            let f = dir.join(name);
+            if !f.is_file() {
+                continue;
+            }
+            if let Ok(canon) = std::fs::canonicalize(&f)
+                && Some(&canon) == self_prompt.as_ref()
+            {
+                continue;
+            }
+            out.push(f);
+        }
+    }
+    out
+}
+
+/// The `<project_context>` hook block for `cwd`, or `None` when no project
+/// files exist. Single definition: [`ProjectContextPlugin`] serves it and
+/// `/context` estimates this exact block.
+pub fn project_context_block(cwd: &Path) -> Option<String> {
+    let mut out = String::from("<project_context>\n");
+    let mut any = false;
+    for f in discover_project_context_files(cwd) {
+        let Ok(body) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let body = body.trim();
+        if body.is_empty() {
+            continue;
+        }
+        let (body, truncated) = if body.len() > PROJECT_CONTEXT_MAX_CHARS {
+            (body[..PROJECT_CONTEXT_MAX_CHARS].to_string(), true)
+        } else {
+            (body.to_string(), false)
+        };
+        out.push_str(&format!(
+            "<file path=\"{}\">{}{}</file>\n",
+            f.display(),
+            body,
+            if truncated {
+                "\n<!-- truncated: file exceeds per-file cap -->"
+            } else {
+                ""
+            }
+        ));
+        any = true;
+    }
+    out.push_str("</project_context>");
+    any.then_some(out)
+}
+
+/// Context-only builtin plugin carrying the `<project_context>` block, so
+/// project `AGENTS.md` / `CLAUDE.md` files reach the model without bash
+/// round-trips and without touching the cached system prefix.
+///
+/// - `tools()` is empty: the tool surface stays bash-only.
+/// - `prompt_context()` returns [`project_context_block`] for the turn cwd,
+///   `None` when nothing is discovered (hook stays silent, prefix stable).
+pub struct ProjectContextPlugin;
+
+#[async_trait::async_trait]
+impl gray_plugin::Plugin for ProjectContextPlugin {
+    fn manifest(&self) -> gray_plugin::Manifest {
+        gray_plugin::Manifest {
+            name: "project-context".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            tools: vec![],
+            ..Default::default()
+        }
+    }
+
+    fn tools(&self) -> Vec<std::sync::Arc<dyn gray_core::agent::Tool>> {
+        vec![]
+    }
+
+    async fn prompt_context(&self, cwd: &str) -> Option<String> {
+        project_context_block(Path::new(cwd))
     }
 }
 
@@ -113,6 +233,60 @@ mod tests {
             apply_substitutions("No args here.", None, "/d"),
             "No args here."
         );
+    }
+
+    #[test]
+    fn project_context_block_attaches_cwd_agents_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "# rules\nBe nice.").unwrap();
+        let block = project_context_block(tmp.path()).expect("block");
+        assert!(block.contains("<project_context>"), "{block}");
+        assert!(block.contains("Be nice."), "{block}");
+        assert!(block.contains("AGENTS.md"), "{block}");
+    }
+
+    #[test]
+    fn project_context_block_empty_without_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(project_context_block(tmp.path()), None);
+    }
+
+    #[test]
+    fn project_context_skips_stored_system_prompt() {
+        // `~/.gray/AGENTS.md` is the system prompt — billing it again as
+        // project context would double-count the prefix.
+        let home = tempfile::tempdir().unwrap();
+        let gray_home = home.path().join(".gray");
+        std::fs::create_dir_all(&gray_home).unwrap();
+        std::fs::write(gray_home.join("AGENTS.md"), "system prompt").unwrap();
+        unsafe { std::env::set_var("GRAY_HOME", &gray_home) };
+        let block = project_context_block(&gray_home);
+        unsafe { std::env::remove_var("GRAY_HOME") };
+        assert_eq!(block, None, "system prompt must not self-attach");
+    }
+
+    #[test]
+    fn project_context_caps_huge_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("AGENTS.md"), "x".repeat(20_000)).unwrap();
+        let block = project_context_block(tmp.path()).expect("block");
+        assert!(block.contains("truncated"), "{block}");
+        assert!(
+            block.len() < 20_000 + 512,
+            "cap must bound the block: {}",
+            block.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn project_context_plugin_is_context_only() {
+        use gray_plugin::Plugin;
+        let plugin = ProjectContextPlugin;
+        assert!(plugin.tools().is_empty(), "must carry no tools");
+        assert!(plugin.manifest().tools.is_empty(), "manifest: no tools");
+        let tmp = tempfile::tempdir().unwrap();
+        let none = plugin.prompt_context(tmp.path().to_str().unwrap()).await;
+        assert_eq!(none, None);
     }
 
     #[test]

@@ -135,7 +135,6 @@ async fn pump_main(
     };
 
     let mut mem = MemView::new();
-    let mut total: u64 = 0;
     let mut log_bytes: u64 = tokio::fs::metadata(&log_path)
         .await
         .map(|m| m.len())
@@ -147,7 +146,6 @@ async fn pump_main(
         // byte counts stay consistent; binary chunks pass through untouched.
         let redacted = gray_core::redaction::redact_bytes_for_log(&chunk);
         mem.push(&redacted);
-        total += redacted.len() as u64;
         // Size cap: one truncation note, then file writes stop (memory
         // view continues). Not a failure: `log_write_failed` stays false.
         if !log_truncated && log.is_some() && log_capped(log_bytes, redacted.len() as u64) {
@@ -306,17 +304,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pump_redacts_shaped_assignments() {
-        // The shaped name/value are assembled at runtime so no
-        // secret-shaped literal sits in source.
-        let name: String = [71u8, 72, 73, 95, 75, 69, 89]
+    async fn pump_redacts_secret_shaped_assignment() {
+        // `*_token=<value>` hits SECRET_NAME_MARKERS ("token"); the name is
+        // assembled at runtime so no secret-shaped literal sits in source.
+        let name: String = [109u8, 121, 95, 116, 111, 107, 101, 110]
             .iter()
             .map(|b| *b as char)
             .collect();
-        let val: String = [118u8, 97, 108, 117, 101, 49, 50, 51]
-            .iter()
-            .map(|b| *b as char)
-            .collect();
+        // "value123": lowercase + digits, no shape of its own — only the
+        // secret-bearing name triggers redaction.
+        let val = "value123";
         let script = format!("printf '\\n{name}={val}\\n'");
         let (mut child, out, err) = spawn_sh(&script);
         drop(err);
@@ -326,7 +323,11 @@ mod tests {
         let s = h.await.unwrap();
         let file = std::fs::read(&log).unwrap();
         let text = String::from_utf8_lossy(&file);
-        assert!(!text.contains(&val), "{text}");
+        assert!(!text.contains(val), "{text}");
+        assert!(
+            text.contains(&name),
+            "name is the useful half, kept: {text}"
+        );
         // Memory view and file agree (both sides see the redacted bytes).
         assert_eq!(s.total_bytes, file.len() as u64);
         let _ = std::fs::remove_file(&log);

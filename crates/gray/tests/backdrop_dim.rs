@@ -76,3 +76,54 @@ fn backdrop_footer_fg_is_color_dimmed() {
     }
     assert!(found > 0, "footer row must exist");
 }
+
+#[test]
+fn backdrop_textarea_copy_is_dimmed_box_and_text() {
+    // The live textarea's copy behind a modal is chrome, not content: its
+    // box bg must be the dimmed surface (never full composer gray) and its
+    // text the dim-mapped faint — on every modal, since all of them share
+    // `render_dimmed_background`.
+    let theme = gray::theme::theme();
+    let buf = draw_bg(150, 45);
+    let area = buf.area;
+    let dim_box = dim_color(theme.surface_bg);
+    assert_ne!(
+        dim_box, theme.surface_bg,
+        "test needs a theme where dimming changes the box"
+    );
+    // Input rows: the ones carrying the prompt text.
+    let mut rows = 0;
+    for y in 0..area.height {
+        let row: String = (0..area.width).map(|x| buf[(x, y)].symbol()).collect();
+        if !row.contains("/thinking") {
+            continue;
+        }
+        rows += 1;
+        for x in 0..area.width {
+            let c = &buf[(x, y)];
+            assert_eq!(
+                c.bg, dim_box,
+                "textarea copy bg must be dimmed, not full surface ({x},{y})"
+            );
+            if !c.symbol().trim().is_empty() && c.symbol() != "\u{276f}" {
+                assert_eq!(
+                    c.fg,
+                    dim_color(theme.text_faint),
+                    "textarea copy text must go through dim_color ({x},{y})"
+                );
+            }
+        }
+    }
+    assert!(rows > 0, "prompt text must be mirrored in the backdrop");
+    // Universal: no full-brightness composer surface may survive anywhere
+    // in the backdrop, transcript cards included.
+    for y in 0..area.height {
+        for x in 0..area.width {
+            assert_ne!(
+                buf[(x, y)].bg,
+                theme.surface_bg,
+                "undimmed surface_bg leaked into backdrop ({x},{y})"
+            );
+        }
+    }
+}
