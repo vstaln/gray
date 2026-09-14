@@ -36,7 +36,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | **Any provider, your keys** | OpenRouter, DeepSeek, Groq, OpenAI, ollama, vLLM, LM Studio — anything OpenAI-compatible — plus OAuth sign-in for xAI/Grok and Codex/ChatGPT. Searchable model picker over the bundled models.dev catalog. |
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
-| **Bash only, by default** | The default profile is a single `bash` tool (fresh `sh -c` spawn per call, no persistent shell) — the mini-swe-agent / dsh `minimal` stance. The model schedules its own recurring work by running `gray cron add …` through bash. Opt into `tools-basic` (read · write · edit · shell control) and `tools-search` (grep · find · ls) via `gray.yml`. Ctrl-C cancels a runaway turn. |
+| **Bash only** | The surface is `bash` + `shell_output` + `shell_kill` + `sleep` — read, search, edit, run, all through bash. The model schedules its own recurring work by running `gray cron add …` through bash. Ctrl-C cancels a runaway turn. |
 | **Extend the harness** | Skills from `SKILL.md`, or sidecar plugins over stdio (frozen wire v1). |
 
 ## Install
@@ -112,7 +112,7 @@ Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--sessi
 
 Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, providers, config) · [docs/plugins.md](docs/plugins.md) (plugin authoring) · [docs/protocol-v1.md](docs/protocol-v1.md) (frozen wire spec).
 
-**Skills** — `SKILL.md` bodies discovered across opencode / claude / agent directories. `/skills` lists them, `/skills [name] [args]` runs one (`/skill` is an alias). The prompt points the model at the skill roots; it reads the matching `SKILL.md` via bash.
+**Skills** — `SKILL.md` bodies discovered across opencode / claude / agent directories. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
 

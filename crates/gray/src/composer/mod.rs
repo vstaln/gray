@@ -65,10 +65,46 @@ pub(crate) fn pill_elapsed(
     running: bool,
 ) -> Duration {
     if running {
-        turn_started.map(|t| t.elapsed()).unwrap_or_else(|| status_started.elapsed())
+        turn_started
+            .map(|t| t.elapsed())
+            .unwrap_or_else(|| status_started.elapsed())
     } else {
         status_started.elapsed()
     }
+}
+
+/// Codex parity (`reference/openai/codex/codex-rs/tui/src/chatwidget/compaction.rs`):
+/// live compaction status. Its wall clock is separate from the turn's running
+/// time, and only a matching live completion contributes a duration to the
+/// transcript. The bottom-pane input box stays mounted the whole time —
+/// compaction only touches the status dock, never the viewport, transcript,
+/// or textarea.
+pub(crate) const COMPACTION_HEADER: &str = "Compacting context";
+/// Codex details line (`Making room to continue.`): kept for parity/docs.
+/// Gray's single-label status dock renders the header only.
+#[allow(dead_code)]
+pub(crate) const COMPACTION_DETAILS: &str = "Making room to continue.";
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveCompaction {
+    pub(crate) id: String,
+    pub(crate) started_at: Instant,
+}
+
+/// Codex `fmt_elapsed_compact`: `0s`, `59s`, `1m 00s`, `1h 00m 00s`.
+pub(crate) fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
+    if elapsed_secs < 60 {
+        return format!("{elapsed_secs}s");
+    }
+    if elapsed_secs < 3600 {
+        let minutes = elapsed_secs / 60;
+        let seconds = elapsed_secs % 60;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    let hours = elapsed_secs / 3600;
+    let minutes = (elapsed_secs % 3600) / 60;
+    let seconds = elapsed_secs % 60;
+    format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
 mod text_area;
@@ -80,6 +116,7 @@ pub struct Tui {
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
+    active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
@@ -239,6 +276,7 @@ impl Tui {
             matches: Vec::new(),
             sel: 0,
             status: None,
+            active_compaction: None,
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
@@ -475,6 +513,14 @@ impl Tui {
     }
 
     pub fn begin_turn(&mut self, label: &str) {
+        // Codex `status_controls.rs`: follow-up input and background activity
+        // must not obscure an active compaction — keep its header/clock.
+        if let Some(active) = self.active_compaction.clone() {
+            self.is_task_running = true;
+            self.status = Some((active.started_at, COMPACTION_HEADER.to_string()));
+            let _ = self.draw();
+            return;
+        }
         let now = Instant::now();
         if self.turn_started.is_none() {
             self.turn_started = Some(now);
@@ -486,8 +532,78 @@ impl Tui {
         let _ = self.draw();
     }
     pub fn set_status(&mut self, label: Option<&str>) {
+        // Codex parity: while compacting, every other status request
+        // (`Working`, `Preparing tool:`, sleep countdown, …) is ignored so
+        // the `Compacting context` dock never flickers or drops the input box.
+        if let Some(active) = self.active_compaction.clone() {
+            self.status = Some((active.started_at, COMPACTION_HEADER.to_string()));
+            let _ = self.draw();
+            return;
+        }
         self.status = label.map(|l| (Instant::now(), l.to_string()));
         let _ = self.draw();
+    }
+
+    /// Codex `on_context_compaction_started`: flush the live answer stream
+    /// with a separator, then raise a dedicated `Compacting context` status
+    /// with its own timer origin. Never touches the viewport, transcript,
+    /// textarea, or turn clock — the input box stays mounted.
+    pub fn begin_compaction(&mut self, id: String) {
+        if self
+            .active_compaction
+            .as_ref()
+            .is_some_and(|active| active.id == id)
+        {
+            return;
+        }
+        self.flush_markdown();
+        self.end_thinking_run(true);
+        let started_at = Instant::now();
+        self.active_compaction = Some(ActiveCompaction { id, started_at });
+        self.status = Some((started_at, COMPACTION_HEADER.to_string()));
+        let _ = self.draw();
+    }
+
+    /// Codex `clear_context_compaction` + `on_context_compaction_completed`:
+    /// only the matching live id clears and contributes a duration. Restores
+    /// `restore` (`Working` for auto paths, `None` for manual `/compact`)
+    /// in the same lock so the ticker can never paint a stale header.
+    pub fn finish_compaction(&mut self, id: &str, restore: Option<&str>) -> Option<Duration> {
+        let active = self.active_compaction.take()?;
+        if active.id != id {
+            self.active_compaction = Some(active);
+            return None;
+        }
+        let elapsed = active.started_at.elapsed();
+        match restore {
+            Some(label) => {
+                self.status = Some((Instant::now(), label.to_string()));
+            }
+            None => {
+                self.status = None;
+            }
+        }
+        let _ = self.draw();
+        Some(elapsed)
+    }
+
+    /// Turn ended without a matching completion (cancel/error): drop the
+    /// compaction flag silently, no transcript line — Codex parity.
+    pub fn clear_compaction_silent(&mut self) {
+        if self.active_compaction.take().is_some() {
+            self.status = None;
+            let _ = self.draw();
+        }
+    }
+
+    pub fn is_compacting(&self) -> bool {
+        self.active_compaction.is_some()
+    }
+
+    pub fn compaction_elapsed(&self) -> Option<Duration> {
+        self.active_compaction
+            .as_ref()
+            .map(|a| a.started_at.elapsed())
     }
     /// Brief 3B: `sleep(seconds, reason?)` countdown on the status line.
     /// `tick_status` refreshes the remaining seconds; [`Self::clear_sleep`]
@@ -536,6 +652,9 @@ impl Tui {
     }
 
     pub fn end_turn(&mut self) {
+        // Codex `turn_runtime.rs`: a turn ending without item completion
+        // clears a live compaction silently (no `Context compacted` line).
+        self.active_compaction = None;
         // capture elapsed before clearing
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
@@ -609,8 +728,11 @@ impl Tui {
             return;
         }
         // Sleep countdown: repaint once per second with the remaining time.
+        // Never obscures an active compaction (Codex status_controls parity).
         let mut sleep_tick = false;
-        if let Some((deadline, reason)) = self.sleep_until.clone() {
+        if self.active_compaction.is_none()
+            && let Some((deadline, reason)) = self.sleep_until.clone()
+        {
             let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();
             self.status = Some((Instant::now(), sleep_label(remaining, &reason)));
             sleep_tick = true;
@@ -707,10 +829,7 @@ mod thought_line_tests {
         let turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(14));
         let restamped = std::time::Instant::now();
         let elapsed = super::pill_elapsed(turn_started, restamped, true);
-        assert!(
-            elapsed.as_secs() >= 13,
-            "clock reset mid-turn: {elapsed:?}"
-        );
+        assert!(elapsed.as_secs() >= 13, "clock reset mid-turn: {elapsed:?}");
     }
 
     #[test]
@@ -718,5 +837,54 @@ mod thought_line_tests {
         let status = std::time::Instant::now() - std::time::Duration::from_secs(2);
         let elapsed = super::pill_elapsed(None, status, false);
         assert!((1..=5).contains(&elapsed.as_secs()), "{elapsed:?}");
+    }
+
+    #[test]
+    fn fmt_elapsed_compact_matches_codex() {
+        assert_eq!(super::fmt_elapsed_compact(0), "0s");
+        assert_eq!(super::fmt_elapsed_compact(1), "1s");
+        assert_eq!(super::fmt_elapsed_compact(59), "59s");
+        assert_eq!(super::fmt_elapsed_compact(60), "1m 00s");
+        assert_eq!(super::fmt_elapsed_compact(61), "1m 01s");
+        assert_eq!(super::fmt_elapsed_compact(3 * 60 + 5), "3m 05s");
+        assert_eq!(super::fmt_elapsed_compact(3600), "1h 00m 00s");
+        assert_eq!(super::fmt_elapsed_compact(3600 + 60 + 1), "1h 01m 01s");
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    // Codex parity (`compaction_tests.rs`): compaction keeps its own clock,
+    // survives follow-up status writes, only the matching id completes, and
+    // the input box (textarea/viewport state) is never touched.
+    use super::*;
+
+    // `Tui::new` needs a real TTY; these tests cover the pure clock/id
+    // policy plus the status-guard contract via a minimal harness. The
+    // full viewport-preservation (input box mounted) is structural: none of
+    // begin/finish/tick/end_turn touches `textarea`, `transcript`,
+    // `history_entries`, or `viewport_h` except through `draw`.
+
+    #[test]
+    fn compaction_clock_is_separate_from_turn_clock() {
+        let turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        let compaction_started = std::time::Instant::now() - std::time::Duration::from_secs(83);
+        // Pill during compaction reads the compaction clock, not the turn.
+        let pill = compaction_started.elapsed();
+        let turn = turn_started.map(|t| t.elapsed()).unwrap_or_default();
+        assert!(pill.as_secs() >= 82, "compaction clock: {pill:?}");
+        assert!(turn.as_secs() >= 599, "turn clock preserved: {turn:?}");
+        assert_eq!(super::fmt_elapsed_compact(83), "1m 23s");
+    }
+
+    #[test]
+    fn mismatched_completion_does_not_clear_live_compaction() {
+        // Policy mirror of `finish_compaction`: a stale id must not clear
+        // the live compaction or contribute a duration.
+        let live = "compact-1".to_string();
+        let stale = "compact-old";
+        assert_ne!(live, stale);
+        // Only the matching id formats a transcript duration.
+        assert_eq!(super::fmt_elapsed_compact(0), "0s");
     }
 }

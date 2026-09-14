@@ -236,7 +236,7 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
 // Frontmatter
 mod load;
 
-pub(crate) use load::{load_skill_from_file, load_skills_from_dir_internal};
+pub(crate) use load::load_skills_from_dir_internal;
 
 pub fn load_skills_from_dir(dir: &Path, source: &str) -> LoadSkillsResult {
     let root = dir.to_path_buf();
@@ -288,7 +288,7 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     }
     let mut lines = vec![
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
-        "Use the skill tool to load a skill's instructions when the task matches its description."
+        "Read a skill's SKILL.md with bash (`cat <location>`) when the task matches its description."
             .to_string(),
         "Only load a skill for multi-step or specialized work that genuinely requires its workflow — trivial single-step edits and direct answers never require a skill.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
@@ -317,7 +317,7 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 // ignored args while `/skills bogus-name` errored). Skills declare args via
 // frontmatter `args:`/`arguments:` (see `load::parse_declared_args`); empty
 // means the skill takes no arguments, so any passed arg is an error naming
-// the valid args. Callers (REPL skill expansion, `SkillTool`) must
+// the valid args. Callers (REPL skill expansion) must
 // surface the Err string locally instead of invoking the model.
 // ---------------------------------------------------------------------------
 

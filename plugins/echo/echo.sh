@@ -18,8 +18,12 @@ while IFS= read -r line; do
       ;;
     *tool/call*)
       id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
-      text=$(printf '%s' "$line" | sed 's/.*"text":"\([^"]*\)".*/\1/')
-      printf '{"id":%s,"result":{"content":"%s"}}\n' "$id" "$text"
+      # ponytail: empty when no "text" arg (was: echoed the whole request line,
+      # invalid JSON -> host hung to timeout); escape for JSON. Ceiling: sed-level
+      # parse, text with embedded quotes truncates (reference fixture only).
+      text=$(printf '%s' "$line" | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+      esc=$(printf '%s' "$text" | sed 's/\\/\\\\/g; s/"/\\"/g')
+      printf '{"id":%s,"result":{"content":"%s"}}\n' "$id" "$esc"
       ;;
   esac
 done

@@ -397,10 +397,12 @@ impl SysEditor {
             Rect::new(area.x, area.y, area.width, 1),
         );
 
-        // 1b. Consequence warning — every time the editor opens. Gray injects
-        // nothing into this prompt, so deleting/leaving things out has no
-        // hidden effect; the model reads project files and skills via bash.
-        let warn = " Full prompt — gray adds nothing else: project files, skills, and cwd are read via bash. <!-- comments --> are stripped.";
+        // 1b. Consequence warning — every time the editor opens. The file
+        // is the stored prompt, so deleting things out has no hidden effect
+        // beyond the words themselves; the skills list arrives per-turn
+        // regardless (context-only, no skill tool), and the model reads
+        // skills + project files via bash.
+        let warn = " Stored prompt (verbatim per turn) — skills arrive separately each turn (context-only, read via bash). Project files and cwd are read via bash. <!-- comments --> are stripped.";
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 warn,

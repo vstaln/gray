@@ -1,10 +1,17 @@
 //! System prompt construction.
 //!
-//! The system prompt is the user's `~/.gray/AGENTS.md` file, sent to the model
-//! verbatim minus HTML comments (`<!-- ... -->`). Gray injects nothing else:
-//! no discovered project files, no skills list, no working-directory line.
-//! Under the default `tools-minimal` surface the model inspects those itself
-//! via bash (the default prompt points at them).
+//! The stored system prompt is the user's `~/.gray/AGENTS.md` file, sent to
+//! the model verbatim minus HTML comments (`<!-- ... -->`). The file itself
+//! carries no discovered project files and no working-directory line —
+//! bash-only tools: the model inspects those itself via bash.
+//!
+//! Skills are the one ephemeral addition, and they live outside this module:
+//! the context-only [`crate::skills_tool::SkillsPlugin`] serves the per-turn
+//! `<available_skills>` list through the `prompt/context` hook (fresh
+//! discovery for the turn cwd, `None` when empty so the prefix stays
+//! byte-stable). No skill tool — the model reads matches with bash (`cat`).
+//! This module stays pure file-text so its byte-stability unit test keeps
+//! meaning something.
 
 /// Build the system prompt: the file text, verbatim, minus HTML comments.
 #[derive(Debug, Clone, Default)]

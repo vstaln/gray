@@ -94,6 +94,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     }
     tui.viewport_h = desired;
 
+    // Hoisted for the draw closure (borrows `tui` immutably inside).
+    let compaction_elapsed = tui.compaction_elapsed();
+    let turn_started = tui.turn_started;
+    let is_task_running = tui.is_task_running;
+
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
         let w = area.width as usize;
@@ -128,7 +133,13 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
             // token estimate: omp's loader is tokens-free, opencode reads
             // the last usage report. Exact counts live in the footer gauge
             // (context), the Thought line (turn output) and `/usage`.
-            let elapsed = super::pill_elapsed(tui.turn_started, *started, tui.is_task_running);
+            // Codex parity: while compacting, the pill runs on the separate
+            // compaction clock — the turn clock is preserved underneath and
+            // restored after (`compaction_status_survives_follow_up`).
+            let elapsed = match compaction_elapsed {
+                Some(d) => d,
+                None => super::pill_elapsed(turn_started, *started, is_task_running),
+            };
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
             let suffix = format!(" {elapsed_str} (esc to interrupt)");
             spans.push(Span::styled(

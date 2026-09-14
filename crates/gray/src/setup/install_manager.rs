@@ -763,8 +763,7 @@ mod tests {
 
     #[test]
     fn error_row_matches_plugins_format() {
-        let row =
-            crate::skills::format_discovered_skill_row(&discovered("x", "Does x things"));
+        let row = crate::skills::format_discovered_skill_row(&discovered("x", "Does x things"));
         assert_eq!(row, "x — Does x things");
         let err = format_error_row(&ErrorEntry {
             ts_secs: 0,
