@@ -492,6 +492,78 @@ mod tests {
             spark,
             vec!["off", "minimal", "low", "medium", "high", "xhigh"]
         );
+        // Qualified provider entries must not leak efforts into another
+        // provider's bare id: kilo/openrouter list their qualified
+        // `meta/muse-spark-1.3-contributor` WITH `max` while bare-id
+        // providers list the contributor id WITHOUT it — the live
+        // `/thinking` picker showed `max` once the background models.dev
+        // fetch landed. Bare-first order (the observed poisoning):
+        let v3: serde_json::Value = serde_json::json!({
+            "testpoisa": {"models": {
+                "spark-poison-7-contributor": {
+                    "reasoning": true,
+                    "limit": {"context": 200000},
+                    "reasoning_options": [{"type": "effort", "values": ["minimal", "low", "medium", "high", "xhigh"]}],
+                },
+            }},
+        });
+        parse_models_dev_json(&v3);
+        let v4: serde_json::Value = serde_json::json!({
+            "testpoisq": {"models": {
+                "testpoisq/spark-poison-7-contributor": {
+                    "reasoning": true,
+                    "limit": {"context": 200000},
+                    "reasoning_options": [{"type": "effort", "values": ["minimal", "low", "medium", "high", "xhigh", "max"]}],
+                },
+            }},
+        });
+        parse_models_dev_json(&v4);
+        let bare7: Vec<&str> = supported_thinking_levels("spark-poison-7-contributor")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(
+            bare7,
+            vec!["off", "minimal", "low", "medium", "high", "xhigh"]
+        );
+        // The qualified id keeps its own provider-specific values (with max).
+        let qual7: Vec<&str> = supported_thinking_levels("testpoisq/spark-poison-7-contributor")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(
+            qual7,
+            vec!["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        );
+        // Reverse order (qualified first): the later exact bare entry still wins.
+        let v5: serde_json::Value = serde_json::json!({
+            "testpoisq": {"models": {
+                "testpoisq/spark-poison-8-contributor": {
+                    "reasoning": true,
+                    "limit": {"context": 200000},
+                    "reasoning_options": [{"type": "effort", "values": ["minimal", "low", "medium", "high", "xhigh", "max"]}],
+                },
+            }},
+        });
+        parse_models_dev_json(&v5);
+        let v6: serde_json::Value = serde_json::json!({
+            "testpoisa": {"models": {
+                "spark-poison-8-contributor": {
+                    "reasoning": true,
+                    "limit": {"context": 200000},
+                    "reasoning_options": [{"type": "effort", "values": ["minimal", "low", "medium", "high", "xhigh"]}],
+                },
+            }},
+        });
+        parse_models_dev_json(&v6);
+        let bare8: Vec<&str> = supported_thinking_levels("spark-poison-8-contributor")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(
+            bare8,
+            vec!["off", "minimal", "low", "medium", "high", "xhigh"]
+        );
         // Future GPT family (e.g. gpt-6-astra) gets the generous modern set.
         let gpt6: Vec<&str> = supported_thinking_levels("openai/gpt-6-astra")
             .iter()
