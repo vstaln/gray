@@ -23,12 +23,22 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: install ripgrep (grep tool + parity tests shell out to rg)
+        shell: bash
+        run: |
+          if command -v rg >/dev/null; then rg --version; exit 0; fi
+          if [ "$(uname)" = "Darwin" ]; then brew install ripgrep
+          else sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi
+          rg --version
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
-      - run: cargo test -p gray-gateway --features all-platforms --quiet
-      - run: cargo check -p gray --all-features
       - run: python3 docs/schema/validate.py
+      - name: startup latency budget (release binary)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo build --release -p gray --quiet
+          python3 scripts/startup-budget.py --quick
       - run: cargo test --workspace --quiet
       - if: matrix.os == 'ubuntu-latest'
         uses: rustsec/audit-check@v2
@@ -60,4 +70,3 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check -p gray
-      - run: cargo check -p gray --all-features

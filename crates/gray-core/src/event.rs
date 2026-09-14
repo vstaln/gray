@@ -49,6 +49,21 @@ impl Usage {
         }
     }
 
+    /// Synthetic context-size estimate for the TUI gauge before the first
+    /// real `StepUsage` lands (resume replay, post-compaction reseed).
+    ///
+    /// Shaped so every gauge consumer agrees: `total()`/`input_tokens` carry
+    /// the estimate, breakdown fields stay zero (unknown — not zero cache).
+    /// Real `StepUsage` overwrites it wholesale via `set_usage`.
+    pub fn estimated_context(tokens: usize) -> Self {
+        Self {
+            input_tokens: tokens,
+            non_cached_input_tokens: tokens,
+            total_tokens: tokens,
+            ..Self::default()
+        }
+    }
+
     /// Add another report into this cumulative total (saturating).
     /// Every provider request bills its full input, so billable turn
     /// totals sum every round's report — unlike the context gauge, which
@@ -108,6 +123,48 @@ impl Usage {
             self.total_tokens = self.input_tokens + self.output_tokens;
         }
     }
+}
+
+/// Appends one streamed thinking chunk, repairing sentence boundaries that
+/// arrive bare: some providers emit sentence-sized reasoning deltas with
+/// the inter-sentence space stripped (`truncated.Identifying`).
+///
+/// Hardcoded join rule — insert exactly one space when the buffer ends with
+/// sentence/clause punctuation (`.?!,:;`) and the chunk starts with a word
+/// character. Every other boundary is byte-concatenated, so:
+/// - a boundary that already carries whitespace is never doubled;
+/// - mid-word BPE splits (`Anal` + `yzing`, letter+letter) from
+///   well-behaved providers stay glued;
+/// - decimals / thousands / clock times stay glued (`3.14`, `1,000`,
+///   `12:30`), as does trailing closing/quoting punctuation.
+pub fn append_thinking_chunk(buf: &mut String, chunk: &str) {
+    if let (Some(prev), Some(next)) = (buf.chars().next_back(), chunk.chars().next())
+        && needs_thinking_boundary_space(prev, next)
+    {
+        buf.push(' ');
+    }
+    buf.push_str(chunk);
+}
+
+fn needs_thinking_boundary_space(prev: char, next: char) -> bool {
+    if prev.is_whitespace() || next.is_whitespace() {
+        return false;
+    }
+    if !matches!(prev, '.' | '?' | '!' | ',' | ';' | ':') {
+        return false;
+    }
+    // Closing / quoting punctuation glues: `etc., and`, `word."Next"`.
+    if matches!(
+        next,
+        '.' | '?' | '!' | ',' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '`'
+    ) {
+        return false;
+    }
+    // Decimals / thousands / clock times stay glued.
+    if next.is_ascii_digit() && matches!(prev, '.' | ',' | ':') {
+        return false;
+    }
+    true
 }
 
 /// Reason why a turn or generation completed.
@@ -353,5 +410,94 @@ impl StreamEvent {
             message: message.into(),
             details: details.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod estimated_context_tests {
+    use super::Usage;
+
+    #[test]
+    fn estimated_context_carries_estimate_as_total_and_input() {
+        let u = Usage::estimated_context(39_000);
+        assert_eq!(u.total(), 39_000);
+        assert_eq!(u.input_tokens, 39_000);
+        // breakdown unknown, not zero-cache: must stay zero so no
+        // consumer mistakes the seed for a measured cache report.
+        assert_eq!(u.cache_read_input_tokens, 0);
+        assert_eq!(u.cache_write_input_tokens, 0);
+        assert_eq!(u.output_tokens, 0);
+        assert_eq!(u.cache_hit_rate(), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod thinking_chunk_tests {
+    use super::append_thinking_chunk;
+
+    fn join(chunks: &[&str]) -> String {
+        let mut buf = String::new();
+        for c in chunks {
+            append_thinking_chunk(&mut buf, c);
+        }
+        buf
+    }
+
+    #[test]
+    fn inserts_space_at_bare_sentence_boundaries() {
+        // The reported muse-spark shape: sentence-sized deltas, stripped space.
+        assert_eq!(
+            join(&["text appears truncated.", "Identifying that leading"]),
+            "text appears truncated. Identifying that leading"
+        );
+        assert_eq!(
+            join(&[
+                "Analyzing reflow_on_resize behavior and cursor position handling to explain why reasoning text appears truncated.",
+                "Identifying that leading whitespace is omitted during wrapping.",
+                "Diagnosing Paragraph truncation on resize.",
+            ]),
+            "Analyzing reflow_on_resize behavior and cursor position handling to explain why reasoning text appears truncated. Identifying that leading whitespace is omitted during wrapping. Diagnosing Paragraph truncation on resize."
+        );
+    }
+
+    #[test]
+    fn leaves_ambiguous_letter_boundaries_glued() {
+        // `handling` + `to` (dropped word space) is indistinguishable from
+        // `Anal` + `yzing` (mid-word BPE split): both are letter+letter with
+        // no whitespace. Repairing the former would corrupt every sub-word
+        // token of well-behaved providers, so the hardcoded rule only fires
+        // on punctuation boundaries and leaves these alone.
+        assert_eq!(join(&["handling", "to explain"]), "handlingto explain");
+    }
+
+    #[test]
+    fn never_doubles_existing_whitespace() {
+        assert_eq!(join(&["end. ", "Next"]), "end. Next");
+        assert_eq!(join(&["end.", " Next"]), "end. Next");
+        assert_eq!(join(&["end.\n", "Next"]), "end.\nNext");
+        assert_eq!(join(&["end.", "\nNext"]), "end.\nNext");
+    }
+
+    #[test]
+    fn leaves_mid_word_bpe_splits_glued() {
+        // Well-behaved providers emit sub-word continuations bare and correct.
+        assert_eq!(join(&["Anal", "yzing"]), "Analyzing");
+        assert_eq!(join(&["trunca", "ted"]), "truncated");
+        assert_eq!(join(&["reflow", "OnResize"]), "reflowOnResize");
+    }
+
+    #[test]
+    fn keeps_numbers_and_closing_punctuation_glued() {
+        assert_eq!(join(&["value 3.", "14 total"]), "value 3.14 total");
+        assert_eq!(join(&["1,", "000 rows"]), "1,000 rows");
+        assert_eq!(join(&["at 12:", "30 sharp"]), "at 12:30 sharp");
+        assert_eq!(join(&["etc.", ", and more"]), "etc., and more");
+    }
+
+    #[test]
+    fn empty_sides_pass_through() {
+        assert_eq!(join(&["", "hi"]), "hi");
+        assert_eq!(join(&["hi", ""]), "hi");
+        assert_eq!(join(&[]), "");
     }
 }

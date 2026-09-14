@@ -4,10 +4,15 @@ use super::*;
 
 pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
-        println!(
-            "\x1b[2mTo resume: gray resume {}\x1b[0m",
-            state.session_id.as_str()
-        );
+        use std::io::IsTerminal as _;
+        if std::io::stdout().is_terminal() {
+            println!(
+                "\x1b[2mTo resume: gray resume {}\x1b[0m",
+                state.session_id.as_str()
+            );
+        } else {
+            println!("To resume: gray resume {}", state.session_id.as_str());
+        }
         let _ = std::io::stdout().flush();
     }
 }
@@ -22,7 +27,26 @@ pub(crate) async fn handle_resume(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-    let target_id: Option<SessionId> = if let Some(raw) = args.target.as_deref() {
+    // Recall-first resolution for cwd-scoped `--last` (`--all` keeps the
+    // list scan for the global latest). A validated pointer skips the scan;
+    // any miss flows into the existing list path below.
+    let mut recalled_id: Option<SessionId> = None;
+    if args.target.is_none()
+        && args.last
+        && !args.all
+        && let Some(root) = default_root()
+    {
+        let store = JsonlSessionStore::new(root);
+        if let Some(c) = std::env::current_dir().ok()
+            && let Some(rid) = store.recall_validated(&c).await
+            && store.load(&rid).await.is_ok()
+        {
+            recalled_id = Some(rid);
+        }
+    }
+    let target_id: Option<SessionId> = if let Some(rid) = recalled_id {
+        Some(rid)
+    } else if let Some(raw) = args.target.as_deref() {
         if let Some(root) = default_root() {
             let store = JsonlSessionStore::new(root);
             if let Some(id) = crate::resume::resolve_prefix(&store, raw, args.all).await {
@@ -53,8 +77,8 @@ pub(crate) async fn handle_resume(
             return;
         };
         let store = JsonlSessionStore::new(root);
-        let summaries = store.list().await;
         let cwd_now = std::env::current_dir().ok();
+        let summaries = store.list().await;
         let filt = if args.all { None } else { cwd_now.as_deref() };
         match crate::resume::latest_summary(&summaries, filt) {
             Some(s) => Some(s.id.clone()),
@@ -75,6 +99,21 @@ pub(crate) async fn handle_resume(
                 return;
             }
         }
+    } else if tui.is_none() {
+        // Headless (piped stdout): the picker needs a TTY — print the list.
+        let Some(root) = default_root() else {
+            return;
+        };
+        let store = JsonlSessionStore::new(root);
+        let summaries = crate::resume::recent_summaries(&store, args.all).await;
+        if summaries.is_empty() {
+            println!("no saved sessions in this directory (try /resume --all or --all)");
+        } else {
+            for s in &summaries {
+                println!("{}", crate::resume::format_summary_row(s));
+            }
+        }
+        return;
     } else {
         let result = with_modal(tui, crate::resume::run_resume_picker(args.all, bg.as_ref())).await;
         match result {
@@ -287,12 +326,12 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                // Live args streaming: count tokens so the `· N tok`
-                // counter grows, and show a truncated preview on status.
+                // Live args streaming: truncated preview on the status dock.
                 // ponytail: status-line preview only, no in-place box update.
+                // (No token accounting: the pill carries no estimate — exact
+                // counts come from usage reports, never chars/4.)
                 let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
-                t.live_progress_tokens(id, args_so_far);
                 pending_tools.insert(id.clone(), (name.clone(), None));
                 if preview.is_empty() {
                     t.set_status(Some(&format!("Preparing tool: {name}")));
@@ -385,10 +424,22 @@ pub(crate) fn dispatch_agent_event(
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
                 t.end_thinking();
-                t.set_usage(*usage);
+                // Billed Σ-per-round totals are the cost basis (`totals`,
+                // `turn_footer`, persisted entry) — they must NOT overwrite
+                // the StepUsage context gauge. The per-turn live counter is
+                // left intact too: `end_turn` captures it for the final
+                // `Thought for` line and does the single reset there. The
+                // billed output is the one exception: stashed for the Thought
+                // line (`· N tok`, reasoning included). The
+                // streamed estimate misses tool results and input, so without
+                // this the final line reads absurdly low — display-only,
+                // never gauge input.
                 if usage.total() > 0 {
                     totals.add(usage, model, Some(ms));
-                    t.push_usage(turn_footer(usage, model, totals, Some(ms)));
+                    t.set_turn_billed(usage.output_tokens);
+                    // TUI Thought line shows billed output only (reasoning
+                    // included); billed totals + cost live in `totals` /
+                    // headless footer.
                 }
             }
             _ => {}
@@ -489,14 +540,45 @@ pub(crate) async fn maybe_threshold_compact(
     ) {
         return;
     }
-    let notice = format!(
-        "auto-compacting {}/{} tokens...",
-        crate::setup::format_context_length(tokens),
-        crate::setup::format_context_length(window)
-    );
+    // Codex parity (`compaction.rs::on_context_compaction_started`): raise a
+    // dedicated `Compacting context` status with its own clock BEFORE the
+    // summarization call. The input box stays mounted — only the status dock
+    // changes — so the chat box can never disappear mid-compact.
+    let compaction_id = format!("auto-{}", uuid::Uuid::new_v4().as_simple());
+    if let Some(shared) = tui {
+        shared
+            .lock()
+            .expect("tui lock")
+            .begin_compaction(compaction_id.clone());
+    }
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
+            // Codex `on_context_compaction_completed`: single
+            // `Context compacted · {elapsed}` line, then header back to
+            // `Working`. The turn clock underneath is untouched.
+            let elapsed = tui
+                .and_then(|shared| {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .finish_compaction(&compaction_id, Some("Working"))
+                })
+                .unwrap_or_default();
+            let notice = format!(
+                "Context compacted · {} ({}/{} tokens)",
+                crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
+                crate::setup::format_context_length(tokens),
+                crate::setup::format_context_length(window)
+            );
             say(tui, &notice);
+            // History just shrank: the gauge still holds the pre-compact
+            // StepUsage (stale-high until the next turn's first StepUsage).
+            // Reseed from the post-compact estimate so the footer, /context,
+            // and the next trigger all see the compacted size immediately.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 // Boundary marker + replacement: reload replays the active
@@ -508,8 +590,25 @@ pub(crate) async fn maybe_threshold_compact(
             }
             *initial_count = agent.messages().len();
         }
-        Ok(false) => {}
-        Err(e) => log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}"),
+        Ok(false) => {
+            // Nothing gained: drop the status silently, no transcript line
+            // (Codex: turn ends without completion clears without a message).
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, None);
+            }
+        }
+        Err(e) => {
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, None);
+            }
+            log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}")
+        }
     }
 }
 
@@ -525,13 +624,38 @@ pub(crate) async fn maybe_overflow_compact(
     if !crate::compact::is_context_overflow_error(err) {
         return false;
     }
-    // Mid-turn notice (not after a card): keep the separating blank say() used to add.
-    if let Some(t) = tui {
-        t.lock().expect("tui lock").ensure_gap(1);
+    // Codex parity: no pre-message — the `Compacting context` status dock is
+    // the ongoing signal (it survives follow-up input/retries). The single
+    // transcript line lands on completion below.
+    let compaction_id = format!("overflow-{}", uuid::Uuid::new_v4().as_simple());
+    if let Some(shared) = tui {
+        shared
+            .lock()
+            .expect("tui lock")
+            .begin_compaction(compaction_id.clone());
     }
-    say(tui, "context overflow — compacting...");
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
+            let elapsed = tui
+                .and_then(|shared| {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .finish_compaction(&compaction_id, Some("Working"))
+                })
+                .unwrap_or_default();
+            say(
+                tui,
+                &format!(
+                    "context overflow — Context compacted · {}",
+                    crate::composer::fmt_elapsed_compact(elapsed.as_secs())
+                ),
+            );
+            // See threshold path: reseed the gauge to the compacted size.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
             ensure_session_state(session_state, config, cwd).await;
             if let Some(state) = session_state {
                 // Boundary marker + replacement (see threshold path).
@@ -544,10 +668,22 @@ pub(crate) async fn maybe_overflow_compact(
             true
         }
         Ok(false) => {
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, Some("Working"));
+            }
             log::warn!(target: "gray_compact", "overflow auto-compact returned false (nothing to compact)");
             false
         }
         Err(e) => {
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, Some("Working"));
+            }
             log::warn!(target: "gray_compact", "overflow auto-compact failed: {e}");
             false
         }

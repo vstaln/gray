@@ -1,15 +1,12 @@
-//! One profile-aware agent builder for every surface (REPL, `-p`, gateway, cron).
+//! One profile-aware agent builder for every surface (REPL, `-p`, cron).
 //!
-//! Lives here (not in `gray`) because historically the `gray → gray-gateway`
-//! edge forbade the gateway from calling `gray::build_agent` — this crate is
-//! the lowest common crate all hosts already depend on. `gray-tools` stays core-only
-//! (no tools→cron/gateway edges); the direction here is plugin→tools/provider.
+//! Lives here (not in `gray`) so every host shares one builder without depending on the binary.
 //!
-//! Surface policy stays with the callers: the system prompt (skills/context
-//! vs gateway suffix), the executor wrapper (plain vs `DenyExecutor`), the
+//! Surface policy stays with the callers: the system prompt (skills/context),
+//! the executor wrapper (plain vs `DenyExecutor`), the
 //! host handler, and abort-vs-warn on sidecar spawn failure all arrive via
 //! [`BuilderOptions`]. Cron needs no direct call — the sidecar fires through
-//! `host/run` (`gray -p`) and gateway delivery runs through `run_agent`.
+//! `host/run` (`gray -p`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -65,10 +62,10 @@ impl Plugin for ToolsBasicPlugin {
     }
 }
 
-/// `tools-minimal`: the default surface — exactly one persistent-shell tool.
-/// Mirrors dsh's `minimal` preset (one persistent shell, no editor/filesystem
-/// tool) and mini-swe-agent's bash-only bet. Everything the model needs to
-/// inspect/mutate files goes through `bash`.
+/// `tools-minimal`: the default surface — the bash shell family only.
+/// `bash` plus its companions (`shell_output`, `shell_kill`, `sleep`) so
+/// background tasks stay readable. Everything — read, search, edit, run —
+/// goes through `bash`.
 pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
@@ -83,7 +80,12 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(gray_tools::BashTool)]
+        vec![
+            Arc::new(gray_tools::BashTool),
+            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
+            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
+            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
+        ]
     }
 }
 
@@ -594,7 +596,7 @@ pub fn provider_cache_key(session_id: Option<&str>) -> String {
 // The single builder
 // ---------------------------------------------------------------------------
 
-/// Builds the `system` prompt: either a ready string (gateway) or a
+/// Builds the `system` prompt: either a ready string or a
 /// registry-aware closure (REPL/`-p` tool snippets + guidelines need the
 /// resolved registry, which only exists after profile resolution).
 pub enum SystemPrompt {
@@ -606,7 +608,7 @@ pub enum SystemPrompt {
 /// registry (snippets, names, guidelines).
 pub type PromptBuilder = Box<dyn FnOnce(&Registry) -> String + Send>;
 
-/// Wraps the profile-built registry executor (gateway: `DenyExecutor`;
+/// Wraps the profile-built registry executor (a `DenyExecutor` wrap;
 /// `None` = plain registry).
 pub type ExecutorWrap = Box<dyn FnOnce(Arc<dyn ToolExecutor>) -> Arc<dyn ToolExecutor> + Send>;
 
@@ -618,13 +620,18 @@ pub struct BuilderOptions {
     /// Known model context window in tokens (`None` = unknown: only
     /// overflow-recovery compaction runs).
     pub context_window: Option<usize>,
-    /// Pins the Responses cache shard; gateway threads its session id so
-    /// daemon sessions don't all collide on the per-process fallback key.
+    /// Pins the Responses cache shard; callers thread their session id so
+    /// sessions don't all collide on the per-process fallback key.
     pub session_id: Option<String>,
     pub cwd: PathBuf,
     pub system_prompt: SystemPrompt,
-    /// Surface tools baked into `tools-basic` (gray: `SkillTool`).
+    /// Surface tools baked into `tools-basic` (gray: none — bash-only).
     pub extra_tools: Vec<Arc<dyn Tool>>,
+    /// Surface plugins that are always active regardless of the profile
+    /// (gray: none — bash-only, empty by default).
+    /// Appended after profile + lock plugins; on tool-name conflict the
+    /// later manifest wins, so these always win their own tool names.
+    pub extra_plugins: Vec<Arc<dyn Plugin>>,
     pub host_handler: Option<HostHandler>,
     pub profile_path: String,
     pub abort_on_spawn_failure: bool,
@@ -647,6 +654,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         cwd,
         system_prompt,
         extra_tools,
+        extra_plugins,
         host_handler,
         profile_path,
         abort_on_spawn_failure,
@@ -659,7 +667,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         Arc::new(ToolsBasicPlugin { extra: extra_tools }) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
-    let (plugins, _) = active_plugins(
+    let (mut plugins, _) = active_plugins(
         defaults,
         &["tools-minimal"],
         &profile_path,
@@ -667,6 +675,17 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         abort_on_spawn_failure,
     )
     .await?;
+    // Always-on surface plugins (see `extra_plugins`): appended after the
+    // profile + lock set so they survive `tools-minimal`-only profiles.
+    // Same-name dedupe as `active_plugins` (later wins) keeps a profile
+    // entry with the same name from doubling up.
+    for p in extra_plugins {
+        let name = p.manifest().name.clone();
+        if let Some(pos) = plugins.iter().position(|e| e.manifest().name == name) {
+            plugins.remove(pos);
+        }
+        plugins.push(p);
+    }
     let (registry, _) = from_plugins(&plugins);
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,

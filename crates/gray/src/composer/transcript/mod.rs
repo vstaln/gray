@@ -66,8 +66,6 @@ impl Tui {
     }
 
     pub fn stream(&mut self, chunk: &str) {
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         self.pending.push_str(&strip_ansi(chunk));
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
@@ -90,10 +88,26 @@ impl Tui {
         let _ = self.draw();
     }
 
+    /// Live terminal width for wrapping cuts. `last_width` goes stale
+    /// between resizes (the reflow debounce only updates it ~75ms+ later),
+    /// so wrapping against it paints rows for the old geometry: narrowing
+    /// then yields over-wide rows that Paragraph hard-clips at the right
+    /// edge, reading as "shortened" reasoning. Falls back to `last_width`
+    /// when the size probe fails (headless tests).
+    pub(crate) fn live_width(&mut self) -> usize {
+        // Gated on an actual change: an unconditional reflow here would
+        // clear + re-emit the whole scrollback on every streamed chunk.
+        if let Ok((cols, _)) = crossterm::terminal::size()
+            && cols.max(20) != self.last_width
+        {
+            self.pending_resize = None;
+            self.reflow_on_resize(cols.max(20));
+        }
+        self.width().max(10)
+    }
+
     pub fn stream_thinking(&mut self, chunk: &str) {
         self.turn_had_thinking = true;
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         if self.hide_thinking {
             let _ = self.draw();
             return;
@@ -106,20 +120,23 @@ impl Tui {
             self.set_status(Some("Thinking"));
         }
         self.thinking = true;
-        self.pending.push_str(&strip_ansi(chunk));
-        let w = self.width().max(10);
+        // Bare sentence boundaries from stripped providers
+        // (`truncated.Identifying`): exactly one space when the join
+        // needs it, never doubled, BPE splits untouched.
+        gray_core::event::append_thinking_chunk(&mut self.pending, &strip_ansi(chunk));
+        let w = self.live_width();
         let max_w = w.saturating_sub(4).max(1);
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            self.thinking_lines.push(trimmed.to_string());
+            self.push_line_styled(trimmed.to_string(), thinking_style());
         }
         if display_width(&self.pending) >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
             self.pending = chars[cut..].iter().collect();
-            self.thinking_lines.push(line);
+            self.push_line_styled(line, thinking_style());
         }
         let _ = self.draw();
     }
@@ -129,8 +146,6 @@ impl Tui {
     }
 
     pub fn stream_text(&mut self, chunk: &str) {
-        let toks = chunk.chars().count().div_ceil(4);
-        self.live_streamed_tokens += toks.max(1);
         self.end_thinking_run(true);
         if self.status.as_ref().map(|s| s.1.as_str()) != Some("Working") {
             self.set_status(Some("Working"));
@@ -138,8 +153,10 @@ impl Tui {
         let clean = strip_ansi(chunk);
         // Feed the live viewport width so tables lay out to fit (or fall back
         // to records) instead of rendering wide and shredding downstream.
-        // No-op when unchanged; resize mid-table only affects new tables.
-        let tw = self.width().max(10).saturating_sub(2);
+        // Reflows first when the size actually changed (same ~75ms trailing
+        // debounce as the idle ticker), so a resize mid-table re-lays the
+        // committed rows instead of only affecting new tables.
+        let tw = self.live_width().saturating_sub(2);
         self.markdown_renderer.set_max_table_width(Some(tw));
         self.markdown_renderer
             .push_and_render(&clean, Some(gray_markdown::get_syntect()));
@@ -165,37 +182,27 @@ impl Tui {
     }
 
     pub(crate) fn end_thinking_run(&mut self, spacer: bool) {
-        if !self.thinking && self.pending.is_empty() && self.thinking_lines.is_empty() {
+        if !self.thinking && self.pending.is_empty() {
             return;
         }
-        // Opencode parity (`Thought: <duration>` header + blank + body):
-        // rows buffer during the run and flush header-first here —
-        // scrollback is append-only (`insert_before`), so unlike opencode's
-        // re-rendered header it can't sit on top while streaming.
+        // Rows already streamed live; only the `✻ Thought for <duration>`
+        // summary lands here, after the body (scrollback is append-only).
         let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
-        if !self.hide_thinking {
-            if !self.pending.is_empty() {
-                let rest = std::mem::take(&mut self.pending);
-                self.thinking_lines.push(rest);
-            }
-            if !self.thinking_lines.is_empty() {
-                self.ensure_gap(1);
-                let rows = std::mem::take(&mut self.thinking_lines);
-                for row in rows {
-                    self.push_line_styled(row, thinking_style());
-                }
-                if let Some(d) = elapsed {
-                    self.ensure_gap(1);
-                    self.push_line_spans(thought_summary_line(d));
-                }
-            }
-            if spacer {
-                self.ensure_gap(1);
-            }
-        } else {
+        if self.hide_thinking {
             self.pending.clear();
-            self.thinking_lines.clear();
+            return;
+        }
+        if !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, thinking_style());
+        }
+        if let Some(d) = elapsed {
+            self.ensure_gap(1);
+            self.push_line_spans(thought_summary_line(d));
+        }
+        if spacer {
+            self.ensure_gap(1);
         }
     }
 
@@ -213,8 +220,8 @@ impl Tui {
         self.ensure_gap(1);
         let lines = format_user_prompt_lines(text, attached, self.width().max(10));
         let height = lines.len() as u16;
-        let block =
-            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block = ratatui::widgets::Block::default()
+            .style(Style::default().bg(crate::theme::theme().surface_bg));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(lines.clone())
                 .block(block)
@@ -260,12 +267,14 @@ pub(crate) fn fmt_thought_duration(d: Duration) -> String {
     }
 }
 
-/// Bottom summary: gray `⬡ Thought for <duration>` under the body, matching
-/// the thinking text above — same hexagon marker as the live status.
+/// Bottom summary: gray `✻ Thought for <duration>` under the body, matching
+/// the turn-end Thought line (same star marker; duration-only — the
+/// provider's true reasoning count isn't known until TurnEnd, and a
+/// streamed estimate here would under-report billed reasoning).
 fn thought_summary_line(elapsed: Duration) -> Line<'static> {
     Line::from(vec![Span::styled(
-        format!("⬡ Thought for {}", fmt_thought_duration(elapsed)),
-        Style::default().fg(Color::Rgb(140, 140, 140)),
+        format!("✻ Thought for {}", fmt_thought_duration(elapsed)),
+        Style::default().fg(crate::theme::theme().text_muted),
     )])
 }
 
@@ -314,8 +323,13 @@ mod tests {
     fn thought_summary_line_names_duration() {
         let line = thought_summary_line(Duration::from_millis(5800));
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "⬡ Thought for 5.8s");
-        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(140, 140, 140)));
+        assert_eq!(text, "✻ Thought for 5.8s");
+        assert_eq!(
+            line.spans[0].style.fg,
+            // Single gray palette (no global read — keeps this test
+            // hermetic under parallel execution).
+            Some(crate::theme::GRAY_UI_THEME.text_muted)
+        );
     }
 
     #[test]
@@ -363,19 +377,19 @@ mod tests {
 
     #[test]
     fn diff_rows_pad_edge_to_edge() {
-        use crate::tool_fmt::{DIFF_DELETE_BG, DIFF_INSERT_BG};
+        use crate::tool_fmt::{diff_delete_bg, diff_insert_bg};
         let header = Line::from("Ran edit");
         let body = vec![
             Line::from(vec![Span::styled(
                 "  1 | - old",
-                Style::default().bg(DIFF_DELETE_BG),
+                Style::default().bg(diff_delete_bg()),
             )])
-            .style(Style::default().bg(DIFF_DELETE_BG)),
+            .style(Style::default().bg(diff_delete_bg())),
             Line::from(vec![Span::styled(
                 "  1 | + new",
-                Style::default().bg(DIFF_INSERT_BG),
+                Style::default().bg(diff_insert_bg()),
             )])
-            .style(Style::default().bg(DIFF_INSERT_BG)),
+            .style(Style::default().bg(diff_insert_bg())),
             Line::from(vec![Span::raw("  2 |   same")]),
         ];
         let lines = format_tool_box_lines(header, &body, 80);
@@ -414,6 +428,71 @@ mod tests {
             );
             assert!(r.start >= prev_end, "ranges ascend without overlap");
             prev_end = r.end;
+        }
+    }
+
+    /// Resize regression: the live thinking cut (`word_flush_cut` at the
+    /// old width) followed by a reflow re-wrap (each stored chunk wrapped
+    /// at the new width) must preserve every word — narrowing or widening
+    /// the window mid-turn must never "shorten" the reasoning.
+    #[test]
+    fn thinking_survives_resize_round_trip() {
+        let text = "The second command was blocked by a guard because of `curl ... | python3`? \
+            Weird, the first one worked. Let me avoid pipes into interpreters and write to a file instead";
+        let norm = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (w_live, w_new) in [(100usize, 40usize), (40usize, 100usize)] {
+            // live cut, mirroring `stream_thinking`
+            let max_live = w_live.saturating_sub(4).max(1);
+            let mut chunks: Vec<String> = Vec::new();
+            let mut rest: Vec<char> = text.chars().collect();
+            while !rest.is_empty() {
+                let s: String = rest.iter().collect();
+                if display_width(&s) < max_live {
+                    chunks.push(s);
+                    break;
+                }
+                let cut = word_flush_cut(&rest, max_live);
+                assert!(cut > 0, "cut must progress");
+                chunks.push(rest[..cut].iter().collect());
+                rest = rest[cut..].to_vec();
+            }
+            // reflow re-wrap, mirroring `reflow_on_resize` (render budget w-2)
+            let mut rows: Vec<String> = Vec::new();
+            for c in &chunks {
+                let line = Line::from(vec![Span::styled(c.clone(), thinking_style())]);
+                for w in wrap_styled_line(line, w_new.saturating_sub(2).max(1)) {
+                    rows.push(w.spans.iter().map(|s| s.content.as_ref()).collect());
+                }
+            }
+            // inter-row boundary spaces are re-flowable (live chunks keep
+            // a trailing space the wrapper then drops); words must survive
+            let got = rows
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(
+                got, norm,
+                "text lost resizing {w_live} -> {w_new}: {rows:?}"
+            );
+        }
+    }
+
+    /// Paragraph has no `.wrap()`: any row wider than the viewport is
+    /// hard-clipped at the right edge (the "shortened" symptom). The wrapper
+    /// must therefore never emit an over-budget row, including overlong
+    /// words (URLs) that force hard cuts.
+    #[test]
+    fn wrapped_rows_never_exceed_budget() {
+        let text = format!(
+            "{} https://api.github.com/repos/some/really/long/path/that/never/breaks/at/all",
+            "word ".repeat(50)
+        );
+        for w in [20usize, 40, 80, 120] {
+            for row in wrap_styled_line(Line::from(text.clone()), w) {
+                let rw: usize = row.spans.iter().map(|s| s.width()).sum();
+                assert!(rw <= w, "row overflows budget {w}: {row:?}");
+            }
         }
     }
 

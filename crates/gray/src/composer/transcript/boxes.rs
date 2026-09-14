@@ -18,8 +18,8 @@ impl Tui {
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
         let height = box_lines.len() as u16;
-        let block =
-            ratatui::widgets::Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+        let block = ratatui::widgets::Block::default()
+            .style(Style::default().bg(crate::theme::theme().surface_bg));
         let _ = self.terminal.insert_before(height, |buf| {
             Paragraph::new(box_lines.clone())
                 .block(block)
@@ -162,7 +162,7 @@ impl Tui {
             Span::styled(
                 "✓ ",
                 Style::default()
-                    .fg(Color::Rgb(74, 222, 128))
+                    .fg(crate::theme::theme().success)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -176,7 +176,7 @@ impl Tui {
             spans.push(Span::raw(" "));
             spans.push(Span::styled(
                 d.to_string(),
-                Style::default().fg(Color::Rgb(140, 140, 140)),
+                Style::default().fg(crate::theme::theme().text_muted),
             ));
         }
         let line = Line::from(spans);
@@ -323,9 +323,18 @@ impl Tui {
             let header = crate::tool_fmt::format_tool_call_header(&name, &args, Some(cwd));
             self.push_tool_box(header, Vec::new());
         }
-        if let Some(last_usage) = entries.iter().rev().find_map(|e| e.usage) {
-            self.set_usage(last_usage);
-        }
+        // NOTE: persisted turn usage is billed Σ-per-round (the cost basis),
+        // NOT context size — restoring it into the gauge repainted the
+        // `843.8k/200k`-style spike on every resume until the next turn's
+        // first StepUsage. Seed the gauge from the replayed messages instead:
+        // same char-estimate `/context` + the compact threshold fall back to,
+        // so footer, `/context`, and trigger agree from the first paint.
+        // First real StepUsage overwrites (see `seed_estimate_usage`).
+        let replay_estimate: usize = entries
+            .iter()
+            .map(|e| crate::compact::estimate_tokens(&e.message))
+            .sum();
+        self.seed_estimate_usage(replay_estimate);
         // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
     }
 }

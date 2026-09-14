@@ -50,6 +50,13 @@ pub struct Config {
     pub context_reserve: Option<usize>,
     /// Tail budget kept alongside the summary after compaction.
     pub context_keep: Option<usize>,
+    /// Turn cap for this process (CLI `--max-turns` / `GRAY_MAX_TURNS`).
+    pub max_turns: Option<u32>,
+    /// Spend cap in micro-dollars for this process (exact `u64`: Eq-safe,
+    /// unlike `f64`). Set via `--max-cost-usd` / `GRAY_MAX_COST_USD`.
+    pub max_cost_micros: Option<u64>,
+    /// Wall-clock cap in seconds from process start (`--max-wall-secs`).
+    pub max_wall_secs: Option<u64>,
 }
 
 impl std::fmt::Debug for Config {
@@ -126,6 +133,28 @@ impl Config {
             })
             .or(saved.context_keep);
 
+        // Caps are CLI/env-only (never persisted): they bound one run, not
+        // the identity. Non-positive values are ignored, never clamped.
+        let max_turns = cli.max_turns.filter(|&n| n > 0).or_else(|| {
+            env("GRAY_MAX_TURNS").and_then(|s| s.trim().parse::<u32>().ok().filter(|&n| n > 0))
+        });
+        let parse_usd = |s: &str| {
+            s.trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|c| c.is_finite() && *c > 0.0)
+                .map(|c| (c * 1_000_000.0).round() as u64)
+                .filter(|&m| m > 0)
+        };
+        let max_cost_micros = cli
+            .max_cost_usd
+            .filter(|c| c.is_finite() && *c > 0.0)
+            .and_then(|c| parse_usd(&c.to_string()))
+            .or_else(|| env("GRAY_MAX_COST_USD").as_deref().and_then(parse_usd));
+        let max_wall_secs = cli.max_wall_secs.filter(|&n| n > 0).or_else(|| {
+            env("GRAY_MAX_WALL_SECS").and_then(|s| s.trim().parse::<u64>().ok().filter(|&n| n > 0))
+        });
+
         let config = Self {
             model,
             base_url,
@@ -135,6 +164,9 @@ impl Config {
             context_window,
             context_reserve,
             context_keep,
+            max_turns,
+            max_cost_micros,
+            max_wall_secs,
         };
         log::info!(target: "gray_config", "config resolved: model={:?}, base_url={}, api_key={}, context_window={:?}", config.model, scrub_url(&config.base_url), config.api_key.as_deref().map(|_| "set").unwrap_or("unset"), config.context_window);
         Ok(config)

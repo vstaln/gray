@@ -73,14 +73,21 @@ fn model_efforts_cell() -> &'static std::sync::RwLock<std::collections::HashMap<
 
 fn cache_model_efforts(model_id: &str, efforts: Vec<String>) {
     if let Ok(mut g) = model_efforts_cell().write() {
+        // Exact key as the provider names it: authoritative, always wins.
         g.insert(model_id.to_string(), efforts.clone());
         let lower = model_id.to_lowercase();
         if lower != model_id {
             g.insert(lower, efforts.clone());
         }
+        // Suffix alias (`provider/model` -> `model`): gap-fill only. A
+        // qualified entry must not clobber another provider's exact bare id:
+        // kilo/openrouter list `meta/muse-spark-1.3-contributor` WITH `max`
+        // while bare-id providers list the contributor id WITHOUT it (the
+        // provider 400-rejects `max`) — last-writer-wins here leaked `max`
+        // into the bare id's `/thinking` rows.
         if let Some((_, suffix)) = model_id.rsplit_once('/') {
-            g.insert(suffix.to_string(), efforts.clone());
-            g.insert(suffix.to_lowercase(), efforts);
+            g.entry(suffix.to_string()).or_insert(efforts.clone());
+            g.entry(suffix.to_lowercase()).or_insert(efforts);
         }
     }
 }

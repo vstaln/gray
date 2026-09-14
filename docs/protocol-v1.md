@@ -3,7 +3,7 @@
 Spec for the host↔sidecar wire as merged in PR #22, audited against
 `origin/main @ cbaaeea` (2026-09-05). Conformance example:
 [`plugins/echo/echo.sh`](../plugins/echo/echo.sh).
-What adapters (`gray-pkg`) and the gateway repo build on.
+What adapters (`gray-pkg`) build on.
 
 ## Wire spec (mirrors `sidecar.rs` — see sync note)
 
@@ -173,11 +173,9 @@ plugin-initiated turns remain deferred to v2 as designed.
 ## Appendix: edges to cut + publishing path
 
 Dependency edges (via `cargo tree`, audit date):
-`gray → gray-gateway`, `gray → gray-cron`, `gray-tools → gray-cron`,
-`gray-gateway → gray-cron` (F1: cron moves **with** the gateway in ③).
-`gray → gray-gateway` pulls twilight into every workspace build today
-(13 twilight/teloxide/slack-morphism nodes under `cargo tree -p gray`;
-Task 3.0 cuts this edge first). `gray-plugin` has no `reqwest` —
+`gray → gray-cron`, `gray-tools → gray-cron`.
+(The gateway crate and the `gray → gray-gateway` edge were deleted;
+no teloxide/twilight/slack-morphism nodes remain in the tree.) `gray-plugin` has no `reqwest` —
 networking stays out of the protocol crate (invariant for `gray-pkg`).
 
 Publishing (`gray.alignment.id`, F2): `release.yml` pushes `main` →

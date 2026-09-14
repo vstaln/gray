@@ -52,10 +52,9 @@ never collide. Gated methods are only sent to sidecars claiming them, so
 pre-v1 plugins (ignore unknown lines) keep working. `command/run`:
 `{"prompt"}` wins over `{"text"}` — prompt makes the host run a turn,
 text just prints. Without a host handler, `host/*` replies `{"error":…}`
-(loud, never a hang). Both hosts install a real runner
-(`gray::host::default_handler`, gateway `cron_host_handler`): `host/say`
-queues for display (REPL-loop drain) or logs + saves under
-`cron/output` (gateway); `host/run` replays the prompt through a fresh
+(loud, never a hang). The host installs a real runner
+(`gray::host::default_handler`): `host/say` queues for display
+(REPL-loop drain); `host/run` replays the prompt through a fresh
 `gray -p` child of the running binary and returns its stdout as
 `{"text"}` (shared core: `gray_plugin::host::run_prompt_child`).
 Ceiling: the 30 s per-request TTL still applies — a longer turn reports
@@ -155,26 +154,15 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 
 ## Links
 
-- Official plugins (the Gray Index seed,
-  [`plugins/official.json`](../plugins/official.json)): `gateway` (source
-  `plugins/gateway`). (`echo` stays a protocol reference only — see the top
-  of this file — not an official plugin.)
-- Gateway sidecar ([`plugins/gateway/gateway.sh`](../plugins/gateway/gateway.sh)):
-  answers `/gateway` over `command/run` by delegating argv to the
-  `gray gateway …` CLI (`status|install|uninstall|pairing|invite`),
-  manifest `commands:["/gateway"]` + `capabilities:["exec"]`.
-- Cron (in-process scheduler, not a sidecar): `gray-cron` holds the job
-  store (`$GRAY_HOME/cron/jobs.json`) + schedule math; the gateway daemon
-  fires due jobs on its 60 s claim-guarded ticker (`claim_due` is atomic,
-  so concurrent tickers never double-run) and delivers back to chat
-  wrapped (`Cronjob: …` + manage hint). Manage it with no daemon running:
-  `gray cron list|add|remove|show` (`add "every 1h" "prompt"
-  [--deliver telegram[:chat]] [--name x] [--in /work/dir]`), one-shot
-  sends via `gray send <platform[:chat[:thread]]> <text>`. Schedule kinds:
+- Official plugins: none yet (the Gray Index seed, `plugins/official.json`, is empty).
+- Cron (file-only store, not a sidecar): `gray-cron` holds the job
+  store (`$GRAY_HOME/cron/jobs.json`) + schedule math. Manage it with no
+  daemon running: `gray cron list|add|remove|show` (`add "every 1h" "prompt"
+  [--deliver <target>] [--name x] [--in /work/dir]`). Delivery targets are
+  stored with the job; no delivery backend exists yet. Schedule kinds:
   `every 1h` / bare `30m` / `in 10m` / RFC3339 one-shots / 5-field cron
   (all ≥60 s). Agent self-scheduling unlocks in phase 3; until then
   scheduling is human-driven (CLI) only.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
-- Gateway (chat delivery, shares the agent builder): `crates/gray-gateway/`.
 - Pi Gallery (preview): the pi skill source (see `Pi Gallery (preview)`
-  above); official plugins above ship from the Gray Index.
+  above).

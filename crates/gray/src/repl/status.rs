@@ -67,6 +67,163 @@ pub(crate) fn turn_footer(
     }
 }
 
+/// Handles `/copy`: last assistant response to the OS clipboard.
+/// arboard first, then native CLI fallbacks (`pbcopy`, `wl-copy`,
+/// `xclip -selection clipboard`); when no clipboard exists the text goes to
+/// stdout instead — never a silent no-op. Empty transcript reports plainly.
+pub(crate) fn handle_copy(agent: &Option<Agent>, tui: Option<&crate::composer::SharedTui>) {
+    let text = agent
+        .as_ref()
+        .and_then(|a| {
+            a.messages()
+                .iter()
+                .rev()
+                .find(|m| m.role == gray_core::Role::Assistant)
+                .map(|m| m.text_content())
+        })
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let Some(text) = text else {
+        super::say(
+            tui,
+            "nothing to copy yet — no assistant response this session",
+        );
+        return;
+    };
+    if copy_to_clipboard(&text) {
+        super::say(
+            tui,
+            &format!("copied {} chars to clipboard", text.chars().count()),
+        );
+    } else {
+        // No clipboard (headless/ssh): print so the text is still reachable.
+        super::say(tui, &format!("no clipboard available — response:\n{text}"));
+    }
+}
+
+/// One clipboard write, arboard first then platform helpers. `true` on
+/// first success.
+fn copy_to_clipboard(text: &str) -> bool {
+    if let Ok(mut cb) = arboard::Clipboard::new()
+        && cb.set_text(text.to_string()).is_ok()
+    {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    let helpers: &[(&str, &[&str])] = &[("pbcopy", &[])];
+    #[cfg(target_os = "windows")]
+    let helpers: &[(&str, &[&str])] = &[("clip", &[])];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let helpers: &[(&str, &[&str])] = &[
+        ("wl-copy", &[]),
+        ("xclip", &["-selection", "clipboard"]),
+        ("xsel", &["--clipboard", "--input"]),
+    ];
+    for (bin, args) in helpers {
+        if std::process::Command::new(bin)
+            .args(*args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .and_then(|mut c| {
+                use std::io::Write;
+                c.stdin
+                    .take()
+                    .map(|mut s| s.write_all(text.as_bytes()).is_ok())
+                    .unwrap_or(false)
+                    .then(|| c.wait())
+                    .transpose()
+                    .map(|st| st.is_some_and(|s| s.success()))
+            })
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Handles `/doctor`: fast offline health checks (config, session store,
+/// provider catalog). One `✓`/`✗` line each, no network.
+pub(crate) fn handle_doctor(config: &Config, tui: Option<&crate::composer::SharedTui>) {
+    let mut lines: Vec<String> = Vec::new();
+    let ok = |b: bool| if b { "✓" } else { "✗" };
+    // Model + auth.
+    let model_ok = config
+        .model
+        .as_deref()
+        .is_some_and(|m| !m.trim().is_empty());
+    lines.push(format!(
+        "{} model: {}",
+        ok(model_ok),
+        config.model.as_deref().unwrap_or("(unset — /connect)"),
+    ));
+    let key_ok = config
+        .api_key
+        .as_deref()
+        .is_some_and(|k| !k.trim().is_empty());
+    lines.push(format!(
+        "{} api key: {}",
+        ok(key_ok),
+        if key_ok {
+            "set"
+        } else {
+            "(unset — /connect)"
+        },
+    ));
+    // Session store writable (0700 dir, round-trip pointer probe).
+    let store_ok = gray_session::default_root().is_some_and(|root| {
+        std::fs::create_dir_all(&root).is_ok()
+            && std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.join(".doctor-probe"))
+                .map(|_| std::fs::remove_file(root.join(".doctor-probe")).is_ok())
+                .unwrap_or(false)
+    });
+    lines.push(format!(
+        "{} session store: {}",
+        ok(store_ok),
+        gray_session::default_root()
+            .map(|r| r.display().to_string())
+            .unwrap_or("(unresolvable HOME)".to_string()),
+    ));
+    // Provider catalog loads.
+    let catalog_ok = crate::setup::load_catalog().is_ok();
+    lines.push(format!(
+        "{} provider catalog: {}",
+        ok(catalog_ok),
+        if catalog_ok {
+            "loads"
+        } else {
+            "FAILED to load"
+        },
+    ));
+    // Caps, when set.
+    if config.max_turns.is_some()
+        || config.max_cost_micros.is_some()
+        || config.max_wall_secs.is_some()
+    {
+        lines.push(format!(
+            "· caps: turns={} spend={} wall={}",
+            config
+                .max_turns
+                .map(|n| n.to_string())
+                .unwrap_or("-".to_string()),
+            config
+                .max_cost_micros
+                .map(|m| format!("${:.2}", m as f64 / 1_000_000.0))
+                .unwrap_or("-".to_string()),
+            config
+                .max_wall_secs
+                .map(|n| format!("{n}s"))
+                .unwrap_or("-".to_string()),
+        ));
+    }
+    super::say(tui, &lines.join("\n"));
+}
+
 /// Handles `/usage` / `/cost`: session totals plus the active model's rate.
 /// TUI renders like `/model` — `✓` action header + dim detail lines.
 pub(crate) fn handle_usage(
@@ -169,31 +326,46 @@ pub(crate) async fn handle_context_window(
         agent: &Option<Agent>,
         tui: Option<&crate::composer::SharedTui>,
     ) -> crate::setup::ContextParts {
+        // The prompt file is the stored system prompt (comments stripped);
+        // the per-turn `<available_skills>` hook block (context-only, no
+        // skill tool — model reads matches with bash) is estimated
+        // separately below so `/context` stays honest. Project context is 0.
         let sys = crate::sys_prompt_path()
             .ok()
             .and_then(|p| load_or_create_system_prompt_at(&p).ok())
-            .map(|s| crate::setup::estimate_str_tokens(&s))
+            .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
             .unwrap_or(0);
-        let ctx_bytes: usize = crate::system_prompt::discover_context_files(cwd)
-            .iter()
-            .map(|f| f.content.len())
-            .sum::<usize>();
-        let skills = crate::skills::discover_skills(cwd).skills;
-        let skills_toks =
-            crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(&skills));
+        let skills = crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(
+            &crate::skills::discover_skills(cwd).skills,
+        ));
         let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
             .map(|s| crate::setup::estimate_str_tokens(&s))
             .unwrap_or(0);
         let latest = tui.and_then(|t| t.lock().ok().and_then(|g| g.latest_usage));
-        let messages = agent
+        // Provider `total` already bills system + tools + history as input,
+        // so adding their estimates on top double-counts (opencode parity:
+        // its context number is the last usage report alone). When a real
+        // report is in force, messages is the residual after the other
+        // estimates, keeping `used()` equal to the provider total;
+        // otherwise it is the plain history estimate.
+        let history_est = agent
             .as_ref()
-            .map(|a| crate::compact::estimate_context_tokens(a.messages(), latest))
+            .map(|a| {
+                a.messages()
+                    .iter()
+                    .map(crate::compact::estimate_tokens)
+                    .sum()
+            })
             .unwrap_or(0);
+        let messages = match latest.map(|u| u.total()).filter(|t| *t > 0) {
+            Some(total) => total.saturating_sub(sys.saturating_add(tools_toks)),
+            None => history_est,
+        };
         crate::setup::ContextParts {
             system_prompt: sys,
-            project_context: (ctx_bytes as f64 / 4.0).ceil() as usize,
+            project_context: 0,
             tools: tools_toks,
-            skills: skills_toks,
+            skills,
             messages,
         }
     }
@@ -440,14 +612,7 @@ pub(crate) async fn handle_compact(
         .await;
     }
     let Some(ag) = agent.as_mut() else {
-        if let Some(shared) = tui {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_dim("└ error: agent could not be initialized".to_string());
-        } else {
-            println!("error: agent could not be initialized");
-        }
+        // reload_agent already reported the cause via say(); no second line.
         return;
     };
 
@@ -466,11 +631,15 @@ pub(crate) async fn handle_compact(
 
     let msg_count = messages.len();
 
+    // Codex `/compact` parity (`slash_dispatch.rs`): raise `Compacting
+    // context` with its own clock before the backend work; the input box
+    // stays mounted, only the status dock changes.
+    let compaction_id = format!("manual-{}", uuid::Uuid::new_v4().as_simple());
     if let Some(shared) = tui {
         shared
             .lock()
             .expect("tui lock")
-            .set_status(Some("Compacting conversation context"));
+            .begin_compaction(compaction_id.clone());
     }
 
     let compact_res = crate::compact::compact_with_keep(
@@ -480,9 +649,17 @@ pub(crate) async fn handle_compact(
     )
     .await;
 
-    if let Some(shared) = tui {
-        shared.lock().expect("tui lock").set_status(None);
-    }
+    // Restore idle (manual has no turn to return to) in the same lock;
+    // the `Context compacted` line below is the single completion signal.
+    let elapsed = tui
+        .and_then(|shared| {
+            shared
+                .lock()
+                .expect("tui lock")
+                .finish_compaction(&compaction_id, None)
+        })
+        .unwrap_or_default();
+    let elapsed_str = crate::composer::fmt_elapsed_compact(elapsed.as_secs());
 
     match compact_res {
         Ok(Some(summary)) => {
@@ -496,17 +673,24 @@ pub(crate) async fn handle_compact(
                     .await;
             }
 
+            // History just shrank (see session.rs threshold path): reseed
+            // the gauge to the compacted size instead of the stale StepUsage.
+            if let Some(shared) = tui {
+                let est = crate::compact::estimate_context_tokens(ag.messages(), None);
+                shared.lock().expect("tui lock").seed_estimate_usage(est);
+            }
+
             if let Some(shared) = tui {
                 let mut tui = shared.lock().expect("tui lock");
                 tui.ensure_gap(1);
                 tui.push_dim(format!(
-                    "└ compressed context ({msg_count} turns -> structured summary)"
+                    "└ Context compacted · {elapsed_str} ({msg_count} messages -> summary)"
                 ));
                 tui.ensure_gap(1);
                 tui.push_dim(summary);
                 tui.ensure_gap(1);
             } else {
-                println!("compressed context ({msg_count} turns -> structured summary)\n");
+                println!("Context compacted · {elapsed_str} ({msg_count} messages -> summary)\n");
                 println!("{summary}\n");
             }
         }

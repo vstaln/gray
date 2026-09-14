@@ -13,7 +13,7 @@ use crate::agent::{
 use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
-use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
+use crate::event::{AgentEvent, StopReason, StreamEvent, Usage, append_thinking_chunk};
 use crate::message::{ChatRequest, ContentBlock, Message, Role};
 use crate::turn_queue::{Submission, SubmitMode, TurnState};
 
@@ -160,10 +160,12 @@ impl Agent {
         let mut total_usage = Usage::default();
         // Billable turn totals: every provider request bills its full
         // input, so turn_end/cost accounting sums every round's report.
-        // total_usage stays the context gauge (latest input + running
-        // output) for StepUsage and the footer.
+        // total_usage stays the context gauge (opencode parity: the latest
+        // round's report only — each round's input already contains the
+        // whole history, so summing outputs across rounds double-counts
+        // and the gauge blows up superlinearly).
         let mut billed = Usage::default();
-        let mut round: u32 = 0;
+        let mut first_round = true;
         let mut empty_retries: u8 = 0;
         let mut continuations: u8 = 0;
         // Post-tool empty nudge fires once per run; silent-retry budget unchanged.
@@ -193,24 +195,8 @@ impl Agent {
                 self.emit_turn_end(&billed).await;
                 return Err(CoreError::Cancelled);
             }
-            if let Some(m) = self.max_rounds
-                && round >= m
-            {
-                // Budget stop, not a loop: long productive runs (50+ tool
-                // rounds of edits/builds) hit this while making progress.
-                // End gracefully so the UI shows a normal footer + resume
-                // note instead of `agent error: Tool loop detected`.
-                let note = format!(
-                    "Stopped after {m} tool rounds — progress saved. Say 'continue' to carry on."
-                );
-                self.messages.push(Message::assistant(note.clone()));
-                emit!(AgentEvent::text_delta(format!("\n{note}\n")));
-                emit!(AgentEvent::turn_end(StopReason::EndTurn, billed));
-                self.emit_turn_end(&billed).await;
-                return Ok(events);
-            }
-            round += 1;
-            self.drain_steer(round == 1);
+            self.drain_steer(first_round);
+            first_round = false;
 
             // Pre-turn budget: compact before the provider ever sees an overflow.
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
@@ -249,7 +235,7 @@ impl Agent {
             // keyed by their stream index (id/name arrive once, arguments
             // may be split across many deltas).
             let mut text_parts: Vec<String> = Vec::new();
-            let mut thinking_parts: Vec<String> = Vec::new();
+            let mut thinking_text = String::new();
             // (item_id, encrypted_content) of the latest Responses
             // reasoning item — attached to the Thinking block at finalize so
             // the next turn can replay it verbatim (cache warmth).
@@ -264,7 +250,7 @@ impl Agent {
                             if !text_parts.is_empty() && pending.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
-                                    thinking_parts.concat(),
+                                    thinking_text.clone(),
                                     text_parts.concat(),
                                     &pending_reasoning,
                                     self.provider.model_id(),
@@ -288,7 +274,7 @@ impl Agent {
                         }
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
                             emit!(AgentEvent::thinking_delta(delta.clone()));
-                            thinking_parts.push(delta);
+                            append_thinking_chunk(&mut thinking_text, &delta);
                         }
                         Some(Ok(StreamEvent::ReasoningItem {
                             item_id,
@@ -409,7 +395,7 @@ impl Agent {
                             if !text_parts.is_empty() && pending.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
-                                    thinking_parts.concat(),
+                                    thinking_text.clone(),
                                     text_parts.concat(),
                                     &pending_reasoning,
                                     self.provider.model_id(),
@@ -419,7 +405,12 @@ impl Agent {
                             // then retry the turn; otherwise surface the error.
                             if e.should_compress() {
                                 match self.try_compact_budgeted().await {
-                                    Ok(true) => continue 'turn,
+                                    Ok(true) => {
+                                        // Steer queued while compacting joins the
+                                        // retried turn — never one reply late.
+                                        self.drain_steer(true);
+                                        continue 'turn;
+                                    }
                                     _ => {
                                         let err = CoreError::from(e);
                                         self.emit_turn_end(&billed).await;
@@ -439,7 +430,7 @@ impl Agent {
                             if !text_parts.is_empty() && pending.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
-                                    thinking_parts.concat(),
+                                    thinking_text.clone(),
                                     text_parts.concat(),
                                     &pending_reasoning,
                                     self.provider.model_id(),
@@ -453,23 +444,22 @@ impl Agent {
                     }
                 }
             };
+            // Context gauge: latest report wins wholesale (opencode parity:
+            // its sidebar/footer read the last assistant message's usage,
+            // never a sum). A round with no usage signal keeps the previous
+            // gauge. Billing stays cumulative below.
             if usage.input_tokens != 0
+                || usage.output_tokens != 0
                 || usage.cached_tokens != 0
                 || usage.non_cached_input_tokens != 0
                 || usage.cache_read_input_tokens != 0
                 || usage.cache_write_input_tokens != 0
+                || usage.reasoning_tokens != 0
                 || usage.total_tokens != 0
             {
-                total_usage.input_tokens = usage.input_tokens;
-                total_usage.cached_tokens = usage.cached_tokens;
-                total_usage.non_cached_input_tokens = usage.non_cached_input_tokens;
-                total_usage.cache_read_input_tokens = usage.cache_read_input_tokens;
-                total_usage.cache_write_input_tokens = usage.cache_write_input_tokens;
+                total_usage = usage;
+                total_usage.normalize();
             }
-            total_usage.output_tokens += usage.output_tokens;
-            total_usage.reasoning_tokens += usage.reasoning_tokens;
-            total_usage.total_tokens = 0;
-            total_usage.normalize();
             billed.accumulate(&usage);
             // Stream-identity hardening: calls that never got a provider ID
             // get a conversation-unique fallback now and emit their single
@@ -498,7 +488,7 @@ impl Agent {
             // Reasoning precedes text, mirroring the provider's emission order
             // (pi renders runs of thinking blocks ahead of prose).
             let mut content: Vec<ContentBlock> = Vec::new();
-            let thinking = thinking_parts.concat();
+            let thinking = std::mem::take(&mut thinking_text);
             if !thinking.is_empty() {
                 content.push(thinking_block(
                     thinking,
@@ -742,12 +732,7 @@ impl Agent {
                                 as futures::future::BoxFuture<'static, ToolOutput>,
                         ));
                     }
-                    let joined = crate::parallel::join_ordered(
-                        futs,
-                        crate::parallel::MAX_WORKERS,
-                        &ctx.cancel,
-                    )
-                    .await;
+                    let joined = crate::parallel::join_ordered(futs, &ctx.cancel).await;
                     // Reconcile by real index (no sentinel exists: every
                     // entry carries its input index; panics arrive as error
                     // outputs). `None`/absent means cancelled

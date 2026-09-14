@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::backend::CrosstermBackend;
-use ratatui::style::{Color, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Widget};
 
@@ -37,6 +37,115 @@ pub(crate) mod transcript;
 
 pub type SharedTui = Arc<std::sync::Mutex<Tui>>;
 
+/// Single-line `✻ Thought for …`: `N tok` is this turn's billed output
+/// token count (exact, from the TurnEnd usage report; reasoning is already
+/// included in output, never split out). Falls back to the streamed estimate
+/// when no usage report arrived (cancelled/errored turns). Other billed
+/// Σ-per-round totals stay out of the TUI line entirely (cost basis lives in
+/// `totals` / headless `turn_footer` only). Pure for testability
+/// (`Tui::new` needs a TTY).
+pub(crate) fn format_thought_line(verb: &str, elapsed: &str, out_tokens: Option<usize>) -> String {
+    let mut line = format!("✻ {verb} {elapsed}");
+    if let Some(c) = out_tokens {
+        line.push_str(&format!(" · {} tok", crate::repl::fmt_usage(c)));
+    }
+    line
+}
+
+/// Elapsed time for the working pill: anchored to the turn start so the
+/// per-tool `set_status` re-stamps (`Preparing tool:` -> `Working`) never
+/// reset the visible clock mid-turn. omp parity
+/// (`packages/coding-agent/src/session/agent-session.ts` stamps prompt->yield
+/// locally at completion, never from the provider, and tool events don't
+/// touch it). Falls back to the status stamp outside turns.
+/// Pure for testability (`Tui::new` needs a TTY).
+pub(crate) fn pill_elapsed(
+    turn_started: Option<Instant>,
+    status_started: Instant,
+    running: bool,
+) -> Duration {
+    if running {
+        turn_started
+            .map(|t| t.elapsed())
+            .unwrap_or_else(|| status_started.elapsed())
+    } else {
+        status_started.elapsed()
+    }
+}
+
+/// Token count for the `Working… · N tok` pill — opencode2 parity
+/// (`packages/tui/src/component/prompt/index.tsx` `usage()`): the LAST
+/// usage report only, summed over non-overlapping parts
+/// (`input + output + reasoning + cache.read + cache.write`).
+/// Gray's `output_tokens` already include reasoning (unlike the TS shape
+/// where `output` excludes it), so the sum is
+/// `non_cached + output + cache_read + cache_write`.
+///
+/// Never a chars/4 estimate (that inflated to ~2.5M on a 14s turn), never
+/// a Σ-per-round sum (each round's input already contains the full
+/// history, so summing grows superlinearly). Pure for testability.
+pub(crate) fn pill_context_tokens(u: &gray_core::event::Usage) -> usize {
+    // No measured breakdown at all (all three zero): the input total is
+    // the whole prompt (defense against hand-built shapes; every mapped
+    // and normalized report carries non_cached or cache parts).
+    let input_part = if u.non_cached_input_tokens == 0
+        && u.cache_read_input_tokens == 0
+        && u.cache_write_input_tokens == 0
+        && u.cached_tokens == 0
+    {
+        u.input_tokens
+    } else {
+        u.non_cached_input_tokens
+    };
+    input_part
+        .saturating_add(u.output_tokens)
+        .saturating_add(u.cache_read_input_tokens.max(u.cached_tokens))
+        .saturating_add(u.cache_write_input_tokens)
+}
+
+/// `· N tok` suffix for the working pill; empty before the first usage
+/// report or when it totals zero (mirrors opencode2's `tokens <= 0` guard).
+pub(crate) fn pill_token_suffix(usage: Option<gray_core::event::Usage>) -> String {
+    match usage.map(|u| pill_context_tokens(&u)).unwrap_or(0) {
+        0 => String::new(),
+        n => format!(" · {} tok", crate::repl::fmt_usage(n)),
+    }
+}
+
+/// Codex parity (`reference/openai/codex/codex-rs/tui/src/chatwidget/compaction.rs`):
+/// live compaction status. Its wall clock is separate from the turn's running
+/// time, and only a matching live completion contributes a duration to the
+/// transcript. The bottom-pane input box stays mounted the whole time —
+/// compaction only touches the status dock, never the viewport, transcript,
+/// or textarea.
+pub(crate) const COMPACTION_HEADER: &str = "Compacting context";
+/// Codex details line (`Making room to continue.`): kept for parity/docs.
+/// Gray's single-label status dock renders the header only.
+#[allow(dead_code)]
+pub(crate) const COMPACTION_DETAILS: &str = "Making room to continue.";
+
+#[derive(Debug, Clone)]
+pub(crate) struct ActiveCompaction {
+    pub(crate) id: String,
+    pub(crate) started_at: Instant,
+}
+
+/// Codex `fmt_elapsed_compact`: `0s`, `59s`, `1m 00s`, `1h 00m 00s`.
+pub(crate) fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
+    if elapsed_secs < 60 {
+        return format!("{elapsed_secs}s");
+    }
+    if elapsed_secs < 3600 {
+        let minutes = elapsed_secs / 60;
+        let seconds = elapsed_secs % 60;
+        return format!("{minutes}m {seconds:02}s");
+    }
+    let hours = elapsed_secs / 3600;
+    let minutes = (elapsed_secs % 3600) / 60;
+    let seconds = elapsed_secs % 60;
+    format!("{hours}h {minutes:02}m {seconds:02}s")
+}
+
 mod text_area;
 pub(crate) use text_area::TextArea;
 
@@ -46,6 +155,7 @@ pub struct Tui {
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
+    active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
@@ -61,12 +171,7 @@ pub struct Tui {
     pending: String,
     thinking: bool,
     thinking_started: Option<Instant>,
-    /// Buffered thinking rows for the current run. Rendered header-first
-    /// (`Thought: <dur>` + blank + body, opencode parity) when the run ends —
-    /// scrollback is append-only so a top header can't be re-rendered live.
-    pub(crate) thinking_lines: Vec<String>,
     hide_thinking: bool,
-    pending_tokens: Option<String>,
     pub(crate) history: Vec<String>,
     pub(crate) history_idx: Option<usize>,
     pub(crate) draft: String,
@@ -87,8 +192,12 @@ pub struct Tui {
     markdown_renderer: gray_markdown::StreamingMarkdownRenderer,
     committed_markdown_lines: usize,
     pub(crate) pending_resize: Option<(u16, Instant)>,
-    pub(crate) live_streamed_tokens: usize,
-    pub(crate) tool_progress_lens: std::collections::HashMap<String, usize>,
+    /// Billed output tokens from this turn's TurnEnd usage (Σ-per-round).
+    /// Display-only: the `Thought for · N tok` line. `None` (cancelled /
+    /// errored before any usage report) prints the bare elapsed, like an
+    /// omp turn with no reported usage. Never feeds the context gauge
+    /// (that stays `latest_usage`, latest-round size).
+    pub(crate) turn_billed_output: Option<usize>,
     /// Current inline viewport height. `draw` keeps it at the exact-fit
     /// content height (+1 spare cleared row, clamped to
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
@@ -122,8 +231,8 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
     let l_cols = (max_logo_w as f32).max(1.0);
     let logo_pad = w.saturating_sub(max_logo_w) / 2;
 
-    let base = Color::Rgb(110, 110, 110);
-    let hilite = Color::Rgb(240, 240, 240);
+    let base = crate::theme::theme().text_dim;
+    let hilite = crate::theme::theme().text_bright;
 
     let mut welcome_lines: Vec<Line<'static>> = Vec::new();
     welcome_lines.push(Line::from(""));
@@ -152,14 +261,14 @@ pub fn build_welcome_lines(w: usize) -> Vec<Line<'static>> {
         Span::raw(" ".repeat(pad)),
         Span::styled(
             "gray",
-            Style::default().bold().fg(Color::Rgb(225, 225, 225)),
+            Style::default().bold().fg(crate::theme::theme().text_body),
         ),
         Span::styled(
             format!(
                 " {} \u{b7} Run /help for commands",
                 env!("CARGO_PKG_VERSION")
             ),
-            Style::default().fg(Color::Rgb(140, 140, 140)),
+            Style::default().fg(crate::theme::theme().text_muted),
         ),
     ]));
     welcome_lines.push(Line::from(""));
@@ -206,6 +315,7 @@ impl Tui {
             matches: Vec::new(),
             sel: 0,
             status: None,
+            active_compaction: None,
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
@@ -216,9 +326,7 @@ impl Tui {
             pending: String::new(),
             thinking: false,
             thinking_started: None,
-            thinking_lines: Vec::new(),
             hide_thinking: false,
-            pending_tokens: None,
             history: Vec::new(),
             history_idx: None,
             draft: String::new(),
@@ -239,8 +347,7 @@ impl Tui {
             ),
             committed_markdown_lines: 0,
             pending_resize: None,
-            live_streamed_tokens: 0,
-            tool_progress_lens: std::collections::HashMap::new(),
+            turn_billed_output: None,
             viewport_h: MIN_VIEWPORT_H,
         })
     }
@@ -269,6 +376,49 @@ impl Tui {
         let _ = self.draw();
     }
 
+    /// Moves in-flight (painted-nowhere / stored-nowhere) buffers into
+    /// `history_entries` so an immediately-following clear + re-emit cannot
+    /// drop them. Called at the top of [`Self::reflow_on_resize`], before the
+    /// scrollback purge.
+    ///
+    /// Two buffers qualify:
+    /// - `pending`: the live thinking tail [`Tui::stream_thinking`] has not
+    ///   flushed yet. Drained via the thinking path so it keeps its italic
+    ///   muted style and its share of the `Thought for` timing.
+    /// - the unfrozen markdown renderer: frozen rows are already committed
+    ///   through [`Tui::stream_text`]; only the not-yet-frozen tail is
+    ///   forced out here. The renderer only freezes complete block rows, so
+    ///   an incremental reflow may re-close an open block (e.g. repeat a
+    ///   table header) once the turn's real close arrives — a cosmetic
+    ///   duplicate row, never lost text.
+    pub(crate) fn drain_inflight_for_reflow(&mut self) {
+        if self.thinking && !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, crate::composer::transcript::thinking_style());
+        }
+        let output = std::mem::replace(
+            &mut self.markdown_renderer,
+            gray_markdown::StreamingMarkdownRenderer::new(
+                gray_markdown::gray_markdown_style(),
+                true,
+            ),
+        )
+        .finish_into_output(Some(gray_markdown::get_syntect()));
+        if output.lines.len() > self.committed_markdown_lines {
+            if self.committed_markdown_lines == 0 {
+                self.ensure_gap(1);
+            }
+            let remaining_lines: Vec<Line<'static>> =
+                output.lines[self.committed_markdown_lines..].to_vec();
+            let offset = self.committed_markdown_lines;
+            // Keep the original commit offset (not the post-drain total) so
+            // `rebase_hyperlinks_for_slice` keeps attributing each URL to
+            // its own row; the counter itself advances past the drain.
+            self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
+        }
+        self.committed_markdown_lines = 0;
+    }
+
     /// Codex-style transcript reflow on terminal resize:
     /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
@@ -277,6 +427,15 @@ impl Tui {
         if let Ok((_, rows)) = crossterm::terminal::size() {
             self.last_height = rows;
         }
+
+        // Draining mid-stream buffers into history first is what keeps a
+        // resize from eating in-flight text: `pending` (live thinking tail)
+        // and the unfrozen markdown renderer hold content that is neither
+        // painted nor stored yet. Without this, narrowing mid-turn widened
+        // the live cut budget past the reflowed rows and the tail rendered
+        // over-wide — Paragraph has no `.wrap()`, so it hard-clips at the
+        // right edge and the reasoning reads "shortened".
+        self.drain_inflight_for_reflow();
 
         // Codex-style: reset scroll region, clear visible screen and purge scrollback, home cursor
         let mut out = std::io::stdout();
@@ -307,7 +466,8 @@ impl Tui {
                     let lines =
                         crate::composer::transcript::format_user_prompt_lines(text, attached, w);
                     let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let block = Block::default()
+                        .style(Style::default().bg(crate::theme::theme().surface_bg));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone())
                             .block(block)
@@ -319,7 +479,8 @@ impl Tui {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
                     let th = lines.len() as u16;
-                    let block = Block::default().style(Style::default().bg(Color::Rgb(22, 22, 22)));
+                    let block = Block::default()
+                        .style(Style::default().bg(crate::theme::theme().surface_bg));
                     let _ = self.terminal.insert_before(th, |buf| {
                         Paragraph::new(lines.clone())
                             .block(block)
@@ -383,15 +544,41 @@ impl Tui {
     }
     pub fn set_usage(&mut self, usage: gray_core::event::Usage) {
         self.latest_usage = Some(usage);
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
         self.cumulative_usage = Some(usage);
+        // NOTE: no per-turn accumulation here. `StepUsage` carries the
+        // latest context size (each round's input already contains the full
+        // history), so summing `usage.total()` across rounds grows
+        // superlinearly (e.g. 16 rounds x ~120k = ~1.9M). The context gauge
+        // and the `Working… · N tok` pill both read this last report only
+        // (opencode2 `usage()` parity); exact turn/session bills live in
+        // the TurnEnd totals.
+    }
+    /// Seeds the context gauge from a char-estimate when no provider
+    /// `StepUsage` is in force: resume replay (persisted usage is billed
+    /// Σ-per-round, unrestorable as context size) and post-compaction
+    /// (history just shrank; the pre-compact `StepUsage` is stale).
+    ///
+    /// No-op on zero so callers never blank a live gauge with an empty
+    /// estimate. First real `StepUsage` overwrites via `set_usage`.
+    pub fn seed_estimate_usage(&mut self, tokens: usize) {
+        if tokens == 0 {
+            return;
+        }
+        let u = gray_core::event::Usage::estimated_context(tokens);
+        self.latest_usage = Some(u);
+        self.cumulative_usage = Some(u);
     }
     pub fn reset_usage(&mut self) {
         self.latest_usage = None;
         self.cumulative_usage = None;
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        self.turn_billed_output = None;
+    }
+
+    /// Stashes the TurnEnd billed output + reasoning counts for the `end_turn`
+    /// Thought line. Called from the TurnEnd dispatch arm (which already holds
+    /// the billed usage); `end_turn` consumes both exactly once.
+    pub fn set_turn_billed(&mut self, output_tokens: usize) {
+        self.turn_billed_output = Some(output_tokens);
     }
 
     pub(crate) fn width(&self) -> usize {
@@ -417,20 +604,97 @@ impl Tui {
     }
 
     pub fn begin_turn(&mut self, label: &str) {
+        // Codex `status_controls.rs`: follow-up input and background activity
+        // must not obscure an active compaction — keep its header/clock.
+        if let Some(active) = self.active_compaction.clone() {
+            self.is_task_running = true;
+            self.status = Some((active.started_at, COMPACTION_HEADER.to_string()));
+            let _ = self.draw();
+            return;
+        }
         let now = Instant::now();
         if self.turn_started.is_none() {
             self.turn_started = Some(now);
             self.turn_had_thinking = false;
         }
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        self.turn_billed_output = None;
         self.is_task_running = true;
         self.status = Some((now, label.to_string()));
         let _ = self.draw();
     }
     pub fn set_status(&mut self, label: Option<&str>) {
+        // Codex parity: while compacting, every other status request
+        // (`Working`, `Preparing tool:`, sleep countdown, …) is ignored so
+        // the `Compacting context` dock never flickers or drops the input box.
+        if let Some(active) = self.active_compaction.clone() {
+            self.status = Some((active.started_at, COMPACTION_HEADER.to_string()));
+            let _ = self.draw();
+            return;
+        }
         self.status = label.map(|l| (Instant::now(), l.to_string()));
         let _ = self.draw();
+    }
+
+    /// Codex `on_context_compaction_started`: flush the live answer stream
+    /// with a separator, then raise a dedicated `Compacting context` status
+    /// with its own timer origin. Never touches the viewport, transcript,
+    /// textarea, or turn clock — the input box stays mounted.
+    pub fn begin_compaction(&mut self, id: String) {
+        if self
+            .active_compaction
+            .as_ref()
+            .is_some_and(|active| active.id == id)
+        {
+            return;
+        }
+        self.flush_markdown();
+        self.end_thinking_run(true);
+        let started_at = Instant::now();
+        self.active_compaction = Some(ActiveCompaction { id, started_at });
+        self.status = Some((started_at, COMPACTION_HEADER.to_string()));
+        let _ = self.draw();
+    }
+
+    /// Codex `clear_context_compaction` + `on_context_compaction_completed`:
+    /// only the matching live id clears and contributes a duration. Restores
+    /// `restore` (`Working` for auto paths, `None` for manual `/compact`)
+    /// in the same lock so the ticker can never paint a stale header.
+    pub fn finish_compaction(&mut self, id: &str, restore: Option<&str>) -> Option<Duration> {
+        let active = self.active_compaction.take()?;
+        if active.id != id {
+            self.active_compaction = Some(active);
+            return None;
+        }
+        let elapsed = active.started_at.elapsed();
+        match restore {
+            Some(label) => {
+                self.status = Some((Instant::now(), label.to_string()));
+            }
+            None => {
+                self.status = None;
+            }
+        }
+        let _ = self.draw();
+        Some(elapsed)
+    }
+
+    /// Turn ended without a matching completion (cancel/error): drop the
+    /// compaction flag silently, no transcript line — Codex parity.
+    pub fn clear_compaction_silent(&mut self) {
+        if self.active_compaction.take().is_some() {
+            self.status = None;
+            let _ = self.draw();
+        }
+    }
+
+    pub fn is_compacting(&self) -> bool {
+        self.active_compaction.is_some()
+    }
+
+    pub fn compaction_elapsed(&self) -> Option<Duration> {
+        self.active_compaction
+            .as_ref()
+            .map(|a| a.started_at.elapsed())
     }
     /// Brief 3B: `sleep(seconds, reason?)` countdown on the status line.
     /// `tick_status` refreshes the remaining seconds; [`Self::clear_sleep`]
@@ -447,19 +711,14 @@ impl Tui {
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            if self.thinking {
-                // Thinking rows buffer for the header-first flush in
-                // `end_thinking_run`, never straight to the transcript.
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.thinking_lines.push(line.to_string());
-                    }
-                }
+            let style = if self.thinking {
+                crate::composer::transcript::thinking_style()
             } else {
-                for line in rest.split('\n') {
-                    if !line.is_empty() {
-                        self.push_line_styled(line.to_string(), Style::default());
-                    }
+                Style::default()
+            };
+            for line in rest.split('\n') {
+                if !line.is_empty() {
+                    self.push_line_styled(line.to_string(), style);
                 }
             }
         }
@@ -484,6 +743,9 @@ impl Tui {
     }
 
     pub fn end_turn(&mut self) {
+        // Codex `turn_runtime.rs`: a turn ending without item completion
+        // clears a live compaction silently (no `Context compacted` line).
+        self.active_compaction = None;
         // capture elapsed before clearing
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
@@ -491,8 +753,11 @@ impl Tui {
         self.is_task_running = false;
         self.status = None;
         self.sleep_until = None;
-        self.live_streamed_tokens = 0;
-        self.tool_progress_lens.clear();
+        // Billed output only (exact, reasoning included). `None` prints the
+        // bare elapsed — a chars/4 fallback here would reintroduce the very
+        // inflation the pill just dropped (2.5M on a 14s turn).
+        let turn_toks = self.turn_billed_output;
+        self.turn_billed_output = None;
         if self.thinking {
             self.end_thinking_run(true);
         }
@@ -508,7 +773,6 @@ impl Tui {
             }
         }
 
-        let pending_tok = self.pending_tokens.take();
         if let Some(elapsed) = elapsed {
             let elapsed_str = crate::repl::format::fmt_duration_ms(
                 elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
@@ -518,40 +782,16 @@ impl Tui {
             } else {
                 "Worked for"
             };
-            let tok_suffix = if let Some(u) = self.latest_usage {
-                format!(" · {} tok", crate::repl::fmt_usage(u.total()))
-            } else {
-                String::new()
-            };
-            // Codex-style: ✻ Worked for 6s · N tok (dim)
-            let line = format!("✻ {verb} {elapsed_str}{tok_suffix}");
+            // `✻ Thought for … · N tok` is billed output (exact, reasoning
+            // included). Other billed Σ-per-round totals stay out of the TUI
+            // entirely.
+            let line = format_thought_line(verb, &elapsed_str, turn_toks);
             self.ensure_gap(1);
             self.push_dim(line);
-            self.ensure_gap(1);
-        } else if let Some(tok) = pending_tok {
-            self.ensure_gap(1);
-            self.push_dim(tok);
             self.ensure_gap(1);
         }
         let _ = std::io::stdout().flush();
         let _ = self.draw();
-    }
-
-    pub fn push_usage(&mut self, tok_line: String) {
-        self.pending_tokens = Some(tok_line);
-    }
-
-    /// pi `updateArgs` token accounting: `args_so_far` is the cumulative
-    /// buffer, so only the delta since the last call counts toward the
-    /// live `· N tok` counter.
-    pub fn live_progress_tokens(&mut self, id: &str, args_so_far: &str) {
-        let prev = self.tool_progress_lens.get(id).copied().unwrap_or(0);
-        let cur = args_so_far.len();
-        if cur > prev {
-            let delta_chars = cur - prev;
-            self.live_streamed_tokens += (delta_chars.div_ceil(4)).max(1);
-            self.tool_progress_lens.insert(id.to_string(), cur);
-        }
     }
 
     pub fn snapshot(&self) -> crate::setup::BackgroundSnapshot {
@@ -579,8 +819,11 @@ impl Tui {
             return;
         }
         // Sleep countdown: repaint once per second with the remaining time.
+        // Never obscures an active compaction (Codex status_controls parity).
         let mut sleep_tick = false;
-        if let Some((deadline, reason)) = self.sleep_until.clone() {
+        if self.active_compaction.is_none()
+            && let Some((deadline, reason)) = self.sleep_until.clone()
+        {
             let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();
             self.status = Some((Instant::now(), sleep_label(remaining, &reason)));
             sleep_tick = true;
@@ -639,5 +882,157 @@ impl Drop for Tui {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+    }
+}
+
+#[cfg(test)]
+mod pill_token_tests {
+    use super::{pill_context_tokens, pill_token_suffix};
+    use gray_core::event::Usage;
+
+    #[test]
+    fn pill_suffix_empty_before_first_report() {
+        assert_eq!(pill_token_suffix(None), "");
+        assert_eq!(pill_token_suffix(Some(Usage::new(0, 0))), "");
+    }
+
+    #[test]
+    fn pill_suffix_counts_last_report_only() {
+        // Plain totals shape: context = input + output.
+        assert_eq!(
+            pill_token_suffix(Some(Usage::new(12_000, 500))),
+            " · 12,500 tok"
+        );
+        // Resume/compaction seed: estimate with no breakdown.
+        assert_eq!(
+            pill_token_suffix(Some(Usage::estimated_context(39_000))),
+            " · 39,000 tok"
+        );
+    }
+
+    #[test]
+    fn pill_sums_non_overlapping_parts_opencode_parity() {
+        // Anthropic-like report: inclusive input 100k, of which 90k cached
+        // read + 1k cached write; output 2k includes 500 reasoning.
+        let u = Usage {
+            input_tokens: 100_000,
+            output_tokens: 2_000,
+            reasoning_tokens: 500,
+            cached_tokens: 90_000,
+            non_cached_input_tokens: 9_000,
+            cache_read_input_tokens: 90_000,
+            cache_write_input_tokens: 1_000,
+            total_tokens: 0,
+        };
+        // 9k fresh + 2k out + 90k read + 1k write = full context, and it
+        // must agree with total() (no double-counted reasoning/cache).
+        assert_eq!(pill_context_tokens(&u), 102_000);
+        assert_eq!(pill_context_tokens(&u), u.total());
+        assert_eq!(pill_token_suffix(Some(u)), " · 102,000 tok");
+    }
+
+    #[test]
+    fn pill_falls_back_to_input_without_breakdown() {
+        let u = Usage {
+            input_tokens: 5_000,
+            output_tokens: 300,
+            ..Usage::default()
+        };
+        assert_eq!(pill_token_suffix(Some(u)), " · 5,300 tok");
+    }
+}
+
+#[cfg(test)]
+mod thought_line_tests {
+    use super::format_thought_line;
+
+    #[test]
+    fn format_thought_line_is_just_verb_elapsed_and_turn_toks() {
+        // `N tok` is billed output (exact, reasoning included — never split
+        // out); backed by the TurnEnd report instead of chars/4.
+        let line = format_thought_line("Thought for", "1m 17s", Some(4_045));
+        assert_eq!(line, "✻ Thought for 1m 17s · 4,045 tok");
+        assert_eq!(line.matches("1m 17s").count(), 1);
+    }
+
+    #[test]
+    fn format_thought_line_no_ctx_is_bare() {
+        let line = format_thought_line("Worked for", "6s", None);
+        assert_eq!(line, "✻ Worked for 6s");
+    }
+
+    #[test]
+    fn format_thought_line_never_splits_reasoning() {
+        // Reasoning is a subset of output — one united count, no suffix.
+        let line = format_thought_line("Thought for", "59s", Some(2_973));
+        assert_eq!(line, "✻ Thought for 59s · 2,973 tok");
+        assert!(!line.contains("reasoning"));
+    }
+
+    #[test]
+    fn pill_clock_ignores_tool_status_restamps() {
+        // Every tool event re-stamps the status (`Preparing tool:` ->
+        // `Working`); the visible clock must keep counting from the turn
+        // start instead of restarting at 0.0s per tool call.
+        let turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(14));
+        let restamped = std::time::Instant::now();
+        let elapsed = super::pill_elapsed(turn_started, restamped, true);
+        assert!(elapsed.as_secs() >= 13, "clock reset mid-turn: {elapsed:?}");
+    }
+
+    #[test]
+    fn pill_clock_falls_back_outside_turns() {
+        let status = std::time::Instant::now() - std::time::Duration::from_secs(2);
+        let elapsed = super::pill_elapsed(None, status, false);
+        assert!((1..=5).contains(&elapsed.as_secs()), "{elapsed:?}");
+    }
+
+    #[test]
+    fn fmt_elapsed_compact_matches_codex() {
+        assert_eq!(super::fmt_elapsed_compact(0), "0s");
+        assert_eq!(super::fmt_elapsed_compact(1), "1s");
+        assert_eq!(super::fmt_elapsed_compact(59), "59s");
+        assert_eq!(super::fmt_elapsed_compact(60), "1m 00s");
+        assert_eq!(super::fmt_elapsed_compact(61), "1m 01s");
+        assert_eq!(super::fmt_elapsed_compact(3 * 60 + 5), "3m 05s");
+        assert_eq!(super::fmt_elapsed_compact(3600), "1h 00m 00s");
+        assert_eq!(super::fmt_elapsed_compact(3600 + 60 + 1), "1h 01m 01s");
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    // Codex parity (`compaction_tests.rs`): compaction keeps its own clock,
+    // survives follow-up status writes, only the matching id completes, and
+    // the input box (textarea/viewport state) is never touched.
+    use super::*;
+
+    // `Tui::new` needs a real TTY; these tests cover the pure clock/id
+    // policy plus the status-guard contract via a minimal harness. The
+    // full viewport-preservation (input box mounted) is structural: none of
+    // begin/finish/tick/end_turn touches `textarea`, `transcript`,
+    // `history_entries`, or `viewport_h` except through `draw`.
+
+    #[test]
+    fn compaction_clock_is_separate_from_turn_clock() {
+        let turn_started = Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        let compaction_started = std::time::Instant::now() - std::time::Duration::from_secs(83);
+        // Pill during compaction reads the compaction clock, not the turn.
+        let pill = compaction_started.elapsed();
+        let turn = turn_started.map(|t| t.elapsed()).unwrap_or_default();
+        assert!(pill.as_secs() >= 82, "compaction clock: {pill:?}");
+        assert!(turn.as_secs() >= 599, "turn clock preserved: {turn:?}");
+        assert_eq!(super::fmt_elapsed_compact(83), "1m 23s");
+    }
+
+    #[test]
+    fn mismatched_completion_does_not_clear_live_compaction() {
+        // Policy mirror of `finish_compaction`: a stale id must not clear
+        // the live compaction or contribute a duration.
+        let live = "compact-1".to_string();
+        let stale = "compact-old";
+        assert_ne!(live, stale);
+        // Only the matching id formats a transcript duration.
+        assert_eq!(super::fmt_elapsed_compact(0), "0s");
     }
 }

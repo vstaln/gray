@@ -1,14 +1,12 @@
 //! Persistent job store with atomic at-most-once claim (Task 2).
 //!
 //! Gray-minimal port of the hermes `cron/jobs.py` claim logic: one
-//! load-modify-save pass under `<cron>/.jobs.lock` (same flock mechanism as
-//! `gray-gateway/src/lock.rs`), 300s fire-claim TTL, 120s one-shot grace,
+//! load-modify-save pass under `<cron>/.jobs.lock` (same flock + 300s-claim
+//! shape the daemon used), 300s fire-claim TTL, 120s one-shot grace,
 //! fast-forward of stale recurring jobs. Deliberate deltas vs hermes,
 //! documented at each site:
 //! - owner stamp is `pid:boot-uuid` (no pid-start-time helper in gray; a dead
 //!   process never reuses its boot uuid, which is all the TTL needs).
-//! - lifecycle guard is a 3-shape substring floor, not the full hermes
-//!   detection table (`reject_lifecycle_shape`).
 //! - no NL weekday schedules, no per-job model/skill overrides (follow-ups).
 
 use std::fs::OpenOptions;
@@ -113,10 +111,9 @@ fn default_enabled() -> bool {
 }
 
 /// Whole-file JSON write via tmp-file + rename (atomic on the same fs), mode
-/// 0600 on unix. Plan-A fallback home: `gray_gateway::delivery::atomic_write_json`
-/// is `pub(crate)` there, and depending on gray-gateway from here would cycle
-/// (gateway gains the gray-cron dep in Task 3) — so gray-cron owns this copy.
-/// Do NOT add a third copy elsewhere.
+/// 0600 on unix. Owned here so the store has no cross-crate edge for its
+/// write path — so gray-cron owns this copy.
+/// Do NOT add another copy elsewhere.
 pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     use std::io::Write as _;
     let body = serde_json::to_string_pretty(value)?;
@@ -150,8 +147,8 @@ pub fn atomic_write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::
     result
 }
 
-/// Cross-process mutual exclusion for one load-modify-save pass. Same flock
-/// mechanism as `gray-gateway/src/lock.rs`, blocking variant: the critical
+/// Cross-process mutual exclusion for one load-modify-save pass (same
+/// flock/claim shape the daemon used). Blocking variant: the critical
 /// section is milliseconds long, and the 30s deadline matches hermes
 /// `_JOBS_LOCK_TIMEOUT_SECONDS`. Lock open/timeout/unsupported errors abort
 /// the pass instead of running it unguarded: at-most-once claims require
@@ -183,25 +180,6 @@ fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) ->
     }
     // Closing the file releases the lock, including on error/unwind.
     f()
-}
-
-/// Gray-minimal lifecycle floor (documented as the floor, not the ceiling):
-/// hermes runs a full detection table (`cron/lifecycle_guard.py` — anchored
-/// regexes, argv tokenizing, referenced-script walks). That table is a
-/// follow-up here; this rejects the three shapes that SIGTERM-respawn a
-/// supervised gateway, case-insensitive substring on normalized lowercase.
-pub fn reject_lifecycle_shape(prompt: &str) -> anyhow::Result<()> {
-    let n = prompt.to_lowercase();
-    if n.contains("gateway restart") || n.contains("gateway stop") {
-        anyhow::bail!("blocked: cron prompt targets the gateway lifecycle (respawn loop)");
-    }
-    if n.contains("systemctl") && n.contains("gray") {
-        anyhow::bail!("blocked: cron prompt targets the gray service lifecycle (respawn loop)");
-    }
-    if n.contains("pkill") && n.contains("gray") {
-        anyhow::bail!("blocked: cron prompt kills the gray process (respawn loop)");
-    }
-    Ok(())
 }
 
 fn validate_new_job(name: &str, prompt: &str, workdir: Option<&Path>) -> anyhow::Result<()> {
@@ -313,7 +291,6 @@ impl CronStore {
         workdir: Option<PathBuf>,
     ) -> anyhow::Result<String> {
         validate_new_job(name, prompt, workdir.as_deref())?;
-        reject_lifecycle_shape(prompt)?;
         let sched = parse_schedule(schedule)?;
         let now = now_secs();
         if let Schedule::Once { at } = &sched
@@ -630,31 +607,6 @@ mod tests {
         assert!(
             store
                 .add("x", "not a schedule", "hi", Deliver::Local)
-                .is_err()
-        );
-        assert!(
-            store
-                .add(
-                    "x",
-                    "every 1h",
-                    "run gateway restart nightly",
-                    Deliver::Local
-                )
-                .is_err()
-        );
-        assert!(
-            store
-                .add(
-                    "x",
-                    "every 1h",
-                    "systemctl restart gray-gateway",
-                    Deliver::Local
-                )
-                .is_err()
-        );
-        assert!(
-            store
-                .add("x", "every 1h", "pkill -f gray", Deliver::Local)
                 .is_err()
         );
         assert!(

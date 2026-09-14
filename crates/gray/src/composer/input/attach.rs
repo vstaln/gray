@@ -121,9 +121,7 @@ pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
 }
 
 /// Paste an image from the OS clipboard (arboard) or clipboard helpers
-/// (wl-paste/xclip). Only compiled with the `clipboard` feature; without it
-/// pastes fall through to plain text.
-#[cfg(feature = "clipboard")]
+/// (wl-paste/xclip). Image first, then clipboard text via the caller.
 pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
     if let Ok(mut clipboard) = arboard::Clipboard::new() {
         if let Ok(img) = clipboard.get_image() {
@@ -180,11 +178,6 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
             }
         }
     }
-    false
-}
-
-#[cfg(not(feature = "clipboard"))]
-pub(crate) fn try_attach_clipboard_image(_tui: &mut Tui) -> bool {
     false
 }
 

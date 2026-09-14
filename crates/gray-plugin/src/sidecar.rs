@@ -468,7 +468,7 @@ impl Plugin for SidecarPlugin {
         }
     }
     async fn run_command(&self, name: &str, argv: Vec<String>) -> Option<CommandOutcome> {
-        // `subcommands` (cron, gateway, …) forward argv over the same
+        // `subcommands` (cron, …) forward argv over the same
         // `command/run` wire as `commands` — one path, no special-casing.
         if !self.manifest.commands.iter().any(|c| c == name)
             && !self.manifest.subcommands.iter().any(|c| c == name)

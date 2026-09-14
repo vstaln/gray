@@ -20,8 +20,8 @@ use tokio::process::Child;
 use tokio::task::JoinHandle;
 
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, ExitReport, MAX_TIMEOUT_SECS, MEM_HEAD_BYTES, MEM_TAIL_BYTES,
-    NotifyPattern, PROMOTION_TAIL_BYTES, PumpSummary, TaskId, TaskInfo, TaskState,
+    DEFAULT_TIMEOUT_SECS, ExitReport, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS, MEM_HEAD_BYTES,
+    MEM_TAIL_BYTES, NotifyPattern, PROMOTION_TAIL_BYTES, PumpSummary, TaskId, TaskInfo, TaskState,
     VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, View,
 };
 use crate::shell::exit::exit_report;
@@ -88,8 +88,33 @@ impl Tool for BashTool {
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let command = match get_str(&args, "command") {
-            Ok(c) => c,
-            Err(e) => return e,
+            Ok(c) if !c.trim().is_empty() => c,
+            _ => {
+                // Repair hint only when unambiguous: empty command + task-ish
+                // keys means the model wanted shell_output; +port/kill keys
+                // means shell_kill. Anything else keeps the plain error.
+                let obj = args.as_object();
+                let has = |k: &str| obj.is_some_and(|m| m.contains_key(k));
+                if has("task_id") || has("from_offset") || has("wait") {
+                    return fail(
+                        "missing required argument 'command'; to read task output use shell_output(task_id) instead"
+                            .to_string(),
+                    );
+                }
+                if has("port") {
+                    return fail(
+                        "missing required argument 'command'; to free a port use shell_kill(port=N) instead"
+                            .to_string(),
+                    );
+                }
+                return match get_str(&args, "command") {
+                    Ok(_) => fail(
+                        "missing required argument 'command': expected a non-empty string"
+                            .to_string(),
+                    ),
+                    Err(e) => e,
+                };
+            }
         };
         let requested = match get_opt_u64(&args, "timeout") {
             Ok(t) => t,
@@ -466,36 +491,78 @@ fn read_log_tail(log_path: &Path) -> (Vec<u8>, u64) {
     (buf, len)
 }
 
-/// Bounded view: the whole log read back from disk when it fits the byte
-/// budget (≤50 KiB read), else one middle-out pass over head ++ tail.
+/// Bounded inline view (≤ ~12 KiB): the whole log read back from disk when
+/// it fits the inline budget, else head ++ tail from the bounded memory
+/// sample with the elided shape imposed explicitly.
 /// `{{MARKER}}` is replaced only when bytes were actually omitted, so user
 /// text can never collide with the slot.
 fn build_view(id: TaskId, log_path: &Path, summary: &PumpSummary) -> View {
-    // Byte-bounded: the summary small-path reads the log back from disk —
-    // never read an unbounded log on a stale/small summary. Check the real
-    // length first and fall back to the bounded in-memory head ++ tail.
+    // Byte-bounded: the small path reads the log back from disk — never read
+    // an unbounded log on a stale/small summary. Check the real length first
+    // and fall back to the bounded in-memory head ++ tail.
     let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
     let use_disk =
-        summary.total_bytes <= VIEW_BUDGET_BYTES as u64 && file_len <= VIEW_BUDGET_BYTES as u64;
-    let raw: Vec<u8> = if use_disk {
-        match std::fs::read(log_path) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                let mut cat = summary.head.clone();
-                cat.extend_from_slice(&summary.tail);
-                cat
-            }
+        summary.total_bytes <= INLINE_BUDGET_BYTES as u64 && file_len <= INLINE_BUDGET_BYTES as u64;
+    // On read error fall through to the memory sample below.
+    if use_disk && let Ok(bytes) = std::fs::read(log_path) {
+        let mut view = middle_out(&bytes, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
+        if view.omitted_range.is_some() {
+            let hint = resume_hint(id, &view);
+            view.body = view.body.replace("{{MARKER}}", &hint);
         }
-    } else {
+        return view;
+    }
+    // Large logs: the ≤12 KiB memory sample (first MEM_HEAD_BYTES verbatim ++
+    // ring of last MEM_TAIL_BYTES) always fits the inline budget, so a plain
+    // middle_out pass would report nothing omitted. Sanitize head and tail
+    // separately instead — a whole-path middle_out returns its sanitized
+    // input verbatim with exact line counts — and impose the elided shape
+    // with honest totals from the summary. The full log stays on disk for
+    // shell_output paging.
+    let head_part = middle_out(&summary.head, usize::MAX, usize::MAX, 0);
+    let tail_part = middle_out(&summary.tail, usize::MAX, usize::MAX, 0);
+    let shown = (head_part.total_lines, tail_part.total_lines);
+    let omitted_lines = summary.total_lines.saturating_sub(shown.0 + shown.1);
+    let omitted_bytes = usize::try_from(
+        summary
+            .total_bytes
+            .saturating_sub((summary.head.len() + summary.tail.len()) as u64),
+    )
+    .unwrap_or(usize::MAX);
+    if omitted_lines == 0 && omitted_bytes == 0 {
+        // Degenerate (summary disagrees with the log length, e.g. the drain
+        // fallback undercounted): render the sample whole, no marker.
         let mut cat = summary.head.clone();
         cat.extend_from_slice(&summary.tail);
-        cat
-    };
-    let mut view = middle_out(&raw, VIEW_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
-    if view.omitted_range.is_some() {
-        let hint = resume_hint(id, &view);
-        view.body = view.body.replace("{{MARKER}}", &hint);
+        return middle_out(&cat, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);
     }
+    // Omitted middle in raw-log space: the head is the first bytes verbatim
+    // and the tail ring the last, so shell_output(from_offset=a) pages
+    // exactly the elided middle.
+    let omitted_range = Some((
+        summary.head.len() as u64,
+        summary
+            .total_bytes
+            .saturating_sub(summary.tail.len() as u64),
+    ));
+    let mut view = View {
+        body: String::new(),
+        shown_lines: shown,
+        omitted_lines,
+        omitted_bytes,
+        omitted_range,
+        total_lines: summary.total_lines,
+        total_bytes: summary.total_bytes,
+    };
+    let hint = resume_hint(id, &view);
+    // trim_end on the head is count-preserving (a trailing newline never
+    // starts a new line), so shown counts match the displayed lines exactly.
+    view.body = format!(
+        "{}\n{}\n{}",
+        head_part.body.trim_end_matches('\n'),
+        hint,
+        tail_part.body
+    );
     view
 }
 

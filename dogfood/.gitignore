@@ -1,0 +1,7 @@
+# run output: transcripts, screenshots, seeded gray-homes (contain key copies)
+runs/
+# lane probes leave seeded gray-homes + logs next to the scenarios
+lane8_home/
+# python bytecode
+__pycache__/
+*.pyc
