@@ -30,8 +30,8 @@ use std::path::{Path, PathBuf};
 // Source identity + reachability
 // ---------------------------------------------------------------------------
 
-/// Search/install source. Labels are display-time copy (match
-/// [`crate::ops::SearchSource`] labels exactly).
+/// Search/install source. Labels are display-time copy (used verbatim by
+/// the marketplace preview pane).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     GrayIndex,
@@ -236,6 +236,32 @@ pub fn split_clawhub_slug(slug: &str) -> (Option<String>, String) {
     }
 }
 
+/// One 429 retry: honor `Retry-After` (default 2s, capped 30s), sleep,
+/// then re-send via `send` (which must rebuild the request). Non-429
+/// responses pass through untouched.
+async fn clawhub_retry_once<F, Fut>(
+    resp: reqwest::Response,
+    send: F,
+) -> anyhow::Result<reqwest::Response>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+{
+    if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(resp);
+    }
+    let wait = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(2)
+        .min(30);
+    log::debug!("clawhub 429, retrying after {wait}s");
+    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+    Ok(send().await?)
+}
+
 /// GET with one 429 → honor `Retry-After` (capped) → retry once.
 /// Shared by search, detail, versions, and the artifact download.
 async fn clawhub_get(
@@ -254,19 +280,7 @@ async fn clawhub_get(
             .send()
     };
     let resp = send().await?;
-    if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
-        return Ok(resp);
-    }
-    let wait = resp
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .unwrap_or(2)
-        .min(30);
-    log::debug!("clawhub 429, retrying after {wait}s");
-    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-    Ok(send().await?)
+    clawhub_retry_once(resp, send).await
 }
 
 /// Search ClawHub (`limit=20`). Any failure is `Err` for the caller to
@@ -592,45 +606,26 @@ pub async fn clawhub_verdicts_batch(
             o
         })
         .collect();
-    let resp = match client
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(10))
-        .json(&serde_json::json!({"items": req_items}))
-        .send()
-        .await
-    {
+    let send = || {
+        client
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(10))
+            .json(&serde_json::json!({"items": req_items}))
+            .send()
+    };
+    let resp = match send().await {
         Ok(r) => r,
         Err(e) => {
             log::debug!("clawhub verdicts failed: {e:#}");
             return out;
         }
     };
-    // 429 on the write-bucket twin: honor and retry once like reads.
-    let resp = match resp.status() {
-        reqwest::StatusCode::TOO_MANY_REQUESTS => {
-            let wait = resp
-                .headers()
-                .get(reqwest::header::RETRY_AFTER)
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(2)
-                .min(30);
-            tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
-            match client
-                .post(&url)
-                .timeout(std::time::Duration::from_secs(10))
-                .json(&serde_json::json!({"items": req_items}))
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    log::debug!("clawhub verdicts retry failed: {e:#}");
-                    return out;
-                }
-            }
+    let resp = match clawhub_retry_once(resp, send).await {
+        Ok(r) => r,
+        Err(e) => {
+            log::debug!("clawhub verdicts retry failed: {e:#}");
+            return out;
         }
-        _ => resp,
     };
     let body: serde_json::Value = match resp.error_for_status() {
         Ok(r) => match r.json().await {

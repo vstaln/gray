@@ -18,8 +18,7 @@
             "properties": {
               "name": {"type": "string", "minLength": 1},
               "description": {"type": "string"},
-              "parameters": {"type": "object"},
-              "snippet": {"type": "string"}
+              "parameters": {"type": "object"}
             }
           }
         ]
@@ -32,10 +31,6 @@
     },
     "provider": {"type": "string"},
     "protocol": {"type": "string", "enum": ["1.1"]},
-    "capabilities": {
-      "type": "array",
-      "items": {"type": "string", "enum": ["exec", "http", "session", "ui"]}
-    },
     "subcommands": {"type": "array", "items": {"type": "string", "pattern": "^/"}}
   }
 }

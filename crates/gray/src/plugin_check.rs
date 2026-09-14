@@ -44,25 +44,18 @@ pub async fn check_plugin_dir(dir: &str) -> anyhow::Result<()> {
             }
         };
     let m = plugin.manifest();
-    let mut reports = vec![
-        Report {
-            name: "manifest",
-            pass: !m.name.trim().is_empty() && !m.version.trim().is_empty(),
-            detail: format!(
-                "name={:?} version={:?} tools={} commands={:?} protocol={:?}",
-                m.name,
-                m.version,
-                m.tools.len(),
-                m.commands,
-                m.protocol
-            ),
-        },
-        Report {
-            name: "capabilities",
-            pass: true,
-            detail: format!("{:?}", m.capabilities),
-        },
-    ];
+    let mut reports = vec![Report {
+        name: "manifest",
+        pass: !m.name.trim().is_empty() && !m.version.trim().is_empty(),
+        detail: format!(
+            "name={:?} version={:?} tools={} commands={:?} protocol={:?}",
+            m.name,
+            m.version,
+            m.tools.len(),
+            m.commands,
+            m.protocol
+        ),
+    }];
 
     // tool/call round-trip on the first tool (skipped when there are none).
     if let Some(tool) = plugin.tools().first().cloned() {

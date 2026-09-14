@@ -24,7 +24,7 @@ pub enum CoreEvent {
 }
 
 /// Protocol v1 manifest: `plugin/manifest` result
-/// `{"name","version","tools":[{"name","description","parameters","snippet"}],
+/// `{"name","version","tools":[{"name","description","parameters"}],
 /// "commands":["/x"],"hooks":["prompt/context","tool/before","turn/end"]}`.
 /// `commands`/`hooks` are empty for pre-v1 sidecars (field absent → default).
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -40,11 +40,6 @@ pub struct Manifest {
     /// v1.1 sidecars send `"1.1"` and handle `plugin/shutdown` + `session`.
     #[serde(default)]
     pub protocol: Option<String>,
-    /// Sandbox capabilities the sidecar declares (`exec`, `http`, `session`,
-    /// `ui`). Advisory today: parsed, surfaced, and schemad — enforcement
-    /// is a later pass (see `docs/plugins.md`).
-    #[serde(default)]
-    pub capabilities: Vec<String>,
     /// Host-owned namespaces this plugin extends (`cron`, …).
     /// Entries route argv through the same `command/run` wire as `commands`
     /// (the adapter merges both into [`PluginHooks::commands`]).
@@ -52,22 +47,15 @@ pub struct Manifest {
     pub subcommands: Vec<String>,
 }
 
-/// One manifest `tools` entry: the model-facing definition plus the optional
-/// `snippet` shown in the Available-tools block.
-#[derive(Debug, Clone)]
-pub struct ManifestTool {
-    pub def: ToolDef,
-    pub snippet: Option<String>,
-}
-
 /// Parse one manifest `tools` entry. Pre-v1 sidecars send bare strings
 /// (`"tools": ["echo"]`) — those still parse, with an empty schema.
-pub fn parse_tool_entry(v: &Value) -> Option<ManifestTool> {
+pub fn parse_tool_entry(v: &Value) -> Option<ToolDef> {
     if let Some(name) = v.as_str() {
-        return Some(ManifestTool {
-            def: ToolDef::new(name, format!("sidecar tool {name}"), serde_json::json!({})),
-            snippet: None,
-        });
+        return Some(ToolDef::new(
+            name,
+            format!("sidecar tool {name}"),
+            serde_json::json!({}),
+        ));
     }
     let obj = v.as_object()?;
     let name = obj.get("name")?.as_str()?;
@@ -83,21 +71,11 @@ pub fn parse_tool_entry(v: &Value) -> Option<ManifestTool> {
         .get("parameters")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let snippet = obj
-        .get("snippet")
-        .and_then(|s| s.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-    Some(ManifestTool {
-        def: ToolDef::new(name, description, parameters),
-        snippet,
-    })
+    Some(ToolDef::new(name, description, parameters))
 }
 
-/// Parse the `tools` array of a `plugin/manifest` result into
-/// definitions + snippets (single walk; [`Manifest::from_result`] keeps
-/// only the defs).
-pub fn manifest_tools(v: &Value) -> Vec<ManifestTool> {
+/// Parse the `tools` array of a `plugin/manifest` result into definitions.
+pub fn manifest_tools(v: &Value) -> Vec<ToolDef> {
     v.get("tools")
         .and_then(|t| t.as_array())
         .map(|a| a.iter().filter_map(parse_tool_entry).collect())
@@ -129,11 +107,10 @@ impl Manifest {
                 .and_then(|s| s.as_str())
                 .unwrap_or_default()
                 .into(),
-            tools: manifest_tools(v).into_iter().map(|t| t.def).collect(),
+            tools: manifest_tools(v),
             commands: str_list("commands"),
             hooks: str_list("hooks"),
             protocol: v.get("protocol").and_then(|s| s.as_str()).map(|s| s.into()),
-            capabilities: str_list("capabilities"),
             subcommands: str_list("subcommands"),
         }
     }
@@ -153,9 +130,7 @@ pub trait Plugin: Send + Sync {
     // NOTE: an earlier `provider()` hook was deleted — every
     // impl returned None and nothing called it. `on_event`/`CoreEvent` stay:
     // SidecarPlugin dispatches them to the subprocess over stdio.
-    async fn on_event(&self, _e: CoreEvent) -> Option<CoreEvent> {
-        None
-    }
+    async fn on_event(&self, _e: CoreEvent) {}
     /// `prompt/context` hook (`params: {"cwd"}` → `result: {"text"}`).
     /// Default `None` = no extra context (pre-v1 behavior).
     async fn prompt_context(&self, _cwd: &str) -> Option<String> {
@@ -246,8 +221,7 @@ impl PluginHooks for PluginHookAdapter {
         }
     }
     async fn pre_tool(&self, name: &str, args: &Value) {
-        let _ = self
-            .plugin
+        self.plugin
             .on_event(CoreEvent::PreTool {
                 name: name.to_string(),
                 args: args.clone(),
@@ -255,8 +229,7 @@ impl PluginHooks for PluginHookAdapter {
             .await;
     }
     async fn post_tool(&self, name: &str, output: &ToolOutput) {
-        let _ = self
-            .plugin
+        self.plugin
             .on_event(CoreEvent::PostTool {
                 name: name.to_string(),
                 output: output.clone(),
@@ -264,8 +237,7 @@ impl PluginHooks for PluginHookAdapter {
             .await;
     }
     async fn turn_end(&self, usage: &Usage) {
-        let _ = self
-            .plugin
+        self.plugin
             .on_event(CoreEvent::TurnEnd { usage: *usage })
             .await;
     }
