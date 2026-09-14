@@ -159,8 +159,6 @@ pub struct Tui {
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
     pub is_task_running: bool,
-    /// Brief 3B `sleep` countdown: deadline + reason while a sleep tool runs.
-    pub(crate) sleep_until: Option<(Instant, String)>,
     /// An alternate-screen modal owns the terminal: the 100ms ticker must not
     /// draw (its frames land on the modal's screen as duplicated chrome).
     /// Set by with_modal/with_modal_sync around every modal call.
@@ -319,7 +317,6 @@ impl Tui {
             turn_started: None,
             turn_had_thinking: false,
             is_task_running: false,
-            sleep_until: None,
             modal_open: false,
             queued_inputs: std::collections::VecDeque::new(),
             local_command: None,
@@ -624,7 +621,7 @@ impl Tui {
     }
     pub fn set_status(&mut self, label: Option<&str>) {
         // Codex parity: while compacting, every other status request
-        // (`Working`, `Preparing tool:`, sleep countdown, …) is ignored so
+        // (`Working`, `Preparing tool:`, …) is ignored so
         // the `Compacting context` dock never flickers or drops the input box.
         if let Some(active) = self.active_compaction.clone() {
             self.status = Some((active.started_at, COMPACTION_HEADER.to_string()));
@@ -649,6 +646,7 @@ impl Tui {
         }
         self.flush_markdown();
         self.end_thinking_run(true);
+        self.is_task_running = true;
         let started_at = Instant::now();
         self.active_compaction = Some(ActiveCompaction { id, started_at });
         self.status = Some((started_at, COMPACTION_HEADER.to_string()));
@@ -671,6 +669,7 @@ impl Tui {
                 self.status = Some((Instant::now(), label.to_string()));
             }
             None => {
+                self.is_task_running = false;
                 self.status = None;
             }
         }
@@ -682,6 +681,7 @@ impl Tui {
     /// compaction flag silently, no transcript line — Codex parity.
     pub fn clear_compaction_silent(&mut self) {
         if self.active_compaction.take().is_some() {
+            self.is_task_running = false;
             self.status = None;
             let _ = self.draw();
         }
@@ -695,18 +695,6 @@ impl Tui {
         self.active_compaction
             .as_ref()
             .map(|a| a.started_at.elapsed())
-    }
-    /// Brief 3B: `sleep(seconds, reason?)` countdown on the status line.
-    /// `tick_status` refreshes the remaining seconds; [`Self::clear_sleep`]
-    /// (or turn end) removes it.
-    pub fn begin_sleep(&mut self, secs: u64, reason: &str) {
-        let reason = reason.trim().to_string();
-        self.sleep_until = Some((Instant::now() + Duration::from_secs(secs), reason.clone()));
-        self.status = Some((Instant::now(), sleep_label(secs, &reason)));
-        let _ = self.draw();
-    }
-    pub fn clear_sleep(&mut self) {
-        self.sleep_until = None;
     }
     pub fn flush_markdown(&mut self) {
         if !self.pending.is_empty() {
@@ -752,7 +740,6 @@ impl Tui {
         self.turn_had_thinking = false;
         self.is_task_running = false;
         self.status = None;
-        self.sleep_until = None;
         // Billed output only (exact, reasoning included). `None` prints the
         // bare elapsed — a chars/4 fallback here would reintroduce the very
         // inflation the pill just dropped (2.5M on a 14s turn).
@@ -818,16 +805,6 @@ impl Tui {
         if self.modal_open {
             return;
         }
-        // Sleep countdown: repaint once per second with the remaining time.
-        // Never obscures an active compaction (Codex status_controls parity).
-        let mut sleep_tick = false;
-        if self.active_compaction.is_none()
-            && let Some((deadline, reason)) = self.sleep_until.clone()
-        {
-            let remaining = deadline.saturating_duration_since(Instant::now()).as_secs();
-            self.status = Some((Instant::now(), sleep_label(remaining, &reason)));
-            sleep_tick = true;
-        }
         // Reference: codex screen_size.rs + transcript_reflow.rs — trailing 75ms debounce.
         // Rows ride along: a height-only drag must reflow too, otherwise a
         // paint on stale screen math tears scrollback with no repair coming.
@@ -849,7 +826,7 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none() && !sleep_tick {
+        if self.status.is_none() {
             return;
         }
         let _ = self.draw();
@@ -865,15 +842,6 @@ impl Tui {
             crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
         );
         let _ = std::io::stdout().flush();
-    }
-}
-
-/// Brief 3B status text: `⏸ sleeping {remaining}s — {reason}`.
-fn sleep_label(remaining_secs: u64, reason: &str) -> String {
-    if reason.is_empty() {
-        format!("⏸ sleeping {remaining_secs}s")
-    } else {
-        format!("⏸ sleeping {remaining_secs}s — {reason}")
     }
 }
 

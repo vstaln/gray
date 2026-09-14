@@ -110,6 +110,38 @@ pub(crate) fn trim_tool_results_to_fit(
     (rewritten, initial.saturating_sub(estimated) as u64)
 }
 
+/// Default number of recent tool observations to keep in full (mini-SWE-agent / SWE-agent parity).
+pub const DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS: usize = 5;
+
+/// Mini-SWE-agent / SWE-agent parity: keeps the last `keep_last_n` tool observations
+/// in full; older tool observations are elided to a concise line since the agent
+/// already acted on them in previous rounds.
+pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n: usize) -> usize {
+    let mut tool_result_indices = Vec::new();
+    for (m_idx, msg) in messages.iter().enumerate() {
+        for (b_idx, block) in msg.content.iter().enumerate() {
+            if matches!(block, ContentBlock::ToolResult { .. }) {
+                tool_result_indices.push((m_idx, b_idx));
+            }
+        }
+    }
+    if tool_result_indices.len() <= keep_last_n {
+        return 0;
+    }
+    let to_elide = tool_result_indices.len() - keep_last_n;
+    let mut pruned = 0;
+    for &(m_idx, b_idx) in &tool_result_indices[..to_elide] {
+        if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx] {
+            if content.len() > 120 {
+                let lines = content.lines().count();
+                *content = format!("Old command output: ({lines} lines omitted; full output in log)");
+                pruned += 1;
+            }
+        }
+    }
+    pruned
+}
+
 /// In-band compaction trigger: chat-shaped equivalent of codex v2's
 /// `ResponseItem::CompactionTrigger` + summary instruction, appended to the
 /// retained history for the summarization call only.
@@ -918,5 +950,37 @@ mod tests {
                 .all(|b| !matches!(b, ContentBlock::Image { .. })),
             "no split base64 survives anywhere"
         );
+    }
+
+    #[test]
+    fn prune_old_tool_observations_keeps_recent_and_elides_older() {
+        let mut msgs: Vec<Message> = (0..8)
+            .map(|i| Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    id: format!("call_{i}"),
+                    content: format!("Output line 1 for tool {i}\nOutput line 2 for tool {i}\n{}", "x".repeat(200)),
+                    is_error: false,
+                }],
+            })
+            .collect();
+
+        let pruned = prune_old_tool_observations(&mut msgs, 3);
+        assert_eq!(pruned, 5); // 8 total - 3 kept = 5 pruned
+
+        // First 5 should be elided
+        for i in 0..5 {
+            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else { panic!() };
+            assert_eq!(id, &format!("call_{i}"));
+            assert!(content.starts_with("Old command output:"));
+            assert!(content.contains("lines omitted; full output in log"));
+        }
+
+        // Last 3 should be untouched
+        for i in 5..8 {
+            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else { panic!() };
+            assert_eq!(id, &format!("call_{i}"));
+            assert!(content.starts_with(&format!("Output line 1 for tool {i}")));
+        }
     }
 }

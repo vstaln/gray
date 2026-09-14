@@ -198,6 +198,14 @@ impl Agent {
             self.drain_steer(first_round);
             first_round = false;
 
+            // mini-SWE-agent / SWE-agent parity: keep the recent tool observations
+            // in full; elide older historical command outputs so bloated compiler/test
+            // dumps from prior rounds don't accumulate and choke the context window.
+            crate::compact::prune_old_tool_observations(
+                &mut self.messages,
+                crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
+            );
+
             // Pre-turn budget: compact before the provider ever sees an overflow.
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
                 // False = nothing to gain (all tail): fall through; the provider's
