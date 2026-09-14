@@ -14,7 +14,7 @@ struct FileLogger {
 /// Runtime size check: `rotate_if_needed` at boot covers restarts only, so
 /// the live logger must cap itself past 10MiB too.
 fn should_rotate(len: u64) -> bool {
-    len > gray_supervise::rotation::LOG_MAX_BYTES
+    len > crate::rotation::LOG_MAX_BYTES
 }
 
 static INIT: OnceLock<()> = OnceLock::new();
@@ -150,7 +150,7 @@ pub fn init() {
             return;
         };
         let path = home.join("logs").join("gray.log");
-        gray_supervise::rotation::rotate_if_needed(&path);
+        crate::rotation::rotate_if_needed(&path);
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -207,7 +207,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("gray.log");
         std::fs::write(&log, vec![b'x'; (10 * 1024 * 1024 + 1) as usize]).unwrap();
-        gray_supervise::rotation::rotate_if_needed(&log);
+        crate::rotation::rotate_if_needed(&log);
         assert!(std::fs::metadata(&log).unwrap().len() < 10 * 1024 * 1024);
     }
 
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn runtime_rotation_threshold_matches_boot_cap() {
         assert!(!should_rotate(0));
-        assert!(!should_rotate(gray_supervise::rotation::LOG_MAX_BYTES));
-        assert!(should_rotate(gray_supervise::rotation::LOG_MAX_BYTES + 1));
+        assert!(!should_rotate(crate::rotation::LOG_MAX_BYTES));
+        assert!(should_rotate(crate::rotation::LOG_MAX_BYTES + 1));
     }
 }

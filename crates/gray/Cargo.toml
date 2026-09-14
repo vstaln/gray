@@ -24,7 +24,6 @@ gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }
 gray-tools = { workspace = true }
 gray-session = { workspace = true }
-gray-supervise = { workspace = true }
 gray-markdown = { workspace = true }
 gray-cron = { workspace = true }
 anyhow = { workspace = true }

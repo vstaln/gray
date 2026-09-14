@@ -11,6 +11,7 @@ pub mod print;
 pub mod profile;
 pub mod repl;
 pub mod resume;
+mod rotation;
 pub mod setup;
 pub mod shell_drain;
 pub mod skills;
