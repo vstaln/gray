@@ -483,6 +483,15 @@ mod tests {
             .map(|(l, _)| *l)
             .collect();
         assert_eq!(gemini, vec!["off", "minimal", "low", "medium", "high"]);
+        // Muse Spark contributor has no `max` (models.dev + family table agree).
+        let spark: Vec<&str> = supported_thinking_levels("testprov/muse-spark-9.9-contributor")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert_eq!(
+            spark,
+            vec!["off", "minimal", "low", "medium", "high", "xhigh"]
+        );
         // Future GPT family (e.g. gpt-6-astra) gets the generous modern set.
         let gpt6: Vec<&str> = supported_thinking_levels("openai/gpt-6-astra")
             .iter()
