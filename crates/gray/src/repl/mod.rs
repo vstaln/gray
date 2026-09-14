@@ -194,6 +194,32 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
 /// unknown-command message) or the owner declines to handle it.
 /// The outcome decides the caller's path: `Say` prints via `say()`,
 /// `Prompt` is submitted as a `ReplCommand::Prompt` turn.
+/// Headless agent behind the cron `AsyncRunner` seam for the REPL tick:
+/// fresh agent per fire (no resume/history), events collected without
+/// streaming. Mirrors `PrintRunner` in main.rs; the runner is the host's
+/// business (cron_serve stays agent-agnostic).
+struct ReplRunner {
+    config: Config,
+}
+
+#[async_trait::async_trait(?Send)]
+impl crate::cron_serve::AsyncRunner for ReplRunner {
+    async fn run(&self, prompt: String) -> anyhow::Result<String> {
+        let cwd = std::env::current_dir()?;
+        let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
+        let ctx = gray_core::agent::ToolContext {
+            cwd,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            session_id: None,
+        };
+        let events = agent
+            .run(gray_core::message::Message::user(prompt), ctx)
+            .await
+            .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &self.config.base_url)))?;
+        Ok(crate::cron_fire::transcript_text(&events))
+    }
+}
+
 async fn run_plugin_command(
     hooks: &[Arc<dyn PluginHooks>],
     name: &str,
@@ -512,6 +538,47 @@ pub async fn run_repl_mode(
     } else {
         None
     };
+
+    // Cron: background tick in live sessions (workstream C). A dedicated OS
+    // thread + current-thread runtime — the agent future is `!Send`, so it
+    // can never `tokio::spawn`. Fires claim through the store's at-most-once
+    // contract, so a concurrent `tick`/`serve` simply sees nothing due.
+    // Results surface via the host/say queue drained at the top of the loop
+    // (new chat lines in the session's own right, never transcript).
+    // No join on exit: process return terminates the thread, and an
+    // in-flight fire's claim TTL (300s) lets the next ticker reclaim it.
+    if interactive {
+        let cfg = config.clone();
+        if let Ok(home) = crate::setup::gray_home()
+            && let Ok(store) = gray_cron::CronStore::open(home.join("cron"))
+        {
+            std::thread::spawn(move || {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                rt.block_on(async {
+                    let runner = ReplRunner { config: cfg };
+                    let deliver = crate::cron_serve::SaveLocalDeliver { home };
+                    let mut interval =
+                        tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        interval.tick().await;
+                        match crate::cron_serve::tick_once(&store, &runner, &deliver).await {
+                            Ok(rep) if rep.fired > 0 => crate::host::queue_say(format!(
+                                "⏰ cron tick: fired={} errors={}",
+                                rep.fired, rep.errors
+                            )),
+                            Ok(_) => {}
+                            Err(e) => log::warn!("repl cron tick failed: {e:#}"),
+                        }
+                    }
+                });
+            });
+        }
+    }
 
     // pi's hideThinkingBlock — toggled with /thinking, session-only.
     // Reasoning is ON by default — user wants to see thinking (high effort).
