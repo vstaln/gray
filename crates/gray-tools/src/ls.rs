@@ -11,9 +11,6 @@ use crate::truncate::{append_notices, truncate_head};
 
 const DEFAULT_LIMIT: usize = 500;
 
-pub const LS_SNIPPET: &str = "List directory contents";
-pub const LS_GUIDELINES: &[&str] = &[];
-
 /// List directory contents, sorted alphabetically with `/` suffix for directories.
 pub struct LsTool;
 
@@ -35,14 +32,6 @@ impl Tool for LsTool {
                 "required": []
             }),
         )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(LS_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(LS_GUIDELINES)
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {

@@ -13,14 +13,6 @@ use crate::ledger::{FileLedger, LedgerEntry};
 use crate::read::notices;
 use crate::{Tool, fail, get_str, resolve_path};
 
-pub const EDIT_SNIPPET: &str = "Make precise file edits with exact text replacement, including multiple disjoint edits in one call";
-pub const EDIT_GUIDELINES: &[&str] = &[
-    "Use edit for precise changes (edits[].oldText must match exactly)",
-    "When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls",
-    "Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.",
-    "Keep edits[].oldText as small as possible while still being unique in the file. If multiple occurrences exist, provide line_start, occurrence, or replace_all to disambiguate.",
-];
-
 pub struct EditTool {
     ledger: Arc<FileLedger>,
 }
@@ -48,17 +40,7 @@ impl Default for EditTool {
 }
 
 fn parse_line_hint(v: &Value) -> Option<usize> {
-    let val = v
-        .get("line_start")
-        .or_else(|| v.get("lineStart"))
-        .or_else(|| v.get("start_line"))
-        .or_else(|| v.get("StartLine"))
-        .or_else(|| v.get("startLine"))
-        .or_else(|| v.get("line"))
-        .or_else(|| v.get("line_number"))
-        .or_else(|| v.get("lineNumber"))
-        .or_else(|| v.get("lineHint"))
-        .or_else(|| v.get("line_hint"))?;
+    let val = v.get("line_start")?;
 
     if let Some(n) = val.as_u64() {
         return Some(n as usize);
@@ -77,14 +59,7 @@ fn parse_line_hint(v: &Value) -> Option<usize> {
 }
 
 fn parse_occurrence(v: &Value) -> Option<isize> {
-    let val = v
-        .get("occurrence")
-        .or_else(|| v.get("occurrence_index"))
-        .or_else(|| v.get("occurrenceIndex"))
-        .or_else(|| v.get("nth"))
-        .or_else(|| v.get("index"))
-        .or_else(|| v.get("match_index"))
-        .or_else(|| v.get("matchIndex"))?;
+    let val = v.get("occurrence")?;
 
     if let Some(n) = val.as_i64() {
         return Some(n as isize);
@@ -105,14 +80,7 @@ fn parse_occurrence(v: &Value) -> Option<isize> {
 }
 
 fn parse_replace_all(v: &Value) -> Option<bool> {
-    let val = v
-        .get("replace_all")
-        .or_else(|| v.get("replaceAll"))
-        .or_else(|| v.get("all"))
-        .or_else(|| v.get("allow_multiple"))
-        .or_else(|| v.get("allowMultiple"))
-        .or_else(|| v.get("AllowMultiple"))
-        .or_else(|| v.get("multiple"))?;
+    let val = v.get("replace_all")?;
 
     if let Some(b) = val.as_bool() {
         return Some(b);
@@ -191,22 +159,13 @@ fn parse_single_edit(v: &Value) -> Result<Edit, String> {
     let old = v
         .get("oldText")
         .or_else(|| v.get("old_text"))
-        .or_else(|| v.get("TargetContent"))
-        .or_else(|| v.get("target_content"))
-        .or_else(|| v.get("targetContent"))
-        .or_else(|| v.get("search"))
-        .or_else(|| v.get("find"))
         .and_then(|x| x.as_str())
-        .ok_or("edit missing oldText / TargetContent")?;
+        .ok_or("edit missing oldText")?;
     let new = v
         .get("newText")
         .or_else(|| v.get("new_text"))
-        .or_else(|| v.get("ReplacementContent"))
-        .or_else(|| v.get("replacement_content"))
-        .or_else(|| v.get("replacementContent"))
-        .or_else(|| v.get("replace"))
         .and_then(|x| x.as_str())
-        .ok_or("edit missing newText / ReplacementContent")?;
+        .ok_or("edit missing newText")?;
     let line_hint = parse_line_hint(v);
     let occurrence = parse_occurrence(v);
     let replace_all = parse_replace_all(v);
@@ -264,13 +223,6 @@ impl Tool for EditTool {
                 "required": ["path"]
             }),
         )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(EDIT_SNIPPET)
-    }
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(EDIT_GUIDELINES)
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {

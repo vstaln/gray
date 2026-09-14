@@ -9,21 +9,19 @@
 //! let given = resolve_path(&ctx.cwd, &path);
 //! let full = resolve::resolve_existing(&given).unwrap_or(given.clone());
 //! let note = (full != given).then(|| {
-//!     resolve::repaired_note(&full.display().to_string(), &given.display().to_string())
+//!     notices::repaired_note(&full.display().to_string(), &given.display().to_string())
 //! });
 //! // ... guard + read `full` as today; prepend `note` to the output.
 //! ```
 //!
 //! Spec: plan.ts T4.1 ("Unicode filename retry (7 spellings) before failing").
 //! Only the final path component is ever mutated — a repair never changes
-//! directories ([`same_parent`] enforces it).
-//!
-//! Contract string lives in `notices.rs` (moved verbatim at the wave gate);
-//! [`repaired_note`] below delegates there (one owner per string).
+//! directories ([`same_parent`] enforces it). Note wording lives in
+//! `notices.rs`.
 //!
 //! FOLLOW-UPS (not done here — files outside T4.1 ownership):
 //! 1. Done (wave gate): `read/mod.rs` wiring above.
-//! 2. Done (wave gate): `notices.rs` owns [`repaired_note`] verbatim.
+//! 2. Done (wave gate): `notices.rs` owns [`super::notices::repaired_note`] verbatim.
 //! 3. `write.rs`/`edit.rs`: call the same helper (spec's follow-up).
 //! 4. `Cargo.toml`: plan suggests `unicode-normalization`; deliberately NOT
 //!    added here (outside ownership). See the `ponytail:` note on [`to_nfc`].
@@ -33,12 +31,6 @@
 //! // zero new deps. Upgrade to the crate if non-Latin scripts need repairs.
 
 use std::path::{Path, PathBuf};
-
-/// `[read: opened <actual> (path repaired from <given>)]` — delegates to
-/// `notices.rs` (prepended to the output when a repair hits).
-pub fn repaired_note(actual: &str, given: &str) -> String {
-    super::notices::repaired_note(actual, given)
-}
 
 /// (precomposed, base, combining) for the Latin scripts the retry covers.
 /// Combining marks: U+0300 grave, U+0301 acute, U+0302 circumflex,
@@ -257,7 +249,7 @@ mod tests {
     #[test]
     fn repaired_note_is_contract_exact() {
         assert_eq!(
-            repaired_note("a/café.txt", "a/cafe.txt"),
+            crate::read::notices::repaired_note("a/café.txt", "a/cafe.txt"),
             "[read: opened a/café.txt (path repaired from a/cafe.txt)]"
         );
     }

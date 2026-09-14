@@ -261,26 +261,7 @@ async fn fast_path_parity() {
         // notices + shape only.
         (json!({"pattern": "needle", "limit": 5}), dir_rels, true),
     ];
-    // In-process lane gate: plain-literal shapes must agree with the
-    // --json lane (same sorted-match / notices comparison). Shapes with
-    // glob/folding bypass the narrowed lane, pinning vimgrep-vs-json only.
-    let mut lit_shapes = shapes.clone();
-    lit_shapes.push((
-        json!({"pattern": "needle", "literal": true}),
-        dir_rels,
-        false,
-    ));
-    lit_shapes.push((
-        json!({"pattern": "needle", "literal": true, "limit": 5}),
-        dir_rels,
-        true,
-    ));
-    lit_shapes.push((
-        json!({"pattern": "no_such_needle_xyz", "literal": true}),
-        dir_rels,
-        false,
-    ));
-    for (args, rels, hits_limit) in lit_shapes.iter().chain(shapes.iter()) {
+    for (args, rels, hits_limit) in shapes.iter() {
         let mut fast_args = args.clone();
         fast_args["context"] = json!(0);
         let fast = grep.execute(&ctx, fast_args).await;

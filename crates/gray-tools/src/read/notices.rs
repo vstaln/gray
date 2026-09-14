@@ -22,10 +22,8 @@
 //!    `tail.rs` ([`tail_note`], [`limit_ignored_note`]), T2.1 `stream.rs`
 //!    ([`cancelled_note`], [`count_skipped_total`]), T4.1 `resolve.rs`
 //!    ([`repaired_note`]), T4.2/T6.1 `bulk.rs` ([`aggregate_note`],
-//!    [`MISSING_INPUT_MESSAGE`], [`no_files_matched`]) moved here verbatim;
-//!    those modules keep thin delegates so their unit tests still pin the
-//!    strings. One owner per string: no `[read:` literal lives outside this
-//!    file.
+//!    [`MISSING_INPUT_MESSAGE`], [`no_files_matched`]) moved here verbatim.
+//!    One owner per string: no `[read:` literal lives outside this file.
 //! 3. Remaining: `write.rs`/`edit.rs` resolve-retry + device-guard reuse,
 //!    T4.2 did-you-mean, pixel/vision ops. (`find.rs` fallback already walks
 //!    via the `ignore` crate.)

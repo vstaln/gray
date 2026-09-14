@@ -31,16 +31,6 @@ use crate::shell::spawn::spawn;
 use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
 use crate::{fail, get_opt_u64, get_str};
 
-pub const BASH_SNIPPET: &str = "Execute bash commands (ls, grep, find, etc.)";
-/// Usage guidelines, ≤ 6 bullets by contract (brief 3D — every word here
-/// ships on every request, so cut adjectives, never add).
-pub const BASH_GUIDELINES: &[&str] = &[
-    "bash output: first line is the verdict (exit, duration, size, log path). Non-zero exit is data, not a tool error; read the header.",
-    "bash blocks until the command exits; timeout (default 30s, max 600s) kills it and returns partial output.",
-    "Need background? `cmd > /tmp/out.log 2>&1 & echo $!`, poll with `tail`, stop with `kill`.",
-    "Truncated output names the log path; grep the log instead of rerunning.",
-];
-
 /// Runs a command through the shell (`sh -c`), blocking until it exits.
 pub struct BashTool;
 
@@ -66,14 +56,6 @@ impl Tool for BashTool {
                 "required": ["command"]
             }),
         )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(BASH_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(BASH_GUIDELINES)
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {

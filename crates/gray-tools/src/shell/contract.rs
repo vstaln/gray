@@ -45,13 +45,6 @@ pub struct View {
     pub total_bytes: u64,
 }
 
-#[derive(Debug)]
-pub enum KillMethod {
-    TermAnswered(Duration),
-    TermIgnoredThenKill(Duration),
-    AlreadyExited,
-}
-
 pub struct PumpSummary {
     pub total_bytes: u64,
     pub total_lines: usize,

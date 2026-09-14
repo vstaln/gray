@@ -12,9 +12,6 @@ use crate::ledger::{FileLedger, LedgerEntry};
 use crate::read::notices;
 use crate::{Tool, fail, finish, get_opt_bool, get_str, resolve_path};
 
-pub const WRITE_SNIPPET: &str = "Create or overwrite files";
-pub const WRITE_GUIDELINES: &[&str] = &["Use write only for new files or complete rewrites."];
-
 /// Writes `content` to `path`, creating parent directories as needed.
 ///
 /// Shares a [`FileLedger`] with the read/edit tools for the read-before-write
@@ -157,14 +154,6 @@ impl Tool for WriteTool {
                 "required": ["path"]
             }),
         )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(WRITE_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(WRITE_GUIDELINES)
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {

@@ -1115,8 +1115,6 @@ dependencies = [
  "infer",
  "libc",
  "log",
- "memchr",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",

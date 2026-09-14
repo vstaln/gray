@@ -6,11 +6,7 @@
 //! are appended to the output.
 //!
 //! Spec: plan.ts T1.5 ("Negative offset reads the tail"). `limit` is ignored
-//! when a tail is requested ([`limit_ignored_note`]).
-//!
-//! Note wording lives in `notices.rs` (moved verbatim at the wave gate);
-//! [`tail_note`]/[`limit_ignored_note`] below are thin delegates so existing
-//! callers and unit tests keep working with one owner per string.
+//! when a tail is requested (see `notices::limit_ignored_note`).
 
 use std::collections::VecDeque;
 
@@ -66,21 +62,6 @@ pub async fn drain_tail(s: &mut LineStream, n: u64) -> std::io::Result<VecDeque<
         }
     }
     Ok(buf)
-}
-
-/// `[read: last <shown> lines of <T> (lines <a>-<T>)]`.
-///
-/// `<shown>` is the lines actually shown (`min(|offset|, T)`), so the note
-/// never claims more lines than the output holds (e.g. `offset=-10` on a
-/// 4-line file says "last 4 lines of 4"). `total` must be > 0; callers skip
-/// the note for empty files (T1.3 owns that note).
-pub fn tail_note(shown: u64, total: usize) -> String {
-    super::notices::tail_note(shown, total)
-}
-
-/// One-line note when `limit` accompanies a negative offset.
-pub fn limit_ignored_note(limit: u64) -> String {
-    super::notices::limit_ignored_note(limit)
 }
 
 #[cfg(test)]
@@ -165,15 +146,18 @@ mod tests {
     #[test]
     fn tail_note_strings_are_contract_exact() {
         assert_eq!(
-            tail_note(3, 3000),
+            crate::read::notices::tail_note(3, 3000),
             "[read: last 3 lines of 3000 (lines 2998-3000)]"
         );
-        assert_eq!(tail_note(4, 4), "[read: last 4 lines of 4 (lines 1-4)]");
+        assert_eq!(
+            crate::read::notices::tail_note(4, 4),
+            "[read: last 4 lines of 4 (lines 1-4)]"
+        );
     }
 
     #[test]
     fn limit_ignored_note_names_value_and_recovery() {
-        let note = limit_ignored_note(2);
+        let note = crate::read::notices::limit_ignored_note(2);
         assert!(note.contains("limit=2"), "{note}");
         assert!(note.contains("Omit limit"), "{note}");
         assert_eq!(note.lines().count(), 1);
