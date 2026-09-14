@@ -31,7 +31,6 @@ clap = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
 futures = { workspace = true }
-fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -49,10 +48,4 @@ async-trait = { workspace = true }
 # No gateway edge: gray ships no messaging adapters.
 unicode-width = { workspace = true }
 ignore = { workspace = true }
-
-[features]
-default = []
-# Deprecated no-op: clipboard/image paste (arboard + image) is core now and
-# always compiled in. Kept so old `--features clipboard` invocations still build.
-clipboard = []
 

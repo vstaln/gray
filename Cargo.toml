@@ -40,8 +40,6 @@ gray-markdown = { path = "crates/gray-markdown" }
 gray-pkg = { path = "crates/gray-pkg" }
 
 # External dependencies
-agent-client-protocol = "2"
-which = "7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "process", "signal", "sync", "time"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 eventsource-stream = "0.2"
@@ -62,7 +60,6 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.12"
-fs2 = "0.4"
 axum = { version = "0.7", features = ["json"] }
 sha2 = "0.10"
 flate2 = "1.1"

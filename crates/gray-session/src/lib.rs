@@ -12,9 +12,9 @@
 //! The store mutex is per-instance. Every read-modify-append/replace path
 //! (`append`, `append_compaction_replacement`) additionally
 //! holds a per-session cross-process exclusive lock (`<root>/<id>.lock` via
-//! `fs2`) for the whole critical section. Lock order is always
+//! `std::fs::File::lock`) for the whole critical section. Lock order is always
 //! file-lock -> in-memory mutex; never the reverse. The lock file is opened
-//! (created 0600 on unix) then `try_lock_exclusive` is retried up to 30s; the
+//! (created 0600 on unix) then `try_lock` is retried up to 30s; the
 //! open file handle is kept alive until the end of the method — closing it
 //! releases the flock, including on process death. `create` uses atomic
 //! `create_new` and needs no lock; `load`/`list` are lock-free reads (a torn
@@ -435,7 +435,6 @@ impl JsonlSessionStore {
     /// degrades to unlocked-with-warning (availability over mutual exclusion
     /// on filesystems without flock).
     async fn lock_session_file(&self, id: &SessionId) -> Result<std::fs::File> {
-        use fs2::FileExt;
         let lock_path = self.session_lock_path(id)?;
         ensure_private_dir(&self.root_dir)?;
         let mut options = std::fs::OpenOptions::new();
@@ -449,9 +448,9 @@ impl JsonlSessionStore {
         tighten_file_mode(&lock_path);
         let deadline = std::time::Instant::now() + SESSION_LOCK_TIMEOUT;
         loop {
-            match file.try_lock_exclusive() {
+            match file.try_lock() {
                 Ok(()) => return Ok(file),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(std::fs::TryLockError::WouldBlock) => {
                     if std::time::Instant::now() >= deadline {
                         return Err(SessionError::Io(std::io::Error::new(
                             std::io::ErrorKind::TimedOut,
@@ -460,7 +459,7 @@ impl JsonlSessionStore {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-                Err(e) => {
+                Err(std::fs::TryLockError::Error(e)) => {
                     log::warn!(
                         "session file locking unsupported on {} ({e}); proceeding unlocked",
                         lock_path.display()
