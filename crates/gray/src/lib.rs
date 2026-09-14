@@ -1,10 +1,10 @@
 //! Gray: a minimal, modular agent harness in Rust.
 
 pub mod compact;
-pub mod cron_fire;
-pub mod cron_serve;
 pub mod composer;
 pub mod config;
+pub mod cron_fire;
+pub mod cron_serve;
 pub mod feedback;
 pub mod host;
 pub mod logging;
@@ -530,10 +530,7 @@ mod tests {
         .unwrap();
         match cli.command {
             Some(Commands::Cron {
-                cmd:
-                    CronCmd::Add {
-                        skills, script, ..
-                    },
+                cmd: CronCmd::Add { skills, script, .. },
             }) => {
                 assert_eq!(skills.as_deref(), Some("a,b"));
                 assert_eq!(script, Some(PathBuf::from("/tmp/pre.sh")));

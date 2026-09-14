@@ -136,7 +136,10 @@ pub async fn tick_once(
     let now = gray_cron::now_secs();
     let owner = owner_stamp();
     let due = store.claim_due(now, &owner)?;
-    let mut report = TickReport { fired: 0, errors: 0 };
+    let mut report = TickReport {
+        fired: 0,
+        errors: 0,
+    };
     for job in due {
         report.fired += 1;
         if !matches!(
@@ -274,10 +277,7 @@ mod tests {
         let rep = tick_once(&store, home.path(), &runner).await.unwrap();
         assert_eq!((rep.fired, rep.errors), (1, 1));
         let job = store.get("d1").unwrap().unwrap();
-        assert_eq!(
-            job.last_status,
-            Some(gray_cron::RunStatus::DeliveryFailed)
-        );
+        assert_eq!(job.last_status, Some(gray_cron::RunStatus::DeliveryFailed));
         assert!(
             job.last_delivery_error
                 .as_deref()
@@ -300,13 +300,6 @@ mod tests {
         assert_eq!((rep.fired, rep.errors), (1, 0));
         let job = store.get("s1").unwrap().unwrap();
         assert_eq!(job.last_status, Some(gray_cron::RunStatus::Ok));
-        assert!(
-            !home
-                .path()
-                .join("cron")
-                .join("output")
-                .join("s1")
-                .exists()
-        );
+        assert!(!home.path().join("cron").join("output").join("s1").exists());
     }
 }

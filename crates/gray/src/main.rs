@@ -361,10 +361,7 @@ impl gray::cron_serve::AsyncRunner for PrintRunner {
             session_id: None,
         };
         let events = agent
-            .run(
-                gray_core::message::Message::user(prompt),
-                ctx,
-            )
+            .run(gray_core::message::Message::user(prompt), ctx)
             .await
             .map_err(|e| {
                 anyhow::anyhow!(gray::repl::format_core_error(&e, &self.config.base_url))

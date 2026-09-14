@@ -15,10 +15,7 @@ pub fn parse_wake_gate(output: &str) -> bool {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
         return true;
     };
-    !matches!(
-        v.get("wakeAgent"),
-        Some(serde_json::Value::Bool(false))
-    )
+    !matches!(v.get("wakeAgent"), Some(serde_json::Value::Bool(false)))
 }
 
 /// `[SILENT]` prefix (case-insensitive, leading whitespace tolerated)
@@ -93,10 +90,7 @@ pub struct ScriptOutcome {
 /// spawn failure, nonzero exit, or timeout → `ok: false` (caller records
 /// `error` without running the agent). Blocking `Command` runs inside
 /// `spawn_blocking` so the ticker stays responsive.
-pub async fn run_pre_script(
-    script: &std::path::Path,
-    workdir: &std::path::Path,
-) -> ScriptOutcome {
+pub async fn run_pre_script(script: &std::path::Path, workdir: &std::path::Path) -> ScriptOutcome {
     let script = script.to_path_buf();
     let workdir = workdir.to_path_buf();
     let join = tokio::task::spawn_blocking(move || {
@@ -258,11 +252,7 @@ mod tests {
         std::fs::write(&sh, "#!/bin/sh\necho hello\n").unwrap();
         #[cfg(unix)]
         #[cfg(unix)]
-        std::fs::set_permissions(
-            &sh,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
+        std::fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let out = run_pre_script(&sh, dir.path()).await;
         assert!(out.ok);
         assert!(out.stdout.contains("hello"));
@@ -275,11 +265,7 @@ mod tests {
         std::fs::write(&sh, "#!/bin/sh\necho oops >&2\nexit 3\n").unwrap();
         #[cfg(unix)]
         #[cfg(unix)]
-        std::fs::set_permissions(
-            &sh,
-            std::os::unix::fs::PermissionsExt::from_mode(0o755),
-        )
-        .unwrap();
+        std::fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let out = run_pre_script(&sh, dir.path()).await;
         assert!(!out.ok);
         assert!(out.stderr_tail.contains("oops"));
