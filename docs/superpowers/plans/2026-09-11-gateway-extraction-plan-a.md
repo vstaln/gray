@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust workspace (edition 2024, resolver 3), GitHub Actions, sh installer.
 
-**Spec:** User decisions 2026-09-11: option 1 → corrected to full deletion ("no native gateway support; that should be a plugin"), decomposition A→B→C, `clipboard` stays. **Supersedes** rev 1 of this file (standalone `gray-gateway` binary — rejected: still native support) and `docs/superpowers/plans/2026-09-11-remove-all-platforms-feature.md` (folded into Task 4). B (core ticker) and C (plugin runtime v2) are out of scope.
+**Spec:** User decisions 2026-09-11: option 1 → corrected to full deletion ("no native gateway support; that should be a plugin"), decomposition A→B→C, `clipboard` stays. **Supersedes** rev 1 of this file (standalone `gray-gateway` binary — rejected: still native support) and the earlier remove-all-platforms-feature plan (folded into Task 4). B (core ticker) and C (plugin runtime v2) are out of scope.
 
 ## Global Constraints
 

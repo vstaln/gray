@@ -32,7 +32,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.meta.outputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: resolve channel + version guard
+        id: meta
+        shell: bash
+        run: |
+          CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME#v}"
+            if [ "$TAG" != "$CARGO_VER" ]; then
+              echo "::error::tag v$TAG does not match Cargo.toml version $CARGO_VER"
+              exit 1
+            fi
+            case "$TAG" in *-*) echo "channel=beta" ;; *) echo "channel=stable" ;; esac >> "$GITHUB_OUTPUT"
+          else
+            echo "channel=beta" >> "$GITHUB_OUTPUT"
+          fi
+
   build-deploy:
+    needs: meta
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -53,22 +76,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: resolve channel + version guard
-        id: meta
-        shell: bash
-        run: |
-          CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME#v}"
-            if [ "$TAG" != "$CARGO_VER" ]; then
-              echo "::error::tag v$TAG does not match Cargo.toml version $CARGO_VER"
-              exit 1
-            fi
-            case "$TAG" in *-*) echo "channel=beta" ;; *) echo "channel=stable" ;; esac >> "$GITHUB_OUTPUT"
-          else
-            echo "channel=beta" >> "$GITHUB_OUTPUT"
-          fi
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -88,7 +95,7 @@ jobs:
 
       - name: build
         env:
-          GRAY_CHANNEL: ${{ steps.meta.outputs.channel }}
+          GRAY_CHANNEL: ${{ needs.meta.outputs.channel }}
         shell: bash
         run: |
           # Single binary. No gateway features exist anymore.
@@ -123,7 +130,7 @@ jobs:
       - name: package
         shell: bash
         run: |
-          TAR=gray-${{ steps.meta.outputs.channel }}-${{ matrix.plat }}.tar.gz
+          TAR=gray-${{ needs.meta.outputs.channel }}-${{ matrix.plat }}.tar.gz
           tar czf "$TAR" -C target/${{ matrix.target }}/release gray
           sha256sum "$TAR" > "SHA256SUMS-${{ matrix.plat }}"
           echo "TAR=$TAR" >> "$GITHUB_ENV"
@@ -142,7 +149,7 @@ jobs:
       - name: stage tarball on gray.alignment.id (manifest swaps last, in finalize)
         shell: bash
         run: |
-          CHANNEL="${{ steps.meta.outputs.channel }}"
+          CHANNEL="${{ needs.meta.outputs.channel }}"
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
           scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" opc@168.110.210.65:/tmp/
           $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL \
@@ -157,7 +164,7 @@ jobs:
           ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
 
   finalize:
-    needs: build-deploy
+    needs: [meta, build-deploy]
     # No tag gate: beta (every main push) needs the manifest swap too.
     runs-on: ubuntu-latest
     steps:
@@ -165,20 +172,10 @@ jobs:
       - uses: ./.github/actions/deploy-key
         with:
           key: ${{ secrets.DEPLOY_KEY }}
-      - name: resolve channel
-        id: meta
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME#v}"
-            case "$TAG" in *-*) echo "channel=beta" ;; *) echo "channel=stable" ;; esac >> "$GITHUB_OUTPUT"
-          else
-            echo "channel=beta" >> "$GITHUB_OUTPUT"
-          fi
       - name: promote staged set live, swap manifest last
         shell: bash
         run: |
-          CHANNEL="${{ steps.meta.outputs.channel }}"
+          CHANNEL="${{ needs.meta.outputs.channel }}"
           VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
           $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/"
