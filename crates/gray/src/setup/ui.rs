@@ -189,10 +189,13 @@ pub fn render_dimmed_background(frame: &mut ratatui::Frame, bg: &BackgroundSnaps
     // cards keep full gray via dim_style's preservation branch below.
     let box_bg = crate::theme::theme().surface_bg;
     let input_bg = dim_color(box_bg);
-    let prompt_arrow_color = crate::theme::theme().text_faint;
-    let text_dimmed_color = crate::theme::theme().text_faint;
-    let footer_cwd_color = crate::theme::theme().text_faint;
-    let footer_model_color = crate::theme::theme().text_faint;
+    // ponytail: dim through the color map, not just SGR faint — terminals
+    // that ignore Modifier::DIM showed these at full brightness behind modals.
+    let faint_dimmed = dim_color(crate::theme::theme().text_faint);
+    let prompt_arrow_color = faint_dimmed;
+    let text_dimmed_color = faint_dimmed;
+    let footer_cwd_color = faint_dimmed;
+    let footer_model_color = faint_dimmed;
 
     let arrow_span = Span::styled(
         " ❯ ",
