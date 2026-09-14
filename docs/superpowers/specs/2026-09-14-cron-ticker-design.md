@@ -36,10 +36,12 @@ CLI: `gray cron tick` (one claim→fire→record pass; nonzero exit only if the
 pass itself broke — lock timeout, corrupt store — never for per-job
 failures; also the OS-cron/runit entry point), `gray cron serve` (`tick` in a
 60s loop until SIGINT/SIGTERM; supervision owns the process, no
-daemonization), `pause`/`resume` (flip `Paused`/`Active`; resume recomputes
-`next_run_at` so a long-paused job isn't instantly stale), `run` (fire now
-through claim→run→`mark_done`, advancing recurring schedules so the next tick
-doesn't double-fire). `list`/`add`/`show`/`remove` unchanged, plus
+daemonization), `pause`/`resume` (`pause` flips `state` to `Paused`, leaving `enabled`
+untouched — `claim_due` already requires both; `resume` flips back to `Active`
+and recomputes `next_run_at` so a long-paused job isn't instantly stale),
+`run` (fire now through claim→run→`mark_done`, advancing recurring schedules
+so the next tick doesn't double-fire; needs a single-job claim path in the
+store — new method or equivalent, detail left to the implementation plan). `list`/`add`/`show`/`remove` unchanged, plus
 `--skills`/`--script` on `add`.
 
 Data flow per tick: `claim_due("pid:boot-uuid")` → for each claimed job in
@@ -63,7 +65,8 @@ existing at `add` (same validation as `--in`), re-checked at fire; a deleted
 script/skill at fire time is `error`, fail loud.
 
 Skills are context-only in gray (no skill tool; model `cat`s SKILL.md): attach
-= resolve each name via existing `resolve_skill_name(workdir, name)`
+= resolve each name via existing `resolve_skill_name(workdir, name)` (against
+the job workdir, both at `add` validation and at fire)
 (`crates/gray/src/skills_tool.rs`) and prepend a short `## skills` block with
 exact `<location>` paths (≈ pasted `/skills <name>`). Unknown name rejected
 at `add`; missing at fire → `error` naming it.
