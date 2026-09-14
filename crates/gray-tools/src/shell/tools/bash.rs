@@ -268,11 +268,15 @@ fn truncated_summary_from_disk(log_path: &std::path::Path) -> PumpSummary {
         .chain(tail.iter())
         .filter(|&&b| b == b'\n')
         .count();
+    // Best effort: only the sampled head+tail are in hand (never read the
+    // whole file here); the live pump path above tracks this exactly.
+    let has_cr = head.iter().chain(tail.iter()).any(|&b| b == b'\r');
     PumpSummary {
         total_bytes,
         total_lines,
         head,
         tail,
+        has_cr,
         log_write_failed: false,
     }
 }
@@ -362,6 +366,7 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
         omitted_range,
         total_lines: summary.total_lines,
         total_bytes: summary.total_bytes,
+        has_cr: summary.has_cr,
     };
     let hint = resume_hint(&view);
     // trim_end on the head is count-preserving (a trailing newline never
