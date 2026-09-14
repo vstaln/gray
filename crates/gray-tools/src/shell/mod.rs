@@ -1,13 +1,11 @@
-//! shell/ — V2 shell tool modules (brief 0 contract, Phase 1 impl, wired by 1D).
+//! shell: blocking bash tool modules.
 
 pub mod contract;
 pub mod exit;
 pub mod fence;
 pub mod kill;
 pub mod pump;
-pub mod registry;
 pub mod spawn;
 pub mod split;
 pub mod tools;
 pub mod view;
-pub mod wake;
