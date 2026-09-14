@@ -20,7 +20,6 @@ pub mod write;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
@@ -331,7 +330,7 @@ impl ToolExecutor for Registry {
         ctx: &ToolContext,
         name: &str,
         args: Value,
-    ) -> BoxFuture<'static, ToolOutput> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutput> + Send + 'static>> {
         let tool = self.lookup(name);
         let coerced = match tool.as_ref().map(|t| t.def()) {
             Some(def) => coerce_args(&def, args),
