@@ -237,26 +237,3 @@ pub struct ChatRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDef>,
 }
-
-impl ChatRequest {
-    /// Creates a new chat request with the given messages.
-    pub fn new(messages: Vec<Message>) -> Self {
-        Self {
-            system: None,
-            messages,
-            tools: Vec::new(),
-        }
-    }
-
-    /// Sets the optional system prompt.
-    pub fn with_system(mut self, system: impl Into<String>) -> Self {
-        self.system = Some(system.into());
-        self
-    }
-
-    /// Sets the available tools.
-    pub fn with_tools(mut self, tools: Vec<ToolDef>) -> Self {
-        self.tools = tools;
-        self
-    }
-}

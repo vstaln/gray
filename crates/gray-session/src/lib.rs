@@ -240,15 +240,7 @@ struct Header {
 pub struct JsonlSessionStore {
     root_dir: PathBuf,
     lock: tokio::sync::Mutex<()>,
-    id_cache: tokio::sync::Mutex<std::collections::HashMap<SessionId, IdCursor>>,
 }
-
-/// Next-write cursor for one session: `(next_id, parent_id, file_len)`.
-/// Appends only ever grow the file, so a matching `file_len` proves no other
-/// handle (same process or another) appended since the cursor was cached —
-/// the cursor is exact. Any length mismatch falls back to the tail probe /
-/// full scan, which keeps the two-handle concurrency test green.
-type IdCursor = (u64, Option<u64>, u64);
 
 impl Default for JsonlSessionStore {
     /// Store rooted at the default directory (`~/.gray/sessions`), falling back
@@ -290,7 +282,6 @@ impl JsonlSessionStore {
         Self {
             root_dir: root_dir.into(),
             lock: tokio::sync::Mutex::new(()),
-            id_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -398,103 +389,12 @@ impl JsonlSessionStore {
         }
     }
 
-    /// Tail probe: `(next_id, parent_id)` from the last entry without reading
-    /// the whole file. Returns `None` when the file is small enough that the
-    /// full scan is cheap anyway, or the tail is unusable (mid-line split,
-    /// unparsable) — the caller then does the full scan, which also surfaces
-    /// the real `Corrupt` line number. A torn tail (missing trailing newline)
-    /// is a definitive refusal, matching [`Self::scan_entries`].
-    async fn tail_next_ids(path: &Path, id: &SessionId) -> Option<Result<(u64, Option<u64>)>> {
-        const TAIL_PROBE_SIZE: u64 = 262_144;
-        let len = match tokio::fs::metadata(path).await {
-            Ok(m) => m.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Some(Err(SessionError::NotFound(id.clone())));
-            }
-            Err(e) => return Some(Err(SessionError::Io(e))),
-        };
-        if len == 0 {
-            return Some(Err(SessionError::NotFound(id.clone())));
-        }
-        // Definitive torn-tail check on the final byte (same rule as scan).
-        {
-            use tokio::io::{AsyncReadExt, AsyncSeekExt};
-            let mut f = match tokio::fs::File::open(path).await {
-                Ok(f) => f,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Some(Err(SessionError::NotFound(id.clone())));
-                }
-                Err(e) => return Some(Err(SessionError::Io(e))),
-            };
-            if f.seek(std::io::SeekFrom::End(-1)).await.is_err() {
-                return None;
-            }
-            let mut last = [0u8; 1];
-            if f.read_exact(&mut last).await.is_err() {
-                return None;
-            }
-            if last[0] != b'\n' {
-                return Some(Err(SessionError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "session has an incomplete tail; repair before appending",
-                ))));
-            }
-        }
-        if len <= TAIL_PROBE_SIZE {
-            return None;
-        }
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        let mut f = match tokio::fs::File::open(path).await {
-            Ok(f) => f,
-            Err(_) => return None,
-        };
-        if f.seek(std::io::SeekFrom::Start(len - TAIL_PROBE_SIZE))
-            .await
-            .is_err()
-        {
-            return None;
-        }
-        let mut buf = Vec::new();
-        if f.read_to_end(&mut buf).await.is_err() {
-            return None;
-        }
-        let text = match std::str::from_utf8(&buf) {
-            Ok(t) => t,
-            Err(_) => return None,
-        };
-        // The file ends with a newline (verified above), so the last
-        // non-empty line is a complete record. The first line may be a
-        // mid-record split — a partial prefix never parses as a complete
-        // `SessionEntry`, so parse failure safely falls back to the scan.
-        let last_line = match text.lines().rfind(|l| !l.trim().is_empty()) {
-            Some(l) => l,
-            None => return None,
-        };
-        match serde_json::from_str::<SessionEntry>(last_line) {
-            Ok(entry) => Some(Ok((entry.entry_id.saturating_add(1), Some(entry.entry_id)))),
-            Err(_) => None,
-        }
-    }
-
-    /// Cached-or-probed `(next_id, parent_id)` for append paths. The
-    /// in-memory cursor wins only when the file length still matches (no
-    /// other handle appended since); else the tail probe; else the full scan
-    /// (which also validates the whole graph and yields real line numbers).
-    async fn next_ids_for_append(&self, id: &SessionId, path: &Path) -> Result<(u64, Option<u64>)> {
-        if let Some((next, parent, cached_len)) = self.id_cache.lock().await.get(id).copied() {
-            match tokio::fs::metadata(path).await {
-                Ok(m) if m.len() == cached_len => return Ok((next, parent)),
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    return Err(SessionError::NotFound(id.clone()));
-                }
-                Err(e) => return Err(SessionError::Io(e)),
-            }
-        }
-        if let Some(fast) = Self::tail_next_ids(path, id).await {
-            let ids = fast?;
-            return Ok(ids);
-        }
+    /// `(next_id, parent_id)` for append paths: reads the file and runs the
+    /// same [`Self::scan_entries`] validation the load path uses, so a torn
+    /// tail / corrupt entry is refused with its real line number.
+    // ponytail: full rescan per append (O(n²) per session); restore a tail
+    // probe + length cursor if append latency ever shows up.
+    async fn next_ids_for_append(id: &SessionId, path: &Path) -> Result<(u64, Option<u64>)> {
         let content = match tokio::fs::read_to_string(path).await {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -503,18 +403,6 @@ impl JsonlSessionStore {
             Err(e) => return Err(SessionError::Io(e)),
         };
         Self::scan_entries(id, &content, path)
-    }
-
-    /// Records the post-write cursor (needs the post-append file length).
-    async fn note_appended(&self, id: &SessionId, path: &Path, entry_id: u64) {
-        let len = tokio::fs::metadata(path)
-            .await
-            .map(|m| m.len())
-            .unwrap_or(0);
-        self.id_cache.lock().await.insert(
-            id.clone(),
-            (entry_id.saturating_add(1), Some(entry_id), len),
-        );
     }
 
     /// Storage path for `id`, validated at the boundary: only ASCII
@@ -650,11 +538,6 @@ impl JsonlSessionStore {
                 file.flush().await?;
                 file.sync_all().await?;
                 tighten_file_mode(&path);
-                let len = line.len() as u64;
-                self.id_cache
-                    .lock()
-                    .await
-                    .insert(id.clone(), (0, None, len));
                 self.remember(&id, &header.cwd).await;
                 Ok(id)
             }
@@ -715,7 +598,7 @@ impl JsonlSessionStore {
         let _guard = self.lock.lock().await;
         let path = self.session_path(id)?;
 
-        let (next_id, parent_id) = self.next_ids_for_append(id, &path).await?;
+        let (next_id, parent_id) = Self::next_ids_for_append(id, &path).await?;
 
         let entry = SessionEntry {
             compaction_boundary: false,
@@ -748,7 +631,6 @@ impl JsonlSessionStore {
         file.flush().await?;
         file.sync_all().await?;
         tighten_file_mode(&path);
-        self.note_appended(id, &path, next_id).await;
 
         Ok(next_id)
     }
@@ -768,7 +650,7 @@ impl JsonlSessionStore {
         let _guard = self.lock.lock().await;
         let path = self.session_path(id)?;
 
-        let (mut next_id, mut parent_id) = self.next_ids_for_append(id, &path).await?;
+        let (mut next_id, mut parent_id) = Self::next_ids_for_append(id, &path).await?;
 
         let mut out = String::new();
         // Marker first, then the replacement, one entry per line.
@@ -817,12 +699,6 @@ impl JsonlSessionStore {
         file.flush().await?;
         file.sync_all().await?;
         tighten_file_mode(&path);
-        // Cursor after the marker + replacement batch (guard the empty case).
-        if next_id > 0 {
-            self.note_appended(id, &path, next_id - 1).await;
-        } else {
-            self.id_cache.lock().await.remove(id);
-        }
 
         Ok(())
     }
@@ -830,10 +706,12 @@ impl JsonlSessionStore {
     /// Semantic validation over the full on-disk entry list (before the
     /// compaction drain): unsupported versions, filename-vs-header ID
     /// mismatches, duplicate entry IDs, and invalid parent chains (missing
-    /// parents, forward references, cycles). Returns `Corrupt` with a custom
-    /// message so existing `matches!(Corrupt)` callers (e.g. strict resume)
-    /// keep reporting it as corruption; the file is NOT quarantined here —
-    /// rejection only. Old version-1 linear files pass unchanged.
+    /// parents, forward references). A cycle always contains a forward
+    /// reference, so the parent-precedes-entry check rejects it here.
+    /// Returns `Corrupt` with a custom message so existing `matches!(Corrupt)`
+    /// callers (e.g. strict resume) keep reporting it as corruption; the file
+    /// is NOT quarantined here — rejection only. Old version-1 linear files
+    /// pass unchanged.
     fn validate_loaded_graph(
         path: &Path,
         expected_id: &SessionId,
@@ -913,40 +791,6 @@ impl JsonlSessionStore {
                         parent, entry.entry_id
                     )),
                 });
-            }
-            // Walk the ancestry for longer cycles (defensive: with unique IDs
-            // + backward-only edges cycles are impossible, but crafted files
-            // with forward refs could loop).
-            let mut visited = std::collections::HashSet::new();
-            visited.insert(entry.entry_id);
-            let mut cur = parent;
-            while let Some(ci) = index_of(cur) {
-                let ce = &entries[ci];
-                if !visited.insert(ce.entry_id) {
-                    return Err(SessionError::Corrupt {
-                        path: path.to_path_buf(),
-                        line,
-                        source: serde_json::Error::custom(format!(
-                            "parent cycle detected at entry {}",
-                            ce.entry_id
-                        )),
-                    });
-                }
-                match ce.parent_id {
-                    Some(pp) => {
-                        if visited.len() > entries.len() {
-                            return Err(SessionError::Corrupt {
-                                path: path.to_path_buf(),
-                                line,
-                                source: serde_json::Error::custom(
-                                    "parent cycle: chain longer than entry count",
-                                ),
-                            });
-                        }
-                        cur = pp;
-                    }
-                    None => break,
-                }
             }
         }
         Ok(())
@@ -1033,30 +877,6 @@ impl JsonlSessionStore {
             cwd: header.cwd.clone(),
             model: header.model,
         };
-        // Seed the append cursor from the tail (exact: appends are the only
-        // writers) and refresh the remembered-session pointer.
-        match entries.last() {
-            Some(last) => {
-                let len = tokio::fs::metadata(&path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                self.id_cache.lock().await.insert(
-                    id.clone(),
-                    (last.entry_id.saturating_add(1), Some(last.entry_id), len),
-                );
-            }
-            None => {
-                let len = tokio::fs::metadata(&path)
-                    .await
-                    .map(|m| m.len())
-                    .unwrap_or(0);
-                self.id_cache
-                    .lock()
-                    .await
-                    .insert(id.clone(), (0, None, len));
-            }
-        }
         self.remember(id, &meta.cwd).await;
 
         // Compaction boundary: replay only the active transcript after the
@@ -1173,7 +993,6 @@ impl JsonlSessionStore {
 
     pub async fn delete(&self, id: &SessionId) -> Result<()> {
         let _guard = self.lock.lock().await;
-        self.id_cache.lock().await.remove(id);
         let path = self.session_path(id)?;
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
@@ -1755,7 +1574,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sequential_appends_keep_monotonic_ids_without_rescan() {
+    async fn sequential_appends_keep_monotonic_ids() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
         let id = store
@@ -1774,7 +1593,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cross_handle_append_continues_ids_via_tail_probe() {
+    async fn cross_handle_append_continues_ids_via_rescan() {
         let dir = tempdir().unwrap();
         let seed = JsonlSessionStore::new(dir.path());
         let id = seed
@@ -1786,14 +1605,14 @@ mod tests {
                 .await
                 .unwrap();
         }
-        // Fresh handle, empty cache: ids continue from the tail, not 0.
+        // Fresh handle, empty cache: ids continue from the file, not 0.
         let fresh = JsonlSessionStore::new(dir.path());
         let got = fresh.append(&id, &Message::user("next")).await.unwrap();
         assert_eq!(got, 3);
     }
 
     #[tokio::test]
-    async fn cached_append_still_refuses_torn_tail() {
+    async fn append_still_refuses_torn_tail() {
         let dir = tempdir().unwrap();
         let store = JsonlSessionStore::new(dir.path());
         let id = store
@@ -1801,8 +1620,8 @@ mod tests {
             .await
             .unwrap();
         store.append(&id, &Message::user("ok")).await.unwrap();
-        // Tear the tail: drop the final newline. Cache is populated, but the
-        // length changed so the cursor is exact-proofed and refused.
+        // Tear the tail: drop the final newline. The rescan sees the
+        // incomplete tail and refuses the append.
         let path = store.session_path(&id).unwrap();
         let content = std::fs::read(&path).unwrap();
         assert!(content.ends_with(b"\n"));
