@@ -73,6 +73,45 @@ pub(crate) fn pill_elapsed(
     }
 }
 
+/// Token count for the `Working… · N tok` pill — opencode2 parity
+/// (`packages/tui/src/component/prompt/index.tsx` `usage()`): the LAST
+/// usage report only, summed over non-overlapping parts
+/// (`input + output + reasoning + cache.read + cache.write`).
+/// Gray's `output_tokens` already include reasoning (unlike the TS shape
+/// where `output` excludes it), so the sum is
+/// `non_cached + output + cache_read + cache_write`.
+///
+/// Never a chars/4 estimate (that inflated to ~2.5M on a 14s turn), never
+/// a Σ-per-round sum (each round's input already contains the full
+/// history, so summing grows superlinearly). Pure for testability.
+pub(crate) fn pill_context_tokens(u: &gray_core::event::Usage) -> usize {
+    // No measured breakdown at all (all three zero): the input total is
+    // the whole prompt (defense against hand-built shapes; every mapped
+    // and normalized report carries non_cached or cache parts).
+    let input_part = if u.non_cached_input_tokens == 0
+        && u.cache_read_input_tokens == 0
+        && u.cache_write_input_tokens == 0
+        && u.cached_tokens == 0
+    {
+        u.input_tokens
+    } else {
+        u.non_cached_input_tokens
+    };
+    input_part
+        .saturating_add(u.output_tokens)
+        .saturating_add(u.cache_read_input_tokens.max(u.cached_tokens))
+        .saturating_add(u.cache_write_input_tokens)
+}
+
+/// `· N tok` suffix for the working pill; empty before the first usage
+/// report or when it totals zero (mirrors opencode2's `tokens <= 0` guard).
+pub(crate) fn pill_token_suffix(usage: Option<gray_core::event::Usage>) -> String {
+    match usage.map(|u| pill_context_tokens(&u)).unwrap_or(0) {
+        0 => String::new(),
+        n => format!(" · {} tok", crate::repl::fmt_usage(n)),
+    }
+}
+
 /// Codex parity (`reference/openai/codex/codex-rs/tui/src/chatwidget/compaction.rs`):
 /// live compaction status. Its wall clock is separate from the turn's running
 /// time, and only a matching live completion contributes a duration to the
@@ -337,6 +376,49 @@ impl Tui {
         let _ = self.draw();
     }
 
+    /// Moves in-flight (painted-nowhere / stored-nowhere) buffers into
+    /// `history_entries` so an immediately-following clear + re-emit cannot
+    /// drop them. Called at the top of [`Self::reflow_on_resize`], before the
+    /// scrollback purge.
+    ///
+    /// Two buffers qualify:
+    /// - `pending`: the live thinking tail [`Tui::stream_thinking`] has not
+    ///   flushed yet. Drained via the thinking path so it keeps its italic
+    ///   muted style and its share of the `Thought for` timing.
+    /// - the unfrozen markdown renderer: frozen rows are already committed
+    ///   through [`Tui::stream_text`]; only the not-yet-frozen tail is
+    ///   forced out here. The renderer only freezes complete block rows, so
+    ///   an incremental reflow may re-close an open block (e.g. repeat a
+    ///   table header) once the turn's real close arrives — a cosmetic
+    ///   duplicate row, never lost text.
+    pub(crate) fn drain_inflight_for_reflow(&mut self) {
+        if self.thinking && !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, crate::composer::transcript::thinking_style());
+        }
+        let output = std::mem::replace(
+            &mut self.markdown_renderer,
+            gray_markdown::StreamingMarkdownRenderer::new(
+                gray_markdown::gray_markdown_style(),
+                true,
+            ),
+        )
+        .finish_into_output(Some(gray_markdown::get_syntect()));
+        if output.lines.len() > self.committed_markdown_lines {
+            if self.committed_markdown_lines == 0 {
+                self.ensure_gap(1);
+            }
+            let remaining_lines: Vec<Line<'static>> =
+                output.lines[self.committed_markdown_lines..].to_vec();
+            let offset = self.committed_markdown_lines;
+            // Keep the original commit offset (not the post-drain total) so
+            // `rebase_hyperlinks_for_slice` keeps attributing each URL to
+            // its own row; the counter itself advances past the drain.
+            self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
+        }
+        self.committed_markdown_lines = 0;
+    }
+
     /// Codex-style transcript reflow on terminal resize:
     /// Clears scrollback and visible screen, re-anchors the inline viewport at the new dimensions,
     /// and re-emits the stored transcript history so lines wrap cleanly without distortion.
@@ -345,6 +427,15 @@ impl Tui {
         if let Ok((_, rows)) = crossterm::terminal::size() {
             self.last_height = rows;
         }
+
+        // Draining mid-stream buffers into history first is what keeps a
+        // resize from eating in-flight text: `pending` (live thinking tail)
+        // and the unfrozen markdown renderer hold content that is neither
+        // painted nor stored yet. Without this, narrowing mid-turn widened
+        // the live cut budget past the reflowed rows and the tail rendered
+        // over-wide — Paragraph has no `.wrap()`, so it hard-clips at the
+        // right edge and the reasoning reads "shortened".
+        self.drain_inflight_for_reflow();
 
         // Codex-style: reset scroll region, clear visible screen and purge scrollback, home cursor
         let mut out = std::io::stdout();
@@ -458,9 +549,9 @@ impl Tui {
         // latest context size (each round's input already contains the full
         // history), so summing `usage.total()` across rounds grows
         // superlinearly (e.g. 16 rounds x ~120k = ~1.9M). The context gauge
-        // stays `latest_usage`; exact turn/session bills live in the TurnEnd
-        // totals. The pill itself carries no estimate at all (omp's loader
-        // is tokens-free; opencode reads the last report, never a sum).
+        // and the `Working… · N tok` pill both read this last report only
+        // (opencode2 `usage()` parity); exact turn/session bills live in
+        // the TurnEnd totals.
     }
     /// Seeds the context gauge from a char-estimate when no provider
     /// `StepUsage` is in force: resume replay (persisted usage is billed
@@ -791,6 +882,63 @@ impl Drop for Tui {
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+    }
+}
+
+#[cfg(test)]
+mod pill_token_tests {
+    use super::{pill_context_tokens, pill_token_suffix};
+    use gray_core::event::Usage;
+
+    #[test]
+    fn pill_suffix_empty_before_first_report() {
+        assert_eq!(pill_token_suffix(None), "");
+        assert_eq!(pill_token_suffix(Some(Usage::new(0, 0))), "");
+    }
+
+    #[test]
+    fn pill_suffix_counts_last_report_only() {
+        // Plain totals shape: context = input + output.
+        assert_eq!(
+            pill_token_suffix(Some(Usage::new(12_000, 500))),
+            " · 12,500 tok"
+        );
+        // Resume/compaction seed: estimate with no breakdown.
+        assert_eq!(
+            pill_token_suffix(Some(Usage::estimated_context(39_000))),
+            " · 39,000 tok"
+        );
+    }
+
+    #[test]
+    fn pill_sums_non_overlapping_parts_opencode_parity() {
+        // Anthropic-like report: inclusive input 100k, of which 90k cached
+        // read + 1k cached write; output 2k includes 500 reasoning.
+        let u = Usage {
+            input_tokens: 100_000,
+            output_tokens: 2_000,
+            reasoning_tokens: 500,
+            cached_tokens: 90_000,
+            non_cached_input_tokens: 9_000,
+            cache_read_input_tokens: 90_000,
+            cache_write_input_tokens: 1_000,
+            total_tokens: 0,
+        };
+        // 9k fresh + 2k out + 90k read + 1k write = full context, and it
+        // must agree with total() (no double-counted reasoning/cache).
+        assert_eq!(pill_context_tokens(&u), 102_000);
+        assert_eq!(pill_context_tokens(&u), u.total());
+        assert_eq!(pill_token_suffix(Some(u)), " · 102,000 tok");
+    }
+
+    #[test]
+    fn pill_falls_back_to_input_without_breakdown() {
+        let u = Usage {
+            input_tokens: 5_000,
+            output_tokens: 300,
+            ..Usage::default()
+        };
+        assert_eq!(pill_token_suffix(Some(u)), " · 5,300 tok");
     }
 }
 

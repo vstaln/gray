@@ -19,8 +19,11 @@ pub const VIEW_BUDGET_BYTES: usize = 50 * 1024;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
 pub const PROMOTION_TAIL_BYTES: usize = 2048;
-pub const MEM_HEAD_BYTES: usize = 16 * 1024;
-pub const MEM_TAIL_BYTES: usize = 48 * 1024;
+pub const MEM_HEAD_BYTES: usize = 6 * 1024;
+pub const MEM_TAIL_BYTES: usize = 6 * 1024;
+/// Inline budget for foreground bash results: head + tail, ~12 KiB (~3k
+/// tokens). The full log always persists on disk; shell_output pages it.
+pub const INLINE_BUDGET_BYTES: usize = MEM_HEAD_BYTES + MEM_TAIL_BYTES;
 pub const EXITED_TASK_TTL: Duration = Duration::from_secs(30 * 60);
 pub const EXITED_TASK_KEEP: usize = 20;
 

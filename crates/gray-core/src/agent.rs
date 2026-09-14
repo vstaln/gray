@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::CoreError;
-use crate::event::{StreamEvent, Usage};
+use crate::event::{StreamEvent, Usage, append_thinking_chunk};
 use crate::message::ChatRequest;
 
 /// Errors surfaced by a provider implementation.
@@ -463,8 +463,11 @@ async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreErro
     let mut result = String::new();
     while let Some(event) = stream.next().await {
         match event? {
-            StreamEvent::TextDelta { delta } | StreamEvent::ThinkingDelta { delta } => {
+            StreamEvent::TextDelta { delta } => {
                 result.push_str(&delta);
+            }
+            StreamEvent::ThinkingDelta { delta } => {
+                append_thinking_chunk(&mut result, &delta);
             }
             StreamEvent::MessageComplete { .. } => break,
             _ => {}

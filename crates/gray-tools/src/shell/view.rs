@@ -217,7 +217,9 @@ pub fn resume_hint(task: TaskId, view: &View) -> String {
 }
 
 /// First result line: "{label}{(note)} · {elapsed} · {total} lines[ · showing
-/// first h + last t · omitted] · log {path}[ · no output]".
+/// first h + last t · omitted · grep-hint] · log {path}[ · no output]".
+/// The grep hint points at the on-disk log (never rerun to see more); the
+/// log path stays last so `split("· log ")` parsers keep working.
 /// Running tasks (report None) render as "task tN running · pid P".
 pub fn header(
     task: &TaskInfo,
@@ -235,7 +237,7 @@ pub fn header(
     let total = view.map(|v| v.total_lines).unwrap_or(0);
     let showing = match view {
         Some(v) if v.omitted_lines > 0 || v.omitted_bytes > 0 => format!(
-            " · showing first {} + last {} · {} lines / {} chars omitted",
+            " · showing first {} + last {} · {} lines / {} chars omitted · grep the log for more (shell_output pages it)",
             fmt_num(v.shown_lines.0),
             fmt_num(v.shown_lines.1),
             fmt_num(v.omitted_lines),
@@ -261,7 +263,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::Instant;
 
-    use super::super::contract::TaskState;
+    use super::super::contract::{INLINE_BUDGET_BYTES, MEM_HEAD_BYTES, MEM_TAIL_BYTES, TaskState};
 
     fn task() -> TaskInfo {
         TaskInfo {
@@ -426,6 +428,16 @@ mod tests {
         let h2 = header(&t, Some(&r), Some(&v2), Duration::from_secs(41));
         assert!(h2.contains("showing first"), "{h2}");
         assert!(h2.contains("omitted"), "{h2}");
+        assert!(
+            h2.contains("grep the log for more (shell_output pages it)"),
+            "{h2}"
+        );
+        // Whole views carry no hint: the log path stays the last field.
+        assert!(
+            !h.contains("grep the log for more"),
+            "whole view must not hint: {h}"
+        );
+        assert!(h.contains(" · log "), "{h}");
 
         let kill = report(
             "exit 137 (SIGKILL)",
@@ -444,5 +456,37 @@ mod tests {
 
         let h5 = header(&t, Some(&r), None, Duration::from_millis(100));
         assert!(h5.contains("no output"), "{h5}");
+    }
+
+    #[test]
+    fn inline_budget_keeps_head_and_tail_with_elision() {
+        // SPEC-01: the foreground inline budget is 6 KiB head + 6 KiB tail.
+        assert_eq!(MEM_HEAD_BYTES, 6 * 1024);
+        assert_eq!(MEM_TAIL_BYTES, 6 * 1024);
+        assert_eq!(INLINE_BUDGET_BYTES, 12 * 1024);
+        // 3,000 ~22-byte lines ≈ 66 KiB: over budget, so head + tail survive
+        // with an elided middle and exact line accounting.
+        let log = numbered_lines(3000);
+        assert!(log.len() > INLINE_BUDGET_BYTES);
+        let v = middle_out(&log, INLINE_BUDGET_BYTES, 2000, 0);
+        assert!(v.body.contains("{{MARKER}}"));
+        let shown_bytes: usize = v.body.len().saturating_sub("{{MARKER}}".len() + 2);
+        assert!(shown_bytes <= INLINE_BUDGET_BYTES, "{shown_bytes}");
+        assert!(v.body.starts_with("line 00001 "));
+        assert!(v.body.ends_with("0000003000"));
+        assert_eq!(
+            v.shown_lines.0 + v.shown_lines.1 + v.omitted_lines,
+            v.total_lines
+        );
+        assert_eq!(v.total_lines, 3000);
+        // Just under the budget renders whole with no marker.
+        let small = middle_out(
+            &log[..INLINE_BUDGET_BYTES - 100],
+            INLINE_BUDGET_BYTES,
+            2000,
+            0,
+        );
+        assert!(!small.body.contains("{{MARKER}}"));
+        assert!(small.omitted_range.is_none());
     }
 }
