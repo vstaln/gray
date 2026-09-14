@@ -1,5 +1,6 @@
 [package]
 name = "gray"
+default-run = "gray"
 version.workspace = true
 edition.workspace = true
 description = "gray — a minimal, modular agent harness in Rust."
