@@ -28,7 +28,7 @@
   <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
 </div>
 
-Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises — no native messaging gateway (chat returns as a plugin).
+Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises.
 
 | | |
 |---|---|
@@ -73,7 +73,7 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 ## Watch it go
 
 <div align="center">
-  <img alt="gray building a complete single-file app in the terminal" src="assets/gray-demo.gif" width="100%" />
+  <img alt="gray building HorseTinder in the terminal" src="assets/gray-demo.gif" width="100%" />
 </div>
 
 ## Commands
@@ -116,11 +116,9 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
 
-## Gateway
+## Scheduling
 
-Removed: gray ships no native messaging gateway — no `gray gateway`, no `gray send`, no platform adapters. Chat (Telegram/Discord/Slack) returns as a plugin.
-
-**Scheduling** — the agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`); execution and delivery arrive with the core scheduler (in progress).
+The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`); execution and delivery arrive with the core scheduler (in progress).
 
 <div align="center">
   <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
