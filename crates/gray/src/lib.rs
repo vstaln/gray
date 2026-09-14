@@ -48,7 +48,7 @@ bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
 default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through one tool family: bash (`bash`, `shell_output`, `shell_kill`, `sleep`). Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
+You work through one tool: blocking `bash`. Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
 Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
@@ -192,8 +192,8 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    // Bash + sleep self-bound at 600 s (promotion, never kill), so the
-    // agent-level timeout must sit above them (P2B requirement).
+    // Bash self-bounds at 600 s (timeout kills the process group), so the
+    // agent-level timeout must sit above it (P2B requirement).
     Ok(agent.with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT))
 }
 

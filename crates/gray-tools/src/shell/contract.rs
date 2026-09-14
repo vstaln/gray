@@ -45,6 +45,7 @@ pub struct View {
     pub total_bytes: u64,
 }
 
+#[derive(Debug)]
 pub enum KillMethod {
     TermAnswered(Duration),
     TermIgnoredThenKill(Duration),

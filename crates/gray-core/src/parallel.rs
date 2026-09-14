@@ -19,16 +19,12 @@ use crate::agent::ToolOutput;
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Default-deny batchable set: statically `Allow` in every approval mode
-/// (see test), never prompts. `read` / `ls` / `find` / `grep` /
-/// `shell_output` / `sleep` are pure-read by construction; `bash` is
-/// admitted only per call through [`bash_is_batchable`] (applied in
-/// `plan_segments`). Everything else — `write`, `edit`, `shell_kill`,
-/// sidecar tools — is a barrier.
+/// (see test), never prompts. `read` / `ls` / `find` / `grep` are
+/// pure-read by construction; `bash` is admitted only per call through
+/// [`bash_is_batchable`] (applied in `plan_segments`). Everything else —
+/// `write`, `edit`, sidecar tools — is a barrier.
 pub fn is_batchable(name: &str) -> bool {
-    matches!(
-        name,
-        "read" | "ls" | "find" | "grep" | "shell_output" | "sleep" | "bash"
-    )
+    matches!(name, "read" | "ls" | "find" | "grep" | "bash")
 }
 
 /// Cheap static screen: is this `bash` `command` plausibly read-only?
@@ -345,16 +341,8 @@ mod tests {
     #[test]
     fn long_batchable_run_stays_one_segment() {
         // Mixed read + screened-bash run: no cap, still one segment.
-        let names = [
-            "read",
-            "bash",
-            "grep",
-            "shell_output",
-            "sleep",
-            "ls",
-            "find",
-        ];
-        let u: Vec<(String, String, Value)> = (0..17)
+        let names = ["read", "bash", "grep", "ls", "find"];
+        let u: Vec<(String, String, Value)> = (0..15)
             .map(|i| {
                 let name = names[i % names.len()];
                 let args = if name == "bash" {
@@ -368,7 +356,7 @@ mod tests {
         let k: HashSet<String> = names.iter().map(|s| s.to_string()).collect();
         assert_eq!(
             plan_segments(&u, &k),
-            vec![Segment::Parallel((0..17).collect())]
+            vec![Segment::Parallel((0..15).collect())]
         );
     }
     #[test]
@@ -520,9 +508,9 @@ mod tests {
                 json!({"command": "sed -n '1,10p' f"}),
             ),
             ("d".into(), "grep".into(), json!({"pattern": "y"})),
-            ("e".into(), "sleep".into(), json!({"seconds": 1})),
+            ("e".into(), "grep".into(), json!({"pattern": "y"})),
         ];
-        let k: HashSet<String> = ["read", "bash", "grep", "sleep"]
+        let k: HashSet<String> = ["read", "bash", "grep"]
             .iter()
             .map(|s| s.to_string())
             .collect();

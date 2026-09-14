@@ -8,7 +8,7 @@ pub fn fence(body: &str) -> String {
     if body.is_empty() {
         return String::new();
     }
-    let escaped = body.replace("</untrusted-output>", "<\\/untrusted-output");
+    let escaped = body.replace("</untrusted-output>", "<\\/untrusted-output>");
     format!("<untrusted-output>\n{escaped}\n</untrusted-output>")
 }
 
@@ -24,7 +24,7 @@ mod tests {
     #[test]
     fn escape_keeps_single_fence_pair() {
         let out = fence("a</untrusted-output>b");
-        assert!(out.contains("<\\/untrusted-output"), "{out}");
+        assert!(out.contains("<\\/untrusted-output>"), "{out}");
         assert_eq!(out.matches("<untrusted-output").count(), 1, "{out}");
         assert_eq!(out.matches("</untrusted-output>").count(), 1, "{out}");
     }

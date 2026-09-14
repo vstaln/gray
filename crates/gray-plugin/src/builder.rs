@@ -53,19 +53,14 @@ impl Plugin for ToolsBasicPlugin {
             Arc::new(gray_tools::WriteTool::new(ledger.clone())),
             Arc::new(gray_tools::EditTool::new(ledger.clone())),
             Arc::new(gray_tools::BashTool),
-            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
-            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
-            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
         ];
         out.extend(self.extra.iter().cloned());
         out
     }
 }
 
-/// `tools-minimal`: the default surface — the bash shell family only.
-/// `bash` plus its companions (`shell_output`, `shell_kill`, `sleep`) so
-/// background tasks stay readable. Everything — read, search, edit, run —
-/// goes through `bash`.
+/// `tools-minimal`: the default surface — the single blocking `bash` only.
+/// Everything — read, search, edit, run — goes through `bash`.
 pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
@@ -80,12 +75,7 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![
-            Arc::new(gray_tools::BashTool),
-            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
-            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
-            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
-        ]
+        vec![Arc::new(gray_tools::BashTool)]
     }
 }
 
