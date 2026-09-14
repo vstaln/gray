@@ -531,7 +531,7 @@ fn strip_shell_fence(trimmed: &str) -> String {
     }
     lines
         .join("\n")
-        .replace("<\\/untrusted-output", "</untrusted-output>")
+        .replace(r"<\/untrusted-output", "</untrusted-output>")
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.

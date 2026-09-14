@@ -1630,8 +1630,14 @@ fn resume_body_and_tool_prefix(
     ResponsesToolsByCallId,
     ResponsesIndexToCallId,
 ) {
-    let continuing = last_response_id.is_some();
-    body.previous_response_id = last_response_id;
+    // Upstream provider rejects previous_response_id when encrypted reasoning is used.
+    let has_reasoning = body.reasoning.is_some()
+        || body
+            .include
+            .as_ref()
+            .is_some_and(|inc| inc.iter().any(|s| s == "reasoning.encrypted_content"));
+    let continuing = last_response_id.is_some() && !has_reasoning;
+    body.previous_response_id = if continuing { last_response_id } else { None };
     if continuing {
         (body, tools_by_call_id, index_to_call_id)
     } else {
