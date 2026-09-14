@@ -477,16 +477,15 @@ pub fn parse_command(line: &str) -> ReplCommand {
     let opt = |s: &str| (!s.is_empty()).then(|| s.to_string());
     let lower_t = t.to_lowercase();
     let lower_cmd = cmd.to_lowercase();
-    let canon: Option<&str> =
-        if lower_cmd == "/skills" || lower_cmd == "/skill" {
-            Some("skills")
-        } else if let Some(d) = resolve(cmd) {
-            Some(d.name)
-        } else if lower_t.starts_with("/model") {
-            Some("model")
-        } else {
-            None
-        };
+    let canon: Option<&str> = if lower_cmd == "/skills" || lower_cmd == "/skill" {
+        Some("skills")
+    } else if let Some(d) = resolve(cmd) {
+        Some(d.name)
+    } else if lower_t.starts_with("/model") {
+        Some("model")
+    } else {
+        None
+    };
     match canon {
         Some("quit") => ReplCommand::Quit,
         Some("resume") => ReplCommand::Resume(if rest.is_empty() {

@@ -62,10 +62,10 @@ impl Plugin for ToolsBasicPlugin {
     }
 }
 
-/// `tools-minimal`: the default surface — exactly one persistent-shell tool.
-/// Mirrors dsh's `minimal` preset (one persistent shell, no editor/filesystem
-/// tool) and mini-swe-agent's bash-only bet. Everything the model needs to
-/// inspect/mutate files goes through `bash`.
+/// `tools-minimal`: the default surface — the bash shell family only.
+/// `bash` plus its companions (`shell_output`, `shell_kill`, `sleep`) so
+/// background tasks stay readable. Everything — read, search, edit, run —
+/// goes through `bash`.
 pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
@@ -80,7 +80,12 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(gray_tools::BashTool)]
+        vec![
+            Arc::new(gray_tools::BashTool),
+            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
+            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
+            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
+        ]
     }
 }
 
@@ -620,8 +625,13 @@ pub struct BuilderOptions {
     pub session_id: Option<String>,
     pub cwd: PathBuf,
     pub system_prompt: SystemPrompt,
-    /// Surface tools baked into `tools-basic` (gray: `SkillTool`).
+    /// Surface tools baked into `tools-basic` (gray: none — bash-only).
     pub extra_tools: Vec<Arc<dyn Tool>>,
+    /// Surface plugins that are always active regardless of the profile
+    /// (gray: none — bash-only, empty by default).
+    /// Appended after profile + lock plugins; on tool-name conflict the
+    /// later manifest wins, so these always win their own tool names.
+    pub extra_plugins: Vec<Arc<dyn Plugin>>,
     pub host_handler: Option<HostHandler>,
     pub profile_path: String,
     pub abort_on_spawn_failure: bool,
@@ -644,6 +654,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         cwd,
         system_prompt,
         extra_tools,
+        extra_plugins,
         host_handler,
         profile_path,
         abort_on_spawn_failure,
@@ -656,7 +667,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         Arc::new(ToolsBasicPlugin { extra: extra_tools }) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
-    let (plugins, _) = active_plugins(
+    let (mut plugins, _) = active_plugins(
         defaults,
         &["tools-minimal"],
         &profile_path,
@@ -664,6 +675,17 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         abort_on_spawn_failure,
     )
     .await?;
+    // Always-on surface plugins (see `extra_plugins`): appended after the
+    // profile + lock set so they survive `tools-minimal`-only profiles.
+    // Same-name dedupe as `active_plugins` (later wins) keeps a profile
+    // entry with the same name from doubling up.
+    for p in extra_plugins {
+        let name = p.manifest().name.clone();
+        if let Some(pos) = plugins.iter().position(|e| e.manifest().name == name) {
+            plugins.remove(pos);
+        }
+        plugins.push(p);
+    }
     let (registry, _) = from_plugins(&plugins);
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,

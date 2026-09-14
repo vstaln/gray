@@ -9,8 +9,13 @@ Every axis below works in the real binary today — see the
 Drop a directory with a `SKILL.md` (frontmatter `description:` required)
 into `~/.gray/skills` (global) or `.gray/skills` (project, walks up to
 git root; also `~/.config/opencode/skills`, `~/.agents/skills`,
-`~/.claude/skills`). Run it with `/skills <name>` (`/skill <name>` works too).
+`~/.claude/skills`). Run it with `/skills <name>` (`/skill <name>` works too) —
+the skill body is pasted visibly into the chat and then run as the turn.
 Loader: `crates/gray/src/skills/`. Copy me: `examples/hello-skill/SKILL.md`.
+
+The model gets the freshly discovered `<available_skills>` list every turn
+(names, descriptions, exact file locations) and reads matches with bash
+(`cat <location>`) — context-only, no skill tool. Tools stay bash-only.
 
 ## Plugins — add tools and slash commands
 
@@ -37,11 +42,13 @@ plugin manifest's `commands: ["/x"]` (routed via `command/run`).
 
 ## System prompt and pickers — tune behavior without code
 
-`~/.gray/AGENTS.md` **is** the complete system prompt — sent to the model
+`~/.gray/AGENTS.md` **is** the stored system prompt — sent to the model
 verbatim, minus HTML comments (`<!-- ... -->`), which stay in the file as
-unreadable notes. Gray appends nothing: project instructions (`AGENTS.md`/
-`CLAUDE.md`) and skills are found by the model via bash, and the default
-prompt says where. `/agentsmd` opens the built-in editor (Ctrl-S save, Ctrl-R
+unreadable notes. Project instructions (`AGENTS.md`/`CLAUDE.md`) are found by
+the model via bash, and the default prompt says where; the one thing gray adds
+per turn is the `<available_skills>` list (context-only — the model reads
+matches with bash, no skill tool).
+`/agentsmd` opens the built-in editor (Ctrl-S save, Ctrl-R
 reset, Ctrl-X cancel); `/agentsmd show|reset` print and restore. `/model`,
 `/thinking`, `/context` persist to `~/.gray/config.json`.
 

@@ -54,10 +54,13 @@ pub async fn compact_with_keep(
         ledger.disarm_all_dedup();
     }
     // Reversible checkpoint: summary on disk, so nothing is truly lost.
-    // Best-effort; compaction succeeds even if it fails.
+    // Best-effort; compaction succeeds even if it fails. Logged, never
+    // `eprintln!`: raw stderr writes land on the live composer viewport and
+    // collide with the next draw (ghost input) while `Compacting context`
+    // owns the status dock.
     let path = write_continuation_checkpoint(&summary, replaced);
     if let Some(p) = path {
-        eprintln!("continuation checkpoint: {}", p.display());
+        log::info!(target: "gray_compact", "continuation checkpoint: {}", p.display());
     }
     Ok(Some(summary))
 }

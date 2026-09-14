@@ -33,8 +33,6 @@ pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
-use crate::skills_tool::SkillTool;
-
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
 pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
@@ -42,15 +40,15 @@ Unreadable note: this HTML comment stays in the file but is stripped before
 the prompt reaches the model. Nothing here is sent verbatim except the text
 outside <!-- --> comments.
 
-This file IS the complete system prompt — gray injects nothing else: no
-discovered project files, no skills list, no working directory. The model
-finds them itself. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset
-to this default, Ctrl-X cancel). Deleting anything here disables nothing
-gray adds, because gray adds nothing.
+This file IS the stored system prompt — sent verbatim every turn. Gray
+adds only ephemeral per-turn context: the <available_skills> list (fresh
+skill discovery for the turn's directory) — no skill tool, read matches with
+bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
+default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through a single tool: a persistent bash shell. Use it to read, search, edit, and run things.
-Before working in a project, read its AGENTS.md / CLAUDE.md. When a task matches a skill, read the matching SKILL.md from the skill roots (e.g. ~/.gray/skills, ~/.agents/skills, ~/.claude/skills, and project .agents/skills).
+You work through one tool family: bash (`bash`, `shell_output`, `shell_kill`, `sleep`). Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
+Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Guidelines:
@@ -129,18 +127,22 @@ pub use gray_plugin::builder::{
 /// builder for REPL and `-p`).
 ///
 /// Surface policy owned here: missing-model help text, `AGENTS.md` body,
-/// skills + context-file discovery, the `skill` tool default, and the
-/// REPL/`-p` host handler. `session_id` pins the Responses
-/// `prompt_cache_key` for cache affinity — pass it whenever known (resume,
-/// /new); `None` uses a per-process stable id.
+/// the always-on context-only `skills` plugin (tools stay bash-only),
+/// and the REPL/`-p` host handler.
+/// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
+/// pass it whenever known (resume, /new); `None` uses a per-process stable id.
 /// (A single function: earlier split variants had an unused `None` leg.)
 ///
-/// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
-/// OpenCode plugins, `~/.agents/skills`, `~/.claude/skills` + project skills
-/// walked up to git root) respecting `.gitignore`/`.ignore`/`.fdignore`, and
-/// `AGENTS.md`/`CLAUDE.md` context files are discovered walking up to git root
-/// and appended as `<project_context>` blocks. Skills are only surfaced when the
-/// `read` tool is present.
+/// Skills are `SKILL.md` files discovered via [`skills::discover_skills`]
+/// (global `~/.gray/skills`, OpenCode plugins, `~/.agents/skills`,
+/// `~/.claude/skills` + project skills walked up to git root) respecting
+/// `.gitignore`/`.ignore`/`.fdignore`.
+/// The context-only [`skills_tool::SkillsPlugin`] (always active, every
+/// profile) serves the per-turn `<available_skills>` block through the
+/// `prompt/context` hook — `None` when nothing is discovered, so the system
+/// prefix stays byte-stable for prefix caching. No `skill` tool: tools stay
+/// bash-only, the model reads matches with `cat`. `/skills <name>` pastes
+/// one visibly into chat before running it.
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
@@ -176,7 +178,10 @@ pub async fn build_agent(
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
-        extra_tools: vec![Arc::new(SkillTool)],
+        // Bash-only tools; the context-only skills plugin is always on
+        // (every profile, including the default `tools-minimal`).
+        extra_tools: vec![],
+        extra_plugins: vec![Arc::new(crate::skills_tool::SkillsPlugin)],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,

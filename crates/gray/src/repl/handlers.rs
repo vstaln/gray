@@ -2,14 +2,61 @@
 
 use super::*;
 
+/// Renders the exact text sent to the model for `/skills <name> [args]`:
+/// the skill body (frontmatter stripped) in a `<skill>` envelope, with the
+/// invocation args appended. Pure so both the visible paste and the model
+/// turn share one string — what you see in chat is what the model gets.
+pub(crate) fn format_skill_paste(
+    name: &str,
+    path: &Path,
+    body: &str,
+    args: Option<&str>,
+) -> String {
+    let mut out = format!(
+        "<skill name=\"{name}\" path=\"{}\">\n{body}\n</skill>",
+        path.display()
+    );
+    if let Some(a) = args.filter(|a| !a.is_empty()) {
+        out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
+    }
+    out
+}
+
+/// Pastes the expanded skill into the chat transcript so the invocation is
+/// visible: a `Skill "name"` box in the TUI, the raw envelope on headless.
+/// Runs before the model turn, so the transcript shows the skill and then
+/// the model's response to it.
+fn paste_skill_into_chat(
+    tui: Option<&crate::composer::SharedTui>,
+    cwd: &Path,
+    name: &str,
+    expanded: &str,
+) {
+    if let Some(shared) = tui {
+        let args = serde_json::json!({ "name": name });
+        let header = crate::tool_fmt::format_tool_call_header("skill", &args, Some(cwd));
+        let body: Vec<ratatui::text::Line<'static>> = expanded
+            .lines()
+            .map(|l| ratatui::text::Line::from(l.to_string()))
+            .collect();
+        let mut t = shared.lock().expect("tui lock");
+        t.push_tool_box(header, body);
+        let _ = t.draw();
+    } else {
+        println!("{expanded}");
+    }
+}
+
 /// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
 /// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). Bare `/skills` opens the skills manager (TTY) or prints the
-/// text list (headless). Both list *discovered* skills (global + project),
-/// not just `~/.gray/skills` installs.
-/// With `local` set (Esc mid-turn), the skill is announced but never expanded
-/// into an AI prompt — the turn was cancelled, nothing talks to the model.
+/// appended). The same text is pasted visibly into the chat transcript first,
+/// so invoking a skill shows the actual skill in chat instead of silently
+/// handing the model a hidden prompt. Bare `/skills` opens the skills manager
+/// (TTY) or prints the text list (headless). Both list *discovered* skills
+/// (global + project), not just `~/.gray/skills` installs.
+/// With `local` set (Esc mid-turn), nothing is pasted or expanded — the turn
+/// was cancelled, nothing talks to the model.
 pub(crate) fn expand_skill_command(
     cmd: ReplCommand,
     cwd: &Path,
@@ -91,16 +138,7 @@ pub(crate) fn expand_skill_command(
     let expanded = match std::fs::read_to_string(&skill.file_path) {
         Ok(content) => {
             let body = crate::skills_tool::strip_frontmatter(&content);
-            let mut out = format!(
-                "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
-                skill.name,
-                skill.file_path.display(),
-                body
-            );
-            if let Some(a) = args.as_deref().filter(|a| !a.is_empty()) {
-                out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
-            }
-            out
+            format_skill_paste(&skill.name, &skill.file_path, body, args.as_deref())
         }
         Err(e) => {
             say(
@@ -110,6 +148,12 @@ pub(crate) fn expand_skill_command(
             return ReplCommand::Empty;
         }
     };
+    // Esc-cancelled (`local`): no paste, no prompt — the turn is dead and
+    // `to_prompt` already maps to `Empty`. Pasting here would print a skill
+    // body for a turn that never runs.
+    if !local {
+        paste_skill_into_chat(tui, cwd, &skill.name, &expanded);
+    }
     to_prompt(expanded)
 }
 
@@ -308,6 +352,16 @@ pub(crate) async fn handle_model(
         return;
     }
 
+    if tui.is_none() {
+        // Headless (piped stdout): the picker needs a TTY — print status.
+        match config.model.as_deref() {
+            Some(m) => println!("model {m} — /model provider/id to switch"),
+            None => {
+                println!("no model configured — /model provider/id to set (or /provider to browse)")
+            }
+        }
+        return;
+    }
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
     let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
     match result {
@@ -463,6 +517,20 @@ pub(crate) async fn handle_thinking(
         return;
     }
 
+    if tui.is_none() {
+        // Headless (piped stdout): the picker needs a TTY — print status.
+        let levels = crate::setup::THINKING_LEVELS
+            .iter()
+            .map(|(l, _)| *l)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cur = config
+            .thinking_effort
+            .clone()
+            .unwrap_or_else(|| "default (high)".to_string());
+        println!("thinking effort: {cur} — levels: {levels}; /thinking <level> to set");
+        return;
+    }
     let has_explicit_level = config.thinking_effort.is_some();
     let bg = tui.map(|shared| shared.lock().expect("tui lock").snapshot());
     let result = with_modal(tui, crate::setup::run_effort_menu(config, bg.as_ref())).await;
@@ -530,6 +598,74 @@ pub(crate) async fn handle_thinking(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_skill_cwd_for_handlers_test(name: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join(".gray").join("skills").join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: Temp skill for completion tests\n---\n# temp\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn skill_paste_is_what_the_model_gets() {
+        // The visible paste and the model turn must be the same string:
+        // what you see in chat is what the model gets.
+        let dir = temp_skill_cwd_for_handlers_test("paste-me");
+        let cwd = dir.path();
+        let out = expand_skill_command(parse_command("/skills paste-me"), cwd, None, false);
+        let ReplCommand::Prompt(expanded) = out else {
+            panic!("expected Prompt, got {out:?}");
+        };
+        assert!(expanded.contains("<skill"), "envelope missing: {expanded}");
+        assert!(expanded.contains("paste-me"), "name missing: {expanded}");
+        assert!(expanded.contains("# temp"), "body missing: {expanded}");
+        // Args ride along in the same text.
+        let dir2 = temp_skill_cwd_for_handlers_test("paste-args");
+        let skill_dir = dir2.path().join(".gray").join("skills").join("paste-args");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\ndescription: Temp skill with args\nargs: env\n---\n# temp $ARGUMENTS\n",
+        )
+        .unwrap();
+        let out = expand_skill_command(
+            parse_command("/skills paste-args env"),
+            dir2.path(),
+            None,
+            false,
+        );
+        let ReplCommand::Prompt(expanded) = out else {
+            panic!("expected Prompt, got {out:?}");
+        };
+        assert!(
+            expanded.contains("**ARGUMENTS:** env"),
+            "args missing: {expanded}"
+        );
+    }
+
+    #[test]
+    fn format_skill_paste_envelope_and_args() {
+        let text = format_skill_paste(
+            "demo",
+            std::path::Path::new("/s/demo/SKILL.md"),
+            "Do things.",
+            Some("fast"),
+        );
+        assert!(text.contains("<skill name=\"demo\""), "{text}");
+        assert!(text.contains("Do things."), "{text}");
+        assert!(text.contains("**ARGUMENTS:** fast"), "{text}");
+        let bare = format_skill_paste(
+            "demo",
+            std::path::Path::new("/s/demo/SKILL.md"),
+            "Do things.",
+            None,
+        );
+        assert!(!bare.contains("ARGUMENTS"), "{bare}");
+    }
 
     // UNRUN (cargo test banned under X): run in TTY/CI.
     // reload_agent with no model configured fails soft through say()

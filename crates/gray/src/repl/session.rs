@@ -4,10 +4,15 @@ use super::*;
 
 pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
     if let Some(state) = session_state {
-        println!(
-            "\x1b[2mTo resume: gray resume {}\x1b[0m",
-            state.session_id.as_str()
-        );
+        use std::io::IsTerminal as _;
+        if std::io::stdout().is_terminal() {
+            println!(
+                "\x1b[2mTo resume: gray resume {}\x1b[0m",
+                state.session_id.as_str()
+            );
+        } else {
+            println!("To resume: gray resume {}", state.session_id.as_str());
+        }
         let _ = std::io::stdout().flush();
     }
 }
@@ -75,6 +80,21 @@ pub(crate) async fn handle_resume(
                 return;
             }
         }
+    } else if tui.is_none() {
+        // Headless (piped stdout): the picker needs a TTY — print the list.
+        let Some(root) = default_root() else {
+            return;
+        };
+        let store = JsonlSessionStore::new(root);
+        let summaries = crate::resume::recent_summaries(&store, args.all).await;
+        if summaries.is_empty() {
+            println!("no saved sessions in this directory (try /resume --all or --all)");
+        } else {
+            for s in &summaries {
+                println!("{}", crate::resume::format_summary_row(s));
+            }
+        }
+        return;
     } else {
         let result = with_modal(tui, crate::resume::run_resume_picker(args.all, bg.as_ref())).await;
         match result {
@@ -501,13 +521,36 @@ pub(crate) async fn maybe_threshold_compact(
     ) {
         return;
     }
-    let notice = format!(
-        "auto-compacting {}/{} tokens...",
-        crate::setup::format_context_length(tokens),
-        crate::setup::format_context_length(window)
-    );
+    // Codex parity (`compaction.rs::on_context_compaction_started`): raise a
+    // dedicated `Compacting context` status with its own clock BEFORE the
+    // summarization call. The input box stays mounted — only the status dock
+    // changes — so the chat box can never disappear mid-compact.
+    let compaction_id = format!("auto-{}", uuid::Uuid::new_v4().as_simple());
+    if let Some(shared) = tui {
+        shared
+            .lock()
+            .expect("tui lock")
+            .begin_compaction(compaction_id.clone());
+    }
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
+            // Codex `on_context_compaction_completed`: single
+            // `Context compacted · {elapsed}` line, then header back to
+            // `Working`. The turn clock underneath is untouched.
+            let elapsed = tui
+                .and_then(|shared| {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .finish_compaction(&compaction_id, Some("Working"))
+                })
+                .unwrap_or_default();
+            let notice = format!(
+                "Context compacted · {} ({}/{} tokens)",
+                crate::composer::fmt_elapsed_compact(elapsed.as_secs()),
+                crate::setup::format_context_length(tokens),
+                crate::setup::format_context_length(window)
+            );
             say(tui, &notice);
             // History just shrank: the gauge still holds the pre-compact
             // StepUsage (stale-high until the next turn's first StepUsage).
@@ -528,8 +571,25 @@ pub(crate) async fn maybe_threshold_compact(
             }
             *initial_count = agent.messages().len();
         }
-        Ok(false) => {}
-        Err(e) => log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}"),
+        Ok(false) => {
+            // Nothing gained: drop the status silently, no transcript line
+            // (Codex: turn ends without completion clears without a message).
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, None);
+            }
+        }
+        Err(e) => {
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, None);
+            }
+            log::warn!(target: "gray_compact", "threshold auto-compact failed: {e}")
+        }
     }
 }
 
@@ -545,13 +605,33 @@ pub(crate) async fn maybe_overflow_compact(
     if !crate::compact::is_context_overflow_error(err) {
         return false;
     }
-    // Mid-turn notice (not after a card): keep the separating blank say() used to add.
-    if let Some(t) = tui {
-        t.lock().expect("tui lock").ensure_gap(1);
+    // Codex parity: no pre-message — the `Compacting context` status dock is
+    // the ongoing signal (it survives follow-up input/retries). The single
+    // transcript line lands on completion below.
+    let compaction_id = format!("overflow-{}", uuid::Uuid::new_v4().as_simple());
+    if let Some(shared) = tui {
+        shared
+            .lock()
+            .expect("tui lock")
+            .begin_compaction(compaction_id.clone());
     }
-    say(tui, "context overflow — compacting...");
     match crate::compact::auto_compact_if_needed(agent).await {
         Ok(true) => {
+            let elapsed = tui
+                .and_then(|shared| {
+                    shared
+                        .lock()
+                        .expect("tui lock")
+                        .finish_compaction(&compaction_id, Some("Working"))
+                })
+                .unwrap_or_default();
+            say(
+                tui,
+                &format!(
+                    "context overflow — Context compacted · {}",
+                    crate::composer::fmt_elapsed_compact(elapsed.as_secs())
+                ),
+            );
             // See threshold path: reseed the gauge to the compacted size.
             if let Some(shared) = tui {
                 let est = crate::compact::estimate_context_tokens(agent.messages(), None);
@@ -569,10 +649,22 @@ pub(crate) async fn maybe_overflow_compact(
             true
         }
         Ok(false) => {
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, Some("Working"));
+            }
             log::warn!(target: "gray_compact", "overflow auto-compact returned false (nothing to compact)");
             false
         }
         Err(e) => {
+            if let Some(shared) = tui {
+                shared
+                    .lock()
+                    .expect("tui lock")
+                    .finish_compaction(&compaction_id, Some("Working"));
+            }
             log::warn!(target: "gray_compact", "overflow auto-compact failed: {e}");
             false
         }

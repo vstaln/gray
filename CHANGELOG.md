@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+- Dogfood (headless/pipe): bare `/thinking` and `/model` print status instead of a raw `No such device` error, bare `/resume` and `gray resume` (no TTY) list sessions as text, `/compact` with no model prints one line, exit-hint has no raw ANSI when piped
+- Dogfood (plugin check): reference echo sidecar returns valid JSON on `{}` args — `tool/call` + concurrency checks pass
+- `gray2` binary target (`cargo build` yields `gray` + `gray2`) + one regression test, zero warnings
+- Auto-compact UI (Codex parity): threshold/overflow/manual compaction raises a dedicated `Compacting context` status with its own clock before the summarization call; follow-up status writes can't obscure it, only the matching completion posts `Context compacted · {elapsed}`, and the input box stays mounted (viewport/transcript/textarea untouched)
+- Bash-only tools with skills context: `tools-minimal` is `bash` + `shell_output` + `shell_kill` + `sleep` (no `skill` tool). The always-on context-only `skills` plugin appends the fresh `<available_skills>` list each turn and the model reads matches with bash (`cat <location>`); `/skills <name>` still pastes the skill visibly into chat before running it
+
 ### Added
 - Plugin system: `gray-plugin` crate with Plugin trait, builtin tools as profile-ordered plugins, `gray.yml` profile loader + sidecar entries, sidecar hook protocol over stdio with timeout/crash degradation
 - Gateway daemon: `gray-gateway` crate (Telegram/Discord/Slack), real Discord adapter with slash commands, OAuth2 invite URL, full `/gateway` REPL suite, delegation durability

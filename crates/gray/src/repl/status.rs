@@ -165,17 +165,22 @@ pub(crate) async fn handle_context_window(
         }
     }
     fn collect_parts(
-        _cwd: &Path,
+        cwd: &Path,
         agent: &Option<Agent>,
         tui: Option<&crate::composer::SharedTui>,
     ) -> crate::setup::ContextParts {
-        // The prompt file is the whole system prompt (comments stripped); gray
-        // no longer appends project context or a skills list, so those are 0.
+        // The prompt file is the stored system prompt (comments stripped);
+        // the per-turn `<available_skills>` hook block (context-only, no
+        // skill tool — model reads matches with bash) is estimated
+        // separately below so `/context` stays honest. Project context is 0.
         let sys = crate::sys_prompt_path()
             .ok()
             .and_then(|p| load_or_create_system_prompt_at(&p).ok())
             .map(|s| crate::setup::estimate_str_tokens(&crate::system_prompt::strip_comments(&s)))
             .unwrap_or(0);
+        let skills = crate::setup::estimate_str_tokens(&crate::skills::format_skills_for_prompt(
+            &crate::skills::discover_skills(cwd).skills,
+        ));
         let tools_toks = serde_json::to_string(&crate::profile::builtin_registry().defs())
             .map(|s| crate::setup::estimate_str_tokens(&s))
             .unwrap_or(0);
@@ -203,7 +208,7 @@ pub(crate) async fn handle_context_window(
             system_prompt: sys,
             project_context: 0,
             tools: tools_toks,
-            skills: 0,
+            skills,
             messages,
         }
     }
@@ -450,14 +455,7 @@ pub(crate) async fn handle_compact(
         .await;
     }
     let Some(ag) = agent.as_mut() else {
-        if let Some(shared) = tui {
-            shared
-                .lock()
-                .expect("tui lock")
-                .push_dim("└ error: agent could not be initialized".to_string());
-        } else {
-            println!("error: agent could not be initialized");
-        }
+        // reload_agent already reported the cause via say(); no second line.
         return;
     };
 
@@ -476,11 +474,15 @@ pub(crate) async fn handle_compact(
 
     let msg_count = messages.len();
 
+    // Codex `/compact` parity (`slash_dispatch.rs`): raise `Compacting
+    // context` with its own clock before the backend work; the input box
+    // stays mounted, only the status dock changes.
+    let compaction_id = format!("manual-{}", uuid::Uuid::new_v4().as_simple());
     if let Some(shared) = tui {
         shared
             .lock()
             .expect("tui lock")
-            .set_status(Some("Compacting conversation context"));
+            .begin_compaction(compaction_id.clone());
     }
 
     let compact_res = crate::compact::compact_with_keep(
@@ -490,9 +492,17 @@ pub(crate) async fn handle_compact(
     )
     .await;
 
-    if let Some(shared) = tui {
-        shared.lock().expect("tui lock").set_status(None);
-    }
+    // Restore idle (manual has no turn to return to) in the same lock;
+    // the `Context compacted` line below is the single completion signal.
+    let elapsed = tui
+        .and_then(|shared| {
+            shared
+                .lock()
+                .expect("tui lock")
+                .finish_compaction(&compaction_id, None)
+        })
+        .unwrap_or_default();
+    let elapsed_str = crate::composer::fmt_elapsed_compact(elapsed.as_secs());
 
     match compact_res {
         Ok(Some(summary)) => {
@@ -517,13 +527,13 @@ pub(crate) async fn handle_compact(
                 let mut tui = shared.lock().expect("tui lock");
                 tui.ensure_gap(1);
                 tui.push_dim(format!(
-                    "└ compressed context ({msg_count} turns -> structured summary)"
+                    "└ Context compacted · {elapsed_str} ({msg_count} messages -> summary)"
                 ));
                 tui.ensure_gap(1);
                 tui.push_dim(summary);
                 tui.ensure_gap(1);
             } else {
-                println!("compressed context ({msg_count} turns -> structured summary)\n");
+                println!("Context compacted · {elapsed_str} ({msg_count} messages -> summary)\n");
                 println!("{summary}\n");
             }
         }

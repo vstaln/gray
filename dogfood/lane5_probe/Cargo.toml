@@ -1,0 +1,15 @@
+[package]
+name = "lane5_probe"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+gray-tools = { path = "../../crates/gray-tools" }
+gray-core = { path = "../../crates/gray-core" }
+gray-plugin = { path = "../../crates/gray-plugin" }
+gray = { path = "../../crates/gray" }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1.0"
+futures = "0.3"

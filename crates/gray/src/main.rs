@@ -99,6 +99,22 @@ async fn run_resume_subcommand(
             }
         }
     } else {
+        use std::io::IsTerminal as _;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            // Scripts/pipes: the picker needs a real terminal — list instead.
+            let summaries = gray::resume::recent_summaries(&store, all).await;
+            if summaries.is_empty() {
+                if all {
+                    anyhow::bail!("no saved sessions")
+                } else {
+                    anyhow::bail!("no saved sessions in this directory (try --all)")
+                }
+            }
+            for s in &summaries {
+                println!("{}", gray::resume::format_summary_row(s));
+            }
+            return Ok(());
+        }
         match gray::resume::run_resume_picker(all, None).await? {
             Some(id) => id,
             None => return Ok(()),

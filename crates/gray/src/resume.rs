@@ -120,6 +120,33 @@ pub fn latest_summary<'a>(
     filtered.into_iter().last()
 }
 
+/// Sorted (oldest first) session summaries for headless list output
+/// (`/resume` with piped stdout, `gray resume` without a TTY): the picker
+/// needs a real terminal, so these print as text instead. Same cwd filter
+/// as [`latest_summary`] (`--all` disables it).
+pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<SessionSummary> {
+    let cwd = std::env::current_dir().ok();
+    let filt = if all { None } else { cwd.as_deref() };
+    let mut out: Vec<SessionSummary> = store
+        .list()
+        .await
+        .into_iter()
+        .filter(|s| filt.is_none_or(|c| paths_match(&s.cwd, c)))
+        .collect();
+    out.sort_by_key(|s| s.started_at);
+    out
+}
+
+/// One text row for headless session lists: short id, preview, age.
+pub fn format_summary_row(s: &SessionSummary) -> String {
+    format!(
+        "{} — {} ({})",
+        short_id(&s.id),
+        preview_text(s, 80),
+        format_relative(s.started_at)
+    )
+}
+
 pub async fn resolve_prefix(
     store: &JsonlSessionStore,
     input: &str,
@@ -659,6 +686,17 @@ fn run_picker_sync(
 mod tests {
     use super::*;
     use gray_core::message::Message;
+
+    #[test]
+    fn headless_row_shows_short_id_preview_and_age() {
+        let s = SessionSummary {
+            id: SessionId::new("30e3f464-aaaa-bbbb-cccc-d60f2104dcd9"),
+            started_at: now_millis(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            first_user_text: Some("hi there".to_string()),
+        };
+        assert_eq!(format_summary_row(&s), "30e3f464 — hi there (just now)");
+    }
 
     async fn seed(
         store: &JsonlSessionStore,
