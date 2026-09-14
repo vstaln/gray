@@ -13,6 +13,13 @@ git root; also `~/.config/opencode/skills`, `~/.agents/skills`,
 the skill body is pasted visibly into the chat and then run as the turn.
 Loader: `crates/gray/src/skills/`. Copy me: `examples/hello-skill/SKILL.md`.
 
+Multi-skill repos install the same way (each `skills/*/SKILL.md` lands under
+`~/.gray/plugins/pi/<pkg>/`, already a discovery root) — e.g. ponytail:
+`gray plugin install npm:@dietrichgebert/ponytail` (verified, preferred) or
+`gray plugin install https://github.com/DietrichGebert/ponytail` (honest
+unverified clone, same as pi's `pi install git:...` flow). Run with
+`/skills ponytail`, `/skills ponytail-review`, …
+
 The model gets the freshly discovered `<available_skills>` list every turn
 (names, descriptions, exact file locations) and reads matches with bash
 (`cat <location>`) — context-only, no skill tool. Tools stay bash-only.
