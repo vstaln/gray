@@ -488,7 +488,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 config: config.clone(),
             };
             let deliver = gray::cron_serve::SaveLocalDeliver { home };
-            let rep = gray::cron_serve::tick_once(&store, &runner, &deliver).await?
+            let rep = gray::cron_serve::tick_once(&store, &runner, &deliver).await?;
             println!("tick: fired={} errors={}", rep.fired, rep.errors);
             Ok(())
         }
