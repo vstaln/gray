@@ -3006,9 +3006,13 @@ mod tests {
             (tools, index)
         };
         // Some(id): continuation — prefix carried for suffix appends, id stamped.
+        // NOTE: `map_chat_to_responses(..., "high")` sets reasoning, and the
+        // provider rejects `previous_response_id` with encrypted reasoning —
+        // so `resume_body_and_tool_prefix` drops the id here. Pass `None`
+        // effort to exercise the id-carrying path.
         let (tools, index) = prefix();
         let (body, kept_tools, kept_index) = resume_body_and_tool_prefix(
-            map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), Some("high")),
+            map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), None),
             tools,
             index,
             Some("resp_9".to_string()),
