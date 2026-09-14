@@ -1,11 +1,11 @@
 //! Size-capped log rotation: `gray.log` → `.1` → `.2`, best-effort, never panics.
 use std::path::Path;
 
-pub const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+pub(crate) const LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// If `path` exceeds `LOG_MAX_BYTES`, shift `.1`→`.2`, `path`→`.1`, truncate `path`.
 /// Missing/small files are left alone. All errors swallowed (logging must not crash boot).
-pub fn rotate_if_needed(path: &Path) {
+pub(crate) fn rotate_if_needed(path: &Path) {
     let Ok(meta) = std::fs::metadata(path) else {
         return;
     };
