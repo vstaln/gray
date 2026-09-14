@@ -204,14 +204,14 @@ fn env_rows_to_strings(body: &str, env_name: &str, depth: usize, mode: Mode) -> 
         if r != ' ' {
             s.push(r);
         }
-        return vec![s];
+        vec![s]
     } else if env_name == "cases" {
         let inner = rendered_rows
             .iter()
             .map(|cells| cells.join("  "))
             .collect::<Vec<_>>()
             .join("; ");
-        return vec![format!("{{{inner}}}")];
+        vec![format!("{{{inner}}}")]
     } else {
         // aligned/align/gather/split/equation/…: `&` is an invisible
         // alignment marker; rejoin cells with a single space. One string per
