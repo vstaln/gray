@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
@@ -97,7 +96,7 @@ mod user_cmds;
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
-pub use format::{THINKING_STYLE, fmt_event, fmt_usage, format_core_error};
+pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
@@ -137,6 +136,31 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     } else {
         println!("{msg}");
     }
+}
+
+/// Post-`run_connect_modal` feedback shared by `/connect` and the
+/// first-turn setup path: sync the chosen model into the composer and echo
+/// the provider name.
+pub(crate) fn push_provider_connected(config: &Config, tui: &TuiOpt) {
+    let Some((shared, _)) = tui else {
+        return;
+    };
+    let mut t = shared.lock().expect("tui lock");
+    if let Some(m) = &config.model {
+        t.set_model(m.clone());
+    }
+    let model_str = config.model.as_deref().unwrap_or("default");
+    let prov_name = crate::setup::load_catalog()
+        .ok()
+        .and_then(|c| {
+            c.values()
+                .find(|p| p.base_url == config.base_url)
+                .map(|p| p.name.clone())
+        })
+        .unwrap_or_else(|| "provider".to_string());
+    t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
+    t.ensure_gap(1);
+    let _ = t.draw();
 }
 
 /// Split a `/name argv…` line into (`/name`, argv words) for plugin
@@ -181,28 +205,8 @@ async fn run_plugin_command(
     owner.run_command(name, argv).await
 }
 
-/// 2E exit sweep: stop the session's background shell tasks (3 s deadline).
-/// Covers the registry key in use plus `"nosession"` (pre-session turns).
-async fn shutdown_shell_tasks(session_state: &Option<SessionState>, tui: &TuiOpt) {
-    let mut keys = vec!["nosession".to_string()];
-    if let Some(s) = session_state {
-        keys.push(s.session_id.as_str().to_string());
-    }
-    keys.dedup();
-    let mut stopped = 0;
-    for k in &keys {
-        stopped += crate::shell_drain::shutdown_shell_session(k).await;
-    }
-    if stopped > 0 {
-        say(
-            tui.as_ref().map(|(s, _)| s),
-            &format!(
-                "stopped {stopped} background task{}",
-                if stopped == 1 { "" } else { "s" }
-            ),
-        );
-    }
-}
+// No background shell tasks exist (blocking-only bash): nothing to stop on quit.
+async fn shutdown_shell_tasks(_session_state: &Option<SessionState>, _tui: &TuiOpt) {}
 
 /// Graceful sidecar teardown (`plugin/shutdown`); best-effort, never fails.
 async fn shutdown_hooks(agent: Option<&gray_core::agent::Agent>) {
@@ -302,10 +306,9 @@ pub async fn run_repl_mode(
     // boot: no forced wizard. A dim hint appears when unconfigured,
     // and the provider picker fires the moment credentials are needed.
     tokio::spawn(spawn_ctrl_c_policy());
-    // Shell drain (briefs 3A/2E): one process wake subscription for the
-    // session filter below, plus the 7-day log sweep.
+    // Shell logs: 7-day + 10MiB startup sweep (blocking-only bash keeps
+    // per-call logs on disk for the header's grep hint).
     crate::shell_drain::sweep_old_shell_logs();
-    let _shell_drain = crate::shell_drain::spawn_shell_drain();
 
     let mut unconfigured = config.model.is_none();
     // Piped first-run skips onboarding like `-p` (never blocks on a picker).
@@ -344,6 +347,16 @@ pub async fn run_repl_mode(
     let mut pending_history: Vec<Message> = Vec::new();
     let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
 
+    // `--session <id>` reopens that exact session; `-c`/`--last` reopens the
+    // most recent. Both resolve into `loaded` and share one apply block.
+    type Resumed = (
+        SessionId,
+        gray_session::SessionMeta,
+        Vec<gray_session::SessionEntry>,
+        JsonlSessionStore,
+    );
+    let mut loaded: Option<Resumed> = None;
+
     // `--session <id>`: reopen that exact session.
     if let Some(id) = session_id
         && let Some(root) = default_root()
@@ -351,28 +364,7 @@ pub async fn run_repl_mode(
         let store = JsonlSessionStore::new(root);
         let sid = SessionId::new(id);
         match store.load(&sid).await {
-            Ok((meta, entries)) => {
-                if config.model.is_none() && !meta.model.is_empty() {
-                    config.model = Some(meta.model.clone());
-                }
-                let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
-                pending_history = history.clone();
-                if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
-                    agent = Some(built.with_messages(history));
-                }
-                // T3.4 lifecycle: resumed sessions start with no ledger state
-                // (fresh builds start empty; clear anyway — see dispatch /new).
-                if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                    ledger.clear();
-                }
-                session_state = Some(SessionState {
-                    session_id: sid.clone(),
-                    store,
-                });
-                session_totals =
-                    SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
-                resumed_session_info = Some((sid, entries));
-            }
+            Ok((meta, entries)) => loaded = Some((sid, meta, entries, store)),
             Err(e) => {
                 println!("could not resume session {id}: {e}");
             }
@@ -384,25 +376,25 @@ pub async fn run_repl_mode(
     // list scan below is the fallback (cold start, pruned pointer, corrupt
     // recalled file — any failure degrades, never errors).
     if resume_last
-        && session_state.is_none()
+        && loaded.is_none()
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
         let cwd_now = std::env::current_dir().ok();
         // (session id, meta, entries) — one load per path, never two.
-        type Resumed = (
+        type Best = (
             SessionId,
             gray_session::SessionMeta,
             Vec<gray_session::SessionEntry>,
         );
-        let mut recalled: Option<Resumed> = None;
+        let mut recalled: Option<Best> = None;
         if let Some(c) = cwd_now.as_deref()
             && let Some(rid) = store.recall_validated(c).await
             && let Ok((meta, entries)) = store.load(&rid).await
         {
             recalled = Some((rid, meta, entries));
         }
-        let loaded: Option<Resumed> = match recalled {
+        let best: Option<Best> = match recalled {
             Some(hit) => Some(hit),
             None => {
                 let summaries = store.list().await;
@@ -420,27 +412,32 @@ pub async fn run_repl_mode(
                 }
             }
         };
-        if let Some((sid, meta, entries)) = loaded {
-            if config.model.is_none() && !meta.model.is_empty() {
-                config.model = Some(meta.model.clone());
-            }
-            let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
-            pending_history = history.clone();
-            if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
-                agent = Some(built.with_messages(history));
-            }
-            // T3.4 lifecycle: see the --session resume above.
-            if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                ledger.clear();
-            }
-            session_state = Some(SessionState {
-                session_id: sid.clone(),
-                store,
-            });
-            session_totals =
-                SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
-            resumed_session_info = Some((sid, entries));
+        if let Some((sid, meta, entries)) = best {
+            loaded = Some((sid, meta, entries, store));
         }
+    }
+
+    if let Some((sid, meta, entries, store)) = loaded {
+        if config.model.is_none() && !meta.model.is_empty() {
+            config.model = Some(meta.model.clone());
+        }
+        let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
+        pending_history = history.clone();
+        if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
+            agent = Some(built.with_messages(history));
+        }
+        // T3.4 lifecycle: resumed sessions start with no ledger state
+        // (fresh builds start empty; clear anyway — see dispatch /new).
+        if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+            ledger.clear();
+        }
+        session_state = Some(SessionState {
+            session_id: sid.clone(),
+            store,
+        });
+        session_totals =
+            SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
+        resumed_session_info = Some((sid, entries));
     }
 
     // Interactive terminals get the ratatui composer; piped input falls back
@@ -549,12 +546,7 @@ pub async fn run_repl_mode(
         for line in crate::host::take_host_say() {
             say(tui.as_ref().map(|(s, _)| s), &line);
         }
-        // Shell wake drain (brief 3A): point the background subscription at
-        // this session, then route queued exit/pattern notes.
-        crate::shell_drain::set_drain_session(&crate::shell_drain::shell_session_key(
-            session_state.as_ref().map(|s| s.session_id.as_str()),
-        ));
-        let mut cmd = if let Some(c) = pending_command.take() {
+        let cmd = if let Some(c) = pending_command.take() {
             c
         } else {
             let (line_text, images) = if interactive {
@@ -606,49 +598,6 @@ pub async fn run_repl_mode(
         if !matches!(&cmd, ReplCommand::Prompt(_) | ReplCommand::Empty) {
             pending_images.clear();
         }
-        // Route queued shell wakes: a turn about to run absorbs them via
-        // steer (newest tool result at the next request); idle at the prompt
-        // starts a synthetic follow-up turn as a system notice when
-        // shell.wake_on_exit, else steers for the next turn.
-        let wakes = crate::shell_drain::take_shell_wake();
-        if !wakes.is_empty() {
-            let joined = wakes.join("\n");
-            match &cmd {
-                ReplCommand::Prompt(_) => {
-                    if let Some(a) = agent.as_mut() {
-                        for w in wakes {
-                            a.steer(w);
-                        }
-                    } else {
-                        crate::shell_drain::queue_shell_wake(joined);
-                    }
-                }
-                ReplCommand::Empty if pending_images.is_empty() => {
-                    if crate::shell_drain::wake_on_exit() {
-                        say(tui.as_ref().map(|(s, _)| s), &joined);
-                        cmd = ReplCommand::Prompt(joined);
-                    } else if let Some(a) = agent.as_mut() {
-                        for w in wakes {
-                            a.steer(w);
-                        }
-                        say(tui.as_ref().map(|(s, _)| s), &joined);
-                    } else {
-                        say(tui.as_ref().map(|(s, _)| s), &joined);
-                        crate::shell_drain::queue_shell_wake(joined);
-                    }
-                }
-                _ => {
-                    if let Some(a) = agent.as_mut() {
-                        for w in wakes {
-                            a.steer(w);
-                        }
-                    } else {
-                        crate::shell_drain::queue_shell_wake(joined);
-                    }
-                }
-            }
-        }
-
         match cmd {
             ReplCommand::Empty => {
                 // Bare Enter (no images) is a no-op. An image-only submit runs

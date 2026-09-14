@@ -40,7 +40,7 @@ async fn search_inner(query: &str) -> anyhow::Result<Vec<SkillHit>> {
         .hits
         .into_iter()
         .filter_map(|h| match h.source {
-            crate::ops::SearchSource::ClawHub | crate::ops::SearchSource::Claude => {
+            crate::sources::Source::ClawHub | crate::sources::Source::ClaudeRepo => {
                 Some(SkillHit {
                     name: h.name,
                     version: h.version,
@@ -50,7 +50,7 @@ async fn search_inner(query: &str) -> anyhow::Result<Vec<SkillHit>> {
                     popularity: h.popularity,
                 })
             }
-            crate::ops::SearchSource::Gray | crate::ops::SearchSource::Pi => None,
+            crate::sources::Source::GrayIndex | crate::sources::Source::PiGallery => None,
         })
         .collect())
 }
@@ -191,7 +191,7 @@ fn finish_skill(p: PendingSkill) -> anyhow::Result<crate::ops::Report> {
         slug: p.slug.clone(),
         owner: p.owner,
         installed_version: p.version.clone(),
-        installed_at: crate::ops::now_secs(),
+        installed_at: crate::now_secs().to_string(),
         source_url: p.source_url.clone(),
     };
     if dest.exists() {

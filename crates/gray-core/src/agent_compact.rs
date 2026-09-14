@@ -129,9 +129,9 @@ mod compact_tests {
     use futures::future::BoxFuture;
     use std::sync::Arc;
 
-    /// Scripted provider for `complete_prompt`: returns one fixed summary
-    /// text as `TextDelta` + `MessageComplete`, mirroring `complete_prompt`'s
-    /// consumption of `StreamEvent::TextDelta`/`MessageComplete`.
+    /// Scripted provider for `complete_with_history`: returns one fixed
+    /// summary text as `TextDelta` + `MessageComplete`, mirroring the
+    /// production consumption of `StreamEvent::TextDelta`/`MessageComplete`.
     struct SummaryProvider {
         text: String,
     }

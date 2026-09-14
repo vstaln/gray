@@ -18,40 +18,12 @@ fn env_override() -> Option<bool> {
     }
 }
 
-fn auto_detect() -> bool {
-    let term = std::env::var("TERM_PROGRAM")
-        .unwrap_or_default()
-        .to_lowercase();
-    if ["kitty", "wezterm", "alacritty", "hyper", "iterm", "ghostty"]
-        .iter()
-        .any(|t| term.contains(t))
-    {
-        return true;
-    }
-    if std::env::var("TERMINAL_EMULATOR")
-        .unwrap_or_default()
-        .to_lowercase()
-        .contains("jetbrains")
-    {
-        return true;
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    [
-        format!("{home}/.fonts"),
-        format!("{home}/.local/share/fonts"),
-        "/usr/share/fonts".into(),
-    ]
-    .iter()
-    .any(|d| {
-        std::path::Path::new(d)
-            .join("SymbolsNerdFont-Regular.ttf")
-            .exists()
-    })
-}
-
-/// Cached Nerd Font availability (env override wins, else auto-detect).
+/// Cached Nerd Font availability: `GRAY_NERD_FONT` opt-in, ASCII otherwise.
+/// Auto-detection (TERM_PROGRAM / installed font files) guessed wrong often
+/// enough (ssh, tmux passthrough, dotfile-managed fonts) that the explicit
+/// env var is the only signal trusted.
 pub fn has_nerd_font() -> bool {
-    *NERD_FONT.get_or_init(|| env_override().unwrap_or_else(auto_detect))
+    *NERD_FONT.get_or_init(|| env_override().unwrap_or(false))
 }
 
 /// Icon by name: hexagons when available, else pure ASCII.

@@ -49,6 +49,17 @@ pub fn project_lock_path(cwd: &Path) -> PathBuf {
     cwd.join(".gray/plugins.json")
 }
 
+/// Effective `enabled` flag for a plugin name: the project overlay wins per
+/// name on the flag, missing entries default to enabled.
+pub fn effective_enabled(user: &LockFile, project: &LockFile, name: &str) -> bool {
+    project
+        .plugins
+        .get(name)
+        .map(|e| e.enabled)
+        .or_else(|| user.plugins.get(name).map(|e| e.enabled))
+        .unwrap_or(true)
+}
+
 /// Sidecar argv lists disabled by the user lock with the project lock
 /// overlaid as an enabled-flag-only delta: a project entry for the same
 /// name wins on the flag. Boot skips spawning a sidecar whose argv is in
@@ -60,13 +71,7 @@ pub fn disabled_sidecar_argvs(user: &LockFile, project: &LockFile) -> Vec<Vec<St
         user.plugins.keys().chain(project.plugins.keys()).collect();
     let mut out = Vec::new();
     for name in names {
-        let enabled = project
-            .plugins
-            .get(name)
-            .map(|e| e.enabled)
-            .or_else(|| user.plugins.get(name).map(|e| e.enabled))
-            .unwrap_or(true);
-        if !enabled
+        if !effective_enabled(user, project, name)
             && let Some(entry) = user.plugins.get(name)
             && !entry.argv.is_empty()
         {

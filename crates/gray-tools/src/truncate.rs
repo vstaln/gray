@@ -40,17 +40,12 @@ fn split_lines_for_counting(content: &str) -> Vec<&str> {
     lines
 }
 
-/// Keep the first `max_lines` / `max_bytes` of `content`, never splitting a line.
-/// Byte counting is UTF-8 length + 1 per newline (matching `Buffer.byteLength` in TS).
+/// Keep the first `DEFAULT_MAX_LINES` / `DEFAULT_MAX_BYTES` of `content`,
+/// never splitting a line. Byte counting is UTF-8 length + 1 per newline
+/// (matching `Buffer.byteLength` in TS).
 pub fn truncate_head(content: &str) -> TruncationResult {
-    truncate_head_with_limits(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
-}
-
-pub fn truncate_head_with_limits(
-    content: &str,
-    max_lines: usize,
-    max_bytes: usize,
-) -> TruncationResult {
+    let max_lines = DEFAULT_MAX_LINES;
+    let max_bytes = DEFAULT_MAX_BYTES;
     let total_bytes = content.len();
     let lines = split_lines_for_counting(content);
     let total_lines = lines.len();

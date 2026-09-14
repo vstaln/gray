@@ -84,7 +84,7 @@ pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<std::fs::Fi
         .truncate(false)
         .write(true)
         .open(path)?;
-    fs2::FileExt::lock_exclusive(&f)?;
+    f.lock()?;
     Ok(f)
 }
 
@@ -259,11 +259,11 @@ mod tests {
         let guard = acquire_update_lock_at(&path).unwrap();
         let probe = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         assert!(
-            fs2::FileExt::try_lock_exclusive(&probe).is_err(),
+            probe.try_lock().is_err(),
             "second exclusive lock must fail while held"
         );
         drop(guard);
-        assert!(fs2::FileExt::try_lock_exclusive(&probe).is_ok());
-        let _ = fs2::FileExt::unlock(&probe);
+        assert!(probe.try_lock().is_ok());
+        let _ = probe.unlock();
     }
 }

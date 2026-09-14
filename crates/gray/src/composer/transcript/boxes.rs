@@ -17,14 +17,7 @@ impl Tui {
         self.ensure_gap(1);
         let w = self.width().max(10);
         let box_lines = format_tool_box_lines(header.clone(), &body, w);
-        let height = box_lines.len() as u16;
-        let block = ratatui::widgets::Block::default()
-            .style(Style::default().bg(crate::theme::theme().surface_bg));
-        let _ = self.terminal.insert_before(height, |buf| {
-            Paragraph::new(box_lines.clone())
-                .block(block)
-                .render(buf.area, buf);
-        });
+        self.insert_paragraph(&box_lines, Some(crate::theme::theme().surface_bg));
         self.history_entries
             .push(crate::composer::TranscriptEntry::ToolBox { header, body });
         self.transcript.extend(box_lines);
@@ -206,33 +199,14 @@ impl Tui {
                                 id,
                                 content,
                                 is_error,
-                            } => {
-                                let (name, args) = tool_calls
-                                    .remove(id)
-                                    .map(|(n, a)| (n, Some(a)))
-                                    .unwrap_or_else(|| ("tool".to_string(), None));
-                                {
-                                    let header = args
-                                        .as_ref()
-                                        .map(|a| {
-                                            crate::tool_fmt::format_tool_call_header(
-                                                &name,
-                                                a,
-                                                Some(cwd),
-                                            )
-                                        })
-                                        .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                    let lines =
-                                        crate::tool_fmt::format_tool_result_lines_with_context(
-                                            &name,
-                                            args.as_ref(),
-                                            content,
-                                            *is_error,
-                                            Some(cwd),
-                                        );
-                                    self.push_tool_box(header, lines);
-                                }
-                            }
+                            } => replay_tool_result(
+                                self,
+                                &mut tool_calls,
+                                id,
+                                content,
+                                *is_error,
+                                cwd,
+                            ),
                             _ => {}
                         }
                     }
@@ -290,30 +264,7 @@ impl Tui {
                             is_error,
                         } = block
                         {
-                            let (name, args) = tool_calls
-                                .remove(id)
-                                .map(|(n, a)| (n, Some(a)))
-                                .unwrap_or_else(|| ("tool".to_string(), None));
-                            {
-                                let header = args
-                                    .as_ref()
-                                    .map(|a| {
-                                        crate::tool_fmt::format_tool_call_header(
-                                            &name,
-                                            a,
-                                            Some(cwd),
-                                        )
-                                    })
-                                    .unwrap_or_else(|| ratatui::text::Line::from(name.clone()));
-                                let lines = crate::tool_fmt::format_tool_result_lines_with_context(
-                                    &name,
-                                    args.as_ref(),
-                                    content,
-                                    *is_error,
-                                    Some(cwd),
-                                );
-                                self.push_tool_box(header, lines);
-                            }
+                            replay_tool_result(self, &mut tool_calls, id, content, *is_error, cwd);
                         }
                     }
                 }
@@ -337,6 +288,35 @@ impl Tui {
         self.seed_estimate_usage(replay_estimate);
         // pi-style: seam gap provided by viewport box padding, not transcript trailing blank
     }
+}
+
+/// Replays one persisted ToolResult into the scrollback: resolves the
+/// matching ToolUse name/args, renders header + body, pushes the card.
+/// Shared by the User-role and System-role replay arms.
+fn replay_tool_result(
+    tui: &mut Tui,
+    tool_calls: &mut HashMap<String, (String, serde_json::Value)>,
+    id: &str,
+    content: &str,
+    is_error: bool,
+    cwd: &std::path::Path,
+) {
+    let (name, args) = tool_calls
+        .remove(id)
+        .map(|(n, a)| (n, Some(a)))
+        .unwrap_or_else(|| ("tool".to_string(), None));
+    let header = args
+        .as_ref()
+        .map(|a| crate::tool_fmt::format_tool_call_header(&name, a, Some(cwd)))
+        .unwrap_or_else(|| Line::from(name.clone()));
+    let lines = crate::tool_fmt::format_tool_result_lines_with_context(
+        &name,
+        args.as_ref(),
+        content,
+        is_error,
+        Some(cwd),
+    );
+    tui.push_tool_box(header, lines);
 }
 
 /// Rebase absolute hyperlink targets onto a committed slice.

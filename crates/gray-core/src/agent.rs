@@ -101,17 +101,6 @@ pub trait Tool: Send + Sync {
     /// Static definition surfaced to the model (name, description, schema).
     fn def(&self) -> crate::message::ToolDef;
 
-    /// One-line snippet rendered in the system prompt's "Available tools" list.
-    /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
-    fn prompt_snippet(&self) -> Option<&str> {
-        None
-    }
-
-    /// Guideline bullets contributed to the system prompt when this tool is active.
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        None
-    }
-
     /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
     /// NOTE: an earlier `is_concurrency_safe` hook was
     /// deleted — tools run sequentially and nothing read it. If a parallel
@@ -252,10 +241,7 @@ pub struct Agent {
     pub(crate) tools: Vec<ToolDef>,
     pub(crate) messages: Vec<Message>,
     pub(crate) tool_timeout: Duration,
-    pub(crate) pending_steer: Vec<String>,
     pub(crate) hooks: Vec<Arc<dyn PluginHooks>>,
-    pub(crate) turn_state: crate::turn_queue::TurnState,
-    pub(crate) next_turn_id: u64,
     pub(crate) context_window: Option<usize>,
 }
 
@@ -269,10 +255,7 @@ impl Agent {
             tools: Vec::new(),
             messages: Vec::new(),
             tool_timeout: Duration::from_secs(120),
-            pending_steer: Vec::new(),
             hooks: Vec::new(),
-            turn_state: crate::turn_queue::TurnState::Idle,
-            next_turn_id: 1,
             context_window: None,
         }
     }
@@ -330,59 +313,6 @@ impl Agent {
         crate::agent_compact::est_tokens(&self.messages)
     }
 
-    /// Queues a steering note for the running turn. Drained before the next
-    /// request: appended to the newest tool result when one exists, else held
-    /// for the next turn boundary as a real user message. `redirect` is just
-    /// cancelling the [`ToolContext`] token, then calling this.
-    pub fn steer(&mut self, s: String) {
-        self.pending_steer.push(s);
-    }
-
-    /// Admit one input WITHOUT executing. Rejections mutate nothing.
-    pub fn submit(
-        &mut self,
-        input: Message,
-        mode: crate::turn_queue::SubmitMode,
-    ) -> crate::turn_queue::Submission {
-        use crate::turn_queue::{RejectReason, Submission, SubmitMode, TurnState, is_empty_input};
-        if is_empty_input(&input) {
-            return Submission::NotSubmitted(RejectReason::EmptyInput);
-        }
-        match (mode, self.turn_state) {
-            (_, TurnState::Idle) => {
-                let turn_id = self.next_turn_id;
-                self.next_turn_id += 1;
-                self.messages.push(input);
-                Submission::Started { turn_id }
-            }
-            (SubmitMode::StartOrSteer, TurnState::Busy { turn_id }) => {
-                self.pending_steer.push(input.context_text());
-                Submission::Steered { turn_id }
-            }
-            (SubmitMode::StartIfIdle, TurnState::Busy { turn_id }) => {
-                Submission::NotSubmitted(RejectReason::NotIdle { turn_id })
-            }
-        }
-    }
-
-    /// Live turn id, if a turn is executing.
-    pub fn current_turn(&self) -> Option<u64> {
-        match self.turn_state {
-            crate::turn_queue::TurnState::Idle => None,
-            crate::turn_queue::TurnState::Busy { turn_id } => Some(turn_id),
-        }
-    }
-
-    /// Releases a turn whose future was dropped instead of awaited. The
-    /// REPL preempts on Ctrl-C by dropping `run_streaming` inside an
-    /// outer `select!`, so the `Idle` reset at the end of `run` never
-    /// executes — without this, every later submit degrades to `Steered`
-    /// into a turn that never runs (instant no-op turns, stale usage).
-    /// Idempotent: safe on an already-idle agent.
-    pub fn abort_turn(&mut self) {
-        self.turn_state = crate::turn_queue::TurnState::Idle;
-    }
-
     /// Read-only view of the accumulated conversation so far.
     pub fn messages(&self) -> &[Message] {
         &self.messages
@@ -408,20 +338,9 @@ impl Agent {
         &self.tools
     }
 
-    /// Single-turn text completion with optional system prompt (used for compaction & summarization).
-    pub async fn complete_prompt(
-        &self,
-        prompt: &str,
-        system: Option<&str>,
-    ) -> Result<String, CoreError> {
-        self.complete_with_history(system, vec![Message::user(prompt)], Vec::new())
-            .await
-    }
-
-    /// [`complete_prompt`](Self::complete_prompt) generalized over history +
-    /// tools: streams one assistant reply and returns its prose. The
-    /// compaction-v2 in-band trigger call passes the live system + tools so
-    /// the request prefix stays cache-hot.
+    /// Single-turn completion over `history` + `tools`: streams one assistant
+    /// reply and returns its prose. The compaction-v2 in-band trigger call
+    /// passes the live system + tools so the request prefix stays cache-hot.
     pub async fn complete_with_history(
         &self,
         system: Option<&str>,
@@ -435,30 +354,12 @@ impl Agent {
         };
         drain_reply_text(self.provider.stream(req)).await
     }
-
-    /// Drains queued [`steer`](Self::steer) text into history before the next
-    /// request: appended to the newest tool result when one exists, else (at a
-    /// turn boundary only) injected as a real user message; mid-turn with no
-    /// tool results it stays queued for the next boundary.
-    pub(crate) fn drain_steer(&mut self, turn_boundary: bool) {
-        if self.pending_steer.is_empty() {
-            return;
-        }
-        if let Some(content) = newest_tool_result_mut(&mut self.messages) {
-            for text in std::mem::take(&mut self.pending_steer) {
-                content.push_str(&format!("\n\n[steer] {text}"));
-            }
-        } else if turn_boundary {
-            let joined = std::mem::take(&mut self.pending_steer).join("\n");
-            self.messages.push(Message::user(joined));
-        }
-    }
 }
 
-/// Shared single-turn reply drain behind [`Agent::complete_prompt`] and
-/// [`Agent::complete_with_history`]: collects `Text`/`Thinking` prose only
-/// and drops tool calls — the compaction trigger reply must never execute
-/// tools (codex v2 likewise collects only the compaction output item).
+/// Single-turn reply drain behind [`Agent::complete_with_history`]: collects
+/// `Text`/`Thinking` prose only and drops tool calls — the compaction trigger
+/// reply must never execute tools (codex v2 likewise collects only the
+/// compaction output item).
 async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreError> {
     let mut result = String::new();
     while let Some(event) = stream.next().await {
@@ -474,16 +375,6 @@ async fn drain_reply_text(mut stream: ProviderStream) -> Result<String, CoreErro
         }
     }
     Ok(result)
-}
-
-/// Newest tool-result content in history, for [`Agent::steer`] injection.
-fn newest_tool_result_mut(messages: &mut [Message]) -> Option<&mut String> {
-    messages.iter_mut().rev().find_map(|m| {
-        m.content.iter_mut().rev().find_map(|b| match b {
-            ContentBlock::ToolResult { content, .. } => Some(content),
-            _ => None,
-        })
-    })
 }
 
 /// Builds the finalized Thinking block, attaching captured Responses
@@ -1173,66 +1064,32 @@ mod agent_tests {
         );
     }
 
-    /// Provider that never yields: the turn stays inside `run_inner` until
-    /// the caller drops its future (what the REPL does on Ctrl-C).
-    struct PendingProvider;
-
-    #[async_trait]
-    impl Provider for PendingProvider {
-        fn stream(&self, _req: ChatRequest) -> ProviderStream {
-            Box::pin(futures::stream::pending())
-        }
-    }
-
+    /// Blank input is admitted nowhere: no provider request, no history
+    /// write, no events. Replaces the old queue's EmptyInput rejection.
     #[tokio::test]
-    async fn dropped_turn_future_blocks_admission_until_abort() {
-        // Regression: the REPL preempts a turn by dropping its
-        // `run_streaming` future (outer `select!` on the cancel token), so
-        // the `Idle` reset at the end of `run` never executes. Admission
-        // must be recoverable via `abort_turn`, or every later prompt
-        // degrades to an instant no-op steer (ms footer, stale tokens).
-        //
-        // NOTE: this drops the live future directly instead of racing a
-        // cancel token through `select!` — the inner stream loop has its
-        // own cancel arm, so a raced token resolves either way
-        // nondeterministically. The drop is what the outer arm does when
-        // it wins that race (e.g. preemption during tool execution, where
-        // the inner arm isn't on the stack).
-        use crate::turn_queue::{Submission, SubmitMode};
+    async fn blank_input_never_reaches_provider_or_history() {
+        let provider = FakeProvider::new(vec![]);
+        let seen = provider.seen_systems();
         let mut agent = Agent::new(
-            Box::new(PendingProvider),
+            Box::new(provider),
             Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
         );
-        let mut on_event = |_: &AgentEvent| {};
-        let mut run_future = Box::pin(agent.run_streaming(
-            Message::user("hi"),
-            ToolContext::default(),
-            &mut on_event,
-        ));
-        // Park the turn inside its provider poll, then drop it mid-turn.
-        futures::future::poll_fn(|cx| {
-            use futures::FutureExt as _;
-            let _ = run_future.poll_unpin(cx);
-            std::task::Poll::Ready(())
-        })
-        .await;
-        drop(run_future);
-        // The dropped future never reset its admission flag...
-        assert!(
-            matches!(
-                agent.submit(Message::user("next"), SubmitMode::StartOrSteer),
-                Submission::Steered { .. }
-            ),
-            "dropped turn must leave admission busy (the trap)"
+        agent.messages.push(Message::user("prior"));
+
+        let events = agent
+            .run(Message::user("   "), ToolContext::default())
+            .await
+            .expect("blank input is a no-op, not an error");
+
+        assert!(events.is_empty(), "no events for blank input");
+        assert_eq!(
+            agent.messages().len(),
+            1,
+            "blank input must not be recorded"
         );
-        // ...until the preempting layer releases it.
-        agent.abort_turn();
         assert!(
-            matches!(
-                agent.submit(Message::user("next"), SubmitMode::StartOrSteer),
-                Submission::Started { .. }
-            ),
-            "abort_turn must restore admission"
+            seen.lock().expect("seen lock poisoned").is_empty(),
+            "provider must not be called"
         );
     }
 
@@ -1756,56 +1613,6 @@ mod agent_tests {
                 .iter()
                 .any(|e| matches!(e, AgentEvent::TurnEnd { .. }))
         );
-    }
-
-    #[tokio::test]
-    async fn steer_appends_to_newest_tool_result() {
-        let provider = FakeProvider::new(vec![tool_script("c1"), end_script(), end_script()]);
-        let mut agent = Agent::new(
-            Box::new(provider),
-            Arc::new(FakeExecutor::new(ToolOutput::ok("data"))),
-        )
-        .with_tools(vec![tool_def()]);
-        agent
-            .run(Message::user("go"), ToolContext::default())
-            .await
-            .unwrap();
-
-        agent.steer("be faster".to_string());
-        agent
-            .run(Message::user("next"), ToolContext::default())
-            .await
-            .unwrap();
-
-        let newest = agent
-            .messages()
-            .iter()
-            .rev()
-            .find_map(|m| {
-                m.content.iter().find_map(|b| match b {
-                    ContentBlock::ToolResult { content, .. } => Some(content.clone()),
-                    _ => None,
-                })
-            })
-            .expect("tool result must exist");
-        assert!(newest.contains("[steer] be faster"), "got {newest}");
-    }
-
-    #[tokio::test]
-    async fn steer_without_tool_results_becomes_user_message() {
-        let provider = FakeProvider::new(vec![end_script()]);
-        let mut agent = Agent::new(
-            Box::new(provider),
-            Arc::new(FakeExecutor::new(ToolOutput::ok("unused"))),
-        );
-
-        agent.steer("focus on tests".to_string());
-        agent
-            .run(Message::user("go"), ToolContext::default())
-            .await
-            .unwrap();
-
-        assert_eq!(agent.messages()[1], Message::user("focus on tests"));
     }
 
     #[test]

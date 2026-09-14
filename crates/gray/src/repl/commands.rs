@@ -126,37 +126,34 @@ pub(crate) fn resolve(name: &str) -> Option<&'static CmdDef> {
 /// Commands matching `filter` (the text after '/'), auto-sorted by relevance.
 pub(crate) fn completion_matches(filter: &str) -> Vec<(&'static str, &'static str)> {
     let f = filter.to_lowercase();
-    let mut matches: Vec<(&'static str, &'static str)> = Vec::new();
+    let mut matches: Vec<(u8, &'static str, &'static str)> = Vec::new();
     for d in REGISTRY {
         let is_match = f.is_empty()
             || d.name.to_lowercase().contains(&f)
             || d.desc.to_lowercase().contains(&f)
             || d.aliases.iter().any(|a| a.contains(f.as_str()));
-        if is_match {
-            matches.push((d.name, d.desc));
+        if !is_match {
+            continue;
         }
-    }
-    matches.sort_by_key(|(n, _)| {
-        let nl = n.to_lowercase();
-        if nl == f {
+        let nl = d.name.to_lowercase();
+        let rank = if nl == f {
             0
         } else if nl.starts_with(&f) {
             1
-        } else if REGISTRY
-            .iter()
-            .any(|d| d.name == *n && d.aliases.contains(&f.as_str()))
-        {
+        } else if d.aliases.contains(&f.as_str()) {
             2
-        } else if REGISTRY
-            .iter()
-            .any(|d| d.name == *n && d.aliases.iter().any(|a| a.starts_with(f.as_str())))
-        {
+        } else if d.aliases.iter().any(|a| a.starts_with(f.as_str())) {
             3
         } else {
             4
-        }
-    });
+        };
+        matches.push((rank, d.name, d.desc));
+    }
+    matches.sort_by_key(|(rank, _, _)| *rank);
     matches
+        .into_iter()
+        .map(|(_, name, desc)| (name, desc))
+        .collect()
 }
 
 /// Completion for the composer prompt: static commands, skill names after
@@ -237,15 +234,21 @@ pub(crate) fn complete_command_args(
     out
 }
 
+/// Filter a static `(name, description)` table by the lowercased typed args;
+/// empty filter lists every row. Rows fill as `{cmd} {name}`.
+fn complete_from_table(cmd: &str, arg_text: &str, table: &[(&str, &str)]) -> Vec<(String, String)> {
+    let f = arg_text.to_lowercase();
+    table
+        .iter()
+        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
+        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
+        .collect()
+}
+
 /// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): levels from
 /// [`crate::setup::THINKING_LEVELS`], the exact set `handle_thinking` accepts.
 fn complete_thinking_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
-    let f = arg_text.to_lowercase();
-    crate::setup::THINKING_LEVELS
-        .iter()
-        .filter(|(l, _)| f.is_empty() || l.contains(f.as_str()))
-        .map(|(l, d)| (format!("{cmd} {l}"), d.to_string()))
-        .collect()
+    complete_from_table(cmd, arg_text, crate::setup::THINKING_LEVELS)
 }
 
 /// Suffixes for `/resume`: session picker flags.
@@ -254,12 +257,7 @@ fn complete_resume_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
         ("--last", "resume most recent session"),
         ("--all", "include other directories"),
     ];
-    let f = arg_text.to_lowercase();
-    FLAGS
-        .iter()
-        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
-        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
-        .collect()
+    complete_from_table(cmd, arg_text, FLAGS)
 }
 
 /// Suffixes for `/skills` (alias `/skill`): discovered skill names;
@@ -277,11 +275,7 @@ fn complete_skill_args(cmd: &str, arg_text: &str, cwd: &std::path::Path) -> Vec<
 /// Suffixes for `/agentsmd` (alias `/sys`).
 fn complete_agentsmd_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
     const SUBS: &[(&str, &str)] = &[("show", "print prompt file"), ("reset", "restore default")];
-    let f = arg_text.to_lowercase();
-    SUBS.iter()
-        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
-        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
-        .collect()
+    complete_from_table(cmd, arg_text, SUBS)
 }
 
 /// Suffixes for `/model`: ids from the in-memory model cache (empty until
@@ -311,11 +305,7 @@ fn complete_plugin_args(
         ("disable", "disable a plugin"),
         ("check", "run conformance checks on a plugin dir"),
     ];
-    let f = arg_text.to_lowercase();
-    SUBS.iter()
-        .filter(|(s, _)| f.is_empty() || s.contains(f.as_str()))
-        .map(|(s, d)| (format!("{cmd} {s}"), d.to_string()))
-        .collect()
+    complete_from_table(cmd, arg_text, SUBS)
 }
 
 /// Suffixes for `/context`: L1 (`[number]|auto|status|reserve|keep`) and L2

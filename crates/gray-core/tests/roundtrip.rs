@@ -68,9 +68,11 @@ fn test_full_chat_request_with_all_content_blocks_and_tools_roundtrip() {
         Message::assistant("Done! All tests are passing."),
     ];
 
-    let request = ChatRequest::new(messages)
-        .with_system("Global system prompt configuration")
-        .with_tools(tools);
+    let request = ChatRequest {
+        system: Some("Global system prompt configuration".to_string()),
+        messages,
+        tools,
+    };
 
     // Serialize to JSON string
     let json_output = serde_json::to_string_pretty(&request)
@@ -193,7 +195,11 @@ fn test_thinking_block_roundtrips_losslessly() {
             ContentBlock::text("visible"),
         ],
     );
-    let req = ChatRequest::new(vec![msg.clone()]);
+    let req = ChatRequest {
+        system: None,
+        messages: vec![msg.clone()],
+        tools: Vec::new(),
+    };
     let json = serde_json::to_string(&req).unwrap();
     let back: ChatRequest = serde_json::from_str(&json).unwrap();
     assert_eq!(back.messages[0], msg);

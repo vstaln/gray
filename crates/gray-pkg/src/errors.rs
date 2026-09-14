@@ -24,13 +24,6 @@ fn errors_path() -> PathBuf {
     crate::gray_home().join("errors.json")
 }
 
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default()
-}
-
 fn read_all() -> Vec<ErrorEntry> {
     match std::fs::read_to_string(errors_path()) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_default(),
@@ -43,7 +36,7 @@ fn read_all() -> Vec<ErrorEntry> {
 pub fn record(source: &str, item: &str, message: String) {
     let mut entries = read_all();
     entries.push(ErrorEntry {
-        ts_secs: now_secs(),
+        ts_secs: crate::now_secs(),
         source: source.to_string(),
         item: item.to_string(),
         message,

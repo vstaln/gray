@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -79,13 +78,6 @@ struct IndexCache {
     index: Index,
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 fn cache_path() -> PathBuf {
     crate::plugins_dir().join("index-cache.json")
 }
@@ -110,7 +102,7 @@ pub async fn fetch_index(client: &reqwest::Client) -> anyhow::Result<Index> {
     let url = index_url();
     let cached = read_cache().ok();
     if let Some(c) = &cached
-        && now_secs().saturating_sub(c.fetched_at) < INDEX_TTL_SECS
+        && crate::now_secs().saturating_sub(c.fetched_at) < INDEX_TTL_SECS
     {
         return Ok(c.index.clone());
     }
@@ -123,7 +115,7 @@ pub async fn fetch_index(client: &reqwest::Client) -> anyhow::Result<Index> {
     if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
         let mut cache =
             cached.ok_or_else(|| anyhow::anyhow!("index revalidated but no cache present"))?;
-        cache.fetched_at = now_secs();
+        cache.fetched_at = crate::now_secs();
         let index = cache.index.clone();
         write_cache(&cache)?;
         return Ok(index);
@@ -137,7 +129,7 @@ pub async fn fetch_index(client: &reqwest::Client) -> anyhow::Result<Index> {
     let index: Index = resp.json().await?;
     write_cache(&IndexCache {
         etag,
-        fetched_at: now_secs(),
+        fetched_at: crate::now_secs(),
         index: index.clone(),
     })?;
     Ok(index)

@@ -9,14 +9,13 @@
 //! signatures unchanged).
 //!
 //! Marker protocol: `middle_out` leaves a literal `{{MARKER}}` line where
-//! `resume_hint(task, view)` output goes. The caller (1D) replaces it, so
-//! `middle_out` stays pure over `(log, budgets, base_offset)` with no task
-//! id in its signature.
+//! `resume_hint(view)` output goes. The caller replaces it, so
+//! `middle_out` stays pure over `(log, budgets, base_offset)`.
 
 use std::path::Path;
 use std::time::Duration;
 
-use super::contract::{ExitReport, TaskId, TaskInfo, VIEW_HEAD_FRACTION, View};
+use super::contract::{ExitReport, VIEW_HEAD_FRACTION, View};
 
 // ── formatting helpers ──────────────────────────────────────────────
 
@@ -198,7 +197,8 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
 }
 
 /// Marker line for the `{{MARKER}}` slot. Empty string when nothing omitted.
-pub fn resume_hint(task: TaskId, view: &View) -> String {
+/// Marker line for the `{{MARKER}}` slot. Empty string when nothing omitted.
+pub fn resume_hint(view: &View) -> String {
     let Some((a, b)) = view.omitted_range else {
         return String::new();
     };
@@ -206,38 +206,34 @@ pub fn resume_hint(task: TaskId, view: &View) -> String {
         return String::new();
     }
     format!(
-        "[\u{2026} {} lines / {} chars omitted (bytes {}\u{2013}{}). grep the log path above, or shell_output(task_id=\"{}\", from_offset={}) to page \u{2026}]",
+        "[\u{2026} {} lines / {} chars omitted (bytes {}\u{2013}{}). grep the log path above.]",
         fmt_num(view.omitted_lines),
         fmt_num(view.omitted_bytes),
         fmt_num_u64(a),
         fmt_num_u64(b),
-        task,
-        a,
     )
 }
 
-/// First result line: "{label}{(note)} · {elapsed} · {total} lines[ · showing
-/// first h + last t · omitted · grep-hint] · log {path}[ · no output]".
+/// First result line: "{label}{(note)} \u{00b7} {elapsed} \u{00b7} {total} lines[ \u{00b7} showing
+/// first h + last t \u{00b7} omitted \u{00b7} grep-hint] \u{00b7} log {path}[ \u{00b7} no output]".
 /// The grep hint points at the on-disk log (never rerun to see more); the
-/// log path stays last so `split("· log ")` parsers keep working.
-/// Running tasks (report None) render as "task tN running · pid P".
+/// log path stays last so `split("\u{00b7} log ")` parsers keep working.
 pub fn header(
-    task: &TaskInfo,
-    report: Option<&ExitReport>,
+    report: &ExitReport,
     view: Option<&View>,
     elapsed: Duration,
+    log_path: &std::path::Path,
 ) -> String {
-    let label = report
-        .map(|r| r.label.clone())
-        .unwrap_or_else(|| format!("task {} running · pid {}", task.id, task.pid));
+    let label = report.label.clone();
     let note = report
-        .and_then(|r| r.note.as_ref())
+        .note
+        .as_ref()
         .map(|n| format!(" ({n})"))
         .unwrap_or_default();
     let total = view.map(|v| v.total_lines).unwrap_or(0);
     let showing = match view {
         Some(v) if v.omitted_lines > 0 || v.omitted_bytes > 0 => format!(
-            " · showing first {} + last {} · {} lines / {} chars omitted · grep the log for more (shell_output pages it)",
+            " \u{00b7} showing first {} + last {} \u{00b7} {} lines / {} chars omitted \u{00b7} grep the log for more",
             fmt_num(v.shown_lines.0),
             fmt_num(v.shown_lines.1),
             fmt_num(v.omitted_lines),
@@ -246,13 +242,13 @@ pub fn header(
         _ => String::new(),
     };
     let mut out = format!(
-        "{label}{note} · {} · {} lines{showing} · log {}",
+        "{label}{note} \u{00b7} {} \u{00b7} {} lines{showing} \u{00b7} log {}",
         format_elapsed(elapsed),
         fmt_num(total),
-        home_relative(&task.log_path),
+        home_relative(log_path),
     );
     if total == 0 {
-        out.push_str(" · no output");
+        out.push_str(" \u{00b7} no output");
     }
     out
 }
@@ -261,21 +257,11 @@ pub fn header(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::time::Instant;
 
-    use super::super::contract::{INLINE_BUDGET_BYTES, MEM_HEAD_BYTES, MEM_TAIL_BYTES, TaskState};
+    use super::super::contract::{INLINE_BUDGET_BYTES, MEM_HEAD_BYTES, MEM_TAIL_BYTES};
 
-    fn task() -> TaskInfo {
-        TaskInfo {
-            id: TaskId(4),
-            pid: 123,
-            pgid: 123,
-            command: "test".into(),
-            started: Instant::now(),
-            log_path: PathBuf::from("/home/u/.gray/shell/s/t4.log"),
-            bytes: 0,
-            state: TaskState::Running,
-        }
+    fn log_path() -> PathBuf {
+        PathBuf::from("/home/u/.gray/shell/s/bash-test.log")
     }
 
     fn report(label: &str, note: Option<&str>) -> ExitReport {
@@ -383,15 +369,10 @@ mod tests {
     fn resume_hint_marker_shape() {
         let log = numbered_lines(3000);
         let v = middle_out(&log, 50 * 1024, 2000, 0);
-        let m = resume_hint(TaskId(4), &v);
-        let (a, _) = v.omitted_range.unwrap();
-        assert!(m.contains("shell_output(task_id=\"t4\""), "{m}");
-        assert!(m.contains(&format!("from_offset={a}")), "{m}");
+        let m = resume_hint(&v);
         assert!(m.contains("lines / "), "{m}");
-        assert_eq!(
-            resume_hint(TaskId(4), &middle_out(b"hi\n", 50 * 1024, 2000, 0)),
-            ""
-        );
+        assert!(m.contains("grep the log path above"), "{m}");
+        assert_eq!(resume_hint(&middle_out(b"hi\n", 50 * 1024, 2000, 0)), "");
     }
 
     #[test]
@@ -401,7 +382,7 @@ mod tests {
         let gray = dir.path().to_string_lossy().into_owned();
         let prev = std::env::var("GRAY_HOME").ok();
         unsafe { std::env::set_var("GRAY_HOME", &gray) };
-        let p = std::path::PathBuf::from(&gray).join("shell/s/t1.log");
+        let p = std::path::PathBuf::from(&gray).join("shell/s/bash-test.log");
         let shown = home_relative(&p);
         match prev {
             Some(v) => unsafe { std::env::set_var("GRAY_HOME", v) },
@@ -411,27 +392,23 @@ mod tests {
             shown.starts_with("~/"),
             "GRAY_HOME path must shorten to ~, got {shown}"
         );
-        assert!(shown.contains("shell/s/t1.log"), "{shown}");
+        assert!(shown.contains("shell/s/bash-test.log"), "{shown}");
     }
 
     #[test]
     fn header_goldens() {
         // Need HOME for the ~ path; skip path assertion if HOME differs.
-        let t = task();
         let r = report("exit 0", None);
         let v = middle_out(b"hi\n", 50 * 1024, 2000, 0);
-        let h = header(&t, Some(&r), Some(&v), Duration::from_millis(1200));
+        let h = header(&r, Some(&v), Duration::from_millis(1200), &log_path());
         assert!(h.starts_with("exit 0 · 1.2s · 1 lines · log "), "{h}");
 
         let log = numbered_lines(3000);
         let v2 = middle_out(&log, 50 * 1024, 2000, 0);
-        let h2 = header(&t, Some(&r), Some(&v2), Duration::from_secs(41));
+        let h2 = header(&r, Some(&v2), Duration::from_secs(41), &log_path());
         assert!(h2.contains("showing first"), "{h2}");
         assert!(h2.contains("omitted"), "{h2}");
-        assert!(
-            h2.contains("grep the log for more (shell_output pages it)"),
-            "{h2}"
-        );
+        assert!(h2.contains("grep the log for more"), "{h2}");
         // Whole views carry no hint: the log path stays the last field.
         assert!(
             !h.contains("grep the log for more"),
@@ -443,7 +420,7 @@ mod tests {
             "exit 137 (SIGKILL)",
             Some("likely OOM-killed; check `dmesg | tail`"),
         );
-        let h3 = header(&t, Some(&kill), Some(&v), Duration::from_secs(2));
+        let h3 = header(&kill, Some(&v), Duration::from_secs(2), &log_path());
         assert!(h3.contains("exit 137 (SIGKILL) (likely OOM-killed"), "{h3}");
 
         let benign = ExitReport {
@@ -451,10 +428,10 @@ mod tests {
             label: "exit 1".into(),
             note: Some("no matches — not an error".into()),
         };
-        let h4 = header(&t, Some(&benign), Some(&v), Duration::from_millis(100));
+        let h4 = header(&benign, Some(&v), Duration::from_millis(100), &log_path());
         assert!(h4.contains("(no matches — not an error)"), "{h4}");
 
-        let h5 = header(&t, Some(&r), None, Duration::from_millis(100));
+        let h5 = header(&r, None, Duration::from_millis(100), &log_path());
         assert!(h5.contains("no output"), "{h5}");
     }
 

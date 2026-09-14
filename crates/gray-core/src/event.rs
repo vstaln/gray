@@ -178,18 +178,6 @@ pub enum StopReason {
     Error,
 }
 
-impl std::fmt::Display for StopReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::EndTurn => write!(f, "end_turn"),
-            Self::ToolUse => write!(f, "tool_use"),
-            Self::MaxTokens => write!(f, "max_tokens"),
-            Self::Cancelled => write!(f, "cancelled"),
-            Self::Error => write!(f, "error"),
-        }
-    }
-}
-
 /// High-level events emitted by the agent loop during turn execution.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -10,7 +10,7 @@ use gray_plugin::lock::{LockEntry, LockFile, lock_path, project_lock_path};
 /// Test-local copy of the two builtin plugins (no surface extras).
 fn default_plugins() -> Vec<Arc<dyn Plugin>> {
     vec![
-        Arc::new(ToolsBasicPlugin::default()) as Arc<dyn Plugin>,
+        Arc::new(ToolsBasicPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ]
 }

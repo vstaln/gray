@@ -17,10 +17,11 @@ mod boxes;
 mod cards;
 mod rows;
 
+pub(crate) use crate::tui::strip_ansi;
 pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
-    format_user_prompt_lines, left_pad, strip_ansi, thinking_style, word_flush_cut,
-    wrap_styled_line, wrap_styled_line_with_ranges,
+    format_user_prompt_lines, left_pad, thinking_style, word_flush_cut, wrap_styled_line,
+    wrap_styled_line_with_ranges,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,10 +57,7 @@ impl Tui {
             return;
         }
         let lines: Vec<Line<'static>> = (0..need).map(|_| Line::from("")).collect();
-        let h = need as u16;
-        let _ = self.terminal.insert_before(h, |buf| {
-            Paragraph::new(lines.clone()).render(buf.area, buf);
-        });
+        self.insert_paragraph(&lines, None);
         self.history_entries.push(super::TranscriptEntry::Gap(need));
         self.transcript.extend(lines);
         cap_history_entries(&mut self.history_entries);
@@ -219,14 +217,7 @@ impl Tui {
     ) {
         self.ensure_gap(1);
         let lines = format_user_prompt_lines(text, attached, self.width().max(10));
-        let height = lines.len() as u16;
-        let block = ratatui::widgets::Block::default()
-            .style(Style::default().bg(crate::theme::theme().surface_bg));
-        let _ = self.terminal.insert_before(height, |buf| {
-            Paragraph::new(lines.clone())
-                .block(block)
-                .render(buf.area, buf);
-        });
+        self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
         self.history_entries
             .push(super::TranscriptEntry::UserPrompt(
                 text.to_string(),

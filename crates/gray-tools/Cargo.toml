@@ -6,8 +6,6 @@ edition.workspace = true
 [dependencies]
 gray-core = { workspace = true }
 async-trait = { workspace = true }
-futures = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
@@ -17,7 +15,5 @@ uuid = { workspace = true }
 libc = { workspace = true }
 ignore = { workspace = true }
 globset = { workspace = true }
-memchr = "2"
 infer = "0.19"
-regex = "1"
 
