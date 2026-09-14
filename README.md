@@ -33,7 +33,7 @@ Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, sel
 | | |
 |---|---|
 | **One binary, no runtime** | musl-static on Linux, Rust-static on macOS. `curl \| sh` lands you in a REPL; `gray update` self-updates. |
-| **Any provider, your keys** | OpenRouter, DeepSeek, Groq, OpenAI, ollama, vLLM, LM Studio — anything OpenAI-compatible — plus OAuth sign-in for xAI/Grok and Codex/ChatGPT. Searchable model picker over the bundled models.dev catalog. |
+| **Any provider, your keys** | OpenAI, Anthropic, Google, OpenRouter, DeepSeek, Groq, Mistral, xAI — anything OpenAI-compatible, local models via Ollama — with Anthropic-style prompt caching on Claude models. Searchable model picker over the bundled models.dev catalog. |
 | **Sessions that survive** | JSONL transcripts in `~/.gray/sessions` with parent-id branching. `-c` reopens the latest, `/resume` picks any of them. Interrupted turns keep what reached memory. |
 | **Context that manages itself** | The window auto-resolves from your provider, gray auto-compacts before the limit and retries once on overflow. `/compact` forces it by hand. |
 | **Bash only** | The surface is `bash` + `shell_output` + `shell_kill` + `sleep` — read, search, edit, run, all through bash. The model schedules its own recurring work by running `gray cron add …` through bash. Ctrl-C cancels a runaway turn. |
@@ -66,7 +66,7 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 
 | command | what it does |
 |---|---|
-| `/provider` | pick a provider — free tier, API key, OAuth (xAI / Codex), or local |
+| `/provider` | pick a provider — API key, ChatGPT/Grok login, free tier, or local |
 | `/key openrouter` | paste an API key right in the CLI (input hidden), stored per-provider in `~/.gray/auth.json` |
 | `/model` | searchable picker over the bundled models.dev catalog |
 
@@ -112,7 +112,7 @@ Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--sessi
 
 Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, providers, config) · [docs/plugins.md](docs/plugins.md) (plugin authoring) · [docs/protocol-v1.md](docs/protocol-v1.md) (frozen wire spec).
 
-**Skills** — `SKILL.md` bodies discovered across opencode / claude / agent directories. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
+**Skills** — `SKILL.md` bodies discovered in your global (`~/.gray/skills`) and project (`.gray/skills`) directories, plus a few conventional shared skill locations. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
 
 **Plugins** — sidecar child processes speaking newline-delimited JSON over stdio, with timeout and crash degradation. `gray.yml` profiles order built-ins and sidecars; [`plugins/echo/`](plugins/echo) is a copy-paste reference implementation.
 

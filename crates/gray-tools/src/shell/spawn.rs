@@ -26,10 +26,11 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("SUDO_ASKPASS", "/bin/false")
         .env("GRAY_TASK_ID", task.to_string())
-        .env("NO_COLOR", "1")
         .env("TERM", "dumb")
         .env("PAGER", "cat")
-        .env("GIT_PAGER", "cat");
+        .env("MANPAGER", "cat")
+        .env("GIT_PAGER", "cat")
+        .env("SYSTEMD_PAGER", "cat");
     #[cfg(unix)]
     {
         unsafe {

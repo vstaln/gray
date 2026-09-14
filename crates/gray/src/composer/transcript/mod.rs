@@ -88,6 +88,24 @@ impl Tui {
         let _ = self.draw();
     }
 
+    /// Live terminal width for wrapping cuts. `last_width` goes stale
+    /// between resizes (the reflow debounce only updates it ~75ms+ later),
+    /// so wrapping against it paints rows for the old geometry: narrowing
+    /// then yields over-wide rows that Paragraph hard-clips at the right
+    /// edge, reading as "shortened" reasoning. Falls back to `last_width`
+    /// when the size probe fails (headless tests).
+    pub(crate) fn live_width(&mut self) -> usize {
+        // Gated on an actual change: an unconditional reflow here would
+        // clear + re-emit the whole scrollback on every streamed chunk.
+        if let Ok((cols, _)) = crossterm::terminal::size()
+            && cols.max(20) != self.last_width
+        {
+            self.pending_resize = None;
+            self.reflow_on_resize(cols.max(20));
+        }
+        self.width().max(10)
+    }
+
     pub fn stream_thinking(&mut self, chunk: &str) {
         self.turn_had_thinking = true;
         if self.hide_thinking {
@@ -102,8 +120,11 @@ impl Tui {
             self.set_status(Some("Thinking"));
         }
         self.thinking = true;
-        self.pending.push_str(&strip_ansi(chunk));
-        let w = self.width().max(10);
+        // Bare sentence boundaries from stripped providers
+        // (`truncated.Identifying`): exactly one space when the join
+        // needs it, never doubled, BPE splits untouched.
+        gray_core::event::append_thinking_chunk(&mut self.pending, &strip_ansi(chunk));
+        let w = self.live_width();
         let max_w = w.saturating_sub(4).max(1);
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
@@ -132,8 +153,10 @@ impl Tui {
         let clean = strip_ansi(chunk);
         // Feed the live viewport width so tables lay out to fit (or fall back
         // to records) instead of rendering wide and shredding downstream.
-        // No-op when unchanged; resize mid-table only affects new tables.
-        let tw = self.width().max(10).saturating_sub(2);
+        // Reflows first when the size actually changed (same ~75ms trailing
+        // debounce as the idle ticker), so a resize mid-table re-lays the
+        // committed rows instead of only affecting new tables.
+        let tw = self.live_width().saturating_sub(2);
         self.markdown_renderer.set_max_table_width(Some(tw));
         self.markdown_renderer
             .push_and_render(&clean, Some(gray_markdown::get_syntect()));
@@ -405,6 +428,71 @@ mod tests {
             );
             assert!(r.start >= prev_end, "ranges ascend without overlap");
             prev_end = r.end;
+        }
+    }
+
+    /// Resize regression: the live thinking cut (`word_flush_cut` at the
+    /// old width) followed by a reflow re-wrap (each stored chunk wrapped
+    /// at the new width) must preserve every word — narrowing or widening
+    /// the window mid-turn must never "shorten" the reasoning.
+    #[test]
+    fn thinking_survives_resize_round_trip() {
+        let text = "The second command was blocked by a guard because of `curl ... | python3`? \
+            Weird, the first one worked. Let me avoid pipes into interpreters and write to a file instead";
+        let norm = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        for (w_live, w_new) in [(100usize, 40usize), (40usize, 100usize)] {
+            // live cut, mirroring `stream_thinking`
+            let max_live = w_live.saturating_sub(4).max(1);
+            let mut chunks: Vec<String> = Vec::new();
+            let mut rest: Vec<char> = text.chars().collect();
+            while !rest.is_empty() {
+                let s: String = rest.iter().collect();
+                if display_width(&s) < max_live {
+                    chunks.push(s);
+                    break;
+                }
+                let cut = word_flush_cut(&rest, max_live);
+                assert!(cut > 0, "cut must progress");
+                chunks.push(rest[..cut].iter().collect());
+                rest = rest[cut..].to_vec();
+            }
+            // reflow re-wrap, mirroring `reflow_on_resize` (render budget w-2)
+            let mut rows: Vec<String> = Vec::new();
+            for c in &chunks {
+                let line = Line::from(vec![Span::styled(c.clone(), thinking_style())]);
+                for w in wrap_styled_line(line, w_new.saturating_sub(2).max(1)) {
+                    rows.push(w.spans.iter().map(|s| s.content.as_ref()).collect());
+                }
+            }
+            // inter-row boundary spaces are re-flowable (live chunks keep
+            // a trailing space the wrapper then drops); words must survive
+            let got = rows
+                .join(" ")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(
+                got, norm,
+                "text lost resizing {w_live} -> {w_new}: {rows:?}"
+            );
+        }
+    }
+
+    /// Paragraph has no `.wrap()`: any row wider than the viewport is
+    /// hard-clipped at the right edge (the "shortened" symptom). The wrapper
+    /// must therefore never emit an over-budget row, including overlong
+    /// words (URLs) that force hard cuts.
+    #[test]
+    fn wrapped_rows_never_exceed_budget() {
+        let text = format!(
+            "{} https://api.github.com/repos/some/really/long/path/that/never/breaks/at/all",
+            "word ".repeat(50)
+        );
+        for w in [20usize, 40, 80, 120] {
+            for row in wrap_styled_line(Line::from(text.clone()), w) {
+                let rw: usize = row.spans.iter().map(|s| s.width()).sum();
+                assert!(rw <= w, "row overflows budget {w}: {row:?}");
+            }
         }
     }
 

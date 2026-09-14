@@ -98,6 +98,9 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     let compaction_elapsed = tui.compaction_elapsed();
     let turn_started = tui.turn_started;
     let is_task_running = tui.is_task_running;
+    // Last usage report only (opencode2 `usage()` parity) — empty until the
+    // first StepUsage lands, never an estimate, never a Σ-per-round sum.
+    let pill_tok_suffix = super::pill_token_suffix(tui.latest_usage.or(tui.cumulative_usage));
 
     let res = tui.terminal.draw(|frame| {
         let area = frame.area();
@@ -129,10 +132,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         if let Some((started, label)) = &tui.status {
             let label_text = format!(" ⬡ {label}\u{2026}");
             let mut spans = shimmer_spans(&label_text, started.elapsed());
-            // Turn-anchored clock (tool re-stamps never restart it) and no
-            // token estimate: omp's loader is tokens-free, opencode reads
-            // the last usage report. Exact counts live in the footer gauge
-            // (context), the Thought line (turn output) and `/usage`.
+            // Turn-anchored clock (tool re-stamps never restart it) plus
+            // the last-report token counter (opencode2 `usage()` parity:
+            // non-overlapping parts of the latest StepUsage, empty before
+            // the first report — never the chars/4 estimate that inflated
+            // to ~2.5M on a 14s turn). Exact turn bills stay on the Thought
+            // line and `/usage`.
             // Codex parity: while compacting, the pill runs on the separate
             // compaction clock — the turn clock is preserved underneath and
             // restored after (`compaction_status_survives_follow_up`).
@@ -141,7 +146,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 None => super::pill_elapsed(turn_started, *started, is_task_running),
             };
             let elapsed_str = format!("{:.1}s", elapsed.as_secs_f64());
-            let suffix = format!(" {elapsed_str} (esc to interrupt)");
+            let suffix = format!(" {elapsed_str}{pill_tok_suffix} (esc to interrupt)");
             spans.push(Span::styled(
                 suffix,
                 Style::default().fg(crate::theme::theme().tool_dim),

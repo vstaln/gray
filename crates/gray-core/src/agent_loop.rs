@@ -13,7 +13,7 @@ use crate::agent::{
 use crate::agent_compact::needs_pre_turn_compact;
 use crate::agent_tools::{PendingToolCall, answer_pending_tools};
 use crate::error::CoreError;
-use crate::event::{AgentEvent, StopReason, StreamEvent, Usage};
+use crate::event::{AgentEvent, StopReason, StreamEvent, Usage, append_thinking_chunk};
 use crate::message::{ChatRequest, ContentBlock, Message, Role};
 use crate::turn_queue::{Submission, SubmitMode, TurnState};
 
@@ -235,7 +235,7 @@ impl Agent {
             // keyed by their stream index (id/name arrive once, arguments
             // may be split across many deltas).
             let mut text_parts: Vec<String> = Vec::new();
-            let mut thinking_parts: Vec<String> = Vec::new();
+            let mut thinking_text = String::new();
             // (item_id, encrypted_content) of the latest Responses
             // reasoning item — attached to the Thinking block at finalize so
             // the next turn can replay it verbatim (cache warmth).
@@ -250,7 +250,7 @@ impl Agent {
                             if !text_parts.is_empty() && pending.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
-                                    thinking_parts.concat(),
+                                    thinking_text.clone(),
                                     text_parts.concat(),
                                     &pending_reasoning,
                                     self.provider.model_id(),
@@ -274,7 +274,7 @@ impl Agent {
                         }
                         Some(Ok(StreamEvent::ThinkingDelta { delta })) => {
                             emit!(AgentEvent::thinking_delta(delta.clone()));
-                            thinking_parts.push(delta);
+                            append_thinking_chunk(&mut thinking_text, &delta);
                         }
                         Some(Ok(StreamEvent::ReasoningItem {
                             item_id,
@@ -395,7 +395,7 @@ impl Agent {
                             if !text_parts.is_empty() && pending.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
-                                    thinking_parts.concat(),
+                                    thinking_text.clone(),
                                     text_parts.concat(),
                                     &pending_reasoning,
                                     self.provider.model_id(),
@@ -425,7 +425,7 @@ impl Agent {
                             if !text_parts.is_empty() && pending.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
-                                    thinking_parts.concat(),
+                                    thinking_text.clone(),
                                     text_parts.concat(),
                                     &pending_reasoning,
                                     self.provider.model_id(),
@@ -483,7 +483,7 @@ impl Agent {
             // Reasoning precedes text, mirroring the provider's emission order
             // (pi renders runs of thinking blocks ahead of prose).
             let mut content: Vec<ContentBlock> = Vec::new();
-            let thinking = thinking_parts.concat();
+            let thinking = std::mem::take(&mut thinking_text);
             if !thinking.is_empty() {
                 content.push(thinking_block(
                     thinking,
