@@ -125,7 +125,6 @@ impl Usage {
     }
 }
 
-
 /// Appends one streamed thinking chunk, repairing sentence boundaries that
 /// arrive bare: some providers emit sentence-sized reasoning deltas with
 /// the inter-sentence space stripped (`truncated.Identifying`).
