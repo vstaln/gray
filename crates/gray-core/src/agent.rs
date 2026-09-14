@@ -1366,6 +1366,44 @@ mod agent_tests {
         );
     }
 
+    /// Elision is a pressure valve, not a per-turn habit: with no window
+    /// pressure the model keeps every tool result it observed (it must not go
+    /// blind on earlier searches/reads mid-task).
+    #[tokio::test]
+    async fn tool_observations_survive_without_context_pressure() {
+        let body = format!("payload-keepme {}", "x".repeat(200));
+        let mut scripts: Vec<Vec<StreamEvent>> = (0..7)
+            .map(|i| tool_script_with_args(&format!("c{i}"), &format!(r#"{{"q":"x{i}"}}"#)))
+            .collect();
+        scripts.push(end_script());
+        let provider = FakeProvider::new(scripts);
+        let mut agent = Agent::new(
+            Box::new(provider),
+            Arc::new(FakeExecutor::new(ToolOutput::ok(body))),
+        )
+        .with_tools(vec![tool_def()]);
+
+        agent
+            .run(Message::user("go"), ToolContext::default())
+            .await
+            .expect("7 tool rounds should finish");
+
+        let observed: Vec<&str> = agent
+            .messages()
+            .iter()
+            .flat_map(|m| &m.content)
+            .filter_map(|b| match b {
+                ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(observed.len(), 7, "one result per round");
+        assert!(
+            observed.iter().all(|c| c.starts_with("payload-keepme")),
+            "no observation may be elided without window pressure: {observed:?}"
+        );
+    }
+
     #[tokio::test]
     async fn context_overflow_surfaces_actionable_error_when_compact_fails() {
         let provider = FakeProvider::new(vec![]).with_failures(vec![

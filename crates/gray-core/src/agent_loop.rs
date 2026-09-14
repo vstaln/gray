@@ -187,16 +187,17 @@ impl Agent {
                 return Err(CoreError::Cancelled);
             }
 
-            // mini-SWE-agent / SWE-agent parity: keep the recent tool observations
-            // in full; elide older historical command outputs so bloated compiler/test
-            // dumps from prior rounds don't accumulate and choke the context window.
-            crate::compact::prune_old_tool_observations(
-                &mut self.messages,
-                crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
-            );
-
             // Pre-turn budget: compact before the provider ever sees an overflow.
+            // Cheapest relief first: elide older historical command outputs
+            // (mini-SWE-agent parity, recent observations stay in full) — and
+            // only under actual pressure, since eliding observations while the
+            // window has room makes the model re-run searches it can no longer
+            // see.
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                crate::compact::prune_old_tool_observations(
+                    &mut self.messages,
+                    crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
+                );
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
