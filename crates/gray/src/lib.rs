@@ -2,6 +2,7 @@
 
 pub mod compact;
 pub mod cron_fire;
+pub mod cron_serve;
 pub mod composer;
 pub mod config;
 pub mod feedback;
