@@ -405,7 +405,12 @@ impl Agent {
                             // then retry the turn; otherwise surface the error.
                             if e.should_compress() {
                                 match self.try_compact_budgeted().await {
-                                    Ok(true) => continue 'turn,
+                                    Ok(true) => {
+                                        // Steer queued while compacting joins the
+                                        // retried turn — never one reply late.
+                                        self.drain_steer(true);
+                                        continue 'turn;
+                                    }
                                     _ => {
                                         let err = CoreError::from(e);
                                         self.emit_turn_end(&billed).await;

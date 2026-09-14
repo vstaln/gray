@@ -107,7 +107,8 @@ pub(crate) use session::{
     persist_turn_messages, print_exit_hint,
 };
 pub(crate) use status::{
-    SessionTotals, handle_compact, handle_context_window, handle_usage, turn_footer,
+    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_doctor, handle_usage,
+    turn_footer,
 };
 pub(crate) use user_cmds::handle_feedback;
 
@@ -379,42 +380,66 @@ pub async fn run_repl_mode(
     }
 
     // `-c`: reopen the most recent session instead of starting blank.
+    // Recall-first: the remembered pointer answers in one file read; the
+    // list scan below is the fallback (cold start, pruned pointer, corrupt
+    // recalled file — any failure degrades, never errors).
     if resume_last
         && session_state.is_none()
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
-        let summaries = store.list().await;
         let cwd_now = std::env::current_dir().ok();
-        if let Some(latest) = crate::resume::latest_summary(&summaries, cwd_now.as_deref())
-            .or_else(|| crate::resume::latest_summary(&summaries, None))
+        // (session id, meta, entries) — one load per path, never two.
+        type Resumed = (
+            SessionId,
+            gray_session::SessionMeta,
+            Vec<gray_session::SessionEntry>,
+        );
+        let mut recalled: Option<Resumed> = None;
+        if let Some(c) = cwd_now.as_deref()
+            && let Some(rid) = store.recall_validated(c).await
+            && let Ok((meta, entries)) = store.load(&rid).await
         {
-            match store.load(&latest.id).await {
-                Ok((meta, entries)) => {
-                    if config.model.is_none() && !meta.model.is_empty() {
-                        config.model = Some(meta.model.clone());
-                    }
-                    let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
-                    pending_history = history.clone();
-                    if let Ok(built) = build_agent(config, &cwd, Some(latest.id.as_str())).await {
-                        agent = Some(built.with_messages(history));
-                    }
-                    // T3.4 lifecycle: see the --session resume above.
-                    if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                        ledger.clear();
-                    }
-                    session_state = Some(SessionState {
-                        session_id: latest.id.clone(),
-                        store,
-                    });
-                    session_totals = SessionTotals::from_entries(
-                        &entries,
-                        config.model.as_deref().unwrap_or(""),
-                    );
-                    resumed_session_info = Some((latest.id.clone(), entries));
+            recalled = Some((rid, meta, entries));
+        }
+        let loaded: Option<Resumed> = match recalled {
+            Some(hit) => Some(hit),
+            None => {
+                let summaries = store.list().await;
+                let latest = crate::resume::latest_summary(&summaries, cwd_now.as_deref())
+                    .or_else(|| crate::resume::latest_summary(&summaries, None));
+                match latest {
+                    Some(l) => match store.load(&l.id).await {
+                        Ok((meta, entries)) => Some((l.id.clone(), meta, entries)),
+                        Err(e) => {
+                            println!("could not resume: {e}");
+                            None
+                        }
+                    },
+                    None => None,
                 }
-                Err(e) => println!("could not resume: {e}"),
             }
+        };
+        if let Some((sid, meta, entries)) = loaded {
+            if config.model.is_none() && !meta.model.is_empty() {
+                config.model = Some(meta.model.clone());
+            }
+            let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
+            pending_history = history.clone();
+            if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
+                agent = Some(built.with_messages(history));
+            }
+            // T3.4 lifecycle: see the --session resume above.
+            if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+                ledger.clear();
+            }
+            session_state = Some(SessionState {
+                session_id: sid.clone(),
+                store,
+            });
+            session_totals =
+                SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
+            resumed_session_info = Some((sid, entries));
         }
     }
 
@@ -647,6 +672,13 @@ pub async fn run_repl_mode(
                 }
             }
             ReplCommand::Prompt(prompt_text) => {
+                if let Some(msg) =
+                    crate::turn_caps::check_caps(config, session_totals.turns, session_totals.cost)
+                {
+                    say(tui.as_ref().map(|(s, _)| s), &msg);
+                    shutdown_shell_tasks(&session_state, &tui).await;
+                    break;
+                }
                 prompt_turn::run_prompt_turn(
                     prompt_text,
                     &mut pending_images,

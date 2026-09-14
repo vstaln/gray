@@ -278,11 +278,31 @@ pub fn format_discovered_skill_row(skill: &Skill) -> String {
     }
 }
 
+/// Ranking for the per-turn prompt list (fx `capability_search` classes,
+/// no new tool): exact names always survive; weak entries — empty
+/// descriptions, oversized blobs (>700 chars, almost surely pasted content
+/// rather than a description) — are rejected before they cost tokens.
+/// First name match wins (dedup), preserving discovery order.
+pub fn rank_skills_for_prompt(skills: &[Skill]) -> Vec<&Skill> {
+    const MAX_DESCRIPTION_LEN: usize = 700;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for s in skills {
+        if s.disable_model_invocation || s.name.trim().is_empty() {
+            continue;
+        }
+        if s.description.trim().is_empty() || s.description.len() > MAX_DESCRIPTION_LEN {
+            continue;
+        }
+        if seen.insert(s.name.clone()) {
+            out.push(s);
+        }
+    }
+    out
+}
+
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
-    let visible: Vec<&Skill> = skills
-        .iter()
-        .filter(|s| !s.disable_model_invocation)
-        .collect();
+    let visible: Vec<&Skill> = rank_skills_for_prompt(skills);
     if visible.is_empty() {
         return String::new();
     }
@@ -595,6 +615,33 @@ mod tests {
         assert!(err.contains("bogus"), "names unknown: {err}");
         assert!(err.contains("env"), "names valid: {err}");
         assert!(err.contains("force"), "names valid: {err}");
+    }
+
+    fn ranked_skill(name: &str, desc: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: desc.to_string(),
+            file_path: PathBuf::from("/tmp/SKILL.md"),
+            base_dir: PathBuf::from("/tmp"),
+            disable_model_invocation: false,
+            source: "path".to_string(),
+            args: vec![],
+        }
+    }
+
+    #[test]
+    fn rank_keeps_exact_names_rejects_weak_entries() {
+        let skills = vec![
+            ranked_skill("deploy", "deploy the app"),
+            ranked_skill("deploy", "duplicate name loses"),
+            ranked_skill("empty", ""),
+            ranked_skill("blob", &"x".repeat(701)),
+            ranked_skill("", "nameless loses"),
+        ];
+        let ranked = rank_skills_for_prompt(&skills);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].name, "deploy");
+        assert_eq!(ranked[0].description, "deploy the app");
     }
 
     #[test]
