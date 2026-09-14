@@ -1,11 +1,11 @@
 #!/bin/sh
-# v1 stub: manifest with schema+snippet tool, /echo command, all hooks;
+# v1 stub: manifest with schema tool, /echo command, all hooks;
 # prompt/context -> text, tool/before -> allow, command/run -> joined argv.
 while IFS= read -r line; do
   case "$line" in
     *plugin/manifest*)
       id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')
-      printf '{"id":%s,"result":{"name":"hooks","version":"0.1.0","tools":[{"name":"shout","description":"Shout text","parameters":{"type":"object"},"snippet":"shout <text>"}],"commands":["/echo"],"hooks":["prompt/context","tool/before","turn/end"]}}\n' "$id"
+      printf '{"id":%s,"result":{"name":"hooks","version":"0.1.0","tools":[{"name":"shout","description":"Shout text","parameters":{"type":"object"}}],"commands":["/echo"],"hooks":["prompt/context","tool/before","turn/end"]}}\n' "$id"
       ;;
     *prompt/context*)
       id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9][0-9]*\).*/\1/')

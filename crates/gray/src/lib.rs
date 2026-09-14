@@ -181,7 +181,6 @@ pub async fn build_agent(
         // / `host/say` don't fall back to loud `{"error":…}`.
         // Bash-only tools; the context-only skills plugin is always on
         // (every profile, including the default `tools-minimal`).
-        extra_tools: vec![],
         extra_plugins: vec![Arc::new(crate::skills_tool::SkillsPlugin)],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),

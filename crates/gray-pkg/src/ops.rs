@@ -8,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::sources::Source;
+
 // TODO(2.4): switch to gray_plugin::lock
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LockFile {
@@ -270,13 +272,6 @@ fn lock_path() -> PathBuf {
     crate::plugins_dir().join("lock.json")
 }
 
-pub(crate) fn now_secs() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs().to_string())
-        .unwrap_or_default()
-}
-
 fn read_lock() -> anyhow::Result<Option<LockFile>> {
     match std::fs::read_to_string(lock_path()) {
         Ok(raw) => Ok(Some(serde_json::from_str(&raw)?)),
@@ -318,7 +313,7 @@ fn record_install(
             source: source.to_string(),
             argv,
             adapter_version: env!("CARGO_PKG_VERSION").to_string(),
-            installed_at: now_secs(),
+            installed_at: crate::now_secs().to_string(),
             scope,
             enabled,
         },
@@ -488,19 +483,6 @@ pub(crate) async fn stage_npm_package(
 // manifest `pi.skills` globs. NEVER execute package code: only `.md` files
 // are copied; everything else is left behind (and counted honestly).
 
-/// What a pi install took vs skipped, printed by [`emit_pi_summary`];
-/// extensions/themes are P3 and never executed. `taken` holds
-/// loadable skill dirs only; dest-top-level `.md` files are listed in
-/// `docs` (copied for reference — the loader recurses with
-/// `include_root_files=false`, so they never load as skills).
-#[derive(Debug, Clone, Default)]
-pub struct PiInstallSummary {
-    pub taken: Vec<String>,
-    pub docs: Vec<String>,
-    pub skipped_ext: bool,
-    pub skipped_themes: bool,
-}
-
 /// Lock key + `pi/` dir name for an npm package: `@scope/name` →
 /// `scope-name` (strip leading `@`, `/` → `-`, `..` → `-`). Sanitized
 /// keys never contain `/` or `..`, so [`remove`]'s traversal rejection
@@ -632,6 +614,20 @@ fn glob_base_is_safe(base: &str) -> bool {
     p.components().all(|c| matches!(c, Component::Normal(_)))
 }
 
+/// Sorted child directories of `dir` that contain a `SKILL.md`.
+fn skill_dirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("SKILL.md").is_file())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
 /// Collect skill matches: `skills/*/SKILL.md`, `*/SKILL.md`, manifest
 /// `pi.skills` globs, top-level `*.md` (R14: top-level `.md` are copied
 /// for reference and listed in `docs`, not `taken`). Deduped, `taken`
@@ -641,33 +637,13 @@ fn collect_skill_matches(root: &Path, globs: &[String]) -> Vec<SkillMatch> {
     let mut seen: HashSet<PathBuf> = HashSet::new();
 
     // `skills/*/SKILL.md` (the common pi layout).
-    if let Ok(rd) = std::fs::read_dir(root.join("skills")) {
-        let mut dirs: Vec<PathBuf> = rd
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            if dir.join("SKILL.md").is_file() {
-                push_skill_dir(&dir, &mut out, &mut seen);
-            }
-        }
+    for dir in skill_dirs(&root.join("skills")) {
+        push_skill_dir(&dir, &mut out, &mut seen);
     }
 
     // `*/SKILL.md` (one level under root; dedupe covers `skills/`).
-    if let Ok(rd) = std::fs::read_dir(root) {
-        let mut dirs: Vec<PathBuf> = rd
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.is_dir())
-            .collect();
-        dirs.sort();
-        for dir in dirs {
-            if dir.join("SKILL.md").is_file() {
-                push_skill_dir(&dir, &mut out, &mut seen);
-            }
-        }
+    for dir in skill_dirs(root) {
+        push_skill_dir(&dir, &mut out, &mut seen);
     }
 
     // Manifest `pi.skills` globs (`./skills`, `skills/*`, single files).
@@ -689,18 +665,8 @@ fn collect_skill_matches(root: &Path, globs: &[String]) -> Vec<SkillMatch> {
             if path.join("SKILL.md").is_file() {
                 push_skill_dir(&path, &mut out, &mut seen);
             }
-            if let Ok(rd) = std::fs::read_dir(&path) {
-                let mut dirs: Vec<PathBuf> = rd
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| p.is_dir())
-                    .collect();
-                dirs.sort();
-                for dir in dirs {
-                    if dir.join("SKILL.md").is_file() {
-                        push_skill_dir(&dir, &mut out, &mut seen);
-                    }
-                }
+            for dir in skill_dirs(&path) {
+                push_skill_dir(&dir, &mut out, &mut seen);
             }
         } else if path.is_file()
             && path.extension().is_some_and(|e| e == "md")
@@ -843,14 +809,6 @@ fn copy_skill_matches(dest: &Path, matches: &[SkillMatch]) -> anyhow::Result<()>
 /// Zero skills → honest bail with nothing written (R12); any copy/lock
 /// failure removes `dest` and writes nothing (no half-state). Shared by
 /// the npm (P2-1 staging) and git (P2-4 clone) arms.
-/// One shared summary printer: loadable skill dirs vs reference docs.
-pub(crate) fn emit_pi_summary(summary: &PiInstallSummary) {
-    eprintln!("skills taken: {}", summary.taken.join(", "));
-    if !summary.docs.is_empty() {
-        eprintln!("docs copied for reference: {}", summary.docs.join(", "));
-    }
-}
-
 pub(crate) fn extract_pi_skills(
     root: &Path,
     key: &str,
@@ -859,7 +817,7 @@ pub(crate) fn extract_pi_skills(
     source: &str,
     ecosystem: &str,
     opts: &InstallOpts,
-) -> anyhow::Result<(PathBuf, PiInstallSummary)> {
+) -> anyhow::Result<PathBuf> {
     // Belt-and-suspenders: both arms validate via `install_key` first, but
     // the destructive `remove_dir_all(dest)` below must never run on `..`.
     validate_install_key(key)?;
@@ -894,20 +852,20 @@ pub(crate) fn extract_pi_skills(
     taken.dedup();
     docs.sort();
     docs.dedup();
-    let summary = PiInstallSummary {
-        taken,
-        docs,
-        skipped_ext: !manifest_ext.is_empty() || root.join("extensions").is_dir() || ext_n > 0,
-        skipped_themes: !manifest_themes.is_empty()
-            || root.join("themes").is_dir()
-            || root.join("theme").is_dir()
-            || theme_n > 0,
-    };
-    if summary.skipped_ext {
+    let skipped_ext = !manifest_ext.is_empty() || root.join("extensions").is_dir() || ext_n > 0;
+    let skipped_themes = !manifest_themes.is_empty()
+        || root.join("themes").is_dir()
+        || root.join("theme").is_dir()
+        || theme_n > 0;
+    if skipped_ext {
         eprintln!("skipped {ext_n} extension files (P3)");
     }
-    if summary.skipped_themes {
+    if skipped_themes {
         eprintln!("skipped {theme_n} theme files (P3)");
+    }
+    eprintln!("skills taken: {}", taken.join(", "));
+    if !docs.is_empty() {
+        eprintln!("docs copied for reference: {}", docs.join(", "));
     }
     let scope = opts.scope.clone().unwrap_or_else(|| "user".to_string());
     if let Err(e) = record_install(
@@ -922,7 +880,7 @@ pub(crate) fn extract_pi_skills(
         let _ = std::fs::remove_dir_all(&dest);
         return Err(e);
     }
-    Ok((dest, summary))
+    Ok(dest)
 }
 
 /// `Npm` arm: resolve → verified download → staging unpack → skills
@@ -936,7 +894,7 @@ async fn install_npm(
     let staged = stage_npm_package(client, name, version).await?;
     let key = install_key(&staged.name)?;
     let root = stage_root(staged.dir.path());
-    let (dest, summary) = extract_pi_skills(
+    let dest = extract_pi_skills(
         &root,
         &key,
         &staged.version,
@@ -945,7 +903,6 @@ async fn install_npm(
         "pi-gallery",
         &opts,
     )?;
-    emit_pi_summary(&summary);
     Ok(Report {
         name: key,
         version: staged.version,
@@ -1023,9 +980,7 @@ async fn install_git(
         .filter(|r| !r.is_empty())
         .unwrap_or("0.0.0")
         .to_string();
-    let (dest, summary) =
-        extract_pi_skills(&clone_dir, &key, &version, &sha, url, "pi-gallery", &opts)?;
-    emit_pi_summary(&summary);
+    let dest = extract_pi_skills(&clone_dir, &key, &version, &sha, url, "pi-gallery", &opts)?;
     Ok(Report {
         name: key,
         version,
@@ -1124,9 +1079,7 @@ async fn install_clawhub(
         &detail.owner,
         &detail.slug,
     ))?;
-    let (dest, summary) =
-        extract_pi_skills(&root, &key, &version, "", &source_url, "clawhub", &opts)?;
-    emit_pi_summary(&summary);
+    let dest = extract_pi_skills(&root, &key, &version, "", &source_url, "clawhub", &opts)?;
     Ok(Report {
         name: key,
         version,
@@ -1151,7 +1104,7 @@ async fn install_claude(
         );
     }
     let key = install_key(plugin)?;
-    let (dest, summary) = extract_pi_skills(
+    let dest = extract_pi_skills(
         &resolved.root,
         &key,
         &resolved.version,
@@ -1160,7 +1113,6 @@ async fn install_claude(
         "claude",
         &opts,
     )?;
-    emit_pi_summary(&summary);
     Ok(Report {
         name: key,
         version: resolved.version,
@@ -1352,31 +1304,9 @@ async fn update_inner(target: &str) -> anyhow::Result<Vec<Report>> {
 // reads npm search on the shared registry base. No per-hit filtering:
 // matches are listed labeled `(preview)`; install stays skills-only.
 
-/// Where a search hit came from. Labels are display-time copy only:
-/// pi hits read exactly `Pi Gallery (preview)` (never stored).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchSource {
-    Gray,
-    Pi,
-    Claude,
-    ClawHub,
-}
-
-impl SearchSource {
-    /// Display label for a source (`Pi Gallery (preview)` is exact copy).
-    pub fn label(self) -> &'static str {
-        match self {
-            SearchSource::Gray => "Gray Index",
-            SearchSource::Pi => "Pi Gallery (preview)",
-            SearchSource::Claude => "Claude",
-            SearchSource::ClawHub => "ClawHub",
-        }
-    }
-}
-
 /// One merged search hit. Gray entries carry no description (the index
 /// has none); pi hits carry npm's description (possibly empty).
-/// `version_detail` (e.g. a source qualifier), `files`, and `trust`
+/// `version_detail` (e.g. a source qualifier), and `trust`
 /// (e.g. ClawHub `official/community + scan status`) feed the
 /// preview+confirm pane; [`format_search_hit`] ignores them by design.
 /// `popularity` is npm's `score.detail.popularity` (0..1) on pi hits,
@@ -1386,9 +1316,8 @@ pub struct SearchHit {
     pub name: String,
     pub version: String,
     pub desc: String,
-    pub source: SearchSource,
+    pub source: Source,
     pub version_detail: String,
-    pub files: Vec<String>,
     pub trust: String,
     pub popularity: f32,
 }
@@ -1414,7 +1343,7 @@ pub const CLAUDE_UNREACHABLE_LINE: &str = "Claude: unreachable";
 /// `(install as <key>)` via the shared sanitizer.
 pub fn format_search_hit(hit: &SearchHit) -> String {
     let mut base = format!("{} {} [{}]", hit.name, hit.version, hit.source.label());
-    if hit.source == SearchSource::Pi || hit.source == SearchSource::ClawHub {
+    if hit.source == Source::PiGallery || hit.source == Source::ClawHub {
         let key = sanitize_npm_key(&hit.name);
         if key != hit.name {
             base.push_str(&format!(" (install as {key})"));
@@ -1493,9 +1422,8 @@ async fn search_pi(client: &reqwest::Client, query: &str) -> anyhow::Result<Vec<
                 name: name.to_string(),
                 version,
                 desc,
-                source: SearchSource::Pi,
+                source: Source::PiGallery,
                 version_detail: String::new(),
-                files: Vec::new(),
                 trust: String::new(),
                 popularity,
             });
@@ -1534,9 +1462,8 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
             name: name.clone(),
             version: entry.version.clone(),
             desc: String::new(),
-            source: SearchSource::Gray,
+            source: Source::GrayIndex,
             version_detail: String::new(),
-            files: Vec::new(),
             trust: String::new(),
             popularity: 0.0,
         });
@@ -1563,9 +1490,8 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
                 name: e.name,
                 version: e.version,
                 desc: e.description,
-                source: SearchSource::Claude,
+                source: Source::ClaudeRepo,
                 version_detail: e.qualifier,
-                files: Vec::new(),
                 trust: String::new(),
                 popularity: 0.0,
             });
@@ -1583,9 +1509,8 @@ pub async fn search_all(query: &str) -> anyhow::Result<SearchOutput> {
                         name: e.name,
                         version: e.version,
                         desc: e.summary,
-                        source: SearchSource::ClawHub,
+                        source: Source::ClawHub,
                         version_detail: String::new(),
-                        files: Vec::new(),
                         trust: crate::sources::clawhub_trust(e.official, &e.scan),
                         popularity: 0.0,
                     });
@@ -2796,9 +2721,9 @@ pub(crate) mod tests {
         let out = search_all("gray").await.unwrap();
         assert!(!out.pi_unreachable);
         assert_eq!(out.hits.len(), 2);
-        assert_eq!(out.hits[0].source, SearchSource::Gray);
+        assert_eq!(out.hits[0].source, Source::GrayIndex);
         assert_eq!(out.hits[0].name, "gray-foo");
-        assert_eq!(out.hits[1].source, SearchSource::Pi);
+        assert_eq!(out.hits[1].source, Source::PiGallery);
         assert_eq!(out.hits[1].name, "pi-bar");
         assert_eq!(
             format_search_hit(&out.hits[0]),
@@ -2825,7 +2750,7 @@ pub(crate) mod tests {
         let hit = out
             .hits
             .iter()
-            .find(|h| h.source == SearchSource::Pi)
+            .find(|h| h.source == Source::PiGallery)
             .unwrap();
         assert!((hit.popularity - 0.83).abs() < 1e-6);
     }
@@ -2842,7 +2767,7 @@ pub(crate) mod tests {
         assert_eq!(out.hits.len(), 1);
         assert_eq!(out.hits[0].name, "gray-foo");
         assert_eq!(out.hits[0].version, "1.0.0");
-        assert_eq!(out.hits[0].source, SearchSource::Gray);
+        assert_eq!(out.hits[0].source, Source::GrayIndex);
     }
 
     #[tokio::test]
@@ -2855,7 +2780,7 @@ pub(crate) mod tests {
         let out = search_all("gray").await.unwrap();
         assert!(out.pi_unreachable);
         assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].source, SearchSource::Gray);
+        assert_eq!(out.hits[0].source, Source::GrayIndex);
         assert_eq!(PI_UNREACHABLE_LINE, "Pi Gallery (preview): unreachable");
     }
 
@@ -2883,7 +2808,7 @@ pub(crate) mod tests {
         assert!(out.gray_unreachable);
         assert!(!out.pi_unreachable);
         assert_eq!(out.hits.len(), 1);
-        assert_eq!(out.hits[0].source, SearchSource::Pi);
+        assert_eq!(out.hits[0].source, Source::PiGallery);
         assert_eq!(GRAY_UNREACHABLE_LINE, "Gray Index: unreachable");
     }
 
@@ -2934,25 +2859,24 @@ pub(crate) mod tests {
 
     #[test]
     fn search_copy_rules_are_exact() {
-        assert_eq!(SearchSource::Gray.label(), "Gray Index");
-        assert_eq!(SearchSource::Pi.label(), "Pi Gallery (preview)");
-        assert!(SearchSource::Pi.label().contains("(preview)"));
+        assert_eq!(Source::GrayIndex.label(), "Gray Index");
+        assert_eq!(Source::PiGallery.label(), "Pi Gallery (preview)");
+        assert!(Source::PiGallery.label().contains("(preview)"));
         assert_eq!(PI_UNREACHABLE_LINE, "Pi Gallery (preview): unreachable");
         // Empty desc omits the suffix; surrounding whitespace is trimmed.
         let bare = SearchHit {
             name: "n".to_string(),
             version: "1.0.0".to_string(),
             desc: String::new(),
-            source: SearchSource::Gray,
+            source: Source::GrayIndex,
             version_detail: String::new(),
-            files: Vec::new(),
             trust: String::new(),
             popularity: 0.0,
         };
         assert_eq!(format_search_hit(&bare), "n 1.0.0 [Gray Index]");
         let padded = SearchHit {
             desc: "  padded  ".to_string(),
-            source: SearchSource::Pi,
+            source: Source::PiGallery,
             ..bare
         };
         assert_eq!(
@@ -2969,9 +2893,8 @@ pub(crate) mod tests {
             name: "@scope/bar".to_string(),
             version: "1.2.3".to_string(),
             desc: "does things".to_string(),
-            source: SearchSource::Pi,
+            source: Source::PiGallery,
             version_detail: String::new(),
-            files: Vec::new(),
             trust: String::new(),
             popularity: 0.0,
         };
@@ -2983,9 +2906,8 @@ pub(crate) mod tests {
             name: "pi-bar".to_string(),
             version: "2.0.0".to_string(),
             desc: String::new(),
-            source: SearchSource::Pi,
+            source: Source::PiGallery,
             version_detail: String::new(),
-            files: Vec::new(),
             trust: String::new(),
             popularity: 0.0,
         };
@@ -2998,9 +2920,8 @@ pub(crate) mod tests {
             name: "@scope/bar".to_string(),
             version: "1.0.0".to_string(),
             desc: String::new(),
-            source: SearchSource::Gray,
+            source: Source::GrayIndex,
             version_detail: String::new(),
-            files: Vec::new(),
             trust: String::new(),
             popularity: 0.0,
         };
@@ -3052,8 +2973,8 @@ pub(crate) mod tests {
 
     #[test]
     fn new_source_labels_and_lines_are_exact() {
-        assert_eq!(SearchSource::Claude.label(), "Claude");
-        assert_eq!(SearchSource::ClawHub.label(), "ClawHub");
+        assert_eq!(Source::ClaudeRepo.label(), "Claude");
+        assert_eq!(Source::ClawHub.label(), "ClawHub");
         assert_eq!(CLAWHUB_UNREACHABLE_LINE, "ClawHub: unreachable");
         assert_eq!(CLAUDE_UNREACHABLE_LINE, "Claude: unreachable");
         // New fields never leak into the rendered hit (Task 1 copy frozen).
@@ -3061,9 +2982,8 @@ pub(crate) mod tests {
             name: "x".to_string(),
             version: "1.0.0".to_string(),
             desc: "d".to_string(),
-            source: SearchSource::ClawHub,
+            source: Source::ClawHub,
             version_detail: "github:o/r@main".to_string(),
-            files: vec!["SKILL.md".to_string()],
             trust: "community".to_string(),
             popularity: 0.0,
         };
@@ -3270,11 +3190,11 @@ pub(crate) mod tests {
         assert_eq!(
             names,
             vec![
-                ("gray-foo", SearchSource::Gray),
-                ("pi-foo", SearchSource::Pi),
-                ("claude-foo", SearchSource::Claude),
-                ("fixture/claw-foo", SearchSource::ClawHub),
-                ("claw-bar", SearchSource::ClawHub),
+                ("gray-foo", Source::GrayIndex),
+                ("pi-foo", Source::PiGallery),
+                ("claude-foo", Source::ClaudeRepo),
+                ("fixture/claw-foo", Source::ClawHub),
+                ("claw-bar", Source::ClawHub),
             ]
         );
         // `claw-foo` ships no payload trust: `scan:clean` proves the

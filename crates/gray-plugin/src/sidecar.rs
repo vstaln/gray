@@ -5,7 +5,7 @@
 //! sends are `{"id", "method", "params?"}`; sidecars reply with
 //! `{"id", "result"}` for request/response methods only:
 //! - `plugin/manifest` (request): no params, reply
-//!   `{"name","version","tools":[{"name","description","parameters","snippet"}],
+//!   `{"name","version","tools":[{"name","description","parameters"}],
 //!   "commands":["/x"],"hooks":[...]}`. Pre-v1 `"tools":["name"]` still parses.
 //! - `tool/call` (request): params `{"name","args"}`, reply `{"content","is_error?"}`.
 //! - `prompt/context` (request): params `{"cwd"}`, reply `{"text"}`.
@@ -42,7 +42,7 @@ use tokio::time::{Duration, timeout};
 use gray_core::agent::{CommandOutcome, Tool, ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
 
-use crate::{CoreEvent, Manifest, ManifestTool, Plugin, ToolBefore, manifest_tools};
+use crate::{CoreEvent, Manifest, Plugin, ToolBefore, manifest_tools};
 
 /// Plugin→host request handler (`host/run`, `host/say`). Set by the host via
 /// [`SidecarPlugin::set_host_handler`]; without one the transport replies
@@ -494,7 +494,7 @@ impl Plugin for SidecarPlugin {
             .filter(|t| !t.is_empty())
             .map(|t| CommandOutcome::Say(t.to_string()))
     }
-    async fn on_event(&self, e: CoreEvent) -> Option<CoreEvent> {
+    async fn on_event(&self, e: CoreEvent) {
         // Minimal tagged JSON (see protocol v1 doc comment above) + v1.1 session.
         let session = session_json("", &self.cwd);
         let params = match &e {
@@ -510,15 +510,12 @@ impl Plugin for SidecarPlugin {
         };
         let name = self.manifest.name.clone();
         // True notification via shared helper: no id, never a reply.
-        if self
+        if !self
             .transport
             .send_notification("event/notify", params)
             .await
         {
-            None // notify never transforms the event
-        } else {
             log::warn!(target: "gray_plugin", "sidecar {name} hook failed, skipping");
-            None
         }
     }
     async fn shutdown(&self) {
@@ -528,23 +525,12 @@ impl Plugin for SidecarPlugin {
 
 struct SidecarTool {
     def: ToolDef,
-    snippet: Option<String>,
     transport: Arc<Transport>,
 }
 
 impl SidecarTool {
-    fn new(entry: ManifestTool, transport: Arc<Transport>) -> Self {
-        // Manifest snippet wins; description keeps snippet-less tools
-        // visible (the pre-v1 gap was `None` hiding every sidecar tool).
-        let text = entry
-            .snippet
-            .filter(|s| !s.is_empty())
-            .or_else(|| (!entry.def.description.is_empty()).then(|| entry.def.description.clone()));
-        Self {
-            def: entry.def,
-            snippet: text,
-            transport,
-        }
+    fn new(def: ToolDef, transport: Arc<Transport>) -> Self {
+        Self { def, transport }
     }
 }
 
@@ -552,9 +538,6 @@ impl SidecarTool {
 impl Tool for SidecarTool {
     fn def(&self) -> ToolDef {
         self.def.clone()
-    }
-    fn prompt_snippet(&self) -> Option<&str> {
-        self.snippet.as_deref()
     }
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let name = self.def.name.clone();
@@ -609,13 +592,10 @@ mod tests {
             .await
             .unwrap();
         let t = std::time::Instant::now();
-        assert!(
-            p.on_event(CoreEvent::TurnEnd {
-                usage: Usage::default()
-            })
-            .await
-            .is_none()
-        );
+        p.on_event(CoreEvent::TurnEnd {
+            usage: Usage::default(),
+        })
+        .await;
         assert!(t.elapsed() < std::time::Duration::from_secs(10));
     }
 
@@ -652,13 +632,10 @@ mod tests {
             .await
             .unwrap();
         let t = std::time::Instant::now();
-        assert!(
-            p.on_event(CoreEvent::TurnEnd {
-                usage: Usage::default()
-            })
-            .await
-            .is_none()
-        );
+        p.on_event(CoreEvent::TurnEnd {
+            usage: Usage::default(),
+        })
+        .await;
         assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 }
