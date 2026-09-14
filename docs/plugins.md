@@ -149,13 +149,16 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 ## Links
 
 - Official plugins: none yet.
-- Cron (file-only store, not a sidecar): `gray-cron` holds the job
-  store (`$GRAY_HOME/cron/jobs.json`) + schedule math. Manage it with no
-  daemon running: `gray cron list|add|remove|show` (`add "every 1h" "prompt"
-  [--deliver <target>] [--name x] [--in /work/dir]`). Delivery targets are
-  stored with the job; no delivery backend exists yet. Schedule kinds:
-  `every 1h` / bare `30m` / `in 10m` / RFC3339 one-shots / 5-field cron
-  (all ≥60 s). Agent self-scheduling unlocks in phase 3; until then
+- Cron (timed gray): `gray-cron` holds the job store
+  (`$GRAY_HOME/cron/jobs.json`) + schedule math; `gray cron tick` fires one
+  claim→fire→record pass (per-job agent run with skills + pre-run script,
+  transcript to `$GRAY_HOME/cron/output/<id>/<ts>.md`), `gray cron serve`
+  ticks every 60s. Manage: `gray cron list|add|show|remove|pause|resume|run`
+  (`add "every 1h" "prompt" [--deliver local] [--name x] [--in /work/dir]
+  [--skills a,b] [--script /abs/pre.sh]`). Only `local` delivery is
+  implemented; `origin`/named targets record `delivery_failed`. Schedule
+  kinds: `every 1h` / bare `30m` / `in 10m` / RFC3339 one-shots / 5-field
+  cron (all ≥60 s). Agent self-scheduling unlocks in phase 3; until then
   scheduling is human-driven (CLI) only.
 - Skills (prompt-time context, not sidecars): `crates/gray/src/skills/`.
 - Pi Gallery (preview): the pi skill source (see `Pi Gallery (preview)`

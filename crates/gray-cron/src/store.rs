@@ -310,6 +310,10 @@ impl CronStore {
         atomic_write_json(&self.jobs_path(), raw)
     }
 
+    /// Nine args is the store's creation seam (name/schedule/prompt/deliver/
+    /// origin/workdir/skills/script): one constructor, validated once. Splitting
+    /// it would scatter the atomic insert across call sites.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_full(
         &self,
         name: &str,
@@ -321,13 +325,7 @@ impl CronStore {
         skills: Vec<String>,
         script: Option<PathBuf>,
     ) -> anyhow::Result<String> {
-        validate_new_job(
-            name,
-            prompt,
-            workdir.as_deref(),
-            &skills,
-            script.as_deref(),
-        )?;
+        validate_new_job(name, prompt, workdir.as_deref(), &skills, script.as_deref())?;
         let sched = parse_schedule(schedule)?;
         let now = now_secs();
         if let Schedule::Once { at } = &sched
@@ -549,8 +547,7 @@ impl CronStore {
             if matches!(job.schedule, Schedule::Once { .. }) && job.last_run_at.is_some() {
                 return Ok(None);
             }
-            if matches!(job.schedule, Schedule::Once { at } if at < now - ONESHOT_GRACE_SECS)
-            {
+            if matches!(job.schedule, Schedule::Once { at } if at < now - ONESHOT_GRACE_SECS) {
                 job.enabled = false;
                 job.state = JobState::Done;
                 job.last_error = Some("missed one-shot window".to_string());

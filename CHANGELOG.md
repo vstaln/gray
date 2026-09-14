@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+- Cron workstream B: `gray cron tick|serve|pause|resume|run`, job skills +
+  pre-run scripts, local-file delivery (`cron/output/<id>/<ts>.md`).
+
 ### Fixed
 - Skills: folded (`description: >`) and literal (`|`) frontmatter now parse (were the bare marker) + `gray plugin install` accepts bare `https://github.com/<owner>/<repo>` URLs as git sources — `https://github.com/DietrichGebert/ponytail` installs all six skills, same as `npm:@dietrichgebert/ponytail`
 - Project context: `AGENTS.md` / `CLAUDE.md` (cwd up to git root) now auto-attach as `<project_context>` hook context every turn — no more manual `cat`, and `/context` bills the exact block instead of showing `0 tokens`. `~/.gray/AGENTS.md` excluded (never double-billed); 16k chars per-file cap
