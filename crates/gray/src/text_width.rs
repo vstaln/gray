@@ -35,6 +35,20 @@ pub fn fit_char_count(chars: &[char], max_w: usize) -> usize {
     chars.len()
 }
 
+/// End index (exclusive, in chars) of the next window starting at `start`
+/// and fitting `max_w` cells: prefers the last space inside the budget so
+/// words are never split, hard-cuts a single overlong word. Always advances.
+pub fn word_window_end(chars: &[char], start: usize, max_w: usize) -> usize {
+    let mut end = (start + fit_char_count(&chars[start..], max_w)).min(chars.len());
+    if end < chars.len()
+        && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
+        && sp > 0
+    {
+        end = start + sp + 1;
+    }
+    end
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -172,11 +172,7 @@ pub async fn build_agent(
         cwd: cwd.to_path_buf(),
         // The file IS the system prompt: sent verbatim (comments stripped).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |_registry: &gray_tools::Registry| {
-                system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
-                    custom_prompt: Some(body),
-                })
-            },
+            move |_registry: &gray_tools::Registry| system_prompt::build_system_prompt(Some(body)),
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.

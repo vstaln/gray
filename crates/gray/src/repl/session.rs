@@ -273,10 +273,7 @@ pub(crate) async fn ensure_session_state(
     {
         let store = JsonlSessionStore::new(root);
         let session_id = SessionId::generate();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let timestamp = crate::print::now_millis();
         let meta = SessionMeta::new(
             session_id.clone(),
             timestamp,
@@ -509,6 +506,30 @@ pub(crate) fn dispatch_agent_event(
 /// auto-compact entry): picks up `GRAY_NO_AUTO_COMPACT=1` from the environment.
 static AUTO_COMPACT_ENV_ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
+/// Shared post-compaction persistence for the threshold and overflow paths:
+/// reseed the context gauge, ensure a session exists, and write the
+/// replacement boundary (reload replays the active transcript, not
+/// original + replacement duplicated).
+async fn persist_compaction_tail(
+    agent: &mut Agent,
+    config: &Config,
+    session_state: &mut Option<SessionState>,
+    cwd: &Path,
+    tui: Option<&crate::composer::SharedTui>,
+) {
+    if let Some(shared) = tui {
+        let est = crate::compact::estimate_context_tokens(agent.messages(), None);
+        shared.lock().expect("tui lock").seed_estimate_usage(est);
+    }
+    ensure_session_state(session_state, config, cwd).await;
+    if let Some(state) = session_state {
+        let _ = state
+            .store
+            .append_compaction_replacement(&state.session_id, agent.messages())
+            .await;
+    }
+}
+
 pub(crate) async fn maybe_threshold_compact(
     agent: &mut Agent,
     config: &Config,
@@ -563,19 +584,7 @@ pub(crate) async fn maybe_threshold_compact(
             // StepUsage (stale-high until the next turn's first StepUsage).
             // Reseed from the post-compact estimate so the footer, /context,
             // and the next trigger all see the compacted size immediately.
-            if let Some(shared) = tui {
-                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
-                shared.lock().expect("tui lock").seed_estimate_usage(est);
-            }
-            ensure_session_state(session_state, config, cwd).await;
-            if let Some(state) = session_state {
-                // Boundary marker + replacement: reload replays the active
-                // transcript, not original + replacement duplicated.
-                let _ = state
-                    .store
-                    .append_compaction_replacement(&state.session_id, agent.messages())
-                    .await;
-            }
+            persist_compaction_tail(agent, config, session_state, cwd, tui).await;
             *initial_count = agent.messages().len();
         }
         Ok(false) => {
@@ -640,18 +649,7 @@ pub(crate) async fn maybe_overflow_compact(
                 ),
             );
             // See threshold path: reseed the gauge to the compacted size.
-            if let Some(shared) = tui {
-                let est = crate::compact::estimate_context_tokens(agent.messages(), None);
-                shared.lock().expect("tui lock").seed_estimate_usage(est);
-            }
-            ensure_session_state(session_state, config, cwd).await;
-            if let Some(state) = session_state {
-                // Boundary marker + replacement (see threshold path).
-                let _ = state
-                    .store
-                    .append_compaction_replacement(&state.session_id, agent.messages())
-                    .await;
-            }
+            persist_compaction_tail(agent, config, session_state, cwd, tui).await;
             *initial_count = agent.messages().len();
             true
         }

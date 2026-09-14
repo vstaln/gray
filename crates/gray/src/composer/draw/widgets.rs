@@ -111,13 +111,7 @@ pub(crate) fn build_input_box(text: &str, cursor: usize, w: usize) -> InputBox {
                 let mut windows: Vec<(usize, usize)> = Vec::new();
                 let mut start = 0usize;
                 while start < chars.len() {
-                    let mut end = (start + content_w).min(chars.len());
-                    if end < chars.len()
-                        && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
-                        && sp > 0
-                    {
-                        end = start + sp + 1;
-                    }
+                    let end = crate::text_width::word_window_end(&chars, start, content_w);
                     windows.push((start, end));
                     start = end;
                 }

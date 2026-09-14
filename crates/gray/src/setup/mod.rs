@@ -110,13 +110,6 @@ pub async fn run_model_menu(
     run_model_modal(config, bg)
 }
 
-pub async fn run_provider_menu(
-    config: &mut Config,
-    bg: Option<&BackgroundSnapshot>,
-) -> anyhow::Result<bool> {
-    run_connect_modal(config, bg)
-}
-
 pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
     let _ = crossterm::terminal::disable_raw_mode();
     crate::tui::clear_screen();
@@ -129,5 +122,5 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
         2,
     );
     print!("\r\n");
-    run_provider_menu(config, None).await
+    run_connect_modal(config, None)
 }

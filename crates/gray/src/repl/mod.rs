@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
@@ -97,7 +96,7 @@ mod user_cmds;
 pub(crate) use commands::{REGISTRY, completion_fill, completion_matches_dyn};
 pub use commands::{ReplCommand, ResumeArgs, SysAction, parse_command};
 pub(crate) use format::build_user_message_with_attachments;
-pub use format::{THINKING_STYLE, fmt_event, fmt_usage, format_core_error};
+pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
@@ -137,6 +136,31 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     } else {
         println!("{msg}");
     }
+}
+
+/// Post-`run_connect_modal` feedback shared by `/connect` and the
+/// first-turn setup path: sync the chosen model into the composer and echo
+/// the provider name.
+pub(crate) fn push_provider_connected(config: &Config, tui: &TuiOpt) {
+    let Some((shared, _)) = tui else {
+        return;
+    };
+    let mut t = shared.lock().expect("tui lock");
+    if let Some(m) = &config.model {
+        t.set_model(m.clone());
+    }
+    let model_str = config.model.as_deref().unwrap_or("default");
+    let prov_name = crate::setup::load_catalog()
+        .ok()
+        .and_then(|c| {
+            c.values()
+                .find(|p| p.base_url == config.base_url)
+                .map(|p| p.name.clone())
+        })
+        .unwrap_or_else(|| "provider".to_string());
+    t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
+    t.ensure_gap(1);
+    let _ = t.draw();
 }
 
 /// Split a `/name argv…` line into (`/name`, argv words) for plugin
@@ -323,6 +347,16 @@ pub async fn run_repl_mode(
     let mut pending_history: Vec<Message> = Vec::new();
     let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
 
+    // `--session <id>` reopens that exact session; `-c`/`--last` reopens the
+    // most recent. Both resolve into `loaded` and share one apply block.
+    type Resumed = (
+        SessionId,
+        gray_session::SessionMeta,
+        Vec<gray_session::SessionEntry>,
+        JsonlSessionStore,
+    );
+    let mut loaded: Option<Resumed> = None;
+
     // `--session <id>`: reopen that exact session.
     if let Some(id) = session_id
         && let Some(root) = default_root()
@@ -330,28 +364,7 @@ pub async fn run_repl_mode(
         let store = JsonlSessionStore::new(root);
         let sid = SessionId::new(id);
         match store.load(&sid).await {
-            Ok((meta, entries)) => {
-                if config.model.is_none() && !meta.model.is_empty() {
-                    config.model = Some(meta.model.clone());
-                }
-                let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
-                pending_history = history.clone();
-                if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
-                    agent = Some(built.with_messages(history));
-                }
-                // T3.4 lifecycle: resumed sessions start with no ledger state
-                // (fresh builds start empty; clear anyway — see dispatch /new).
-                if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                    ledger.clear();
-                }
-                session_state = Some(SessionState {
-                    session_id: sid.clone(),
-                    store,
-                });
-                session_totals =
-                    SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
-                resumed_session_info = Some((sid, entries));
-            }
+            Ok((meta, entries)) => loaded = Some((sid, meta, entries, store)),
             Err(e) => {
                 println!("could not resume session {id}: {e}");
             }
@@ -363,25 +376,25 @@ pub async fn run_repl_mode(
     // list scan below is the fallback (cold start, pruned pointer, corrupt
     // recalled file — any failure degrades, never errors).
     if resume_last
-        && session_state.is_none()
+        && loaded.is_none()
         && let Some(root) = default_root()
     {
         let store = JsonlSessionStore::new(root);
         let cwd_now = std::env::current_dir().ok();
         // (session id, meta, entries) — one load per path, never two.
-        type Resumed = (
+        type Best = (
             SessionId,
             gray_session::SessionMeta,
             Vec<gray_session::SessionEntry>,
         );
-        let mut recalled: Option<Resumed> = None;
+        let mut recalled: Option<Best> = None;
         if let Some(c) = cwd_now.as_deref()
             && let Some(rid) = store.recall_validated(c).await
             && let Ok((meta, entries)) = store.load(&rid).await
         {
             recalled = Some((rid, meta, entries));
         }
-        let loaded: Option<Resumed> = match recalled {
+        let best: Option<Best> = match recalled {
             Some(hit) => Some(hit),
             None => {
                 let summaries = store.list().await;
@@ -399,27 +412,32 @@ pub async fn run_repl_mode(
                 }
             }
         };
-        if let Some((sid, meta, entries)) = loaded {
-            if config.model.is_none() && !meta.model.is_empty() {
-                config.model = Some(meta.model.clone());
-            }
-            let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
-            pending_history = history.clone();
-            if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
-                agent = Some(built.with_messages(history));
-            }
-            // T3.4 lifecycle: see the --session resume above.
-            if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
-                ledger.clear();
-            }
-            session_state = Some(SessionState {
-                session_id: sid.clone(),
-                store,
-            });
-            session_totals =
-                SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
-            resumed_session_info = Some((sid, entries));
+        if let Some((sid, meta, entries)) = best {
+            loaded = Some((sid, meta, entries, store));
         }
+    }
+
+    if let Some((sid, meta, entries, store)) = loaded {
+        if config.model.is_none() && !meta.model.is_empty() {
+            config.model = Some(meta.model.clone());
+        }
+        let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
+        pending_history = history.clone();
+        if let Ok(built) = build_agent(config, &cwd, Some(sid.as_str())).await {
+            agent = Some(built.with_messages(history));
+        }
+        // T3.4 lifecycle: resumed sessions start with no ledger state
+        // (fresh builds start empty; clear anyway — see dispatch /new).
+        if let Some(ledger) = gray_plugin::builder::current_file_ledger() {
+            ledger.clear();
+        }
+        session_state = Some(SessionState {
+            session_id: sid.clone(),
+            store,
+        });
+        session_totals =
+            SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
+        resumed_session_info = Some((sid, entries));
     }
 
     // Interactive terminals get the ratatui composer; piped input falls back

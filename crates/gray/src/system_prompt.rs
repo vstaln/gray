@@ -13,13 +13,6 @@
 //! This module stays pure file-text so its byte-stability unit test keeps
 //! meaning something.
 
-/// Build the system prompt: the file text, verbatim, minus HTML comments.
-#[derive(Debug, Clone, Default)]
-pub struct BuildSystemPromptOptions {
-    /// The full prompt (the `~/.gray/AGENTS.md` body). `None`/empty → "".
-    pub custom_prompt: Option<String>,
-}
-
 /// Strip `<!-- ... -->` spans (multi-line allowed) and trailing whitespace.
 /// Comments stay in the editable file; the model never sees them. An unclosed
 /// comment swallows the rest of the file.
@@ -37,19 +30,18 @@ pub fn strip_comments(s: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// Build the system prompt.
-pub fn build_system_prompt(options: BuildSystemPromptOptions) -> String {
-    strip_comments(&options.custom_prompt.unwrap_or_default())
+/// Build the system prompt: the file text, verbatim, minus HTML comments.
+/// `None`/empty → "".
+pub fn build_system_prompt(custom_prompt: Option<String>) -> String {
+    strip_comments(custom_prompt.as_deref().unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn opts(prompt: &str) -> BuildSystemPromptOptions {
-        BuildSystemPromptOptions {
-            custom_prompt: Some(prompt.to_string()),
-        }
+    fn opts(prompt: &str) -> Option<String> {
+        Some(prompt.to_string())
     }
 
     #[test]
