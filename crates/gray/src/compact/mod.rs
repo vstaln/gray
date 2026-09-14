@@ -18,9 +18,7 @@ pub use policy::{
     init_auto_compact_from_env, is_auto_compact_enabled, is_context_overflow_error,
     set_auto_compact_enabled, should_compact,
 };
-/// Reusable auto-compact helper that mirrors manual `/compact` flow: the
-/// codex-v2 pipeline with the user's keep-recent budget, gated by the session
-/// auto-compact switch.
+
 pub async fn auto_compact_if_needed(agent: &mut Agent) -> Result<bool, CoreError> {
     if !is_auto_compact_enabled() {
         return Ok(false);
@@ -56,10 +54,13 @@ pub async fn compact_with_keep(
         ledger.disarm_all_dedup();
     }
     // Reversible checkpoint: summary on disk, so nothing is truly lost.
-    // Best-effort; compaction succeeds even if it fails.
+    // Best-effort; compaction succeeds even if it fails. Logged, never
+    // `eprintln!`: raw stderr writes land on the live composer viewport and
+    // collide with the next draw (ghost input) while `Compacting context`
+    // owns the status dock.
     let path = write_continuation_checkpoint(&summary, replaced);
     if let Some(p) = path {
-        eprintln!("continuation checkpoint: {}", p.display());
+        log::info!(target: "gray_compact", "continuation checkpoint: {}", p.display());
     }
     Ok(Some(summary))
 }

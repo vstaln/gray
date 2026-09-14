@@ -123,7 +123,10 @@ fn fenced_body(content: &str) -> &str {
 }
 
 fn log_path_of(header: &str) -> PathBuf {
-    let field = header.split("log ").nth(1).expect("header has log path");
+    let field = header
+        .rsplit("\u{b7} log ")
+        .next()
+        .expect("header has log path");
     PathBuf::from(
         field
             .trim_end()
@@ -438,6 +441,9 @@ async fn s8_no_dup_bytes() -> Row {
         "pages disjoint: {b2:?}"
     );
     // Let the waiter reap so the log length is final, then check the ratio.
+    // (A poll-for-Exited loop was tried here and reverted: r2 returns only at
+    // line-B, so the remaining ~1 s tail sleep dominates either way and the
+    // 1.5 s grace floor stands — polling saved nothing measurable.)
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let unique = registry()
         .get(&session, TaskId(n))

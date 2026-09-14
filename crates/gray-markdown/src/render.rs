@@ -945,12 +945,14 @@ mod math_tests {
     }
 
     #[test]
-    fn cases_environment_renders_brace_column() {
+    fn cases_environment_renders_flat() {
         let text = "$$\n|x| = \\begin{cases} x & x \\ge 0 \\\\ -x & x < 0 \\end{cases}\n$$\n\n";
         let lines = pretty_lines(text);
         let joined = lines.join("\n");
-        assert!(joined.contains('⎧'), "got: {lines:#?}");
-        assert!(joined.contains('⎩'), "got: {lines:#?}");
+        assert!(
+            joined.contains("|x| = {x  x ≥ 0; −x  x < 0}"),
+            "got: {lines:#?}"
+        );
     }
 
     #[test]

@@ -90,7 +90,7 @@ pub(crate) fn render_selecting_model(
             Span::styled(
                 "Type to filter models...",
                 Style::default()
-                    .fg(Color::Rgb(90, 90, 90))
+                    .fg(crate::theme::theme().text_dim)
                     .bg(colors.box_bg),
             ),
         ])
@@ -186,7 +186,7 @@ pub(crate) fn render_selecting_model(
                 Line::from(Span::styled(
                     full_row_str,
                     Style::default()
-                        .fg(Color::Black)
+                        .fg(crate::theme::theme().on_selection)
                         .bg(colors.accent_peach)
                         .add_modifier(Modifier::BOLD),
                 ))
@@ -195,7 +195,7 @@ pub(crate) fn render_selecting_model(
                     Span::styled(
                         " ✓ ",
                         Style::default()
-                            .fg(Color::Rgb(74, 222, 128))
+                            .fg(crate::theme::theme().success)
                             .add_modifier(Modifier::BOLD)
                             .bg(colors.box_bg),
                     )
@@ -212,7 +212,7 @@ pub(crate) fn render_selecting_model(
                 let sub_span = Span::styled(
                     sub,
                     Style::default()
-                        .fg(Color::Rgb(130, 130, 130))
+                        .fg(crate::theme::theme().text_dim)
                         .bg(colors.box_bg),
                 );
                 let pad_span = Span::styled(" ".repeat(fill), Style::default().bg(colors.box_bg));

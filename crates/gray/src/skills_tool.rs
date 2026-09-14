@@ -1,24 +1,53 @@
-//! The `skill` tool: loads a skill's SKILL.md body into context.
+//! Skill context for the bash-only surface + paste helpers for `/skills <name>`.
 //!
-//! Reads the file, strips YAML frontmatter, substitutes `$ARGUMENTS` / `${SKILL_DIR}`,
-//! and returns the body wrapped in a `<skill>` envelope so the model treats it as
-//! instructions to follow rather than a program to run.
-//!
-//! (Moved from `gray-tools` so `gray-tools` depends on `gray-core` only;
-//! the tool lives next to skill discovery in [`crate::skills`].)
+//! No `skill` tool — tools stay bash-only (`bash`, `shell_output`,
+//! `shell_kill`, `sleep`). Skills work through context + bash:
+//! [`SkillsPlugin`] serves the per-turn `<available_skills>` list (names,
+//! descriptions, exact `<location>` paths) via the `prompt/context` hook,
+//! and the model reads one with bash (`cat <location>`).
+//! This module also keeps the pure helpers the REPL slash command needs:
+//! frontmatter stripping, `$ARGUMENTS` / `${SKILL_DIR}` substitution, and
+//! name→path resolution via [`crate::skills::discover_skills`].
 
-use async_trait::async_trait;
-use gray_core::agent::{Tool, ToolContext, ToolOutput};
-use gray_core::message::ToolDef;
-use gray_core::tool_out::{fail, finish, resolve_path};
-use serde_json::Value;
-use serde_json::json;
 use std::path::{Path, PathBuf};
 
-pub const SKILL_SNIPPET: &str = "Load a skill's instructions into context";
+/// Context-only builtin plugin carrying the per-turn `<available_skills>`
+/// list, so the model finds skills without bash-hunting for `SKILL.md`.
+///
+/// - `tools()` is empty: the tool surface stays bash-only.
+/// - `prompt_context()` returns [`crate::skills::format_skills_for_prompt`]
+///   for the turn cwd, `None` when nothing is discovered (system prefix stays
+///   byte-stable for prefix caching).
+///
+/// The stored system prompt (`~/.gray/AGENTS.md`) stays verbatim — this list
+/// is ephemeral per-turn context, never written anywhere.
+pub struct SkillsPlugin;
 
-/// Loads a skill file (`path`, or `name` resolved against skill directories).
-pub struct SkillTool;
+#[async_trait::async_trait]
+impl gray_plugin::Plugin for SkillsPlugin {
+    fn manifest(&self) -> gray_plugin::Manifest {
+        gray_plugin::Manifest {
+            name: "skills".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            tools: vec![],
+            ..Default::default()
+        }
+    }
+
+    fn tools(&self) -> Vec<std::sync::Arc<dyn gray_core::agent::Tool>> {
+        vec![]
+    }
+
+    async fn prompt_context(&self, cwd: &str) -> Option<String> {
+        let found = crate::skills::discover_skills(Path::new(cwd));
+        let block = crate::skills::format_skills_for_prompt(&found.skills);
+        if block.trim().is_empty() {
+            None
+        } else {
+            Some(block)
+        }
+    }
+}
 
 /// Resolve a skill name to its SKILL.md path via [`crate::skills::discover_skills`]
 /// (global + project roots, first name match wins).
@@ -56,91 +85,6 @@ pub fn strip_frontmatter(content: &str) -> &str {
 pub fn apply_substitutions(body: &str, args: Option<&str>, skill_dir: &str) -> String {
     body.replace("$ARGUMENTS", args.unwrap_or(""))
         .replace("${SKILL_DIR}", skill_dir)
-}
-
-#[async_trait]
-impl Tool for SkillTool {
-    fn def(&self) -> ToolDef {
-        ToolDef::new(
-            "skill",
-            "Load a skill's instructions (SKILL.md body) into context. Use when the \
-             task matches a skill listed in <available_skills>. Returns the skill \
-             content wrapped in a <skill> envelope; follow it as instructions.",
-            json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Path to the skill file (from <available_skills> <location>)"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Skill name to resolve against known skill dirs (used when no path is known)"
-                    },
-                    "args": {
-                        "type": "string",
-                        "description": "Optional arguments, substituted for $ARGUMENTS in the skill body"
-                    }
-                }
-            }),
-        )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(SKILL_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(&[
-            "When a task matches a skill in <available_skills>, load it with the skill tool and follow its instructions.",
-        ])
-    }
-
-    // Pure read: safe to run alongside other tools.
-    async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let path = match args.get("path") {
-            Some(Value::String(s)) if !s.is_empty() => resolve_path(&ctx.cwd, s),
-            _ => match args.get("name").and_then(|v| v.as_str()) {
-                Some(name) if !name.is_empty() => match resolve_skill_name(&ctx.cwd, name) {
-                    Some(p) => p,
-                    None => return fail(format!("no skill named '{name}' found")),
-                },
-                _ => return fail("missing required argument: 'path' or 'name'".to_string()),
-            },
-        };
-        let args_str = args
-            .get("args")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) => return fail(format!("read failed for {}: {e}", path.display())),
-        };
-        // Bug1: unknown invocation args must fail locally (naming valid args)
-        // instead of silently substituting/ignoring. Skills with no declared
-        // `args:` take none — any passed arg is an error.
-        if let Some(a) = args_str.as_deref()
-            && !a.trim().is_empty()
-        {
-            let (maybe_skill, _) = crate::skills::load_skill_from_file(&path, "path");
-            if let Some(skill) = maybe_skill
-                && let Err(msg) = crate::skills::validate_skill_args(&skill, Some(a))
-            {
-                return fail(msg);
-            }
-        }
-        let skill_dir = path.parent().unwrap_or(Path::new(".")).to_string_lossy();
-        let body = strip_frontmatter(&content);
-        let body = apply_substitutions(body, args_str.as_deref(), &skill_dir);
-        let envelope = format!(
-            "<skill name=\"{}\" path=\"{}\">\n{}\n</skill>",
-            path.file_stem().and_then(|s| s.to_str()).unwrap_or("skill"),
-            path.display(),
-            body
-        );
-        finish(envelope)
-    }
 }
 
 #[cfg(test)]
@@ -186,74 +130,66 @@ mod tests {
         assert!(resolve_skill_name(tmp.path(), "missing").is_none());
     }
 
-    fn tool_ctx(cwd: &std::path::Path) -> gray_core::agent::ToolContext {
-        gray_core::agent::ToolContext {
-            cwd: cwd.to_path_buf(),
-            ..Default::default()
-        }
-    }
-
     #[tokio::test]
-    async fn skill_tool_rejects_unknown_args_naming_valid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".gray/skills/deploy");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(
-            dir.join("SKILL.md"),
-            "---\nname: deploy\ndescription: test\nargs: env, force\n---\nDeploy $ARGUMENTS.",
-        )
-        .unwrap();
-        let tool = SkillTool;
-        let ctx = tool_ctx(tmp.path());
-        let skill_path = dir.join("SKILL.md");
-        // known arg passes (no error)
-        let ok = tool
-            .execute(
-                &ctx,
-                serde_json::json!({"path": skill_path.to_string_lossy(), "args": "env"}),
-            )
-            .await;
-        assert!(!ok.is_error, "known arg must pass: {}", ok.content);
-        // unknown arg fails locally naming valid args, no model needed
-        let err = tool
-            .execute(
-                &ctx,
-                serde_json::json!({"path": skill_path.to_string_lossy(), "args": "bogus-args"}),
-            )
-            .await;
-        assert!(err.is_error, "unknown arg must fail");
+    async fn skills_plugin_is_context_only_and_serves_block() {
+        use gray_plugin::Plugin;
+        let plugin = SkillsPlugin;
+        // Bash-only: no tools ride this plugin.
         assert!(
-            err.content.contains("bogus-args"),
-            "names unknown: {}",
-            err.content
+            plugin.tools().is_empty(),
+            "skills plugin must carry no tools"
         );
-        assert!(err.content.contains("env"), "names valid: {}", err.content);
-    }
-
-    #[tokio::test]
-    async fn skill_tool_rejects_any_arg_when_no_args_declared() {
+        assert!(
+            plugin.manifest().tools.is_empty(),
+            "manifest must advertise no tools"
+        );
+        // Isolate from global skills for the empty case.
+        let prev_home = std::env::var("HOME").ok();
+        let prev_gray = std::env::var("GRAY_HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let iso = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("HOME", iso.path());
+            std::env::set_var("GRAY_HOME", iso.path().join(".gray"));
+            std::env::set_var("XDG_CONFIG_HOME", iso.path().join(".config"));
+        }
+        let empty = tempfile::tempdir().unwrap();
+        let none = plugin.prompt_context(empty.path().to_str().unwrap()).await;
+        assert_eq!(none, None);
+        // Restore before the project-skill case (discovery walks cwd only,
+        // globals stay isolated only for the empty check above).
+        unsafe {
+            match &prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match &prev_gray {
+                Some(v) => std::env::set_var("GRAY_HOME", v),
+                None => std::env::remove_var("GRAY_HOME"),
+            }
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".gray/skills/plain");
+        let dir = tmp.path().join(".gray/skills/paste-demo");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("SKILL.md"),
-            "---\nname: plain\ndescription: test\n---\nPlain body.",
+            "---\ndescription: demo skill\n---\nDemo body.",
         )
         .unwrap();
-        let tool = SkillTool;
-        let ctx = tool_ctx(tmp.path());
-        let skill_path = dir.join("SKILL.md");
-        let err = tool
-            .execute(
-                &ctx,
-                serde_json::json!({"path": skill_path.to_string_lossy(), "args": "bogus-args"}),
-            )
-            .await;
-        assert!(err.is_error, "arg on no-args skill must fail");
+        let ctx = plugin
+            .prompt_context(tmp.path().to_str().unwrap())
+            .await
+            .expect("discovered skills must produce hook context");
+        assert!(ctx.contains("<available_skills>"), "missing block: {ctx}");
+        assert!(ctx.contains("paste-demo"), "missing skill name: {ctx}");
+        assert!(ctx.contains("SKILL.md"), "missing exact location: {ctx}");
         assert!(
-            err.content.contains("(none)"),
-            "names valid: {}",
-            err.content
+            ctx.contains("cat <location>") || ctx.contains("cat "),
+            "block must tell the model to read via bash: {ctx}"
         );
     }
 }

@@ -16,7 +16,7 @@
 //!
 //! Config: `shell.wake_on_exit` has no config-file section yet, so it is
 //! `GRAY_SHELL_WAKE_ON_EXIT` (default true; `0/false/no/off` disables).
-//! Print mode and the gateway skip idle injection unless explicitly
+//! Print mode skips idle injection unless explicitly
 //! enabled via that env var.
 
 use std::sync::Mutex;
@@ -32,7 +32,7 @@ const LOG_SWEEP_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 /// age sweep alone let real usage reach 208MB; the sweep deletes oversized
 /// files too (pre-cap leftovers), the pump stops live writes past this.
 const SHELL_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
-/// WAKE_QUEUE cap: the REPL drains each loop-top, but gateway/print may
+/// WAKE_QUEUE cap: the REPL drains each loop-top, but print mode may
 /// never drain, so an uncleared queue would grow unbounded. Past this the
 /// oldest entries drop (freshest wake wins).
 pub const WAKE_QUEUE_CAP: usize = 100;
@@ -76,7 +76,7 @@ fn sweep_due(len: u64, age: Option<Duration>) -> bool {
     len > SHELL_LOG_MAX_BYTES || age.is_some_and(|a| a > LOG_SWEEP_AGE)
 }
 
-/// Idle wake-ups start a turn when true (default). False in `-p`/gateway
+/// Idle wake-ups start a turn when true (default). False in `-p`
 /// unless `GRAY_SHELL_WAKE_ON_EXIT` explicitly enables.
 pub fn wake_on_exit() -> bool {
     match std::env::var("GRAY_SHELL_WAKE_ON_EXIT") {

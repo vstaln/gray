@@ -101,7 +101,10 @@ async fn spew_is_bounded_but_logged_whole() {
     );
     assert!(out.content.contains("shell_output(task_id=\"t"), "{}", head);
     // The full 30,000 lines are on disk at the logged path.
-    let log_field = head.split("log ").nth(1).expect("header has log path");
+    let log_field = head
+        .rsplit("\u{b7} log ")
+        .next()
+        .expect("header has log path");
     let log_path = log_field
         .trim_end()
         .replace('~', &std::env::var("HOME").unwrap());

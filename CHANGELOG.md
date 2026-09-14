@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+- Dogfood (headless/pipe): bare `/thinking` and `/model` print status instead of a raw `No such device` error, bare `/resume` and `gray resume` (no TTY) list sessions as text, `/compact` with no model prints one line, exit-hint has no raw ANSI when piped
+- Dogfood (plugin check): reference echo sidecar returns valid JSON on `{}` args — `tool/call` + concurrency checks pass
+- `gray2` binary target (`cargo build` yields `gray` + `gray2`) + one regression test, zero warnings
+- Dogfood (modal backdrop): input/footer text behind modals dimmed through the color map, not just SGR faint (was full-bright on terminals ignoring faint)
+- Piped `/thinking` status lists the current model's filtered levels (same provider-driven filter as the modal), not the full catalog
+-- `/thinking` levels: qualified models.dev entries (kilo/openrouter `meta/muse-spark-1.3-contributor` WITH `max`) no longer leak `max` into the bare contributor id via the suffix alias (gap-fill; exact provider keys stay authoritative) — the live picker showed `max` once the background models.dev fetch landed
+-- Modal backdrop: transcript user cards now dim to near-black like the input box (the preserved full-gray card glowed through behind modals)
+- Auto-compact UI (Codex parity): threshold/overflow/manual compaction raises a dedicated `Compacting context` status with its own clock before the summarization call; follow-up status writes can't obscure it, only the matching completion posts `Context compacted · {elapsed}`, and the input box stays mounted (viewport/transcript/textarea untouched)
+- Bash-only tools with skills context: `tools-minimal` is `bash` + `shell_output` + `shell_kill` + `sleep` (no `skill` tool). The always-on context-only `skills` plugin appends the fresh `<available_skills>` list each turn and the model reads matches with bash (`cat <location>`); `/skills <name>` still pastes the skill visibly into chat before running it
+
 ### Added
 - Plugin system: `gray-plugin` crate with Plugin trait, builtin tools as profile-ordered plugins, `gray.yml` profile loader + sidecar entries, sidecar hook protocol over stdio with timeout/crash degradation
 - Gateway daemon: `gray-gateway` crate (Telegram/Discord/Slack), real Discord adapter with slash commands, OAuth2 invite URL, full `/gateway` REPL suite, delegation durability
@@ -30,7 +41,13 @@
 - prompt_cache_key passthrough for chat requests
 - `gray sessions prune --older-than-days N` for session-store GC; `persist_redacted: true` gateway option to scrub secrets from persisted gateway transcripts
 
+### Changed
+- Clipboard/image paste is core again: `arboard` + `image` are always compiled in, no `--features clipboard` needed (kept as a no-op alias)
+- Removed the native messaging gateway: deleted `crates/gray-gateway` (adapters, daemon, pairing, delivery, systemd), the `plugins/gateway` sidecar, `gray gateway ...`/`gray send`, and the `telegram`/`discord`/`slack`/`all-platforms` features. Chat returns as a plugin; `gray cron --deliver` targets are stored opaquely until a delivery backend exists. Dropped the `--all-features` CI checks.
+
 ### Fixed
+- Working pill: clock anchors to the turn start (tool `Preparing tool:`/`Working` re-stamps no longer restart it at 0.0s) and the spinner carries no token estimate — exact counts stay in the footer gauge (context), the `Thought for · N tok` line (billed turn output) and `/usage` (session). Removes the chars/4 live estimator that read 2.5M on a 14s turn
+- Skills: `/skills [name] [args]` (alias `/skill`) replaces the `/skills:<name>` colon form; bare `/skills` lists all discovered skills (global + project), not just `~/.gray/skills` installs, and no longer prints the text list on top of the TTY manager
 - Synthesize tool outputs for orphaned function calls (unbricks sessions after mid-turn cancel)
 - Classify upstream 5xx as ServerError; connection-safe errors with 10s timeout
 - Detach bash tool with setsid to prevent password-prompt hangs; char-safe log preview (emoji byte-slice panic)
@@ -49,6 +66,8 @@
 - Popup restore on resize/refocus
 - Unknown-tool fail-closed handling
 - Clipboard async copy path
+- History recall (Up/Down) while a turn is running, matching idle prompt behavior
+- `Thought for` line and live status counter are per-turn (count from zero, final at turn end); session context stays in the footer gauge
 - Log caps to bound disk/memory growth
 - Transcript bound for long sessions
 - Executor watchdog for hung tool runs

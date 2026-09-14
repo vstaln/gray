@@ -18,8 +18,10 @@ pub mod skills_tool;
 pub mod sys_editor;
 pub mod system_prompt;
 pub(crate) mod text_width;
+pub mod theme;
 pub mod tool_fmt;
 pub mod tui;
+pub mod turn_caps;
 pub mod update;
 
 use clap::Parser;
@@ -32,12 +34,23 @@ pub use profile::{build_registry, take_profile_warnings};
 pub use repl::{ReplCommand, parse_command, run_repl_mode};
 pub use tui::{clear_screen, print_wrapped};
 
-use crate::skills_tool::SkillTool;
-
 /// Default system prompt, shipped as markdown and materialized to `~/.gray/AGENTS.md`
 /// on first run. Edit that file (or use the `/agentsmd` command) to change it.
-pub const DEFAULT_SYS_PROMPT: &str = r#"You are gray, a minimal agent running on the user's machine.
-You work through a single tool: a persistent bash shell. Use it to read, search, edit, and run things.
+pub const DEFAULT_SYS_PROMPT: &str = r#"<!--
+Unreadable note: this HTML comment stays in the file but is stripped before
+the prompt reaches the model. Nothing here is sent verbatim except the text
+outside <!-- --> comments.
+
+This file IS the stored system prompt — sent verbatim every turn. Gray
+adds only ephemeral per-turn context: the <available_skills> list (fresh
+skill discovery for the turn's directory) — no skill tool, read matches with
+bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
+default, Ctrl-X cancel).
+-->
+You are gray, a minimal agent running on the user's machine.
+You work through one tool family: bash (`bash`, `shell_output`, `shell_kill`, `sleep`). Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
+Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
+To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
 Guidelines:
 - Be concise.
@@ -112,21 +125,25 @@ pub use gray_plugin::builder::{
 
 /// Builds the interactive [`gray_core::agent::Agent`]: thin surface wrapper
 /// over [`gray_plugin::builder::build_agent`] (the single profile-aware
-/// builder for REPL, `-p`, and gateway).
+/// builder for REPL and `-p`).
 ///
 /// Surface policy owned here: missing-model help text, `AGENTS.md` body,
-/// skills + context-file discovery, the `skill` tool default, and the
-/// REPL/`-p` host handler. `session_id` pins the Responses
-/// `prompt_cache_key` for cache affinity — pass it whenever known (resume,
-/// /new); `None` uses a per-process stable id.
+/// the always-on context-only `skills` plugin (tools stay bash-only),
+/// and the REPL/`-p` host handler.
+/// `session_id` pins the Responses `prompt_cache_key` for cache affinity —
+/// pass it whenever known (resume, /new); `None` uses a per-process stable id.
 /// (A single function: earlier split variants had an unused `None` leg.)
 ///
-/// Skills are discovered via [`skills::discover_skills`] (global `~/.gray/skills`,
-/// OpenCode plugins, `~/.agents/skills`, `~/.claude/skills` + project skills
-/// walked up to git root) respecting `.gitignore`/`.ignore`/`.fdignore`, and
-/// `AGENTS.md`/`CLAUDE.md` context files are discovered walking up to git root
-/// and appended as `<project_context>` blocks. Skills are only surfaced when the
-/// `read` tool is present.
+/// Skills are `SKILL.md` files discovered via [`skills::discover_skills`]
+/// (global `~/.gray/skills`, OpenCode plugins, `~/.agents/skills`,
+/// `~/.claude/skills` + project skills walked up to git root) respecting
+/// `.gitignore`/`.ignore`/`.fdignore`.
+/// The context-only [`skills_tool::SkillsPlugin`] (always active, every
+/// profile) serves the per-turn `<available_skills>` block through the
+/// `prompt/context` hook — `None` when nothing is discovered, so the system
+/// prefix stays byte-stable for prefix caching. No `skill` tool: tools stay
+/// bash-only, the model reads matches with `cat`. `/skills <name>` pastes
+/// one visibly into chat before running it.
 ///
 /// Errors here are user-configuration problems (missing model or API key), so the
 /// message is written for a human, not a log file.
@@ -144,12 +161,6 @@ pub async fn build_agent(
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
 
-    // Discover skills + AGENTS.md / CLAUDE.md context (prompt needs the
-    // resolved registry, so this becomes a builder closure below).
-    let discovered = skills::discover_skills(cwd);
-    let context_files = system_prompt::discover_context_files(cwd);
-    let prompt_cwd = cwd.to_path_buf();
-
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
         api_key: api_key.to_string(),
@@ -158,21 +169,20 @@ pub async fn build_agent(
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
+        // The file IS the system prompt: sent verbatim (comments stripped).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |registry: &gray_tools::Registry| {
-                let selected_tools = registry.tool_names();
+            move |_registry: &gray_tools::Registry| {
                 system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
                     custom_prompt: Some(body),
-                    selected_tools: Some(selected_tools),
-                    cwd: prompt_cwd,
-                    context_files: Some(context_files),
-                    skills: Some(discovered.skills),
                 })
             },
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
-        extra_tools: vec![Arc::new(SkillTool)],
+        // Bash-only tools; the context-only skills plugin is always on
+        // (every profile, including the default `tools-minimal`).
+        extra_tools: vec![],
+        extra_plugins: vec![Arc::new(crate::skills_tool::SkillsPlugin)],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
         abort_on_spawn_failure: true,
@@ -236,9 +246,20 @@ pub struct Cli {
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,
 
-    /// External ACP agent for this run (e.g. --acp opencode); works with -p too
-    #[arg(long, value_name = "AGENT")]
-    pub acp: Option<String>,
+    /// Maximum agent turns per invocation (mini-swe-agent step_limit).
+    /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
+    #[arg(long, value_name = "N")]
+    pub max_turns: Option<u32>,
+
+    /// Maximum spend in USD per invocation (mini-swe-agent cost_limit).
+    /// Env: GRAY_MAX_COST_USD. Unpriced models never trip this.
+    #[arg(long, value_name = "USD")]
+    pub max_cost_usd: Option<f64>,
+
+    /// Maximum wall-clock seconds per invocation (mini-swe-agent wall_time).
+    /// Env: GRAY_MAX_WALL_SECS. Measured from process start.
+    #[arg(long, value_name = "SECS")]
+    pub max_wall_secs: Option<u64>,
 
     /// Resume subcommand (picker by default; see `gray resume --help`)
     #[command(subcommand)]
@@ -265,11 +286,6 @@ pub enum Commands {
         #[arg(long)]
         all: bool,
     },
-    /// Messaging gateway (Telegram/Discord/Slack) — daemon on VPS
-    Gateway {
-        #[command(subcommand)]
-        cmd: Option<GatewayCmd>,
-    },
     /// Plugin tools (conformance check)
     Plugin {
         #[command(subcommand)]
@@ -282,13 +298,6 @@ pub enum Commands {
     Cron {
         #[command(subcommand)]
         cmd: CronCmd,
-    },
-    /// Send a one-shot chat message (no daemon needed; uses the gateway.yaml token)
-    Send {
-        /// Delivery target: <platform>[:chat[:thread]] (e.g. telegram:123)
-        target: String,
-        /// Message text (words are joined with spaces)
-        text: Vec<String>,
     },
     /// Session store maintenance
     Sessions {
@@ -311,7 +320,7 @@ pub enum SessionsCmd {
 /// `gray cron ...` — recurring/one-shot job management.
 ///
 /// Thin CLI over `gray-cron::CronStore`: `add` runs the store's validation
-/// (schedule shape, lifecycle-reject) inline, so no daemon round-trip.
+/// (schedule shape) inline, so no daemon round-trip.
 #[derive(Parser, Debug, Clone)]
 pub enum CronCmd {
     /// List jobs (id, name, schedule, next run, last status)
@@ -322,7 +331,7 @@ pub enum CronCmd {
         schedule: String,
         /// Prompt the daemon runs at fire time
         prompt: String,
-        /// Delivery target (default `local` = save-only): origin | local | <platform>[:chat[:thread]]
+        /// Delivery target, stored with the job (no delivery backend yet): origin | local | <target>
         #[arg(long)]
         deliver: Option<String>,
         /// Job name (default: prompt's first line, truncated)
@@ -341,33 +350,6 @@ pub enum CronCmd {
     Remove {
         /// Job id or name
         id: String,
-    },
-}
-
-#[derive(Parser, Debug, Clone)]
-pub enum GatewayCmd {
-    /// Run the gateway daemon (foreground)
-    Run,
-    /// Show gateway status
-    Status {
-        /// File-based health probe (heartbeat freshness), exit 0/1
-        #[arg(long)]
-        probe: bool,
-    },
-    /// Install systemd user service (gray-gateway.service)
-    Install,
-    /// Uninstall systemd service
-    Uninstall,
-    /// Print the OAuth2 invite URL for a platform (discord)
-    Invite {
-        /// Platform to invite (discord)
-        #[arg(default_value = "discord")]
-        platform: String,
-    },
-    /// Approve/deny chat pairing requests (bind the owner without editing gateway.yaml)
-    Pairing {
-        #[command(subcommand)]
-        cmd: PairingCmd,
     },
 }
 
@@ -412,31 +394,6 @@ pub enum PluginCmd {
     Check {
         /// Plugin directory (executable, plugin.sh, or single executable)
         dir: String,
-    },
-}
-
-/// `gray gateway pairing ...` — runtime owner binding without editing gateway.yaml.
-#[derive(Parser, Debug, Clone)]
-pub enum PairingCmd {
-    /// Approve a pending DM code (`pairing approve discord ABC12345`)
-    Approve {
-        /// Platform the code came from
-        platform: String,
-        /// Pairing code the user received
-        code: String,
-    },
-    /// Show pending + approved users (`pairing list [discord|all]`)
-    List {
-        /// Platform or `all`
-        #[arg(default_value = "all")]
-        platform: String,
-    },
-    /// Drop a user's approval
-    Revoke {
-        /// Platform
-        platform: String,
-        /// Approved user id
-        user: String,
     },
 }
 
@@ -518,15 +475,6 @@ mod tests {
                 cmd: CronCmd::Remove { .. },
             })
         ));
-
-        let cli = Cli::try_parse_from(["gray", "send", "telegram:123", "hello", "world"]).unwrap();
-        match cli.command {
-            Some(Commands::Send { target, text }) => {
-                assert_eq!(target, "telegram:123");
-                assert_eq!(text, vec!["hello".to_string(), "world".to_string()]);
-            }
-            other => panic!("unexpected {other:?}"),
-        }
     }
 
     #[test]

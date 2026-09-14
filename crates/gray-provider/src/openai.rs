@@ -35,8 +35,8 @@ pub struct OpenAiProvider {
     initial_backoff: Duration,
     reasoning_effort: Option<String>,
     /// Stable per-process id sent as `prompt_cache_key` (Responses API and
-    /// chat completions alike) so the gateway pins one cache shard for prompt
-    /// caching. Also sent as the `x-opencode-session` header (Console Go
+    /// chat completions alike) so callers pin one cache shard per session for
+    /// prompt caching. Also sent as the `x-opencode-session` header (Console Go
     /// routes on it; required).
     session_id: Option<String>,
     /// Pre-stream POST retry bound (replaces the single `MAX_ATTEMPTS` gate in

@@ -83,17 +83,17 @@ pub fn run_context_modal(
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
-    let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(254, 215, 170); // soft pastel peach
-    let text_dim = Color::Rgb(140, 140, 140);
+    let box_bg = crate::theme::theme().surface_bg;
+    let accent_peach = crate::theme::theme().accent_soft; // soft pastel peach
+    let text_dim = crate::theme::theme().text_muted;
     // soft pastel category colors
-    let c_sys = Color::Rgb(203, 213, 225); // pastel slate
-    let c_ctx = Color::Rgb(167, 243, 208); // pastel mint
-    let c_tools = Color::Rgb(186, 230, 253); // pastel sky blue
-    let c_skills = Color::Rgb(217, 249, 157); // pastel matcha
-    let c_msgs = Color::Rgb(254, 240, 138); // pastel warm butter
-    let c_free = Color::Rgb(100, 116, 139); // muted slate
-    let c_reserve = Color::Rgb(254, 205, 211); // pastel rose
+    let c_sys = crate::theme::theme().ctx_system; // pastel slate
+    let c_ctx = crate::theme::theme().ctx_context; // pastel mint
+    let c_tools = crate::theme::theme().ctx_tools; // pastel sky blue
+    let c_skills = crate::theme::theme().ctx_skills; // pastel matcha
+    let c_msgs = crate::theme::theme().ctx_messages; // pastel warm butter
+    let c_free = crate::theme::theme().ctx_free; // muted slate
+    let c_reserve = crate::theme::theme().rose; // pastel rose
 
     let initial_window = config.context_window;
     let initial_reserve = config.context_reserve;
@@ -315,7 +315,7 @@ pub fn run_context_modal(
                             Paragraph::new(Line::from(Span::styled(
                                 format!("{raw}{}", " ".repeat(fill)),
                                 Style::default()
-                                    .fg(Color::Black)
+                                    .fg(crate::theme::theme().on_selection)
                                     .bg(accent_peach)
                                     .add_modifier(Modifier::BOLD),
                             ))),

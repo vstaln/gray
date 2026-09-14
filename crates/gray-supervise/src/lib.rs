@@ -4,7 +4,6 @@ pub mod health;
 pub mod heartbeat;
 pub mod lifecycle;
 pub mod rotation;
-pub mod units;
 pub mod watchdog;
 
 use std::path::{Path, PathBuf};

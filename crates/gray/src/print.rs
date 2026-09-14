@@ -172,6 +172,14 @@ pub async fn run_print_mode_with_session(
         session_id: None, // one-shot print mode has no session
     };
 
+    // One-shot run = one turn: only max_turns=0 (nonsensical but
+    // explicit) and an already-blown wall clock can stop it pre-run.
+    // max_turns=0 is rejected at resolve, so this is dead-simple.
+    if let Some(max) = config.max_wall_secs
+        && crate::turn_caps::process_start().elapsed().as_secs() >= max
+    {
+        anyhow::bail!("max wall time {max}s reached — stopping (--max-wall-secs SECS)");
+    }
     let mut agent = build_agent(config, &cwd, resume_target.as_ref().map(|s| s.as_str())).await?;
     if !history.is_empty() {
         agent = agent.with_messages(history);

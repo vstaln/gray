@@ -120,6 +120,33 @@ pub fn latest_summary<'a>(
     filtered.into_iter().last()
 }
 
+/// Sorted (oldest first) session summaries for headless list output
+/// (`/resume` with piped stdout, `gray resume` without a TTY): the picker
+/// needs a real terminal, so these print as text instead. Same cwd filter
+/// as [`latest_summary`] (`--all` disables it).
+pub async fn recent_summaries(store: &JsonlSessionStore, all: bool) -> Vec<SessionSummary> {
+    let cwd = std::env::current_dir().ok();
+    let filt = if all { None } else { cwd.as_deref() };
+    let mut out: Vec<SessionSummary> = store
+        .list()
+        .await
+        .into_iter()
+        .filter(|s| filt.is_none_or(|c| paths_match(&s.cwd, c)))
+        .collect();
+    out.sort_by_key(|s| s.started_at);
+    out
+}
+
+/// One text row for headless session lists: short id, preview, age.
+pub fn format_summary_row(s: &SessionSummary) -> String {
+    format!(
+        "{} — {} ({})",
+        short_id(&s.id),
+        preview_text(s, 80),
+        format_relative(s.started_at)
+    )
+}
+
 pub async fn resolve_prefix(
     store: &JsonlSessionStore,
     input: &str,
@@ -232,9 +259,16 @@ pub async fn resolve_session_strict(
 /// Latest session for `gray -p -c`: most recent in this directory, falling
 /// back to the global latest (mirrors the REPL `-c` path, which has no
 /// `--all` flag). `Ok(None)` when the store is empty (fresh print run).
+/// Recall-first: the remembered-session pointer answers in one file read;
+/// the full list scan is the fallback (cold start, pruned pointer).
 pub async fn latest_session_anywhere(store: &JsonlSessionStore) -> Option<SessionId> {
-    let summaries = store.list().await;
     let cwd = std::env::current_dir().ok();
+    if let Some(c) = cwd.as_deref()
+        && let Some(id) = store.recall_validated(c).await
+    {
+        return Some(id);
+    }
+    let summaries = store.list().await;
     latest_summary(&summaries, cwd.as_deref())
         .or_else(|| latest_summary(&summaries, None))
         .map(|s| s.id.clone())
@@ -323,9 +357,9 @@ fn run_picker_sync(
     let backend = CrosstermBackend::new(stdout_handle);
     let mut terminal = Terminal::new(backend)?;
 
-    let box_bg = Color::Rgb(22, 22, 22);
-    let accent_peach = Color::Rgb(246, 173, 126);
-    let text_dim = Color::Rgb(120, 120, 120);
+    let box_bg = crate::theme::theme().surface_bg;
+    let accent_peach = crate::theme::theme().accent;
+    let text_dim = crate::theme::theme().text_dim;
 
     let mut query = String::new();
     let mut sel: usize = 0;
@@ -411,7 +445,9 @@ fn run_picker_sync(
                         ),
                         Span::styled(
                             "Type to filter…",
-                            Style::default().fg(Color::Rgb(90, 90, 90)).bg(box_bg),
+                            Style::default()
+                                .fg(crate::theme::theme().text_dim)
+                                .bg(box_bg),
                         ),
                     ])
                 } else {
@@ -521,7 +557,7 @@ fn run_picker_sync(
                             Line::from(Span::styled(
                                 row_str,
                                 Style::default()
-                                    .fg(Color::Black)
+                                    .fg(crate::theme::theme().on_selection)
                                     .bg(accent_peach)
                                     .add_modifier(Modifier::BOLD),
                             ))
@@ -657,6 +693,17 @@ fn run_picker_sync(
 mod tests {
     use super::*;
     use gray_core::message::Message;
+
+    #[test]
+    fn headless_row_shows_short_id_preview_and_age() {
+        let s = SessionSummary {
+            id: SessionId::new("30e3f464-aaaa-bbbb-cccc-d60f2104dcd9"),
+            started_at: now_millis(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            first_user_text: Some("hi there".to_string()),
+        };
+        assert_eq!(format_summary_row(&s), "30e3f464 — hi there (just now)");
+    }
 
     async fn seed(
         store: &JsonlSessionStore,

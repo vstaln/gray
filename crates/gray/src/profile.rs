@@ -1,10 +1,12 @@
 //! Plugin profile: gray-surface policy over the shared builder.
 //!
 //! Profile→registry→hooks assembly lives once in
-//! [`gray_plugin::builder`] (lowest common crate — the `gray → gray-gateway`
-//! edge forbids a `gray`-owned shared builder). This module keeps gray's
-//! surface policy: the [`SkillTool`] default baked into `tools-basic`, the
-//! transcript-safe warning queue, and the `--dump-manifest` registry view.
+//! [`gray_plugin::builder`] (lowest common crate — keeps the shared builder
+//! out of any single binary). This module keeps gray's
+//! surface policy: bash-only tools (`tools-minimal`) plus the always-on
+//! context-only [`crate::skills_tool::SkillsPlugin`]
+//! (per-turn `<available_skills>` list, no tools), the transcript-safe
+//! warning queue, and the `--dump-manifest` registry view.
 
 use std::sync::Arc;
 
@@ -14,7 +16,7 @@ pub use gray_plugin::builder::{
     ToolsBasicPlugin, ToolsMinimalPlugin, ToolsSearchPlugin, from_plugins,
 };
 
-use crate::skills_tool::SkillTool;
+use crate::skills_tool::SkillsPlugin;
 
 /// Builtin plugin catalog: what a `gray.yml` may name. The no-profile
 /// fallback is `tools-minimal` (see [`active_plugins`]); `tools-basic` and
@@ -22,10 +24,12 @@ use crate::skills_tool::SkillTool;
 fn gray_defaults() -> Vec<Arc<dyn Plugin>> {
     vec![
         Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
-        Arc::new(ToolsBasicPlugin {
-            extra: vec![Arc::new(SkillTool)],
-        }) as Arc<dyn Plugin>,
+        Arc::new(ToolsBasicPlugin { extra: vec![] }) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
+        // Always on: per-turn `<available_skills>` context, no tools.
+        // (The live agent path in `lib::build_agent` appends the same via
+        // `extra_plugins`; this covers `--dump-manifest`/`builtin_registry`.)
+        Arc::new(SkillsPlugin) as Arc<dyn Plugin>,
     ]
 }
 
@@ -66,21 +70,38 @@ fn drain_builder_warnings() {
 /// the profile is missing/unparseable/empty. Manifest-only boot (no host
 /// handler); a sidecar spawn failure aborts boot with entry index + argv.
 pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bool)> {
-    let out = gray_plugin::builder::active_plugins(
+    let (mut plugins, fallback) = gray_plugin::builder::active_plugins(
         gray_defaults(),
-        &["tools-minimal"],
+        // Fallback when no profile resolves: bash shell family + skills context.
+        &["tools-minimal", "skills"],
         "gray.yml",
         None,
         true,
     )
     .await?;
     drain_builder_warnings();
-    Ok(out)
+    // Always-on context-only `skills` plugin: appended after the profile +
+    // lock set so it survives explicit `tools-minimal`-only profiles too
+    // (same later-wins dedupe as the builder's `extra_plugins`;
+    // mirrors `lib::build_agent`). Carries no tools — tools stay bash-only.
+    if !fallback {
+        let name = "skills";
+        if let Some(pos) = plugins.iter().position(|e| e.manifest().name == name) {
+            plugins.remove(pos);
+        }
+        plugins.push(Arc::new(SkillsPlugin) as Arc<dyn Plugin>);
+    }
+    Ok((plugins, fallback))
 }
 
-/// The default builtin registry (no profile file): `tools-minimal` only.
+/// The default builtin registry (no profile file): `tools-minimal` plus the
+/// context-only `skills` plugin (so `/context` tool estimates match the live agent).
 pub fn builtin_registry() -> gray_tools::Registry {
-    from_plugins(&[Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>]).0
+    from_plugins(&[
+        Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
+        Arc::new(SkillsPlugin) as Arc<dyn Plugin>,
+    ])
+    .0
 }
 
 /// Builds the tool registry from the `gray.yml` profile plugin order,

@@ -2,7 +2,7 @@
 //!
 //! Gray's paste path used to accept terminal-driven bracketed paste
 //! (`Event::Paste`) plus an image-only Ctrl+V. There was no text fallback:
-//! on a default build (no `clipboard` feature) Ctrl+V was a silent no-op,
+//! Ctrl+V was a silent no-op when the clipboard backend was missing,
 //! and any terminal that doesn't emit bracketed paste (or a `$EDITOR` that
 //! cleared mode 2004 mid-session) left the user with no way to paste at
 //! all. Opencode perfected this with a `prompt.paste` command (bound to
@@ -11,9 +11,8 @@
 //! backend half; the frontend (draw code) is untouched.
 //!
 //! Text reads are dependency-free native helpers (`pbpaste`, `wl-paste`,
-//! `xclip`, `xsel`, PowerShell, termux) so they work on the default build.
-//! With the `clipboard` feature, arboard is tried first (it also covers
-//! Wayland session quirks the CLI helpers sometimes miss).
+//! `xclip`, `xsel`, PowerShell, termux); arboard is tried first (it also
+//! covers Wayland session quirks the CLI helpers sometimes miss).
 
 use super::Tui;
 
@@ -100,7 +99,6 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
     })
 }
 
-#[cfg(feature = "clipboard")]
 fn arboard_text() -> Option<String> {
     if let Ok(mut clipboard) = arboard::Clipboard::new()
         && let Ok(text) = clipboard.get_text()
@@ -154,10 +152,8 @@ pub(crate) fn read_system_clipboard_text_with_paths(paths: &str) -> Option<Strin
     None
 }
 
-/// Production entry: arboard first when compiled in, then native helpers on
-/// the real PATH.
+/// Production entry: arboard first, then native helpers on the real PATH.
 pub(crate) fn read_system_clipboard_text() -> Option<String> {
-    #[cfg(feature = "clipboard")]
     if let Some(text) = arboard_text() {
         return Some(text);
     }

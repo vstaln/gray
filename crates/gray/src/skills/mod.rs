@@ -236,7 +236,7 @@ fn add_ignore_rules(matcher: &mut IgnoreMatcher, dir: &Path, root_dir: &Path) {
 // Frontmatter
 mod load;
 
-pub(crate) use load::{load_skill_from_file, load_skills_from_dir_internal};
+pub(crate) use load::load_skills_from_dir_internal;
 
 pub fn load_skills_from_dir(dir: &Path, source: &str) -> LoadSkillsResult {
     let root = dir.to_path_buf();
@@ -256,17 +256,59 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// One-line row for a discovered skill: `name — description`
+/// (description single-lined and capped at 100 chars; the modal truncates
+/// to width, the headless list needs its own cap).
+pub fn format_discovered_skill_row(skill: &Skill) -> String {
+    const MAX_DESC: usize = 100;
+    let desc: String = skill
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let short = if desc.chars().count() > MAX_DESC {
+        format!("{}…", desc.chars().take(MAX_DESC - 1).collect::<String>())
+    } else {
+        desc
+    };
+    if short.is_empty() {
+        skill.name.clone()
+    } else {
+        format!("{} — {}", skill.name, short)
+    }
+}
+
+/// Ranking for the per-turn prompt list (fx `capability_search` classes,
+/// no new tool): exact names always survive; weak entries — empty
+/// descriptions, oversized blobs (>700 chars, almost surely pasted content
+/// rather than a description) — are rejected before they cost tokens.
+/// First name match wins (dedup), preserving discovery order.
+pub fn rank_skills_for_prompt(skills: &[Skill]) -> Vec<&Skill> {
+    const MAX_DESCRIPTION_LEN: usize = 700;
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for s in skills {
+        if s.disable_model_invocation || s.name.trim().is_empty() {
+            continue;
+        }
+        if s.description.trim().is_empty() || s.description.len() > MAX_DESCRIPTION_LEN {
+            continue;
+        }
+        if seen.insert(s.name.clone()) {
+            out.push(s);
+        }
+    }
+    out
+}
+
 pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
-    let visible: Vec<&Skill> = skills
-        .iter()
-        .filter(|s| !s.disable_model_invocation)
-        .collect();
+    let visible: Vec<&Skill> = rank_skills_for_prompt(skills);
     if visible.is_empty() {
         return String::new();
     }
     let mut lines = vec![
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
-        "Use the skill tool to load a skill's instructions when the task matches its description."
+        "Read a skill's SKILL.md with bash (`cat <location>`) when the task matches its description."
             .to_string(),
         "Only load a skill for multi-step or specialized work that genuinely requires its workflow — trivial single-step edits and direct answers never require a skill.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
@@ -291,11 +333,11 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Invocation-arg validation (Bug1: `/skills:<name> <bogus-args>` silently
-// ignored args while `/skills:bogus-name` errored). Skills declare args via
+// Invocation-arg validation (Bug1: `/skills <name> <bogus-args>` silently
+// ignored args while `/skills bogus-name` errored). Skills declare args via
 // frontmatter `args:`/`arguments:` (see `load::parse_declared_args`); empty
 // means the skill takes no arguments, so any passed arg is an error naming
-// the valid args. Callers (REPL `/skills:` expansion, `SkillTool`) must
+// the valid args. Callers (REPL skill expansion) must
 // surface the Err string locally instead of invoking the model.
 // ---------------------------------------------------------------------------
 
@@ -573,6 +615,33 @@ mod tests {
         assert!(err.contains("bogus"), "names unknown: {err}");
         assert!(err.contains("env"), "names valid: {err}");
         assert!(err.contains("force"), "names valid: {err}");
+    }
+
+    fn ranked_skill(name: &str, desc: &str) -> Skill {
+        Skill {
+            name: name.to_string(),
+            description: desc.to_string(),
+            file_path: PathBuf::from("/tmp/SKILL.md"),
+            base_dir: PathBuf::from("/tmp"),
+            disable_model_invocation: false,
+            source: "path".to_string(),
+            args: vec![],
+        }
+    }
+
+    #[test]
+    fn rank_keeps_exact_names_rejects_weak_entries() {
+        let skills = vec![
+            ranked_skill("deploy", "deploy the app"),
+            ranked_skill("deploy", "duplicate name loses"),
+            ranked_skill("empty", ""),
+            ranked_skill("blob", &"x".repeat(701)),
+            ranked_skill("", "nameless loses"),
+        ];
+        let ranked = rank_skills_for_prompt(&skills);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].name, "deploy");
+        assert_eq!(ranked[0].description, "deploy the app");
     }
 
     #[test]
