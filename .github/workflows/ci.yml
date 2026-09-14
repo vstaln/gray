@@ -26,9 +26,10 @@ jobs:
       - name: install ripgrep (grep tool + parity tests shell out to rg)
         shell: bash
         run: |
-          if command -v rg >/dev/null; then exit 0; fi
+          if command -v rg >/dev/null; then rg --version; exit 0; fi
           if [ "$(uname)" = "Darwin" ]; then brew install ripgrep
           else sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep; fi
+          rg --version
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
