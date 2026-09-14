@@ -1,0 +1,9 @@
+name: gray
+port: 8080
+debug: true
+limits:
+  cpu: 2
+  mem: 512
+tags:
+  - fast
+  - local
