@@ -18,12 +18,6 @@ fn try_lock_tui<T>(
     }
 }
 
-/// Brief 3B: any keystroke while a turn runs wakes a sleeping agent early
-/// (250 ms coalesced inside the registry; fire-and-forget here).
-fn poke_shell_sleep() {
-    gray_tools::shell::registry::registry().notify_user_input();
-}
-
 /// Full watcher (prompt turns): typing queues follow-ups, clipboard paste, popups.
 pub(crate) fn spawn_key_watcher_with_typing(
     watch_cancel: Cancel,
@@ -116,7 +110,6 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if !t.is_task_running {
                         continue;
                     }
-                    poke_shell_sleep();
                     if modifiers.contains(KeyModifiers::CONTROL)
                         && matches!(code, KeyCode::Char('v') | KeyCode::Char('V'))
                     {
@@ -443,7 +436,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             {
                                 t.textarea.delete_word_backward();
                             } else {
-                                t.textarea.delete_backward(1);
+                                t.textarea.delete_backward();
                             }
                             t.sync_attachments();
                             sync_matches(&mut t);
@@ -455,7 +448,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             {
                                 t.textarea.delete_word_forward();
                             } else {
-                                t.textarea.delete_forward(1);
+                                t.textarea.delete_forward();
                             }
                             t.sync_attachments();
                             sync_matches(&mut t);
@@ -490,7 +483,6 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     if !t.is_task_running {
                         continue;
                     }
-                    poke_shell_sleep();
                     t.handle_paste(data);
                     let cur_text = t.textarea.text().to_string();
                     t.matches = crate::repl::completion_matches_dyn(&cur_text, &cwd_for_watcher);

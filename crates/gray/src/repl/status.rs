@@ -326,10 +326,10 @@ pub(crate) async fn handle_context_window(
         agent: &Option<Agent>,
         tui: Option<&crate::composer::SharedTui>,
     ) -> crate::setup::ContextParts {
-        // The prompt file is the stored system prompt (comments stripped);
-        // the per-turn `<available_skills>` hook block (context-only, no
-        // skill tool — model reads matches with bash) is estimated
-        // separately below so `/context` stays honest. Project context is 0.
+        // The prompt file is the stored system prompt (comments stripped).
+        // Per-turn hook blocks (`<available_skills>` + `<project_context>`,
+        // context-only) are estimated separately below so `/context` stays
+        // honest: the project estimate reads the exact block the hook serves.
         let sys = crate::sys_prompt_path()
             .ok()
             .and_then(|p| load_or_create_system_prompt_at(&p).ok())
@@ -361,9 +361,12 @@ pub(crate) async fn handle_context_window(
             Some(total) => total.saturating_sub(sys.saturating_add(tools_toks)),
             None => history_est,
         };
+        let project = crate::skills_tool::project_context_block(cwd)
+            .map(|b| crate::setup::estimate_str_tokens(&b))
+            .unwrap_or(0);
         crate::setup::ContextParts {
             system_prompt: sys,
-            project_context: 0,
+            project_context: project,
             tools: tools_toks,
             skills,
             messages,
@@ -642,12 +645,25 @@ pub(crate) async fn handle_compact(
             .begin_compaction(compaction_id.clone());
     }
 
+    let watch_cancel = tokio_util::sync::CancellationToken::new();
+    let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _key_watcher = tui.map(|shared| {
+        crate::repl::key_watcher::spawn_key_watcher_with_typing(
+            watch_cancel,
+            watch_stop.clone(),
+            Some(shared.clone()),
+            cwd.to_path_buf(),
+        )
+    });
+
     let compact_res = crate::compact::compact_with_keep(
         ag,
         custom_instructions.as_deref(),
         crate::setup::user_keep_recent_tokens(),
     )
     .await;
+
+    watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Restore idle (manual has no turn to return to) in the same lock;
     // the `Context compacted` line below is the single completion signal.

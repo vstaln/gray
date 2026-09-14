@@ -20,7 +20,6 @@ pub mod write;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 pub use gray_core::agent::Tool;
 use gray_core::agent::{ToolContext, ToolExecutor, ToolOutput};
 use gray_core::message::ToolDef;
@@ -28,15 +27,6 @@ pub(crate) use gray_core::tool_out::{
     MAX_BYTES, fail, finish, get_opt_bool, get_opt_u64, get_str, resolve_path,
 };
 use serde_json::Value;
-
-/// Optional string argument (`null`/absent -> `None`; wrong type -> error).
-pub(crate) fn get_opt_str(args: &Value, key: &str) -> Result<Option<String>, ToolOutput> {
-    match args.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(fail(format!("invalid argument '{key}': expected string"))),
-    }
-}
 
 pub use edit::EditTool;
 pub use find::FindTool;
@@ -125,29 +115,6 @@ impl Registry {
     /// Names of registered tools in registration order.
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.def().name.clone()).collect()
-    }
-
-    /// One-line snippets keyed by tool name — only tools with `Some` snippet are included
-    /// (mirrors pi's `visibleTools = tools.filter(name => !!toolSnippets[name])`).
-    pub fn prompt_snippets(&self) -> std::collections::HashMap<String, String> {
-        let mut m = std::collections::HashMap::new();
-        for tool in &self.tools {
-            if let Some(snippet) = tool.prompt_snippet() {
-                m.insert(tool.def().name.clone(), snippet.to_string());
-            }
-        }
-        m
-    }
-
-    /// Collected guideline bullets from all registered tools (in registration order, deduped by caller).
-    pub fn prompt_guidelines(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for tool in &self.tools {
-            if let Some(guidelines) = tool.prompt_guidelines() {
-                out.extend(guidelines.iter().map(|g| g.to_string()));
-            }
-        }
-        out
     }
 }
 
@@ -363,7 +330,7 @@ impl ToolExecutor for Registry {
         ctx: &ToolContext,
         name: &str,
         args: Value,
-    ) -> BoxFuture<'static, ToolOutput> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolOutput> + Send + 'static>> {
         let tool = self.lookup(name);
         let coerced = match tool.as_ref().map(|t| t.def()) {
             Some(def) => coerce_args(&def, args),

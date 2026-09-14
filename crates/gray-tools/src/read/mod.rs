@@ -25,9 +25,6 @@ use serde_json::json;
 
 use crate::{FileLedger, LedgerEntry, Tool, fail, get_opt_u64, get_str, resolve_path};
 
-pub const READ_SNIPPET: &str = "Read file contents";
-pub const READ_GUIDELINES: &[&str] = &["Use read to examine files instead of cat or sed."];
-
 /// Reads a text file (`path`, optional 1-based `offset`, optional `limit`).
 ///
 /// Shares a [`FileLedger`] with the write/edit tools so repeat reads can be
@@ -93,14 +90,6 @@ impl Tool for ReadTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(READ_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(READ_GUIDELINES)
-    }
-
     // Pure read: safe to run alongside other tools.
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         // T6.1 bulk: `paths[]`/`exclude[]` short-circuit here. Single-`path`
@@ -131,7 +120,7 @@ impl Tool for ReadTool {
         let given = resolve_path(&ctx.cwd, &path);
         let full = resolve::resolve_existing(&given).unwrap_or_else(|| given.clone());
         let repaired = (full != given).then(|| {
-            resolve::repaired_note(&full.display().to_string(), &given.display().to_string())
+            notices::repaired_note(&full.display().to_string(), &given.display().to_string())
         });
         // limit=0 shows nothing: exact edge, never a full view, no ledger entry.
         if limit == Some(0) {
@@ -458,9 +447,9 @@ impl ReadTool {
         }
         // T1.5 tail notes (empty files return via the T1.3 note above).
         if tail_mode && let Some(t) = total {
-            let mut notes = vec![tail::tail_note(raws.len() as u64, t)];
+            let mut notes = vec![notices::tail_note(raws.len() as u64, t)];
             if let Some(lim) = limit {
-                notes.push(tail::limit_ignored_note(lim));
+                notes.push(notices::limit_ignored_note(lim));
             }
             output = notices::join(&output, &notes.join("\n"));
         }
@@ -551,7 +540,7 @@ impl ReadTool {
         let paths = get_str_list(args, "paths");
         if paths.is_empty() {
             if args.get("path").is_none() || args.get("path").is_some_and(Value::is_null) {
-                return Some(fail(bulk::MISSING_INPUT_MESSAGE.to_string()));
+                return Some(fail(notices::MISSING_INPUT_MESSAGE.to_string()));
             }
             return None;
         }
@@ -627,7 +616,7 @@ impl ReadTool {
         }
         let mut out = blocks.join("\n\n");
         if !skipped.is_empty() {
-            let note = bulk::aggregate_note(shown.len(), rendered.len(), &skipped);
+            let note = notices::aggregate_note(shown.len(), rendered.len(), &skipped);
             out = if out.is_empty() {
                 note
             } else {

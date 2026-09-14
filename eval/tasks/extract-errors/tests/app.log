@@ -1,0 +1,6 @@
+INFO starting up
+ERROR disk full
+WARN retrying
+ERROR timeout on read
+INFO done
+ERRORREF not an error level

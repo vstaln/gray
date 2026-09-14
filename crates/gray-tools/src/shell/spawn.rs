@@ -1,4 +1,4 @@
-//! shell/spawn.rs — process spawn (brief 1D).
+//! shell/spawn.rs: process spawn.
 //!
 //! `sh -c` with null stdin, piped stdout/stderr, non-interactive env,
 //! detached via setsid (pgid == pid). NO `kill_on_drop`: from now on a
@@ -9,12 +9,10 @@ use std::path::Path;
 
 use tokio::process::Command;
 
-use super::contract::{Spawned, TaskId};
+use super::contract::Spawned;
 
-/// Spawn `command` via `sh -c` in `cwd`, tagged with `task` for
-/// `GRAY_TASK_ID`. (P1D ruling: the `task` param extends the contract's
-/// 2-arg form — without it the mandated env tag cannot be set.)
-pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
+/// Spawn `command` via `sh -c` in `cwd`.
+pub fn spawn(command: &str, cwd: &Path) -> io::Result<Spawned> {
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
         .arg(command)
@@ -25,7 +23,6 @@ pub fn spawn(command: &str, cwd: &Path, task: TaskId) -> io::Result<Spawned> {
         .env("DEBIAN_FRONTEND", "noninteractive")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("SUDO_ASKPASS", "/bin/false")
-        .env("GRAY_TASK_ID", task.to_string())
         .env("TERM", "dumb")
         .env("PAGER", "cat")
         .env("MANPAGER", "cat")
@@ -86,8 +83,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_records_real_process_group() {
-        let spawned =
-            spawn("true", &PathBuf::from("/tmp"), TaskId(1)).expect("sh -c true must spawn");
+        let spawned = spawn("true", &PathBuf::from("/tmp")).expect("sh -c true must spawn");
         assert_eq!(spawned.pgid, spawned.pid as i32);
     }
 }

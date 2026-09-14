@@ -102,9 +102,10 @@ pub fn shorten_path(path_str: &str, cwd: Option<&Path>) -> String {
     format!("{head}…{tail}")
 }
 
-/// Expands tabs to spaces with a given tab size (default 4) to ensure
-/// all characters are explicit printable spaces and background styling covers every cell.
-pub fn expand_tabs(s: &str, tab_size: usize) -> String {
+/// Expands tabs to 4-space stops so all characters are explicit printable
+/// spaces and background styling covers every cell.
+pub fn expand_tabs(s: &str) -> String {
+    const TAB_SIZE: usize = 4;
     if !s.contains('\t') {
         return s.to_string();
     }
@@ -112,7 +113,7 @@ pub fn expand_tabs(s: &str, tab_size: usize) -> String {
     let mut col = 0;
     for ch in s.chars() {
         if ch == '\t' {
-            let count = tab_size.saturating_sub(col % tab_size).max(1);
+            let count = TAB_SIZE.saturating_sub(col % TAB_SIZE).max(1);
             for _ in 0..count {
                 result.push(' ');
             }
@@ -339,11 +340,7 @@ pub(crate) use diff::{highlight_line_spans, wrap_styled_spans};
 pub fn render_code_block(content: &str, path: Option<&Path>) -> Vec<Line<'static>> {
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = path.and_then(|p| syntect.highlight_lines_by_file_path(p));
-    render_numbered_lines(
-        &content.lines().collect::<Vec<_>>(),
-        &mut highlighter,
-        Some(40),
-    )
+    render_numbered_lines(&content.lines().collect::<Vec<_>>(), &mut highlighter)
 }
 
 /// Guesses a syntect language token for command output and lightly
@@ -379,12 +376,12 @@ fn push_numbered_wrapped(
     content_w: usize,
 ) {
     let syntect = gray_markdown::get_syntect();
-    let expanded = expand_tabs(text, 4);
+    let expanded = expand_tabs(text);
     let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
     let cont_indent_len = indent_count.min(content_w / 2);
     let cont_indent_str = " ".repeat(cont_indent_len);
 
-    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, diff_equal_fg(), None);
+    let row_spans = highlight_line_spans(&expanded, highlighter, syntect, None);
     let wrapped_rows = wrap_styled_spans(row_spans, content_w, cont_indent_len);
 
     let gutter_str = format!("{:>width$} | ", line_num, width = gutter_width);
@@ -414,13 +411,14 @@ fn push_numbered_wrapped(
 
 /// Numbered, highlighted, indent-wrapped rendering shared by
 /// [`render_code_block`] (capped) and command output (uncapped).
-/// `max_lines_to_show`: Some(n) keeps head/tail with an omission marker,
-/// None shows every line.
+/// Above the cap, keeps head/tail with an omission marker.
 fn render_numbered_lines(
     raw_lines: &[&str],
     highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>,
-    max_lines_to_show: Option<usize>,
 ) -> Vec<Line<'static>> {
+    const MAX_LINES_TO_SHOW: usize = 40;
+    const HEAD: usize = 18;
+    const TAIL: usize = 6;
     let total = raw_lines.len();
     if total == 0 {
         return Vec::new();
@@ -435,11 +433,7 @@ fn render_numbered_lines(
     let overhead = 2 + gutter_width + 3 + 2;
     let content_w = term_w.saturating_sub(overhead).max(20);
 
-    if let Some(max) = max_lines_to_show
-        && total > max
-    {
-        const HEAD: usize = 18;
-        const TAIL: usize = 6;
+    if total > MAX_LINES_TO_SHOW {
         for (idx, line_text) in raw_lines.iter().take(HEAD).enumerate() {
             push_numbered_wrapped(
                 &mut lines,
@@ -500,7 +494,7 @@ pub fn tool_may_render_body(tool_name: &str) -> bool {
 
 /// Strip the `<untrusted-output>` shell fence for *display* only.
 ///
-/// `bash`/`shell_output` wrap process output in the fence so the model can
+/// `bash` wraps process output in the fence so the model can
 /// tell tool output from user text (prompt-injection boundary). The tags are
 /// harness plumbing: the transcript keeps them, but rendering them as
 /// numbered output lines confuses humans.
@@ -522,16 +516,16 @@ fn strip_shell_fence(trimmed: &str) -> String {
     {
         lines.remove(idx);
     }
-    if let Some(idx) = lines
-        .iter()
-        .rposition(|l| l.trim() == "</untrusted-output>")
-        && lines.len().saturating_sub(idx) <= 5
+    if let Some(idx) = lines.iter().rposition(|l| {
+        let t = l.trim();
+        t == "</untrusted-output>" || t == "<\\/untrusted-output>"
+    }) && lines.len().saturating_sub(idx) <= 5
     {
         lines.remove(idx);
     }
     lines
         .join("\n")
-        .replace("<\\/untrusted-output", "</untrusted-output>")
+        .replace("<\\/untrusted-output>", "</untrusted-output>")
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.
@@ -585,22 +579,12 @@ pub fn format_tool_result_lines_with_context(
     }
 
     if tool_name == "write" {
-        // If write produced a diff (from overwriting an existing file), render it
-        if output.starts_with("--- ") || output.contains("@@ ") {
-            let hunks = parse_diff_hunks(output);
-            if !hunks.is_empty() {
-                return render_diff_hunks(&hunks, file_path, cwd);
-            }
-        }
-        // If a file was written/created, display the written code block with line numbers & syntax highlighting
+        // Diff-like output was already rendered (or discarded) above; a write
+        // reaching here displays the written code block with line numbers.
         let content = args.map(arg_content).unwrap_or("");
         if !content.is_empty() {
             return render_code_block(content, file_path);
         }
-        return Vec::new();
-    }
-
-    if tool_name == "read" {
         return Vec::new();
     }
 
@@ -619,11 +603,7 @@ pub fn format_tool_result_lines_with_context(
     let (pretty, token) = prettify_output(&trimmed);
     let syntect = gray_markdown::get_syntect();
     let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
-    render_numbered_lines(
-        &pretty.lines().collect::<Vec<_>>(),
-        &mut highlighter,
-        Some(40),
-    )
+    render_numbered_lines(&pretty.lines().collect::<Vec<_>>(), &mut highlighter)
 }
 
 mod plain;

@@ -763,16 +763,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
-dependencies = [
- "libc",
- "winapi",
-]
-
-[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -950,7 +940,6 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
- "fs2",
  "futures",
  "gray-core",
  "gray-cron",
@@ -958,7 +947,6 @@ dependencies = [
  "gray-pkg",
  "gray-plugin",
  "gray-session",
- "gray-supervise",
  "gray-tools",
  "ignore",
  "image",
@@ -984,7 +972,6 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -1080,7 +1067,6 @@ dependencies = [
 name = "gray-session"
 version = "0.1.0"
 dependencies = [
- "fs2",
  "gray-core",
  "log",
  "serde",
@@ -1092,32 +1078,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "gray-supervise"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "serde",
- "serde_json",
- "tempfile",
- "uuid",
-]
-
-[[package]]
 name = "gray-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "futures",
  "globset",
  "gray-core",
  "ignore",
  "infer",
  "libc",
  "log",
- "memchr",
- "regex",
- "serde",
  "serde_json",
  "tempfile",
  "tokio",

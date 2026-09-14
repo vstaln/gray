@@ -2,8 +2,7 @@
 
 Sidecars are child processes speaking newline-delimited JSON over stdio.
 Frozen wire spec: [`protocol-v1.md`](protocol-v1.md) (v1.1).
-Machine schemas: [`schema/manifest.v1.json`](schema/manifest.v1.json),
-[`schema/protocol.v1.json`](schema/protocol.v1.json).
+Machine schema: [`schema/manifest.v1.json`](schema/manifest.v1.json).
 Reference implementation: [`plugins/echo/echo.sh`](../plugins/echo/echo.sh)
 (copy it as your starting point).
 
@@ -12,11 +11,9 @@ Reference implementation: [`plugins/echo/echo.sh`](../plugins/echo/echo.sh)
 ```json
 {"name":"echo","version":"0.1.0","protocol":"1.1",
  "tools":[{"name":"echo","description":"Echo text back",
-   "parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]},
-   "snippet":"echo <text>"}],
+   "parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}],
  "commands":["/echo"],
  "hooks":["turn/end"],
- "capabilities":[],
  "subcommands":[]}
 ```
 
@@ -27,9 +24,6 @@ Reference implementation: [`plugins/echo/echo.sh`](../plugins/echo/echo.sh)
   informational (events arrive as `event/notify` regardless).
 - `protocol: "1.1"` opts into `plugin/shutdown` + `session` params.
   Absent = pre-v1: unknown lines ignored, never sent shutdown.
-- `capabilities`: advisory sandbox declaration (`exec`, `http`,
-  `session`, `ui`). Parsed, surfaced in `--dump-manifest`, schemad —
-  **not enforced yet**.
 - `subcommands` (e.g. `/cron`): host-owned namespaces the plugin extends.
   Argv forwards over the same `command/run` wire as `commands`.
 
@@ -154,7 +148,7 @@ hooks/commands you answer) and exit 0 on `plugin/shutdown`.
 
 ## Links
 
-- Official plugins: none yet (the Gray Index seed, `plugins/official.json`, is empty).
+- Official plugins: none yet.
 - Cron (file-only store, not a sidecar): `gray-cron` holds the job
   store (`$GRAY_HOME/cron/jobs.json`) + schedule math. Manage it with no
   daemon running: `gray cron list|add|remove|show` (`add "every 1h" "prompt"

@@ -211,26 +211,11 @@ pub(crate) async fn handle_sys(
                     return;
                 }
             };
-            // Interactive: the built-in bracket editor, never `$EDITOR`/vim.
-            // External editors remain for non-TUI (piped) callers.
-            if tui.is_none()
-                && crate::sys_editor::should_use_external_editor(
-                    std::env::var("EDITOR").ok().as_deref(),
-                )
-            {
-                match crate::sys_editor::run_external_editor(&path, &initial) {
-                    Ok(Some(_)) => {
-                        say(
-                            tui,
-                            "✓ system prompt saved — applies from your next message",
-                        );
-                        reload_agent(agent, config, cwd, session_id, tui).await;
-                    }
-                    Ok(None) => say(tui, "prompt unchanged"),
-                    Err(e) => say(tui, &format!("editor error: {e}")),
-                }
-                return;
-            }
+            // One external-editor path for TUI and headless alike: `$EDITOR`
+            // when set, `vi` otherwise. Snapshot before the editor overwrites
+            // in place; the TUI pauses its draw loop across the handover and
+            // reflows once the editor exits.
+            let _ = crate::sys_editor::backup_before_overwrite(&path);
             let tui_snap = tui.cloned();
             let editor_paused = if let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");
@@ -243,8 +228,7 @@ pub(crate) async fn handle_sys(
             } else {
                 false
             };
-            let mut editor = crate::sys_editor::SysEditor::new(&initial, &path);
-            let res = editor.run();
+            let res = crate::sys_editor::run_external_editor(&path, &initial);
             if editor_paused && let Some(shared) = &tui_snap {
                 let mut t = shared.lock().expect("tui lock");
                 t.pending_resize = None;
@@ -256,24 +240,15 @@ pub(crate) async fn handle_sys(
                 }
             }
             match res {
-                Ok(Some(saved)) => {
-                    let _ = crate::sys_editor::backup_before_overwrite(&path);
-                    if let Err(e) = std::fs::write(&path, &saved) {
-                        say(tui, &format!("failed to save {}: {e}", path.display()));
-                        return;
-                    }
+                Ok(Some(_)) => {
                     say(
                         tui,
                         "✓ system prompt saved — applies from your next message",
                     );
                     reload_agent(agent, config, cwd, session_id, tui).await;
                 }
-                Ok(None) => {
-                    say(tui, "prompt unchanged");
-                }
-                Err(e) => {
-                    say(tui, &format!("editor error: {e}"));
-                }
+                Ok(None) => say(tui, "prompt unchanged"),
+                Err(e) => say(tui, &format!("editor error: {e}")),
             }
         }
     }

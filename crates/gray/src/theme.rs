@@ -12,12 +12,10 @@ use ratatui::style::Color;
 /// are positional-independent, but diffs stay reviewable when grouped).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiTheme {
-    pub name: &'static str,
     // Surfaces
     pub surface_bg: Color,
     pub raised_bg: Color,
     pub input_bg: Color,
-    pub selection_bg: Color,
     pub on_selection: Color,
     pub chip_bg: Color,
     // Text ramp (faint → bright)
@@ -56,7 +54,6 @@ pub struct UiTheme {
     pub ctx_skills: Color,
     pub ctx_messages: Color,
     pub ctx_free: Color,
-    pub ctx_reserve: Color,
     // Marketplace source badges — external brand colors, intentionally
     // identical across themes (like the logo).
     pub badge_pi: Color,
@@ -73,11 +70,9 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
 /// Default `gray` theme: today's exact colors, pixel-identical. The neutral
 /// gray ramp plus the peach accent and TokyoNight tool/diff slots.
 pub const GRAY_UI_THEME: UiTheme = UiTheme {
-    name: "gray",
     surface_bg: rgb(22, 22, 22),
     raised_bg: rgb(28, 28, 28),
     input_bg: rgb(32, 32, 32),
-    selection_bg: rgb(246, 173, 126),
     on_selection: Color::Black,
     chip_bg: rgb(200, 200, 200),
     text_faint: rgb(70, 70, 70),
@@ -109,7 +104,6 @@ pub const GRAY_UI_THEME: UiTheme = UiTheme {
     ctx_skills: rgb(217, 249, 157),
     ctx_messages: rgb(254, 240, 138),
     ctx_free: rgb(100, 116, 139),
-    ctx_reserve: rgb(254, 205, 211),
     badge_pi: rgb(125, 211, 252),
     badge_claw: rgb(134, 239, 172),
     badge_claude: rgb(196, 181, 253),

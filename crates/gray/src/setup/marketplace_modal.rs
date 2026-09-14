@@ -48,13 +48,13 @@ pub(crate) fn split_market_row(
 
 /// Short row chip for a plugin source (display only; install specs and
 /// the preview pane keep full labels via `format_preview`).
-fn source_chip(source: gray_pkg::ops::SearchSource) -> &'static str {
-    use gray_pkg::ops::SearchSource as S;
+fn source_chip(source: Source) -> &'static str {
+    use gray_pkg::sources::Source as S;
     match source {
-        S::Gray => "gray",
-        S::Pi => "pi",
+        S::GrayIndex => "gray",
+        S::PiGallery => "pi",
         S::ClawHub => "claw",
-        S::Claude => "claude",
+        S::ClaudeRepo => "claude",
     }
 }
 
@@ -98,9 +98,6 @@ pub(crate) fn format_preview(hit: &SearchHit, requires: &[String]) -> String {
     }
     if !hit.version_detail.trim().is_empty() {
         lines.push(format!("detail: {}", hit.version_detail.trim()));
-    }
-    if !hit.files.is_empty() {
-        lines.push(format!("files: {}", hit.files.join(", ")));
     }
     if !hit.trust.trim().is_empty() {
         lines.push(format!("trust: {}", hit.trust.trim()));
@@ -154,12 +151,12 @@ pub(crate) fn install_status_covered_by_footer(msg: &str, preview_open: bool) ->
 /// Install spec for a plugin hit: Gray names install bare, Pi via `npm:`,
 /// ClawHub via `clawhub:`, Claude via `claude:`.
 pub(crate) fn install_spec_for_plugin(hit: &SearchHit) -> String {
-    use gray_pkg::ops::SearchSource;
+    use Source;
     match hit.source {
-        SearchSource::Gray => hit.name.clone(),
-        SearchSource::Pi => format!("npm:{}", hit.name),
-        SearchSource::ClawHub => format!("clawhub:{}", hit.name),
-        SearchSource::Claude => format!("claude:{}", hit.name),
+        Source::GrayIndex => hit.name.clone(),
+        Source::PiGallery => format!("npm:{}", hit.name),
+        Source::ClawHub => format!("clawhub:{}", hit.name),
+        Source::ClaudeRepo => format!("claude:{}", hit.name),
     }
 }
 
@@ -234,8 +231,8 @@ pub fn run_marketplace_modal(bg: Option<&BackgroundSnapshot>) -> anyhow::Result<
     // Pristine receipts; the display vecs are filter+sort views over these.
     let mut plugin_all: Vec<SearchHit> = Vec::new();
     let mut skill_all: Vec<SkillHit> = Vec::new();
-    let mut plugin_filter: Option<gray_pkg::ops::SearchSource> = None;
-    let mut skill_filter: Option<gray_pkg::ops::SearchSource> = None;
+    let mut plugin_filter: Option<Source> = None;
+    let mut skill_filter: Option<Source> = None;
     let mut sort_mode = SortMode::Relevance;
     let mut skill_booted = false;
 
@@ -1122,11 +1119,7 @@ impl SortMode {
 }
 
 /// Display view over pristine receipts: source filter, then the `^S` sort.
-fn apply_plugin_view(
-    all: &[SearchHit],
-    filter: Option<gray_pkg::ops::SearchSource>,
-    sort: SortMode,
-) -> Vec<SearchHit> {
+fn apply_plugin_view(all: &[SearchHit], filter: Option<Source>, sort: SortMode) -> Vec<SearchHit> {
     let mut v: Vec<SearchHit> = all
         .iter()
         .filter(|h| filter.is_none_or(|f| h.source == f))
@@ -1141,11 +1134,7 @@ fn apply_plugin_view(
 }
 
 /// Display view over pristine skill receipts: source filter, then `^S` sort.
-fn apply_skill_view(
-    all: &[SkillHit],
-    filter: Option<gray_pkg::ops::SearchSource>,
-    sort: SortMode,
-) -> Vec<SkillHit> {
+fn apply_skill_view(all: &[SkillHit], filter: Option<Source>, sort: SortMode) -> Vec<SkillHit> {
     let mut v: Vec<SkillHit> = all
         .iter()
         .filter(|h| filter.is_none_or(|f| h.source == f.label()))
@@ -1160,15 +1149,13 @@ fn apply_skill_view(
 }
 
 /// `^F` cycles (tab-scoped; `None` = all sources).
-fn next_plugin_filter(
-    cur: Option<gray_pkg::ops::SearchSource>,
-) -> Option<gray_pkg::ops::SearchSource> {
-    use gray_pkg::ops::SearchSource as S;
+fn next_plugin_filter(cur: Option<Source>) -> Option<Source> {
+    use gray_pkg::sources::Source as S;
     const ORDER: [Option<S>; 5] = [
         None,
-        Some(S::Gray),
-        Some(S::Pi),
-        Some(S::Claude),
+        Some(S::GrayIndex),
+        Some(S::PiGallery),
+        Some(S::ClaudeRepo),
         Some(S::ClawHub),
     ];
     let pos = ORDER.iter().position(|f| *f == cur).unwrap_or(0);
@@ -1176,23 +1163,21 @@ fn next_plugin_filter(
 }
 
 /// `^F` cycles on the Skills tab (only skill-bearing sources).
-fn next_skill_filter(
-    cur: Option<gray_pkg::ops::SearchSource>,
-) -> Option<gray_pkg::ops::SearchSource> {
-    use gray_pkg::ops::SearchSource as S;
-    const ORDER: [Option<S>; 3] = [None, Some(S::ClawHub), Some(S::Claude)];
+fn next_skill_filter(cur: Option<Source>) -> Option<Source> {
+    use gray_pkg::sources::Source as S;
+    const ORDER: [Option<S>; 3] = [None, Some(S::ClawHub), Some(S::ClaudeRepo)];
     let pos = ORDER.iter().position(|f| *f == cur).unwrap_or(0);
     ORDER[(pos + 1) % ORDER.len()]
 }
 
 /// Short footer label for the active source filter.
-fn filter_short(f: Option<gray_pkg::ops::SearchSource>) -> &'static str {
-    use gray_pkg::ops::SearchSource as S;
+fn filter_short(f: Option<Source>) -> &'static str {
+    use gray_pkg::sources::Source as S;
     match f {
         None => "all",
-        Some(S::Gray) => "gray",
-        Some(S::Pi) => "pi",
-        Some(S::Claude) => "claude",
+        Some(S::GrayIndex) => "gray",
+        Some(S::PiGallery) => "pi",
+        Some(S::ClaudeRepo) => "claude",
         Some(S::ClawHub) => "clawhub",
     }
 }
@@ -1394,17 +1379,17 @@ mod tests {
         installed_summary, next_plugin_filter, next_skill_filter, scroll_top, skill_chip,
         sort_plugins_by_name, sort_skills_by_name, source_chip, split_market_row,
     };
-    use gray_pkg::ops::{SearchHit, SearchSource};
+    use gray_pkg::ops::SearchHit;
     use gray_pkg::skills_ops::SkillHit;
+    use gray_pkg::sources::Source;
 
     fn plugin_hit() -> SearchHit {
         SearchHit {
             name: "demo".to_string(),
             version: "1.2.3".to_string(),
             desc: "does things".to_string(),
-            source: SearchSource::Gray,
+            source: Source::GrayIndex,
             version_detail: String::new(),
-            files: Vec::new(),
             trust: String::new(),
             popularity: 0.0,
         }
@@ -1438,11 +1423,11 @@ mod tests {
 
     #[test]
     fn source_chips_are_short_and_exact() {
-        use gray_pkg::ops::SearchSource as S;
-        assert_eq!(source_chip(S::Gray), "gray");
-        assert_eq!(source_chip(S::Pi), "pi");
+        use gray_pkg::sources::Source as S;
+        assert_eq!(source_chip(S::GrayIndex), "gray");
+        assert_eq!(source_chip(S::PiGallery), "pi");
         assert_eq!(source_chip(S::ClawHub), "claw");
-        assert_eq!(source_chip(S::Claude), "claude");
+        assert_eq!(source_chip(S::ClaudeRepo), "claude");
     }
 
     #[test]
@@ -1459,16 +1444,14 @@ mod tests {
     }
 
     #[test]
-    fn preview_shows_detail_files_trust_and_requires_when_known() {
+    fn preview_shows_detail_trust_and_requires_when_known() {
         let mut hit = plugin_hit();
         hit.version_detail = "github:o/r@main".to_string();
-        hit.files = vec!["SKILL.md".to_string()];
         hit.trust = "official + scan:clean".to_string();
         let out = format_preview(&hit, &["git".to_string(), "rg".to_string()]);
         assert!(out.contains("demo 1.2.3 [Gray Index]"), "head: {out:?}");
         assert!(out.contains("does things"), "desc: {out:?}");
         assert!(out.contains("detail: github:o/r@main"), "detail: {out:?}");
-        assert!(out.contains("files: SKILL.md"), "files: {out:?}");
         assert!(
             out.contains("trust: official + scan:clean"),
             "trust: {out:?}"
@@ -1562,7 +1545,7 @@ mod tests {
 
     #[test]
     fn apply_plugin_view_filters_then_sorts() {
-        use gray_pkg::ops::SearchSource as S;
+        use gray_pkg::sources::Source as S;
         let hit = |name: &str, source: S| {
             let mut h = plugin_hit();
             h.name = name.to_string();
@@ -1570,19 +1553,23 @@ mod tests {
             h
         };
         let all = vec![
-            hit("zebra", S::Pi),
-            hit("Apple", S::Gray),
-            hit("mango", S::Pi),
+            hit("zebra", S::PiGallery),
+            hit("Apple", S::GrayIndex),
+            hit("mango", S::PiGallery),
         ];
         let names = |v: &[SearchHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
         // Filter keeps receipt order.
         assert_eq!(
-            names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Relevance)),
+            names(&apply_plugin_view(
+                &all,
+                Some(S::PiGallery),
+                SortMode::Relevance
+            )),
             vec!["zebra", "mango"]
         );
         // Filter + sort.
         assert_eq!(
-            names(&apply_plugin_view(&all, Some(S::Pi), SortMode::Name)),
+            names(&apply_plugin_view(&all, Some(S::PiGallery), SortMode::Name)),
             vec!["mango", "zebra"]
         );
         // No filter + sort.
@@ -1606,7 +1593,7 @@ mod tests {
             hit("mango", "ClawHub"),
         ];
         let names = |v: &[SkillHit]| v.iter().map(|h| h.name.clone()).collect::<Vec<String>>();
-        use gray_pkg::ops::SearchSource as S;
+        use gray_pkg::sources::Source as S;
         assert_eq!(
             names(&apply_skill_view(&all, Some(S::ClawHub), SortMode::Name)),
             vec!["mango", "zebra"]
@@ -1619,12 +1606,12 @@ mod tests {
 
     #[test]
     fn filter_cycles_cover_tab_sources() {
-        use gray_pkg::ops::SearchSource as S;
+        use gray_pkg::sources::Source as S;
         let mut f = None;
         for expect in [
-            Some(S::Gray),
-            Some(S::Pi),
-            Some(S::Claude),
+            Some(S::GrayIndex),
+            Some(S::PiGallery),
+            Some(S::ClaudeRepo),
             Some(S::ClawHub),
             None,
         ] {
@@ -1632,12 +1619,12 @@ mod tests {
             assert_eq!(f, expect);
         }
         let mut f = None;
-        for expect in [Some(S::ClawHub), Some(S::Claude), None] {
+        for expect in [Some(S::ClawHub), Some(S::ClaudeRepo), None] {
             f = next_skill_filter(f);
             assert_eq!(f, expect);
         }
         assert_eq!(filter_short(None), "all");
-        assert_eq!(filter_short(Some(S::Pi)), "pi");
+        assert_eq!(filter_short(Some(S::PiGallery)), "pi");
         assert_eq!(filter_short(Some(S::ClawHub)), "clawhub");
     }
 
@@ -1687,15 +1674,15 @@ mod tests {
     fn install_specs_derive_from_source() {
         assert_eq!(install_spec_for_plugin(&plugin_hit()), "demo");
         let mut pi = plugin_hit();
-        pi.source = SearchSource::Pi;
+        pi.source = Source::PiGallery;
         pi.name = "@scope/bar".to_string();
         assert_eq!(install_spec_for_plugin(&pi), "npm:@scope/bar");
         let mut ch = plugin_hit();
-        ch.source = SearchSource::ClawHub;
+        ch.source = Source::ClawHub;
         ch.name = "arein/test".to_string();
         assert_eq!(install_spec_for_plugin(&ch), "clawhub:arein/test");
         let mut cl = plugin_hit();
-        cl.source = SearchSource::Claude;
+        cl.source = Source::ClaudeRepo;
         cl.name = "grep-skills".to_string();
         assert_eq!(install_spec_for_plugin(&cl), "claude:grep-skills");
         assert_eq!(

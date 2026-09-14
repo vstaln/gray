@@ -1,0 +1,4 @@
+# service settings
+host = "localhost"
+port = 8080
+workers = 4  # do not touch

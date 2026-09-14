@@ -1,14 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use gray_session::{JsonlSessionStore, SessionId, SessionSummary};
 
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+use crate::print::now_millis;
 
 fn format_relative(ts: u64) -> String {
     let now = now_millis();

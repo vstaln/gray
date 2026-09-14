@@ -23,12 +23,8 @@ use crate::{HostHandler, Manifest, Plugin, PluginHookAdapter, SidecarPlugin, mer
 // Builtin plugins (single definition; callers add surface extras via options)
 // ---------------------------------------------------------------------------
 
-/// `tools-basic` file/shell set. `extra` holds surface tools owned elsewhere
-/// (`SkillTool` lives in `gray` so `gray-tools` stays core-only).
-#[derive(Default)]
-pub struct ToolsBasicPlugin {
-    pub extra: Vec<Arc<dyn Tool>>,
-}
+/// `tools-basic` file/shell set.
+pub struct ToolsBasicPlugin;
 
 impl Plugin for ToolsBasicPlugin {
     fn manifest(&self) -> Manifest {
@@ -44,28 +40,18 @@ impl Plugin for ToolsBasicPlugin {
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
         // T3.2/T3.3 wiring: read/write/edit share one ledger per tools() call
         // (from_plugins calls once per build, so the session tools agree).
-        // No struct field: ToolsBasicPlugin literals also live in gray::profile,
-        // which must keep compiling untouched — T3.4 adopts this ledger into
-        // Registry::file_ledger for /new + compaction.
         let ledger = Arc::new(gray_tools::FileLedger::new());
-        let mut out: Vec<Arc<dyn Tool>> = vec![
+        vec![
             Arc::new(gray_tools::ReadTool::new(ledger.clone())),
             Arc::new(gray_tools::WriteTool::new(ledger.clone())),
             Arc::new(gray_tools::EditTool::new(ledger.clone())),
             Arc::new(gray_tools::BashTool),
-            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
-            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
-            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
-        ];
-        out.extend(self.extra.iter().cloned());
-        out
+        ]
     }
 }
 
-/// `tools-minimal`: the default surface — the bash shell family only.
-/// `bash` plus its companions (`shell_output`, `shell_kill`, `sleep`) so
-/// background tasks stay readable. Everything — read, search, edit, run —
-/// goes through `bash`.
+/// `tools-minimal`: the default surface — the single blocking `bash` only.
+/// Everything — read, search, edit, run — goes through `bash`.
 pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
@@ -80,12 +66,7 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![
-            Arc::new(gray_tools::BashTool),
-            Arc::new(gray_tools::shell::tools::shell_output::ShellOutputTool),
-            Arc::new(gray_tools::shell::tools::shell_kill::ShellKillTool),
-            Arc::new(gray_tools::shell::tools::sleep::SleepTool),
-        ]
+        vec![Arc::new(gray_tools::BashTool)]
     }
 }
 
@@ -359,21 +340,6 @@ fn load_lock_files(cwd: &Path) -> (crate::lock::LockFile, crate::lock::LockFile,
     (user, project, warnings)
 }
 
-/// Effective `enabled` flag for a lock entry: the project overlay wins per
-/// name on the flag (same rule as [`crate::lock::disabled_sidecar_argvs`]).
-fn effective_enabled(
-    name: &str,
-    user: &crate::lock::LockFile,
-    project: &crate::lock::LockFile,
-) -> bool {
-    project
-        .plugins
-        .get(name)
-        .map(|e| e.enabled)
-        .or_else(|| user.plugins.get(name).map(|e| e.enabled))
-        .unwrap_or(true)
-}
-
 // ---------------------------------------------------------------------------
 // Profile resolution
 // ---------------------------------------------------------------------------
@@ -438,7 +404,7 @@ pub async fn active_plugins(
     let mut disabled_paths: Vec<String> = Vec::new();
     let mut disabled_dirs: Vec<String> = Vec::new();
     for name in user_lock.plugins.keys() {
-        if effective_enabled(name, &user_lock, &project_lock) {
+        if crate::lock::effective_enabled(&user_lock, &project_lock, name) {
             continue;
         }
         if let Some(pd) = &pdir {
@@ -512,7 +478,7 @@ pub async fn active_plugins(
     // resolve their executable from the install dir; legacy entries spawn
     // their recorded argv. Failures warn (names only) and never abort.
     for (name, entry) in user_lock.plugins.iter() {
-        if !effective_enabled(name, &user_lock, &project_lock) {
+        if !crate::lock::effective_enabled(&user_lock, &project_lock, name) {
             continue;
         }
         let argv: Vec<String> = if !entry.argv.is_empty() {
@@ -625,8 +591,6 @@ pub struct BuilderOptions {
     pub session_id: Option<String>,
     pub cwd: PathBuf,
     pub system_prompt: SystemPrompt,
-    /// Surface tools baked into `tools-basic` (gray: none — bash-only).
-    pub extra_tools: Vec<Arc<dyn Tool>>,
     /// Surface plugins that are always active regardless of the profile
     /// (gray: none — bash-only, empty by default).
     /// Appended after profile + lock plugins; on tool-name conflict the
@@ -653,7 +617,6 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         session_id,
         cwd,
         system_prompt,
-        extra_tools,
         extra_plugins,
         host_handler,
         profile_path,
@@ -664,7 +627,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
     // is `tools-minimal` — one persistent shell, gray's default surface.
     let defaults: Vec<Arc<dyn Plugin>> = vec![
         Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
-        Arc::new(ToolsBasicPlugin { extra: extra_tools }) as Arc<dyn Plugin>,
+        Arc::new(ToolsBasicPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
     ];
     let (mut plugins, _) = active_plugins(
@@ -691,12 +654,14 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         SystemPrompt::Literal(s) => s,
         SystemPrompt::Build(f) => f(&registry),
     };
-    let provider = OpenAiProvider::builder(api_key, model)
-        .base_url(base_url)
-        .reasoning_effort(reasoning_effort)
-        .session_id(provider_cache_key(session_id.as_deref()))
-        .build()
-        .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
+    let provider = OpenAiProvider::new(
+        api_key,
+        model,
+        base_url,
+        reasoning_effort,
+        Some(provider_cache_key(session_id.as_deref())),
+    )
+    .map_err(|e| anyhow::anyhow!("failed to initialize OpenAI provider: {e}"))?;
 
     let tool_defs = registry.defs();
     let executor: Arc<dyn ToolExecutor> = match wrap_executor {
@@ -720,7 +685,7 @@ mod tests {
     /// Test-local copy of the two builtin plugins (no surface extras).
     fn default_plugins() -> Vec<Arc<dyn Plugin>> {
         vec![
-            Arc::new(ToolsBasicPlugin::default()) as Arc<dyn Plugin>,
+            Arc::new(ToolsBasicPlugin) as Arc<dyn Plugin>,
             Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
         ]
     }

@@ -33,7 +33,7 @@ pub(crate) fn format_tool_box_lines(
         let mut line = line.clone();
         for span in line.spans.iter_mut() {
             if span.content.contains('\t') {
-                let expanded = crate::tool_fmt::expand_tabs(&span.content, 4);
+                let expanded = crate::tool_fmt::expand_tabs(&span.content);
                 *span = Span::styled(expanded, span.style);
             }
         }

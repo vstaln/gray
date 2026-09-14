@@ -24,7 +24,7 @@ use crate::skills_tool::SkillsPlugin;
 fn gray_defaults() -> Vec<Arc<dyn Plugin>> {
     vec![
         Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
-        Arc::new(ToolsBasicPlugin { extra: vec![] }) as Arc<dyn Plugin>,
+        Arc::new(ToolsBasicPlugin) as Arc<dyn Plugin>,
         Arc::new(ToolsSearchPlugin) as Arc<dyn Plugin>,
         // Always on: per-turn `<available_skills>` context, no tools.
         // (The live agent path in `lib::build_agent` appends the same via

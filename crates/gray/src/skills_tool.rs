@@ -1,7 +1,7 @@
 //! Skill context for the bash-only surface + paste helpers for `/skills <name>`.
 //!
-//! No `skill` tool — tools stay bash-only (`bash`, `shell_output`,
-//! `shell_kill`, `sleep`). Skills work through context + bash:
+//! No `skill` tool — the tool surface stays blocking-`bash`-only.
+//! Skills work through context + bash:
 //! [`SkillsPlugin`] serves the per-turn `<available_skills>` list (names,
 //! descriptions, exact `<location>` paths) via the `prompt/context` hook,
 //! and the model reads one with bash (`cat <location>`).
@@ -47,6 +47,19 @@ impl gray_plugin::Plugin for SkillsPlugin {
             Some(block)
         }
     }
+}
+/// Read the exact `<project_context>` block the prompt hook serves for `cwd`:
+/// the project AGENTS.md / CLAUDE.md the model sees each turn. `None` when
+/// the hook serves nothing (keeps `/context` honest without duplicating
+/// discovery logic).
+pub fn project_context_block(cwd: &std::path::Path) -> Option<String> {
+    // No hook serves a `<project_context>` block: the system prompt tells
+    // the model to read AGENTS.md / CLAUDE.md with bash, so project context
+    // arrives as ordinary (prunable) tool observations, not a hook block.
+    // Kept as a named choke point so `/context` stays honest if a hook is
+    // ever added - and so the call in `repl::status` keeps compiling.
+    let _ = cwd;
+    None
 }
 
 /// Resolve a skill name to its SKILL.md path via [`crate::skills::discover_skills`]

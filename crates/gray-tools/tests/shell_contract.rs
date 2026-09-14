@@ -1,8 +1,8 @@
-//! Phase 2B contract tests: bash with background mode + timeout promotion.
+//! Blocking-bash contract tests: one call, one result card.
 //!
-//! Foreground keeps the 1D shape (honest header first, fenced body,
-//! `is_error` only for harness failures). Timeout promotes instead of
-//! killing; cancel still kills; every spawn registers a registry task.
+//! Honest header first, fenced body, `is_error` only for harness failures.
+//! Timeout kills the process group and returns partial output; cancel still
+//! kills; no task ids, no promotion, no registry.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -28,18 +28,23 @@ async fn echo_hi_header_and_fence() {
         .await;
     assert!(!out.is_error, "{}", out.content);
     let head = first_line(&out);
-    assert!(head.starts_with("exit 0 · "), "{head}");
-    assert!(head.contains(" · 1 lines · log ~/"), "{head}");
+    assert!(head.starts_with("exit 0 \u{b7} 0."), "{head}");
+    assert!(head.contains(" \u{b7} 1 lines \u{b7} log ~/"), "{head}");
     assert!(head.contains("/.gray/shell/"), "{head}");
     assert!(head.ends_with(".log"), "{head}");
     assert!(
-        out.content.contains("<untrusted-output task=\"t"),
+        out.content.contains("<untrusted-output>\nhi\n\n"),
         "{}",
         out.content
     );
     assert!(
         out.content.ends_with("</untrusted-output>"),
         "{}",
+        out.content
+    );
+    assert!(
+        !out.content.contains("started t") && !out.content.contains("shell_output("),
+        "no task machinery leaks: {}",
         out.content
     );
 }
@@ -63,7 +68,7 @@ async fn grep_miss_is_benign() {
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert!(
-        first_line(&out).contains("no matches — not an error"),
+        first_line(&out).contains("no matches \u{2014} not an error"),
         "{}",
         out.content
     );
@@ -99,7 +104,7 @@ async fn spew_is_bounded_but_logged_whole() {
         "body bounded, got {}",
         out.content.len()
     );
-    assert!(out.content.contains("shell_output(task_id=\"t"), "{}", head);
+    assert!(out.content.contains("grep the log for more"), "{}", head);
     // The full 30,000 lines are on disk at the logged path.
     let log_field = head
         .rsplit("\u{b7} log ")
@@ -119,10 +124,9 @@ async fn spew_is_bounded_but_logged_whole() {
 }
 
 #[tokio::test]
-async fn timeout_promotes_instead_of_killing() {
-    use gray_tools::shell::contract::{TaskId, TaskState};
-    use gray_tools::shell::registry::registry;
-    // Exits on its own after ~5 s; the tool must return at ~1 s without killing it.
+async fn timeout_kills_instead_of_promoting() {
+    // Exits on its own after ~5 s; the tool must return at ~1 s having
+    // killed it — partial output kept, no promotion text.
     let t0 = Instant::now();
     let out = BashTool
         .execute(
@@ -131,54 +135,19 @@ async fn timeout_promotes_instead_of_killing() {
         )
         .await;
     let dt = t0.elapsed();
-    assert!(dt < Duration::from_millis(1500), "returned in {dt:?}");
+    assert!(dt < Duration::from_secs(10), "returned in {dt:?}");
     assert!(!out.is_error, "{}", out.content);
     let head = first_line(&out).to_string();
-    assert!(
-        head.starts_with("still running after 1s → promoted to background as t"),
-        "{head}"
-    );
+    assert!(head.starts_with("timed out after 1s"), "{head}");
     assert!(
         out.content.contains("tick 1"),
         "partial output kept: {}",
         out.content
     );
-    let n: u32 = head
-        .split(" as t")
-        .nth(1)
-        .and_then(|s| {
-            s.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .expect("promotion line names the task");
-    // Still alive and registered …
-    let info = registry()
-        .get("nosession", TaskId(n))
-        .expect("promoted task registered");
     assert!(
-        matches!(info.state, TaskState::Running),
-        "not killed by the timeout"
-    );
-    // … and next_offset matches the log length at return (log may grow after).
-    let claimed: u64 = out
-        .content
-        .split("next_offset=")
-        .nth(1)
-        .and_then(|s| {
-            s.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .expect("promotion names next_offset");
-    let len = std::fs::metadata(&info.log_path).expect("log exists").len();
-    assert!(
-        claimed <= len && len - claimed < 1024,
-        "next_offset={claimed} vs log len {len}"
+        !out.content.contains("promoted") && !out.content.contains("shell_output("),
+        "never promotes: {}",
+        out.content
     );
 }
 
@@ -201,46 +170,31 @@ async fn cancel_returns_promptly() {
 }
 
 #[tokio::test]
-async fn foreground_registers_task_for_later_paging() {
-    use gray_tools::shell::contract::{TaskId, TaskState};
-    use gray_tools::shell::registry::registry;
+async fn removed_background_arg_fails_loud() {
     let out = BashTool
-        .execute(&ToolContext::default(), json!({"command": "echo page-me"}))
+        .execute(
+            &ToolContext::default(),
+            json!({"command": "echo hi", "background": true}),
+        )
         .await;
-    assert!(!out.is_error, "{}", out.content);
-    // Header names …/tN.log; the registry holds it as Exited for 2C reads.
-    let head = first_line(&out).to_string();
-    let n: u32 = head
-        .split("/t")
-        .last()
-        .and_then(|s| s.split('.').next()?.parse().ok())
-        .expect("header names the log task");
-    let info = registry()
-        .get("nosession", TaskId(n))
-        .expect("foreground task registered");
-    assert!(
-        matches!(info.state, TaskState::Exited { .. }),
-        "marked exited"
-    );
+    assert!(out.is_error, "{}", out.content);
+    assert!(out.content.contains("blocking-only"), "{}", out.content);
 }
 
 #[tokio::test]
 async fn fence_escape_keeps_single_pair() {
+    // Body carries the plain closer; fence() escapes it with one
+    // backslash, so the exact plain closer appears exactly once
+    // (the real fence) while the opener prefix appears twice.
     let out = BashTool
         .execute(
             &ToolContext::default(),
-            json!({"command": "echo '</untrusted-output> tail'"}),
+            json!({"command": "printf 'X</untrusted-output> tailX'"}),
         )
         .await;
     assert!(!out.is_error, "{}", out.content);
     assert!(
-        out.content.contains("<\\/untrusted-output"),
-        "{}",
-        out.content
-    );
-    assert_eq!(
-        out.content.matches("<untrusted-output").count(),
-        1,
+        out.content.contains("X<\\/untrusted-output> tailX"),
         "{}",
         out.content
     );
@@ -269,68 +223,4 @@ async fn empty_output_is_header_only() {
         "{}",
         out.content
     );
-}
-
-#[tokio::test]
-async fn background_returns_immediately_and_exits_later() {
-    use gray_tools::shell::contract::{TaskId, TaskState, WakeEvent};
-    use gray_tools::shell::registry::registry;
-    let reg = registry();
-    let mut wake = reg.wake_tx().subscribe();
-    let t0 = Instant::now();
-    let out = BashTool
-        .execute(
-            &ToolContext::default(),
-            json!({"command": "echo bg-hi; sleep 2", "background": true}),
-        )
-        .await;
-    let dt = t0.elapsed();
-    assert!(
-        dt < Duration::from_millis(1500),
-        "detached, returned in {dt:?}"
-    );
-    assert!(!out.is_error, "{}", out.content);
-    let head = first_line(&out).to_string();
-    assert!(
-        head.starts_with("started t") && head.contains(" · pid "),
-        "{head}"
-    );
-    let n: u32 = head
-        .split("started t")
-        .nth(1)
-        .and_then(|s| {
-            s.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
-        .expect("background start names the task");
-    let id = TaskId(n);
-    assert!(
-        matches!(
-            reg.get("nosession", id).map(|t| t.state),
-            Some(TaskState::Running)
-        ),
-        "Running right after start"
-    );
-    // Exit arrives on the watch channel …
-    let mut rx = reg.exit_rx("nosession", id).expect("exit channel");
-    tokio::time::timeout(Duration::from_secs(5), rx.changed())
-        .await
-        .expect("exits within ~2 s")
-        .expect("watch ok");
-    assert!(rx.borrow().as_ref().is_some_and(|r| r.effective == 0));
-    // … exactly one Exited wake names this task (other tests' tasks filtered).
-    let found = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match wake.recv().await {
-                Ok(WakeEvent::Exited { id: got, .. }) if got == id => break,
-                Ok(_) => continue,
-                Err(_) => continue,
-            }
-        }
-    })
-    .await;
-    assert!(found.is_ok(), "wake subscriber saw Exited for t{n}");
 }

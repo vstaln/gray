@@ -26,3 +26,10 @@ pub(crate) fn gray_home() -> PathBuf {
 pub(crate) fn plugins_dir() -> PathBuf {
     gray_home().join("plugins")
 }
+
+pub(crate) fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}

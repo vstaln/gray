@@ -1,68 +1,32 @@
-//! shell/contract.rs — shared shell-task types (Phase 0, brief 0).
+//! shell/contract.rs: shared shell types.
 //!
-//! Every public type the shell briefs share. Behavior lives with the
-//! owners: exit→exit.rs, view/header→view.rs, fence→fence.rs,
-//! pump→pump.rs, spawn→spawn.rs, registry→registry.rs, kill→kill.rs,
-//! wake/sleep→wake.rs.
+//! Blocking `bash` only: budgets, exit reports, bounded views. No task
+//! registry, no background tasks, no wake events: a command runs, the tool
+//! waits (killing the process group on timeout/cancel), and the full log
+//! stays on disk for `grep`.
 
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-// NOTE: `regex` backs `NotifyPattern` (brief 3C, 1 MiB size limit).
 use tokio::process::Child;
 
-// ── budgets & limits ──────────────────────────────────────────────
+// budgets and limits
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_TIMEOUT_SECS: u64 = 600;
 pub const VIEW_BUDGET_BYTES: usize = 50 * 1024;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
-pub const PROMOTION_TAIL_BYTES: usize = 2048;
 pub const MEM_HEAD_BYTES: usize = 6 * 1024;
 pub const MEM_TAIL_BYTES: usize = 6 * 1024;
-/// Inline budget for foreground bash results: head + tail, ~12 KiB (~3k
-/// tokens). The full log always persists on disk; shell_output pages it.
+/// Inline budget for bash results: head + tail, ~12 KiB (~3k tokens).
+/// The full log always persists on disk; `grep` it instead of rerunning.
 pub const INLINE_BUDGET_BYTES: usize = MEM_HEAD_BYTES + MEM_TAIL_BYTES;
-pub const EXITED_TASK_TTL: Duration = Duration::from_secs(30 * 60);
-pub const EXITED_TASK_KEEP: usize = 20;
+/// How long the tool waits for the output pump after the child exits.
+/// A grandchild inheriting the pipes keeps the pump alive forever, so the
+/// result must never wait past this.
+pub const PUMP_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
-// ── core types ────────────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TaskId(pub u32); // Display: "t{n}"
-
-impl std::fmt::Display for TaskId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "t{}", self.0)
-    }
-}
-
-/// Compiled `notify_on` regex (brief 3C): size-limited to 1 MiB.
-/// Invalid expressions fail here so the tool can report the regex error
-/// plus an example. Empty never matches (preserved stub rule — a bare
-/// empty regex would match every line).
-#[derive(Clone, Debug)]
-pub struct NotifyPattern {
-    expr: String,
-    regex: regex::Regex,
-}
-
-impl NotifyPattern {
-    pub fn new(expr: &str) -> Result<Self, regex::Error> {
-        let regex = regex::RegexBuilder::new(expr).size_limit(1 << 20).build()?;
-        Ok(Self {
-            expr: expr.to_string(),
-            regex,
-        })
-    }
-    pub fn as_str(&self) -> &str {
-        &self.expr
-    }
-    pub fn matches(&self, line: &str) -> bool {
-        !self.expr.is_empty() && self.regex.is_match(line)
-    }
-}
+// core types
 
 #[derive(Clone, Debug)]
 pub struct ExitReport {
@@ -81,46 +45,6 @@ pub struct View {
     pub total_bytes: u64,
 }
 
-pub enum TaskState {
-    Running,
-    Exited { report: ExitReport, at: Instant },
-}
-
-pub struct TaskInfo {
-    pub id: TaskId,
-    pub pid: u32,
-    pub pgid: i32,
-    pub command: String,
-    pub started: Instant,
-    pub log_path: PathBuf,
-    pub bytes: u64,
-    pub state: TaskState,
-}
-
-#[derive(Clone, Debug)] // Clone: broadcast::Sender<WakeEvent> requires it (P1D wiring fix)
-pub enum WakeEvent {
-    Exited { id: TaskId, report: ExitReport },
-    PatternMatched { id: TaskId, line: String },
-    UserInput,
-}
-
-pub enum KillTarget {
-    Task(TaskId),
-    Pid(u32),
-    Port(u16),
-}
-
-pub struct KillReport {
-    pub report: Option<ExitReport>,
-    pub describe: String,
-}
-
-pub enum KillMethod {
-    TermAnswered(Duration),
-    TermIgnoredThenKill(Duration),
-    AlreadyExited,
-}
-
 pub struct PumpSummary {
     pub total_bytes: u64,
     pub total_lines: usize,
@@ -131,8 +55,7 @@ pub struct PumpSummary {
     pub log_write_failed: bool,
 }
 
-// spawn.rs (brief 1D; P1D ruling: `task` param added — the 2-arg form
-// cannot set the brief-mandated `GRAY_TASK_ID` env on the child)
+// spawn.rs: the detached child plus its group id (setsid: pgid == pid).
 pub struct Spawned {
     pub child: Child,
     pub pid: u32,

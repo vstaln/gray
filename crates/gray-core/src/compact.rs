@@ -69,20 +69,15 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
 /// - each `ToolResult` block is independently replaceable: `id`/`is_error`
 ///   are kept, so pairing and alternation are untouched.
 ///
-/// Unknown window (`None`) returns `(0, 0)` immediately, mirroring v2's early
-/// return. Returns (rewritten block count, estimated deleted tokens).
+/// Unknown window (`None`) returns immediately, mirroring v2's early
+/// return.
 // Slice (not `&mut Vec`): only iteration is needed, so the narrower type
 // keeps `ptr_arg` clean without an allow.
-pub(crate) fn trim_tool_results_to_fit(
-    messages: &mut [Message],
-    window: Option<usize>,
-) -> (usize, u64) {
+pub(crate) fn trim_tool_results_to_fit(messages: &mut [Message], window: Option<usize>) {
     let Some(window) = window else {
-        return (0, 0);
+        return;
     };
     let mut estimated: usize = messages.iter().map(message_tokens).sum();
-    let initial = estimated;
-    let mut rewritten = 0;
     for msg in messages.iter_mut().rev() {
         if estimated <= window {
             break;
@@ -104,10 +99,52 @@ pub(crate) fn trim_tool_results_to_fit(
                 *content = CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string();
             }
             estimated = estimated - old_msg_tokens + message_tokens(msg);
-            rewritten += 1;
         }
     }
-    (rewritten, initial.saturating_sub(estimated) as u64)
+}
+
+/// Default number of recent tool observations to keep in full (mini-SWE-agent / SWE-agent parity).
+pub const DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS: usize = 5;
+
+/// Mini-SWE-agent / SWE-agent parity: keeps the last `keep_last_n` tool observations
+/// in full; older tool observations are elided to a concise line since the agent
+/// already acted on them in previous rounds.
+pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n: usize) {
+    let mut tool_result_indices = Vec::new();
+    for (m_idx, msg) in messages.iter().enumerate() {
+        for (b_idx, block) in msg.content.iter().enumerate() {
+            if matches!(block, ContentBlock::ToolResult { .. }) {
+                tool_result_indices.push((m_idx, b_idx));
+            }
+        }
+    }
+    if tool_result_indices.len() <= keep_last_n {
+        return;
+    }
+    let to_elide = tool_result_indices.len() - keep_last_n;
+    for &(m_idx, b_idx) in &tool_result_indices[..to_elide] {
+        if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx]
+            && content.len() > 120
+        {
+            let lines = content.lines().count();
+            // Keep the header's `log <path>` so the elided output stays
+            // recoverable (`tail`/`grep` the file) instead of a dead end.
+            let log_path = content
+                .lines()
+                .next()
+                .and_then(|h| h.split_once(" · log "))
+                .map(|(_, p)| p.trim())
+                .filter(|p| !p.is_empty());
+            *content = match log_path {
+                Some(p) => {
+                    format!(
+                        "Old command output: ({lines} lines omitted; full output logged at {p})"
+                    )
+                }
+                None => format!("Old command output: ({lines} lines omitted)"),
+            };
+        }
+    }
 }
 
 /// In-band compaction trigger: chat-shaped equivalent of codex v2's
@@ -403,8 +440,7 @@ mod tests {
     fn trim_replaces_newest_tool_results_first_keeping_ids() {
         let mut msgs = tool_msgs();
         // Total estimate: 3 × 2500 = 7500. One trim lands at 5000 + 14 = 5014.
-        let (rewritten, _deleted) = trim_tool_results_to_fit(&mut msgs, Some(5100));
-        assert_eq!(rewritten, 1);
+        trim_tool_results_to_fit(&mut msgs, Some(5100));
         for (msg, id) in msgs.iter().zip(["c1", "c2", "c3"]) {
             let ContentBlock::ToolResult {
                 id: got_id,
@@ -427,20 +463,32 @@ mod tests {
     fn trim_unknown_window_is_noop() {
         let mut msgs = tool_msgs();
         let before = msgs.clone();
-        assert_eq!(trim_tool_results_to_fit(&mut msgs, None), (0, 0));
+        trim_tool_results_to_fit(&mut msgs, None);
         assert_eq!(msgs, before);
     }
 
     #[test]
-    fn trim_reports_deleted_tokens() {
+    fn trim_shrinks_the_estimate_to_fit() {
         let mut msgs = tool_msgs();
-        let (_rewritten, deleted) = trim_tool_results_to_fit(&mut msgs, Some(5100));
-        let expected = (10_000 - CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.len()) as u64 / 4;
+        trim_tool_results_to_fit(&mut msgs, Some(5100));
+        let replaced = msgs
+            .iter()
+            .filter(|m| {
+                m.content.iter().any(|b| {
+                    matches!(
+                        b,
+                        ContentBlock::ToolResult { content, .. }
+                            if content == CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE
+                    )
+                })
+            })
+            .count();
+        assert_eq!(replaced, 1, "exactly the newest tool result is rewritten");
+        let estimated: usize = msgs.iter().map(message_tokens).sum();
         assert!(
-            deleted.abs_diff(expected) <= 2,
-            "deleted {deleted} ≈ expected {expected}"
+            estimated <= 5100,
+            "estimate {estimated} must fit the window"
         );
-        assert!(deleted > 0);
     }
 
     // --- Task 2 (RED): retention grouping + budget walk --------------------
@@ -918,5 +966,76 @@ mod tests {
                 .all(|b| !matches!(b, ContentBlock::Image { .. })),
             "no split base64 survives anywhere"
         );
+    }
+
+    #[test]
+    fn prune_old_tool_observations_keeps_recent_and_elides_older() {
+        let mut msgs: Vec<Message> = (0..8)
+            .map(|i| Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    id: format!("call_{i}"),
+                    content: format!(
+                        "Output line 1 for tool {i}\nOutput line 2 for tool {i}\n{}",
+                        "x".repeat(200)
+                    ),
+                    is_error: false,
+                }],
+            })
+            .collect();
+
+        prune_old_tool_observations(&mut msgs, 3);
+
+        // First 5 should be elided
+        for i in 0..5 {
+            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else {
+                panic!()
+            };
+            assert_eq!(id, &format!("call_{i}"));
+            assert!(content.starts_with("Old command output:"));
+            assert!(content.contains("lines omitted"));
+        }
+
+        // Last 3 should be untouched
+        for i in 5..8 {
+            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else {
+                panic!()
+            };
+            assert_eq!(id, &format!("call_{i}"));
+            assert!(content.starts_with(&format!("Output line 1 for tool {i}")));
+        }
+    }
+
+    #[test]
+    fn prune_keeps_log_path_from_header() {
+        let header = "exit 1 · 0.3s · 40 lines · log ~/.gray/shell/s1/bash-abc.log";
+        let mut msgs: Vec<Message> = (0..2)
+            .map(|i| Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    id: format!("call_{i}"),
+                    content: format!(
+                        "{header}\n<untrusted-output>\nfail {i}\n{}\n</untrusted-output>",
+                        "x".repeat(120)
+                    ),
+                    is_error: false,
+                }],
+            })
+            .collect();
+
+        prune_old_tool_observations(&mut msgs, 1);
+
+        let ContentBlock::ToolResult { content, .. } = &msgs[0].content[0] else {
+            panic!()
+        };
+        assert!(
+            content.contains("~/.gray/shell/s1/bash-abc.log"),
+            "log path lost: {content}"
+        );
+        // The still-recent second observation is untouched.
+        let ContentBlock::ToolResult { content, .. } = &msgs[1].content[0] else {
+            panic!()
+        };
+        assert!(content.starts_with(header));
     }
 }

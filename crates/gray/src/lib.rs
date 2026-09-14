@@ -11,6 +11,7 @@ pub mod print;
 pub mod profile;
 pub mod repl;
 pub mod resume;
+mod rotation;
 pub mod setup;
 pub mod shell_drain;
 pub mod skills;
@@ -48,7 +49,7 @@ bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
 default, Ctrl-X cancel).
 -->
 You are gray, a minimal agent running on the user's machine.
-You work through one tool family: bash (`bash`, `shell_output`, `shell_kill`, `sleep`). Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
+You work through one tool: blocking `bash`. Use bash to read, search, edit, and run things (e.g. `cat`, `rg`, `sed`, `python3`).
 Before working in a project, read its AGENTS.md / CLAUDE.md with bash. When a task matches a skill listed in <available_skills> (appended to your context each turn), read its SKILL.md with bash (`cat <location>`) and follow its instructions. `/skills <name>` in chat pastes the skill visibly before running it.
 To schedule recurring work for the user, run `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`).
 
@@ -171,17 +172,12 @@ pub async fn build_agent(
         cwd: cwd.to_path_buf(),
         // The file IS the system prompt: sent verbatim (comments stripped).
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |_registry: &gray_tools::Registry| {
-                system_prompt::build_system_prompt(system_prompt::BuildSystemPromptOptions {
-                    custom_prompt: Some(body),
-                })
-            },
+            move |_registry: &gray_tools::Registry| system_prompt::build_system_prompt(Some(body)),
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
         // Bash-only tools; the context-only skills plugin is always on
         // (every profile, including the default `tools-minimal`).
-        extra_tools: vec![],
         extra_plugins: vec![Arc::new(crate::skills_tool::SkillsPlugin)],
         host_handler: Some(host::default_handler(cwd.to_path_buf())),
         profile_path: "gray.yml".to_string(),
@@ -192,8 +188,8 @@ pub async fn build_agent(
     for w in gray_plugin::builder::take_builder_warnings() {
         profile::queue_profile_warning(w);
     }
-    // Bash + sleep self-bound at 600 s (promotion, never kill), so the
-    // agent-level timeout must sit above them (P2B requirement).
+    // Bash self-bounds at 600 s (timeout kills the process group), so the
+    // agent-level timeout must sit above it (P2B requirement).
     Ok(agent.with_tool_timeout(crate::shell_drain::SHELL_TOOL_TIMEOUT))
 }
 

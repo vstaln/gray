@@ -19,6 +19,9 @@ pub const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 /// Maximum retry attempts for transient errors.
 const MAX_ATTEMPTS: usize = 3;
 
+/// Initial retry backoff (exponential, jittered, `Retry-After`-floored).
+const INITIAL_BACKOFF: Duration = Duration::from_millis(50);
+
 /// Upper bound for wire-controlled tool-call indices (hostile-server guard).
 const MAX_TOOL_CALL_INDEX: usize = 4096;
 
@@ -32,34 +35,11 @@ pub struct OpenAiProvider {
     api_key: String,
     model: String,
     http: reqwest::Client,
-    initial_backoff: Duration,
     reasoning_effort: Option<String>,
     /// Stable per-process id sent as `prompt_cache_key` (Responses API and
     /// chat completions alike) so callers pin one cache shard per session for
     /// prompt caching. Also sent as the `x-opencode-session` header (Console Go
     /// routes on it; required).
-    session_id: Option<String>,
-    /// Pre-stream POST retry bound (replaces the single `MAX_ATTEMPTS` gate in
-    /// `Init`/`ResponsesInit`). Default 3 reproduces today's behavior.
-    request_max_retries: usize,
-    /// Mid-stream retry bound (Responses resume arms; chat path has no
-    /// resume primitive and stays terminal).
-    stream_max_retries: usize,
-    /// Per-SSE-event idle deadline. `None` (default) leaves the 120s
-    /// reqwest `read_timeout` governing. When set, a stalled Responses event
-    /// poll resumes with `previous_response_id`; exhausted stays terminal.
-    stream_idle_timeout: Option<Duration>,
-}
-
-/// Builder for constructing an `OpenAiProvider`.
-///
-/// `Debug` is redacted by hand (see [`OpenAiProvider`]).
-#[derive(Clone)]
-pub struct OpenAiProviderBuilder {
-    base_url: Option<String>,
-    api_key: String,
-    model: String,
-    reasoning_effort: Option<String>,
     session_id: Option<String>,
 }
 
@@ -71,51 +51,22 @@ impl std::fmt::Debug for OpenAiProvider {
     }
 }
 
-impl std::fmt::Debug for OpenAiProviderBuilder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OpenAiProviderBuilder")
-            .field("model", &self.model)
-            .finish_non_exhaustive()
-    }
-}
-
-impl OpenAiProviderBuilder {
-    /// Creates a new builder with the given API key and model name.
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self {
-            base_url: None,
-            api_key: api_key.into(),
-            model: model.into(),
-            reasoning_effort: None,
-            session_id: None,
-        }
-    }
-
-    /// Sets a stable session id sent as `prompt_cache_key` on the Responses
-    /// API and chat completions alike so consecutive requests hit the same
-    /// cache shard.
-    pub fn session_id(mut self, session_id: impl Into<String>) -> Self {
-        self.session_id = Some(session_id.into());
-        self
-    }
-
-    /// Sets the base URL for the OpenAI-compatible API endpoint.
-    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = Some(base_url.into());
-        self
-    }
-
-    /// Sets reasoning effort (e.g. "low", "medium", "high", "off").
-    pub fn reasoning_effort(mut self, effort: Option<String>) -> Self {
-        self.reasoning_effort = effort;
-        self
-    }
-
-    /// Builds the `OpenAiProvider` instance.
-    pub fn build(self) -> Result<OpenAiProvider, String> {
-        let base_url_str = self
-            .base_url
-            .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
+impl OpenAiProvider {
+    /// Constructs an `OpenAiProvider`. An empty `base_url` selects
+    /// [`DEFAULT_BASE_URL`]; `session_id` pins the prompt-cache shard.
+    pub fn new(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        base_url: impl Into<String>,
+        reasoning_effort: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<Self, String> {
+        let base_url_str = base_url.into();
+        let base_url_str = if base_url_str.is_empty() {
+            DEFAULT_BASE_URL.to_string()
+        } else {
+            base_url_str
+        };
         let base_url = Url::parse(&base_url_str)
             .map_err(|e| format!("invalid base_url '{base_url_str}': {e}"))?;
 
@@ -128,25 +79,14 @@ impl OpenAiProviderBuilder {
             .build()
             .expect("reqwest client with timeouts");
 
-        Ok(OpenAiProvider {
+        Ok(Self {
             base_url,
-            api_key: self.api_key,
-            model: self.model,
+            api_key: api_key.into(),
+            model: model.into(),
             http,
-            initial_backoff: Duration::from_millis(50),
-            reasoning_effort: self.reasoning_effort,
-            session_id: self.session_id,
-            request_max_retries: MAX_ATTEMPTS,
-            stream_max_retries: MAX_ATTEMPTS,
-            stream_idle_timeout: None,
+            reasoning_effort,
+            session_id,
         })
-    }
-}
-
-impl OpenAiProvider {
-    /// Returns a builder to configure and construct an `OpenAiProvider`.
-    pub fn builder(api_key: impl Into<String>, model: impl Into<String>) -> OpenAiProviderBuilder {
-        OpenAiProviderBuilder::new(api_key, model)
     }
 }
 
@@ -1466,29 +1406,22 @@ enum StreamState {
         api_key: String,
         body: OpenAiChatRequest,
         session_id: Option<String>,
-        initial_backoff: Duration,
         attempt: usize,
         retry_after: Option<Duration>,
-        request_max_retries: usize,
-        stream_idle_timeout: Option<Duration>,
     },
     ResponsesInit {
         client: reqwest::Client,
         url: Url,
         api_key: String,
         body: ResponsesRequest,
-        initial_backoff: Duration,
         attempt: usize,
         retry_after: Option<Duration>,
-        request_max_retries: usize,
-        stream_max_retries: usize,
         stream_attempt: usize,
         // Tool-arg prefix inherited from the interrupted stream: carried into
         // the fresh `ResponsesStreaming` on POST success so suffix deltas
         // append (empty on fresh turns and `None`-id full replays).
         tools_by_call_id: BTreeMap<String, (usize, String, String)>,
         index_to_call_id: BTreeMap<usize, String>,
-        stream_idle_timeout: Option<Duration>,
     },
     Streaming {
         event_stream: BoxedEventStream,
@@ -1497,7 +1430,6 @@ enum StreamState {
         last_usage: Option<Usage>,
         pending_events: VecDeque<StreamEvent>,
         completed: bool,
-        stream_idle_timeout: Option<Duration>,
     },
     ResponsesStreaming {
         event_stream: BoxedEventStream,
@@ -1509,18 +1441,14 @@ enum StreamState {
         pending_events: VecDeque<StreamEvent>,
         completed: bool,
         // Re-POST context for mid-stream resume (Responses only): a
-        // retryable transport/idle failure rebuilds ResponsesInit from these
+        // retryable transport failure rebuilds ResponsesInit from these
         // with `previous_response_id = last_response_id`.
         client: reqwest::Client,
         url: Url,
         api_key: String,
         body: ResponsesRequest,
-        initial_backoff: Duration,
-        request_max_retries: usize,
-        stream_max_retries: usize,
         stream_attempt: usize,
         last_response_id: Option<String>,
-        stream_idle_timeout: Option<Duration>,
     },
     Done,
 }
@@ -1630,8 +1558,14 @@ fn resume_body_and_tool_prefix(
     ResponsesToolsByCallId,
     ResponsesIndexToCallId,
 ) {
-    let continuing = last_response_id.is_some();
-    body.previous_response_id = last_response_id;
+    // Upstream provider rejects previous_response_id when encrypted reasoning is used.
+    let has_reasoning = body.reasoning.is_some()
+        || body
+            .include
+            .as_ref()
+            .is_some_and(|inc| inc.iter().any(|s| s == "reasoning.encrypted_content"));
+    let continuing = last_response_id.is_some() && !has_reasoning;
+    body.previous_response_id = if continuing { last_response_id } else { None };
     if continuing {
         (body, tools_by_call_id, index_to_call_id)
     } else {
@@ -1652,11 +1586,8 @@ fn stream_unfold_step(
                     api_key,
                     body,
                     session_id,
-                    initial_backoff,
                     attempt,
                     retry_after,
-                    request_max_retries,
-                    stream_idle_timeout,
                 } => {
                     // Backoff for attempts 2+ runs here so the previous
                     // `Reconnecting...` notice is already on screen (Codex:
@@ -1670,7 +1601,7 @@ fn stream_unfold_step(
                     // a cancel branch.
                     if attempt > 1 {
                         tokio::time::sleep(backoff_delay(
-                            initial_backoff,
+                            INITIAL_BACKOFF,
                             attempt - 1,
                             retry_after,
                         ))
@@ -1703,7 +1634,6 @@ fn stream_unfold_step(
                                 last_usage: None,
                                 pending_events: VecDeque::new(),
                                 completed: false,
-                                stream_idle_timeout,
                             };
                         }
                         Err((err, floor, http_status)) => {
@@ -1729,15 +1659,12 @@ fn stream_unfold_step(
                                     api_key,
                                     body: stripped,
                                     session_id,
-                                    initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
-                                    request_max_retries,
-                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
-                            if is_retryable_error(&err) && attempt < request_max_retries {
+                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying (attempt {attempt}) after error: {err}");
                                 let next = StreamState::Init {
                                     client,
@@ -1745,18 +1672,14 @@ fn stream_unfold_step(
                                     api_key,
                                     body,
                                     session_id,
-                                    initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: retry_floor(&err, floor, attempt),
-                                    request_max_retries,
-                                    stream_idle_timeout,
                                 };
                                 // One notice per burst: the transcript is
                                 // append-only, so retries 2+ stay silent
                                 // instead of stacking `Reconnecting...` cells.
                                 if attempt == 1 {
-                                    let notice =
-                                        retry_notice_event(attempt, request_max_retries, &err);
+                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
                                     return Some((Ok(notice), next));
                                 }
                                 state = next;
@@ -1774,19 +1697,15 @@ fn stream_unfold_step(
                     url,
                     api_key,
                     body,
-                    initial_backoff,
                     attempt,
                     retry_after,
-                    request_max_retries,
-                    stream_max_retries,
                     stream_attempt,
                     tools_by_call_id,
                     index_to_call_id,
-                    stream_idle_timeout,
                 } => {
                     if attempt > 1 {
                         tokio::time::sleep(backoff_delay(
-                            initial_backoff,
+                            INITIAL_BACKOFF,
                             attempt - 1,
                             retry_after,
                         ))
@@ -1828,12 +1747,8 @@ fn stream_unfold_step(
                                 url,
                                 api_key,
                                 body,
-                                initial_backoff,
-                                request_max_retries,
-                                stream_max_retries,
                                 stream_attempt,
                                 last_response_id,
-                                stream_idle_timeout,
                             };
                         }
                         Err((err, floor, http_status)) => {
@@ -1856,17 +1771,13 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body: stripped,
-                                    initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
-                                    request_max_retries,
-                                    stream_max_retries,
                                     stream_attempt,
                                     // Full replay: stale tool-arg prefix no
                                     // longer has a server-side continuation.
                                     tools_by_call_id: BTreeMap::new(),
                                     index_to_call_id: BTreeMap::new(),
-                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
@@ -1888,39 +1799,30 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body: stripped,
-                                    initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: floor,
-                                    request_max_retries,
-                                    stream_max_retries,
                                     stream_attempt,
                                     tools_by_call_id,
                                     index_to_call_id,
-                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
-                            if is_retryable_error(&err) && attempt < request_max_retries {
+                            if is_retryable_error(&err) && attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "retrying responses (attempt {attempt}) after error: {err}");
                                 let next = StreamState::ResponsesInit {
                                     client,
                                     url,
                                     api_key,
                                     body,
-                                    initial_backoff,
                                     attempt: attempt + 1,
                                     retry_after: retry_floor(&err, floor, attempt),
-                                    request_max_retries,
-                                    stream_max_retries,
                                     stream_attempt,
                                     tools_by_call_id,
                                     index_to_call_id,
-                                    stream_idle_timeout,
                                 };
                                 // One notice per burst (see Init above).
                                 if attempt == 1 {
-                                    let notice =
-                                        retry_notice_event(attempt, request_max_retries, &err);
+                                    let notice = retry_notice_event(attempt, MAX_ATTEMPTS, &err);
                                     return Some((Ok(notice), next));
                                 }
                                 state = next;
@@ -1940,7 +1842,6 @@ fn stream_unfold_step(
                     mut last_usage,
                     mut pending_events,
                     mut completed,
-                    stream_idle_timeout,
                 } => {
                     if let Some(event) = pending_events.pop_front() {
                         return Some((
@@ -1952,7 +1853,6 @@ fn stream_unfold_step(
                                 last_usage,
                                 pending_events,
                                 completed,
-                                stream_idle_timeout,
                             },
                         ));
                     }
@@ -1961,24 +1861,7 @@ fn stream_unfold_step(
                         return None;
                     }
 
-                    // Per-SSE idle deadline: a configured timeout fires
-                    // before read_timeout would. Chat has no resume
-                    // primitive, so this arm stays terminal here; the
-                    // Responses arm resumes instead.
-                    let next = if let Some(idle) = stream_idle_timeout {
-                        match tokio::time::timeout(idle, event_stream.next()).await {
-                            Ok(next) => next,
-                            Err(_) => {
-                                let err = ProviderError::Timeout(format!(
-                                    "stream stalled: no SSE event within {idle:?}"
-                                ));
-                                log::error!(target: "gray_provider", "stream idle timeout: {err}");
-                                return Some((Err(err), StreamState::Done));
-                            }
-                        }
-                    } else {
-                        event_stream.next().await
-                    };
+                    let next = event_stream.next().await;
                     match next {
                         Some(Ok(sse_event)) => {
                             let data = sse_event.data.trim();
@@ -2087,7 +1970,6 @@ fn stream_unfold_step(
                                 last_usage,
                                 pending_events,
                                 completed,
-                                stream_idle_timeout,
                             };
                         }
                         Some(Err(err)) => {
@@ -2115,7 +1997,6 @@ fn stream_unfold_step(
                                     last_usage,
                                     pending_events,
                                     completed,
-                                    stream_idle_timeout,
                                 };
                             } else {
                                 return None;
@@ -2134,12 +2015,8 @@ fn stream_unfold_step(
                     url,
                     api_key,
                     body,
-                    initial_backoff,
-                    request_max_retries,
-                    stream_max_retries,
                     stream_attempt,
                     mut last_response_id,
-                    stream_idle_timeout,
                 } => {
                     if let Some(event) = pending_events.pop_front() {
                         return Some((
@@ -2155,70 +2032,15 @@ fn stream_unfold_step(
                                 url,
                                 api_key,
                                 body,
-                                initial_backoff,
-                                request_max_retries,
-                                stream_max_retries,
                                 stream_attempt,
                                 last_response_id,
-                                stream_idle_timeout,
                             },
                         ));
                     }
                     if completed {
                         return None;
                     }
-                    // Idle arm: a stalled event poll resumes with
-                    // `previous_response_id` while stream attempts remain
-                    // (fresh full retry when no id was seen yet); exhausted
-                    // stays terminal exactly as before. Chat path untouched.
-                    let next = if let Some(idle) = stream_idle_timeout {
-                        match tokio::time::timeout(idle, event_stream.next()).await {
-                            Ok(next) => next,
-                            Err(_) => {
-                                if stream_attempt < stream_max_retries {
-                                    log::warn!(target: "gray_provider", "responses stream stalled, resuming (stream attempt {stream_attempt})");
-                                    // Throttle the re-POST like pre-stream
-                                    // retries (no Retry-After on a stall).
-                                    tokio::time::sleep(backoff_delay(
-                                        initial_backoff,
-                                        stream_attempt,
-                                        None,
-                                    ))
-                                    .await;
-                                    let (resumed, resume_tools, resume_index) =
-                                        resume_body_and_tool_prefix(
-                                            body,
-                                            tools_by_call_id,
-                                            index_to_call_id,
-                                            last_response_id,
-                                        );
-                                    state = StreamState::ResponsesInit {
-                                        client,
-                                        url,
-                                        api_key,
-                                        body: resumed,
-                                        initial_backoff,
-                                        attempt: 1,
-                                        retry_after: None,
-                                        request_max_retries,
-                                        stream_max_retries,
-                                        stream_attempt: stream_attempt + 1,
-                                        tools_by_call_id: resume_tools,
-                                        index_to_call_id: resume_index,
-                                        stream_idle_timeout,
-                                    };
-                                    continue;
-                                }
-                                let err = ProviderError::Timeout(format!(
-                                    "stream stalled: no SSE event within {idle:?}"
-                                ));
-                                log::error!(target: "gray_provider", "responses stream idle timeout: {err}");
-                                return Some((Err(err), StreamState::Done));
-                            }
-                        }
-                    } else {
-                        event_stream.next().await
-                    };
+                    let next = event_stream.next().await;
                     match next {
                         Some(Ok(sse_event)) => {
                             let data = sse_event.data.trim();
@@ -2234,12 +2056,8 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body,
-                                    initial_backoff,
-                                    request_max_retries,
-                                    stream_max_retries,
                                     stream_attempt,
                                     last_response_id,
-                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
@@ -2520,12 +2338,8 @@ fn stream_unfold_step(
                                 url,
                                 api_key,
                                 body,
-                                initial_backoff,
-                                request_max_retries,
-                                stream_max_retries,
                                 stream_attempt,
                                 last_response_id,
-                                stream_idle_timeout,
                             };
                         }
                         Some(Err(err)) => {
@@ -2535,13 +2349,13 @@ fn stream_unfold_step(
                             // tool-arg prefix rides along on `Some(id)` so
                             // suffix deltas append; already-yielded deltas
                             // stay out and the server continues the prefix.
-                            if stream_attempt < stream_max_retries {
+                            if stream_attempt < MAX_ATTEMPTS {
                                 log::warn!(target: "gray_provider", "responses stream error, resuming (stream attempt {stream_attempt}): {err}");
                                 // Throttle the re-POST like pre-stream
                                 // retries (transport errors carry no
                                 // Retry-After).
                                 tokio::time::sleep(backoff_delay(
-                                    initial_backoff,
+                                    INITIAL_BACKOFF,
                                     stream_attempt,
                                     None,
                                 ))
@@ -2558,15 +2372,11 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body: resumed,
-                                    initial_backoff,
                                     attempt: 1,
                                     retry_after: None,
-                                    request_max_retries,
-                                    stream_max_retries,
                                     stream_attempt: stream_attempt + 1,
                                     tools_by_call_id: resume_tools,
                                     index_to_call_id: resume_index,
-                                    stream_idle_timeout,
                                 };
                                 continue;
                             }
@@ -2611,12 +2421,8 @@ fn stream_unfold_step(
                                     url,
                                     api_key,
                                     body,
-                                    initial_backoff,
-                                    request_max_retries,
-                                    stream_max_retries,
                                     stream_attempt,
                                     last_response_id,
-                                    stream_idle_timeout,
                                 };
                             } else {
                                 return None;
@@ -2656,15 +2462,11 @@ impl Provider for OpenAiProvider {
                 url,
                 api_key: self.api_key.clone(),
                 body,
-                initial_backoff: self.initial_backoff,
                 attempt: 1,
                 retry_after: None,
-                request_max_retries: self.request_max_retries,
-                stream_max_retries: self.stream_max_retries,
                 stream_attempt: 1,
                 tools_by_call_id: BTreeMap::new(),
                 index_to_call_id: BTreeMap::new(),
-                stream_idle_timeout: self.stream_idle_timeout,
             };
             return stream::unfold(init_state, stream_unfold_step).boxed();
         }
@@ -2687,11 +2489,8 @@ impl Provider for OpenAiProvider {
             api_key: self.api_key.clone(),
             body,
             session_id: self.session_id.clone(),
-            initial_backoff: self.initial_backoff,
             attempt: 1,
             retry_after: None,
-            request_max_retries: self.request_max_retries,
-            stream_idle_timeout: self.stream_idle_timeout,
         };
 
         stream::unfold(init_state, stream_unfold_step).boxed()
@@ -2704,9 +2503,7 @@ mod tests {
 
     #[test]
     fn debug_never_contains_api_key() {
-        let p = OpenAiProviderBuilder::new("sk-sentinel-secret", "m")
-            .build()
-            .unwrap();
+        let p = OpenAiProvider::new("sk-sentinel-secret", "m", "", None, None).unwrap();
         let dbg = format!("{p:?}");
         assert!(!dbg.contains("sk-sentinel-secret"), "{dbg}");
     }
@@ -2788,9 +2585,7 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
-        let provider = OpenAiProvider::builder("key", "test-model")
-            .base_url(server.uri())
-            .build()
+        let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
             .expect("provider builds");
         let req = ChatRequest {
             system: None,
@@ -2818,11 +2613,14 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
-        let provider = OpenAiProvider::builder("key", "test-model")
-            .base_url(server.uri())
-            .session_id("sess-123")
-            .build()
-            .expect("provider builds");
+        let provider = OpenAiProvider::new(
+            "key",
+            "test-model",
+            server.uri(),
+            None,
+            Some("sess-123".to_string()),
+        )
+        .expect("provider builds");
         let req = ChatRequest {
             system: None,
             messages: Vec::new(),
@@ -2842,37 +2640,6 @@ mod tests {
                 .expect("session header sent");
             assert_eq!(got.to_str().expect("header ascii"), "sess-123");
         }
-    }
-
-    #[tokio::test]
-    async fn stream_idle_timeout_fires_on_stalled_stream() {
-        // Unfold-step level: wiremock cannot stage "headers, one SSE event,
-        // then silence", so drive a never-resolving event stream directly.
-        // A configured 50ms idle must surface a fast terminal Err (the same
-        // terminal shape a transport stall gets today); Task 2 turns this
-        // arm into resume instead of terminal.
-        let pending: BoxedEventStream = stream::pending().boxed();
-        let state = StreamState::Streaming {
-            event_stream: pending,
-            accumulated_tools: BTreeMap::new(),
-            last_finish_reason: None,
-            last_usage: None,
-            pending_events: VecDeque::new(),
-            completed: false,
-            stream_idle_timeout: Some(Duration::from_millis(50)),
-        };
-        let start = std::time::Instant::now();
-        let out = stream_unfold_step(state).await;
-        let elapsed = start.elapsed();
-        match out {
-            Some((Err(ProviderError::Timeout(_)), StreamState::Done)) => {}
-            Some((Err(_), _)) => panic!("expected Timeout terminal Err"),
-            _ => panic!("expected terminal Err + Done"),
-        }
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "idle timeout must fire fast: {elapsed:?}"
-        );
     }
 
     fn responses_req_with_thinking(_model: &str) -> ChatRequest {
@@ -3000,9 +2767,13 @@ mod tests {
             (tools, index)
         };
         // Some(id): continuation — prefix carried for suffix appends, id stamped.
+        // NOTE: `map_chat_to_responses(..., "high")` sets reasoning, and the
+        // provider rejects `previous_response_id` with encrypted reasoning —
+        // so `resume_body_and_tool_prefix` drops the id here. Pass `None`
+        // effort to exercise the id-carrying path.
         let (tools, index) = prefix();
         let (body, kept_tools, kept_index) = resume_body_and_tool_prefix(
-            map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), Some("high")),
+            map_chat_to_responses(empty_chat_req(), "m1", Some("sess"), None),
             tools,
             index,
             Some("resp_9".to_string()),
@@ -3521,9 +3292,7 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(429).set_body_string(body))
             .mount(&server)
             .await;
-        let provider = OpenAiProvider::builder("key", "test-model")
-            .base_url(server.uri())
-            .build()
+        let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
             .expect("provider builds");
         let req = ChatRequest {
             system: None,
@@ -3558,9 +3327,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let provider = OpenAiProvider::builder("key", "test-model")
-            .base_url(server.uri())
-            .build()
+        let provider = OpenAiProvider::new("key", "test-model", server.uri(), None, None)
             .expect("provider builds");
         let req = ChatRequest {
             system: None,
@@ -3603,11 +3370,14 @@ mod tests {
             .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
-        let provider = OpenAiProvider::builder("key", "test-model")
-            .base_url(server.uri())
-            .session_id("sess-123")
-            .build()
-            .expect("provider builds");
+        let provider = OpenAiProvider::new(
+            "key",
+            "test-model",
+            server.uri(),
+            None,
+            Some("sess-123".to_string()),
+        )
+        .expect("provider builds");
         let req = ChatRequest {
             system: None,
             messages: Vec::new(),
