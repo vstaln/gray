@@ -207,6 +207,19 @@ pub(crate) async fn dispatch_command(
             handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
+        ReplCommand::CronJobs(arg) => {
+            let store = gray_cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
+            let jobs = store.list()?;
+            let text = match arg {
+                None => super::cron::format_cron_dashboard(&jobs),
+                Some(id) => match jobs.into_iter().find(|j| j.id == id || j.name == id) {
+                    Some(j) => super::cron::format_cron_dashboard(&[j]),
+                    None => format!("unknown cron job {id:?}"),
+                },
+            };
+            say(tui.as_ref().map(|(s, _)| s), &text);
+            Flow::Continue
+        }
         ReplCommand::Copy => {
             handle_copy(agent, tui.as_ref().map(|(s, _)| s));
             Flow::Continue

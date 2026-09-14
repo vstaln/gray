@@ -83,6 +83,7 @@ use crate::{DEFAULT_SYS_PROMPT, build_agent, load_or_create_system_prompt_at};
 
 pub mod attachments;
 pub mod commands;
+mod cron;
 mod dispatch;
 pub mod format;
 mod handlers;
