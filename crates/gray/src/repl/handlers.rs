@@ -519,7 +519,10 @@ pub(crate) async fn handle_thinking(
 
     if tui.is_none() {
         // Headless (piped stdout): the picker needs a TTY — print status.
-        let levels = crate::setup::THINKING_LEVELS
+        // Same provider-driven filter as the modal, so piped output agrees
+        // with what `/thinking` would offer on a TTY.
+        let model = config.model.clone().unwrap_or_default();
+        let levels = crate::setup::supported_thinking_levels(&model)
             .iter()
             .map(|(l, _)| *l)
             .collect::<Vec<_>>()
