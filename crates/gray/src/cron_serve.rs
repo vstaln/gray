@@ -36,12 +36,7 @@ pub struct LocalDeliver {
 
 #[async_trait::async_trait(?Send)]
 impl CronDeliver for LocalDeliver {
-    async fn deliver(
-        &self,
-        job: &gray_cron::CronJob,
-        now: i64,
-        text: &str,
-    ) -> Result<(), String> {
+    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String> {
         crate::cron_fire::write_local_output(&self.home, job, now, text)
             .map(|_| ())
             .map_err(|e| format!("local write failed: {e:#}"))
@@ -57,12 +52,7 @@ pub struct SaveLocalDeliver {
 
 #[async_trait::async_trait(?Send)]
 impl CronDeliver for SaveLocalDeliver {
-    async fn deliver(
-        &self,
-        job: &gray_cron::CronJob,
-        now: i64,
-        text: &str,
-    ) -> Result<(), String> {
+    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String> {
         if !matches!(job.deliver, gray_cron::Deliver::Local) {
             log::warn!(
                 "cron {}: unknown target {:?}, saved locally",
@@ -70,9 +60,11 @@ impl CronDeliver for SaveLocalDeliver {
                 job.deliver
             );
         }
-        LocalDeliver { home: self.home.clone() }
-            .deliver(job, now, text)
-            .await
+        LocalDeliver {
+            home: self.home.clone(),
+        }
+        .deliver(job, now, text)
+        .await
     }
 }
 
@@ -255,7 +247,15 @@ mod tests {
             fail: false,
             seen: Default::default(),
         };
-        let rep = tick_once(&store, &runner, &LocalDeliver { home: home.path().to_path_buf() }).await.unwrap();
+        let rep = tick_once(
+            &store,
+            &runner,
+            &LocalDeliver {
+                home: home.path().to_path_buf(),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(rep.fired, 1);
         assert_eq!(rep.errors, 0);
         let job = store.get("j1").unwrap().unwrap();
@@ -283,7 +283,15 @@ mod tests {
             fail: true,
             seen: Default::default(),
         };
-        let rep = tick_once(&store, &runner, &LocalDeliver { home: home.path().to_path_buf() }).await.unwrap();
+        let rep = tick_once(
+            &store,
+            &runner,
+            &LocalDeliver {
+                home: home.path().to_path_buf(),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(rep.fired, 2);
         assert_eq!(rep.errors, 2);
         for id in ["a", "b"] {
@@ -302,7 +310,15 @@ mod tests {
             fail: false,
             seen: Default::default(),
         };
-        let rep = tick_once(&store, &runner, &LocalDeliver { home: home.path().to_path_buf() }).await.unwrap();
+        let rep = tick_once(
+            &store,
+            &runner,
+            &LocalDeliver {
+                home: home.path().to_path_buf(),
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!((rep.fired, rep.errors), (1, 0));
         let job = store.get("s1").unwrap().unwrap();
         assert_eq!(job.last_status, Some(gray_cron::RunStatus::Ok));

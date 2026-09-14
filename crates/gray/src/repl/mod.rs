@@ -216,7 +216,9 @@ impl crate::cron_serve::AsyncRunner for ReplRunner {
         let events = agent
             .run(gray_core::message::Message::user(prompt), ctx)
             .await
-            .map_err(|e| anyhow::anyhow!(crate::repl::format_core_error(&e, &self.config.base_url)))?;
+            .map_err(|e| {
+                anyhow::anyhow!(crate::repl::format_core_error(&e, &self.config.base_url))
+            })?;
         Ok(crate::cron_fire::transcript_text(&events))
     }
 }
@@ -563,8 +565,7 @@ pub async fn run_repl_mode(
                 rt.block_on(async {
                     let runner = ReplRunner { config: cfg };
                     let deliver = crate::cron_serve::SaveLocalDeliver { home };
-                    let mut interval =
-                        tokio::time::interval(std::time::Duration::from_secs(60));
+                    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                     loop {
                         interval.tick().await;
                         match crate::cron_serve::tick_once(&store, &runner, &deliver).await {

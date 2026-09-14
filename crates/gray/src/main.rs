@@ -498,12 +498,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let runner = PrintRunner {
                 config: config.clone(),
             };
-gray::cron_serve::serve_loop(
-                store,
-                gray::cron_serve::SaveLocalDeliver { home },
-                runner,
-            )
-            .await
+            gray::cron_serve::serve_loop(store, gray::cron_serve::SaveLocalDeliver { home }, runner)
+                .await
         }
         CronCmd::Pause { id } => {
             if cron_store()?.set_paused(&id, true)? {

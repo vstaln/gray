@@ -23,7 +23,9 @@ pub fn parse_wake_gate(output: &str) -> bool {
 /// model output (hermes parity); a marker buried mid-body is ignored.
 pub fn is_silent_response(text: &str) -> bool {
     let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
-    let Some(first) = lines.next() else { return false };
+    let Some(first) = lines.next() else {
+        return false;
+    };
     if first.eq_ignore_ascii_case("[silent]") {
         return true;
     }

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- Cron in-chat firing: background REPL tick, `/cron` dashboard, delivery seam.
 - Cron workstream B: `gray cron tick|serve|pause|resume|run`, job skills +
   pre-run scripts, local-file delivery (`cron/output/<id>/<ts>.md`).
 
