@@ -241,10 +241,6 @@ pub struct Cli {
     #[arg(long, value_name = "TOKENS", value_parser = parse_context_window_cli)]
     pub context_keep: Option<usize>,
 
-    /// TUI color theme (gray, tokyo-night, dracula, catppuccin-mocha, gruvbox-dark, claude, terminal). Env: GRAY_THEME.
-    #[arg(long, value_name = "NAME")]
-    pub theme: Option<String>,
-
     /// Print the merged plugin manifest as JSON and exit
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,

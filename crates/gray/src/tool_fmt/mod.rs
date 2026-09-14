@@ -9,8 +9,8 @@ use std::path::Path;
 
 // ── Palette (active theme) ─────────────────────────────────────────────────
 // GrokNight/TokyoNight heritage: green bullet, orange paths, yellow commands.
-// These read the live [`UiTheme`] so `/theme` recolors tool output without a
-// restart. The default `gray` theme seeds today's exact values, so output is
+// These read the shared [`UiTheme`] palette (single gray theme).
+// The palette seeds today's exact values, so output is
 // pixel-identical until the user switches.
 pub fn accent_tool() -> Color {
     crate::theme::theme().tool_accent

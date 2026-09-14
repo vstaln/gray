@@ -303,9 +303,9 @@ mod tests {
         assert_eq!(text, "✻ Thought for 5.8s");
         assert_eq!(
             line.spans[0].style.fg,
-            // Pure Gray preset (no `theme()` global read — keeps this test
+            // Single gray palette (no global read — keeps this test
             // hermetic under parallel execution).
-            Some(crate::theme::ThemeId::Gray.ui_theme().text_muted)
+            Some(crate::theme::GRAY_UI_THEME.text_muted)
         );
     }
 

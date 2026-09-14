@@ -22,11 +22,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["effort", "reasoning"],
     },
     CmdDef {
-        name: "theme",
-        desc: "switch color theme",
-        aliases: &["themes"],
-    },
-    CmdDef {
         name: "context",
         desc: "set context window",
         aliases: &[],
@@ -395,8 +390,6 @@ pub enum ReplCommand {
     Compact(Option<String>),
     /// Set reasoning effort (`/thinking [level]`, `/effort`, `/reasoning`; bare toggles hide/show).
     Thinking(Option<String>),
-    /// Switch TUI color theme (`/theme [name]`; bare lists themes).
-    Theme(Option<String>),
     /// Print the command list (`/help`).
     Help,
     /// Open the model picker (`/model`) or set directly (`/model provider/id`).
@@ -506,7 +499,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("new") => ReplCommand::New(opt(rest)),
         Some("compact") => ReplCommand::Compact(opt(rest)),
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
-        Some("theme") => ReplCommand::Theme(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
@@ -651,7 +643,6 @@ mod tests {
             "context",
             "resume",
             "new",
-            "theme",
             "compact",
             "usage",
             "feedback",
@@ -678,7 +669,6 @@ mod tests {
             ("login", "connect"),
             ("effort", "thinking"),
             ("reasoning", "thinking"),
-            ("themes", "theme"),
             ("compress", "compact"),
             ("sys", "agentsmd"),
             ("cost", "usage"),
@@ -708,7 +698,6 @@ mod tests {
             ("login", "connect"),
             ("effort", "thinking"),
             ("reasoning", "thinking"),
-            ("themes", "theme"),
             ("compress", "compact"),
             ("sys", "agentsmd"),
             ("cost", "usage"),
@@ -736,11 +725,6 @@ mod tests {
 
     #[test]
     fn registry_parse_uses_canonical() {
-        assert!(matches!(
-            parse_command("/theme dracula"),
-            ReplCommand::Theme(_)
-        ));
-        assert!(matches!(parse_command("/theme"), ReplCommand::Theme(_)));
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         assert!(matches!(parse_command("/COST"), ReplCommand::Usage));
         assert!(matches!(
