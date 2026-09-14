@@ -500,7 +500,7 @@ pub fn tool_may_render_body(tool_name: &str) -> bool {
 
 /// Strip the `<untrusted-output>` shell fence for *display* only.
 ///
-/// `bash`/`shell_output` wrap process output in the fence so the model can
+/// `bash` wraps process output in the fence so the model can
 /// tell tool output from user text (prompt-injection boundary). The tags are
 /// harness plumbing: the transcript keeps them, but rendering them as
 /// numbered output lines confuses humans.
@@ -522,16 +522,16 @@ fn strip_shell_fence(trimmed: &str) -> String {
     {
         lines.remove(idx);
     }
-    if let Some(idx) = lines
-        .iter()
-        .rposition(|l| l.trim() == "</untrusted-output>")
-        && lines.len().saturating_sub(idx) <= 5
+    if let Some(idx) = lines.iter().rposition(|l| {
+        let t = l.trim();
+        t == "</untrusted-output>" || t == "<\\/untrusted-output>"
+    }) && lines.len().saturating_sub(idx) <= 5
     {
         lines.remove(idx);
     }
     lines
         .join("\n")
-        .replace(r"<\/untrusted-output", "</untrusted-output>")
+        .replace("<\\/untrusted-output>", "</untrusted-output>")
 }
 
 /// Formats tool output lines with Codex/Grok-style rendering.

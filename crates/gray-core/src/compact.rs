@@ -134,7 +134,8 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
         if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx] {
             if content.len() > 120 {
                 let lines = content.lines().count();
-                *content = format!("Old command output: ({lines} lines omitted; full output in log)");
+                *content =
+                    format!("Old command output: ({lines} lines omitted; full output in log)");
                 pruned += 1;
             }
         }
@@ -959,7 +960,10 @@ mod tests {
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult {
                     id: format!("call_{i}"),
-                    content: format!("Output line 1 for tool {i}\nOutput line 2 for tool {i}\n{}", "x".repeat(200)),
+                    content: format!(
+                        "Output line 1 for tool {i}\nOutput line 2 for tool {i}\n{}",
+                        "x".repeat(200)
+                    ),
                     is_error: false,
                 }],
             })
@@ -970,7 +974,9 @@ mod tests {
 
         // First 5 should be elided
         for i in 0..5 {
-            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else { panic!() };
+            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else {
+                panic!()
+            };
             assert_eq!(id, &format!("call_{i}"));
             assert!(content.starts_with("Old command output:"));
             assert!(content.contains("lines omitted; full output in log"));
@@ -978,7 +984,9 @@ mod tests {
 
         // Last 3 should be untouched
         for i in 5..8 {
-            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else { panic!() };
+            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else {
+                panic!()
+            };
             assert_eq!(id, &format!("call_{i}"));
             assert!(content.starts_with(&format!("Output line 1 for tool {i}")));
         }

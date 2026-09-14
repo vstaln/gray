@@ -19,5 +19,4 @@ ignore = { workspace = true }
 globset = { workspace = true }
 memchr = "2"
 infer = "0.19"
-regex = "1"
 

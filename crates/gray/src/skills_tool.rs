@@ -1,7 +1,7 @@
 //! Skill context for the bash-only surface + paste helpers for `/skills <name>`.
 //!
-//! No `skill` tool — tools stay bash-only (`bash`, `shell_output`,
-//! `shell_kill`, `sleep`). Skills work through context + bash:
+//! No `skill` tool — the tool surface stays blocking-`bash`-only.
+//! Skills work through context + bash:
 //! [`SkillsPlugin`] serves the per-turn `<available_skills>` list (names,
 //! descriptions, exact `<location>` paths) via the `prompt/context` hook,
 //! and the model reads one with bash (`cat <location>`).
