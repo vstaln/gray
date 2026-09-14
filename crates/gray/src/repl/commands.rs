@@ -47,6 +47,16 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["cost"],
     },
     CmdDef {
+        name: "copy",
+        desc: "copy last assistant response",
+        aliases: &[],
+    },
+    CmdDef {
+        name: "doctor",
+        desc: "health checks (config, store, provider)",
+        aliases: &[],
+    },
+    CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
@@ -398,6 +408,10 @@ pub enum ReplCommand {
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
     Usage,
+    /// Copy the last assistant response to the clipboard (`/copy`).
+    Copy,
+    /// Health checks: config, session store, provider reachability (`/doctor`).
+    Doctor,
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
     Feedback(Option<String>),
     /// Unknown slash command (`/word`).
@@ -501,6 +515,8 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
+        Some("copy") => ReplCommand::Copy,
+        Some("doctor") => ReplCommand::Doctor,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Every connect alias accepts optional args like `/key openrouter`
@@ -575,6 +591,8 @@ mod tests {
     #[test]
     fn usage_command_and_cost_alias() {
         assert!(matches!(parse_command("/usage"), ReplCommand::Usage));
+        assert!(matches!(parse_command("/copy"), ReplCommand::Copy));
+        assert!(matches!(parse_command("/doctor"), ReplCommand::Doctor));
         assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
         use std::path::Path;
         let cwd = Path::new(".");

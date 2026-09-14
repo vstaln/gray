@@ -625,6 +625,9 @@ mod tests {
             context_window: None,
             context_reserve: None,
             context_keep: None,
+            max_turns: None,
+            max_cost_micros: None,
+            max_wall_secs: None,
         };
         let mut agent: Option<Agent> = None;
         reload_agent(

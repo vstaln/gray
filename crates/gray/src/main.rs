@@ -33,6 +33,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     let mut config = Config::resolve(&cli)?;
+    gray::turn_caps::init_process_start();
     gray::setup::set_user_context_window(config.context_window);
     gray::setup::set_user_reserve_tokens(config.context_reserve);
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
@@ -85,15 +86,24 @@ async fn run_resume_subcommand(
         gray::resume::resolve_session_strict(&store, raw, all).await?
     } else if last {
         let cwd = std::env::current_dir().ok();
-        let summaries = store.list().await;
-        let cwd_filter = if all { None } else { cwd.as_deref() };
-        match gray::resume::latest_summary(&summaries, cwd_filter) {
-            Some(s) => s.id.clone(),
-            None => {
-                if all {
-                    anyhow::bail!("no saved sessions")
-                } else {
-                    anyhow::bail!("no saved sessions in this directory (try --all)")
+        // Recall-first for the cwd-scoped case (`--all` keeps the scan).
+        if !all
+            && let Some(c) = cwd.as_deref()
+            && let Some(rid) = store.recall_validated(c).await
+            && store.load(&rid).await.is_ok()
+        {
+            rid
+        } else {
+            let summaries = store.list().await;
+            let cwd_filter = if all { None } else { cwd.as_deref() };
+            match gray::resume::latest_summary(&summaries, cwd_filter) {
+                Some(s) => s.id.clone(),
+                None => {
+                    if all {
+                        anyhow::bail!("no saved sessions")
+                    } else {
+                        anyhow::bail!("no saved sessions in this directory (try --all)")
+                    }
                 }
             }
         }

@@ -240,7 +240,15 @@ struct Header {
 pub struct JsonlSessionStore {
     root_dir: PathBuf,
     lock: tokio::sync::Mutex<()>,
+    id_cache: tokio::sync::Mutex<std::collections::HashMap<SessionId, IdCursor>>,
 }
+
+/// Next-write cursor for one session: `(next_id, parent_id, file_len)`.
+/// Appends only ever grow the file, so a matching `file_len` proves no other
+/// handle (same process or another) appended since the cursor was cached —
+/// the cursor is exact. Any length mismatch falls back to the tail probe /
+/// full scan, which keeps the two-handle concurrency test green.
+type IdCursor = (u64, Option<u64>, u64);
 
 impl Default for JsonlSessionStore {
     /// Store rooted at the default directory (`~/.gray/sessions`), falling back
@@ -282,12 +290,231 @@ impl JsonlSessionStore {
         Self {
             root_dir: root_dir.into(),
             lock: tokio::sync::Mutex::new(()),
+            id_cache: tokio::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     /// Returns a reference to the root directory path of the store.
     pub fn root_dir(&self) -> &Path {
         &self.root_dir
+    }
+
+    /// FNV-1a 64-bit hex of `s` (no new deps): stable pointer-file names
+    /// for remembered workspace sessions.
+    fn fnv1a_hex(s: &str) -> String {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for b in s.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        format!("{h:016x}")
+    }
+
+    /// Directory holding one remembered-session pointer per cwd hash.
+    /// A directory (not `.jsonl` files) so [`Self::list`] never scans it.
+    fn remembered_dir(&self) -> PathBuf {
+        self.root_dir.join("remembered")
+    }
+
+    /// Pointer path for `cwd`: hash of the canonical path when it resolves,
+    /// else the raw path (same rule on write and read, so they agree).
+    fn remember_path_for_cwd(&self, cwd: &Path) -> PathBuf {
+        let key = cwd
+            .canonicalize()
+            .unwrap_or_else(|_| cwd.to_path_buf())
+            .display()
+            .to_string();
+        self.remembered_dir()
+            .join(format!("{}.txt", Self::fnv1a_hex(&key)))
+    }
+
+    /// Best-effort write of the remembered session for `cwd` (`cwd\nid`,
+    /// 0600, atomic tmp+rename). Never fails the caller: a missing pointer
+    /// just means the next `-c` pays one full scan.
+    pub async fn remember(&self, id: &SessionId, cwd: &Path) {
+        if !valid_session_id(id.as_str()) {
+            return;
+        }
+        let dir = self.remembered_dir();
+        if ensure_private_dir(&dir).is_err() {
+            return;
+        }
+        let path = self.remember_path_for_cwd(cwd);
+        let stored_cwd = cwd
+            .canonicalize()
+            .unwrap_or_else(|_| cwd.to_path_buf())
+            .display()
+            .to_string();
+        let tmp = dir.join(format!(".tmp-{}", Self::fnv1a_hex(id.as_str())));
+        let content = format!("{stored_cwd}\n{}\n", id.as_str());
+        if tokio::fs::write(&tmp, content.as_bytes()).await.is_err() {
+            return;
+        }
+        tighten_file_mode(&tmp);
+        if tokio::fs::rename(&tmp, &path).await.is_err() {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return;
+        }
+        tighten_file_mode(&path);
+    }
+
+    /// Recalled session id for `cwd`, or `None` when no/invalid pointer.
+    /// Verifies the stored cwd still matches (hash collisions, moved dirs)
+    /// and the id is well-formed — never trusts the file blindly.
+    pub async fn recall(&self, cwd: &Path) -> Option<SessionId> {
+        let content = tokio::fs::read_to_string(self.remember_path_for_cwd(cwd))
+            .await
+            .ok()?;
+        let mut lines = content.lines();
+        let stored_cwd = PathBuf::from(lines.next()?.trim());
+        let current = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        let stored = stored_cwd
+            .canonicalize()
+            .unwrap_or_else(|_| stored_cwd.clone());
+        if stored != current && stored_cwd != current {
+            return None;
+        }
+        let id_str = lines.next()?.trim();
+        if !valid_session_id(id_str) {
+            return None;
+        }
+        Some(SessionId::new(id_str))
+    }
+
+    /// Recalled id that still has a session file on disk (`None` after
+    /// prune/delete — the caller then falls back to the list scan).
+    pub async fn recall_validated(&self, cwd: &Path) -> Option<SessionId> {
+        let id = self.recall(cwd).await?;
+        let path = self.session_path(&id).ok()?;
+        match tokio::fs::metadata(&path).await {
+            Ok(m) => {
+                if m.is_file() {
+                    Some(id)
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Tail probe: `(next_id, parent_id)` from the last entry without reading
+    /// the whole file. Returns `None` when the file is small enough that the
+    /// full scan is cheap anyway, or the tail is unusable (mid-line split,
+    /// unparsable) — the caller then does the full scan, which also surfaces
+    /// the real `Corrupt` line number. A torn tail (missing trailing newline)
+    /// is a definitive refusal, matching [`Self::scan_entries`].
+    async fn tail_next_ids(path: &Path, id: &SessionId) -> Option<Result<(u64, Option<u64>)>> {
+        const TAIL_PROBE_SIZE: u64 = 262_144;
+        let len = match tokio::fs::metadata(path).await {
+            Ok(m) => m.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Some(Err(SessionError::NotFound(id.clone())));
+            }
+            Err(e) => return Some(Err(SessionError::Io(e))),
+        };
+        if len == 0 {
+            return Some(Err(SessionError::NotFound(id.clone())));
+        }
+        // Definitive torn-tail check on the final byte (same rule as scan).
+        {
+            use tokio::io::{AsyncReadExt, AsyncSeekExt};
+            let mut f = match tokio::fs::File::open(path).await {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Some(Err(SessionError::NotFound(id.clone())));
+                }
+                Err(e) => return Some(Err(SessionError::Io(e))),
+            };
+            if f.seek(std::io::SeekFrom::End(-1)).await.is_err() {
+                return None;
+            }
+            let mut last = [0u8; 1];
+            if f.read_exact(&mut last).await.is_err() {
+                return None;
+            }
+            if last[0] != b'\n' {
+                return Some(Err(SessionError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "session has an incomplete tail; repair before appending",
+                ))));
+            }
+        }
+        if len <= TAIL_PROBE_SIZE {
+            return None;
+        }
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        let mut f = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
+            Err(_) => return None,
+        };
+        if f.seek(std::io::SeekFrom::Start(len - TAIL_PROBE_SIZE))
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        let mut buf = Vec::new();
+        if f.read_to_end(&mut buf).await.is_err() {
+            return None;
+        }
+        let text = match std::str::from_utf8(&buf) {
+            Ok(t) => t,
+            Err(_) => return None,
+        };
+        // The file ends with a newline (verified above), so the last
+        // non-empty line is a complete record. The first line may be a
+        // mid-record split — a partial prefix never parses as a complete
+        // `SessionEntry`, so parse failure safely falls back to the scan.
+        let last_line = match text.lines().rfind(|l| !l.trim().is_empty()) {
+            Some(l) => l,
+            None => return None,
+        };
+        match serde_json::from_str::<SessionEntry>(last_line) {
+            Ok(entry) => Some(Ok((entry.entry_id.saturating_add(1), Some(entry.entry_id)))),
+            Err(_) => None,
+        }
+    }
+
+    /// Cached-or-probed `(next_id, parent_id)` for append paths. The
+    /// in-memory cursor wins only when the file length still matches (no
+    /// other handle appended since); else the tail probe; else the full scan
+    /// (which also validates the whole graph and yields real line numbers).
+    async fn next_ids_for_append(&self, id: &SessionId, path: &Path) -> Result<(u64, Option<u64>)> {
+        if let Some((next, parent, cached_len)) = self.id_cache.lock().await.get(id).copied() {
+            match tokio::fs::metadata(path).await {
+                Ok(m) if m.len() == cached_len => return Ok((next, parent)),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(SessionError::NotFound(id.clone()));
+                }
+                Err(e) => return Err(SessionError::Io(e)),
+            }
+        }
+        if let Some(fast) = Self::tail_next_ids(path, id).await {
+            let ids = fast?;
+            return Ok(ids);
+        }
+        let content = match tokio::fs::read_to_string(path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SessionError::NotFound(id.clone()));
+            }
+            Err(e) => return Err(SessionError::Io(e)),
+        };
+        Self::scan_entries(id, &content, path)
+    }
+
+    /// Records the post-write cursor (needs the post-append file length).
+    async fn note_appended(&self, id: &SessionId, path: &Path, entry_id: u64) {
+        let len = tokio::fs::metadata(path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+        self.id_cache.lock().await.insert(
+            id.clone(),
+            (entry_id.saturating_add(1), Some(entry_id), len),
+        );
     }
 
     /// Storage path for `id`, validated at the boundary: only ASCII
@@ -423,6 +650,12 @@ impl JsonlSessionStore {
                 file.flush().await?;
                 file.sync_all().await?;
                 tighten_file_mode(&path);
+                let len = line.len() as u64;
+                self.id_cache
+                    .lock()
+                    .await
+                    .insert(id.clone(), (0, None, len));
+                self.remember(&id, &header.cwd).await;
                 Ok(id)
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -482,14 +715,7 @@ impl JsonlSessionStore {
         let _guard = self.lock.lock().await;
         let path = self.session_path(id)?;
 
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(SessionError::NotFound(id.clone()));
-            }
-            Err(e) => return Err(SessionError::Io(e)),
-        };
-        let (next_id, parent_id) = Self::scan_entries(id, &content, &path)?;
+        let (next_id, parent_id) = self.next_ids_for_append(id, &path).await?;
 
         let entry = SessionEntry {
             compaction_boundary: false,
@@ -522,6 +748,7 @@ impl JsonlSessionStore {
         file.flush().await?;
         file.sync_all().await?;
         tighten_file_mode(&path);
+        self.note_appended(id, &path, next_id).await;
 
         Ok(next_id)
     }
@@ -541,14 +768,7 @@ impl JsonlSessionStore {
         let _guard = self.lock.lock().await;
         let path = self.session_path(id)?;
 
-        let content = match tokio::fs::read_to_string(&path).await {
-            Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(SessionError::NotFound(id.clone()));
-            }
-            Err(e) => return Err(SessionError::Io(e)),
-        };
-        let (mut next_id, mut parent_id) = Self::scan_entries(id, &content, &path)?;
+        let (mut next_id, mut parent_id) = self.next_ids_for_append(id, &path).await?;
 
         let mut out = String::new();
         // Marker first, then the replacement, one entry per line.
@@ -597,6 +817,12 @@ impl JsonlSessionStore {
         file.flush().await?;
         file.sync_all().await?;
         tighten_file_mode(&path);
+        // Cursor after the marker + replacement batch (guard the empty case).
+        if next_id > 0 {
+            self.note_appended(id, &path, next_id - 1).await;
+        } else {
+            self.id_cache.lock().await.remove(id);
+        }
 
         Ok(())
     }
@@ -804,9 +1030,34 @@ impl JsonlSessionStore {
         let meta = SessionMeta {
             id: header.id,
             timestamp: header.timestamp,
-            cwd: header.cwd,
+            cwd: header.cwd.clone(),
             model: header.model,
         };
+        // Seed the append cursor from the tail (exact: appends are the only
+        // writers) and refresh the remembered-session pointer.
+        match entries.last() {
+            Some(last) => {
+                let len = tokio::fs::metadata(&path)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                self.id_cache.lock().await.insert(
+                    id.clone(),
+                    (last.entry_id.saturating_add(1), Some(last.entry_id), len),
+                );
+            }
+            None => {
+                let len = tokio::fs::metadata(&path)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                self.id_cache
+                    .lock()
+                    .await
+                    .insert(id.clone(), (0, None, len));
+            }
+        }
+        self.remember(id, &meta.cwd).await;
 
         // Compaction boundary: replay only the active transcript after the
         // last marker. Old files carry no markers and load whole.
@@ -922,6 +1173,7 @@ impl JsonlSessionStore {
 
     pub async fn delete(&self, id: &SessionId) -> Result<()> {
         let _guard = self.lock.lock().await;
+        self.id_cache.lock().await.remove(id);
         let path = self.session_path(id)?;
         match tokio::fs::remove_file(&path).await {
             Ok(()) => Ok(()),
@@ -963,6 +1215,8 @@ fn now_millis() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    // temporary: appended to lib.rs tests then removed
+
     use super::*;
     use tempfile::tempdir;
 
@@ -1442,6 +1696,122 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), 20, "entry IDs must be unique under concurrency");
+    }
+
+    #[tokio::test]
+    async fn remember_recall_roundtrip() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let cwd = dir.path().join("work");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let id = SessionId::new("remember1");
+        store
+            .create(SessionMeta::new(id.clone(), 1, cwd.clone(), "m"))
+            .await
+            .unwrap();
+        // create() remembers; explicit remember is idempotent.
+        store.remember(&id, &cwd).await;
+        assert_eq!(store.recall(&cwd).await, Some(id.clone()));
+        assert_eq!(store.recall_validated(&cwd).await, Some(id.clone()));
+    }
+
+    #[tokio::test]
+    async fn recall_returns_none_for_other_cwd_and_garbage() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let id = SessionId::new("remember2");
+        store
+            .create(SessionMeta::new(id.clone(), 1, a.clone(), "m"))
+            .await
+            .unwrap();
+        // Different cwd hashes to a different pointer file.
+        assert_eq!(store.recall(&b).await, None);
+        // Garbage in the pointer file never surfaces.
+        std::fs::write(store.remember_path_for_cwd(&a), "not\na session\n").unwrap();
+        assert_eq!(store.recall(&a).await, None);
+        assert_eq!(store.recall_validated(&a).await, None);
+    }
+
+    #[tokio::test]
+    async fn recall_validated_none_after_delete() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let cwd = dir.path().join("w");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let id = SessionId::new("remember3");
+        store
+            .create(SessionMeta::new(id.clone(), 1, cwd.clone(), "m"))
+            .await
+            .unwrap();
+        assert!(store.recall_validated(&cwd).await.is_some());
+        store.delete(&id).await.unwrap();
+        assert_eq!(store.recall_validated(&cwd).await, None);
+        // Stale pointer degrades to the list fallback, never an error.
+        assert!(store.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sequential_appends_keep_monotonic_ids_without_rescan() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store
+            .create(SessionMeta::new(SessionId::new("seq1"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        for i in 0..5u64 {
+            let got = store
+                .append(&id, &Message::user(format!("m{i}")))
+                .await
+                .unwrap();
+            assert_eq!(got, i);
+        }
+        let (_, entries) = store.load(&id).await.unwrap();
+        assert_eq!(entries.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn cross_handle_append_continues_ids_via_tail_probe() {
+        let dir = tempdir().unwrap();
+        let seed = JsonlSessionStore::new(dir.path());
+        let id = seed
+            .create(SessionMeta::new(SessionId::new("tail1"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        for i in 0..3 {
+            seed.append(&id, &Message::user(format!("m{i}")))
+                .await
+                .unwrap();
+        }
+        // Fresh handle, empty cache: ids continue from the tail, not 0.
+        let fresh = JsonlSessionStore::new(dir.path());
+        let got = fresh.append(&id, &Message::user("next")).await.unwrap();
+        assert_eq!(got, 3);
+    }
+
+    #[tokio::test]
+    async fn cached_append_still_refuses_torn_tail() {
+        let dir = tempdir().unwrap();
+        let store = JsonlSessionStore::new(dir.path());
+        let id = store
+            .create(SessionMeta::new(SessionId::new("torn1"), 1, "/tmp", "m"))
+            .await
+            .unwrap();
+        store.append(&id, &Message::user("ok")).await.unwrap();
+        // Tear the tail: drop the final newline. Cache is populated, but the
+        // length changed so the cursor is exact-proofed and refused.
+        let path = store.session_path(&id).unwrap();
+        let content = std::fs::read(&path).unwrap();
+        assert!(content.ends_with(b"\n"));
+        std::fs::write(&path, &content[..content.len() - 1]).unwrap();
+        let err = store
+            .append(&id, &Message::user("after tear"))
+            .await
+            .expect_err("torn tail must refuse");
+        assert!(matches!(err, SessionError::Io(_)));
     }
 
     #[cfg(unix)]

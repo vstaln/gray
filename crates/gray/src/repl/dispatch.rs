@@ -210,6 +210,14 @@ pub(crate) async fn dispatch_command(
             handle_usage(session_totals, config, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
+        ReplCommand::Copy => {
+            handle_copy(agent, tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
+        ReplCommand::Doctor => {
+            handle_doctor(config, tui.as_ref().map(|(s, _)| s));
+            Flow::Continue
+        }
         ReplCommand::Feedback(text) => {
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue

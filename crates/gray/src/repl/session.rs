@@ -27,7 +27,26 @@ pub(crate) async fn handle_resume(
     tui: Option<&crate::composer::SharedTui>,
 ) {
     let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
-    let target_id: Option<SessionId> = if let Some(raw) = args.target.as_deref() {
+    // Recall-first resolution for cwd-scoped `--last` (`--all` keeps the
+    // list scan for the global latest). A validated pointer skips the scan;
+    // any miss flows into the existing list path below.
+    let mut recalled_id: Option<SessionId> = None;
+    if args.target.is_none()
+        && args.last
+        && !args.all
+        && let Some(root) = default_root()
+    {
+        let store = JsonlSessionStore::new(root);
+        if let Some(c) = std::env::current_dir().ok()
+            && let Some(rid) = store.recall_validated(&c).await
+            && store.load(&rid).await.is_ok()
+        {
+            recalled_id = Some(rid);
+        }
+    }
+    let target_id: Option<SessionId> = if let Some(rid) = recalled_id {
+        Some(rid)
+    } else if let Some(raw) = args.target.as_deref() {
         if let Some(root) = default_root() {
             let store = JsonlSessionStore::new(root);
             if let Some(id) = crate::resume::resolve_prefix(&store, raw, args.all).await {
@@ -58,8 +77,8 @@ pub(crate) async fn handle_resume(
             return;
         };
         let store = JsonlSessionStore::new(root);
-        let summaries = store.list().await;
         let cwd_now = std::env::current_dir().ok();
+        let summaries = store.list().await;
         let filt = if args.all { None } else { cwd_now.as_deref() };
         match crate::resume::latest_summary(&summaries, filt) {
             Some(s) => Some(s.id.clone()),

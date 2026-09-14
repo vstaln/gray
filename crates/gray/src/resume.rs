@@ -259,9 +259,16 @@ pub async fn resolve_session_strict(
 /// Latest session for `gray -p -c`: most recent in this directory, falling
 /// back to the global latest (mirrors the REPL `-c` path, which has no
 /// `--all` flag). `Ok(None)` when the store is empty (fresh print run).
+/// Recall-first: the remembered-session pointer answers in one file read;
+/// the full list scan is the fallback (cold start, pruned pointer).
 pub async fn latest_session_anywhere(store: &JsonlSessionStore) -> Option<SessionId> {
-    let summaries = store.list().await;
     let cwd = std::env::current_dir().ok();
+    if let Some(c) = cwd.as_deref()
+        && let Some(id) = store.recall_validated(c).await
+    {
+        return Some(id);
+    }
+    let summaries = store.list().await;
     latest_summary(&summaries, cwd.as_deref())
         .or_else(|| latest_summary(&summaries, None))
         .map(|s| s.id.clone())

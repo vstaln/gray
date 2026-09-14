@@ -21,6 +21,7 @@ pub(crate) mod text_width;
 pub mod theme;
 pub mod tool_fmt;
 pub mod tui;
+pub mod turn_caps;
 pub mod update;
 
 use clap::Parser;
@@ -244,6 +245,21 @@ pub struct Cli {
     /// Print the merged plugin manifest as JSON and exit
     #[arg(long = "dump-manifest")]
     pub dump_manifest: bool,
+
+    /// Maximum agent turns per invocation (mini-swe-agent step_limit).
+    /// Env: GRAY_MAX_TURNS. Applies to REPL turns this process runs.
+    #[arg(long, value_name = "N")]
+    pub max_turns: Option<u32>,
+
+    /// Maximum spend in USD per invocation (mini-swe-agent cost_limit).
+    /// Env: GRAY_MAX_COST_USD. Unpriced models never trip this.
+    #[arg(long, value_name = "USD")]
+    pub max_cost_usd: Option<f64>,
+
+    /// Maximum wall-clock seconds per invocation (mini-swe-agent wall_time).
+    /// Env: GRAY_MAX_WALL_SECS. Measured from process start.
+    #[arg(long, value_name = "SECS")]
+    pub max_wall_secs: Option<u64>,
 
     /// Resume subcommand (picker by default; see `gray resume --help`)
     #[command(subcommand)]

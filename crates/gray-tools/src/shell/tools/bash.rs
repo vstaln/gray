@@ -88,8 +88,33 @@ impl Tool for BashTool {
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let command = match get_str(&args, "command") {
-            Ok(c) => c,
-            Err(e) => return e,
+            Ok(c) if !c.trim().is_empty() => c,
+            _ => {
+                // Repair hint only when unambiguous: empty command + task-ish
+                // keys means the model wanted shell_output; +port/kill keys
+                // means shell_kill. Anything else keeps the plain error.
+                let obj = args.as_object();
+                let has = |k: &str| obj.is_some_and(|m| m.contains_key(k));
+                if has("task_id") || has("from_offset") || has("wait") {
+                    return fail(
+                        "missing required argument 'command'; to read task output use shell_output(task_id) instead"
+                            .to_string(),
+                    );
+                }
+                if has("port") {
+                    return fail(
+                        "missing required argument 'command'; to free a port use shell_kill(port=N) instead"
+                            .to_string(),
+                    );
+                }
+                return match get_str(&args, "command") {
+                    Ok(_) => fail(
+                        "missing required argument 'command': expected a non-empty string"
+                            .to_string(),
+                    ),
+                    Err(e) => e,
+                };
+            }
         };
         let requested = match get_opt_u64(&args, "timeout") {
             Ok(t) => t,
