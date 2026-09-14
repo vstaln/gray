@@ -329,7 +329,7 @@ pub enum CronCmd {
         schedule: String,
         /// Prompt the daemon runs at fire time
         prompt: String,
-        /// Delivery target, stored with the job (no delivery backend yet): origin | local | <target>
+        /// Delivery target, stored with the job (only local delivers; origin | <target> records delivery_failed)
         #[arg(long)]
         deliver: Option<String>,
         /// Job name (default: prompt's first line, truncated)
@@ -338,6 +338,31 @@ pub enum CronCmd {
         /// Working dir the job runs in (must be absolute + existing)
         #[arg(long = "in", value_name = "DIR")]
         workdir: Option<PathBuf>,
+        /// Comma-separated skill names (must resolve at fire time)
+        #[arg(long)]
+        skills: Option<String>,
+        /// Absolute path to a pre-run script (stdout injected into prompt)
+        #[arg(long)]
+        script: Option<PathBuf>,
+    },
+    /// One claim→fire→record pass (also the OS-cron/runit entry point)
+    Tick,
+    /// Tick every 60s until SIGINT/SIGTERM
+    Serve,
+    /// Suspend a job (id or name)
+    Pause {
+        /// Job id or name
+        id: String,
+    },
+    /// Resume a suspended job (id or name; recomputes next run)
+    Resume {
+        /// Job id or name
+        id: String,
+    },
+    /// Fire a job now regardless of schedule (id or name)
+    Run {
+        /// Job id or name
+        id: String,
     },
     /// Show one job's full record (id or name)
     Show {
@@ -443,6 +468,7 @@ mod tests {
                         deliver,
                         name,
                         workdir,
+                        ..
                     },
             }) => {
                 assert_eq!(schedule, "0 9 * * *");
@@ -473,6 +499,47 @@ mod tests {
                 cmd: CronCmd::Remove { .. },
             })
         ));
+    }
+
+    #[test]
+    fn cron_cli_parses_lifecycle() {
+        for args in [
+            vec!["gray", "cron", "tick"],
+            vec!["gray", "cron", "serve"],
+            vec!["gray", "cron", "pause", "abc"],
+            vec!["gray", "cron", "resume", "abc"],
+            vec!["gray", "cron", "run", "abc"],
+        ] {
+            let cli = Cli::try_parse_from(args.clone()).unwrap();
+            assert!(
+                matches!(cli.command, Some(Commands::Cron { .. })),
+                "{args:?}"
+            );
+        }
+        let cli = Cli::try_parse_from([
+            "gray",
+            "cron",
+            "add",
+            "every 1h",
+            "--skills",
+            "a,b",
+            "--script",
+            "/tmp/pre.sh",
+            "do it",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Cron {
+                cmd:
+                    CronCmd::Add {
+                        skills, script, ..
+                    },
+            }) => {
+                assert_eq!(skills.as_deref(), Some("a,b"));
+                assert_eq!(script, Some(PathBuf::from("/tmp/pre.sh")));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

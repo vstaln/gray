@@ -11,22 +11,24 @@ pub struct TickReport {
 }
 
 /// Agent seam: production runs the headless agent; tests stub it.
-#[async_trait::async_trait]
-pub trait AsyncRunner: Send + Sync {
+/// `?Send`: the agent future is not `Send`; the ticker only ever awaits it
+/// directly (never `spawn`s), so no `Send` bound is needed.
+#[async_trait::async_trait(?Send)]
+pub trait AsyncRunner {
     async fn run(&self, prompt: String) -> anyhow::Result<String>;
 }
 
 /// Whole-fire wall clock (script + agent), matches the bash tool bound.
 pub const FIRE_TIMEOUT_SECS: u64 = 600;
 
-fn owner_stamp() -> String {
+pub fn owner_stamp() -> String {
     format!("{}:{}", std::process::id(), uuid::Uuid::new_v4())
 }
 
 /// Fire one already-claimed job and record the outcome via `mark_done`.
 /// Returns the recorded status for the tick report. Never propagates
 /// job-level failure: every path ends in `mark_done` (claim released).
-async fn fire_one(
+pub async fn fire_one(
     store: &gray_cron::CronStore,
     home: &Path,
     runner: &dyn AsyncRunner,
@@ -180,7 +182,7 @@ mod tests {
         seen: std::sync::Mutex<Vec<String>>,
     }
 
-    #[async_trait::async_trait]
+    #[async_trait::async_trait(?Send)]
     impl AsyncRunner for StubRunner {
         async fn run(&self, prompt: String) -> anyhow::Result<String> {
             self.seen.lock().unwrap().push(prompt);
