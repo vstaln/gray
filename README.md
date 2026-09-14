@@ -73,7 +73,7 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 ## Watch it go
 
 <div align="center">
-  <img alt="gray building HorseTinder in the terminal" src="assets/gray-demo.gif" width="100%" />
+  <img alt="gray building HorseTinder — session replay from gray.alignment.id" src="assets/gray-demo.gif" width="100%" />
 </div>
 
 ## Commands
