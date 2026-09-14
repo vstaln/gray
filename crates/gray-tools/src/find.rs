@@ -35,9 +35,6 @@ fn relativize(result_path: &str, search_path: &Path) -> String {
     }
 }
 
-pub const FIND_SNIPPET: &str = "Find files by glob pattern (respects .gitignore)";
-pub const FIND_GUIDELINES: &[&str] = &[];
-
 /// Filename glob search. Respects .gitignore via `fd` when available,
 /// otherwise falls back to a manual walk.
 pub struct FindTool;
@@ -61,14 +58,6 @@ impl Tool for FindTool {
                 "required": ["pattern"]
             }),
         )
-    }
-
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(FIND_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(FIND_GUIDELINES)
     }
 
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {

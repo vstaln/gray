@@ -25,14 +25,10 @@
 //! Spec: plan.ts T6.1. `limit` applies per file; headers are sorted; the
 //! aggregate budget (~100 KiB) applies to rendered bytes.
 //!
-//! Contract strings live in `notices.rs` (moved verbatim at the wave gate);
-//! [`aggregate_note`]/[`MISSING_INPUT_MESSAGE`] below delegate there (one
-//! owner per string — same staging as `resolve.rs`).
-//!
 //! FOLLOW-UPS (not done here — files outside T4.2 ownership):
 //! 1. Done (T6.1): `read/mod.rs` wiring above.
-//! 2. Done (wave gate): `notices.rs` owns [`aggregate_note`]/
-//!    [`MISSING_INPUT_MESSAGE`] verbatim.
+//! 2. Done (wave gate): `notices.rs` owns [`super::notices::aggregate_note`]/
+//!    [`super::notices::MISSING_INPUT_MESSAGE`] verbatim.
 
 use std::path::Path;
 
@@ -45,9 +41,6 @@ pub const AGGREGATE_BYTES: u64 = 100 * 1024;
 /// Dirs excluded unless an input pattern names them (spec-fixed list).
 pub const DEFAULT_DIR_EXCLUDES: &[&str] = &["node_modules", "target", ".git", "dist"];
 
-/// Enforced when neither `path` nor `paths` is given — delegates to `notices.rs`.
-pub const MISSING_INPUT_MESSAGE: &str = super::notices::MISSING_INPUT_MESSAGE;
-
 /// `==> <relative path> <==` — per-file header above the windowed output.
 pub fn header(rel: &str) -> String {
     format!("==> {rel} <==")
@@ -56,11 +49,6 @@ pub fn header(rel: &str) -> String {
 /// True for glob inputs (`*`/`?`, incl. `**`). Anything else is a literal.
 pub fn is_glob(s: &str) -> bool {
     s.chars().any(|c| c == '*' || c == '?')
-}
-
-/// Trailing summary once the budget stops the list — delegates to `notices.rs`.
-pub fn aggregate_note(shown: usize, total: usize, skipped: &[String]) -> String {
-    super::notices::aggregate_note(shown, total, skipped)
 }
 
 /// True when a pattern names a dir as a path segment (`node_modules/**/*.js`
@@ -235,7 +223,7 @@ mod tests {
     #[test]
     fn missing_input_message_is_contract_exact() {
         assert_eq!(
-            MISSING_INPUT_MESSAGE,
+            crate::read::notices::MISSING_INPUT_MESSAGE,
             "read: provide path (one file) or paths (list of files/globs)"
         );
     }
@@ -368,7 +356,7 @@ mod tests {
         assert_eq!(shown.len(), 100);
         assert_eq!(skipped.len(), 200);
         assert_eq!(skipped[0], "f100.rs");
-        let note = aggregate_note(shown.len(), files.len(), &skipped);
+        let note = crate::read::notices::aggregate_note(shown.len(), files.len(), &skipped);
         assert!(
             note.starts_with("[read: showed 100 of 300 files; 200 skipped (over 100 KiB total): "),
             "{note}"

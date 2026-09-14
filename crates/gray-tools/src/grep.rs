@@ -7,7 +7,6 @@ use std::process::Stdio;
 use async_trait::async_trait;
 use gray_core::agent::{ToolContext, ToolOutput};
 use gray_core::message::ToolDef;
-use memchr::memmem;
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
@@ -16,9 +15,6 @@ use crate::{MAX_BYTES, Tool, fail, finish, get_opt_bool, get_opt_u64, get_str, r
 
 const DEFAULT_LIMIT: usize = 100;
 const GREP_MAX_LINE_LENGTH: usize = 500;
-
-pub const GREP_SNIPPET: &str = "Search file contents for patterns (respects .gitignore)";
-pub const GREP_GUIDELINES: &[&str] = &[];
 
 /// Search file contents with ripgrep. Respects .gitignore.
 pub struct GrepTool;
@@ -171,7 +167,7 @@ impl GrepTool {
     }
 }
 
-/// Shared match assembly for the `--vimgrep` and in-process lanes:
+/// Match assembly for the `--vimgrep` match-only fast path:
 /// `rel:line: text` + limit/truncation notices. Identical output or the
 /// lane doesn't ship (see `fast_path_parity` test).
 #[allow(clippy::too_many_arguments)]
@@ -223,127 +219,6 @@ fn assemble_matches(
     }
     append_notices(&mut output, &notices);
     finish(output)
-}
-
-/// In-process literal lane: no `rg` spawn, early stop without
-/// kill/wait/reap. Narrow by design: `literal:true + context:0`, no glob,
-/// case-sensitive, small limit. Anything fancier (glob, folding, regex,
-/// full-tree scans) stays on `rg`, whose semantics this lane must not
-/// reimplement. Walk honors ignore files via the `ignore` crate (the same
-/// library `rg` itself uses: `--hidden` == `hidden(false)`, gitignore only
-/// inside repos). Binary files (NUL in the first 8 KiB) and files over
-/// ~50 KiB are skipped back to `rg`. Output goes through
-/// [`assemble_matches`]: byte-identical contract or the lane doesn't ship.
-/// The blocking scan runs under `spawn_blocking`; cancel is honored
-/// between files.
-async fn execute_in_process(
-    ctx: &ToolContext,
-    pattern: &str,
-    search_path: &Path,
-    is_dir: bool,
-    effective_limit: usize,
-) -> Option<ToolOutput> {
-    use std::io::Read as _;
-    if pattern.is_empty() {
-        return None; // empty pattern: rg semantics, not worth replicating.
-    }
-    let needle: Vec<u8> = pattern.as_bytes().to_vec();
-    let files: Vec<std::path::PathBuf> = if !is_dir {
-        vec![search_path.to_path_buf()]
-    } else {
-        let root = search_path.to_path_buf();
-        let walker = ignore::WalkBuilder::new(&root)
-            .hidden(false)
-            .require_git(true)
-            .build();
-        let mut out = Vec::new();
-        for entry in walker {
-            if ctx.cancel.is_cancelled() {
-                break;
-            }
-            let Ok(entry) = entry else { continue };
-            if !entry.file_type().is_some_and(|t| t.is_file()) {
-                continue;
-            }
-            out.push(entry.path().to_path_buf());
-        }
-        out
-    };
-    let cancel = ctx.cancel.clone();
-    let hits = tokio::task::spawn_blocking(move || {
-        let mut hits: Vec<(String, usize, String)> = Vec::new();
-        'files: for path in files {
-            if cancel.is_cancelled() || hits.len() >= effective_limit {
-                break;
-            }
-            let mut f = match std::fs::File::open(&path) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            // Binary sniff: NUL in the first 8 KiB → skip (rg parity).
-            let mut head = [0u8; 8192];
-            let n = f.read(&mut head).unwrap_or(0);
-            if head[..n].contains(&0) {
-                continue;
-            }
-            // Whole-file memmem: match offsets first (SIMD), then map only
-            // matched offsets to line numbers. Unmatched lines are never
-            // materialized. `take` caps the read at ~50 KiB: bigger files
-            // go back to `rg`.
-            let mut content: Vec<u8> = head[..n].to_vec();
-            if f.take(50 * 1024).read_to_end(&mut content).is_err() {
-                continue;
-            }
-            if content.len() > 50 * 1024 + 8192 {
-                continue;
-            }
-            // Newline index: rank(line) = count of `\\n` before offset + 1.
-            let mut newlines: Vec<usize> = Vec::new();
-            for (i, b) in content.iter().enumerate() {
-                if *b == b'\n' {
-                    newlines.push(i);
-                }
-            }
-            for m in memmem::find_iter(&content, needle.as_slice()) {
-                if hits.len() >= effective_limit {
-                    break 'files;
-                }
-                if cancel.is_cancelled() {
-                    break 'files;
-                }
-                let line_no = newlines.partition_point(|&n| n < m) + 1;
-                let start = if line_no >= 2 {
-                    newlines[line_no - 2] + 1
-                } else {
-                    0
-                };
-                let end = newlines.get(line_no - 1).copied().unwrap_or(content.len());
-                let mut line = &content[start..end.min(content.len()).max(start)];
-                while line.last() == Some(&b'\n') {
-                    line = &line[..line.len() - 1];
-                }
-                hits.push((
-                    path.to_string_lossy().to_string(),
-                    line_no,
-                    String::from_utf8_lossy(line).to_string(),
-                ));
-            }
-        }
-        hits
-    })
-    .await
-    .unwrap_or_default();
-    if ctx.cancel.is_cancelled() {
-        return Some(finish("cancelled by user".to_string()));
-    }
-    let match_limit_reached = hits.len() >= effective_limit;
-    Some(assemble_matches(
-        search_path,
-        is_dir,
-        &hits,
-        effective_limit,
-        match_limit_reached,
-    ))
 }
 
 fn truncate_line(line: &str) -> (String, bool) {
@@ -398,14 +273,6 @@ impl Tool for GrepTool {
         )
     }
 
-    fn prompt_snippet(&self) -> Option<&str> {
-        Some(GREP_SNIPPET)
-    }
-
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        Some(GREP_GUIDELINES)
-    }
-
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
         let pattern = match get_str(&args, "pattern") {
             Ok(p) => p,
@@ -445,24 +312,6 @@ impl Tool for GrepTool {
             Ok(m) => m.is_dir(),
             Err(e) => return fail(format!("Path not found: {}: {e}", search_path.display())),
         };
-
-        // In-process literal lane: `literal:true + context:0` skips the
-        // `rg` spawn entirely (~3ms exec tax). Regex/ignoreCase searches
-        // keep the `--vimgrep` fast path below.
-        // Small-limit plain-literal lookups go in-process (early stop
-        // beats spawn+full-scan); full-tree scans and anything with glob
-        // or folding stay on `rg`, whose semantics this lane won't mirror.
-        const IN_PROCESS_LIMIT: usize = 10;
-        if literal
-            && context == 0
-            && glob.is_none()
-            && !ignore_case
-            && effective_limit <= IN_PROCESS_LIMIT
-            && let Some(output) =
-                execute_in_process(ctx, &pattern, &search_path, is_dir, effective_limit).await
-        {
-            return output;
-        }
 
         // Fast path (match-only searches): plain `--vimgrep` output parses
         // with one split per line instead of one JSON document per match.

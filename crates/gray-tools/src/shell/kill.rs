@@ -6,8 +6,6 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use super::contract::KillMethod;
-
 /// Single raw-signal choke point. Probes with sig 0 never count.
 /// SAFETY: `kill(2)` is async-signal-safe; targets are validated by callers.
 #[cfg(unix)]
@@ -42,7 +40,7 @@ fn gone(target: i32) -> bool {
 
 /// Shared SIGTERM, 100 ms poll, SIGKILL escalation. `sig_target` is the
 /// `kill(2)` first arg (`-pgid` for our groups).
-async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<KillMethod, String> {
+async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<(), String> {
     // Windows has no SIGTERM/SIGKILL escalation: refuse instead of signalling.
     #[cfg(not(unix))]
     {
@@ -57,13 +55,13 @@ async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<KillMe
         if unsafe { signal_pid(sig_target, libc::SIGTERM) } != 0 {
             let e = io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(KillMethod::AlreadyExited);
+                return Ok(());
             }
             return Err(format!("SIGTERM to {what} failed: {e}"));
         }
         loop {
             if gone(sig_target) {
-                return Ok(KillMethod::TermAnswered(t0.elapsed()));
+                return Ok(());
             }
             if t0.elapsed() >= grace {
                 break;
@@ -71,23 +69,23 @@ async fn escalate(sig_target: i32, what: &str, grace: Duration) -> Result<KillMe
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         if gone(sig_target) {
-            return Ok(KillMethod::TermAnswered(t0.elapsed()));
+            return Ok(());
         }
         if unsafe { signal_pid(sig_target, libc::SIGKILL) } != 0 {
             let e = io::Error::last_os_error();
             if e.raw_os_error() == Some(libc::ESRCH) {
-                return Ok(KillMethod::TermAnswered(t0.elapsed()));
+                return Ok(());
             }
             return Err(format!("SIGKILL to {what} failed: {e}"));
         }
-        Ok(KillMethod::TermIgnoredThenKill(grace))
+        Ok(())
     }
 }
 
 /// SIGTERM a group we created, SIGKILL after `grace` when ignored.
 /// Refuses degenerate groups and our own process/group before any syscall
-/// (never broadcast). Returns `Err`, never a method, on refusal.
-pub async fn term_then_kill(pgid: i32, grace: Duration) -> Result<KillMethod, String> {
+/// (never broadcast). Returns `Err` on refusal.
+pub async fn term_then_kill(pgid: i32, grace: Duration) -> Result<(), String> {
     if pgid <= 1 {
         return Err(format!(
             "refusing to signal process group {pgid}: never broadcast"
@@ -152,21 +150,14 @@ mod tests {
     #[tokio::test]
     async fn group_kill_kills_tree() {
         // sh parent + sleep child in one group: SIGTERM may or may not be
-        // answered in time (load-dependent), so accept either method — the
-        // invariant is the whole tree dies by SIGTERM or SIGKILL.
+        // answered in time (load-dependent), so accept either escalation
+        // path — the invariant is the whole tree dies by SIGTERM or SIGKILL.
         let spawned = spawn("sleep 30", &std::env::temp_dir()).expect("spawn");
         let pgid = spawned.pgid;
         let mut child = spawned.child;
-        let method = term_then_kill(pgid, Duration::from_secs(2))
+        term_then_kill(pgid, Duration::from_secs(2))
             .await
             .expect("group kill ok");
-        assert!(
-            matches!(
-                method,
-                KillMethod::TermAnswered(_) | KillMethod::TermIgnoredThenKill(_)
-            ),
-            "group kill resolves, got {method:?}"
-        );
         let st = child.wait().await.expect("reap");
         assert!(
             st.signal() == Some(libc::SIGTERM) || st.signal() == Some(libc::SIGKILL),
@@ -199,13 +190,9 @@ mod tests {
             .expect("read ok");
         assert_eq!(ready.as_deref(), Some("ready"));
         let reaper = tokio::spawn(async move { child.wait().await });
-        let m = term_then_kill(pgid, Duration::from_millis(300))
+        term_then_kill(pgid, Duration::from_millis(300))
             .await
             .expect("escalates");
-        assert!(
-            matches!(m, KillMethod::TermIgnoredThenKill(_)),
-            "expected escalation"
-        );
         let st = tokio::time::timeout(Duration::from_secs(3), reaper)
             .await
             .expect("reaped")

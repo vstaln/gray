@@ -101,17 +101,6 @@ pub trait Tool: Send + Sync {
     /// Static definition surfaced to the model (name, description, schema).
     fn def(&self) -> crate::message::ToolDef;
 
-    /// One-line snippet rendered in the system prompt's "Available tools" list.
-    /// `None` hides the tool from that list (mirrors pi's `toolSnippets[name]` filter).
-    fn prompt_snippet(&self) -> Option<&str> {
-        None
-    }
-
-    /// Guideline bullets contributed to the system prompt when this tool is active.
-    fn prompt_guidelines(&self) -> Option<&'static [&'static str]> {
-        None
-    }
-
     /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
     /// NOTE: an earlier `is_concurrency_safe` hook was
     /// deleted — tools run sequentially and nothing read it. If a parallel

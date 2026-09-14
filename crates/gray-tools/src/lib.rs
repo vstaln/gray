@@ -117,29 +117,6 @@ impl Registry {
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.iter().map(|t| t.def().name.clone()).collect()
     }
-
-    /// One-line snippets keyed by tool name — only tools with `Some` snippet are included
-    /// (mirrors pi's `visibleTools = tools.filter(name => !!toolSnippets[name])`).
-    pub fn prompt_snippets(&self) -> std::collections::HashMap<String, String> {
-        let mut m = std::collections::HashMap::new();
-        for tool in &self.tools {
-            if let Some(snippet) = tool.prompt_snippet() {
-                m.insert(tool.def().name.clone(), snippet.to_string());
-            }
-        }
-        m
-    }
-
-    /// Collected guideline bullets from all registered tools (in registration order, deduped by caller).
-    pub fn prompt_guidelines(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        for tool in &self.tools {
-            if let Some(guidelines) = tool.prompt_guidelines() {
-                out.extend(guidelines.iter().map(|g| g.to_string()));
-            }
-        }
-        out
-    }
 }
 
 /// Legacy arg-name aliases applied before schema lookup (old -> canonical).
