@@ -134,8 +134,22 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
         if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx] {
             if content.len() > 120 {
                 let lines = content.lines().count();
-                *content =
-                    format!("Old command output: ({lines} lines omitted; full output in log)");
+                // Keep the header's `log <path>` so the elided output stays
+                // recoverable (`tail`/`grep` the file) instead of a dead end.
+                let log_path = content
+                    .lines()
+                    .next()
+                    .and_then(|h| h.split_once(" · log "))
+                    .map(|(_, p)| p.trim())
+                    .filter(|p| !p.is_empty());
+                *content = match log_path {
+                    Some(p) => {
+                        format!(
+                            "Old command output: ({lines} lines omitted; full output logged at {p})"
+                        )
+                    }
+                    None => format!("Old command output: ({lines} lines omitted)"),
+                };
                 pruned += 1;
             }
         }
@@ -979,7 +993,7 @@ mod tests {
             };
             assert_eq!(id, &format!("call_{i}"));
             assert!(content.starts_with("Old command output:"));
-            assert!(content.contains("lines omitted; full output in log"));
+            assert!(content.contains("lines omitted"));
         }
 
         // Last 3 should be untouched
@@ -990,5 +1004,39 @@ mod tests {
             assert_eq!(id, &format!("call_{i}"));
             assert!(content.starts_with(&format!("Output line 1 for tool {i}")));
         }
+    }
+
+    #[test]
+    fn prune_keeps_log_path_from_header() {
+        let header = "exit 1 · 0.3s · 40 lines · log ~/.gray/shell/s1/bash-abc.log";
+        let mut msgs: Vec<Message> = (0..2)
+            .map(|i| Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    id: format!("call_{i}"),
+                    content: format!(
+                        "{header}\n<untrusted-output>\nfail {i}\n{}\n</untrusted-output>",
+                        "x".repeat(120)
+                    ),
+                    is_error: false,
+                }],
+            })
+            .collect();
+
+        let pruned = prune_old_tool_observations(&mut msgs, 1);
+        assert_eq!(pruned, 1);
+
+        let ContentBlock::ToolResult { content, .. } = &msgs[0].content[0] else {
+            panic!()
+        };
+        assert!(
+            content.contains("~/.gray/shell/s1/bash-abc.log"),
+            "log path lost: {content}"
+        );
+        // The still-recent second observation is untouched.
+        let ContentBlock::ToolResult { content, .. } = &msgs[1].content[0] else {
+            panic!()
+        };
+        assert!(content.starts_with(header));
     }
 }
