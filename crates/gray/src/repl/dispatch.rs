@@ -62,12 +62,14 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::Help => {
+            // Build the registry lines once; the branches differ only in how
+            // they render (scrollback dim block vs stdout).
+            let mut out = String::new();
+            for d in REGISTRY {
+                out.push_str(&commands::format_help_line(d));
+                out.push('\n');
+            }
             if let Some((shared, _)) = tui {
-                let mut out = String::new();
-                for d in REGISTRY {
-                    out.push_str(&commands::format_help_line(d));
-                    out.push('\n');
-                }
                 if let Some(a) = agent.as_ref() {
                     for (n, d) in plugin_help_entries(a.hooks()) {
                         out.push_str(&format!("  /{n:<10} {d}\n"));
@@ -78,9 +80,7 @@ pub(crate) async fn dispatch_command(
                 t.ensure_gap(1);
             } else {
                 println!("{}", crate::rule("commands"));
-                for d in REGISTRY {
-                    println!("{}", commands::format_help_line(d));
-                }
+                print!("{out}");
                 if let Some(a) = agent.as_ref() {
                     for (n, d) in plugin_help_entries(a.hooks()) {
                         println!("  /{n:<8} {d}");
@@ -112,10 +112,7 @@ pub(crate) async fn dispatch_command(
             if let Some(root) = default_root() {
                 let store = JsonlSessionStore::new(root);
                 let session_id = SessionId::generate();
-                let timestamp = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
+                let timestamp = crate::print::now_millis();
                 let meta = SessionMeta::new(
                     session_id.clone(),
                     timestamp,
@@ -226,30 +223,13 @@ pub(crate) async fn dispatch_command(
             let bg = tui
                 .as_ref()
                 .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-            let result = with_modal(
-                tui.as_ref().map(|(s, _)| s),
-                crate::setup::run_provider_menu(config, bg.as_ref()),
-            )
-            .await;
+            let result = with_modal_sync(tui.as_ref().map(|(s, _)| s), || {
+                crate::setup::run_connect_modal(config, bg.as_ref())
+            });
             match result {
                 Ok(true) => {
                     *unconfigured = false;
-                    if let Some((shared, _)) = tui {
-                        let mut t = shared.lock().expect("tui lock");
-                        if let Some(m) = &config.model {
-                            t.set_model(m.clone());
-                        }
-                        let model_str = config.model.as_deref().unwrap_or("default");
-                        let catalog = crate::setup::load_catalog().ok();
-                        let prov_name = catalog
-                            .as_ref()
-                            .and_then(|c| c.values().find(|p| p.base_url == config.base_url))
-                            .map(|p| p.name.as_str())
-                            .unwrap_or("provider");
-                        t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
-                        t.ensure_gap(1);
-                        let _ = t.draw();
-                    }
+                    push_provider_connected(config, tui);
                     reload_agent(
                         &mut *agent,
                         config,

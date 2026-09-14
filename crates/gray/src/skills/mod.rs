@@ -14,8 +14,6 @@ use std::path::{Path, PathBuf};
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-const MAX_NAME_LENGTH: usize = 64;
-const MAX_DESCRIPTION_LENGTH: usize = 1024;
 const IGNORE_FILE_NAMES: &[&str] = &[".gitignore", ".ignore", ".fdignore"];
 
 // ---------------------------------------------------------------------------
@@ -36,26 +34,9 @@ pub struct Skill {
     pub args: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct Diagnostic {
-    pub kind: String, // "warning" | "collision"
-    pub message: String,
-    pub path: PathBuf,
-    pub collision: Option<CollisionInfo>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CollisionInfo {
-    pub resource_type: String,
-    pub name: String,
-    pub winner_path: PathBuf,
-    pub loser_path: PathBuf,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct LoadSkillsResult {
     pub skills: Vec<Skill>,
-    pub diagnostics: Vec<Diagnostic>,
 }
 
 // ---------------------------------------------------------------------------
@@ -407,34 +388,17 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
 
     let mut skill_map: HashMap<String, Skill> = HashMap::new();
     let mut real_path_set: HashSet<PathBuf> = HashSet::new();
-    let mut all_diagnostics: Vec<Diagnostic> = Vec::new();
-    let mut collision_diagnostics: Vec<Diagnostic> = Vec::new();
 
-    // Inline helper to avoid capturing `all_diagnostics` in a closure (borrowck).
+    // Inline helper to avoid capturing the maps in a closure (borrowck).
     let do_add = |result: LoadSkillsResult,
                   skill_map: &mut HashMap<String, Skill>,
-                  real_path_set: &mut HashSet<PathBuf>,
-                  all_diagnostics: &mut Vec<Diagnostic>,
-                  collision_diagnostics: &mut Vec<Diagnostic>| {
-        all_diagnostics.extend(result.diagnostics);
+                  real_path_set: &mut HashSet<PathBuf>| {
         for skill in result.skills {
             let real = canonicalize_path(&skill.file_path);
             if real_path_set.contains(&real) {
                 continue;
             }
-            if let Some(existing) = skill_map.get(&skill.name) {
-                collision_diagnostics.push(Diagnostic {
-                    kind: "collision".to_string(),
-                    message: format!("name \"{}\" collision", skill.name),
-                    path: skill.file_path.clone(),
-                    collision: Some(CollisionInfo {
-                        resource_type: "skill".to_string(),
-                        name: skill.name.clone(),
-                        winner_path: existing.file_path.clone(),
-                        loser_path: skill.file_path.clone(),
-                    }),
-                });
-            } else {
+            if skill_map.get(&skill.name).is_none() {
                 real_path_set.insert(real);
                 skill_map.insert(skill.name.clone(), skill);
             }
@@ -447,8 +411,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
         load_skills_from_dir(&global_skills, "user"),
         &mut skill_map,
         &mut real_path_set,
-        &mut all_diagnostics,
-        &mut collision_diagnostics,
     );
     // P2-2: pi installs land in `<agent_dir>/plugins/pi/<pkg>/`.
     let pi_plugins = resolved_agent_dir.join("plugins").join("pi");
@@ -457,8 +419,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
             load_skills_from_dir(&pi_plugins, "user"),
             &mut skill_map,
             &mut real_path_set,
-            &mut all_diagnostics,
-            &mut collision_diagnostics,
         );
     }
     if let Some(home) = resolve_home() {
@@ -473,8 +433,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
                 load_skills_from_dir(&opencode_skills, "user"),
                 &mut skill_map,
                 &mut real_path_set,
-                &mut all_diagnostics,
-                &mut collision_diagnostics,
             );
         }
         if let Ok(entries) = fs::read_dir(&opencode_dir) {
@@ -488,8 +446,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
                         load_skills_from_dir(&sub_skills, "user"),
                         &mut skill_map,
                         &mut real_path_set,
-                        &mut all_diagnostics,
-                        &mut collision_diagnostics,
                     );
                 }
             }
@@ -502,8 +458,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
                 load_skills_from_dir(&agents_skills, "user"),
                 &mut skill_map,
                 &mut real_path_set,
-                &mut all_diagnostics,
-                &mut collision_diagnostics,
             );
         }
         let claude_skills = home.join(".claude").join("skills");
@@ -512,8 +466,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
                 load_skills_from_dir(&claude_skills, "user"),
                 &mut skill_map,
                 &mut real_path_set,
-                &mut all_diagnostics,
-                &mut collision_diagnostics,
             );
         }
 
@@ -523,8 +475,6 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
                 load_skills_from_dir(&pi_skills, "user"),
                 &mut skill_map,
                 &mut real_path_set,
-                &mut all_diagnostics,
-                &mut collision_diagnostics,
             );
         }
     }
@@ -558,19 +508,13 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
                     load_skills_from_dir(&d, "project"),
                     &mut skill_map,
                     &mut real_path_set,
-                    &mut all_diagnostics,
-                    &mut collision_diagnostics,
                 );
             }
         }
     }
     let mut skills: Vec<Skill> = skill_map.into_values().collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
-    all_diagnostics.extend(collision_diagnostics);
-    LoadSkillsResult {
-        skills,
-        diagnostics: all_diagnostics,
-    }
+    LoadSkillsResult { skills }
 }
 
 /// Discover skills for `cwd` with defaults (global + project).

@@ -15,18 +15,12 @@ pub(crate) struct TextElement {
     pub(crate) range: Range<usize>,
 }
 
-#[derive(Debug, Clone)]
-struct WrapCache {
-    lines: Vec<Range<usize>>,
-}
-
 #[derive(Debug)]
 pub(crate) struct TextArea {
     text: String,
     cursor: usize, // byte index
     elements: Vec<TextElement>,
     preferred_col: Option<usize>,
-    wrap_cache: Option<WrapCache>,
 }
 
 #[allow(dead_code)]
@@ -37,7 +31,6 @@ impl TextArea {
             cursor: 0,
             elements: Vec::new(),
             preferred_col: None,
-            wrap_cache: None,
         }
     }
     pub(crate) fn text(&self) -> &str {
@@ -55,7 +48,6 @@ impl TextArea {
         self.cursor = self.clamp_to_boundary(self.cursor);
         self.elements.clear();
         self.preferred_col = None;
-        self.rebuild_wrap_cache();
     }
     pub(crate) fn clamp_to_boundary(&self, pos: usize) -> usize {
         let mut p = pos.min(self.text.len());
@@ -63,9 +55,6 @@ impl TextArea {
             p += 1;
         }
         p
-    }
-    pub(crate) fn is_char_boundary(&self, pos: usize) -> bool {
-        self.text.is_char_boundary(pos)
     }
     pub(crate) fn next_boundary(&self, pos: usize) -> usize {
         // next char boundary, but jump over atomic elements
@@ -110,17 +99,13 @@ impl TextArea {
         n
     }
     pub(crate) fn insert_str(&mut self, s: &str) {
-        self.insert_at(self.cursor, s);
-    }
-    pub(crate) fn insert_at(&mut self, pos: usize, s: &str) {
-        let pos = self.clamp_to_boundary(pos.min(self.text.len()));
+        let pos = self.clamp_to_boundary(self.cursor.min(self.text.len()));
         self.text.insert_str(pos, s);
         if pos <= self.cursor {
             self.cursor += s.len();
         }
         self.shift_elements(pos, 0, s.len());
         self.preferred_col = None;
-        self.rebuild_wrap_cache();
     }
     pub(crate) fn insert_element(&mut self, placeholder: &str) {
         let start = self.cursor;
@@ -130,7 +115,6 @@ impl TextArea {
         self.elements.sort_by_key(|e| e.range.start);
         // insert_str already invalidated, but ensure element range accounted
         self.preferred_col = None;
-        self.rebuild_wrap_cache();
     }
     pub(crate) fn shift_elements(&mut self, pos: usize, removed: usize, inserted: usize) {
         let diff = inserted as isize - removed as isize;
@@ -142,30 +126,18 @@ impl TextArea {
             }
         }
     }
-    pub(crate) fn delete_backward(&mut self, n: usize) {
-        if n == 0 || self.cursor == 0 {
+    pub(crate) fn delete_backward(&mut self) {
+        if self.cursor == 0 {
             return;
         }
-        let mut target = self.cursor;
-        for _ in 0..n {
-            target = self.prev_boundary(target);
-            if target == 0 {
-                break;
-            }
-        }
+        let target = self.prev_boundary(self.cursor);
         self.replace_range(target..self.cursor, "");
     }
-    pub(crate) fn delete_forward(&mut self, n: usize) {
-        if n == 0 || self.cursor >= self.text.len() {
+    pub(crate) fn delete_forward(&mut self) {
+        if self.cursor >= self.text.len() {
             return;
         }
-        let mut target = self.cursor;
-        for _ in 0..n {
-            target = self.next_boundary(target);
-            if target >= self.text.len() {
-                break;
-            }
-        }
+        let target = self.next_boundary(self.cursor);
         self.replace_range(self.cursor..target, "");
     }
     pub(crate) fn prev_word_boundary(&self, pos: usize) -> usize {
@@ -263,7 +235,6 @@ impl TextArea {
         self.cursor = self.clamp_to_boundary(self.cursor);
         self.shift_elements(start, removed, s.len());
         self.preferred_col = None;
-        self.rebuild_wrap_cache();
     }
     pub(crate) fn set_cursor(&mut self, pos: usize) {
         self.cursor = self.clamp_to_boundary(pos.min(self.text.len()));
@@ -284,7 +255,7 @@ impl TextArea {
         self.cursor = self.next_boundary(self.cursor);
         self.preferred_col = None;
     }
-    // --- WrapCache + preferred_col helpers ---
+    // --- vertical movement helpers (logical lines) ---
     fn display_width_of_range(&self, start: usize, end: usize) -> usize {
         if start >= self.text.len() || end > self.text.len() || start >= end {
             return 0;
@@ -293,16 +264,6 @@ impl TextArea {
             .chars()
             .map(crate::text_width::char_width)
             .sum()
-    }
-    fn current_display_col(&self) -> usize {
-        let bol = self.text[..self.cursor]
-            .rfind('\n')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        self.display_width_of_range(bol, self.cursor)
-    }
-    fn col_for_cursor(&self) -> usize {
-        self.current_display_col()
     }
     fn move_to_display_col_on_line(
         &mut self,
@@ -354,72 +315,7 @@ impl TextArea {
         }
         self.cursor = new_pos.min(self.text.len());
     }
-    fn wrapped_line_index_by_start(lines: &[Range<usize>], cursor: usize) -> Option<usize> {
-        for (i, r) in lines.iter().enumerate() {
-            if cursor >= r.start && cursor < r.end {
-                return Some(i);
-            }
-            // cursor at exact end of a soft-wrapped line is start of next; treat as next
-            if cursor == r.end && i + 1 < lines.len() && lines[i + 1].start == r.end {
-                // ambiguous: if cursor equals boundary between soft wraps, choose next line
-                // check if next line starts at cursor
-                if lines[i + 1].start == cursor {
-                    return Some(i + 1);
-                }
-                return Some(i);
-            }
-        }
-        // cursor at text end belongs to last line
-        if let Some((last_idx, last)) = lines.iter().enumerate().next_back()
-            && cursor >= last.start
-            && cursor <= last.end
-        {
-            return Some(last_idx);
-        }
-        None
-    }
-    fn compute_logical_lines(&self) -> Vec<Range<usize>> {
-        let mut lines = Vec::new();
-        let mut start = 0usize;
-        for (idx, ch) in self.text.char_indices() {
-            if ch == '\n' {
-                lines.push(start..idx);
-                start = idx + 1;
-            }
-        }
-        lines.push(start..self.text.len());
-        lines
-    }
-    fn rebuild_wrap_cache(&mut self) {
-        // logical lines as WrapCache; upgrade to word-wrap at terminal width when needed
-        // width 0 means logical-only, no visual wrapping
-        let lines = self.compute_logical_lines();
-        self.wrap_cache = Some(WrapCache { lines });
-    }
     pub(crate) fn move_up(&mut self) {
-        // WrapCache-aware: try visual lines first if cache present
-        if let Some(cache) = self.wrap_cache.clone() {
-            let lines = &cache.lines;
-            if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor) {
-                let cur_range = &lines[idx];
-                let target_col = self
-                    .preferred_col
-                    .unwrap_or_else(|| self.display_width_of_range(cur_range.start, self.cursor));
-                if idx > 0 {
-                    if self.preferred_col.is_none() {
-                        self.preferred_col = Some(target_col);
-                    }
-                    let prev = &lines[idx - 1];
-                    self.move_to_display_col_on_line(prev.start, prev.end, target_col);
-                    return;
-                } else {
-                    self.cursor = 0;
-                    self.preferred_col = None;
-                    return;
-                }
-            }
-        }
-        // Fallback logical line navigation (when cache missing or not covering cursor)
         let bol = self.text[..self.cursor]
             .rfind('\n')
             .map(|i| i + 1)
@@ -448,28 +344,7 @@ impl TextArea {
         // keep preferred_col for sticky column
     }
     pub(crate) fn move_down(&mut self) {
-        if let Some(cache) = self.wrap_cache.clone() {
-            let lines = &cache.lines;
-            if let Some(idx) = Self::wrapped_line_index_by_start(lines, self.cursor) {
-                let cur_range = &lines[idx];
-                let target_col = self
-                    .preferred_col
-                    .unwrap_or_else(|| self.display_width_of_range(cur_range.start, self.cursor));
-                if idx + 1 < lines.len() {
-                    if self.preferred_col.is_none() {
-                        self.preferred_col = Some(target_col);
-                    }
-                    let next = &lines[idx + 1];
-                    self.move_to_display_col_on_line(next.start, next.end, target_col);
-                    return;
-                } else {
-                    self.cursor = self.text.len();
-                    self.preferred_col = None;
-                    return;
-                }
-            }
-        }
-        // Fallback logical
+        // Logical-line navigation
         let eol = self.text[self.cursor..]
             .find('\n')
             .map(|i| i + self.cursor)

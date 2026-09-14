@@ -119,10 +119,6 @@ pub(crate) fn pill_token_suffix(usage: Option<gray_core::event::Usage>) -> Strin
 /// compaction only touches the status dock, never the viewport, transcript,
 /// or textarea.
 pub(crate) const COMPACTION_HEADER: &str = "Compacting context";
-/// Codex details line (`Making room to continue.`): kept for parity/docs.
-/// Gray's single-label status dock renders the header only.
-#[allow(dead_code)]
-pub(crate) const COMPACTION_DETAILS: &str = "Making room to continue.";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveCompaction {
@@ -373,26 +369,9 @@ impl Tui {
         let _ = self.draw();
     }
 
-    /// Moves in-flight (painted-nowhere / stored-nowhere) buffers into
-    /// `history_entries` so an immediately-following clear + re-emit cannot
-    /// drop them. Called at the top of [`Self::reflow_on_resize`], before the
-    /// scrollback purge.
-    ///
-    /// Two buffers qualify:
-    /// - `pending`: the live thinking tail [`Tui::stream_thinking`] has not
-    ///   flushed yet. Drained via the thinking path so it keeps its italic
-    ///   muted style and its share of the `Thought for` timing.
-    /// - the unfrozen markdown renderer: frozen rows are already committed
-    ///   through [`Tui::stream_text`]; only the not-yet-frozen tail is
-    ///   forced out here. The renderer only freezes complete block rows, so
-    ///   an incremental reflow may re-close an open block (e.g. repeat a
-    ///   table header) once the turn's real close arrives — a cosmetic
-    ///   duplicate row, never lost text.
-    pub(crate) fn drain_inflight_for_reflow(&mut self) {
-        if self.thinking && !self.pending.is_empty() {
-            let rest = std::mem::take(&mut self.pending);
-            self.push_line_styled(rest, crate::composer::transcript::thinking_style());
-        }
+    /// Finishes the live markdown renderer and commits every row past the
+    /// last committed offset. Shared by the reflow drain and `flush_markdown`.
+    fn commit_markdown_tail(&mut self) {
         let output = std::mem::replace(
             &mut self.markdown_renderer,
             gray_markdown::StreamingMarkdownRenderer::new(
@@ -414,6 +393,47 @@ impl Tui {
             self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
         }
         self.committed_markdown_lines = 0;
+    }
+
+    /// `insert_before` + `Paragraph` render for one block of rows; `bg`
+    /// paints the card background (user/tool cards), `None` leaves rows
+    /// unstyled. One home for the scrollback insert ceremony.
+    pub(crate) fn insert_paragraph(
+        &mut self,
+        lines: &[Line<'static>],
+        bg: Option<ratatui::style::Color>,
+    ) {
+        let height = lines.len() as u16;
+        let _ = self.terminal.insert_before(height, |buf| {
+            let mut p = Paragraph::new(lines.to_vec());
+            if let Some(bg) = bg {
+                p = p.block(Block::default().style(Style::default().bg(bg)));
+            }
+            p.render(buf.area, buf);
+        });
+    }
+
+    /// Moves in-flight (painted-nowhere / stored-nowhere) buffers into
+    /// `history_entries` so an immediately-following clear + re-emit cannot
+    /// drop them. Called at the top of [`Self::reflow_on_resize`], before the
+    /// scrollback purge.
+    ///
+    /// Two buffers qualify:
+    /// - `pending`: the live thinking tail [`Tui::stream_thinking`] has not
+    ///   flushed yet. Drained via the thinking path so it keeps its italic
+    ///   muted style and its share of the `Thought for` timing.
+    /// - the unfrozen markdown renderer: frozen rows are already committed
+    ///   through [`Tui::stream_text`]; only the not-yet-frozen tail is
+    ///   forced out here. The renderer only freezes complete block rows, so
+    ///   an incremental reflow may re-close an open block (e.g. repeat a
+    ///   table header) once the turn's real close arrives — a cosmetic
+    ///   duplicate row, never lost text.
+    pub(crate) fn drain_inflight_for_reflow(&mut self) {
+        if self.thinking && !self.pending.is_empty() {
+            let rest = std::mem::take(&mut self.pending);
+            self.push_line_styled(rest, crate::composer::transcript::thinking_style());
+        }
+        self.commit_markdown_tail();
     }
 
     /// Codex-style transcript reflow on terminal resize:
@@ -453,36 +473,19 @@ impl Tui {
             match entry {
                 TranscriptEntry::Welcome => {
                     let lines = build_welcome_lines(w);
-                    let th = lines.len() as u16;
-                    let _ = self.terminal.insert_before(th, |buf| {
-                        Paragraph::new(lines.clone()).render(buf.area, buf);
-                    });
+                    self.insert_paragraph(&lines, None);
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::UserPrompt(text, attached) => {
                     let lines =
                         crate::composer::transcript::format_user_prompt_lines(text, attached, w);
-                    let th = lines.len() as u16;
-                    let block = Block::default()
-                        .style(Style::default().bg(crate::theme::theme().surface_bg));
-                    let _ = self.terminal.insert_before(th, |buf| {
-                        Paragraph::new(lines.clone())
-                            .block(block)
-                            .render(buf.area, buf);
-                    });
+                    self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::ToolBox { header, body } => {
                     let lines =
                         crate::composer::transcript::format_tool_box_lines(header.clone(), body, w);
-                    let th = lines.len() as u16;
-                    let block = Block::default()
-                        .style(Style::default().bg(crate::theme::theme().surface_bg));
-                    let _ = self.terminal.insert_before(th, |buf| {
-                        Paragraph::new(lines.clone())
-                            .block(block)
-                            .render(buf.area, buf);
-                    });
+                    self.insert_paragraph(&lines, Some(crate::theme::theme().surface_bg));
                     new_transcript.extend(lines);
                 }
                 TranscriptEntry::StyledLines { lines, hyperlinks } => {
@@ -504,10 +507,7 @@ impl Tui {
                     if need_actual > 0 {
                         let blank: Vec<Line<'static>> =
                             (0..need_actual).map(|_| Line::from("")).collect();
-                        let th = need_actual as u16;
-                        let _ = self.terminal.insert_before(th, |buf| {
-                            Paragraph::new(blank.clone()).render(buf.area, buf);
-                        });
+                        self.insert_paragraph(&blank, None);
                         new_transcript.extend(blank);
                     }
                 }
@@ -677,20 +677,6 @@ impl Tui {
         Some(elapsed)
     }
 
-    /// Turn ended without a matching completion (cancel/error): drop the
-    /// compaction flag silently, no transcript line — Codex parity.
-    pub fn clear_compaction_silent(&mut self) {
-        if self.active_compaction.take().is_some() {
-            self.is_task_running = false;
-            self.status = None;
-            let _ = self.draw();
-        }
-    }
-
-    pub fn is_compacting(&self) -> bool {
-        self.active_compaction.is_some()
-    }
-
     pub fn compaction_elapsed(&self) -> Option<Duration> {
         self.active_compaction
             .as_ref()
@@ -710,24 +696,7 @@ impl Tui {
                 }
             }
         }
-        let output = std::mem::replace(
-            &mut self.markdown_renderer,
-            gray_markdown::StreamingMarkdownRenderer::new(
-                gray_markdown::gray_markdown_style(),
-                true,
-            ),
-        )
-        .finish_into_output(Some(gray_markdown::get_syntect()));
-        if output.lines.len() > self.committed_markdown_lines {
-            if self.committed_markdown_lines == 0 {
-                self.ensure_gap(1);
-            }
-            let remaining_lines: Vec<Line<'static>> =
-                output.lines[self.committed_markdown_lines..].to_vec();
-            let offset = self.committed_markdown_lines;
-            self.push_styled_lines_with_hyperlinks(remaining_lines, &output.hyperlinks, offset);
-        }
-        self.committed_markdown_lines = 0;
+        self.commit_markdown_tail();
     }
 
     pub fn end_turn(&mut self) {
@@ -973,7 +942,6 @@ mod compaction_tests {
     // Codex parity (`compaction_tests.rs`): compaction keeps its own clock,
     // survives follow-up status writes, only the matching id completes, and
     // the input box (textarea/viewport state) is never touched.
-    use super::*;
 
     // `Tui::new` needs a real TTY; these tests cover the pure clock/id
     // policy plus the status-guard contract via a minimal harness. The

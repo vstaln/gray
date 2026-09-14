@@ -139,50 +139,6 @@ fn parse_yaml_like(s: &str) -> SkillFrontmatter {
 }
 
 // ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-fn validate_name(name: &str) -> Vec<String> {
-    let mut errors = Vec::new();
-    if name.len() > MAX_NAME_LENGTH {
-        errors.push(format!(
-            "name exceeds {MAX_NAME_LENGTH} characters ({})",
-            name.len()
-        ));
-    }
-    let valid = name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-    if !valid {
-        errors.push(
-            "name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)"
-                .to_string(),
-        );
-    }
-    if name.starts_with('-') || name.ends_with('-') {
-        errors.push("name must not start or end with a hyphen".to_string());
-    }
-    if name.contains("--") {
-        errors.push("name must not contain consecutive hyphens".to_string());
-    }
-    errors
-}
-
-fn validate_description(desc: &Option<String>) -> Vec<String> {
-    let mut errors = Vec::new();
-    match desc {
-        None => errors.push("description is required".to_string()),
-        Some(d) if d.trim().is_empty() => errors.push("description is required".to_string()),
-        Some(d) if d.len() > MAX_DESCRIPTION_LENGTH => errors.push(format!(
-            "description exceeds {MAX_DESCRIPTION_LENGTH} characters ({})",
-            d.len()
-        )),
-        _ => {}
-    }
-    errors
-}
-
-// ---------------------------------------------------------------------------
 // Core loaders
 // ---------------------------------------------------------------------------
 
@@ -190,39 +146,17 @@ fn is_skill_md_file(path: &Path) -> bool {
     path.file_name().and_then(|n| n.to_str()) == Some("SKILL.md")
 }
 
-pub(crate) fn load_skill_from_file(
-    file_path: &Path,
-    source: &str,
-) -> (Option<Skill>, Vec<Diagnostic>) {
-    let mut diagnostics = Vec::new();
+pub(crate) fn load_skill_from_file(file_path: &Path, source: &str) -> Option<Skill> {
     let is_declared_skill = is_skill_md_file(file_path);
 
     let raw = match fs::read_to_string(file_path) {
         Ok(c) => c,
-        Err(e) => {
-            diagnostics.push(Diagnostic {
-                kind: "warning".to_string(),
-                message: e.to_string(),
-                path: file_path.to_path_buf(),
-                collision: None,
-            });
-            return (None, diagnostics);
-        }
+        Err(_) => return None,
     };
 
     let frontmatter = match parse_frontmatter(&raw) {
         Ok((fm, _)) => fm,
-        Err(e) => {
-            if is_declared_skill {
-                diagnostics.push(Diagnostic {
-                    kind: "warning".to_string(),
-                    message: e,
-                    path: file_path.to_path_buf(),
-                    collision: None,
-                });
-            }
-            return (None, diagnostics);
-        }
+        Err(_) => return None,
     };
 
     let has_description = frontmatter
@@ -232,7 +166,7 @@ pub(crate) fn load_skill_from_file(
         .unwrap_or(false);
 
     if !is_declared_skill && !has_description {
-        return (None, diagnostics);
+        return None;
     }
 
     let skill_dir = file_path.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -242,34 +176,16 @@ pub(crate) fn load_skill_from_file(
         .unwrap_or("")
         .to_string();
 
-    for err in validate_description(&frontmatter.description) {
-        diagnostics.push(Diagnostic {
-            kind: "warning".to_string(),
-            message: err,
-            path: file_path.to_path_buf(),
-            collision: None,
-        });
-    }
-
     let frontmatter_name = frontmatter.name.clone();
     let name = frontmatter_name.unwrap_or(parent_dir_name);
 
-    for err in validate_name(&name) {
-        diagnostics.push(Diagnostic {
-            kind: "warning".to_string(),
-            message: err,
-            path: file_path.to_path_buf(),
-            collision: None,
-        });
-    }
-
     if !has_description {
-        return (None, diagnostics);
+        return None;
     }
 
     let description = frontmatter.description.unwrap_or_default();
 
-    let skill = Skill {
+    Some(Skill {
         name,
         description,
         file_path: file_path.to_path_buf(),
@@ -277,8 +193,7 @@ pub(crate) fn load_skill_from_file(
         disable_model_invocation: frontmatter.disable_model_invocation,
         source: source.to_string(),
         args: frontmatter.args.clone(),
-    };
-    (Some(skill), diagnostics)
+    })
 }
 
 // internal walker
@@ -290,13 +205,9 @@ pub(crate) fn load_skills_from_dir_internal(
     root_dir: &Path,
 ) -> LoadSkillsResult {
     let mut skills = Vec::new();
-    let mut diagnostics = Vec::new();
 
     if !dir.exists() {
-        return LoadSkillsResult {
-            skills,
-            diagnostics,
-        };
+        return LoadSkillsResult { skills };
     }
 
     add_ignore_rules(matcher, dir, root_dir);
@@ -304,10 +215,7 @@ pub(crate) fn load_skills_from_dir_internal(
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => {
-            return LoadSkillsResult {
-                skills,
-                diagnostics,
-            };
+            return LoadSkillsResult { skills };
         }
     };
 
@@ -341,15 +249,10 @@ pub(crate) fn load_skills_from_dir_internal(
         if !is_file || matcher.ignores(&rel_posix) {
             continue;
         }
-        let (skill, mut diags) = load_skill_from_file(full_path, source);
-        if let Some(s) = skill {
+        if let Some(s) = load_skill_from_file(full_path, source) {
             skills.push(s);
         }
-        diagnostics.append(&mut diags);
-        return LoadSkillsResult {
-            skills,
-            diagnostics,
-        };
+        return LoadSkillsResult { skills };
     }
 
     // Phase 2: scan children
@@ -390,7 +293,6 @@ pub(crate) fn load_skills_from_dir_internal(
             let mut sub =
                 load_skills_from_dir_internal(&full_path, source, false, matcher, root_dir);
             skills.append(&mut sub.skills);
-            diagnostics.append(&mut sub.diagnostics);
             continue;
         }
 
@@ -398,17 +300,12 @@ pub(crate) fn load_skills_from_dir_internal(
             continue;
         }
 
-        let (skill, mut diags) = load_skill_from_file(&full_path, source);
-        if let Some(s) = skill {
+        if let Some(s) = load_skill_from_file(&full_path, source) {
             skills.push(s);
         }
-        diagnostics.append(&mut diags);
     }
 
-    LoadSkillsResult {
-        skills,
-        diagnostics,
-    }
+    LoadSkillsResult { skills }
 }
 
 #[cfg(test)]
@@ -432,7 +329,7 @@ mod tests {
             "---\nname: deploy\ndescription: test skill\nargs: env, force\n---\nBody"
         )
         .unwrap();
-        let (skill, _) = load_skill_from_file(f.path(), "path");
+        let skill = load_skill_from_file(f.path(), "path");
         let skill = skill.expect("loads");
         assert_eq!(skill.args, vec!["env".to_string(), "force".to_string()]);
     }
@@ -441,7 +338,7 @@ mod tests {
     fn frontmatter_without_args_means_no_args() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         writeln!(f, "---\ndescription: test skill\n---\nBody").unwrap();
-        let (skill, _) = load_skill_from_file(f.path(), "path");
+        let skill = load_skill_from_file(f.path(), "path");
         let skill = skill.expect("loads");
         assert!(skill.args.is_empty());
     }
@@ -456,26 +353,25 @@ mod tests {
             "---\nname: ponytail\ndescription: >\n  Forces the laziest solution\n  that actually works.\nargs: lite, full\n---\nBody"
         )
         .unwrap();
-        let (skill, diags) = load_skill_from_file(f.path(), "path");
+        let skill = load_skill_from_file(f.path(), "path");
         let skill = skill.expect("loads");
         assert_eq!(
             skill.description,
             "Forces the laziest solution that actually works."
         );
         assert_eq!(skill.args, vec!["lite".to_string(), "full".to_string()]);
-        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     }
 
     #[test]
     fn literal_and_chomped_markers_parse() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         writeln!(f, "---\ndescription: |-\n  line one\n  line two\n---\nBody").unwrap();
-        let (skill, _) = load_skill_from_file(f.path(), "path");
+        let skill = load_skill_from_file(f.path(), "path");
         assert_eq!(skill.expect("loads").description, "line one\nline two");
 
         let mut g = tempfile::NamedTempFile::new().unwrap();
         writeln!(g, "---\ndescription: >-\n  folded here\n---\nBody").unwrap();
-        let (skill, _) = load_skill_from_file(g.path(), "path");
+        let skill = load_skill_from_file(g.path(), "path");
         assert_eq!(skill.expect("loads").description, "folded here");
     }
 }

@@ -1,7 +1,7 @@
 //! Transcript row helpers: wrapping, prompt formatting (split from `transcript`).
 
 use super::*;
-use crate::text_width::{chars_width, fit_char_count};
+use crate::text_width::{chars_width, fit_char_count, word_window_end};
 
 pub(crate) fn thinking_style() -> Style {
     Style::default()
@@ -12,10 +12,6 @@ pub(crate) fn thinking_style() -> Style {
 /// Left padding, omp-style: one space.
 pub(crate) fn left_pad() -> Span<'static> {
     Span::raw(" ")
-}
-
-pub(crate) fn strip_ansi(s: &str) -> String {
-    crate::tui::strip_ansi(s)
 }
 
 fn slice_line_spans<'a>(
@@ -164,7 +160,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
     }
     if words.is_empty() {
         // column mapping is approximate here; word-split lines are the norm.
-        return char_chunk_fallback(line, max_w, flat)
+        return char_chunk_fallback(line, max_w)
             .into_iter()
             .map(|l| (l, 0..usize::MAX))
             .collect();
@@ -255,7 +251,7 @@ pub(crate) fn wrap_styled_line_with_ranges(
     result
 }
 
-fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<Line<'static>> {
+fn char_chunk_fallback(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> {
     let line_style = line.style;
     let mut result = Vec::new();
     let mut current_spans: Vec<Span<'static>> = Vec::new();
@@ -305,23 +301,7 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize, _flat: String) -> Vec<
 /// ("r|espond"). Falls back to a hard cut at the cell budget when there is
 /// no space (single overlong word) — same as the wrapper's long-word path.
 pub(crate) fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
-    let mut end = 0usize;
-    let mut used = 0usize;
-    for (i, c) in chars.iter().enumerate() {
-        let w = crate::text_width::char_width(*c);
-        if used + w > max_w {
-            break;
-        }
-        used += w;
-        end = i + 1;
-    }
-    if end < chars.len()
-        && let Some(sp) = chars[..end].iter().rposition(|c| *c == ' ')
-        && sp > 0
-    {
-        return sp + 1; // keep the space at the row end; rest starts clean
-    }
-    end
+    word_window_end(chars, 0, max_w)
 }
 
 pub(crate) fn format_user_prompt_lines(
@@ -359,13 +339,7 @@ pub(crate) fn format_user_prompt_lines(
             while start < chars.len() {
                 // Prefer a word boundary (last space in the window) over a
                 // mid-word char cut; hard-cut only a single overlong word.
-                let mut end = start + fit_char_count(&chars[start..], max_w);
-                if end < chars.len()
-                    && let Some(sp) = chars[start..end].iter().rposition(|c| *c == ' ')
-                    && sp > 0
-                {
-                    end = start + sp + 1;
-                }
+                let end = word_window_end(&chars, start, max_w);
                 let row_prefix = if first_row {
                     prefix.clone()
                 } else {

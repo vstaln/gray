@@ -138,22 +138,10 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
                 return true;
             }
         }
-        if let Ok(text) = clipboard.get_text() {
-            let decoded = decoded_paste_path(&text);
-            let p = Path::new(&decoded);
-            if p.exists() && p.is_file() && file_size_exceeds(p, MAX_ATTACH_FILE_BYTES) {
-                tui.push_dim(format!(
-                    "attachment too big (>{}MB, skipped): {}",
-                    MAX_ATTACH_FILE_BYTES / 1024 / 1024,
-                    p.display()
-                ));
-                let _ = tui.draw();
-                return true;
-            }
-            if is_attachable_path(&decoded) {
-                attach_image(tui, PathBuf::from(decoded));
-                return true;
-            }
+        if let Ok(text) = clipboard.get_text()
+            && try_attach_image_paste(tui, &text)
+        {
+            return true;
         }
     }
     for (cmd, args) in [

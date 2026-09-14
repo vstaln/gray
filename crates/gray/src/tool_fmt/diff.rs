@@ -118,7 +118,6 @@ pub(crate) fn highlight_line_spans(
     line: &str,
     highlighter: &mut Option<gray_markdown::syntect::easy::HighlightLines<'_>>,
     syntect: &gray_markdown::Syntect,
-    fallback_fg: Color,
     bg: Option<Color>,
 ) -> Vec<Span<'static>> {
     let mut spans = Vec::new();
@@ -149,7 +148,7 @@ pub(crate) fn highlight_line_spans(
         }
     }
 
-    let mut st = Style::default().fg(fallback_fg);
+    let mut st = Style::default().fg(diff_equal_fg());
     if let Some(bg_c) = bg {
         st = st.bg(bg_c);
     }
@@ -406,34 +405,20 @@ pub fn render_diff_hunks(
             let cont_num_str = format!("{:>width$} ", "", width = gutter_width);
             let cont_sign_str = "  ";
 
-            let expanded = expand_tabs(&line.text, 4);
+            let expanded = expand_tabs(&line.text);
             let indent_count = expanded.chars().take_while(|c| *c == ' ').count();
             let cont_indent_len = indent_count.min(content_w / 2);
             let cont_indent_str = " ".repeat(cont_indent_len);
 
             let row_spans = match line.tag {
-                DiffTag::Delete => highlight_line_spans(
-                    &expanded,
-                    &mut old_highlighter,
-                    syntect,
-                    diff_equal_fg(),
-                    bg_color,
-                ),
-                DiffTag::Insert => highlight_line_spans(
-                    &expanded,
-                    &mut new_highlighter,
-                    syntect,
-                    diff_equal_fg(),
-                    bg_color,
-                ),
+                DiffTag::Delete => {
+                    highlight_line_spans(&expanded, &mut old_highlighter, syntect, bg_color)
+                }
+                DiffTag::Insert => {
+                    highlight_line_spans(&expanded, &mut new_highlighter, syntect, bg_color)
+                }
                 DiffTag::Equal => {
-                    let s = highlight_line_spans(
-                        &expanded,
-                        &mut new_highlighter,
-                        syntect,
-                        diff_equal_fg(),
-                        None,
-                    );
+                    let s = highlight_line_spans(&expanded, &mut new_highlighter, syntect, None);
                     if let Some(hl) = old_highlighter.as_mut() {
                         let _ = hl.highlight_line(&format!("{expanded}\n"), &syntect.syntax_set);
                     }

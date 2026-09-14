@@ -2,6 +2,32 @@
 
 use super::*;
 
+/// One streaming attempt with cooperative cancel: on Ctrl-C, `ctx` shares
+/// the token so the run is already signalled — give it a bounded window to
+/// observe cancel and execute its own cleanup/transcript-repair paths
+/// (partial-text salvage, turn_end) before the drop preempts it.
+async fn run_streaming_cancellable(
+    agent: &mut Agent,
+    msg: Message,
+    ctx: ToolContext,
+    cancel: &tokio_util::sync::CancellationToken,
+    on_event: &mut dyn FnMut(&AgentEvent),
+) -> Result<Vec<AgentEvent>, CoreError> {
+    let mut run_future = Box::pin(agent.run_streaming(msg, ctx, on_event));
+    tokio::select! {
+        res = &mut run_future => res,
+        _ = cancel.cancelled() => {
+            cancel.cancel();
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future).await;
+            // Fallback: a run that ignored cancel is still pending; the drop
+            // preempts it. The entry guards blank input and owns no
+            // cross-turn state, so no external abort is needed.
+            drop(run_future);
+            Err(CoreError::Cancelled)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 // Mechanical split of `run_repl_mode`: params are the loop state the turn borrows.
 pub(crate) async fn run_prompt_turn(
@@ -29,31 +55,13 @@ pub(crate) async fn run_prompt_turn(
             let bg = tui
                 .as_ref()
                 .map(|(shared, _)| shared.lock().expect("tui lock").snapshot());
-            let result = with_modal(
-                tui.as_ref().map(|(s, _)| s),
-                crate::setup::run_provider_menu(config, bg.as_ref()),
-            )
-            .await;
+            let result = with_modal_sync(tui.as_ref().map(|(s, _)| s), || {
+                crate::setup::run_connect_modal(config, bg.as_ref())
+            });
             match result {
                 Ok(true) => {
                     *unconfigured = false;
-                    if let Some((shared, _)) = tui {
-                        let mut t = shared.lock().expect("tui lock");
-                        if let Some(m) = &config.model {
-                            t.set_model(m.clone());
-                        }
-                        let model_str = config.model.as_deref().unwrap_or("default");
-                        let prov_name = crate::setup::load_catalog()
-                            .ok()
-                            .and_then(|c| {
-                                c.values()
-                                    .find(|p| p.base_url == config.base_url)
-                                    .map(|p| p.name.clone())
-                            })
-                            .unwrap_or_else(|| "provider".to_string());
-                        t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
-                        let _ = t.draw();
-                    }
+                    push_provider_connected(config, tui);
                 }
                 Ok(false) => {
                     if let Some((shared, _)) = tui {
@@ -196,26 +204,7 @@ pub(crate) async fn run_prompt_turn(
                 &mut turn_duration_ms,
             );
         };
-        let mut run_future = Box::pin(agent.run_streaming(user_msg, ctx, &mut on_event));
-        tokio::select! {
-            res = &mut run_future => res,
-            _ = cancel.cancelled() => {
-                // Cooperative cancel: ctx shares this token, so the run is
-                // already signalled — give it a bounded window to observe
-                // cancel and execute its own cleanup/transcript-repair paths
-                // (partial-text salvage, turn_end) instead of dropping it
-                // mid-flight.
-                cancel.cancel();
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future)
-                        .await;
-                // Fallback: a run that ignored cancel is still pending; the
-                // drop preempts it. The entry guards blank input and owns no
-                // cross-turn state, so no external abort is needed.
-                drop(run_future);
-                Err(CoreError::Cancelled)
-            }
-        }
+        run_streaming_cancellable(agent, user_msg, ctx, &cancel, &mut on_event).await
     };
     // overflow recovery (one retry only)
     if let Err(ref e) = run_result
@@ -252,21 +241,14 @@ pub(crate) async fn run_prompt_turn(
                 &mut turn_duration_ms,
             );
         };
-        let mut run_future2 =
-            Box::pin(agent.run_streaming(user_msg_for_retry.clone(), ctx2, &mut on_event2));
-        let retry_res = tokio::select! {
-            res = &mut run_future2 => res,
-            _ = cancel.cancelled() => {
-                // Same cooperative-cancel contract as the main turn above.
-                cancel.cancel();
-                let _ =
-                    tokio::time::timeout(std::time::Duration::from_secs(5), &mut run_future2)
-                        .await;
-                drop(run_future2);
-                Err(CoreError::Cancelled)
-            }
-        };
-        run_result = retry_res;
+        run_result = run_streaming_cancellable(
+            agent,
+            user_msg_for_retry.clone(),
+            ctx2,
+            &cancel,
+            &mut on_event2,
+        )
+        .await;
     }
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
     // signal the watcher to exit; it dies within one 100ms tick.

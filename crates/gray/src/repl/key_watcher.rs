@@ -436,7 +436,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             {
                                 t.textarea.delete_word_backward();
                             } else {
-                                t.textarea.delete_backward(1);
+                                t.textarea.delete_backward();
                             }
                             t.sync_attachments();
                             sync_matches(&mut t);
@@ -448,7 +448,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                             {
                                 t.textarea.delete_word_forward();
                             } else {
-                                t.textarea.delete_forward(1);
+                                t.textarea.delete_forward();
                             }
                             t.sync_attachments();
                             sync_matches(&mut t);

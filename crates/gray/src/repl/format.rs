@@ -1,9 +1,5 @@
 use gray_core::error::CoreError;
-use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-
-/// Maximum characters of error output rendered in tool results.
-pub(crate) const MAX_ERROR_DISPLAY_CHARS: usize = 200;
 
 /// Truncates a string slice to at most `max_chars` unicode scalar values / chars.
 pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> &str {
@@ -259,62 +255,6 @@ pub(crate) fn build_user_message_with_attachments(
 /// (italic muted color; dim stands in for pi's `thinkingText` theme color).
 pub const THINKING_STYLE: &str = "\x1b[2m\x1b[3m";
 
-/// Formats an [`AgentEvent`] for display in the interactive REPL.
-pub fn fmt_event(event: &AgentEvent) -> String {
-    match event {
-        AgentEvent::Start
-        | AgentEvent::ToolCallEnd { .. }
-        | AgentEvent::ToolCallProgress { .. }
-        | AgentEvent::StepUsage { .. } => String::new(),
-        AgentEvent::TextDelta { delta } => delta.clone(),
-        AgentEvent::ThinkingDelta { delta } => {
-            // Streamed live, dim+italic like pi's rendered thinking blocks.
-            format!("{THINKING_STYLE}{}\x1b[0m", delta.clone())
-        }
-        AgentEvent::ToolCallStart { name, .. } => {
-            format!("\n\x1b[2m· {name}\x1b[0m\n")
-        }
-        AgentEvent::ToolResult {
-            output, is_error, ..
-        } => {
-            if *is_error {
-                let truncated = truncate_chars(output, MAX_ERROR_DISPLAY_CHARS);
-                format!("\x1b[31m✗ {truncated}\x1b[0m\n")
-            } else {
-                String::new()
-            }
-        }
-        AgentEvent::TurnEnd { usage, .. } => {
-            if usage.total() > 0 {
-                let cached = if usage.cached_tokens > 0 {
-                    format!(
-                        " · {} cached ({:.0}%)",
-                        fmt_usage(usage.cached_tokens),
-                        usage.cache_hit_rate() * 100.0
-                    )
-                } else {
-                    String::new()
-                };
-                format!(
-                    "\n\x1b[2m\u{b7} {} tok{cached}\x1b[0m\n",
-                    fmt_usage(usage.total())
-                )
-            } else {
-                "\n".to_string()
-            }
-        }
-        // Codex steal (`new_stream_error_event`): dim `⚠ msg` + `└ details`.
-        AgentEvent::StreamError { message, details } => {
-            let trunc = truncate_chars(details, MAX_ERROR_DISPLAY_CHARS);
-            if trunc.is_empty() {
-                format!("\n\x1b[2m⚠ {message}\x1b[0m\n")
-            } else {
-                format!("\n\x1b[2m⚠ {message}\n└ {trunc}\x1b[0m\n")
-            }
-        }
-    }
-}
-
 /// Formats a turn duration like the TUI `Worked for` line: `850ms`, `6s`, `6.5s`, `2m 5s`.
 pub fn fmt_duration_ms(ms: u64) -> String {
     let secs = ms as f64 / 1000.0;
@@ -361,24 +301,6 @@ mod tests {
         assert!(!out.contains("\"param\":"), "must not dump raw JSON: {out}");
         assert!(out.contains("503"), "must keep status: {out}");
         assert!(out.contains("cf-ray"), "must keep cf-ray: {out}");
-    }
-
-    #[test]
-    fn codex_style_stream_error_renders_reconnecting_with_details() {
-        // Codex steal: StreamError cell is `⚠ Reconnecting... n/m` + `└ details`.
-        let ev = AgentEvent::StreamError {
-            message: "Reconnecting... 1/3".to_string(),
-            details: "status 503: backend overloaded".to_string(),
-        };
-        let out = fmt_event(&ev);
-        assert!(
-            out.contains("Reconnecting... 1/3"),
-            "must show attempt: {out}"
-        );
-        assert!(
-            out.contains("backend overloaded"),
-            "must show details: {out}"
-        );
     }
 
     #[test]

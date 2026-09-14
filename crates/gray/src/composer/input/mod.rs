@@ -163,7 +163,7 @@ pub(crate) fn handle_key_event_without_popup(
             if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
                 tui.textarea.delete_word_backward();
             } else {
-                tui.textarea.delete_backward(1);
+                tui.textarea.delete_backward();
             }
             sync_attachments(tui);
             tui.sel = 0;
@@ -173,7 +173,7 @@ pub(crate) fn handle_key_event_without_popup(
             if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::CONTROL) {
                 tui.textarea.delete_word_forward();
             } else {
-                tui.textarea.delete_forward(1);
+                tui.textarea.delete_forward();
             }
             sync_attachments(tui);
             tui.sel = 0;

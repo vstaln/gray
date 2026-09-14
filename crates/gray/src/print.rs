@@ -15,6 +15,14 @@ use gray_session::{JsonlSessionStore, SessionId, SessionMeta};
 use crate::build_agent;
 use crate::config::Config;
 
+/// Wall-clock milliseconds since the Unix epoch (0 on a pre-epoch clock).
+pub(crate) fn now_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Tracking state for active tool call during streaming.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveToolCall {
@@ -341,10 +349,7 @@ pub async fn save_session(
     messages: &[Message],
 ) -> anyhow::Result<SessionId> {
     let session_id = SessionId::generate();
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let timestamp = now_millis();
 
     let meta = SessionMeta::new(
         session_id.clone(),

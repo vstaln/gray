@@ -32,11 +32,6 @@ impl Frame<'_> {
     pub fn set_cursor_position<P: Into<Position>>(&mut self, position: P) {
         self.cursor_position = Some(position.into());
     }
-
-    #[allow(dead_code)]
-    pub fn buffer_mut(&mut self) -> &mut Buffer {
-        self.buffer
-    }
 }
 
 pub struct CustomTerminal<B>
