@@ -487,7 +487,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let runner = PrintRunner {
                 config: config.clone(),
             };
-            let rep = gray::cron_serve::tick_once(&store, &home, &runner).await?;
+            let deliver = gray::cron_serve::SaveLocalDeliver { home };
+            let rep = gray::cron_serve::tick_once(&store, &runner, &deliver).await?
             println!("tick: fired={} errors={}", rep.fired, rep.errors);
             Ok(())
         }
@@ -497,7 +498,12 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let runner = PrintRunner {
                 config: config.clone(),
             };
-            gray::cron_serve::serve_loop(store, home, runner).await
+gray::cron_serve::serve_loop(
+                store,
+                gray::cron_serve::SaveLocalDeliver { home },
+                runner,
+            )
+            .await
         }
         CronCmd::Pause { id } => {
             if cron_store()?.set_paused(&id, true)? {
@@ -531,7 +537,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let runner = PrintRunner {
                 config: config.clone(),
             };
-            let status = gray::cron_serve::fire_one(&store, &home, &runner, job, now).await;
+            let deliver = gray::cron_serve::SaveLocalDeliver { home };
+            let status = gray::cron_serve::fire_one(&store, &runner, job, now, &deliver).await;
             println!("ran {id} status={status:?}");
             Ok(())
         }
