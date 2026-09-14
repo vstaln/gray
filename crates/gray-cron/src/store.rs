@@ -103,6 +103,10 @@ pub struct CronJob {
     #[serde(default)]
     pub workdir: Option<PathBuf>,
     #[serde(default)]
+    pub skills: Vec<String>,
+    #[serde(default)]
+    pub script: Option<PathBuf>,
+    #[serde(default)]
     pub fire_claim: Option<Claim>,
 }
 
@@ -182,7 +186,13 @@ fn with_jobs_lock<T>(lock_path: &Path, f: impl FnOnce() -> anyhow::Result<T>) ->
     f()
 }
 
-fn validate_new_job(name: &str, prompt: &str, workdir: Option<&Path>) -> anyhow::Result<()> {
+fn validate_new_job(
+    name: &str,
+    prompt: &str,
+    workdir: Option<&Path>,
+    skills: &[String],
+    script: Option<&Path>,
+) -> anyhow::Result<()> {
     if name.trim().is_empty() {
         anyhow::bail!("job name is empty");
     }
@@ -199,6 +209,25 @@ fn validate_new_job(name: &str, prompt: &str, workdir: Option<&Path>) -> anyhow:
         if !dir.is_dir() {
             anyhow::bail!("workdir is not an existing dir: {}", dir.display());
         }
+    }
+    for s in skills {
+        anyhow::ensure!(!s.trim().is_empty(), "job skill is empty");
+        anyhow::ensure!(
+            s.chars().count() <= MAX_NAME_LEN,
+            "job skill exceeds {MAX_NAME_LEN} chars"
+        );
+    }
+    if let Some(path) = script {
+        anyhow::ensure!(
+            path.is_absolute(),
+            "script must be absolute: {}",
+            path.display()
+        );
+        anyhow::ensure!(
+            path.is_file(),
+            "script is not an existing file: {}",
+            path.display()
+        );
     }
     Ok(())
 }
@@ -289,8 +318,16 @@ impl CronStore {
         deliver: Deliver,
         origin: Option<Origin>,
         workdir: Option<PathBuf>,
+        skills: Vec<String>,
+        script: Option<PathBuf>,
     ) -> anyhow::Result<String> {
-        validate_new_job(name, prompt, workdir.as_deref())?;
+        validate_new_job(
+            name,
+            prompt,
+            workdir.as_deref(),
+            &skills,
+            script.as_deref(),
+        )?;
         let sched = parse_schedule(schedule)?;
         let now = now_secs();
         if let Schedule::Once { at } = &sched
@@ -314,6 +351,8 @@ impl CronStore {
             deliver,
             origin,
             workdir,
+            skills: skills.into_iter().map(|s| s.trim().to_string()).collect(),
+            script,
             fire_claim: None,
         };
         let id = job.id.clone();
@@ -454,6 +493,86 @@ impl CronStore {
     /// finished one-shot goes terminal (`Done`) so it is retained but never
     /// re-fires. `DeliveryFailed` writes the delivery column, anything else the
     /// run column (hermes parity).
+    /// Pause (`paused=true` → `Paused`) or resume (`false` → `Active`).
+    /// Resume recomputes `next_run_at` from now so a long-paused job is not
+    /// instantly stale. Returns false when the job is unknown.
+    /// `enabled` is left untouched: `claim_due` already requires both.
+    pub fn set_paused(&self, id_or_name: &str, paused: bool) -> anyhow::Result<bool> {
+        with_jobs_lock(&self.lock_path(), || {
+            let mut raw = self.load_raw()?;
+            let mut jobs = Self::parse_jobs(&raw);
+            let Some(job) = jobs
+                .iter_mut()
+                .find(|j| j.id == id_or_name || j.name == id_or_name)
+            else {
+                return Ok(false);
+            };
+            if paused {
+                job.state = JobState::Paused;
+            } else {
+                job.state = JobState::Active;
+                job.next_run_at = next_run(now_secs(), &job.schedule);
+            }
+            self.save_jobs(&mut raw, &jobs)?;
+            Ok(true)
+        })
+    }
+
+    /// Claim one job by id/name for `owner`, bypassing due-ness (implements
+    /// `gray cron run`). Same guards as `claim_due`: skip disabled/paused/
+    /// done, skip live claims (reclaim past [`FIRE_CLAIM_TTL_SECS`]), retire
+    /// missed one-shots without firing, advance recurring schedules.
+    pub fn claim_one(
+        &self,
+        now: i64,
+        owner: &str,
+        id_or_name: &str,
+    ) -> anyhow::Result<Option<CronJob>> {
+        with_jobs_lock(&self.lock_path(), || {
+            let mut raw = self.load_raw()?;
+            let mut jobs = Self::parse_jobs(&raw);
+            let Some(job) = jobs
+                .iter_mut()
+                .find(|j| j.id == id_or_name || j.name == id_or_name)
+            else {
+                return Ok(None);
+            };
+            if !job.enabled || job.state != JobState::Active {
+                return Ok(None);
+            }
+            if let Some(claim) = &job.fire_claim
+                && now.saturating_sub(claim.at) <= FIRE_CLAIM_TTL_SECS
+            {
+                return Ok(None);
+            }
+            job.fire_claim = None;
+            if matches!(job.schedule, Schedule::Once { .. }) && job.last_run_at.is_some() {
+                return Ok(None);
+            }
+            if matches!(job.schedule, Schedule::Once { at } if at < now - ONESHOT_GRACE_SECS)
+            {
+                job.enabled = false;
+                job.state = JobState::Done;
+                job.last_error = Some("missed one-shot window".to_string());
+                self.save_jobs(&mut raw, &jobs)?;
+                return Ok(None);
+            }
+            if !matches!(job.schedule, Schedule::Once { .. }) {
+                match next_run(now, &job.schedule) {
+                    Some(advanced) => job.next_run_at = Some(advanced),
+                    None => return Ok(None),
+                }
+            }
+            job.fire_claim = Some(Claim {
+                at: now,
+                by: owner.to_string(),
+            });
+            let out = job.clone();
+            self.save_jobs(&mut raw, &jobs)?;
+            Ok(Some(out))
+        })
+    }
+
     pub fn mark_done(
         &self,
         id_or_name: &str,
@@ -510,7 +629,7 @@ mod tests {
             prompt: &str,
             deliver: Deliver,
         ) -> anyhow::Result<String> {
-            self.add_full(name, schedule, prompt, deliver, None, None)
+            self.add_full(name, schedule, prompt, deliver, None, None, vec![], None)
         }
     }
 
@@ -618,6 +737,8 @@ mod tests {
                     Deliver::Local,
                     None,
                     Some(PathBuf::from("relative/path")),
+                    vec![],
+                    None,
                 )
                 .is_err()
         );
@@ -630,6 +751,8 @@ mod tests {
                     Deliver::Local,
                     None,
                     Some(PathBuf::from("/no/such/dir/gray-cron-test")),
+                    vec![],
+                    None,
                 )
                 .is_err()
         );
@@ -708,6 +831,119 @@ mod tests {
         assert_eq!(o.state, JobState::Done);
         assert_eq!(o.last_status, Some(RunStatus::Error));
         assert_eq!(o.last_error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn add_accepts_skills_and_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CronStore::open(dir.path()).unwrap();
+        let script = dir.path().join("pre.sh");
+        std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+        let id = store
+            .add_full(
+                "job",
+                "every 1h",
+                "do work",
+                Deliver::Local,
+                None,
+                None,
+                vec!["briefing".to_string()],
+                Some(script.clone()),
+            )
+            .unwrap();
+        let job = store.get(&id).unwrap().unwrap();
+        assert_eq!(job.skills, vec!["briefing".to_string()]);
+        assert_eq!(job.script, Some(script));
+    }
+
+    #[test]
+    fn add_rejects_bad_skills_and_script() {
+        let (_dir, store) = test_store();
+        assert!(
+            store
+                .add_full(
+                    "x",
+                    "every 1h",
+                    "hi",
+                    Deliver::Local,
+                    None,
+                    None,
+                    vec!["  ".to_string()],
+                    None,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .add_full(
+                    "x",
+                    "every 1h",
+                    "hi",
+                    Deliver::Local,
+                    None,
+                    None,
+                    vec!["n".repeat(MAX_NAME_LEN + 1)],
+                    None,
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .add_full(
+                    "x",
+                    "every 1h",
+                    "hi",
+                    Deliver::Local,
+                    None,
+                    None,
+                    vec![],
+                    Some(PathBuf::from("relative/pre.sh")),
+                )
+                .is_err()
+        );
+        assert!(
+            store
+                .add_full(
+                    "x",
+                    "every 1h",
+                    "hi",
+                    Deliver::Local,
+                    None,
+                    None,
+                    vec![],
+                    Some(PathBuf::from("/no/such/file.sh")),
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pause_resume_and_claim_one() {
+        let (_dir, store) = test_store();
+        let id = store
+            .add("hourly", "every 1h", "hi", Deliver::Local)
+            .unwrap();
+        assert!(store.set_paused(&id, true).unwrap());
+        let job = store.get(&id).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Paused);
+        assert!(job.enabled);
+        store.set_next_run_for_test(&id, 1).unwrap();
+        assert!(store.claim_due(1_700_000_000, "o").unwrap().is_empty());
+        assert!(store.set_paused(&id, false).unwrap());
+        let job = store.get(&id).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Active);
+        assert!(job.next_run_at.unwrap() > 1_700_000_000);
+        let claimed = store
+            .claim_one(1_700_000_001, "owner", &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.id, id);
+        assert!(
+            !store
+                .claim_one(1_700_000_001, "other", &id)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
