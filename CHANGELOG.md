@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- Skills: folded (`description: >`) and literal (`|`) frontmatter now parse (were the bare marker) + `gray plugin install` accepts bare `https://github.com/<owner>/<repo>` URLs as git sources — `https://github.com/DietrichGebert/ponytail` installs all six skills, same as `npm:@dietrichgebert/ponytail`
+- Project context: `AGENTS.md` / `CLAUDE.md` (cwd up to git root) now auto-attach as `<project_context>` hook context every turn — no more manual `cat`, and `/context` bills the exact block instead of showing `0 tokens`. `~/.gray/AGENTS.md` excluded (never double-billed); 16k chars per-file cap
+- Modal backdrop: textarea copy pinned dim (box bg + text through the color map) with a universal regression test — no full-brightness composer surface may survive in any modal backdrop
 - Dogfood (headless/pipe): bare `/thinking` and `/model` print status instead of a raw `No such device` error, bare `/resume` and `gray resume` (no TTY) list sessions as text, `/compact` with no model prints one line, exit-hint has no raw ANSI when piped
 - Dogfood (plugin check): reference echo sidecar returns valid JSON on `{}` args — `tool/call` + concurrency checks pass
 - `gray2` binary target (`cargo build` yields `gray` + `gray2`) + one regression test, zero warnings
