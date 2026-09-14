@@ -14,10 +14,6 @@ path = "src/lib.rs"
 name = "gray"
 path = "src/main.rs"
 
-[[bin]]
-name = "gray2"
-path = "src/main.rs"
-
 [dependencies]
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
