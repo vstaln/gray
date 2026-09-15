@@ -12,6 +12,13 @@
   printing a `next=` that will never arrive.
 
 ### Fixed
+- Cancelling a turn no longer discards the in-flight tool's own report: both
+  cancel paths (single dispatch, parallel join) abandoned the future on the
+  same token the tool watches, so partial output and the process-group kill
+  never ran and the turn answered with a bare synthetic `cancelled by user`.
+  A cancelled tool now gets a bounded 3s window (inside the turn's own 5s
+  cooperative window) to report, then the turn ends with that output in
+  history.
 - Cron silence: `next=` rows look identical whether or not a driver (`serve`, a
   `tick` host, a REPL) is running, so jobs could sit due forever unnoticed.
   Overdue jobs are now named in `list`/`/cron`, and `add` warns at creation when

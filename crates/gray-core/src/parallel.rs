@@ -229,6 +229,15 @@ pub fn plan_segments(
     out
 }
 
+/// Bounded window for cancelled tools to report before they are aborted.
+/// A cancelled tool shares the run's `ctx`, so it is already signalled and
+/// owns the cleanup that matters (kill its process group, drain its output
+/// pump, return partial output). Dropping it first throws that report away
+/// and forces the caller to fabricate a placeholder. Kept below the REPL
+/// turn's 5s cooperative window (`prompt_turn::run_streaming_cancellable`)
+/// so the inner report always lands inside the outer one.
+pub const CANCEL_REPORT_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Run `futs` concurrently, returning `(input_index, output)` in
 /// input-index order — one entry per input. No cap: every call in the
 /// batch is in flight at once.
@@ -265,7 +274,26 @@ pub async fn join_ordered(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => {
-                set.abort_all();
+                // Let already-signalled tools land their own reports first
+                // (bounded), then abort whatever is still running. Aborting
+                // first would discard partial output the caller can never
+                // reconstruct.
+                let deadline = tokio::time::sleep(CANCEL_REPORT_GRACE);
+                tokio::pin!(deadline);
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = &mut deadline => {
+                            set.abort_all();
+                            break;
+                        }
+                        res = set.join_next() => match res {
+                            Some(Ok((idx, out))) => done.push((idx, Some(out))),
+                            Some(Err(_)) => {}
+                            None => break,
+                        },
+                    }
+                }
                 while let Some(res) = set.join_next().await {
                     if let Ok((idx, out)) = res {
                         done.push((idx, Some(out)));
