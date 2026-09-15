@@ -152,7 +152,9 @@ pub struct Tui {
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
     /// Latched status-dock seam (see `ratchet_seam`): keeps the viewport
-    /// still while the streaming tail flickers.
+    /// still while the streaming tail flickers. Checkpoint trailing gaps
+    /// release it (see `release_dock_seam`) so it never stacks a second
+    /// blank above the live status.
     dock_seam: bool,
     active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
@@ -634,6 +636,16 @@ impl Tui {
         }
         self.status = label.map(|l| (Instant::now(), l.to_string()));
         let _ = self.draw();
+    }
+
+    /// Releases the latched dock seam after a checkpoint trailing gap
+    /// (`Thought for` spacer, tool-box trailing, compaction summary): the
+    /// gap already separates scrollback from the dock, so a latched seam
+    /// would stack a second blank above the live status. Streaming
+    /// re-latches on the next non-blank frame, so per-chunk flicker still
+    /// holds the viewport steady (no input-box bounce).
+    pub(crate) fn release_dock_seam(&mut self) {
+        self.dock_seam = false;
     }
 
     /// Codex `on_context_compaction_started`: flush the live answer stream

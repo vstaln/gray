@@ -509,6 +509,28 @@ mod tests {
         assert!(!ratchet_seam(true, false, true));
     }
 
+    /// Checkpoint trailing gaps (`Thought for` spacer, tool-box trailing)
+    /// release the seam latch, so the gap never stacks with a latched seam
+    /// into a double blank above the live status. Streaming re-latches on
+    /// the next non-blank frame, so per-chunk flicker still holds steady.
+    #[test]
+    fn checkpoint_gap_releases_seam_to_single_spaced_status() {
+        // thinking streams: tail non-blank latches the seam on.
+        let mut seam = ratchet_seam(false, true, true);
+        assert!(seam);
+        // Thought summary commits + trailing spacer gap; the checkpoint
+        // releases the latch (see `release_dock_seam` callers).
+        seam = false;
+        // status-only frames with a blank tail: no seam, status + breath.
+        seam = ratchet_seam(seam, true, false);
+        assert!(!seam, "seam must not stack on the checkpoint gap");
+        assert_eq!(status_dock_h(true, seam), 2, "status + breath only");
+        // answer streams: first non-blank row re-latches, height steady.
+        seam = ratchet_seam(seam, true, true);
+        assert!(seam);
+        assert_eq!(status_dock_h(true, seam), 3, "seam + status + breath");
+    }
+
     #[test]
     fn queued_preview_renders_header_and_entries() {
         let mut q: std::collections::VecDeque<(String, Vec<std::path::PathBuf>)> =
