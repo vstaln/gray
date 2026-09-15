@@ -61,7 +61,7 @@ pub(crate) async fn run_prompt_turn(
             match result {
                 Ok(true) => {
                     *unconfigured = false;
-                    push_provider_connected(config, tui);
+                    push_provider_connected(config, tui, None);
                 }
                 Ok(false) => {
                     if let Some((shared, _)) = tui {

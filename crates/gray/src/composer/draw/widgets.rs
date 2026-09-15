@@ -215,8 +215,10 @@ pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {
 
 /// Grow-only latch for the dock seam: the streaming tail flickers
 /// blank/non-blank between chunks, so the dock may grow mid-turn but never
-/// shrinks until the status clears. Pure for testability (`Tui::new` needs
-/// a TTY).
+/// shrinks mid-stream until the status clears. Checkpoint trailing gaps
+/// (`Thought for` spacer, tool-box trailing) release it explicitly (see
+/// `release_dock_seam`) so the seam never stacks a second blank above the
+/// live status. Pure for testability (`Tui::new` needs a TTY).
 pub(crate) fn ratchet_seam(cached: bool, has_status: bool, live_needs: bool) -> bool {
     has_status && (cached || live_needs)
 }

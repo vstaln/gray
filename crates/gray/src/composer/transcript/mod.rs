@@ -201,6 +201,7 @@ impl Tui {
         }
         if spacer {
             self.ensure_gap(1);
+            self.release_dock_seam();
         }
     }
 

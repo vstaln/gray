@@ -139,16 +139,70 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     }
 }
 
+/// Clamp `config.thinking_effort` to the levels `model` accepts
+/// (Prime-Agent `clampThinkingLevel` parity). `None`/empty effort stays
+/// as-is; unknown family keeps the current level. Persists to saved config.
+/// Returns `(old, new)` when a clamp happened.
+pub(crate) fn clamp_thinking_to_model_name(
+    config: &mut Config,
+    model: &str,
+) -> Option<(String, String)> {
+    if model.is_empty() {
+        return None;
+    }
+    let current = config.thinking_effort.clone()?;
+    if current.is_empty() {
+        return None;
+    }
+    let clamped = crate::setup::clamp_thinking_level(model, &current);
+    if clamped == current {
+        return None;
+    }
+    let (old, new) = (current, clamped.to_string());
+    config.thinking_effort = Some(new.clone());
+    if let Ok(path) = crate::setup::saved_config_path() {
+        let mut saved = crate::setup::load_saved_config_at(&path);
+        saved.thinking_effort = Some(new.clone());
+        let _ = crate::setup::save_saved_config_at(&path, &saved);
+    }
+    Some((old, new))
+}
+
+/// Clamp `config.thinking_effort` to what `config.model` accepts.
+/// See [`clamp_thinking_to_model_name`].
+pub(crate) fn clamp_thinking_to_model(config: &mut Config) -> Option<(String, String)> {
+    let model = config.model.clone().unwrap_or_default();
+    clamp_thinking_to_model_name(config, &model)
+}
+
 /// Post-`run_connect_modal` feedback shared by `/connect` and the
 /// first-turn setup path: sync the chosen model into the composer and echo
-/// the provider name.
-pub(crate) fn push_provider_connected(config: &Config, tui: &TuiOpt) {
+/// the provider name. Clamps a stale effort (e.g. deepseek `max` → Spark
+/// `xhigh`) before painting so the footer never shows an unsupported level.
+pub(crate) fn push_provider_connected(
+    config: &mut Config,
+    tui: &TuiOpt,
+    hide_thinking: Option<&mut bool>,
+) {
+    let clamped = clamp_thinking_to_model(config);
+    if clamped.is_some()
+        && let Some(h) = hide_thinking
+    {
+        *h = config.reasoning_hidden();
+    }
     let Some((shared, _)) = tui else {
+        if let Some((old, new)) = clamped {
+            println!("Thinking effort clamped from {old} to {new} (not supported by this model)");
+        }
         return;
     };
     let mut t = shared.lock().expect("tui lock");
     if let Some(m) = &config.model {
         t.set_model(m.clone());
+    }
+    if let Some((_, ref new)) = clamped {
+        t.set_thinking_effort(new.clone());
+        t.set_hide_thinking(config.reasoning_hidden());
     }
     let model_str = config.model.as_deref().unwrap_or("default");
     let prov_name = crate::setup::load_catalog()
@@ -160,6 +214,11 @@ pub(crate) fn push_provider_connected(config: &Config, tui: &TuiOpt) {
         })
         .unwrap_or_else(|| "provider".to_string());
     t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
+    if let Some((old, new)) = clamped {
+        t.push_dim(format!(
+            "└ thinking effort clamped from {old} to {new} (not supported by this model)"
+        ));
+    }
     t.ensure_gap(1);
     let _ = t.draw();
 }
@@ -449,6 +508,12 @@ pub async fn run_repl_mode(
     if let Some((sid, meta, entries, store)) = loaded {
         if config.model.is_none() && !meta.model.is_empty() {
             config.model = Some(meta.model.clone());
+        }
+        // Startup resume lands on the session's model: clamp a stale effort
+        // (e.g. saved `max` under a Spark session) before the first build
+        // and before the TUI init below paints the footer.
+        if let Some((old, new)) = clamp_thinking_to_model(config) {
+            println!("Thinking effort clamped from {old} to {new} (not supported by this model)");
         }
         let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
         pending_history = history.clone();

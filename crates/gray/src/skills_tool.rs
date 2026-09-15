@@ -19,9 +19,18 @@ use std::path::{Path, PathBuf};
 ///   for the turn cwd, `None` when nothing is discovered (system prefix stays
 ///   byte-stable for prefix caching).
 ///
+/// Discovery walks ~300 files, so the served block is cached per cwd behind
+/// a [`crate::skills::discovery_fingerprint`] (stat-only, no reads): any
+/// add/edit/remove flips the fingerprint and rescans, so a cache hit can
+/// never serve bytes a fresh discovery wouldn't — behavior is identical to
+/// per-turn rediscovery, minus the IO.
+///
 /// The stored system prompt (`~/.gray/AGENTS.md`) stays verbatim — this list
 /// is ephemeral per-turn context, never written anywhere.
-pub struct SkillsPlugin;
+#[derive(Default)]
+pub struct SkillsPlugin {
+    cache: std::sync::Mutex<Option<(String, u64, Option<String>)>>,
+}
 
 #[async_trait::async_trait]
 impl gray_plugin::Plugin for SkillsPlugin {
@@ -39,13 +48,25 @@ impl gray_plugin::Plugin for SkillsPlugin {
     }
 
     async fn prompt_context(&self, cwd: &str) -> Option<String> {
+        let fingerprint = crate::skills::discovery_fingerprint(Path::new(cwd));
+        if let Ok(guard) = self.cache.lock()
+            && let Some((cached_cwd, cached_fp, cached_block)) = guard.as_ref()
+            && *cached_cwd == cwd
+            && *cached_fp == fingerprint
+        {
+            return cached_block.clone();
+        }
         let found = crate::skills::discover_skills(Path::new(cwd));
         let block = crate::skills::format_skills_for_prompt(&found.skills);
-        if block.trim().is_empty() {
+        let out = if block.trim().is_empty() {
             None
         } else {
             Some(block)
+        };
+        if let Ok(mut guard) = self.cache.lock() {
+            *guard = Some((cwd.to_string(), fingerprint, out.clone()));
         }
+        out
     }
 }
 /// Read the exact `<project_context>` block the prompt hook serves for `cwd`:
@@ -144,9 +165,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn skills_context_matches_fresh_discovery_and_rescans_on_change() {
+        use gray_plugin::Plugin;
+        // Isolate from the user's real skills (see the test above for why
+        // this save/set/restore dance exists).
+        let prev_home = std::env::var("HOME").ok();
+        let prev_gray = std::env::var("GRAY_HOME").ok();
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let iso = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("HOME", iso.path());
+            std::env::set_var("GRAY_HOME", iso.path().join(".gray"));
+            std::env::set_var("XDG_CONFIG_HOME", iso.path().join(".config"));
+        }
+        let restore = || unsafe {
+            match &prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+            match &prev_gray {
+                Some(v) => std::env::set_var("GRAY_HOME", v),
+                None => std::env::remove_var("GRAY_HOME"),
+            }
+            match &prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        };
+
+        let work = tempfile::tempdir().unwrap();
+        let cwd = work.path().to_str().unwrap().to_string();
+        let fresh_block = || {
+            let found = crate::skills::discover_skills(work.path());
+            let block = crate::skills::format_skills_for_prompt(&found.skills);
+            if block.trim().is_empty() {
+                None
+            } else {
+                Some(block)
+            }
+        };
+        let write_skill = |name: &str, description: &str| {
+            let dir = work.path().join(".gray/skills").join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\ndescription: {description}\n---\nBody"),
+            )
+            .unwrap();
+        };
+
+        let plugin = SkillsPlugin::default();
+        // Fingerprint is stable with no changes…
+        let fp1 = crate::skills::discovery_fingerprint(work.path());
+        assert_eq!(fp1, crate::skills::discovery_fingerprint(work.path()));
+
+        write_skill("demo-a", "first demo skill");
+        // …moves when a skill appears…
+        let fp2 = crate::skills::discovery_fingerprint(work.path());
+        assert_ne!(fp1, fp2, "fingerprint must move on new skill");
+        // …and the served block matches a fresh discovery exactly (no
+        // behavior change vs per-turn rediscovery)…
+        let a = plugin.prompt_context(&cwd).await;
+        assert_eq!(a, fresh_block());
+        assert!(a.unwrap().contains("first demo skill"));
+        // …is stable across turns…
+        assert_eq!(plugin.prompt_context(&cwd).await, fresh_block());
+
+        // …moves on in-place edits (dir mtime alone would miss these)…
+        write_skill("demo-a", "edited demo description");
+        let fp3 = crate::skills::discovery_fingerprint(work.path());
+        assert_ne!(fp2, fp3, "fingerprint must move on content edit");
+        let b = plugin.prompt_context(&cwd).await;
+        assert_eq!(b, fresh_block());
+        assert!(b.unwrap().contains("edited demo description"));
+
+        // …and on removal.
+        std::fs::remove_dir_all(work.path().join(".gray/skills/demo-a")).unwrap();
+        let fp4 = crate::skills::discovery_fingerprint(work.path());
+        assert_ne!(fp3, fp4, "fingerprint must move on removal");
+        assert_eq!(plugin.prompt_context(&cwd).await, fresh_block());
+
+        restore();
+    }
+
+    #[tokio::test]
     async fn skills_plugin_is_context_only_and_serves_block() {
         use gray_plugin::Plugin;
-        let plugin = SkillsPlugin;
+        let plugin = SkillsPlugin::default();
         // Bash-only: no tools ride this plugin.
         assert!(
             plugin.tools().is_empty(),

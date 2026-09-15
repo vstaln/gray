@@ -57,6 +57,7 @@ pub(crate) async fn dispatch_command(
                 &mut *agent,
                 tui.as_ref().map(|(s, _)| s),
                 session_state.as_ref().map(|s| s.session_id.as_str()),
+                &mut *hide_thinking,
             )
             .await;
             Flow::Continue
@@ -98,6 +99,7 @@ pub(crate) async fn dispatch_command(
                 &mut *session_state,
                 &mut *session_totals,
                 tui.as_ref().map(|(s, _)| s),
+                &mut *hide_thinking,
             )
             .await;
             Flow::Continue
@@ -246,7 +248,7 @@ pub(crate) async fn dispatch_command(
             match result {
                 Ok(true) => {
                     *unconfigured = false;
-                    push_provider_connected(config, tui);
+                    push_provider_connected(config, tui, Some(&mut *hide_thinking));
                     reload_agent(
                         &mut *agent,
                         config,

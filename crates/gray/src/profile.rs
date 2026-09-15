@@ -29,7 +29,7 @@ fn gray_defaults() -> Vec<Arc<dyn Plugin>> {
         // Always on: per-turn `<available_skills>` context, no tools.
         // (The live agent path in `lib::build_agent` appends the same via
         // `extra_plugins`; this covers `--dump-manifest`/`builtin_registry`.)
-        Arc::new(SkillsPlugin) as Arc<dyn Plugin>,
+        Arc::new(SkillsPlugin::default()) as Arc<dyn Plugin>,
     ]
 }
 
@@ -89,7 +89,7 @@ pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bo
         if let Some(pos) = plugins.iter().position(|e| e.manifest().name == name) {
             plugins.remove(pos);
         }
-        plugins.push(Arc::new(SkillsPlugin) as Arc<dyn Plugin>);
+        plugins.push(Arc::new(SkillsPlugin::default()) as Arc<dyn Plugin>);
     }
     Ok((plugins, fallback))
 }
@@ -99,7 +99,7 @@ pub(crate) async fn active_plugins() -> anyhow::Result<(Vec<Arc<dyn Plugin>>, bo
 pub fn builtin_registry() -> gray_tools::Registry {
     from_plugins(&[
         Arc::new(ToolsMinimalPlugin) as Arc<dyn Plugin>,
-        Arc::new(SkillsPlugin) as Arc<dyn Plugin>,
+        Arc::new(SkillsPlugin::default()) as Arc<dyn Plugin>,
     ])
     .0
 }

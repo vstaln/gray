@@ -3,12 +3,12 @@ mod providers;
 pub(crate) use providers::ensure_disk_loaded;
 pub use providers::{
     ModelRate, cache_model_context, cache_model_context_if_absent, cache_model_reasoning,
-    cache_models_dev_if_absent, cached_model_ids, context_source, fetch_litellm_context_windows,
-    fetch_live_provider_models, fetch_models_dev_context, fetch_openrouter_rates, format_cost,
-    friendly_model_name, get_cached_model_context, get_model_rate, load_models_cache_to_memory,
-    model_supports_reasoning, parse_litellm_context_json, parse_models_dev_json,
-    parse_openrouter_models_json, save_models_cache_to_disk, supported_efforts,
-    supported_thinking_levels, turn_cost,
+    cache_models_dev_if_absent, cached_model_ids, clamp_thinking_level, context_source,
+    fetch_litellm_context_windows, fetch_live_provider_models, fetch_models_dev_context,
+    fetch_openrouter_rates, format_cost, friendly_model_name, get_cached_model_context,
+    get_model_rate, load_models_cache_to_memory, model_supports_reasoning,
+    parse_litellm_context_json, parse_models_dev_json, parse_openrouter_models_json,
+    save_models_cache_to_disk, supported_efforts, supported_thinking_levels, turn_cost,
 };
 
 static USER_CONTEXT_WINDOW: std::sync::OnceLock<std::sync::RwLock<Option<usize>>> =

@@ -6,6 +6,7 @@ impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.insert_tool_box(header, body);
         self.ensure_gap(1);
+        self.release_dock_seam();
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
