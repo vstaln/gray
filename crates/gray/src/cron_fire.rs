@@ -262,10 +262,9 @@ mod tests {
         let sh = dir.path().join("ok.sh");
         std::fs::write(&sh, "#!/bin/sh\necho hello\n").unwrap();
         #[cfg(unix)]
-        #[cfg(unix)]
         std::fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let out = run_pre_script(&sh, dir.path()).await;
-        assert!(out.ok);
+        assert!(out.ok, "stderr: {}", out.stderr_tail);
         assert!(out.stdout.contains("hello"));
     }
 

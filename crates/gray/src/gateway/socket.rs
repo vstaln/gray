@@ -258,10 +258,18 @@ mod tests {
         let answer: serde_json::Value = serde_json::from_slice(&line).unwrap();
         assert_eq!(answer["ok"], serde_json::json!(true));
         assert_eq!(
-            answer["result"]["cron"]["ticker_live"],
-            serde_json::json!(false)
+            answer["result"]["cron"],
+            serde_json::json!({
+                "ticker_live": false,
+                "last_tick_at": null,
+                "last_tick_kind": null,
+                "last_tick_secs_ago": null,
+                "overdue": 0,
+                "jobs": 0,
+            }),
+            "full cron payload: {}",
+            answer["result"]["cron"]
         );
-        assert_eq!(answer["result"]["cron"]["jobs"], serde_json::json!(0));
         assert_eq!(
             answer["result"]["answering_pid"],
             serde_json::json!(std::process::id())
