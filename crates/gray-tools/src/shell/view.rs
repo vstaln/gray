@@ -163,7 +163,7 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
     let total_lines = count_lines(&s);
     // Raw-log check (pre-sanitize): sanitize folds `\r\n` for display, so
     // the flag must come from the unfolded bytes.
-    let has_cr = log.iter().any(|&b| b == b'\r');
+    let has_cr = log.contains(&b'\r');
     if s.len() <= budget_bytes && total_lines <= budget_lines {
         return View {
             body: s,

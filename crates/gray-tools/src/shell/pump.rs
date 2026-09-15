@@ -64,7 +64,7 @@ impl MemView {
         }
         self.total_bytes += chunk.len() as u64;
         self.total_lines += chunk.iter().filter(|&&b| b == b'\n').count();
-        self.has_cr = self.has_cr || chunk.iter().any(|&b| b == b'\r');
+        self.has_cr = self.has_cr || chunk.contains(&b'\r');
     }
 
     fn into_summary(self, log_write_failed: bool) -> PumpSummary {
