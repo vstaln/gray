@@ -378,49 +378,42 @@ pub fn validate_skill_args(skill: &Skill, args: Option<&str>) -> Result<(), Stri
 // Handles global + project defaults with collision diagnostics.
 // ---------------------------------------------------------------------------
 
-fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
+/// Push a candidate root unless missing or identical to the global skills
+/// dir (dedup rule moved verbatim from `load_skills`).
+fn push_root(
+    roots: &mut Vec<(PathBuf, &'static str)>,
+    dir: PathBuf,
+    source: &'static str,
+    global_skills: &Path,
+) {
+    if dir.is_dir() && dir != global_skills {
+        roots.push((dir, source));
+    }
+}
+
+/// Candidate skill-search roots in first-wins order, with their source
+/// label (`"user"` global vs `"project"`). Single source of truth for
+/// [`load_skills`] and [`discovery_fingerprint`] so the fingerprint can
+/// never drift from what discovery reads. Only existing dirs are listed —
+/// the fingerprint additionally hashes the list itself, so a root appearing
+/// or vanishing flips it and triggers a rescan.
+fn skill_search_roots(cwd: &Path, agent_dir: &Path) -> Vec<(PathBuf, &'static str)> {
     let resolved_cwd = if cwd.as_os_str().is_empty() {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
         cwd.to_path_buf()
     };
     let resolved_agent_dir = agent_dir.to_path_buf();
-
-    let mut skill_map: HashMap<String, Skill> = HashMap::new();
-    let mut real_path_set: HashSet<PathBuf> = HashSet::new();
-
-    // Inline helper to avoid capturing the maps in a closure (borrowck).
-    let do_add = |result: LoadSkillsResult,
-                  skill_map: &mut HashMap<String, Skill>,
-                  real_path_set: &mut HashSet<PathBuf>| {
-        for skill in result.skills {
-            let real = canonicalize_path(&skill.file_path);
-            if real_path_set.contains(&real) {
-                continue;
-            }
-            if skill_map.get(&skill.name).is_none() {
-                real_path_set.insert(real);
-                skill_map.insert(skill.name.clone(), skill);
-            }
-        }
-    };
+    let mut roots: Vec<(PathBuf, &'static str)> = Vec::new();
 
     // global
     let global_skills = resolved_agent_dir.join("skills");
-    do_add(
-        load_skills_from_dir(&global_skills, "user"),
-        &mut skill_map,
-        &mut real_path_set,
-    );
+    if global_skills.is_dir() {
+        roots.push((global_skills.clone(), "user"));
+    }
     // P2-2: pi installs land in `<agent_dir>/plugins/pi/<pkg>/`.
     let pi_plugins = resolved_agent_dir.join("plugins").join("pi");
-    if pi_plugins.is_dir() && pi_plugins != global_skills {
-        do_add(
-            load_skills_from_dir(&pi_plugins, "user"),
-            &mut skill_map,
-            &mut real_path_set,
-        );
-    }
+    push_root(&mut roots, pi_plugins, "user", &global_skills);
     if let Some(home) = resolve_home() {
         // OpenCode global skills & plugins (e.g. superpowers)
         let config_base = std::env::var("XDG_CONFIG_HOME")
@@ -428,55 +421,42 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
             .unwrap_or_else(|_| home.join(".config"));
         let opencode_dir = config_base.join("opencode");
         let opencode_skills = opencode_dir.join("skills");
-        if opencode_skills.is_dir() && opencode_skills != global_skills {
-            do_add(
-                load_skills_from_dir(&opencode_skills, "user"),
-                &mut skill_map,
-                &mut real_path_set,
-            );
-        }
+        push_root(&mut roots, opencode_skills.clone(), "user", &global_skills);
         if let Ok(entries) = fs::read_dir(&opencode_dir) {
+            // `read_dir` order is filesystem-defined; first name match wins
+            // downstream, so duplicates across these subdirs resolve the
+            // same way here as they always have (no sorting: that would
+            // change which duplicate survives).
             for entry in entries.flatten() {
                 let sub_skills = entry.path().join("skills");
                 if sub_skills.is_dir()
                     && sub_skills != opencode_skills
                     && sub_skills != global_skills
                 {
-                    do_add(
-                        load_skills_from_dir(&sub_skills, "user"),
-                        &mut skill_map,
-                        &mut real_path_set,
-                    );
+                    roots.push((sub_skills, "user"));
                 }
             }
         }
 
         // Agents and Claude global skills
-        let agents_skills = home.join(".agents").join("skills");
-        if agents_skills.is_dir() && agents_skills != global_skills {
-            do_add(
-                load_skills_from_dir(&agents_skills, "user"),
-                &mut skill_map,
-                &mut real_path_set,
-            );
-        }
-        let claude_skills = home.join(".claude").join("skills");
-        if claude_skills.is_dir() && claude_skills != global_skills {
-            do_add(
-                load_skills_from_dir(&claude_skills, "user"),
-                &mut skill_map,
-                &mut real_path_set,
-            );
-        }
-
-        let pi_skills = home.join(".pi").join("agent").join("skills");
-        if pi_skills.is_dir() && pi_skills != global_skills {
-            do_add(
-                load_skills_from_dir(&pi_skills, "user"),
-                &mut skill_map,
-                &mut real_path_set,
-            );
-        }
+        push_root(
+            &mut roots,
+            home.join(".agents").join("skills"),
+            "user",
+            &global_skills,
+        );
+        push_root(
+            &mut roots,
+            home.join(".claude").join("skills"),
+            "user",
+            &global_skills,
+        );
+        push_root(
+            &mut roots,
+            home.join(".pi").join("agent").join("skills"),
+            "user",
+            &global_skills,
+        );
     }
     // project: walk up to git root collecting skills
     let git_root = find_git_root(&resolved_cwd);
@@ -504,13 +484,101 @@ fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
         for cfg in [".gray", ".opencode", ".agents", ".claude", ".pi"] {
             let d = ancestor.join(cfg).join("skills");
             if d.is_dir() {
-                do_add(
-                    load_skills_from_dir(&d, "project"),
-                    &mut skill_map,
-                    &mut real_path_set,
-                );
+                roots.push((d, "project"));
             }
         }
+    }
+    roots
+}
+
+/// Stat-only fingerprint of everything skill discovery reads: the resolved
+/// root set itself plus (name, kind, mtime, size) per entry underneath
+/// (symlinks listed, never followed — no cycle risk; dotfiles and
+/// `node_modules` skipped like the loader). No file is ever read, so this
+/// is ~10x cheaper than a full discovery; any add/edit/remove flips the
+/// hash and the caller rescans. Deliberate hole (documented, not fixed):
+/// ignore-rule (`.gitignore`) edits that change the *filtered set* without
+/// touching skills are invisible — they self-heal on the next agent rebuild.
+pub fn discovery_fingerprint(cwd: &Path) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::time::UNIX_EPOCH;
+
+    let mut h = DefaultHasher::new();
+    for (root, source) in skill_search_roots(cwd, &gray_agent_dir()) {
+        root.hash(&mut h);
+        source.hash(&mut h);
+        // Iterative deep walk; names sorted so `read_dir` order never leaks in.
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            let mut entries: Vec<_> = fs::read_dir(&dir)
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+            entries.sort_by_key(|a| a.file_name());
+            for e in entries {
+                let name = e.file_name();
+                let name_str = name.to_string_lossy();
+                if name_str.starts_with('.') || name_str == "node_modules" {
+                    continue;
+                }
+                name_str.hash(&mut h);
+                match e.file_type() {
+                    Ok(ft) if ft.is_dir() => {
+                        0u8.hash(&mut h);
+                        stack.push(e.path());
+                    }
+                    _ => {
+                        // File or symlink (never followed): content edits flip
+                        // mtime/size, retargets flip the link mtime.
+                        1u8.hash(&mut h);
+                        match fs::symlink_metadata(e.path()) {
+                            Ok(m) => {
+                                m.modified()
+                                    .ok()
+                                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                    .map(|d| d.as_nanos())
+                                    .unwrap_or(0)
+                                    .hash(&mut h);
+                                m.len().hash(&mut h);
+                            }
+                            Err(_) => 0u8.hash(&mut h),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    h.finish()
+}
+
+fn load_skills(cwd: &Path, agent_dir: &Path) -> LoadSkillsResult {
+    let mut skill_map: HashMap<String, Skill> = HashMap::new();
+    let mut real_path_set: HashSet<PathBuf> = HashSet::new();
+
+    // Inline helper to avoid capturing the maps in a closure (borrowck).
+    let do_add = |result: LoadSkillsResult,
+                  skill_map: &mut HashMap<String, Skill>,
+                  real_path_set: &mut HashSet<PathBuf>| {
+        for skill in result.skills {
+            let real = canonicalize_path(&skill.file_path);
+            if real_path_set.contains(&real) {
+                continue;
+            }
+            if skill_map.get(&skill.name).is_none() {
+                real_path_set.insert(real);
+                skill_map.insert(skill.name.clone(), skill);
+            }
+        }
+    };
+
+    // Same roots, same order as before (missing dirs are simply absent —
+    // the loader no-ops on them either way).
+    for (dir, source) in skill_search_roots(cwd, agent_dir) {
+        do_add(
+            load_skills_from_dir(&dir, source),
+            &mut skill_map,
+            &mut real_path_set,
+        );
     }
     let mut skills: Vec<Skill> = skill_map.into_values().collect();
     skills.sort_by(|a, b| a.name.cmp(&b.name));
