@@ -34,13 +34,25 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
 
     // Socket first (after the claim, hermes order): liveness answers before
     // the first tick, and a bind failure is loud but non-fatal.
+    // Unix-only: on Windows there is no control socket — pid + state files
+    // still answer `gateway status`.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    let socket_home = home.clone();
-    let socket_task = tokio::spawn(async move {
-        if let Err(e) = socket::serve(socket_home, stop_rx).await {
-            log::warn!("gateway: control socket disabled: {e:#}");
-        }
-    });
+    #[cfg(unix)]
+    let socket_task = {
+        let socket_home = home.clone();
+        tokio::spawn(async move {
+            if let Err(e) = socket::serve(socket_home, stop_rx).await {
+                log::warn!("gateway: control socket disabled: {e:#}");
+            }
+        })
+    };
+    #[cfg(not(unix))]
+    let socket_task = {
+        let _ = stop_rx;
+        tokio::spawn(async move {
+            log::warn!("gateway: control socket unavailable on this platform");
+        })
+    };
     let _ = state::write(
         &home,
         &state::record(state::STATE_RUNNING, None, started_at),
@@ -53,9 +65,8 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     let deliver = crate::cron_serve::SaveLocalDeliver { home: home.clone() };
     let mut interval = tokio::time::interval(Duration::from_secs(60));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    let exit_reason: &'static str;
+    let mut stop_signal = stop_signal();
+    let mut exit_reason: &'static str = "stop";
 
     enum TickEnd {
         Finished(anyhow::Result<crate::cron_serve::TickReport>),
@@ -69,8 +80,7 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
                 tokio::pin!(tick);
                 let end = tokio::select! {
                     report = &mut tick => TickEnd::Finished(report),
-                    _ = sigterm.recv() => TickEnd::Signalled("SIGTERM"),
-                    _ = sigint.recv() => TickEnd::Signalled("SIGINT"),
+                    reason = stop_signal.recv() => TickEnd::Signalled(reason.unwrap_or("stop")),
                 };
                 match end {
                     TickEnd::Finished(Ok(rep)) => {
@@ -84,8 +94,11 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
                     }
                 }
             }
-            _ = sigterm.recv() => { exit_reason = "SIGTERM"; break 'run; }
-            _ = sigint.recv() => { exit_reason = "SIGINT"; break 'run; }
+            _ = stop_signal.recv() => {
+                exit_reason = "stop";
+                break 'run;
+            }
+            else => break 'run,
         }
     }
 
@@ -98,6 +111,36 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
     pid::remove_owned(&home, record.pid);
     log::info!("gateway: stopped ({exit_reason})");
     Ok(())
+}
+
+/// Portable stop signal: SIGTERM/SIGINT on unix, Ctrl-C on Windows.
+/// Yields a static reason string so the state file says why we stopped.
+#[cfg(unix)]
+fn stop_signal() -> tokio::sync::mpsc::UnboundedReceiver<&'static str> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("SIGTERM handler");
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+        .expect("SIGINT handler");
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = sigterm.recv() => { let _ = tx.send("SIGTERM"); }
+            _ = sigint.recv() => { let _ = tx.send("SIGINT"); }
+        }
+    });
+    rx
+}
+
+/// Portable stop signal: SIGTERM/SIGINT on unix, Ctrl-C on Windows.
+/// Yields a static reason string so the state file says why we stopped.
+#[cfg(not(unix))]
+fn stop_signal() -> tokio::sync::mpsc::UnboundedReceiver<&'static str> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let _ = tokio::signal::ctrl_c().await;
+        let _ = tx.send("stop");
+    });
+    rx
 }
 
 /// Bounded drain for an in-flight fire (see module docs).

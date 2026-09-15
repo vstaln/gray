@@ -700,6 +700,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // serializes two registry builds sharing CURRENT_LEDGER
     async fn from_plugins_adopts_one_ledger_into_registry() {
         let _guard = build_lock();
         // Deferred T3.2 item: the registry's file_ledger must be the same

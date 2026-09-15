@@ -31,6 +31,7 @@ pub fn record_path(home: &Path) -> PathBuf {
 
 /// Boot-relative start tick of `pid` (field 22 of `/proc/<pid>/stat`), or
 /// `None` when unreadable (dead process, or no /proc on this platform).
+#[cfg(unix)]
 pub fn proc_start_time(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // comm may contain spaces and parentheses: split after the *last* ')'.
@@ -38,7 +39,15 @@ pub fn proc_start_time(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
+/// Non-unix fallback: no /proc starttime, so PID-reuse detection degrades
+/// to the existence probe (same tradeoff the old doc comment states).
+#[cfg(not(unix))]
+pub fn proc_start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
 /// Signal-0 probe: exists (possibly owned by another user) == alive.
+#[cfg(unix)]
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 || pid > i32::MAX as u32 {
         return false;
@@ -49,6 +58,14 @@ pub fn pid_alive(pid: u32) -> bool {
         libc::kill(pid as libc::pid_t, 0) == 0
             || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
+}
+
+/// Non-unix fallback: no signal-0 probe available. A record can only be
+/// trusted when its pid is our own process (fresh claim in this session);
+/// anything else reads as not-running so a new claim replaces it.
+#[cfg(not(unix))]
+pub fn pid_alive(pid: u32) -> bool {
+    pid != 0 && pid == std::process::id()
 }
 
 /// Live == the pid exists and its start time still matches the record.

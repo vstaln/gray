@@ -119,6 +119,10 @@ pub fn handle_request_line(home: &Path, raw: &[u8], now: i64) -> Vec<u8> {
 /// Serve the control socket until `stop` flips. A bind failure is the
 /// caller's to judge — non-fatal by design: cron ticking must not depend on
 /// this socket, and consumers fall back to the pid file.
+///
+/// Unix-only: Windows has no unix-domain sockets in this path, so the
+/// daemon runs socketless there (pid file + state file still work).
+#[cfg(unix)]
 pub async fn serve(
     home: PathBuf,
     mut stop: tokio::sync::watch::Receiver<bool>,
@@ -154,6 +158,7 @@ pub async fn serve(
     Ok(())
 }
 
+#[cfg(unix)]
 async fn serve_connection(home: PathBuf, stream: tokio::net::UnixStream) {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let (rd, mut wr) = stream.into_split();
@@ -182,6 +187,19 @@ pub fn query(home: &Path, verb: &str) -> Option<serde_json::Value> {
 }
 
 pub fn query_within(home: &Path, verb: &str, timeout: Duration) -> Option<serde_json::Value> {
+    #[cfg(not(unix))]
+    {
+        let _ = (home, verb, timeout);
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        unix_query_within(home, verb, timeout)
+    }
+}
+
+#[cfg(unix)]
+fn unix_query_within(home: &Path, verb: &str, timeout: Duration) -> Option<serde_json::Value> {
     let path = sock_path(home);
     if !path.exists() {
         return None;
@@ -251,6 +269,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn serve_answers_queries_and_cleans_up_on_stop() {
         let home = tempfile::tempdir().unwrap();
         let dir = home.path().to_path_buf();

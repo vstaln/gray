@@ -43,8 +43,16 @@ pub fn supervisor_kind() -> String {
 }
 
 fn parent_comm() -> Option<String> {
-    let ppid = unsafe { libc::getppid() };
-    proc_comm(ppid as u32)
+    #[cfg(unix)]
+    {
+        // SAFETY: getppid has no failure mode.
+        let ppid = unsafe { libc::getppid() };
+        proc_comm(ppid as u32)
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 fn proc_comm(pid: u32) -> Option<String> {
@@ -419,8 +427,18 @@ fn stop_by_pid(home: &Path) -> anyhow::Result<String> {
     let Some(rec) = super::pid::running(home) else {
         return Ok("gateway is not running".to_string());
     };
-    // SAFETY: SIGTERM is the documented stop path for a manual foreground run.
-    unsafe { libc::kill(rec.pid as libc::pid_t, libc::SIGTERM) };
+    #[cfg(unix)]
+    {
+        // SAFETY: SIGTERM is the documented stop path for a manual foreground run.
+        unsafe { libc::kill(rec.pid as libc::pid_t, libc::SIGTERM) };
+    }
+    #[cfg(not(unix))]
+    {
+        anyhow::bail!(
+            "cannot signal pid {} on this platform — end the `gateway run` process manually",
+            rec.pid
+        );
+    }
     for _ in 0..80 {
         if super::pid::running(home).is_none() {
             return Ok(format!("stopped (pid {})", rec.pid));
@@ -589,9 +607,13 @@ fn shell_quote(s: &str) -> String {
 
 fn write_executable(path: &Path, body: &str) -> anyhow::Result<()> {
     std::fs::write(path, body)?;
-    let mut perm = std::fs::metadata(path)?.permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
-    std::fs::set_permissions(path, perm)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut perm = std::fs::metadata(path)?.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(path, perm)?;
+    }
     Ok(())
 }
 
