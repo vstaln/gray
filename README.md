@@ -10,7 +10,6 @@
   <p><strong>A minimal, modular AI agent harness.</strong><br/>Start small. Extend anything.</p>
   <p>
     <a href="https://gray.alignment.id">Website</a> ·
-    <a href="docs/customize.md">Docs</a> ·
     <a href="CHANGELOG.md">Changelog</a> ·
     <a href="https://github.com/vstaln/gray/releases">Releases</a>
   </p>
@@ -110,7 +109,7 @@ Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--sessi
 
 ## Extend
 
-Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, providers, config) · [docs/plugins.md](docs/plugins.md) (plugin authoring) · [docs/protocol-v1.md](docs/protocol-v1.md) (frozen wire spec).
+Make gray yours via skills, plugins, providers, and config.
 
 **Skills** — `SKILL.md` bodies discovered in your global (`~/.gray/skills`) and project (`.gray/skills`) directories, plus a few conventional shared skill locations. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
 
@@ -152,7 +151,7 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 | `gray-cron` | cron scheduling · job store · ticker |
 | `gray-markdown` | streaming markdown renderer for the TUI |
 
-Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose). Shell-tool notes: [docs/harness/shell-tool.md](docs/harness/shell-tool.md).
+Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose).
 
 ## Environment
 
