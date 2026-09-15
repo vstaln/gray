@@ -151,6 +151,9 @@ pub struct Tui {
     pub(crate) matches: Vec<(String, String)>,
     pub(crate) sel: usize,
     status: Option<(Instant, String)>,
+    /// Latched status-dock seam (see `ratchet_seam`): keeps the viewport
+    /// still while the streaming tail flickers.
+    dock_seam: bool,
     active_compaction: Option<ActiveCompaction>,
     turn_started: Option<Instant>,
     turn_had_thinking: bool,
@@ -309,6 +312,7 @@ impl Tui {
             matches: Vec::new(),
             sel: 0,
             status: None,
+            dock_seam: false,
             active_compaction: None,
             turn_started: None,
             turn_had_thinking: false,
