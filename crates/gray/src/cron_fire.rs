@@ -31,8 +31,7 @@ pub fn is_silent_response(text: &str) -> bool {
     }
     text.lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
+        .rfind(|l| !l.is_empty())
         .is_some_and(|l| l.eq_ignore_ascii_case("[silent]"))
 }
 
