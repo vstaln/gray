@@ -17,14 +17,17 @@ pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+// Mechanical split of `run_repl_mode`: params are the loop state the arm borrows.
 pub(crate) async fn handle_resume(
-    config: &Config,
+    config: &mut Config,
     cwd: &Path,
     args: ResumeArgs,
     agent: &mut Option<Agent>,
     session_state: &mut Option<SessionState>,
     totals: &mut SessionTotals,
     tui: Option<&crate::composer::SharedTui>,
+    hide_thinking: &mut bool,
 ) {
     let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
     // Recall-first resolution for cwd-scoped `--last` (`--all` keeps the
@@ -162,6 +165,28 @@ pub(crate) async fn handle_resume(
             let model = eff_model.as_deref().unwrap_or("");
             let mut build_config = config.clone();
             build_config.model = eff_model.clone();
+            // Resume lands on the session's model: clamp a stale effort
+            // (e.g. saved `max` under a Spark session) before painting,
+            // and write the result back to the live config + saved file
+            // so the footer and the next boot agree.
+            if !model.is_empty()
+                && let Some((old, new)) =
+                    super::clamp_thinking_to_model_name(&mut build_config, model)
+            {
+                config.thinking_effort = Some(new.clone());
+                if let Ok(path) = crate::setup::saved_config_path() {
+                    let mut saved = crate::setup::load_saved_config_at(&path);
+                    saved.thinking_effort = Some(new.clone());
+                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                }
+                *hide_thinking = build_config.reasoning_hidden();
+                say(
+                    tui,
+                    &format!(
+                        "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                    ),
+                );
+            }
             match build_agent(&build_config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
@@ -183,6 +208,13 @@ pub(crate) async fn handle_resume(
                         // on the same effective model as the resumed agent.
                         if !model.is_empty() {
                             t.set_model(model.to_string());
+                        }
+                        // The resumed model keeps its own effort: paint it so
+                        // the footer follows the switch instead of the stale
+                        // pre-resume level.
+                        if let Some(eff) = &build_config.thinking_effort {
+                            t.set_thinking_effort(eff.clone());
+                            t.set_hide_thinking(build_config.reasoning_hidden());
                         }
                         t.push_dim(format!(
                             "\u{2b22} Resumed session {} ({n} messages)",

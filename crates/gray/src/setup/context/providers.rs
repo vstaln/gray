@@ -307,6 +307,38 @@ pub fn supported_thinking_levels(model_id: &str) -> Vec<(&'static str, &'static 
         .collect()
 }
 
+/// Clamps a thinking level to what `model_id` actually accepts (Prime-Agent
+/// `clampThinkingLevel` parity). Keeps `level` when supported, else the
+/// nearest level in `THINKING_LEVELS` order — upward first, then downward
+/// (so `max`→`xhigh` on Spark). `off` is always valid; unknown family
+/// → full catalog (kept); `model_supports_reasoning == Some(false)` →
+/// `off` only. Unknown/empty `level` falls back to the first supported level
+/// (`off`).
+pub fn clamp_thinking_level(model_id: &str, level: &str) -> &'static str {
+    let supported = supported_thinking_levels(model_id);
+    if let Some((l, _)) = supported.iter().find(|(l, _)| *l == level) {
+        return l;
+    }
+    let order: Vec<&str> = super::super::THINKING_LEVELS
+        .iter()
+        .map(|(l, _)| *l)
+        .collect();
+    let Some(req_idx) = order.iter().position(|l| *l == level) else {
+        return supported.first().map(|(l, _)| *l).unwrap_or("off");
+    };
+    for cand in order.iter().skip(req_idx) {
+        if let Some((l, _)) = supported.iter().find(|(l, _)| l == cand) {
+            return l;
+        }
+    }
+    for cand in order[..req_idx].iter().rev() {
+        if let Some((l, _)) = supported.iter().find(|(l, _)| l == cand) {
+            return l;
+        }
+    }
+    supported.first().map(|(l, _)| *l).unwrap_or("off")
+}
+
 /// Dynamically queries the provider's live /models endpoint (e.g. OpenAI, OpenRouter, Ollama, vLLM, LMStudio, etc.).
 pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -1005,6 +1037,52 @@ pub(crate) fn ensure_disk_loaded() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spark_levels_exclude_max_deepseek_v4_keeps_it() {
+        let spark: Vec<&str> = supported_thinking_levels("muse-spark-1.3-contributor")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert!(
+            !spark.contains(&"max"),
+            "spark must not offer max: {spark:?}"
+        );
+        assert!(spark.contains(&"xhigh"), "spark keeps xhigh: {spark:?}");
+        let v4: Vec<&str> = supported_thinking_levels("deepseek-v4")
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
+        assert!(v4.contains(&"max"), "deepseek-v4 keeps max: {v4:?}");
+    }
+
+    #[test]
+    fn clamp_max_to_xhigh_on_spark_keeps_supported_levels() {
+        // The footer bug: deepseek-v4(max) -> spark must show `xhigh`.
+        assert_eq!(
+            clamp_thinking_level("muse-spark-1.3-contributor", "max"),
+            "xhigh"
+        );
+        assert_eq!(
+            clamp_thinking_level("provider/muse-spark-1.3-contributor", "max"),
+            "xhigh"
+        );
+        assert_eq!(
+            clamp_thinking_level("muse-spark-1.3-contributor", "high"),
+            "high"
+        );
+        assert_eq!(
+            clamp_thinking_level("muse-spark-1.3-contributor", "off"),
+            "off"
+        );
+        assert_eq!(clamp_thinking_level("deepseek-v4", "max"), "max");
+        // Off is always valid; unknown family keeps the level.
+        assert_eq!(clamp_thinking_level("some-unknown-model-xyz", "max"), "max");
+        assert_eq!(
+            clamp_thinking_level("muse-spark-1.3-contributor", ""),
+            "off"
+        );
+    }
 
     // UNRUN (cargo test banned under X — verified via check + clippy only).
     #[test]

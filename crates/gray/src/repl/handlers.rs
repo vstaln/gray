@@ -289,6 +289,7 @@ pub(crate) async fn handle_model(
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
     session_id: Option<&str>,
+    hide_thinking: &mut bool,
 ) {
     if let Some(m) = direct {
         let (_, _, known) =
@@ -301,6 +302,12 @@ pub(crate) async fn handle_model(
             }
         };
         config.model = Some(m.clone());
+        // Clamp a stale effort before painting (e.g. deepseek `max` → Spark
+        // `xhigh`) so the footer never shows an unsupported level.
+        let clamped = super::clamp_thinking_to_model(config);
+        if clamped.is_some() {
+            *hide_thinking = config.reasoning_hidden();
+        }
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);
             saved.model = Some(m.clone());
@@ -309,10 +316,24 @@ pub(crate) async fn handle_model(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
+            if let Some((_, ref new)) = clamped {
+                t.set_thinking_effort(new.clone());
+                t.set_hide_thinking(*hide_thinking);
+            }
             t.push_action("Model set to", Some(&m));
+            if let Some((old, new)) = clamped {
+                t.push_dim(format!(
+                    "└ thinking effort clamped from {old} to {new} (not supported by this model)"
+                ));
+            }
             t.ensure_gap(1);
         } else {
             println!("✓ Model set to {m}");
+            if let Some((old, new)) = clamped {
+                println!(
+                    "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                );
+            }
         }
         if crate::setup::get_user_context_window().is_none()
             && crate::setup::get_cached_model_context(&m).is_none()
@@ -341,14 +362,33 @@ pub(crate) async fn handle_model(
     let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
+            // Picker switched the model: clamp a stale effort before
+            // painting so the footer never shows an unsupported level.
+            let clamped = super::clamp_thinking_to_model(config);
+            if clamped.is_some() {
+                *hide_thinking = config.reasoning_hidden();
+            }
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
                     t.push_action("Model set to", Some(m));
-                    t.ensure_gap(1);
                 }
+                if let Some((_, ref new)) = clamped {
+                    t.set_thinking_effort(new.clone());
+                    t.set_hide_thinking(*hide_thinking);
+                }
+                if let Some((old, new)) = clamped {
+                    t.push_dim(format!(
+                        "└ thinking effort clamped from {old} to {new} (not supported by this model)"
+                    ));
+                }
+                t.ensure_gap(1);
                 let _ = t.draw();
+            } else if let Some((old, new)) = clamped {
+                println!(
+                    "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                );
             }
             if let Some(m) = config.model.clone()
                 && crate::setup::get_user_context_window().is_none()
@@ -396,11 +436,14 @@ pub(crate) async fn handle_thinking(
 ) {
     if let Some(eff) = direct {
         let eff_clean = eff.to_lowercase();
-        if eff_clean == "off"
-            || crate::setup::THINKING_LEVELS
+        // Validate against what the CURRENT model accepts, not the global
+        // catalog — Prime-Agent rejects unknown-for-model levels the same way.
+        let supported: Vec<&str> =
+            crate::setup::supported_thinking_levels(&config.model.clone().unwrap_or_default())
                 .iter()
-                .any(|(l, _)| *l == eff_clean)
-        {
+                .map(|(l, _)| *l)
+                .collect();
+        if eff_clean == "off" || supported.iter().any(|l| *l == eff_clean) {
             config.thinking_effort = Some(eff_clean.clone());
             if let Ok(path) = crate::setup::saved_config_path() {
                 let mut saved = crate::setup::load_saved_config_at(&path);
@@ -421,7 +464,8 @@ pub(crate) async fn handle_thinking(
             return;
         }
         let msg = format!(
-            "unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max"
+            "unknown level '{eff_clean}' for this model — try: {}",
+            supported.join(", ")
         );
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");

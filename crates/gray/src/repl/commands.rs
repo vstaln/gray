@@ -250,8 +250,8 @@ fn complete_from_table(cmd: &str, arg_text: &str, table: &[(&str, &str)]) -> Vec
         .collect()
 }
 
-/// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): levels from
-/// [`crate::setup::THINKING_LEVELS`], the exact set `handle_thinking` accepts.
+/// Suffixes for `/thinking` (aliases `/effort`, `/reasoning`): global catalog.
+/// Direct sets validate against the per-model [`crate::setup::supported_thinking_levels`].
 fn complete_thinking_args(cmd: &str, arg_text: &str) -> Vec<(String, String)> {
     complete_from_table(cmd, arg_text, crate::setup::THINKING_LEVELS)
 }
