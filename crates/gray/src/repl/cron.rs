@@ -95,11 +95,7 @@ mod tests {
             last_tick: None,
             overdue: vec![],
         };
-        let out = format_cron_dashboard(
-            &[job("nightly", None)],
-            Some(&health),
-            1_700_000_000,
-        );
+        let out = format_cron_dashboard(&[job("nightly", None)], Some(&health), 1_700_000_000);
         assert!(out.contains("nightly"));
         assert!(out.contains("no tick has ever run"), "{out}");
         assert!(!out.contains("fire automatically in this session"), "{out}");

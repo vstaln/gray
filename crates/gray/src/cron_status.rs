@@ -106,7 +106,11 @@ mod tests {
         assert_eq!(ago_short(60), "1m");
         assert_eq!(ago_short(3 * 3600), "3h");
         assert_eq!(ago_short(16 * 86_400), "16d");
-        assert_eq!(ago_short(-5), "0s", "clock skew never prints a negative age");
+        assert_eq!(
+            ago_short(-5),
+            "0s",
+            "clock skew never prints a negative age"
+        );
     }
 
     #[test]

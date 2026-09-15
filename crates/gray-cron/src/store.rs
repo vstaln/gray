@@ -349,7 +349,9 @@ impl CronStore {
             if !job.enabled || job.state != JobState::Active {
                 continue;
             }
-            let Some(next) = job.next_run_at else { continue };
+            let Some(next) = job.next_run_at else {
+                continue;
+            };
             if next + TICKER_STALE_SECS >= now {
                 continue;
             }
@@ -1080,7 +1082,10 @@ mod tests {
     #[test]
     fn tick_stamp_round_trips_and_missing_reads_as_none() {
         let (_dir, store) = test_store();
-        assert!(store.last_tick().unwrap().is_none(), "fresh store ticked never");
+        assert!(
+            store.last_tick().unwrap().is_none(),
+            "fresh store ticked never"
+        );
         store.record_tick("serve").unwrap();
         let stamp = store.last_tick().unwrap().expect("stamp written");
         assert_eq!(stamp.kind, "serve");
@@ -1129,10 +1134,16 @@ mod tests {
     fn health_ignores_paused_and_not_yet_due_jobs() {
         let (_dir, store) = test_store();
         let due = store.add("due", "every 1h", "p", Deliver::Local).unwrap();
-        let future = store.add("future", "every 1h", "p", Deliver::Local).unwrap();
-        let paused = store.add("paused", "every 1h", "p", Deliver::Local).unwrap();
+        let future = store
+            .add("future", "every 1h", "p", Deliver::Local)
+            .unwrap();
+        let paused = store
+            .add("paused", "every 1h", "p", Deliver::Local)
+            .unwrap();
         store.set_next_run_for_test(&due, 1).unwrap();
-        store.set_next_run_for_test(&future, now_secs() + 3600).unwrap();
+        store
+            .set_next_run_for_test(&future, now_secs() + 3600)
+            .unwrap();
         store.set_next_run_for_test(&paused, 1).unwrap();
         store.set_paused(&paused, true).unwrap();
         let health = store.health(now_secs()).unwrap();

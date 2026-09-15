@@ -568,7 +568,8 @@ pub async fn run_repl_mode(
                     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                     loop {
                         interval.tick().await;
-                        match crate::cron_serve::tick_once(&store, &runner, &deliver, "repl").await {
+                        match crate::cron_serve::tick_once(&store, &runner, &deliver, "repl").await
+                        {
                             Ok(rep) if rep.fired > 0 => crate::host::queue_say(format!(
                                 "⏰ cron tick: fired={} errors={}",
                                 rep.fired, rep.errors

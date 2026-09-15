@@ -367,7 +367,10 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             // A schedule nothing ticks looks identical to a live one in the
             // rows above; this line is the only place that says otherwise.
             let now = gray_cron::now_secs();
-            println!("{}", gray::cron_status::ticker_line(&store.health(now)?, now));
+            println!(
+                "{}",
+                gray::cron_status::ticker_line(&store.health(now)?, now)
+            );
             Ok(())
         }
         CronCmd::Add {
@@ -413,7 +416,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 .unwrap_or_else(|| "-".to_string());
             println!("added {id} next {next}");
             let stamp = store.last_tick()?;
-            if let Some(warn) = gray::cron_status::add_warning(stamp.as_ref(), gray_cron::now_secs())
+            if let Some(warn) =
+                gray::cron_status::add_warning(stamp.as_ref(), gray_cron::now_secs())
             {
                 println!("{warn}");
             }
