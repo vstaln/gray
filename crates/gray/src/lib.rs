@@ -60,6 +60,7 @@ Guidelines:
 - Read surrounding code, types, and tests before changing anything; match existing patterns.
 - Give error and edge cases the same care as happy paths; fix root causes.
 - Verify by building and testing; only claim what you actually ran.
+- Before finishing, verify your own result: re-read every file you wrote and re-run your own checks (trailing newlines and exact bytes matter).
 - Commands run non-interactively without a TTY. Never run commands that prompt for interactive passwords (e.g. `sudo` without passwordless setup, `ssh` without keys). Use non-interactive flags (e.g. `sudo -n`) instead.
 - When referencing files or URLs in responses, format them with absolute paths or file:// links (e.g. file:///path/to/file or [label](file:///path/to/file)) and standard web URLs so they are clickable in the terminal.
 - Keep going until done or truly blocked. A failed tool call means try differently, not give up."#;
