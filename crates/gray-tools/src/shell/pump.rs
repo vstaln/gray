@@ -37,6 +37,7 @@ struct MemView {
     tail: VecDeque<u8>,
     total_bytes: u64,
     total_lines: usize,
+    has_cr: bool,
 }
 
 impl MemView {
@@ -46,6 +47,7 @@ impl MemView {
             tail: VecDeque::with_capacity(MEM_TAIL_BYTES),
             total_bytes: 0,
             total_lines: 0,
+            has_cr: false,
         }
     }
 
@@ -62,6 +64,7 @@ impl MemView {
         }
         self.total_bytes += chunk.len() as u64;
         self.total_lines += chunk.iter().filter(|&&b| b == b'\n').count();
+        self.has_cr = self.has_cr || chunk.contains(&b'\r');
     }
 
     fn into_summary(self, log_write_failed: bool) -> PumpSummary {
@@ -70,6 +73,7 @@ impl MemView {
             total_lines: self.total_lines,
             head: self.head,
             tail: self.tail.into_iter().collect(),
+            has_cr: self.has_cr,
             log_write_failed,
         }
     }
@@ -246,6 +250,17 @@ mod tests {
         assert!(log_capped(0, SHELL_LOG_MAX_BYTES + 1));
         assert!(log_capped(SHELL_LOG_MAX_BYTES, 1));
         assert!(!log_capped(SHELL_LOG_MAX_BYTES - 2, 1));
+    }
+
+    #[test]
+    fn mem_view_tracks_cr_across_chunks() {
+        let mut mem = MemView::new();
+        mem.push(b"line one\nline two");
+        assert!(!mem.has_cr);
+        mem.push(b"\r\nline three\r\n");
+        assert!(mem.has_cr);
+        let s = mem.into_summary(false);
+        assert!(s.has_cr);
     }
 
     #[test]

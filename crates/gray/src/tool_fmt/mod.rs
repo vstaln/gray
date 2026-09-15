@@ -131,6 +131,52 @@ fn truncate_cmd(cmd: &str) -> &str {
     if line.len() > 80 { &line[..80] } else { line }
 }
 
+/// Heredoc hidden in a bash command (`cat <<'EOF' > path` … `EOF`):
+/// returns the body plus the redirect target, if any, so replay shows the
+/// code gray wrote or ran (bash-only harness: the `write`-tool arm never
+/// fires, and the one-line header plus trivial stdout would hide it).
+/// First heredoc wins; unclosed or empty bodies yield None.
+fn heredoc_body(command: &str) -> Option<(String, Option<String>)> {
+    let mut lines = command.lines();
+    let mut opener = None;
+    for line in lines.by_ref() {
+        if line.contains("<<") {
+            opener = Some(line.to_string());
+            break;
+        }
+    }
+    let opener = opener?;
+    let after = opener.split_once("<<")?.1.trim();
+    let after = after.strip_prefix('-').unwrap_or(after).trim();
+    let delim = after
+        .split_whitespace()
+        .next()
+        .map(|t| t.trim_matches(|c| c == '\'' || c == '"'))
+        .filter(|d| !d.is_empty())?;
+    let target = opener
+        .split('>')
+        .skip(1)
+        .filter_map(|t| {
+            t.trim_start_matches('>')
+                .split_whitespace()
+                .next()
+                .map(|s| s.trim_matches(|c| c == '\'' || c == '"').to_string())
+        })
+        .find(|t| !t.is_empty() && !t.starts_with('&'));
+    let mut body: Vec<&str> = Vec::new();
+    for line in lines {
+        if line.trim() == delim {
+            return if body.is_empty() {
+                None
+            } else {
+                Some((body.join("\n"), target))
+            };
+        }
+        body.push(line);
+    }
+    None
+}
+
 /// Resolves the display name for a `skill` tool call, matching opencode's
 /// `Skill "name"` header. Prefers explicit `name`/`skill` args, then derives
 /// from `path`/`location` (parent dir for SKILL.md, else file stem).
@@ -593,17 +639,33 @@ pub fn format_tool_result_lines_with_context(
     }
 
     let trimmed = strip_shell_fence(output.trim());
-    if trimmed.is_empty() {
-        return Vec::new();
+    let mut rows = if trimmed.is_empty() {
+        Vec::new()
+    } else {
+        // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
+        // full output stays in model context, TUI only renders a window.
+        // ponytail: reuse render_code_block cap, no new collapsing system.
+        let (pretty, token) = prettify_output(&trimmed);
+        let syntect = gray_markdown::get_syntect();
+        let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
+        render_numbered_lines(&pretty.lines().collect::<Vec<_>>(), &mut highlighter)
+    };
+    // Bash-only harness: file writes arrive as heredocs, whose bodies the
+    // one-line header never shows — render them like the `write` arm does
+    // (same cap), ahead of the command output.
+    if tool_name == "bash"
+        && let Some(cmd) = args.and_then(|a| a.get("command")).and_then(|v| v.as_str())
+        && let Some((body, target)) = heredoc_body(cmd)
+    {
+        let hp = target.map(|t| match cwd {
+            Some(c) => c.join(&t),
+            None => std::path::PathBuf::from(&t),
+        });
+        let mut code = render_code_block(&body, hp.as_deref());
+        code.append(&mut rows);
+        rows = code;
     }
-
-    // Cap display like code blocks (40-line threshold → 18 head + 6 tail):
-    // full output stays in model context, TUI only renders a window.
-    // ponytail: reuse render_code_block cap, no new collapsing system.
-    let (pretty, token) = prettify_output(&trimmed);
-    let syntect = gray_markdown::get_syntect();
-    let mut highlighter = token.and_then(|t| syntect.highlight_lines_for_token(t));
-    render_numbered_lines(&pretty.lines().collect::<Vec<_>>(), &mut highlighter)
+    rows
 }
 
 mod plain;
@@ -616,6 +678,43 @@ mod tests {
 
     fn row_text(l: &Line<'_>) -> String {
         l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn bash_args(cmd: &str) -> serde_json::Value {
+        serde_json::json!({"command": cmd})
+    }
+
+    #[test]
+    fn bash_heredoc_write_renders_code_then_output() {
+        // Bash-only harness: file writes arrive as heredocs whose bodies the
+        // one-line header never shows. The box must carry the written code
+        // (like the `write` arm) plus the command output.
+        let cmd = "cat <<'EOF' > pid.rs\nfn main() {}\nEOF";
+        let out = "exit 0 · patched pid.rs";
+        let lines =
+            format_tool_result_lines_with_context("bash", Some(&bash_args(cmd)), out, false, None);
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("fn main()"), "written code missing: {text:?}");
+        assert!(text.contains("patched pid.rs"), "output missing: {text:?}");
+        assert!(text.contains("1 | "), "code not numbered: {text:?}");
+    }
+
+    #[test]
+    fn bash_python_heredoc_without_redirect_renders_body() {
+        let cmd = "python3 - <<'PY'\nprint(1)\nPY";
+        let lines =
+            format_tool_result_lines_with_context("bash", Some(&bash_args(cmd)), "", false, None);
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("print(1)"), "ran code missing: {text:?}");
+    }
+
+    #[test]
+    fn bash_unclosed_heredoc_falls_back_to_output_only() {
+        let cmd = "cat <<'EOF'\npartial";
+        let lines =
+            format_tool_result_lines_with_context("bash", Some(&bash_args(cmd)), "hi", false, None);
+        let text: String = lines.iter().map(row_text).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("hi"), "output missing: {text:?}");
     }
 
     #[test]

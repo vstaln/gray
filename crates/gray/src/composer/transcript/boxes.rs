@@ -224,7 +224,16 @@ impl Tui {
                 gray_core::Role::Assistant => {
                     for block in &entry.message.content {
                         match block {
-                            gray_core::ContentBlock::Thinking { .. } => {}
+                            gray_core::ContentBlock::Thinking { text, .. } => {
+                                // Persisted reasoning replays dim+italic like
+                                // live thinking (no `Thought for` timing —
+                                // that only exists live). Previously dropped.
+                                let rows = thinking_replay_lines(text);
+                                if !rows.is_empty() {
+                                    self.ensure_gap(1);
+                                    self.push_styled_lines_with_hyperlinks(rows, &[], 0);
+                                }
+                            }
                             gray_core::ContentBlock::Text { text } => {
                                 let clean = strip_ansi(text);
                                 if !clean.trim().is_empty() {
@@ -350,6 +359,19 @@ pub(crate) fn rebase_hyperlinks_for_slice(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replayed_thinking_keeps_every_line_dim_italic() {
+        // Resume must show persisted reasoning: one row per source line,
+        // in the live thinking style. Blank blocks paint nothing.
+        let rows = thinking_replay_lines("first\nsecond");
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        for r in &rows {
+            assert!(r.spans.iter().all(|s| s.style == thinking_style()), "{r:?}");
+        }
+        assert!(thinking_replay_lines("   \n  ").is_empty());
+        assert!(thinking_replay_lines("").is_empty());
+    }
 
     #[test]
     fn adjacent_file_links_do_not_steal_previous_url() {

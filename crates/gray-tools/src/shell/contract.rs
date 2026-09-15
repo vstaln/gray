@@ -43,6 +43,9 @@ pub struct View {
     pub omitted_range: Option<(u64, u64)>,
     pub total_lines: usize,
     pub total_bytes: u64,
+    /// Raw bytes contain `\r`: the rendered body folds CRLF for display, so
+    /// the header must say so (a CRLF file and an LF file render identically).
+    pub has_cr: bool,
 }
 
 pub struct PumpSummary {
@@ -50,6 +53,9 @@ pub struct PumpSummary {
     pub total_lines: usize,
     pub head: Vec<u8>,
     pub tail: Vec<u8>,
+    /// Any streamed chunk contained `\r` (exact: tracked while pumping, so
+    /// CRs in the omitted middle still count).
+    pub has_cr: bool,
     /// Set when the log dir/file could not be created or a write failed.
     /// The memory view stays alive either way; never panics.
     pub log_write_failed: bool,

@@ -540,6 +540,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // serial guard must cover the whole test (env + gray home)
     async fn manual_compact_passes_instructions_to_trigger() {
         use async_trait::async_trait;
         use futures::stream::BoxStream;

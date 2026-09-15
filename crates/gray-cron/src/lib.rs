@@ -7,4 +7,7 @@ pub mod schedule;
 pub mod store;
 
 pub use schedule::Schedule;
-pub use store::{CronJob, CronStore, Deliver, RunStatus, now_secs};
+pub use store::TICKER_STALE_SECS;
+pub use store::{
+    CronHealth, CronJob, CronStore, Deliver, OverdueJob, RunStatus, TickStamp, now_secs,
+};

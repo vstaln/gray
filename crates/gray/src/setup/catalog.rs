@@ -322,8 +322,29 @@ pub struct ConnectItem {
     pub no_auth: bool,
 }
 
+/// Trims a pasted custom base URL to the API root: strips whitespace,
+/// trailing slashes, and route suffixes (`/chat/completions`, `/messages`,
+/// `/models`) so `…/v1/chat/completions` becomes `…/v1`.
+pub fn normalize_custom_base_url(raw: &str) -> String {
+    let mut s = raw.trim().trim_end_matches('/').to_string();
+    loop {
+        let mut stripped: Option<String> = None;
+        for suffix in ["/chat/completions", "/messages", "/models"] {
+            if let Some(rest) = s.strip_suffix(suffix) {
+                stripped = Some(rest.trim_end_matches('/').to_string());
+                break;
+            }
+        }
+        match stripped {
+            Some(next) => s = next,
+            None => break,
+        }
+    }
+    s
+}
+
 /// Builds the full list of providers for the connect modal:
-/// Popular section on top, followed by all catalog providers under Providers.
+/// Custom on top, then popular, followed by all catalog providers.
 pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
         (
@@ -352,6 +373,13 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
             "OpenRouter",
             "(Access 300+ models)",
             "https://openrouter.ai/api/v1",
+            false,
+        ),
+        (
+            "commandcode",
+            "CommandCode",
+            "(API key)",
+            "https://api.commandcode.ai/provider/v1",
             false,
         ),
         (
@@ -401,6 +429,16 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let mut items = Vec::new();
     let mut popular_ids = std::collections::HashSet::new();
 
+    // Custom OpenAI/Anthropic-compatible endpoint, always first (separator drawn under it).
+    popular_ids.insert("custom".to_string());
+    items.push(ConnectItem {
+        id: "custom".to_string(),
+        name: "Custom".to_string(),
+        sublabel: "(OpenAI/Anthropic compatible)".to_string(),
+        base_url: String::new(),
+        no_auth: false,
+    });
+
     for (id, name, sublabel, base_url, no_auth) in popular_defs {
         popular_ids.insert(id.to_string());
         let url = catalog.get(id).map_or(base_url, |p| p.base_url.as_str());
@@ -437,6 +475,45 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_is_first_entry() {
+        let catalog = load_catalog().expect("catalog");
+        let items = build_connect_items(&catalog);
+        assert_eq!(items[0].id, "custom");
+        assert!(items[0].sublabel.contains("OpenAI"));
+    }
+
+    #[test]
+    fn commandcode_pinned_with_provider_base() {
+        let catalog = load_catalog().expect("catalog");
+        let items = build_connect_items(&catalog);
+        let cc = items
+            .iter()
+            .find(|i| i.id == "commandcode")
+            .expect("commandcode pinned");
+        assert_eq!(cc.base_url, "https://api.commandcode.ai/provider/v1");
+    }
+
+    #[test]
+    fn normalize_custom_base_url_trims_suffixes() {
+        assert_eq!(
+            normalize_custom_base_url("https://x.example/v1/chat/completions "),
+            "https://x.example/v1"
+        );
+        assert_eq!(
+            normalize_custom_base_url("https://x.example/v1/messages"),
+            "https://x.example/v1"
+        );
+        assert_eq!(
+            normalize_custom_base_url("https://x.example/v1/models"),
+            "https://x.example/v1"
+        );
+        assert_eq!(
+            normalize_custom_base_url("http://localhost:11434/v1/"),
+            "http://localhost:11434/v1"
+        );
+    }
 
     #[test]
     fn saving_key_preserves_oauth_objects() {

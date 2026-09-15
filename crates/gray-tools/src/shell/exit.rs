@@ -49,7 +49,7 @@ pub fn exit_report(status: std::process::ExitStatus, command: &str) -> ExitRepor
     let mut note: Option<String> = signal_note(effective).map(str::to_string);
     if let Some(b) = benign_note(&head, effective) {
         note = Some(b.to_string());
-    } else if effective == 0 && !command.contains("pipefail") {
+    } else if effective == 0 {
         note = masked_note(command);
     }
     // `ls` exit 2 ("No such file") is deliberately NOT benign: a missing
@@ -131,9 +131,13 @@ fn masked_note(command: &str) -> Option<String> {
         return None;
     }
     let first = base_head(&segs[0]);
+    // POSIX-honest: the executor is `sh -c` (dash on some systems), so
+    // `set -o pipefail` is not available. Rerunning the first stage alone
+    // works in every shell.
     Some(format!(
-        "`{}` reports {last}'s exit, not {first}'s; rerun with `set -o pipefail;` to see the real status",
-        command.trim()
+        "`{}` reports {last}'s exit, not {first}'s; rerun `{}` without the pipe to see the real status",
+        command.trim(),
+        segs[0].trim()
     ))
 }
 
@@ -194,15 +198,25 @@ mod exit_tests {
     }
 
     #[test]
-    fn masked_pipeline_gets_pipefail_note() {
+    fn masked_pipeline_note_is_posix_honest() {
+        // The executor is `sh -c` (dash on some systems): the note must
+        // never recommend `set -o pipefail` (a bashism dash rejects with
+        // exit 2). POSIX advice — rerun the first stage without the pipe —
+        // works in every shell.
         let r = exit_report(code(0), "false | tail -1");
-        assert!(r.note.as_deref().unwrap_or("").contains("pipefail"));
+        let note = r.note.as_deref().unwrap_or("");
+        assert!(!note.contains("pipefail"), "{note}");
+        assert!(note.contains("tail"), "{note}");
+        assert!(note.contains("false"), "{note}");
     }
 
     #[test]
-    fn pipefail_suppresses_masked_note() {
-        let r = exit_report(code(1), "set -o pipefail; false | tail -1");
-        assert!(r.note.is_none());
+    fn pipefail_mention_does_not_suppress_masked_note() {
+        // Leftover-word false negative: the note keys off the pipeline
+        // shape, not the command text. A command merely mentioning
+        // "pipefail" under `sh -c` still reports the tail's exit.
+        let r = exit_report(code(0), "echo pipefail | tail -1");
+        assert!(r.note.is_some());
     }
 
     #[test]

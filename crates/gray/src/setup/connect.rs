@@ -40,6 +40,10 @@ pub fn run_connect_modal(
 
     enum ModalState {
         Selecting,
+        EnteringBaseUrl {
+            url_buf: String,
+            status_msg: Option<String>,
+        },
         EnteringKey {
             item: ConnectItem,
             key_buf: String,
@@ -109,6 +113,12 @@ pub fn run_connect_modal(
                         config,
                         &auth_keys,
                         &colors,
+                    ),
+                    ModalState::EnteringBaseUrl {
+                        url_buf,
+                        status_msg,
+                    } => super::connect_draw::render_entering_url(
+                        frame, area, url_buf, status_msg, &colors,
                     ),
                     ModalState::EnteringKey {
                         item,
@@ -214,7 +224,12 @@ pub fn run_connect_modal(
                             KeyCode::Esc => return Ok(false),
                             KeyCode::Enter => {
                                 if let Some(&item) = filtered.get(sel) {
-                                    if item.no_auth {
+                                    if item.id == "custom" {
+                                        state = ModalState::EnteringBaseUrl {
+                                            url_buf: String::new(),
+                                            status_msg: None,
+                                        };
+                                    } else if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
                                         let models =
@@ -254,6 +269,74 @@ pub fn run_connect_modal(
                         _ => {}
                     }
                 }
+                ModalState::EnteringBaseUrl {
+                    url_buf,
+                    status_msg,
+                } => match read()? {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char('c'),
+                        modifiers,
+                        kind: KeyEventKind::Press,
+                        ..
+                    }) if modifiers.contains(KeyModifiers::CONTROL) => {
+                        state = ModalState::Selecting;
+                    }
+                    Event::Key(KeyEvent {
+                        code,
+                        kind: KeyEventKind::Press,
+                        ..
+                    }) => match code {
+                        KeyCode::Esc => {
+                            state = ModalState::Selecting;
+                        }
+                        KeyCode::Char(ch) => {
+                            url_buf.push(ch);
+                            *status_msg = None;
+                        }
+                        KeyCode::Backspace => {
+                            url_buf.pop();
+                            *status_msg = None;
+                        }
+                        KeyCode::Enter => {
+                            let normalized = normalize_custom_base_url(url_buf);
+                            let valid = normalized.starts_with("http://")
+                                || normalized.starts_with("https://");
+                            if normalized.is_empty() || !valid {
+                                *status_msg =
+                                    Some("Enter a valid base URL (e.g. https://…/v1)".into());
+                            } else {
+                                let existing =
+                                    load_auth_keys().get("custom").cloned().or_else(|| {
+                                        if config.base_url == normalized {
+                                            config.api_key.clone()
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                let item = ConnectItem {
+                                    id: "custom".to_string(),
+                                    name: "Custom".to_string(),
+                                    sublabel: "(OpenAI/Anthropic compatible)".to_string(),
+                                    base_url: normalized,
+                                    no_auth: false,
+                                };
+                                state = ModalState::EnteringKey {
+                                    item,
+                                    key_buf: String::new(),
+                                    existing_key: existing,
+                                    status_msg: None,
+                                };
+                            }
+                        }
+                        _ => {}
+                    },
+                    Event::Paste(pasted) => {
+                        insert_paste(url_buf, &pasted);
+                        *status_msg = None;
+                    }
+                    Event::Resize(_, _) => {}
+                    _ => {}
+                },
                 ModalState::EnteringKey {
                     item,
                     key_buf,
@@ -292,9 +375,25 @@ pub fn run_connect_modal(
                             };
 
                             if final_key.is_empty() {
-                                *status_msg =
-                                    Some("No API key entered — please enter a valid key".into());
-                            } else if existing_key.is_some() {
+                                if item.id == "custom" && existing_key.is_none() {
+                                    // Keyless custom endpoint (local models): skip
+                                    // auth save and go straight to model picking.
+                                    config.base_url = item.base_url.clone();
+                                    config.api_key = None;
+                                    let models = fetch_live_provider_models(&item.base_url, None);
+                                    state = ModalState::SelectingModel {
+                                        item: item.clone(),
+                                        models,
+                                        filter: String::new(),
+                                        sel: 0,
+                                        scroll_top: 0,
+                                    };
+                                } else {
+                                    *status_msg = Some(
+                                        "No API key entered — please enter a valid key".into(),
+                                    );
+                                }
+                            } else if existing_key.is_some() && item.id != "custom" {
                                 save_auth_key(&item.id, &final_key)?;
                                 let path = saved_config_path()?;
                                 let mut saved = load_saved_config_at(&path);

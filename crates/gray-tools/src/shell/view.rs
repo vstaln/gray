@@ -161,6 +161,9 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
     let s = sanitize(log);
     let total_bytes = s.len() as u64;
     let total_lines = count_lines(&s);
+    // Raw-log check (pre-sanitize): sanitize folds `\r\n` for display, so
+    // the flag must come from the unfolded bytes.
+    let has_cr = log.contains(&b'\r');
     if s.len() <= budget_bytes && total_lines <= budget_lines {
         return View {
             body: s,
@@ -170,6 +173,7 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
             omitted_range: None,
             total_lines,
             total_bytes,
+            has_cr,
         };
     }
     let head_byte_budget = (budget_bytes as f32 * VIEW_HEAD_FRACTION).floor() as usize;
@@ -193,6 +197,7 @@ pub fn middle_out(log: &[u8], budget_bytes: usize, budget_lines: usize, base_off
         omitted_range,
         total_lines,
         total_bytes,
+        has_cr,
     }
 }
 
@@ -215,9 +220,12 @@ pub fn resume_hint(view: &View) -> String {
 }
 
 /// First result line: "{label}{(note)} \u{00b7} {elapsed} \u{00b7} {total} lines[ \u{00b7} showing
-/// first h + last t \u{00b7} omitted \u{00b7} grep-hint] \u{00b7} log {path}[ \u{00b7} no output]".
+/// first h + last t \u{00b7} omitted \u{00b7} grep-hint][ \u{00b7} CR folded] \u{00b7} log {path}[ \u{00b7} no output]".
 /// The grep hint points at the on-disk log (never rerun to see more); the
 /// log path stays last so `split("\u{00b7} log ")` parsers keep working.
+/// `CR folded` discloses sanitize's CRLF folding: without it a CRLF file
+/// and an LF file render identically and the model cannot see the bytes
+/// that fail a byte-exact check.
 pub fn header(
     report: &ExitReport,
     view: Option<&View>,
@@ -241,8 +249,12 @@ pub fn header(
         ),
         _ => String::new(),
     };
+    let folded = match view {
+        Some(v) if v.has_cr => " \u{00b7} CR folded for display",
+        _ => "",
+    };
     let mut out = format!(
-        "{label}{note} \u{00b7} {} \u{00b7} {} lines{showing} \u{00b7} log {}",
+        "{label}{note} \u{00b7} {} \u{00b7} {} lines{showing}{folded} \u{00b7} log {}",
         format_elapsed(elapsed),
         fmt_num(total),
         home_relative(log_path),
@@ -433,6 +445,33 @@ mod tests {
 
         let h5 = header(&r, None, Duration::from_millis(100), &log_path());
         assert!(h5.contains("no output"), "{h5}");
+    }
+
+    #[test]
+    fn crlf_sets_folded_flag_and_header_marker() {
+        // A CRLF file and an LF file render identically; the header must
+        // disclose the folding so the model can distrust the visible bytes.
+        let v = middle_out(b"id,name\r\n1,ann\r\n", 50 * 1024, 2000, 0);
+        assert!(v.has_cr);
+        assert_eq!(v.body, "id,name\n1,ann\n");
+        let h = header(
+            &report("exit 0", None),
+            Some(&v),
+            Duration::from_millis(100),
+            &log_path(),
+        );
+        assert!(h.contains("CR folded for display"), "{h}");
+        assert!(h.contains(" \u{00b7} log "), "log path stays last: {h}");
+
+        let clean = middle_out(b"id,name\n1,ann\n", 50 * 1024, 2000, 0);
+        assert!(!clean.has_cr);
+        let h2 = header(
+            &report("exit 0", None),
+            Some(&clean),
+            Duration::from_millis(100),
+            &log_path(),
+        );
+        assert!(!h2.contains("CR folded"), "{h2}");
     }
 
     #[test]

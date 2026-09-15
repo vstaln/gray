@@ -47,6 +47,11 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &["cost"],
     },
     CmdDef {
+        name: "cron",
+        desc: "list cron jobs (read-only)",
+        aliases: &[],
+    },
+    CmdDef {
         name: "copy",
         desc: "copy last assistant response",
         aliases: &[],
@@ -398,6 +403,8 @@ pub enum ReplCommand {
     ContextWindow(Option<String>),
     /// Session token + cost totals (`/usage` or `/cost`).
     Usage,
+    /// List cron jobs (read-only; manage via `gray cron` CLI).
+    CronJobs(Option<String>),
     /// Copy the last assistant response to the clipboard (`/copy`).
     Copy,
     /// Health checks: config, session store, provider reachability (`/doctor`).
@@ -505,6 +512,7 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("thinking") => ReplCommand::Thinking(opt(rest)),
         Some("context") => ReplCommand::ContextWindow(opt(rest)),
         Some("usage") => ReplCommand::Usage,
+        Some("cron") => ReplCommand::CronJobs(opt(rest)),
         Some("copy") => ReplCommand::Copy,
         Some("doctor") => ReplCommand::Doctor,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
@@ -1007,5 +1015,17 @@ mod tests {
             parse_command("/skills:commit"),
             ReplCommand::Unknown(_)
         ));
+    }
+
+    #[test]
+    fn cron_parses_bare_and_single_arg() {
+        assert!(matches!(
+            parse_command("/cron"),
+            ReplCommand::CronJobs(None)
+        ));
+        let ReplCommand::CronJobs(Some(id)) = parse_command("/cron abc123") else {
+            panic!("expected CronJobs(Some)");
+        };
+        assert_eq!(id, "abc123");
     }
 }

@@ -10,7 +10,6 @@
   <p><strong>A minimal, modular AI agent harness.</strong><br/>Start small. Extend anything.</p>
   <p>
     <a href="https://gray.alignment.id">Website</a> ·
-    <a href="docs/customize.md">Docs</a> ·
     <a href="CHANGELOG.md">Changelog</a> ·
     <a href="https://github.com/vstaln/gray/releases">Releases</a>
   </p>
@@ -102,7 +101,8 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 |---|---|
 | `gray resume [--last\|--all] [SESSION_ID]` | resume a conversation — picker, most-recent, or by id/prefix |
 | `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
-| `gray cron <list\|add\|remove\|show>` | recurring/one-shot jobs (file-only, no daemon needed) |
+| `gray cron <list\|add\|remove\|show>` | recurring/one-shot jobs (fired by the gateway, `serve`, a `tick` host, or the REPL) |
+| `gray gateway <run\|status\|start\|stop\|restart\|install\|uninstall>` | the daemon that fires cron with no REPL open — cron ticker + control socket, supervised as a user service |
 | `gray sessions prune` | session store maintenance |
 | `gray update` | update gray to the latest release |
 
@@ -110,7 +110,7 @@ Global flags: `-p/--print` (one-shot), `-c/--continue` (reopen latest), `--sessi
 
 ## Extend
 
-Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, providers, config) · [docs/plugins.md](docs/plugins.md) (plugin authoring) · [docs/protocol-v1.md](docs/protocol-v1.md) (frozen wire spec).
+Make gray yours via skills, plugins, providers, and config.
 
 **Skills** — `SKILL.md` bodies discovered in your global (`~/.gray/skills`) and project (`.gray/skills`) directories, plus a few conventional shared skill locations. `/skills` lists them, `/skills [name] [args]` pastes one into the chat and runs it (`/skill` is an alias). The model gets the fresh `<available_skills>` list every turn and reads matches with bash (`cat <location>`) — no skill tool, tools stay bash-only.
 
@@ -118,7 +118,9 @@ Make gray yours: [docs/customize.md](docs/customize.md) (skills, plugins, provid
 
 ## Scheduling
 
-The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`); execution and delivery arrive with the core scheduler (in progress).
+The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). Jobs fire when something ticks the store — the gateway daemon, `gray cron serve`, a `gray cron tick` host (cron/systemd timer), or an open REPL.
+
+**Gateway** — `gray gateway install` writes a user service (runit on Void, systemd `--user` elsewhere; `install --print` previews) running `gray gateway run`: a 60s cron ticker plus a control socket at `$GRAY_HOME/gateway.sock` answering `identify`/`status` (one JSON line in, one out — a connectable socket with a well-formed answer *is* liveness). `gray gateway status` reports daemon + service + ticker health and exits 1 when down; `start`/`stop`/`restart` drive the service, `uninstall` removes it. The daemon claims `$GRAY_HOME/gateway.pid` (O_EXCL, start-time-checked against PID reuse), records why it stopped in `gateway.state.json`, and drains an in-flight fire up to 65s on SIGTERM.
 
 <div align="center">
   <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
@@ -152,7 +154,7 @@ When usage nears the limit (`tokens > window − 16k` reserve), gray summarizes 
 | `gray-cron` | cron scheduling · job store · ticker |
 | `gray-markdown` | streaming markdown renderer for the TUI |
 
-Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose). Shell-tool notes: [docs/harness/shell-tool.md](docs/harness/shell-tool.md).
+Design notes: streaming first — text deltas, tool calls, and usage arrive as typed events over SSE. Logs go to `~/.gray/logs/gray.log` (`GRAY_LOG=debug` for the firehose).
 
 ## Environment
 

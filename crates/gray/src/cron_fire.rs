@@ -18,12 +18,21 @@ pub fn parse_wake_gate(output: &str) -> bool {
     !matches!(v.get("wakeAgent"), Some(serde_json::Value::Bool(false)))
 }
 
-/// `[SILENT]` prefix (case-insensitive, leading whitespace tolerated)
-/// suppresses delivery; the fire still records `ok`.
+/// `[SILENT]` (case-insensitive, trimmed) as the whole body, first line, or
+/// last line suppresses delivery; the fire still records `ok`. Forgiving of
+/// model output (hermes parity); a marker buried mid-body is ignored.
 pub fn is_silent_response(text: &str) -> bool {
-    text.trim_start()
-        .get(..8)
-        .is_some_and(|h| h.eq_ignore_ascii_case("[silent]"))
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    if first.eq_ignore_ascii_case("[silent]") {
+        return true;
+    }
+    text.lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .is_some_and(|l| l.eq_ignore_ascii_case("[silent]"))
 }
 
 /// Final prompt: optional `## skills` block (exact `<location>` paths, one
@@ -203,8 +212,10 @@ mod tests {
 
     #[test]
     fn silent_prefix_shapes() {
-        assert!(is_silent_response("[SILENT] nothing to report"));
-        assert!(is_silent_response("  [silent]  x"));
+        assert!(is_silent_response("[SILENT]"));
+        assert!(is_silent_response("[SILENT]\nreal line"));
+        assert!(is_silent_response("real line\n[SILENT]"));
+        assert!(is_silent_response("  [silent]  "));
         assert!(!is_silent_response("loud report"));
         assert!(!is_silent_response(""));
     }
@@ -251,10 +262,9 @@ mod tests {
         let sh = dir.path().join("ok.sh");
         std::fs::write(&sh, "#!/bin/sh\necho hello\n").unwrap();
         #[cfg(unix)]
-        #[cfg(unix)]
         std::fs::set_permissions(&sh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let out = run_pre_script(&sh, dir.path()).await;
-        assert!(out.ok);
+        assert!(out.ok, "stderr: {}", out.stderr_tail);
         assert!(out.stdout.contains("hello"));
     }
 

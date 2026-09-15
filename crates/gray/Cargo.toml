@@ -14,10 +14,6 @@ path = "src/lib.rs"
 name = "gray"
 path = "src/main.rs"
 
-[[bin]]
-name = "gray2"
-path = "src/main.rs"
-
 [dependencies]
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
@@ -45,7 +41,8 @@ image = { workspace = true }
 tempfile = { workspace = true }
 base64 = { workspace = true }
 async-trait = { workspace = true }
-# No gateway edge: gray ships no messaging adapters.
+libc = { workspace = true }
+# Gateway host only (lifecycle/socket/ticker): messaging adapters stay out of the binary.
 unicode-width = { workspace = true }
 ignore = { workspace = true }
 

@@ -125,9 +125,13 @@ pub(crate) fn render_selecting(
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
 
-    // 3. Provider List
+    // 3. Provider List (Custom stays first with a separator line under it)
     let list_y = inner.y + 3;
     let list_h = inner.height.saturating_sub(4) as usize;
+    let show_sep =
+        !filtered.is_empty() && filtered[0].id == "custom" && *scroll_top == 0 && list_h > 1;
+    // Separator consumes one visual row, so one fewer provider row fits.
+    let item_cap = list_h.saturating_sub(if show_sep { 1 } else { 0 });
 
     if filtered.is_empty() {
         let empty_msg = Paragraph::new(Line::from(vec![Span::styled(
@@ -139,12 +143,30 @@ pub(crate) fn render_selecting(
         let safe_sel = sel.min(filtered.len().saturating_sub(1));
         if safe_sel < *scroll_top {
             *scroll_top = safe_sel;
-        } else if safe_sel >= *scroll_top + list_h {
-            *scroll_top = safe_sel.saturating_sub(list_h.saturating_sub(1));
+        } else if safe_sel >= *scroll_top + item_cap {
+            *scroll_top = safe_sel.saturating_sub(item_cap.saturating_sub(1));
         }
+        // Recompute: scrolling Custom out hides the separator, freeing its row.
+        let show_sep =
+            !filtered.is_empty() && filtered[0].id == "custom" && *scroll_top == 0 && list_h > 1;
 
         for r in 0..list_h {
-            let idx = *scroll_top + r;
+            if show_sep && r == 1 {
+                let rule = "─".repeat(inner.width as usize);
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        rule,
+                        Style::default().fg(colors.text_dim).bg(colors.box_bg),
+                    ))),
+                    Rect::new(inner.x, list_y + r as u16, inner.width, 1),
+                );
+                continue;
+            }
+            let idx = if show_sep && r > 1 {
+                r - 1
+            } else {
+                *scroll_top + r
+            };
             if idx >= filtered.len() {
                 break;
             }
@@ -242,6 +264,134 @@ pub(crate) fn render_selecting(
     );
 }
 
+pub(crate) fn render_entering_url(
+    frame: &mut Frame,
+    area: Rect,
+    url_buf: &str,
+    status_msg: &Option<String>,
+    colors: &ConnectColors,
+) {
+    let dialog_w = 64.min(area.width.saturating_sub(4)).max(40).min(area.width);
+    let dialog_h = 10
+        .min(area.height.saturating_sub(2))
+        .max(8)
+        .min(area.height);
+    let dialog_x = (area.width.saturating_sub(dialog_w)) / 2;
+    let dialog_y = (area.height.saturating_sub(dialog_h)) / 3;
+    let dialog_rect = Rect::new(dialog_x, dialog_y, dialog_w, dialog_h);
+
+    frame.render_widget(Clear, dialog_rect);
+
+    let box_block = Block::default().style(Style::default().bg(colors.box_bg));
+    frame.render_widget(box_block, dialog_rect);
+
+    let pad_x = 3u16;
+    let inner_w = dialog_w.saturating_sub(pad_x * 2);
+    let inner = Rect::new(
+        dialog_x + pad_x,
+        dialog_y + 1,
+        inner_w,
+        dialog_h.saturating_sub(2),
+    );
+
+    let title_str = "Custom Provider";
+    let esc_str = "esc";
+    let pad_len =
+        (inner.width as usize).saturating_sub(title_str.chars().count() + esc_str.chars().count());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                title_str,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.box_bg),
+            ),
+            Span::styled(" ".repeat(pad_len), Style::default().bg(colors.box_bg)),
+            Span::styled(
+                esc_str,
+                Style::default().fg(colors.text_dim).bg(colors.box_bg),
+            ),
+        ])),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            "Provider: Custom (OpenAI/Anthropic compatible)",
+            Style::default().fg(colors.text_dim).bg(colors.box_bg),
+        )])),
+        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+    );
+
+    let input_content = if url_buf.is_empty() {
+        Line::from(vec![Span::styled(
+            " Paste or type base URL (https://…/v1)...",
+            Style::default()
+                .fg(crate::theme::theme().text_dim)
+                .bg(colors.input_bg),
+        )])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!(" {url_buf}"),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors.input_bg),
+            ),
+            Span::styled(
+                "▎",
+                Style::default().fg(colors.accent_peach).bg(colors.input_bg),
+            ),
+        ])
+    };
+
+    let input_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
+    frame.render_widget(Clear, input_rect);
+    frame.render_widget(
+        Paragraph::new(input_content).style(Style::default().bg(colors.input_bg)),
+        input_rect,
+    );
+
+    let note_line = if let Some(msg) = status_msg {
+        Line::from(Span::styled(
+            format!(" \u{2022} {msg}"),
+            Style::default()
+                .fg(crate::theme::theme().error)
+                .bg(colors.box_bg),
+        ))
+    } else {
+        Line::from(Span::styled(
+            " (Route suffixes like /chat/completions are trimmed)",
+            Style::default()
+                .fg(crate::theme::theme().text_dim)
+                .bg(colors.box_bg),
+        ))
+    };
+    frame.render_widget(
+        Paragraph::new(note_line),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
+    );
+
+    let footer = Line::from(vec![
+        Span::styled(
+            "enter ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+                .bg(colors.box_bg),
+        ),
+        Span::styled(
+            "continue",
+            Style::default().fg(colors.text_dim).bg(colors.box_bg),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(footer),
+        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+    );
+}
+
 pub(crate) fn render_entering_key(
     frame: &mut Frame,
     area: Rect,
@@ -324,6 +474,13 @@ pub(crate) fn render_entering_key(
                         .bg(colors.input_bg),
                 ),
             ])
+        } else if item.id == "custom" {
+            Line::from(vec![Span::styled(
+                " Paste or type API key (Enter to skip)...",
+                Style::default()
+                    .fg(crate::theme::theme().text_dim)
+                    .bg(colors.input_bg),
+            )])
         } else {
             Line::from(vec![Span::styled(
                 " Paste or type API key...",

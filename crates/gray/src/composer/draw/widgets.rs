@@ -203,14 +203,22 @@ pub(crate) fn transcript_ends_blank(transcript: &[Line<'static>]) -> bool {
 ///
 /// The seam is dynamic on purpose. A fixed seam (b377846) stacked with the
 /// blank a paragraph checkpoint leaves behind (2-row gap, hence 8ec9af0);
-/// no seam (current) jams thinking rows, list items, code fences and
-/// partial paragraphs flush against `⬡ Working…`. Deciding per frame gives
-/// exactly one blank row above the status — `ensure_gap(1)` for the dock.
+/// no seam jams streamed rows flush against `⬡ Working…`. The live need
+/// feeds a [`ratchet_seam`] latch: deciding per frame bounced the input
+/// box 2<->3 rows on every streamed chunk.
 pub(crate) fn status_dock_h(has_status: bool, needs_seam: bool) -> u16 {
     if !has_status {
         return 0;
     }
     2 + u16::from(needs_seam)
+}
+
+/// Grow-only latch for the dock seam: the streaming tail flickers
+/// blank/non-blank between chunks, so the dock may grow mid-turn but never
+/// shrinks until the status clears. Pure for testability (`Tui::new` needs
+/// a TTY).
+pub(crate) fn ratchet_seam(cached: bool, has_status: bool, live_needs: bool) -> bool {
+    has_status && (cached || live_needs)
 }
 
 /// Queued follow-up inputs held while a turn is in flight (codex

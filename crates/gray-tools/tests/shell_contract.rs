@@ -32,8 +32,12 @@ async fn echo_hi_header_and_fence() {
     assert!(head.contains(" \u{b7} 1 lines \u{b7} log ~/"), "{head}");
     assert!(head.contains("/.gray/shell/"), "{head}");
     assert!(head.ends_with(".log"), "{head}");
+    // No phantom blank line: the fence supplies the closing newline, so a
+    // body ending in `\n` must not render an extra blank line before the
+    // closer (the visible line count must match the header's "1 lines").
     assert!(
-        out.content.contains("<untrusted-output>\nhi\n\n"),
+        out.content
+            .contains("<untrusted-output>\nhi\n</untrusted-output>"),
         "{}",
         out.content
     );

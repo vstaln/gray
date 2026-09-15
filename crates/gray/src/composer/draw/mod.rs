@@ -11,7 +11,8 @@ use crate::text_width::display_width;
 mod widgets;
 
 pub(crate) use widgets::{
-    build_input_box, queued_preview_lines, shimmer_spans, status_dock_h, transcript_ends_blank,
+    build_input_box, queued_preview_lines, ratchet_seam, shimmer_spans, status_dock_h,
+    transcript_ends_blank,
 };
 
 /// Exact-fit viewport height for the given content, clamped to
@@ -42,8 +43,14 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     // Attachments row.
     let attach_h: u16 = u16::from(!tui.attachments.is_empty());
     // Seam (only if scrollback didn't already end blank) + shimmer status
-    // text + one bare breathing row below it.
-    let needs_seam = !transcript_ends_blank(&tui.transcript);
+    // text + one bare breathing row below it. Latched: a per-frame seam
+    // resized the viewport under the input box on every streamed chunk.
+    tui.dock_seam = ratchet_seam(
+        tui.dock_seam,
+        tui.status.is_some(),
+        !transcript_ends_blank(&tui.transcript),
+    );
+    let needs_seam = tui.dock_seam;
     let status_h: u16 = status_dock_h(tui.status.is_some(), needs_seam);
     // Row offset of the status text inside its dock: below the seam when
     // one was reserved, else the very top of the viewport.
@@ -475,6 +482,31 @@ mod tests {
         assert_eq!(desired_viewport_h(3, 0, 3, 6, 0, VIEWPORT_H), 13);
         // Question panel: expands up to available screen height to show all options.
         assert_eq!(desired_viewport_h(0, 0, 0, 15, 0, 23), 16);
+    }
+
+    /// One streamed paragraph arriving chunk by chunk flips the transcript
+    /// tail blank / non-blank between frames. Driven through the exact path
+    /// `draw` uses: the viewport must hold still instead of bouncing 6<->7
+    /// rows per chunk (the reported input-box bounce).
+    #[test]
+    fn streaming_tail_flicker_holds_viewport_still() {
+        let mut cached = false;
+        let mut heights = Vec::new();
+        for blank in [true, false, true, false, true] {
+            cached = ratchet_seam(cached, true, !blank);
+            heights.push(desired_viewport_h(
+                status_dock_h(true, cached),
+                0,
+                3,
+                0,
+                0,
+                VIEWPORT_H,
+            ));
+        }
+        // One growth step when content first flows, then steady — never an
+        // oscillation. Latch releases when the status clears.
+        assert_eq!(heights, vec![6, 7, 7, 7, 7], "heights: {heights:?}");
+        assert!(!ratchet_seam(true, false, true));
     }
 
     #[test]

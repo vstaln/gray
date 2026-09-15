@@ -187,16 +187,17 @@ impl Agent {
                 return Err(CoreError::Cancelled);
             }
 
-            // mini-SWE-agent / SWE-agent parity: keep the recent tool observations
-            // in full; elide older historical command outputs so bloated compiler/test
-            // dumps from prior rounds don't accumulate and choke the context window.
-            crate::compact::prune_old_tool_observations(
-                &mut self.messages,
-                crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
-            );
-
             // Pre-turn budget: compact before the provider ever sees an overflow.
+            // Cheapest relief first: elide older historical command outputs
+            // (mini-SWE-agent parity, recent observations stay in full) — and
+            // only under actual pressure, since eliding observations while the
+            // window has room makes the model re-run searches it can no longer
+            // see.
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+                crate::compact::prune_old_tool_observations(
+                    &mut self.messages,
+                    crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
+                );
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
@@ -822,11 +823,11 @@ impl Agent {
                         continue;
                     }
                 };
+                // Pin the tool future rather than moving it into the
+                // timeout: a cancel must be able to bound-wait on it.
+                let mut exec_fut = Box::pin(self.executor.execute(&ctx, name, effective_args));
                 let output = tokio::select! {
-                    out = tokio::time::timeout(
-                        self.tool_timeout,
-                        self.executor.execute(&ctx, name, effective_args),
-                    ) => match out {
+                    out = tokio::time::timeout(self.tool_timeout, &mut exec_fut) => match out {
                         Ok(output) => output,
                         Err(_) => ToolOutput::error(format!(
                             "Tool '{name}' timed out after {}s",
@@ -834,7 +835,40 @@ impl Agent {
                         )),
                     },
                     _ = ctx.cancel.cancelled() => {
-                        answer_pending_tools(self, &tool_uses, idx, "cancelled by user");
+                        // The tool shares `ctx`, so it is already signalled
+                        // and owns the cleanup that matters (kill its process
+                        // group, drain, report partial output). Wait out that
+                        // report instead of dropping the future and answering
+                        // with a bare synthetic string: a cancel must never be
+                        // the reason output is lost.
+                        let report = match tokio::time::timeout(
+                            crate::parallel::CANCEL_REPORT_GRACE,
+                            &mut exec_fut,
+                        )
+                        .await
+                        {
+                            Ok(report) => report,
+                            Err(_) => ToolOutput::error("cancelled by user"),
+                        };
+                        for hook in &self.hooks {
+                            hook.post_tool(name, &report).await;
+                        }
+                        emit!(AgentEvent::tool_result(
+                            id.clone(),
+                            report.content.clone(),
+                            report.is_error,
+                        ));
+                        self.messages.push(Message {
+                            role: Role::User,
+                            content: vec![ContentBlock::ToolResult {
+                                id: id.clone(),
+                                content: report.content,
+                                is_error: report.is_error,
+                            }],
+                        });
+                        // This call now has a real result; only the calls
+                        // after it still need the synthetic backfill.
+                        answer_pending_tools(self, &tool_uses, idx + 1, "cancelled by user");
                         self.emit_turn_end(&billed).await;
                         return Err(CoreError::Cancelled);
                     },

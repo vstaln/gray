@@ -20,8 +20,8 @@ mod rows;
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
-    format_user_prompt_lines, left_pad, thinking_style, word_flush_cut, wrap_styled_line,
-    wrap_styled_line_with_ranges,
+    format_user_prompt_lines, left_pad, thinking_replay_lines, thinking_style, word_flush_cut,
+    wrap_styled_line, wrap_styled_line_with_ranges,
 };
 
 // ---------------------------------------------------------------------------

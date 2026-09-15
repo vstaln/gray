@@ -23,7 +23,7 @@ pub fn take_host_say() -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn queue_say(text: String) {
+pub(crate) fn queue_say(text: String) {
     if let Ok(mut q) = SAY_QUEUE.lock() {
         q.push(text);
     }

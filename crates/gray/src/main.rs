@@ -55,6 +55,9 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Cron { cmd } => {
                 return run_cron(cmd, &config).await;
             }
+            gray::Commands::Gateway { cmd } => {
+                return gray::gateway::run_cli(cmd, &config).await;
+            }
             gray::Commands::Sessions { cmd } => {
                 return run_sessions(cmd).await;
             }
@@ -341,40 +344,12 @@ async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
     }
 }
 
-/// Headless agent behind the cron `AsyncRunner` seam: fresh agent per
-/// fire (no resume/history — hermes isolation), events collected without
-/// streaming so ticker stdout stays log-clean. Fires are NOT persisted as
-/// sessions in B (transcript goes to the local output file); revisit if a
-/// delivery backend ever needs them.
-struct PrintRunner {
-    config: gray::config::Config,
-}
-
-#[async_trait::async_trait(?Send)]
-impl gray::cron_serve::AsyncRunner for PrintRunner {
-    async fn run(&self, prompt: String) -> anyhow::Result<String> {
-        let cwd = std::env::current_dir()?;
-        let mut agent = gray::build_agent(&self.config, &cwd, None).await?;
-        let ctx = gray_core::agent::ToolContext {
-            cwd,
-            cancel: tokio_util::sync::CancellationToken::new(),
-            session_id: None,
-        };
-        let events = agent
-            .run(gray_core::message::Message::user(prompt), ctx)
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(gray::repl::format_core_error(&e, &self.config.base_url))
-            })?;
-        Ok(gray::cron_fire::transcript_text(&events))
-    }
-}
-
 async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::Result<()> {
     use gray::CronCmd;
     match cmd {
         CronCmd::List => {
-            let jobs = cron_store()?.list()?;
+            let store = cron_store()?;
+            let jobs = store.list()?;
             if jobs.is_empty() {
                 println!("no cron jobs");
                 return Ok(());
@@ -389,6 +364,13 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                     fmt_status(j.last_status)
                 );
             }
+            // A schedule nothing ticks looks identical to a live one in the
+            // rows above; this line is the only place that says otherwise.
+            let now = gray_cron::now_secs();
+            println!(
+                "{}",
+                gray::cron_status::ticker_line(&store.health(now)?, now)
+            );
             Ok(())
         }
         CronCmd::Add {
@@ -433,6 +415,12 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 .map(|j| fmt_ts_opt(j.next_run_at))
                 .unwrap_or_else(|| "-".to_string());
             println!("added {id} next {next}");
+            let stamp = store.last_tick()?;
+            if let Some(warn) =
+                gray::cron_status::add_warning(stamp.as_ref(), gray_cron::now_secs())
+            {
+                println!("{warn}");
+            }
             Ok(())
         }
         CronCmd::Show { id } => {
@@ -484,20 +472,22 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
         CronCmd::Tick => {
             let store = cron_store()?;
             let home = gray::setup::gray_home()?;
-            let runner = PrintRunner {
+            let runner = gray::cron_serve::HeadlessRunner {
                 config: config.clone(),
             };
-            let rep = gray::cron_serve::tick_once(&store, &home, &runner).await?;
+            let deliver = gray::cron_serve::SaveLocalDeliver { home };
+            let rep = gray::cron_serve::tick_once(&store, &runner, &deliver, "cli").await?;
             println!("tick: fired={} errors={}", rep.fired, rep.errors);
             Ok(())
         }
         CronCmd::Serve => {
             let store = cron_store()?;
             let home = gray::setup::gray_home()?;
-            let runner = PrintRunner {
+            let runner = gray::cron_serve::HeadlessRunner {
                 config: config.clone(),
             };
-            gray::cron_serve::serve_loop(store, home, runner).await
+            gray::cron_serve::serve_loop(store, gray::cron_serve::SaveLocalDeliver { home }, runner)
+                .await
         }
         CronCmd::Pause { id } => {
             if cron_store()?.set_paused(&id, true)? {
@@ -528,10 +518,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             let Some(job) = store.claim_one(now, &owner, &id)? else {
                 anyhow::bail!("job {id:?} is not runnable (unknown, paused, or already claimed)");
             };
-            let runner = PrintRunner {
+            let runner = gray::cron_serve::HeadlessRunner {
                 config: config.clone(),
             };
-            let status = gray::cron_serve::fire_one(&store, &home, &runner, job, now).await;
+            let deliver = gray::cron_serve::SaveLocalDeliver { home };
+            let status = gray::cron_serve::fire_one(&store, &runner, job, now, &deliver).await;
             println!("ran {id} status={status:?}");
             Ok(())
         }

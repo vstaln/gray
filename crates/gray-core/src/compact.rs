@@ -987,8 +987,8 @@ mod tests {
         prune_old_tool_observations(&mut msgs, 3);
 
         // First 5 should be elided
-        for i in 0..5 {
-            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else {
+        for (i, msg) in msgs.iter().enumerate().take(5) {
+            let ContentBlock::ToolResult { content, id, .. } = &msg.content[0] else {
                 panic!()
             };
             assert_eq!(id, &format!("call_{i}"));
@@ -997,8 +997,8 @@ mod tests {
         }
 
         // Last 3 should be untouched
-        for i in 5..8 {
-            let ContentBlock::ToolResult { content, id, .. } = &msgs[i].content[0] else {
+        for (i, msg) in msgs.iter().enumerate().skip(5) {
+            let ContentBlock::ToolResult { content, id, .. } = &msg.content[0] else {
                 panic!()
             };
             assert_eq!(id, &format!("call_{i}"));

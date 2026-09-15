@@ -3,10 +3,42 @@
 ## [Unreleased]
 
 ### Added
+- Gateway daemon (`gray gateway ...`): the always-on host that fires cron with
+  no REPL open. `run` is the foreground daemon (60s cron ticker with the same
+  `HeadlessRunner`/`SaveLocalDeliver` as `tick`/`serve`, plus a control socket
+  at `$GRAY_HOME/gateway.sock` answering `identify`/`status` — one JSON line
+  in, one out, hermes wire shape); `install` writes a user service (runit
+  `run`+`log/run` on Void, systemd `--user` unit elsewhere, `--print` previews,
+  `--no-start` defers), `start`/`stop`/`restart` drive it, `uninstall` removes
+  it, `status` reports daemon + service + ticker health (exit 1 when down).
+  Process shape follows the hermes gateway: O_EXCL pid claim with
+  `/proc` start-time against PID reuse, `gateway.state.json` recording why the
+  last run stopped, socket-first liveness with pid-file fallback, 0600 socket,
+  supervisor detected from the real init (never inferred outside-in), and a
+  bounded 65s drain of in-flight fires on SIGTERM/SIGINT. `install`/`start`
+  wait up to 10s for `runsvdir` to pick up a fresh service dir (it rescans
+  every ~5s) instead of racing it, and `stop` tells runit-stopped vs
+  tick-draining apart (was a `⚠ still running` either way).
+- Cron in-chat firing: background REPL tick, `/cron` dashboard, delivery seam.
 - Cron workstream B: `gray cron tick|serve|pause|resume|run`, job skills +
   pre-run scripts, local-file delivery (`cron/output/<id>/<ts>.md`).
+- Cron ticker liveness: every tick pass writes a heartbeat
+  (`$GRAY_HOME/cron/.last_tick`), and `gray cron list`, `gray cron add`, and the
+  `/cron` dashboard report it — a store nobody is ticking now says so instead of
+  printing a `next=` that will never arrive.
 
 ### Fixed
+- Cancelling a turn no longer discards the in-flight tool's own report: both
+  cancel paths (single dispatch, parallel join) abandoned the future on the
+  same token the tool watches, so partial output and the process-group kill
+  never ran and the turn answered with a bare synthetic `cancelled by user`.
+  A cancelled tool now gets a bounded 3s window (inside the turn's own 5s
+  cooperative window) to report, then the turn ends with that output in
+  history.
+- Cron silence: `next=` rows look identical whether or not a driver (`serve`, a
+  `tick` host, a REPL) is running, so jobs could sit due forever unnoticed.
+  Overdue jobs are now named in `list`/`/cron`, and `add` warns at creation when
+  no ticker has run inside the liveness horizon.
 - Skills: folded (`description: >`) and literal (`|`) frontmatter now parse (were the bare marker) + `gray plugin install` accepts bare `https://github.com/<owner>/<repo>` URLs as git sources — `https://github.com/DietrichGebert/ponytail` installs all six skills, same as `npm:@dietrichgebert/ponytail`
 - Project context: `AGENTS.md` / `CLAUDE.md` (cwd up to git root) now auto-attach as `<project_context>` hook context every turn — no more manual `cat`, and `/context` bills the exact block instead of showing `0 tokens`. `~/.gray/AGENTS.md` excluded (never double-billed); 16k chars per-file cap
 - Modal backdrop: textarea copy pinned dim (box bg + text through the color map) with a universal regression test — no full-brightness composer surface may survive in any modal backdrop
