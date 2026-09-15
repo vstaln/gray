@@ -132,12 +132,10 @@ fn masked_note(command: &str) -> Option<String> {
     }
     let first = base_head(&segs[0]);
     // POSIX-honest: the executor is `sh -c` (dash on some systems), so
-    // `set -o pipefail` is not available. Rerunning the first stage alone
-    // works in every shell.
+    // `set -o pipefail` is not available. Name the two stages only — never
+    // echo the pipeline (long commands would ride every header twice).
     Some(format!(
-        "`{}` reports {last}'s exit, not {first}'s; rerun `{}` without the pipe to see the real status",
-        command.trim(),
-        segs[0].trim()
+        "`{last}` masks `{first}`'s exit; rerun `{first}` alone for its status"
     ))
 }
 
@@ -208,6 +206,12 @@ mod exit_tests {
         assert!(!note.contains("pipefail"), "{note}");
         assert!(note.contains("tail"), "{note}");
         assert!(note.contains("false"), "{note}");
+        // Wire-budget: the note must name the two stages, never echo the
+        // full pipeline (long commands would ride every header twice).
+        assert!(
+            !note.contains('|'),
+            "header must not echo the pipeline: {note}"
+        );
     }
 
     #[test]
