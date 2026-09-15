@@ -31,14 +31,22 @@
   ],
   "featured": true
  },
- "openrouter": {
-  "name": "OpenRouter",
-  "base_url": "https://openrouter.ai/api/v1",
-  "env_key": [
-   "OPENROUTER_API_KEY"
-  ],
-  "featured": true
- },
+  "openrouter": {
+   "name": "OpenRouter",
+   "base_url": "https://openrouter.ai/api/v1",
+   "env_key": [
+    "OPENROUTER_API_KEY"
+   ],
+   "featured": true
+  },
+  "commandcode": {
+   "name": "CommandCode",
+   "base_url": "https://api.commandcode.ai/provider/v1",
+   "env_key": [
+    "COMMANDCODE_API_KEY"
+   ],
+   "featured": true
+  },
  "302ai": {
   "name": "302.AI",
   "base_url": "https://api.302.ai/v1",

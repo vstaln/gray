@@ -41,7 +41,8 @@ pub(crate) use catalog::save_auth_key;
 pub use catalog::{
     AUTH_MODE_API_KEY, AUTH_MODE_NONE, Catalog, CatalogProvider, ConnectItem, PROVIDERS_JSON,
     SavedConfig, build_connect_items, gray_home, load_auth_keys, load_catalog,
-    load_saved_config_at, mask_key_pretty, save_saved_config_at, saved_config_path,
+    load_saved_config_at, mask_key_pretty, normalize_custom_base_url, save_saved_config_at,
+    saved_config_path,
 };
 
 pub mod context;
