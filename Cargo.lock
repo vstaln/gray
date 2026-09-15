@@ -950,6 +950,7 @@ dependencies = [
  "gray-tools",
  "ignore",
  "image",
+ "libc",
  "log",
  "percent-encoding",
  "ratatui",

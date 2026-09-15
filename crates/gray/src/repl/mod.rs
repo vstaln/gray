@@ -197,8 +197,8 @@ fn plugin_help_entries(hooks: &[Arc<dyn PluginHooks>]) -> Vec<(String, String)> 
 /// `Prompt` is submitted as a `ReplCommand::Prompt` turn.
 /// Headless agent behind the cron `AsyncRunner` seam for the REPL tick:
 /// fresh agent per fire (no resume/history), events collected without
-/// streaming. Mirrors `PrintRunner` in main.rs; the runner is the host's
-/// business (cron_serve stays agent-agnostic).
+/// streaming. Mirrors `HeadlessRunner` in cron_serve.rs; the runner is the
+/// host's business (cron_serve stays agent-agnostic).
 struct ReplRunner {
     config: Config,
 }

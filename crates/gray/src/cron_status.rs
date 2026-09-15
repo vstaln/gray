@@ -10,7 +10,7 @@
 use gray_cron::{CronHealth, TICKER_STALE_SECS, TickStamp};
 
 /// Driver recipe shared by every warning, so the fix is one copy-paste.
-const DRIVERS: &str = "run `gray cron serve`, host `gray cron tick` (cron/runit), or keep a REPL open";
+const DRIVERS: &str = "install the gateway (`gray gateway install`), or run `gray cron serve`, `gray cron tick`, or a REPL";
 
 /// Compact age: `42s`, `9m`, `3h`, `16d`.
 pub fn ago_short(secs: i64) -> String {
@@ -131,7 +131,7 @@ mod tests {
         let line = ticker_line(&health, 1000);
         assert!(line.contains("no tick has ever run"), "{line}");
         assert!(
-            line.contains("gray cron serve") && line.contains("cron/runit"),
+            line.contains("gray cron serve") && line.contains("gray gateway install"),
             "{line}"
         );
     }

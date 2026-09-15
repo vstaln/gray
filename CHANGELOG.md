@@ -3,6 +3,22 @@
 ## [Unreleased]
 
 ### Added
+- Gateway daemon (`gray gateway ...`): the always-on host that fires cron with
+  no REPL open. `run` is the foreground daemon (60s cron ticker with the same
+  `HeadlessRunner`/`SaveLocalDeliver` as `tick`/`serve`, plus a control socket
+  at `$GRAY_HOME/gateway.sock` answering `identify`/`status` — one JSON line
+  in, one out, hermes wire shape); `install` writes a user service (runit
+  `run`+`log/run` on Void, systemd `--user` unit elsewhere, `--print` previews,
+  `--no-start` defers), `start`/`stop`/`restart` drive it, `uninstall` removes
+  it, `status` reports daemon + service + ticker health (exit 1 when down).
+  Process shape follows the hermes gateway: O_EXCL pid claim with
+  `/proc` start-time against PID reuse, `gateway.state.json` recording why the
+  last run stopped, socket-first liveness with pid-file fallback, 0600 socket,
+  supervisor detected from the real init (never inferred outside-in), and a
+  bounded 65s drain of in-flight fires on SIGTERM/SIGINT. `install`/`start`
+  wait up to 10s for `runsvdir` to pick up a fresh service dir (it rescans
+  every ~5s) instead of racing it, and `stop` tells runit-stopped vs
+  tick-draining apart (was a `⚠ still running` either way).
 - Cron in-chat firing: background REPL tick, `/cron` dashboard, delivery seam.
 - Cron workstream B: `gray cron tick|serve|pause|resume|run`, job skills +
   pre-run scripts, local-file delivery (`cron/output/<id>/<ts>.md`).

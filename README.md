@@ -101,7 +101,8 @@ Slash commands autocomplete: Enter completes and fires, Tab inserts for editing 
 |---|---|
 | `gray resume [--last\|--all] [SESSION_ID]` | resume a conversation — picker, most-recent, or by id/prefix |
 | `gray plugin <list\|search\|install\|remove\|update\|enable\|disable\|check>` | manage plugins |
-| `gray cron <list\|add\|remove\|show>` | recurring/one-shot jobs (file-only, no daemon needed) |
+| `gray cron <list\|add\|remove\|show>` | recurring/one-shot jobs (fired by the gateway, `serve`, a `tick` host, or the REPL) |
+| `gray gateway <run\|status\|start\|stop\|restart\|install\|uninstall>` | the daemon that fires cron with no REPL open — cron ticker + control socket, supervised as a user service |
 | `gray sessions prune` | session store maintenance |
 | `gray update` | update gray to the latest release |
 
@@ -117,7 +118,9 @@ Make gray yours via skills, plugins, providers, and config.
 
 ## Scheduling
 
-The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`); execution and delivery arrive with the core scheduler (in progress).
+The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (manage with `gray cron list/show/remove`). Jobs fire when something ticks the store — the gateway daemon, `gray cron serve`, a `gray cron tick` host (cron/systemd timer), or an open REPL.
+
+**Gateway** — `gray gateway install` writes a user service (runit on Void, systemd `--user` elsewhere; `install --print` previews) running `gray gateway run`: a 60s cron ticker plus a control socket at `$GRAY_HOME/gateway.sock` answering `identify`/`status` (one JSON line in, one out — a connectable socket with a well-formed answer *is* liveness). `gray gateway status` reports daemon + service + ticker health and exits 1 when down; `start`/`stop`/`restart` drive the service, `uninstall` removes it. The daemon claims `$GRAY_HOME/gateway.pid` (O_EXCL, start-time-checked against PID reuse), records why it stopped in `gateway.state.json`, and drains an in-flight fire up to 65s on SIGTERM.
 
 <div align="center">
   <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />

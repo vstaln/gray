@@ -3,7 +3,7 @@
 //! The agent is behind [`AsyncRunner`] so tests fire jobs with a stub —
 //! no model, no network. Production plugs the headless agent in `main.rs`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct TickReport {
     pub fired: usize,
@@ -16,6 +16,34 @@ pub struct TickReport {
 #[async_trait::async_trait(?Send)]
 pub trait AsyncRunner {
     async fn run(&self, prompt: String) -> anyhow::Result<String>;
+}
+
+/// The production runner (CLI tick + gateway daemon): a fresh headless agent
+/// per fire (no resume/history — hermes isolation), events collected without
+/// streaming so ticker stdout stays log-clean. Fires are not persisted as
+/// sessions; the transcript goes to the delivery target (local file today).
+pub struct HeadlessRunner {
+    pub config: crate::config::Config,
+}
+
+#[async_trait::async_trait(?Send)]
+impl AsyncRunner for HeadlessRunner {
+    async fn run(&self, prompt: String) -> anyhow::Result<String> {
+        let cwd = std::env::current_dir()?;
+        let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
+        let ctx = gray_core::agent::ToolContext {
+            cwd,
+            cancel: tokio_util::sync::CancellationToken::new(),
+            session_id: None,
+        };
+        let events = agent
+            .run(gray_core::message::Message::user(prompt), ctx)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(crate::repl::format_core_error(&e, &self.config.base_url))
+            })?;
+        Ok(crate::cron_fire::transcript_text(&events))
+    }
 }
 
 /// Whole-fire wall clock (script + agent), matches the bash tool bound.

@@ -7,6 +7,7 @@ pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
 pub mod feedback;
+pub mod gateway;
 pub mod host;
 pub mod logging;
 pub mod plugin_check;
@@ -296,6 +297,11 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PluginCmd,
     },
+    /// Gateway daemon: cron ticker + control socket, supervised as a service
+    Gateway {
+        #[command(subcommand)]
+        cmd: GatewayCmd,
+    },
     /// Update gray to the latest release
     #[command(visible_alias = "upgrade")]
     Update,
@@ -381,6 +387,32 @@ pub enum CronCmd {
         /// Job id or name
         id: String,
     },
+}
+
+/// `gray gateway ...` — the daemon host (hermes-shaped; adapters live elsewhere).
+#[derive(Parser, Debug, Clone)]
+pub enum GatewayCmd {
+    /// Run in the foreground (what the service/supervisor executes)
+    Run,
+    /// Report daemon + service + cron-ticker health (exit 1 when not running)
+    Status,
+    /// Start the installed service (runit/systemd)
+    Start,
+    /// Stop the installed service, or SIGTERM a foreground process
+    Stop,
+    /// Restart the installed service
+    Restart,
+    /// Install (and start) a user service running `gray gateway run`
+    Install {
+        /// Write the service but do not start it
+        #[arg(long)]
+        no_start: bool,
+        /// Print what would be written; write nothing
+        #[arg(long)]
+        print: bool,
+    },
+    /// Stop and remove the installed service
+    Uninstall,
 }
 
 /// `gray plugin ...` — plugin-side tooling.
