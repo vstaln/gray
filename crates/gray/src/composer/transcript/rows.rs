@@ -304,6 +304,19 @@ pub(crate) fn word_flush_cut(chars: &[char], max_w: usize) -> usize {
     word_window_end(chars, 0, max_w)
 }
 
+/// Replay rendering for a persisted thinking block: one dim+italic row per
+/// source line, mirroring the live `stream_thinking` style (minus the
+/// `Thought for` timing, which only exists live). Blank blocks yield no
+/// rows so resume never paints empty italic gaps.
+pub(crate) fn thinking_replay_lines(text: &str) -> Vec<Line<'static>> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    text.lines()
+        .map(|l| Line::from(vec![Span::styled(l.to_string(), thinking_style())]))
+        .collect()
+}
+
 pub(crate) fn format_user_prompt_lines(
     text: &str,
     attached: &[std::path::PathBuf],
