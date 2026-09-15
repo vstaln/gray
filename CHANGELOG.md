@@ -6,8 +6,16 @@
 - Cron in-chat firing: background REPL tick, `/cron` dashboard, delivery seam.
 - Cron workstream B: `gray cron tick|serve|pause|resume|run`, job skills +
   pre-run scripts, local-file delivery (`cron/output/<id>/<ts>.md`).
+- Cron ticker liveness: every tick pass writes a heartbeat
+  (`$GRAY_HOME/cron/.last_tick`), and `gray cron list`, `gray cron add`, and the
+  `/cron` dashboard report it — a store nobody is ticking now says so instead of
+  printing a `next=` that will never arrive.
 
 ### Fixed
+- Cron silence: `next=` rows look identical whether or not a driver (`serve`, a
+  `tick` host, a REPL) is running, so jobs could sit due forever unnoticed.
+  Overdue jobs are now named in `list`/`/cron`, and `add` warns at creation when
+  no ticker has run inside the liveness horizon.
 - Skills: folded (`description: >`) and literal (`|`) frontmatter now parse (were the bare marker) + `gray plugin install` accepts bare `https://github.com/<owner>/<repo>` URLs as git sources — `https://github.com/DietrichGebert/ponytail` installs all six skills, same as `npm:@dietrichgebert/ponytail`
 - Project context: `AGENTS.md` / `CLAUDE.md` (cwd up to git root) now auto-attach as `<project_context>` hook context every turn — no more manual `cat`, and `/context` bills the exact block instead of showing `0 tokens`. `~/.gray/AGENTS.md` excluded (never double-billed); 16k chars per-file cap
 - Modal backdrop: textarea copy pinned dim (box bg + text through the color map) with a universal regression test — no full-brightness composer surface may survive in any modal backdrop

@@ -374,7 +374,8 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
     use gray::CronCmd;
     match cmd {
         CronCmd::List => {
-            let jobs = cron_store()?.list()?;
+            let store = cron_store()?;
+            let jobs = store.list()?;
             if jobs.is_empty() {
                 println!("no cron jobs");
                 return Ok(());
@@ -389,6 +390,10 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                     fmt_status(j.last_status)
                 );
             }
+            // A schedule nothing ticks looks identical to a live one in the
+            // rows above; this line is the only place that says otherwise.
+            let now = gray_cron::now_secs();
+            println!("{}", gray::cron_status::ticker_line(&store.health(now)?, now));
             Ok(())
         }
         CronCmd::Add {
@@ -433,6 +438,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 .map(|j| fmt_ts_opt(j.next_run_at))
                 .unwrap_or_else(|| "-".to_string());
             println!("added {id} next {next}");
+            let stamp = store.last_tick()?;
+            if let Some(warn) = gray::cron_status::add_warning(stamp.as_ref(), gray_cron::now_secs())
+            {
+                println!("{warn}");
+            }
             Ok(())
         }
         CronCmd::Show { id } => {
@@ -488,7 +498,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 config: config.clone(),
             };
             let deliver = gray::cron_serve::SaveLocalDeliver { home };
-            let rep = gray::cron_serve::tick_once(&store, &runner, &deliver).await?;
+            let rep = gray::cron_serve::tick_once(&store, &runner, &deliver, "cli").await?;
             println!("tick: fired={} errors={}", rep.fired, rep.errors);
             Ok(())
         }

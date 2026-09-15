@@ -210,10 +210,14 @@ pub(crate) async fn dispatch_command(
         ReplCommand::CronJobs(arg) => {
             let store = gray_cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
             let jobs = store.list()?;
+            let now = gray_cron::now_secs();
+            // Health is store-level (one ticker serves every job); a read
+            // failure only drops the liveness line, never the listing.
+            let health = store.health(now).ok();
             let text = match arg {
-                None => super::cron::format_cron_dashboard(&jobs),
+                None => super::cron::format_cron_dashboard(&jobs, health.as_ref(), now),
                 Some(id) => match jobs.into_iter().find(|j| j.id == id || j.name == id) {
-                    Some(j) => super::cron::format_cron_dashboard(&[j]),
+                    Some(j) => super::cron::format_cron_dashboard(&[j], health.as_ref(), now),
                     None => format!("unknown cron job {id:?}"),
                 },
             };

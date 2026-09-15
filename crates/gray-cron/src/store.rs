@@ -22,6 +22,10 @@ pub const MAX_NAME_LEN: usize = 50;
 /// Job ids are this many hex chars of a uuid v4.
 const JOB_ID_HEX_LEN: usize = 12;
 
+/// Ticker liveness horizon: a heartbeat inside this window means a driver is
+/// running. 5x the 60s tick cadence, so one slow pass never reads as dead.
+pub const TICKER_STALE_SECS: i64 = 300;
+
 pub fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -32,6 +36,43 @@ pub fn now_secs() -> i64 {
 pub struct Claim {
     pub at: i64,
     pub by: String,
+}
+
+/// Heartbeat left by every tick pass. `kind` names the driver: `serve`, `cli`
+/// (one-shot `gray cron tick`), or `repl` (the in-session thread). Without a
+/// stamp a store cannot tell "nothing is due" from "nobody is ticking", and a
+/// job can sit due forever in silence.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TickStamp {
+    pub at: i64,
+    pub pid: u32,
+    pub kind: String,
+}
+
+/// A job that should have fired and did not: `next_run_at` is older than the
+/// liveness horizon, so a ticker that ran recently would have claimed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverdueJob {
+    pub id: String,
+    pub name: String,
+    pub next_run_at: i64,
+}
+
+/// Store liveness for the reporting surfaces (`cron list`, `cron add`,
+/// `/cron`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CronHealth {
+    pub last_tick: Option<TickStamp>,
+    pub overdue: Vec<OverdueJob>,
+}
+
+impl CronHealth {
+    /// True when a ticker has been seen inside the liveness horizon.
+    pub fn ticker_live(&self, now: i64) -> bool {
+        self.last_tick
+            .as_ref()
+            .is_some_and(|t| now.saturating_sub(t.at) <= TICKER_STALE_SECS)
+    }
 }
 
 /// Where a finished job's output goes (targets resolve fully in Task 4).
@@ -256,6 +297,74 @@ impl CronStore {
 
     fn lock_path(&self) -> PathBuf {
         self.cron_dir.join(".jobs.lock")
+    }
+
+    fn tick_stamp_path(&self) -> PathBuf {
+        self.cron_dir.join(".last_tick")
+    }
+
+    /// Record a tick heartbeat. Every driver writes one per pass — including
+    /// passes that fire nothing, which is precisely the signal that separates
+    /// "nothing due" from "nothing ticking". Callers treat failure as
+    /// best-effort: a missing heartbeat must never stop a job from firing.
+    pub fn record_tick(&self, kind: &str) -> anyhow::Result<()> {
+        atomic_write_json(
+            &self.tick_stamp_path(),
+            &TickStamp {
+                at: now_secs(),
+                pid: std::process::id(),
+                kind: kind.to_string(),
+            },
+        )
+    }
+
+    /// Last heartbeat, if any. Missing or corrupt reads as `None` (warned):
+    /// liveness reporting must never fail a `list`.
+    pub fn last_tick(&self) -> anyhow::Result<Option<TickStamp>> {
+        let body = match std::fs::read_to_string(self.tick_stamp_path()) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        match serde_json::from_str(&body) {
+            Ok(stamp) => Ok(Some(stamp)),
+            Err(e) => {
+                log::warn!(
+                    "cron: unreadable tick stamp {} ({e}), treating as never ticked",
+                    self.tick_stamp_path().display()
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// Liveness + overdue jobs for the reporting surfaces. Read-only and
+    /// deliberately not under the jobs lock: a stale read only mislabels a
+    /// line of text, while `list` must not queue behind a job that is busy
+    /// firing.
+    pub fn health(&self, now: i64) -> anyhow::Result<CronHealth> {
+        let last_tick = self.last_tick()?;
+        let mut overdue = Vec::new();
+        for job in self.list()? {
+            if !job.enabled || job.state != JobState::Active {
+                continue;
+            }
+            let Some(next) = job.next_run_at else { continue };
+            if next + TICKER_STALE_SECS >= now {
+                continue;
+            }
+            if let Some(claim) = &job.fire_claim
+                && now.saturating_sub(claim.at) <= FIRE_CLAIM_TTL_SECS
+            {
+                continue; // a driver is on it right now
+            }
+            overdue.push(OverdueJob {
+                id: job.id.clone(),
+                name: job.name.clone(),
+                next_run_at: next,
+            });
+        }
+        Ok(CronHealth { last_tick, overdue })
     }
 
     /// Raw records; supports the bare array we write plus the `{"jobs": [...]}`
@@ -966,5 +1075,77 @@ mod tests {
             raw2.iter()
                 .any(|v| v.get("id").and_then(|i| i.as_str()) == Some("bad"))
         );
+    }
+
+    #[test]
+    fn tick_stamp_round_trips_and_missing_reads_as_none() {
+        let (_dir, store) = test_store();
+        assert!(store.last_tick().unwrap().is_none(), "fresh store ticked never");
+        store.record_tick("serve").unwrap();
+        let stamp = store.last_tick().unwrap().expect("stamp written");
+        assert_eq!(stamp.kind, "serve");
+        assert_eq!(stamp.pid, std::process::id());
+        assert!(stamp.at > 0);
+    }
+
+    #[test]
+    fn corrupt_tick_stamp_reads_as_never_ticked() {
+        let (dir, store) = test_store();
+        std::fs::write(dir.path().join(".last_tick"), "{not json").unwrap();
+        assert!(store.last_tick().unwrap().is_none());
+    }
+
+    #[test]
+    fn health_flags_never_ticked_store_with_overdue_job() {
+        let (_dir, store) = test_store();
+        let id = store
+            .add("reminder", "every 1h", "say hi", Deliver::Local)
+            .unwrap();
+        store.set_next_run_for_test(&id, 1).unwrap();
+        let now = now_secs();
+        let health = store.health(now).unwrap();
+        assert!(health.last_tick.is_none());
+        assert!(!health.ticker_live(now), "no tick yet is not live");
+        assert_eq!(health.overdue.len(), 1);
+        assert_eq!(health.overdue[0].id, id);
+        assert_eq!(health.overdue[0].next_run_at, 1);
+    }
+
+    #[test]
+    fn health_live_ticker_still_reports_due_job() {
+        let (_dir, store) = test_store();
+        let id = store
+            .add("reminder", "every 1h", "say hi", Deliver::Local)
+            .unwrap();
+        store.set_next_run_for_test(&id, 1).unwrap();
+        store.record_tick("repl").unwrap();
+        let now = now_secs();
+        let health = store.health(now).unwrap();
+        assert!(health.ticker_live(now));
+        assert_eq!(health.overdue.len(), 1, "due and unclaimed stays overdue");
+    }
+
+    #[test]
+    fn health_ignores_paused_and_not_yet_due_jobs() {
+        let (_dir, store) = test_store();
+        let due = store.add("due", "every 1h", "p", Deliver::Local).unwrap();
+        let future = store.add("future", "every 1h", "p", Deliver::Local).unwrap();
+        let paused = store.add("paused", "every 1h", "p", Deliver::Local).unwrap();
+        store.set_next_run_for_test(&due, 1).unwrap();
+        store.set_next_run_for_test(&future, now_secs() + 3600).unwrap();
+        store.set_next_run_for_test(&paused, 1).unwrap();
+        store.set_paused(&paused, true).unwrap();
+        let health = store.health(now_secs()).unwrap();
+        assert_eq!(health.overdue.len(), 1, "only the due, active job counts");
+        assert_eq!(health.overdue[0].id, due);
+    }
+
+    #[test]
+    fn health_skips_job_with_live_fire_claim() {
+        let (_dir, store) = test_store();
+        let id = store.add("due", "every 1h", "p", Deliver::Local).unwrap();
+        store.set_next_run_for_test(&id, 1).unwrap();
+        assert_eq!(store.claim_due(now_secs(), "owner-a").unwrap().len(), 1);
+        assert!(store.health(now_secs()).unwrap().overdue.is_empty());
     }
 }

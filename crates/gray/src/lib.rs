@@ -5,6 +5,7 @@ pub mod composer;
 pub mod config;
 pub mod cron_fire;
 pub mod cron_serve;
+pub mod cron_status;
 pub mod feedback;
 pub mod host;
 pub mod logging;

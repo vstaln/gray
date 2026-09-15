@@ -155,8 +155,15 @@ pub async fn tick_once(
     store: &gray_cron::CronStore,
     runner: &dyn AsyncRunner,
     deliver: &dyn CronDeliver,
+    kind: &str,
 ) -> anyhow::Result<TickReport> {
     let now = gray_cron::now_secs();
+    // Liveness first, before any job runs: every pass stamps the store so a
+    // later reader can tell "nothing was due" from "nothing was ticking".
+    // Best-effort — a failed heartbeat must not stop jobs from firing.
+    if let Err(e) = store.record_tick(kind) {
+        log::warn!("cron: cannot record tick heartbeat: {e:#}");
+    }
     let owner = owner_stamp();
     let due = store.claim_due(now, &owner)?;
     let mut report = TickReport {
@@ -187,7 +194,7 @@ pub async fn serve_loop(
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             _ = interval.tick() => {
-                match tick_once(&store, &runner, &deliver).await {
+                match tick_once(&store, &runner, &deliver, "serve").await {
                     Ok(rep) => log::info!("cron tick: fired={} errors={}", rep.fired, rep.errors),
                     Err(e) => log::warn!("cron tick failed: {e:#}"),
                 }
@@ -253,6 +260,7 @@ mod tests {
             &LocalDeliver {
                 home: home.path().to_path_buf(),
             },
+            "test",
         )
         .await
         .unwrap();
@@ -289,6 +297,7 @@ mod tests {
             &LocalDeliver {
                 home: home.path().to_path_buf(),
             },
+            "test",
         )
         .await
         .unwrap();
@@ -316,6 +325,7 @@ mod tests {
             &LocalDeliver {
                 home: home.path().to_path_buf(),
             },
+            "test",
         )
         .await
         .unwrap();
