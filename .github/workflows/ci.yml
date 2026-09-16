@@ -96,6 +96,8 @@ jobs:
         run: cargo test --locked -p gray-tools --test shell_contract -- --nocapture
       - name: Resolve native profile without Unix HOME
         run: cargo test --locked -p gray --test home_paths -- --nocapture
+      - name: Check explicit preview limitations and real first-request cwd
+        run: cargo test --locked -p gray --test windows_limits --test working_directory -- --nocapture
       - name: Build native preview artifact (not a release)
         env:
           GRAY_CHANNEL: beta

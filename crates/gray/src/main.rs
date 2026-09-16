@@ -319,6 +319,11 @@ async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
 
 async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::Result<()> {
     use gray::CronCmd;
+    if cfg!(windows) && matches!(&cmd, CronCmd::Tick | CronCmd::Serve | CronCmd::Run { .. }) {
+        anyhow::bail!(
+            "cron execution is not supported on native Windows; use a WSL execution host"
+        );
+    }
     match cmd {
         CronCmd::List => {
             let store = cron_store()?;
@@ -388,6 +393,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 .map(|j| fmt_ts_opt(j.next_run_at))
                 .unwrap_or_else(|| "-".to_string());
             println!("added {id} next {next}");
+            if cfg!(windows) {
+                println!(
+                    "Stored only: cron execution is not supported on native Windows. Use a supported execution host."
+                );
+            }
             let stamp = store.last_tick()?;
             if let Some(warn) =
                 gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs())

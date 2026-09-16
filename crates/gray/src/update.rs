@@ -59,6 +59,10 @@ fn confirm() -> bool {
 }
 
 fn run_installer() -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !cfg!(windows),
+        "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum"
+    );
     let status = Command::new("sh")
         .arg("-c")
         .arg(install_command())
@@ -100,6 +104,12 @@ fn run_installer_locked() -> anyhow::Result<()> {
 
 /// Manual `gray update`: run the installer unconditionally, then exit hint.
 pub async fn update_now() -> anyhow::Result<()> {
+    // Windows locks its running executable. Never launch the Unix installer
+    // or advertise an update we could not install; external reinstall only.
+    anyhow::ensure!(
+        !cfg!(windows),
+        "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum"
+    );
     println!("→ updating gray ({CHANNEL})...");
     run_installer_locked()?;
     println!("✓ updated. restart gray to use the new version.");
@@ -158,6 +168,11 @@ pub async fn startup_check() {
     if std::env::var("GRAY_NO_UPDATE_CHECK").as_deref() == Ok("1") {
         return;
     }
+    if cfg!(windows) && std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
+        eprintln!(
+            "Automatic installation is not supported on native Windows; close Gray and reinstall externally."
+        );
+    }
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
     }
@@ -172,6 +187,12 @@ pub async fn startup_check() {
         return;
     };
     if !is_newer(&latest, current) {
+        return;
+    }
+    if cfg!(windows) {
+        println!(
+            "gray {latest} available; on native Windows close Gray and rerun install-native.ps1 externally."
+        );
         return;
     }
     let auto_flag = std::env::var("GRAY_AUTO_UPDATE").ok();

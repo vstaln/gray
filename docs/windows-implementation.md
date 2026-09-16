@@ -108,3 +108,21 @@ package lock reading, and profile-relative tilde expansion. Its first package
 fixture used the wrong lock filename and was corrected to the existing reader's
 plugins/lock.json (production format unchanged). Full local workspace tests,
 formatting and clippy passed; native CI is the acceptance check.
+
+## Preview installer checkpoint
+
+Native home and shell CI passed in run 35144531698. Run 35145426953 built a
+release-mode Windows beta binary and passed the real installer tests under
+PowerShell 7 and Windows PowerShell 5.1; it uploaded a preview ZIP/checksum/script.
+The public WSL installer and production release workflow remain unchanged.
+
+Native gateway/cron execution and in-process updates are now explicitly rejected;
+REPL cron auto-start is disabled on Windows. The real binary test additionally
+uses a Unicode USERPROFILE with HOME and GRAY_HOME absent. CI must verify these
+latest paths. docs/windows-preview.md describes artifact use and remaining gates.
+
+Local check/clippy/fmt passed with a worktree-private target directory. Sharing the
+original target directory produced a stale gray-core symbol error despite correct
+source, so subsequent builds are isolated too. The parallel full workspace run
+hit the pre-existing process-global skills env race; serial full workspace passed.
+No full native release, ACL guarantee, or interactive TUI acceptance is claimed.

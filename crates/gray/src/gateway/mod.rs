@@ -21,6 +21,12 @@ use std::path::Path;
 /// Dispatch `gray gateway <cmd>`.
 pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> anyhow::Result<()> {
     use crate::GatewayCmd;
+    // Native service/IPC lifecycle is not implemented in this preview. Reject
+    // before creating pid/socket state or calling Unix service managers.
+    anyhow::ensure!(
+        !cfg!(windows),
+        "gateway is not supported on native Windows; use WSL for background scheduling"
+    );
     match cmd {
         GatewayCmd::Run => run::run_foreground(config).await,
         GatewayCmd::Status => {

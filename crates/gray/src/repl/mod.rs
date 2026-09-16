@@ -620,7 +620,9 @@ pub async fn run_repl_mode(
     // (new chat lines in the session's own right, never transcript).
     // No join on exit: process return terminates the thread, and an
     // in-flight fire's claim TTL (300s) lets the next ticker reclaim it.
-    if interactive {
+    // File-only cron management remains usable on Windows; automatic firing
+    // must not bypass the CLI's explicit unsupported-execution boundary.
+    if interactive && !cfg!(windows) {
         let cfg = config.clone();
         if let Ok(home) = crate::setup::gray_home()
             && let Ok(store) = crate::cron::CronStore::open(home.join("cron"))

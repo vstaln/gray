@@ -6,9 +6,24 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
 async fn first_request_includes_launch_directory_without_changing_saved_prompt() {
+    check_first_request(false).await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn native_binary_uses_profile_without_home_override() {
+    check_first_request(true).await;
+}
+
+async fn check_first_request(native_profile: bool) {
     let root = tempfile::tempdir().unwrap();
     let cwd = root.path().join("project café with spaces");
-    let home = root.path().join("home");
+    let profile = root.path().join("profile café with spaces");
+    let home = if native_profile {
+        profile.join(".gray")
+    } else {
+        root.path().join("home")
+    };
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     let saved = "Custom instructions.\n<!-- private editor note -->\n";
@@ -72,6 +87,12 @@ async fn first_request_includes_launch_directory_without_changing_saved_prompt()
             "hello",
         ])
         .kill_on_drop(true);
+    if native_profile {
+        command
+            .env_remove("HOME")
+            .env_remove("GRAY_HOME")
+            .env("USERPROFILE", &profile);
+    }
     let output = tokio::time::timeout(Duration::from_secs(30), command.output())
         .await
         .expect("CLI must finish")
