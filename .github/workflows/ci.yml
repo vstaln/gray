@@ -96,3 +96,29 @@ jobs:
         run: cargo test --locked -p gray-tools --test shell_contract -- --nocapture
       - name: Resolve native profile without Unix HOME
         run: cargo test --locked -p gray --test home_paths -- --nocapture
+      - name: Build native preview artifact (not a release)
+        env:
+          GRAY_CHANNEL: beta
+        run: cargo build --locked --release -p gray
+      - name: Test native installer with PowerShell 7
+        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
+      - name: Test native installer with Windows PowerShell 5.1
+        shell: powershell
+        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
+      - name: Package preview ZIP and checksum
+        shell: pwsh
+        run: |
+          # CI artifacts only: never modify the production CDN or installer default.
+          New-Item -ItemType Directory -Path native-package | Out-Null
+          Copy-Item target/release/gray.exe, LICENSE, THIRD_PARTY_NOTICES.md native-package/
+          $archive = 'gray-beta-x86_64-windows.zip'
+          Compress-Archive native-package/* $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-preview
+          path: |
+            gray-beta-x86_64-windows.zip
+            gray-beta-x86_64-windows.zip.sha256
+            dist/install-native.ps1
