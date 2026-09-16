@@ -237,15 +237,7 @@ pub fn take_builder_warnings() -> Vec<String> {
 /// resolves: user-scope filtering is skipped, the project overlay still
 /// applies.
 fn gray_home() -> Option<PathBuf> {
-    std::env::var("GRAY_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".gray"))
-        })
+    gray_core::paths::gray_home()
 }
 
 /// Install dir for lock entries (`<home>/plugins`), mirroring `gray-pkg`

@@ -56,8 +56,8 @@ fn canonicalize_path(p: &Path) -> PathBuf {
 }
 
 fn resolve_home() -> Option<PathBuf> {
-    if let Ok(h) = std::env::var("HOME") {
-        return Some(PathBuf::from(h));
+    if let Some(h) = gray_core::paths::user_home() {
+        return Some(h);
     }
     if let Ok(h) = std::env::var("GRAY_HOME") {
         return Some(PathBuf::from(h));

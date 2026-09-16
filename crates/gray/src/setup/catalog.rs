@@ -89,10 +89,9 @@ pub const AUTH_MODE_NONE: &str = "none";
 
 /// Resolves `$GRAY_HOME` (or `$HOME/.gray`) — shared root for gray's files.
 pub fn gray_home() -> anyhow::Result<PathBuf> {
-    let base = std::env::var("GRAY_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
-        .map_err(|_| anyhow::anyhow!("cannot resolve home: set HOME or GRAY_HOME"))?;
-    Ok(PathBuf::from(base))
+    gray_core::paths::gray_home().ok_or_else(|| {
+        anyhow::anyhow!("cannot resolve home: set GRAY_HOME or the platform user profile")
+    })
 }
 
 /// Path to the persisted config file.

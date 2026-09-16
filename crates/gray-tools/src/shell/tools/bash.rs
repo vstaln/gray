@@ -231,15 +231,7 @@ impl Tool for BashTool {
 }
 
 fn gray_home() -> PathBuf {
-    std::env::var("GRAY_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".gray"))
-                .unwrap_or_else(|_| std::env::temp_dir().join(".gray"))
-        })
+    gray_core::paths::gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
 }
 
 fn shell_dir() -> PathBuf {

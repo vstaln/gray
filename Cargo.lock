@@ -921,6 +921,7 @@ dependencies = [
  "axum",
  "base64",
  "flate2",
+ "gray-core",
  "log",
  "reqwest",
  "serde",

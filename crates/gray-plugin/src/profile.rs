@@ -47,14 +47,12 @@ fn parse_entry(entry: &str) -> Option<PluginEntry> {
         }
         // String path form: `sidecar: ~/.gray/plugins/my-tools` (single argv).
         let path = unquote(v);
-        // Expand `~` to $HOME so spawn gets a real path.
-        let expanded = match path.strip_prefix("~/") {
-            Some(rest) => match std::env::var("HOME") {
-                Ok(home) => format!("{home}/{rest}"),
-                Err(_) => path.to_string(),
-            },
-            None if path == "~" => std::env::var("HOME").unwrap_or_else(|_| path.to_string()),
-            None => path.to_string(),
+        // Tilde belongs to the user profile, not an overridden GRAY_HOME.
+        // Keep unresolved paths literal so spawn reports the actual failure.
+        let expanded = match (path.strip_prefix("~/"), gray_core::paths::user_home()) {
+            (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),
+            (None, Some(home)) if path == "~" => home.to_string_lossy().into_owned(),
+            _ => path.to_string(),
         };
         return (!expanded.is_empty()).then(|| PluginEntry::Sidecar(SidecarSpec(vec![expanded])));
     }

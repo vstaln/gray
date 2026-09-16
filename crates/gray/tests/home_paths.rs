@@ -14,6 +14,36 @@ fn native_home_without_shell_environment() {
             gray::session_store::default_root().unwrap(),
             expected.join("sessions")
         );
+        assert_eq!(gray_core::paths::user_home().unwrap(), profile);
+        eprintln!(
+            "resolved profile={:?}, gray root={:?}, expected={expected:?}",
+            gray_core::paths::user_home(),
+            gray::setup::gray_home()
+        );
+        // Exercise the package reader's real plugins/lock.json layout. The
+        // plugin host's separate plugins.json format is not this fixture.
+        std::fs::create_dir_all(expected.join("plugins")).unwrap();
+        std::fs::write(
+            expected.join("plugins/lock.json"),
+            r#"{"schema":1,"plugins":{"native-fixture":{"version":"1"}}}"#,
+        )
+        .unwrap();
+        assert!(
+            gray_pkg::ops::list()
+                .unwrap()
+                .contains_key("native-fixture")
+        );
+        let config = profile.join("profile.yml");
+        std::fs::write(&config, "plugins:\n  - sidecar: ~/plugin.exe\n").unwrap();
+        let entries = gray_plugin::profile::load_entries(config.to_str().unwrap()).unwrap();
+        assert_eq!(
+            entries,
+            vec![gray_plugin::profile::PluginEntry::Sidecar(
+                gray_plugin::profile::SidecarSpec(vec![
+                    profile.join("plugin.exe").to_string_lossy().into_owned()
+                ])
+            )]
+        );
         return;
     }
     let dir = tempfile::Builder::new()

@@ -79,10 +79,7 @@ Guidelines:
 ///
 /// Single editable system prompt — users add to this one file. Migrates legacy `sys.md` if present.
 pub fn sys_prompt_path() -> anyhow::Result<PathBuf> {
-    let base = std::env::var("GRAY_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
-        .map_err(|_| anyhow::anyhow!("cannot resolve home: set HOME or GRAY_HOME"))?;
-    Ok(PathBuf::from(base).join("AGENTS.md"))
+    Ok(crate::setup::gray_home()?.join("AGENTS.md"))
 }
 
 /// Loads the system prompt from `path`, writing the embedded default there first if absent.

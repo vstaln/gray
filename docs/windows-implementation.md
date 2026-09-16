@@ -93,3 +93,18 @@ Linux CI also caught socket startup's process-wide umask(0177) removing owner
 traversal from concurrently created directories. Use 0077, retaining owner access
 while still excluding group/other. Full workspace tests passed in parallel locally;
 fmt and workspace clippy passed. Native confirmation remains the next CI run.
+
+## Native profile resolution
+
+Windows run 35142774785 reproduced the missing-HOME failure in home_paths.
+Shared gray-core::paths uses Rust's native profile lookup on Windows and preserves
+Unix HOME lookup; config, prompt, sessions, shell logs, package roots, plugin
+builder/profile and skill discovery consume it. No environment mutation or new
+platform dependency is needed. Existing no-home fallback policies remain; broader
+private-storage/ACL validation is still a release blocker.
+
+The subprocess test covers unset Windows HOME, Unicode/spaces, GRAY_HOME override,
+package lock reading, and profile-relative tilde expansion. Its first package
+fixture used the wrong lock filename and was corrected to the existing reader's
+plugins/lock.json (production format unchanged). Full local workspace tests,
+formatting and clippy passed; native CI is the acceptance check.
