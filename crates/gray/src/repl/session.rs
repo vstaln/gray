@@ -221,6 +221,7 @@ pub(crate) async fn handle_resume(
                             sid.as_str()
                         ));
                         t.ensure_gap(1);
+                        let _ = t.draw();
                     } else {
                         println!(
                             "\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m",

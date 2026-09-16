@@ -327,6 +327,7 @@ pub(crate) async fn handle_model(
                 ));
             }
             t.ensure_gap(1);
+            let _ = t.draw();
         } else {
             println!("✓ Model set to {m}");
             if let Some((old, new)) = clamped {
@@ -457,6 +458,7 @@ pub(crate) async fn handle_thinking(
                 t.set_hide_thinking(*hide_thinking);
                 t.push_action("Thinking effort set to", Some(&eff_clean));
                 t.ensure_gap(1);
+                let _ = t.draw();
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
             }
