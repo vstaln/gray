@@ -47,8 +47,17 @@ impl SessionTotals {
     }
 }
 
-/// `⬡ 12,400 tok · 6s · $0.004 ($0.41 session)` — cost/time parts appear only
-/// when known; otherwise the footer stays tokens-only as before.
+/// Output tokens/sec for a turn — opencode v2 `turnTokensPerSecond` style.
+/// Gray tracks whole-turn time (tools included), not stream-only time.
+pub(crate) fn turn_tokens_per_second(output_tokens: usize, duration_ms: u64) -> Option<u64> {
+    if output_tokens == 0 || duration_ms == 0 {
+        return None;
+    }
+    Some((output_tokens as f64 * 1000.0 / duration_ms as f64).round() as u64)
+}
+
+/// `⬡ 12,400 tok · 82 tok/s · 6s · $0.004 ($0.41 session)` — rate/time/cost
+/// parts appear only when known; otherwise the footer stays tokens-only.
 pub(crate) fn turn_footer(
     usage: &gray_core::event::Usage,
     model: &str,
@@ -56,17 +65,21 @@ pub(crate) fn turn_footer(
     duration_ms: Option<u64>,
 ) -> String {
     let base = format!("\u{2b22} {} tok", crate::repl::fmt_usage(usage.total()));
+    let rate = duration_ms
+        .and_then(|ms| turn_tokens_per_second(usage.output_tokens, ms))
+        .map(|t| format!(" · {t} tok/s"))
+        .unwrap_or_default();
     let time = duration_ms
         .map(|ms| format!(" · {}", crate::repl::format::fmt_duration_ms(ms)))
         .unwrap_or_default();
     match crate::setup::turn_cost(usage, model) {
         Some(c) if totals.turns > 1 => format!(
-            "{base}{time} · {} ({} session)",
+            "{base}{rate}{time} · {} ({} session)",
             crate::setup::format_cost(c),
             crate::setup::format_cost(totals.cost)
         ),
-        Some(c) => format!("{base}{time} · {}", crate::setup::format_cost(c)),
-        None => format!("{base}{time}"),
+        Some(c) => format!("{base}{rate}{time} · {}", crate::setup::format_cost(c)),
+        None => format!("{base}{rate}{time}"),
     }
 }
 

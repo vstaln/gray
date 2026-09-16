@@ -117,6 +117,19 @@ fn turn_footer_includes_duration_when_known() {
     assert!(line.contains("tok"), "footer should keep tokens: {line}");
 }
 
+#[test]
+fn turn_footer_shows_tokens_per_second() {
+    let usage = gray_core::event::Usage::new(1000, 500);
+    let totals = super::SessionTotals::default();
+    let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
+    assert!(line.contains("77 tok/s"), "500 out / 6.5s: {line}");
+    let untimed = super::turn_footer(&usage, "test-persist-model", &totals, None);
+    assert!(
+        !untimed.contains("tok/s"),
+        "no duration, no rate: {untimed}"
+    );
+}
+
 /// Stub plugin claiming `/echo`, like a sidecar manifest with
 /// `commands:["/echo"]` answering `command/run` with `{"text"}`.
 struct EchoHook;
