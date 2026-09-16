@@ -114,8 +114,18 @@ async fn sigkill_is_honest() {
         .execute(&ToolContext::default(), json!({"command": cmd}))
         .await;
     assert!(!out.is_error, "{}", out.content);
+    #[cfg(unix)]
     assert!(
         first_line(&out).starts_with("exit 137 (SIGKILL"),
+        "{}",
+        out.content
+    );
+    // The same fixture under Git/MSYS reports native status 9 << 8 (2304),
+    // observed on Windows CI. Native ExitStatus has no POSIX signal field:
+    // preserve the actual code rather than invent a Unix SIGKILL status.
+    #[cfg(windows)]
+    assert!(
+        first_line(&out).starts_with("exit 2304 ·"),
         "{}",
         out.content
     );

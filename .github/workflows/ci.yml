@@ -35,6 +35,13 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
+      # Keep platform process tests ahead of unrelated suites, so a failure
+      # elsewhere cannot hide the macOS cancellation regression evidence.
+      - if: matrix.os == 'macos-latest'
+        name: Verify macOS timeout and complete shell library tests
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo test --locked -p gray-tools --lib -- --nocapture
       - run: cargo test --workspace --quiet
       - if: matrix.os == 'ubuntu-latest'
         uses: rustsec/audit-check@v2

@@ -93,10 +93,16 @@ async fn first_request_includes_launch_directory_without_changing_saved_prompt()
         .unwrap()["content"]
         .as_str()
         .unwrap();
-    let path = serde_json::to_string(&cwd.to_string_lossy()).unwrap();
-    assert!(
-        system.contains(&format!("Working directory: {path}")),
-        "first request missing cwd: {system}"
+    let directory = system
+        .lines()
+        .find_map(|line| line.strip_prefix("Working directory: "))
+        .unwrap_or_else(|| panic!("first request missing cwd: {system}"));
+    let directory: String = serde_json::from_str(directory).unwrap();
+    // macOS getcwd resolves /var -> /private/var. Compare directory identity,
+    // not the alias tempfile happened to return; don't change production cwd.
+    assert_eq!(
+        std::fs::canonicalize(directory).unwrap(),
+        std::fs::canonicalize(&cwd).unwrap()
     );
     assert!(system.starts_with("Custom instructions."));
     assert!(!system.contains("private editor note"));
