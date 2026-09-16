@@ -310,6 +310,29 @@ pub(crate) async fn dispatch_command(
                 handled = true;
             }
             if !handled {
+                let parts: Vec<String> = cmd
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect();
+                if let Some((name, args)) = parts.split_first() {
+                    match crate::plugin_cli::capture_slash(name, args).await {
+                        Ok(Some(text)) => {
+                            say(tui.as_ref().map(|(s, _)| s), text.trim_end());
+                            handled = true;
+                        }
+                        Err(e) => {
+                            say(
+                                tui.as_ref().map(|(s, _)| s),
+                                &format!("plugin command failed: {e}"),
+                            );
+                            handled = true;
+                        }
+                        Ok(None) => {}
+                    }
+                }
+            }
+            if !handled {
                 // The gateway left the TUI (native gateway deleted; chat returns as a plugin):
                 // point muscle memory at it instead of the generic unknown.
                 let first = cmd[1..].split_whitespace().next().unwrap_or("");

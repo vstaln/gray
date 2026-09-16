@@ -26,6 +26,7 @@ pub(crate) const VIEWPORT_H: u16 = 14;
 /// bottom pad + context footer. No cleared slack below the footer.
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
+mod plugin_widget;
 mod terminal;
 pub(crate) use terminal::CustomTerminal;
 
@@ -148,21 +149,25 @@ pub(crate) const MAX_LIVE_TOOLS: usize = 3;
 
 /// Live tool headers for the viewport, oldest-first, capped. Free fn so
 /// tests cover the cap/marker policy without `Tui::new` (needs a TTY).
-pub(crate) fn live_tool_rows(tools: &[LiveTool]) -> Vec<Line<'static>> {
+pub(crate) fn live_tool_rows(tools: &[LiveTool], elapsed: Duration) -> Vec<Line<'static>> {
     tools
         .iter()
         .take(MAX_LIVE_TOOLS)
         .map(|t| {
+            let mut line = t.header.clone();
             if t.running {
-                let mut line = t.header.clone();
-                line.spans.push(Span::styled(
-                    " · running…",
-                    Style::default().fg(crate::theme::theme().tool_dim),
-                ));
-                line
-            } else {
-                t.header.clone()
+                // ponytail: reuse the status shimmer; only the live bash verb changes.
+                let prefix =
+                    usize::from(line.spans.first().is_some_and(|s| s.content == "\u{2b22} "));
+                if prefix == 1 {
+                    line.spans[0].content = "\u{2b21} ".into();
+                }
+                let end = prefix
+                    + usize::from(line.spans.get(prefix).is_some_and(|s| s.content == "Ran "));
+                line.spans
+                    .splice(prefix..end, draw::shimmer_spans("Running ", elapsed));
             }
+            line
         })
         .collect()
 }
@@ -238,14 +243,15 @@ pub struct Tui {
     /// input box by `draw`; the scrollback commit at `ToolResult` stays the
     /// single transcript render, so resume/reflow never see this.
     live_tools: Vec<LiveTool>,
+    plugin_widget: plugin_widget::Widget,
 }
 
 /// One in-flight tool call rendered live above the input box while the
 /// model streams its args (`streaming`) or the executor runs it
 /// (`running`). `header` is always the full
 /// [`crate::tool_fmt::format_tool_call_header`]-family line so the live
-/// card and the final scrollback card agree; `running` only flips the
-/// trailing `· running…` marker. Never enters `history_entries`.
+/// card keeps its command styling; execution adds a shimmering leading label
+/// instead of the completed bash verb. Never enters `history_entries`.
 #[derive(Clone, Debug)]
 pub(crate) struct LiveTool {
     pub(crate) id: String,
@@ -405,6 +411,7 @@ impl Tui {
             turn_billed_output: None,
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
+            plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
         })
     }
 
@@ -686,7 +693,12 @@ impl Tui {
     /// Live tool headers for the viewport, oldest-first, capped so the
     /// input box always stays visible.
     pub(crate) fn live_tool_rows(&self) -> Vec<Line<'static>> {
-        live_tool_rows(&self.live_tools)
+        let elapsed = self
+            .turn_started
+            .or_else(|| self.status.as_ref().map(|(started, _)| *started))
+            .map(|started| started.elapsed())
+            .unwrap_or_default();
+        live_tool_rows(&self.live_tools, elapsed)
     }
 
     /// Overflow count past the live-tool cap (`+N more`, like the queued
@@ -935,7 +947,12 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none() && self.live_tools.is_empty() {
+        let widget_changed = self.plugin_widget.refresh();
+        if self.status.is_none()
+            && self.live_tools.is_empty()
+            && !self.plugin_widget.active()
+            && !widget_changed
+        {
             return;
         }
         let _ = self.draw();

@@ -174,12 +174,16 @@ pub(crate) fn completion_matches_dyn(
             } else {
                 after.to_string()
             };
-            return complete_command_args(&cmd.to_lowercase(), &full_after, cwd);
+            let mut matches = complete_command_args(&cmd.to_lowercase(), &full_after, cwd);
+            matches.extend(crate::plugin_cli::completions(inner));
+            return matches;
         }
-        return completion_matches(inner)
+        let mut matches: Vec<_> = completion_matches(inner)
             .into_iter()
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect();
+        matches.extend(crate::plugin_cli::completions(inner));
+        return matches;
     }
     Vec::new()
 }
@@ -189,7 +193,12 @@ pub(crate) fn completion_matches_dyn(
 /// the existing skill dispatch runs it — skills never become real
 /// top-level commands.
 pub(crate) fn completion_fill(name: &str) -> String {
-    if name.contains(' ') || resolve(name).is_some() {
+    if name.contains(' ')
+        || resolve(name).is_some()
+        || crate::plugin_cli::completions(name)
+            .iter()
+            .any(|(n, _)| n == name)
+    {
         return format!("/{name} ");
     }
     format!("/skills {name} ")
