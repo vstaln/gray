@@ -94,3 +94,5 @@ jobs:
         # test files report native evidence instead of stopping at one failure.
         if: ${{ !cancelled() }}
         run: cargo test --locked -p gray-tools --test shell_contract -- --nocapture
+      - name: Resolve native profile without Unix HOME
+        run: cargo test --locked -p gray --test home_paths -- --nocapture
