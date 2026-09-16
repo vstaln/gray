@@ -108,7 +108,6 @@ pub(crate) use session::{
 };
 pub(crate) use status::{
     SessionTotals, handle_compact, handle_context_window, handle_copy, handle_usage, turn_footer,
-    turn_tokens_per_second,
 };
 pub(crate) use user_cmds::handle_feedback;
 
