@@ -347,8 +347,11 @@ pub(crate) fn dispatch_agent_event(
                 t.end_thinking();
                 pending_tools.insert(id.clone(), (name.clone(), None));
                 // pi `ToolExecutionComponent` appears immediately (partial):
-                // surface the tool on the status dock instead of leaving
-                // "Thinking…" frozen while args stream in.
+                // viewport-anchored live card, same header family as the
+                // final scrollback card. Single scrollback commit stays at
+                // `ToolResult`, so this never duplicates.
+                let header = crate::tool_fmt::format_live_tool_header(name, "", None);
+                t.upsert_live_tool(id, header, false);
                 t.set_status(Some(&format!("Preparing tool: {name}")));
             }
             AgentEvent::ToolCallProgress {
@@ -356,13 +359,15 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                // Live args streaming: truncated preview on the status dock.
-                // ponytail: status-line preview only, no in-place box update.
+                // pi `updateArgs`: stream the in-progress command into the
+                // live card head (same header family as the final card).
                 // (No token accounting: the pill carries no estimate — exact
                 // counts come from usage reports, never chars/4.)
+                pending_tools.insert(id.clone(), (name.clone(), None));
+                let header = crate::tool_fmt::format_live_tool_header(name, args_so_far, None);
+                t.upsert_live_tool(id, header, false);
                 let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
-                pending_tools.insert(id.clone(), (name.clone(), None));
                 if preview.is_empty() {
                     t.set_status(Some(&format!("Preparing tool: {name}")));
                 } else {
@@ -384,10 +389,12 @@ pub(crate) fn dispatch_agent_event(
                         e.1 = Some(args.clone());
                     })
                     .or_insert((name.clone(), Some(args.clone())));
-                // No transcript line here: the result card below is the single
-                // render of the call. The live signal rides the status dock
-                // (`Preparing tool:` at Start, `Working` here) so a duplicate
-                // header never lands in the transcript.
+                // pi `markExecutionStarted` + `setArgsComplete`: the live
+                // card flips to its final header + `running…` marker. No
+                // transcript line here: the result card below is the single
+                // scrollback render, so a duplicate never lands.
+                let header = crate::tool_fmt::format_tool_call_header(&name, args, Some(cwd));
+                t.upsert_live_tool(id, header, true);
                 t.set_status(Some("Working"));
             }
             AgentEvent::ToolResult {
@@ -411,8 +418,9 @@ pub(crate) fn dispatch_agent_event(
                         *is_error,
                         Some(cwd),
                     );
-                    // The box is the single render of the call — always push
-                    // it (no live line exists to duplicate it).
+                    // pi `updateResult`: the scrollback commit is the flip —
+                    // drop the live card, then push the single render.
+                    t.remove_live_tool(id);
                     {
                         let header = args
                             .as_ref()
@@ -441,6 +449,9 @@ pub(crate) fn dispatch_agent_event(
                 *turn_usage = Some(*usage);
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
+                // pi `settle_pending_cards`: leftovers never stick (cancel/
+                // error paths emit no ToolResult for in-flight calls).
+                t.clear_live_tools();
                 t.end_thinking();
                 // Billed Σ-per-round totals are the cost basis (`totals`,
                 // `turn_footer`, persisted entry) — they must NOT overwrite

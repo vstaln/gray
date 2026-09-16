@@ -22,15 +22,15 @@ fn transcript_ends_blank_matches_ensure_gap() {
 #[test]
 fn desired_viewport_exact_fit() {
     // Idle: input 3 + footer 1 = 4 rows (MIN_VIEWPORT_H).
-    assert_eq!(desired_viewport_h(0, 0, 3, 0, 0, VIEWPORT_H), 4);
+    assert_eq!(desired_viewport_h(0, 0, 0, 3, 0, 0, VIEWPORT_H), 4);
     // Slash popup: input 3 + panel 6 + footer 1 = 10.
-    assert_eq!(desired_viewport_h(0, 0, 3, 6, 0, VIEWPORT_H), 10);
+    assert_eq!(desired_viewport_h(0, 0, 0, 3, 6, 0, VIEWPORT_H), 10);
     // Running: status 2 + input 3 + footer 1 = 6.
-    assert_eq!(desired_viewport_h(2, 0, 3, 0, 0, VIEWPORT_H), 6);
+    assert_eq!(desired_viewport_h(2, 0, 0, 3, 0, 0, VIEWPORT_H), 6);
     // Running + full panel: 3 + 3 + 6 + 1 = 13.
-    assert_eq!(desired_viewport_h(3, 0, 3, 6, 0, VIEWPORT_H), 13);
+    assert_eq!(desired_viewport_h(3, 0, 0, 3, 6, 0, VIEWPORT_H), 13);
     // Question panel: expands up to available screen height to show all options.
-    assert_eq!(desired_viewport_h(0, 0, 0, 15, 0, 23), 16);
+    assert_eq!(desired_viewport_h(0, 0, 0, 0, 15, 0, 23), 16);
 }
 
 /// One streamed paragraph arriving chunk by chunk flips the transcript
@@ -45,6 +45,7 @@ fn streaming_tail_flicker_holds_viewport_still() {
         cached = ratchet_seam(cached, true, !blank);
         heights.push(desired_viewport_h(
             status_dock_h(true, cached),
+            0,
             0,
             3,
             0,
@@ -102,4 +103,21 @@ fn queued_preview_renders_header_and_entries() {
     assert!(text.contains("Queued follow-up inputs (2)"), "got: {text}");
     assert!(text.contains("↳ hello"), "got: {text}");
     assert!(text.contains("↳ second"), "got: {text}");
+}
+
+#[test]
+fn live_tool_viewport_height_counts_live_rows() {
+    // Live cards sit between queued preview and input: 1 live row grows
+    // the exact-fit viewport by exactly 1 (status 2 + live 1 + input 3).
+    let without = desired_viewport_h(2, 0, 0, 3, 0, 0, VIEWPORT_H);
+    let with = desired_viewport_h(2, 0, 1, 3, 0, 0, VIEWPORT_H);
+    assert_eq!(with, without + 1, "live rows must reserve viewport space");
+    // Cap: 3 cards + `… +N more` overflow row, never unbounded.
+    let capped = desired_viewport_h(2, 0, 4, 3, 0, 0, VIEWPORT_H);
+    assert_eq!(capped, without + 4, "3 live + overflow row: {capped}");
+    // Clamp holds at the top: live cards can never push past VIEWPORT_H.
+    assert_eq!(
+        desired_viewport_h(3, 4, 40, 3, 6, 1, VIEWPORT_H),
+        VIEWPORT_H
+    );
 }

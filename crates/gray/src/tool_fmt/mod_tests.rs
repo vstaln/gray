@@ -248,3 +248,56 @@ fn render_code_block_cap_unchanged() {
     assert_eq!(lines.len(), 25);
     assert!(row_text(&lines[18]).contains("… +26 lines"));
 }
+
+#[test]
+fn live_header_empty_args_shows_name_only() {
+    let text = row_text(&format_live_tool_header("bash", "", None));
+    assert!(text.contains("bash"), "got {text:?}");
+}
+
+#[test]
+fn live_header_full_json_matches_final_header() {
+    let raw = r#"{"command":"cargo test -p gray"}"#;
+    let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        row_text(&format_live_tool_header("bash", raw, None)),
+        row_text(&format_tool_call_header("bash", &v, None)),
+    );
+}
+
+#[test]
+fn live_header_partial_bash_streams_command() {
+    let text = row_text(&format_live_tool_header(
+        "bash",
+        r#"{"command":"cargo test --li"#,
+        None,
+    ));
+    assert!(text.contains("cargo test"), "got {text:?}");
+}
+
+#[test]
+fn live_header_partial_read_streams_path() {
+    let text = row_text(&format_live_tool_header("read", r#"{"path":"src/ma"#, None));
+    assert!(text.contains("src/ma"), "got {text:?}");
+}
+
+#[test]
+fn live_header_garbage_never_panics_and_names_tool() {
+    for raw in ["{{{", "\"unclosed", "   ", ",,,"] {
+        let text = row_text(&format_live_tool_header("grep", raw, None));
+        assert!(text.contains("grep"), "got {text:?} for {raw:?}");
+    }
+}
+
+#[test]
+fn live_header_huge_raw_still_streams_prefix() {
+    // No 1MB Box: oversized partials cap the extracted scalar, the header
+    // still streams from the same prefix the final card truncates to.
+    let big = format!(r#"{{"command":"{}"#, "x".repeat(9000));
+    let full = format!(r#"{{"command":"{}"}}"#, "x".repeat(9000));
+    let v: serde_json::Value = serde_json::from_str(&full).unwrap();
+    assert_eq!(
+        row_text(&format_live_tool_header("bash", &big, None)),
+        row_text(&format_tool_call_header("bash", &v, None)),
+    );
+}

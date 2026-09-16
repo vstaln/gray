@@ -220,6 +220,9 @@ pub(crate) async fn run_prompt_turn(
         .await
     {
         pending_tools.clear();
+        if let Some(t) = &tui_stream {
+            t.lock().expect("tui lock").clear_live_tools();
+        }
         let ctx2 = ToolContext {
             cwd: cwd.to_path_buf(),
             cancel: cancel.clone(),

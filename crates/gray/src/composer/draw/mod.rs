@@ -20,12 +20,13 @@ pub(crate) use widgets::{
 pub(crate) fn desired_viewport_h(
     status_h: u16,
     queued_h: u16,
+    live_h: u16,
     box_rows: u16,
     panel_h: u16,
     attach_h: u16,
     max_h: u16,
 ) -> u16 {
-    (status_h + queued_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
+    (status_h + queued_h + live_h + box_rows + panel_h + attach_h + 1).clamp(MIN_VIEWPORT_H, max_h)
 }
 
 pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
@@ -72,10 +73,23 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     };
     let panel_est: u16 = tui.matches.len().min(PANEL_ROWS) as u16;
     let box_rows_est: u16 = box_h;
+    // Live tool cards above the input box (pi pending cards): measured,
+    // not estimated — the rows are already wrapped for `w`.
+    let live_est: u16 = tui
+        .live_tool_rows()
+        .iter()
+        .map(|l| {
+            crate::composer::transcript::wrap_styled_line(l.clone(), w.saturating_sub(4).max(1))
+                .len()
+                .max(1) as u16
+        })
+        .sum::<u16>()
+        .saturating_add(u16::from(tui.live_tool_overflow() > 0));
     let max_viewport_h = VIEWPORT_H;
     let desired = desired_viewport_h(
         status_h,
         queued_est,
+        live_est,
         box_rows_est,
         panel_est,
         attach_h,
@@ -102,6 +116,11 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
     tui.viewport_h = desired;
 
     // Hoisted for the draw closure (borrows `tui` immutably inside).
+    // Live tool headers hoisted as owned rows — `live_tool_rows` borrows
+    // all of `tui`, which would collide with `terminal.draw`'s mutable
+    // borrow; wrapping happens inside at the frame width.
+    let live_headers: Vec<Line<'static>> = tui.live_tool_rows();
+    let live_overflow = tui.live_tool_overflow();
     let compaction_elapsed = tui.compaction_elapsed();
     let turn_started = tui.turn_started;
     let is_task_running = tui.is_task_running;
@@ -117,11 +136,20 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // Queued preview sits between status and input.
         let queued_preview: Vec<Line<'static>> = queued_preview_lines(&tui.queued_inputs, w);
         let queued_h = queued_preview.len() as u16;
+        // Live tool cards (pi pending cards): wrapped at the frame width
+        // like every other viewport row; `live_h` reserves their space.
+        let live_rows: Vec<Line<'static>> = live_headers
+            .into_iter()
+            .flat_map(|l| {
+                crate::composer::transcript::wrap_styled_line(l, w.saturating_sub(4).max(1))
+            })
+            .collect();
+        let live_h = live_rows.len() as u16 + u16::from(live_overflow > 0);
         // Space left for the completion panel once the fixed rows
         // (status, queued, input, attachments, footer) are placed.
         let avail = area
             .height
-            .saturating_sub(status_h + queued_h + box_h + attach_h + 1);
+            .saturating_sub(status_h + queued_h + live_h + box_h + attach_h + 1);
         let need = PANEL_ROWS as u16;
         let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
         let visible_count = if tui.matches.is_empty() {
@@ -131,7 +159,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
         let panel_h = visible_count as u16;
         let box_rows = box_h;
-        let box_y = status_y + status_h + queued_h;
+        let box_y = status_y + status_h + queued_h + live_h;
         let panel_y = box_y + box_rows;
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
@@ -173,6 +201,34 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 Paragraph::new(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
+        }
+        let live_y = status_y + status_h + queued_h;
+        for (i, line) in live_rows.iter().enumerate() {
+            let y = live_y + i as u16;
+            if y < area.y || y >= area.y + area.height {
+                continue;
+            }
+            frame.render_widget(
+                Paragraph::new(line.clone()).block(
+                    Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)),
+                ),
+                Rect::new(area.x, y, area.width, 1),
+            );
+        }
+        if live_overflow > 0 {
+            let y = live_y + live_rows.len() as u16;
+            if y >= area.y && y < area.y + area.height {
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        format!("    … +{live_overflow} more"),
+                        Style::default()
+                            .fg(crate::theme::theme().text_muted)
+                            .add_modifier(Modifier::DIM)
+                            .add_modifier(Modifier::ITALIC),
+                    )])),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
         }
         let rendered_box_h = box_h.min(area.bottom().saturating_sub(box_y));
         if rendered_box_h > 0 {

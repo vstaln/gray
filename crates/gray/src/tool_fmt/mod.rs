@@ -131,6 +131,155 @@ fn truncate_cmd(cmd: &str) -> &str {
     if line.len() > 80 { &line[..80] } else { line }
 }
 
+/// Live header for a still-streaming tool call (pi `renderCall` on partial
+/// args): renders the same header as [`format_tool_call_header`] once
+/// `args_so_far` parses as JSON, else streams the in-progress scalar
+/// (`command` / `path` / `pattern` / …) raw. Char-safe throughout: partial
+/// tails decode `char`-wise (a multibyte split mid-chunk can never panic)
+/// and the 9000-char cap falls back to the name-only line, so `truncate_cmd`
+/// never byte-slices attacker-shaped partial text.
+pub fn format_live_tool_header(name: &str, args_so_far: &str, cwd: Option<&Path>) -> Line<'static> {
+    const RAW_CAP: usize = 9000;
+    let trimmed = args_so_far.trim();
+    if trimmed.is_empty() {
+        return tool_name_line(name);
+    }
+    // Fast path: complete JSON renders exactly like the final header.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        return format_tool_call_header(name, &v, cwd);
+    }
+    // Slow path: stream the in-progress scalar, tolerating unclosed quotes
+    // and trailing escapes. Stays a dumb string scan (no new deps).
+    match extract_partial_scalar(name, trimmed, RAW_CAP) {
+        Some(partial) => format_tool_call_header(name, &partial, cwd),
+        None => tool_name_line(name),
+    }
+}
+
+/// Bare `⬡ name` line for empty/garbage partial args (pi `renderCall` with
+/// `undefined` args: `formatShellCall` shows the prompt + `...`).
+fn tool_name_line(name: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            "\u{2b22} ",
+            Style::default()
+                .fg(accent_tool())
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            name.to_string(),
+            Style::default()
+                .fg(text_primary())
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// Best-effort scalar for the tool's headline arg straight from the raw
+/// partial-JSON buffer. Finds the key's opening quote, then decodes
+/// `\"`-aware up to the buffer end; trailing backslash (split escape) is
+/// dropped. `None` when the key/value isn't started yet. Bounded: values
+/// past RAW_CAP chars fall back to the name-only line, and only the key
+/// region is scanned, so per-delta cost is O(key + value), never O(buffer).
+fn extract_partial_scalar(name: &str, raw: &str, cap: usize) -> Option<serde_json::Value> {
+    let key = match name {
+        "bash" => "command",
+        "skill" => "name",
+        _ => scalar_key(name, raw),
+    };
+    let from = find_key_value_start(raw, key)?;
+    let (value, _closed) = decode_partial_string(&raw[from..], cap)?;
+    let mut obj = serde_json::Map::with_capacity(1);
+    obj.insert(key.to_string(), serde_json::Value::String(value));
+    Some(serde_json::Value::Object(obj))
+}
+
+/// Headline key per tool: `path` for file tools, `pattern` for search
+/// tools, `skill`'s `name` handled by the caller. Unknown tools reuse the
+/// same guess so `format_tool_call_header`'s `other` arm renders `k=v`.
+fn scalar_key(name: &str, raw: &str) -> &'static str {
+    match name {
+        "read" | "write" | "edit" | "ls" => "path",
+        "grep" | "find" => "pattern",
+        _ => {
+            // ponytail: key order decides, not a schema table. `path` wins
+            // on ties (the final header's `other` arm prefers it too).
+            let path_pos = raw.find("\"path\"").map(|i| (i, "path"));
+            let pattern_pos = raw.find("\"pattern\"").map(|i| (i, "pattern"));
+            let command_pos = raw.find("\"command\"").map(|i| (i, "command"));
+            [path_pos, pattern_pos, command_pos]
+                .into_iter()
+                .flatten()
+                .min_by_key(|(i, _)| *i)
+                .map(|(_, k)| k)
+                .unwrap_or("path")
+        }
+    }
+}
+
+/// Byte offset of the string value's first content char after
+/// `"key" : "`, or `None` if the key/opening quote hasn't streamed yet.
+fn find_key_value_start(raw: &str, key: &str) -> Option<usize> {
+    let quoted = format!("\"{key}\"");
+    let mut search = raw;
+    let mut base = 0usize;
+    loop {
+        let rel = search.find(quoted.as_str())?;
+        let mut i = base + rel + quoted.len();
+        let b = raw.as_bytes();
+        while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+            i += 1;
+        }
+        if i < b.len() && b[i] == b':' {
+            i += 1;
+            while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                i += 1;
+            }
+            if i < b.len() && b[i] == b'"' {
+                return Some(i + 1);
+            }
+            return None;
+        }
+        base += rel + quoted.len();
+        search = &raw[base..];
+    }
+}
+
+/// Decodes a partial JSON string body (opening quote already consumed):
+/// `\"` stays a literal quote, `\\` a backslash, `\n`/`\t` their
+/// control chars; unknown escapes keep the escaped char. A trailing lone
+/// `\\` is a split escape — dropped. Over-cap values return `None`
+/// (caller falls back to the name-only line).
+fn decode_partial_string(raw: &str, cap: usize) -> Option<(String, bool)> {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    let mut closed = false;
+    while let Some(c) = chars.next() {
+        if c == '"' {
+            closed = true;
+            break;
+        }
+        if c != '\\' {
+            out.push(c);
+        } else {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => break,
+            }
+        }
+        if out.chars().count() > cap {
+            return None;
+        }
+    }
+    if out.is_empty() && !closed {
+        return None;
+    }
+    Some((out, closed))
+}
+
 /// Heredoc hidden in a bash command (`cat <<'EOF' > path` … `EOF`):
 /// returns the body plus the redirect target, if any, so replay shows the
 /// code gray wrote or ran (bash-only harness: the `write`-tool arm never

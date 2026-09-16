@@ -142,6 +142,36 @@ pub(crate) fn fmt_elapsed_compact(elapsed_secs: u64) -> String {
     format!("{hours}h {minutes:02}m {seconds:02}s")
 }
 
+/// Cap for viewport-anchored live tool cards: mirrors the queued-preview
+/// cap so the 14-row viewport never pushes the input box off.
+pub(crate) const MAX_LIVE_TOOLS: usize = 3;
+
+/// Live tool headers for the viewport, oldest-first, capped. Free fn so
+/// tests cover the cap/marker policy without `Tui::new` (needs a TTY).
+pub(crate) fn live_tool_rows(tools: &[LiveTool]) -> Vec<Line<'static>> {
+    tools
+        .iter()
+        .take(MAX_LIVE_TOOLS)
+        .map(|t| {
+            if t.running {
+                let mut line = t.header.clone();
+                line.spans.push(Span::styled(
+                    " · running…",
+                    Style::default().fg(crate::theme::theme().tool_dim),
+                ));
+                line
+            } else {
+                t.header.clone()
+            }
+        })
+        .collect()
+}
+
+/// Overflow count past [`MAX_LIVE_TOOLS`] (pure companion for tests).
+pub(crate) fn live_tool_overflow(len: usize) -> usize {
+    len.saturating_sub(MAX_LIVE_TOOLS)
+}
+
 mod text_area;
 pub(crate) use text_area::TextArea;
 
@@ -202,6 +232,25 @@ pub struct Tui {
     /// `MIN_VIEWPORT_H..=VIEWPORT_H`) so there is never a 10-row idle gap;
     /// popups can grow it back up.
     pub(crate) viewport_h: u16,
+    /// Live tool cards (pi `ToolExecutionComponent`, viewport-anchored):
+    /// streaming `ToolCallStart`/`Progress` and executing `ToolCallEnd`
+    /// state, keyed by call id in first-seen order. Rendered above the
+    /// input box by `draw`; the scrollback commit at `ToolResult` stays the
+    /// single transcript render, so resume/reflow never see this.
+    live_tools: Vec<LiveTool>,
+}
+
+/// One in-flight tool call rendered live above the input box while the
+/// model streams its args (`streaming`) or the executor runs it
+/// (`running`). `header` is always the full
+/// [`crate::tool_fmt::format_tool_call_header`]-family line so the live
+/// card and the final scrollback card agree; `running` only flips the
+/// trailing `· running…` marker. Never enters `history_entries`.
+#[derive(Clone, Debug)]
+pub(crate) struct LiveTool {
+    pub(crate) id: String,
+    pub(crate) header: Line<'static>,
+    pub(crate) running: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -348,6 +397,7 @@ impl Tui {
             pending_resize: None,
             turn_billed_output: None,
             viewport_h: MIN_VIEWPORT_H,
+            live_tools: Vec::new(),
         })
     }
 
@@ -584,6 +634,55 @@ impl Tui {
         self.turn_billed_output = Some(output_tokens);
     }
 
+    /// Upserts a live tool card (pi `updateArgs` / `markExecutionStarted`):
+    /// `header` replaces the previous one for the same `id`, first-seen
+    /// order preserved; cap mirrors the queued-preview cap so the
+    /// 14-row viewport never pushes the input box off.
+    pub(crate) fn upsert_live_tool(&mut self, id: &str, header: Line<'static>, running: bool) {
+        if let Some(slot) = self.live_tools.iter_mut().find(|t| t.id == id) {
+            slot.header = header;
+            slot.running = running;
+        } else {
+            self.live_tools.push(LiveTool {
+                id: id.to_string(),
+                header,
+                running,
+            });
+        }
+        let _ = self.draw();
+    }
+
+    /// Drops a live tool card (pi `updateResult` flips the same card:
+    /// here the scrollback commit at `ToolResult` is the flip, so the live
+    /// card just goes away).
+    pub(crate) fn remove_live_tool(&mut self, id: &str) {
+        if let Some(pos) = self.live_tools.iter().position(|t| t.id == id) {
+            self.live_tools.remove(pos);
+            let _ = self.draw();
+        }
+    }
+
+    /// Live tool headers for the viewport, oldest-first, capped so the
+    /// input box always stays visible.
+    pub(crate) fn live_tool_rows(&self) -> Vec<Line<'static>> {
+        live_tool_rows(&self.live_tools)
+    }
+
+    /// Overflow count past the live-tool cap (`+N more`, like the queued
+    /// preview's `… +N more`).
+    pub(crate) fn live_tool_overflow(&self) -> usize {
+        live_tool_overflow(self.live_tools.len())
+    }
+
+    /// Clears live tool cards without touching scrollback (cancel/error/
+    /// turn end: pi `settle_pending_cards` — leftovers never stick).
+    pub(crate) fn clear_live_tools(&mut self) {
+        if !self.live_tools.is_empty() {
+            self.live_tools.clear();
+            let _ = self.draw();
+        }
+    }
+
     pub(crate) fn width(&self) -> usize {
         self.last_width.max(20) as usize
     }
@@ -719,6 +818,10 @@ impl Tui {
         // Codex `turn_runtime.rs`: a turn ending without item completion
         // clears a live compaction silently (no `Context compacted` line).
         self.active_compaction = None;
+        // Belt-and-suspenders with the TurnEnd dispatch clear: prompt_turn
+        // always calls `end_turn`, so orphaned live cards can never leak
+        // across turns even if dispatch missed the event.
+        self.live_tools.clear();
         // capture elapsed before clearing
         let elapsed = self.turn_started.take().map(|s| s.elapsed());
         let had_thinking = self.turn_had_thinking;
@@ -811,7 +914,7 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none() {
+        if self.status.is_none() && self.live_tools.is_empty() {
             return;
         }
         let _ = self.draw();
@@ -837,6 +940,10 @@ impl Drop for Tui {
         let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
     }
 }
+
+#[path = "mod_live_tool_tests.rs"]
+#[cfg(test)]
+mod live_tool_tests;
 
 #[path = "mod_pill_token_tests.rs"]
 #[cfg(test)]
