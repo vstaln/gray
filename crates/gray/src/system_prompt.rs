@@ -1,17 +1,8 @@
-//! System prompt construction.
-//!
-//! The stored system prompt is the user's `~/.gray/AGENTS.md` file, sent to
-//! the model verbatim minus HTML comments (`<!-- ... -->`). The file itself
-//! carries no discovered project files and no working-directory line —
-//! bash-only tools: the model inspects those itself via bash.
-//!
-//! Skills are the one ephemeral addition, and they live outside this module:
-//! the context-only [`crate::skills_tool::SkillsPlugin`] serves the per-turn
-//! `<available_skills>` list through the `prompt/context` hook (fresh
-//! discovery for the turn cwd, `None` when empty so the prefix stays
-//! byte-stable). No skill tool — the model reads matches with bash (`cat`).
-//! This module stays pure file-text so its byte-stability unit test keeps
-//! meaning something.
+//! System prompt construction. The editable file stays comment-stripped and
+//! byte-stable; the runtime prompt appends the directory already known to Gray.
+//! Skills are added separately through the per-turn prompt/context hook.
+
+use std::path::Path;
 
 /// Strip `<!-- ... -->` spans (multi-line allowed) and trailing whitespace.
 /// Comments stay in the editable file; the model never sees them. An unclosed
@@ -34,6 +25,26 @@ pub fn strip_comments(s: &str) -> String {
 /// `None`/empty → "".
 pub fn build_system_prompt(custom_prompt: Option<String>) -> String {
     strip_comments(custom_prompt.as_deref().unwrap_or_default())
+}
+
+/// Append runtime context without writing machine-specific paths into AGENTS.md.
+/// Use the caller's cwd (also passed to tools), not this process's ambient cwd:
+/// resumed sessions and headless callers must describe their execution context.
+/// JSON quoting keeps newlines, quotes and Windows backslashes unambiguous.
+pub fn build_runtime_prompt(custom_prompt: Option<String>, cwd: &Path) -> String {
+    let mut prompt = build_system_prompt(custom_prompt);
+    if !prompt.is_empty() {
+        prompt.push_str("\n\n");
+    }
+    let directory = serde_json::to_string(&cwd.to_string_lossy())
+        .expect("serializing a directory string cannot fail");
+    prompt.push_str(&format!(
+        "Working directory: {directory}\n\
+         This is the starting directory for shell commands and relative file paths. \
+         You do not need to run `pwd` just to discover it. \
+         Each shell call starts here; `cd` inside a command does not change later calls."
+    ));
+    prompt
 }
 
 #[path = "system_prompt_tests.rs"]

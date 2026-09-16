@@ -49,7 +49,8 @@ the prompt reaches the model. Nothing here is sent verbatim except the text
 outside <!-- --> comments.
 
 This file IS the stored system prompt — sent verbatim every turn. Gray
-adds only ephemeral per-turn context: the <available_skills> list (fresh
+adds the runtime working directory and ephemeral per-turn context:
+the <available_skills> list (fresh
 skill discovery for the turn's directory) — no skill tool, read matches with
 bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
 default, Ctrl-X cancel).
@@ -173,6 +174,8 @@ pub async fn build_agent(
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
+    // Same directory as the tool context; never persist it in the user's file.
+    let prompt_cwd = cwd.to_path_buf();
 
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
@@ -182,9 +185,11 @@ pub async fn build_agent(
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // The file IS the system prompt: sent verbatim (comments stripped).
+        // Keep stored instructions intact; append runtime cwd before any turn.
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |_registry: &gray_tools::Registry| system_prompt::build_system_prompt(Some(body)),
+            move |_registry: &gray_tools::Registry| {
+                system_prompt::build_runtime_prompt(Some(body), &prompt_cwd)
+            },
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.

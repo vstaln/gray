@@ -64,3 +64,18 @@ is still disclosed; serial success is not represented as parallel success.
 Reviewed job ownership: unnamed non-inheritable handle, KILL_ON_JOB_CLOSE,
 suspended child assigned before resume, and TerminateJobObject for termination.
 No native runtime conclusion follows from that source inspection.
+
+## Working-directory context (cwd fix)
+
+Report: the model spends its first tool call on `pwd`. Root cause in
+system_prompt.rs: the stored prompt builder deliberately sent no directory, while
+every caller already resolved one. Reproduced with a local mock provider against
+the real binary: the first request carried only the saved instructions.
+
+Fix: build_runtime_prompt appends a quoted `Working directory:` line built from
+the same cwd the tools receive. AGENTS.md stays byte-identical (asserted), so
+the runtime path varies without touching the stored prompt. Comment-stripping
+cannot hide the line (empty/unclosed cases assert it still appears). JSON
+quoting keeps Unicode, spaces, quotes and Windows backslashes unambiguous.
+- `cargo test -p gray --test working_directory` fails before, passes after.
+- All gray tests pass (unit + integration, serial).
