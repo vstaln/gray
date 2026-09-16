@@ -111,14 +111,6 @@ pub fn limit_ignored_note(limit: u64) -> String {
     )
 }
 
-/// Magic-byte sniff hit (T1.4, verbatim): `[read: <path> is <mime> (<size>), not shown]`.
-pub fn mime_note(display: &str, mime: &str, size: usize) -> String {
-    format!(
-        "[read: {display} is {mime} ({}), not shown]",
-        format_size(size)
-    )
-}
-
 /// NUL-byte sniff hit (T1.4, verbatim).
 pub fn nul_note(display: &str) -> String {
     format!("[read: {display} looks binary (NUL bytes), not shown]")

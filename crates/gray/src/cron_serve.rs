@@ -54,7 +54,8 @@ pub const FIRE_TIMEOUT_SECS: u64 = 600;
 /// `last_delivery_error`; run columns stay untouched.
 #[async_trait::async_trait(?Send)]
 pub trait CronDeliver {
-    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String>;
+    async fn deliver(&self, job: &crate::cron::CronJob, now: i64, text: &str)
+    -> Result<(), String>;
 }
 
 /// Local delivery: transcript to `$HOME/cron/output/<id>/<ts>.md`.
@@ -64,7 +65,12 @@ pub struct LocalDeliver {
 
 #[async_trait::async_trait(?Send)]
 impl CronDeliver for LocalDeliver {
-    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String> {
+    async fn deliver(
+        &self,
+        job: &crate::cron::CronJob,
+        now: i64,
+        text: &str,
+    ) -> Result<(), String> {
         crate::cron_fire::write_local_output(&self.home, job, now, text)
             .map(|_| ())
             .map_err(|e| format!("local write failed: {e:#}"))
@@ -80,8 +86,13 @@ pub struct SaveLocalDeliver {
 
 #[async_trait::async_trait(?Send)]
 impl CronDeliver for SaveLocalDeliver {
-    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String> {
-        if !matches!(job.deliver, gray_cron::Deliver::Local) {
+    async fn deliver(
+        &self,
+        job: &crate::cron::CronJob,
+        now: i64,
+        text: &str,
+    ) -> Result<(), String> {
+        if !matches!(job.deliver, crate::cron::Deliver::Local) {
             log::warn!(
                 "cron {}: unknown target {:?}, saved locally",
                 job.id,
@@ -104,13 +115,13 @@ pub fn owner_stamp() -> String {
 /// Returns the recorded status for the tick report. Never propagates
 /// job-level failure: every path ends in `mark_done` (claim released).
 pub async fn fire_one(
-    store: &gray_cron::CronStore,
+    store: &crate::cron::CronStore,
     runner: &dyn AsyncRunner,
-    job: gray_cron::CronJob,
+    job: crate::cron::CronJob,
     now: i64,
     deliver: &dyn CronDeliver,
-) -> gray_cron::RunStatus {
-    use gray_cron::RunStatus;
+) -> crate::cron::RunStatus {
+    use crate::cron::RunStatus;
     let fail = |msg: String| {
         let _ = store.mark_done(&job.id, RunStatus::Error, Some(&msg));
         RunStatus::Error
@@ -180,12 +191,12 @@ pub async fn fire_one(
 /// Per-job failure is recorded on the job and counted; only pass-level
 /// store failure propagates as `Err`.
 pub async fn tick_once(
-    store: &gray_cron::CronStore,
+    store: &crate::cron::CronStore,
     runner: &dyn AsyncRunner,
     deliver: &dyn CronDeliver,
     kind: &str,
 ) -> anyhow::Result<TickReport> {
-    let now = gray_cron::now_secs();
+    let now = crate::cron::now_secs();
     // Liveness first, before any job runs: every pass stamps the store so a
     // later reader can tell "nothing was due" from "nothing was ticking".
     // Best-effort — a failed heartbeat must not stop jobs from firing.
@@ -202,7 +213,7 @@ pub async fn tick_once(
         report.fired += 1;
         if !matches!(
             fire_one(store, runner, job, now, deliver).await,
-            gray_cron::RunStatus::Ok
+            crate::cron::RunStatus::Ok
         ) {
             report.errors += 1;
         }
@@ -213,7 +224,7 @@ pub async fn tick_once(
 /// Tick every 60s until SIGINT. Supervision owns the process; there is no
 /// daemonization here. Tick-level store errors log and continue.
 pub async fn serve_loop(
-    store: gray_cron::CronStore,
+    store: crate::cron::CronStore,
     deliver: impl CronDeliver + 'static,
     runner: impl AsyncRunner + 'static,
 ) -> anyhow::Result<()> {

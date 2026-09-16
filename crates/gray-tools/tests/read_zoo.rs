@@ -445,5 +445,7 @@ async fn zoo_smoke_every_small_fixture_reads() {
         "real.png returns a note today: {}",
         miss.content
     );
-    assert!(miss.content.contains("is image/png"), "{}", miss.content);
+    // ponytail: magic-sniff removed, so binary fixtures report the NUL
+    // note instead of a mime note. Still refused, still is_error=false.
+    assert!(miss.content.contains("not shown"), "{}", miss.content);
 }

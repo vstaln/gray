@@ -90,11 +90,6 @@ where
         Ok(term)
     }
 
-    #[allow(dead_code)]
-    pub fn previous_buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.buffers[1 - self.current]
-    }
-
     pub fn set_viewport_area(&mut self, area: Rect) {
         self.buffers[self.current].resize(area);
         self.buffers[1 - self.current].resize(area);
@@ -138,7 +133,7 @@ where
     pub fn clear_after_position(&mut self, position: Position) -> io::Result<()> {
         self.backend.set_cursor_position(position)?;
         self.backend.clear_region(ClearType::AfterCursor)?;
-        self.previous_buffer_mut().reset();
+        self.buffers[1 - self.current].reset();
         Ok(())
     }
 

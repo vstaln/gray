@@ -157,7 +157,7 @@ pub async fn run_pre_script(script: &std::path::Path, workdir: &std::path::Path)
 /// keeps no second copy): unique private tmp, mode at creation, dir sync.
 pub fn write_local_output(
     home: &std::path::Path,
-    job: &gray_cron::CronJob,
+    job: &crate::cron::CronJob,
     now: i64,
     body: &str,
 ) -> anyhow::Result<std::path::PathBuf> {

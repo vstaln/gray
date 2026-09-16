@@ -19,8 +19,8 @@ impl AsyncRunner for StubRunner {
     }
 }
 
-fn due_store(home: &tempfile::TempDir, records: serde_json::Value) -> gray_cron::CronStore {
-    let store = gray_cron::CronStore::open(home.path().join("cron")).unwrap();
+fn due_store(home: &tempfile::TempDir, records: serde_json::Value) -> crate::cron::CronStore {
+    let store = crate::cron::CronStore::open(home.path().join("cron")).unwrap();
     std::fs::write(
         home.path().join("cron").join("jobs.json"),
         serde_json::to_string_pretty(&records).unwrap(),
@@ -59,7 +59,7 @@ async fn tick_fires_due_job_and_marks_ok() {
     assert_eq!(rep.fired, 1);
     assert_eq!(rep.errors, 0);
     let job = store.get("j1").unwrap().unwrap();
-    assert_eq!(job.last_status, Some(gray_cron::RunStatus::Ok));
+    assert_eq!(job.last_status, Some(crate::cron::RunStatus::Ok));
     assert!(job.fire_claim.is_none());
     assert_eq!(runner.seen.lock().unwrap().len(), 1);
 }
@@ -97,7 +97,7 @@ async fn tick_agent_failure_records_error_and_continues() {
     assert_eq!(rep.errors, 2);
     for id in ["a", "b"] {
         let job = store.get(id).unwrap().unwrap();
-        assert_eq!(job.last_status, Some(gray_cron::RunStatus::Error));
+        assert_eq!(job.last_status, Some(crate::cron::RunStatus::Error));
         assert!(job.fire_claim.is_none());
     }
 }
@@ -123,6 +123,6 @@ async fn tick_silent_response_skips_write_but_ok() {
     .unwrap();
     assert_eq!((rep.fired, rep.errors), (1, 0));
     let job = store.get("s1").unwrap().unwrap();
-    assert_eq!(job.last_status, Some(gray_cron::RunStatus::Ok));
+    assert_eq!(job.last_status, Some(crate::cron::RunStatus::Ok));
     assert!(!home.path().join("cron").join("output").join("s1").exists());
 }

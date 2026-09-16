@@ -210,9 +210,9 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::CronJobs(arg) => {
-            let store = gray_cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
+            let store = crate::cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
             let jobs = store.list()?;
-            let now = gray_cron::now_secs();
+            let now = crate::cron::now_secs();
             // Health is store-level (one ticker serves every job); a read
             // failure only drops the liveness line, never the listing.
             let health = store.health(now).ok();

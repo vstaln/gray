@@ -1,6 +1,6 @@
 // UNRUN (cargo test banned under X): run in TTY/CI.
 use super::*;
-use gray_cron::OverdueJob;
+use crate::cron::OverdueJob;
 
 fn stamp(at: i64, kind: &str) -> TickStamp {
     TickStamp {

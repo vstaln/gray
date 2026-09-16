@@ -11,12 +11,11 @@ fn bom_stripped_once_at_start_only() {
 }
 
 #[test]
-fn svg_and_text_mimes_stay_text() {
-    assert!(is_text_mime("image/svg+xml"));
-    assert!(is_text_mime("text/plain"));
-    assert!(is_text_mime("text/html"));
-    assert!(!is_text_mime("image/png"));
-    assert!(!is_text_mime("application/pdf"));
+fn nul_bytes_are_binary_plain_text_passes() {
+    assert!(sniff(b"hello world", "p").is_ok());
+    assert!(sniff(b"", "p").is_ok());
+    assert!(sniff(b"\xEF\xBB\xBFhi", "p").is_ok());
+    assert!(sniff(b"ab\x00cd", "p").is_err());
 }
 
 #[test]

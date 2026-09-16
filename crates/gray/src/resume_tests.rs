@@ -19,7 +19,7 @@ async fn seed(
     texts: &[&str],
 ) -> SessionId {
     let sid = store
-        .create(gray_session::SessionMeta::new(
+        .create(crate::session_store::SessionMeta::new(
             SessionId::new(id),
             1,
             cwd,

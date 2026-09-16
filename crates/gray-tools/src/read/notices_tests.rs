@@ -80,7 +80,6 @@ fn no_notice_contains_error_prefix() {
         dedup_stub("p", 1, 2000),
         tail_note(3, 3000),
         limit_ignored_note(2),
-        mime_note("p", "image/png", 1032),
         nul_note("p"),
         cancelled_note(2),
         count_skipped_total(2001, 200 * 1024 * 1024),

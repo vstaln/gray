@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+use crate::session_store::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -119,8 +119,8 @@ pub(crate) type TuiOpt = Option<(
 )>;
 
 pub(crate) struct SessionState {
-    pub(crate) store: gray_session::JsonlSessionStore,
-    pub(crate) session_id: gray_session::SessionId,
+    pub(crate) store: crate::session_store::JsonlSessionStore,
+    pub(crate) session_id: crate::session_store::SessionId,
 }
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
@@ -433,14 +433,15 @@ pub async fn run_repl_mode(
     let mut session_state: Option<SessionState> = None;
     let mut session_totals = SessionTotals::default();
     let mut pending_history: Vec<Message> = Vec::new();
-    let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
+    let mut resumed_session_info: Option<(SessionId, Vec<crate::session_store::SessionEntry>)> =
+        None;
 
     // `--session <id>` reopens that exact session; `-c`/`--last` reopens the
     // most recent. Both resolve into `loaded` and share one apply block.
     type Resumed = (
         SessionId,
-        gray_session::SessionMeta,
-        Vec<gray_session::SessionEntry>,
+        crate::session_store::SessionMeta,
+        Vec<crate::session_store::SessionEntry>,
         JsonlSessionStore,
     );
     let mut loaded: Option<Resumed> = None;
@@ -472,8 +473,8 @@ pub async fn run_repl_mode(
         // (session id, meta, entries) — one load per path, never two.
         type Best = (
             SessionId,
-            gray_session::SessionMeta,
-            Vec<gray_session::SessionEntry>,
+            crate::session_store::SessionMeta,
+            Vec<crate::session_store::SessionEntry>,
         );
         let mut recalled: Option<Best> = None;
         if let Some(c) = cwd_now.as_deref()
@@ -618,7 +619,7 @@ pub async fn run_repl_mode(
     if interactive {
         let cfg = config.clone();
         if let Ok(home) = crate::setup::gray_home()
-            && let Ok(store) = gray_cron::CronStore::open(home.join("cron"))
+            && let Ok(store) = crate::cron::CronStore::open(home.join("cron"))
         {
             std::thread::spawn(move || {
                 let Ok(rt) = tokio::runtime::Builder::new_current_thread()

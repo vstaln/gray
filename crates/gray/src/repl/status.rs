@@ -34,7 +34,10 @@ impl SessionTotals {
 
     /// Rebuilds totals from stored session entries. Usage is recorded on the
     /// last message of each turn, so entries carrying usage map 1:1 to turns.
-    pub(crate) fn from_entries(entries: &[gray_session::SessionEntry], model: &str) -> Self {
+    pub(crate) fn from_entries(
+        entries: &[crate::session_store::SessionEntry],
+        model: &str,
+    ) -> Self {
         let mut t = SessionTotals::default();
         for e in entries.iter().filter(|e| e.usage.is_some()) {
             let u = e.usage.as_ref().expect("filtered");
@@ -68,8 +71,7 @@ pub(crate) fn turn_footer(
 }
 
 /// Handles `/copy`: last assistant response to the OS clipboard.
-/// arboard first, then native CLI fallbacks (`pbcopy`, `wl-copy`,
-/// `xclip -selection clipboard`); when no clipboard exists the text goes to
+/// Native CLI helpers (`pbcopy`, `wl-copy`, `xclip -selection clipboard`); when no clipboard exists the text goes to
 /// stdout instead — never a silent no-op. Empty transcript reports plainly.
 pub(crate) fn handle_copy(agent: &Option<Agent>, tui: Option<&crate::composer::SharedTui>) {
     let text = agent
@@ -101,14 +103,8 @@ pub(crate) fn handle_copy(agent: &Option<Agent>, tui: Option<&crate::composer::S
     }
 }
 
-/// One clipboard write, arboard first then platform helpers. `true` on
-/// first success.
+/// One clipboard write via platform helpers. `true` on first success.
 fn copy_to_clipboard(text: &str) -> bool {
-    if let Ok(mut cb) = arboard::Clipboard::new()
-        && cb.set_text(text.to_string()).is_ok()
-    {
-        return true;
-    }
     #[cfg(target_os = "macos")]
     let helpers: &[(&str, &[&str])] = &[("pbcopy", &[])];
     #[cfg(target_os = "windows")]
@@ -173,7 +169,7 @@ pub(crate) fn handle_doctor(config: &Config, tui: Option<&crate::composer::Share
         },
     ));
     // Session store writable (0700 dir, round-trip pointer probe).
-    let store_ok = gray_session::default_root().is_some_and(|root| {
+    let store_ok = crate::session_store::default_root().is_some_and(|root| {
         std::fs::create_dir_all(&root).is_ok()
             && std::fs::OpenOptions::new()
                 .create(true)
@@ -185,7 +181,7 @@ pub(crate) fn handle_doctor(config: &Config, tui: Option<&crate::composer::Share
     lines.push(format!(
         "{} session store: {}",
         ok(store_ok),
-        gray_session::default_root()
+        crate::session_store::default_root()
             .map(|r| r.display().to_string())
             .unwrap_or("(unresolvable HOME)".to_string()),
     ));

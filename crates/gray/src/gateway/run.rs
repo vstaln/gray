@@ -58,7 +58,7 @@ pub async fn run_foreground(config: &Config) -> anyhow::Result<()> {
         &state::record(state::STATE_RUNNING, None, started_at),
     );
 
-    let store = gray_cron::CronStore::open(home.join("cron"))?;
+    let store = crate::cron::CronStore::open(home.join("cron"))?;
     let runner = crate::cron_serve::HeadlessRunner {
         config: config.clone(),
     };

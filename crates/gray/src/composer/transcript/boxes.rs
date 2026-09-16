@@ -180,7 +180,7 @@ impl Tui {
     /// Replays a previous session's message history into the TUI scrollback.
     pub fn replay_session_history(
         &mut self,
-        entries: &[gray_session::SessionEntry],
+        entries: &[crate::session_store::SessionEntry],
         cwd: &std::path::Path,
     ) {
         let mut tool_calls: HashMap<String, (String, serde_json::Value)> = HashMap::new();

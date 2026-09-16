@@ -10,9 +10,8 @@
 //! empty-bracketed-paste → clipboard-read fallback. This module is that
 //! backend half; the frontend (draw code) is untouched.
 //!
-//! Text reads are dependency-free native helpers (`pbpaste`, `wl-paste`,
-//! `xclip`, `xsel`, PowerShell, termux); arboard is tried first (it also
-//! covers Wayland session quirks the CLI helpers sometimes miss).
+//! Text reads are native helpers only (`pbpaste`, `wl-paste`,
+//! `xclip`, `xsel`, PowerShell, termux) with timeout + tests.
 
 use super::Tui;
 
@@ -99,14 +98,10 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
     })
 }
 
-fn arboard_text() -> Option<String> {
-    if let Ok(mut clipboard) = arboard::Clipboard::new()
-        && let Ok(text) = clipboard.get_text()
-        && !text.trim().is_empty()
-    {
-        return Some(text);
-    }
-    None
+/// Production entry: native helpers on the real PATH.
+pub(crate) fn read_system_clipboard_text() -> Option<String> {
+    let paths = std::env::var_os("PATH").unwrap_or_default();
+    read_system_clipboard_text_with_paths(&paths.to_string_lossy())
 }
 
 /// Bound for one clipboard helper: `wl-paste` blocks until the compositor
@@ -150,15 +145,6 @@ pub(crate) fn read_system_clipboard_text_with_paths(paths: &str) -> Option<Strin
         return Some(text);
     }
     None
-}
-
-/// Production entry: arboard first, then native helpers on the real PATH.
-pub(crate) fn read_system_clipboard_text() -> Option<String> {
-    if let Some(text) = arboard_text() {
-        return Some(text);
-    }
-    let paths = std::env::var_os("PATH").unwrap_or_default();
-    read_system_clipboard_text_with_paths(&paths.to_string_lossy())
 }
 
 /// opencode `prompt.paste`: image attach first, then clipboard text through

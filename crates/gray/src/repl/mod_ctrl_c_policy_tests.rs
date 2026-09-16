@@ -16,7 +16,7 @@ fn sigint_second_press_within_window_exits() {
 
 #[test]
 fn totals_sum_durations_and_skip_untimed() {
-    let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+    let entry = |id: u64, duration_ms: Option<u64>| crate::session_store::SessionEntry {
         compaction_boundary: false,
         entry_id: id,
         parent_id: None,

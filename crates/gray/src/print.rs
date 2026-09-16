@@ -6,11 +6,11 @@ use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::session_store::{JsonlSessionStore, SessionId, SessionMeta};
 use gray_core::agent::ToolContext;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
 use gray_core::redaction::{redact_for_disclosure, redact_message};
-use gray_session::{JsonlSessionStore, SessionId, SessionMeta};
 
 use crate::build_agent;
 use crate::config::Config;

@@ -26,10 +26,9 @@
 //! }
 //! ```
 
-use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::{
-    HyperlinkTarget, LatexDelimiterNormalizer, MarkdownBuffers, MarkdownRenderOutput,
-    MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,
+    HyperlinkTarget, MarkdownBuffers, MarkdownRenderOutput, MarkdownStyle, Syntect,
+    render_markdown_ratatui_with_link_id,
 };
 
 /// Tracks the frozen state for truncation.
@@ -87,21 +86,6 @@ pub struct StreamingMarkdownRenderer {
     /// Maximum width for rendered tables (in display columns).
     max_table_width: Option<usize>,
 
-    /// Incremental highlighter for the trailing still-open fenced code block.
-    ///
-    /// Persists syntect's resumable per-line state across `rerender_tail` calls
-    /// so a large open code block is highlighted in O(N) total instead of O(N²).
-    /// Created lazily on the first render with syntect, and cleared (so it
-    /// rebuilds) whenever `set_max_table_width` resets the frozen state.
-    open_code: Option<OpenCodeHighlighter>,
-
-    /// Streaming LaTeX delimiter normalizer. Rewrites `\(…\)` / `\[…\]` /
-    /// `\begin{equation}` into the canonical `$` / `$$` forms before text is
-    /// appended to `source`, so the math handlers convert them uniformly —
-    /// including inside table cells. Held-back ambiguous bytes (a partial
-    /// delimiter at a chunk boundary) are flushed by `finish()`.
-    normalizer: LatexDelimiterNormalizer,
-
     /// Whether the current output was built with syntax highlighting.
     ///
     /// Threaded from the `syntect` argument of the last render
@@ -136,11 +120,7 @@ impl Clone for StreamingMarkdownRenderer {
         // clone.
         let mut new = Self::new(self.style, self.pretty);
         new.set_max_table_width(self.max_table_width);
-        // `self.source` is already normalized, so append it verbatim (do NOT
-        // re-run the normalizer, which could hold back a trailing ambiguous
-        // suffix and make the clone's source diverge). Copy the normalizer
-        // state separately so any held-back bytes survive the clone.
-        new.push_normalized(&self.source);
+        new.source.push_str(&self.source);
         // Preserve highlight state: replay the render with `get_syntect()`
         // when the original was highlighted instead of `None` — otherwise
         // fenced code blocks lose their colors in the clone. (A custom-theme
@@ -151,7 +131,6 @@ impl Clone for StreamingMarkdownRenderer {
         } else {
             None
         });
-        new.normalizer = self.normalizer.clone();
         new
     }
 }
@@ -167,8 +146,6 @@ impl StreamingMarkdownRenderer {
             style,
             pretty,
             max_table_width: None,
-            open_code: None,
-            normalizer: LatexDelimiterNormalizer::new(),
             highlighted: false,
         }
     }
@@ -189,16 +166,7 @@ impl StreamingMarkdownRenderer {
             // Reset frozen state since table formatting may change
             self.frozen = FrozenState::default();
             self.output.clear();
-            self.open_code = None;
         }
-    }
-
-    /// Append already-normalized source text, bypassing the delimiter
-    /// normalizer. Used by `clone()` to reproduce an existing (already
-    /// normalized) `source` exactly; the cloned normalizer state is copied
-    /// separately so any held-back bytes are preserved.
-    fn push_normalized(&mut self, text: &str) {
-        self.source.push_str(text);
     }
 
     /// Render accumulated content.
@@ -208,21 +176,18 @@ impl StreamingMarkdownRenderer {
     ///
     /// Pass `None` for syntect to disable syntax highlighting for code blocks.
     ///
-    /// Theme stability: a still-open fenced code block is highlighted
-    /// incrementally, caching the colors of the `syntect` theme seen so far.
-    /// The `syntect` theme must stay stable between renders. (Passing a
-    /// different theme would leave already-committed lines in the old colors.)
+    /// Theme stability: a still-open fenced code block re-highlights from
+    /// scratch each pass, so colors always match the current theme.
     pub fn render(&mut self, syntect: Option<&Syntect>) {
         self.rerender_tail(syntect);
     }
 
     /// Push a chunk and render immediately (convenience method).
     ///
-    /// Normalizes and appends `chunk`, then rerenders the unfrozen tail.
+    /// Appends `chunk`, then rerenders the unfrozen tail.
     /// Use this for real-time streaming where you want to display after each chunk.
     pub fn push_and_render(&mut self, chunk: &str, syntect: Option<&Syntect>) {
-        let normalized = self.normalizer.push(chunk);
-        self.source.push_str(&normalized);
+        self.source.push_str(chunk);
         self.rerender_tail(syntect);
     }
 
@@ -255,16 +220,8 @@ impl StreamingMarkdownRenderer {
             tail_start += 1;
         }
         let tail = &self.source[tail_start..];
-        // Lazily create the incremental open-code cache once syntect is present.
-        // It rebuilds itself on fence/offset change, so a stale cache from a
-        // previous tail (e.g. after a checkpoint advanced) is self-correcting.
-        let open_code = match syntect {
-            Some(syn) => Some(
-                self.open_code
-                    .get_or_insert_with(|| OpenCodeHighlighter::new(syn)),
-            ),
-            None => None,
-        };
+        // ponytail: incremental open-block cache removed; the tail
+        // re-highlights from scratch each pass.
         let (tail_output, checkpoint, tail_next_link_id) = render_markdown_ratatui_with_link_id(
             tail,
             self.style,
@@ -273,7 +230,6 @@ impl StreamingMarkdownRenderer {
             syntect,
             self.max_table_width,
             self.frozen.next_link_id,
-            open_code,
         );
 
         // Append tail to output
@@ -386,11 +342,6 @@ impl StreamingMarkdownRenderer {
     ///
     /// Returns a view of the finalized output.
     pub fn finish(&mut self, syntect: Option<&Syntect>) -> &MarkdownRenderOutput {
-        // Flush any bytes the normalizer held back at the last chunk boundary
-        // (e.g. a trailing partial delimiter) so the full re-render sees the
-        // complete, normalized source.
-        let flushed = self.normalizer.finish();
-        self.source.push_str(&flushed);
         // Thread highlight state for `clone()` (see field docs).
         self.highlighted = syntect.is_some();
 
@@ -406,8 +357,6 @@ impl StreamingMarkdownRenderer {
             // NOTE: Since full render restarts link IDs at 0, we MUST also reset our
             // counter to the post-render value :sadge:
             0,
-            // finish() is a full batch re-render: never use the incremental cache.
-            None,
         );
 
         // Replace the output with the full render
@@ -442,11 +391,6 @@ impl StreamingMarkdownRenderer {
             source_bytes: self.source.len(),
             next_link_id: post_scan_next_id,
         };
-
-        // Streaming is over: release the highlighter caches (open-block state
-        // + closed-fence memo) instead of retaining them for the lifetime of
-        // the rendered block. Lazily rebuilt if rendering ever resumes.
-        self.open_code = None;
 
         &self.output
     }

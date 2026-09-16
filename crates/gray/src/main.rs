@@ -79,7 +79,7 @@ async fn run_resume_subcommand(
     last: bool,
     all: bool,
 ) -> anyhow::Result<()> {
-    use gray_session::{JsonlSessionStore, default_root};
+    use gray::session_store::{JsonlSessionStore, default_root};
     let Some(root) = default_root() else {
         anyhow::bail!("cannot resolve home");
     };
@@ -245,9 +245,9 @@ async fn run_plugin_inner(cmd: gray::PluginCmd) -> anyhow::Result<()> {
 ///
 /// File-only surface: the store lives at `$GRAY_HOME/cron/jobs.json`.
 /// Delivery targets ride the record opaquely; no backend interprets them yet.
-fn cron_store() -> anyhow::Result<gray_cron::CronStore> {
+fn cron_store() -> anyhow::Result<gray::cron::CronStore> {
     let home = gray::setup::gray_home()?;
-    gray_cron::CronStore::open(home.join("cron"))
+    gray::cron::CronStore::open(home.join("cron"))
 }
 
 fn fmt_ts(ts: i64) -> String {
@@ -272,38 +272,38 @@ fn fmt_dur(mut secs: u64) -> String {
     format!("{secs}m")
 }
 
-fn fmt_schedule(s: &gray_cron::Schedule) -> String {
+fn fmt_schedule(s: &gray::cron::Schedule) -> String {
     match s {
-        gray_cron::Schedule::Interval { secs } => format!("every {}", fmt_dur(*secs)),
-        gray_cron::Schedule::Cron { expr } => expr.clone(),
-        gray_cron::Schedule::Once { at } => format!("once {}", fmt_ts(*at)),
+        gray::cron::Schedule::Interval { secs } => format!("every {}", fmt_dur(*secs)),
+        gray::cron::Schedule::Cron { expr } => expr.clone(),
+        gray::cron::Schedule::Once { at } => format!("once {}", fmt_ts(*at)),
     }
 }
 
-fn fmt_deliver(d: &gray_cron::Deliver) -> String {
+fn fmt_deliver(d: &gray::cron::Deliver) -> String {
     match d {
-        gray_cron::Deliver::Origin => "origin".to_string(),
-        gray_cron::Deliver::Local => "local".to_string(),
-        gray_cron::Deliver::Target(s) => s.clone(),
+        gray::cron::Deliver::Origin => "origin".to_string(),
+        gray::cron::Deliver::Local => "local".to_string(),
+        gray::cron::Deliver::Target(s) => s.clone(),
     }
 }
 
-fn fmt_status(s: Option<gray_cron::RunStatus>) -> &'static str {
+fn fmt_status(s: Option<gray::cron::RunStatus>) -> &'static str {
     match s {
         None => "-",
-        Some(gray_cron::RunStatus::Ok) => "ok",
-        Some(gray_cron::RunStatus::Error) => "error",
-        Some(gray_cron::RunStatus::DeliveryFailed) => "delivery_failed",
+        Some(gray::cron::RunStatus::Ok) => "ok",
+        Some(gray::cron::RunStatus::Error) => "error",
+        Some(gray::cron::RunStatus::DeliveryFailed) => "delivery_failed",
     }
 }
 
 /// `--deliver` flag: `origin`/`local` keywords (case-insensitive), anything
 /// else rides `Deliver::Target`, stored opaquely until a delivery backend exists.
-fn parse_deliver_flag(raw: Option<&str>) -> gray_cron::Deliver {
+fn parse_deliver_flag(raw: Option<&str>) -> gray::cron::Deliver {
     match raw.map(str::trim).unwrap_or("local") {
-        s if s.eq_ignore_ascii_case("origin") => gray_cron::Deliver::Origin,
-        s if s.eq_ignore_ascii_case("local") || s.is_empty() => gray_cron::Deliver::Local,
-        s => gray_cron::Deliver::Target(s.to_string()),
+        s if s.eq_ignore_ascii_case("origin") => gray::cron::Deliver::Origin,
+        s if s.eq_ignore_ascii_case("local") || s.is_empty() => gray::cron::Deliver::Local,
+        s => gray::cron::Deliver::Target(s.to_string()),
     }
 }
 
@@ -327,9 +327,9 @@ fn default_job_name(prompt: &str) -> String {
 async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
     match cmd {
         gray::SessionsCmd::Prune { older_than_days } => {
-            let root = gray_session::default_root()
+            let root = gray::session_store::default_root()
                 .ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
-            let store = gray_session::JsonlSessionStore::new(root);
+            let store = gray::session_store::JsonlSessionStore::new(root);
             let cutoff_ms = chrono::Utc::now()
                 .timestamp_millis()
                 .saturating_sub((older_than_days as i64).saturating_mul(86_400_000))
@@ -366,7 +366,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             }
             // A schedule nothing ticks looks identical to a live one in the
             // rows above; this line is the only place that says otherwise.
-            let now = gray_cron::now_secs();
+            let now = gray::cron::now_secs();
             println!(
                 "{}",
                 gray::cron_status::ticker_line(&store.health(now)?, now)
@@ -417,7 +417,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
             println!("added {id} next {next}");
             let stamp = store.last_tick()?;
             if let Some(warn) =
-                gray::cron_status::add_warning(stamp.as_ref(), gray_cron::now_secs())
+                gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs())
             {
                 println!("{warn}");
             }
@@ -513,7 +513,7 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
         CronCmd::Run { id } => {
             let store = cron_store()?;
             let home = gray::setup::gray_home()?;
-            let now = gray_cron::now_secs();
+            let now = gray::cron::now_secs();
             let owner = gray::cron_serve::owner_stamp();
             let Some(job) = store.claim_one(now, &owner, &id)? else {
                 anyhow::bail!("job {id:?} is not runnable (unknown, paused, or already claimed)");

@@ -1,12 +1,12 @@
 // UNRUN (cargo test banned under X): run in TTY/CI.
 use super::*;
 
-fn job(name: &str, status: Option<gray_cron::RunStatus>) -> gray_cron::CronJob {
-    gray_cron::CronJob {
+fn job(name: &str, status: Option<crate::cron::RunStatus>) -> crate::cron::CronJob {
+    crate::cron::CronJob {
         id: "abc123def456".to_string(),
         name: name.to_string(),
         prompt: "p".to_string(),
-        schedule: gray_cron::Schedule::Interval { secs: 3600 },
+        schedule: crate::cron::Schedule::Interval { secs: 3600 },
         enabled: true,
         state: Default::default(),
         created_at: 1,
@@ -33,8 +33,8 @@ fn dashboard_empty() {
 fn dashboard_row_shapes() {
     let out = format_cron_dashboard(
         &[
-            job("hourly", Some(gray_cron::RunStatus::Ok)),
-            job("nightly", Some(gray_cron::RunStatus::Error)),
+            job("hourly", Some(crate::cron::RunStatus::Ok)),
+            job("nightly", Some(crate::cron::RunStatus::Error)),
         ],
         None,
         1_700_000_000,
@@ -51,7 +51,7 @@ fn dashboard_row_shapes() {
 
 #[test]
 fn dashboard_reports_ticker_liveness() {
-    let health = gray_cron::CronHealth {
+    let health = crate::cron::CronHealth {
         last_tick: None,
         overdue: vec![],
     };

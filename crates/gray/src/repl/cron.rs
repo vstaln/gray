@@ -5,8 +5,8 @@
 /// of a bare promise that due jobs fire. Pure: the store stays in dispatch,
 /// so the caller hands in the health snapshot it already read.
 pub(crate) fn format_cron_dashboard(
-    jobs: &[gray_cron::CronJob],
-    health: Option<&gray_cron::CronHealth>,
+    jobs: &[crate::cron::CronJob],
+    health: Option<&crate::cron::CronHealth>,
     now: i64,
 ) -> String {
     if jobs.is_empty() {

@@ -104,7 +104,7 @@ pub fn claim(home: &Path) -> anyhow::Result<PidRecord> {
         argv: std::env::args().collect(),
         home: home.display().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        started_at: gray_cron::now_secs(),
+        started_at: crate::cron::now_secs(),
     };
     for _ in 0..2 {
         match write_new(home, &rec) {

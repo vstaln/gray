@@ -19,7 +19,7 @@ use syntect::{
 pub struct Syntect {
     /// The color theme for syntax highlighting.
     pub theme: SyntectTheme,
-    /// The syntax definitions (supports 250+ languages via two-face).
+    /// The syntax definitions (syntect built-in set).
     pub syntax_set: SyntaxSet,
 }
 
@@ -27,7 +27,7 @@ impl Syntect {
     /// Create a new Syntect instance from theme bytes.
     ///
     /// The theme bytes should be a TextMate `.tmTheme` file.
-    /// Uses two-face's extended syntax set with 250+ languages.
+    /// Uses syntect's built-in syntax set (common languages only).
     /// A corrupt theme falls back to the default theme instead of panicking.
     ///
     /// # Example
@@ -39,8 +39,11 @@ impl Syntect {
         let mut cursor = Cursor::new(theme_bytes);
         let theme =
             ThemeSet::load_from_reader(&mut cursor).unwrap_or_else(|_| Self::default().theme);
-        // Use two-face's extended syntax set which includes 250+ languages from bat
-        let syntax_set = two_face::syntax::extra_newlines();
+        // syntect built-ins cover the diff view's languages; exotic
+        // fences fall back to unhighlighted instead of a 250-lang dump.
+        // ponytail: two-face removed, syntect defaults. Re-add only if a
+        // top-20 language is ever missing from the default set.
+        let syntax_set = SyntaxSet::load_defaults_newlines();
         Self { theme, syntax_set }
     }
 }
@@ -54,7 +57,7 @@ impl Default for Syntect {
             .cloned()
             .or_else(|| ts.themes.values().next().cloned())
             .unwrap_or_default();
-        let syntax_set = two_face::syntax::extra_newlines();
+        let syntax_set = SyntaxSet::load_defaults_newlines();
         Self { theme, syntax_set }
     }
 }

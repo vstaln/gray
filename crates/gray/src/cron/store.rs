@@ -12,7 +12,7 @@
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-use crate::schedule::{ONESHOT_GRACE_SECS, Schedule, next_run, parse_schedule};
+use crate::cron::schedule::{ONESHOT_GRACE_SECS, Schedule, next_run, parse_schedule};
 
 /// Fire-claim TTL: a live claim blocks re-fire; a stale one is reclaimable
 /// after a crashed ticker (hermes number).

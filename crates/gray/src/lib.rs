@@ -3,6 +3,7 @@
 pub mod compact;
 pub mod composer;
 pub mod config;
+pub mod cron;
 pub mod cron_fire;
 pub mod cron_serve;
 pub mod cron_status;
@@ -16,6 +17,7 @@ pub mod profile;
 pub mod repl;
 pub mod resume;
 mod rotation;
+pub mod session_store;
 pub mod setup;
 pub mod shell_drain;
 pub mod skills;

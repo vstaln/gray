@@ -1,6 +1,6 @@
 //! Session storage for the Gray agent.
 //!
-//! This crate provides session persistence and management for conversations,
+//! This module provides session persistence and management for conversations,
 //! storing each session as a JSONL file.
 //!
 //! # Architecture & Logging Choice
@@ -1031,6 +1031,6 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-#[path = "lib_tests.rs"]
+#[path = "session_store_tests.rs"]
 #[cfg(test)]
 mod tests;

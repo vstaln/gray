@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use gray_session::{JsonlSessionStore, SessionId, SessionSummary};
+use crate::session_store::{JsonlSessionStore, SessionId, SessionSummary};
 
 use crate::print::now_millis;
 
@@ -235,7 +235,7 @@ pub async fn resolve_session_strict(
     }
     match store.load(&SessionId::new(raw)).await {
         Ok(_) => Ok(SessionId::new(raw)),
-        Err(e) if matches!(e, gray_session::SessionError::Corrupt { .. }) => {
+        Err(e) if matches!(e, crate::session_store::SessionError::Corrupt { .. }) => {
             if let Some(q) = quarantined_file_name(store.root_dir(), raw) {
                 anyhow::bail!("session '{raw}' is corrupt (moved to {q}): {e}");
             }
@@ -307,8 +307,8 @@ pub async fn run_resume_picker(
     show_all: bool,
     bg: Option<&crate::setup::BackgroundSnapshot>,
 ) -> anyhow::Result<Option<SessionId>> {
-    let root =
-        gray_session::default_root().ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
+    let root = crate::session_store::default_root()
+        .ok_or_else(|| anyhow::anyhow!("cannot resolve home"))?;
     let store = JsonlSessionStore::new(root);
     let mut summaries = store.list().await;
     summaries.sort_by_key(|s| s.started_at);

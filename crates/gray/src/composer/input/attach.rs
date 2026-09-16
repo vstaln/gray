@@ -120,30 +120,11 @@ pub(crate) fn try_attach_image_paste(tui: &mut Tui, pasted: &str) -> bool {
     false
 }
 
-/// Paste an image from the OS clipboard (arboard) or clipboard helpers
+/// Paste an image from the OS clipboard via native helpers
 /// (wl-paste/xclip). Image first, then clipboard text via the caller.
+// ponytail: arboard removed, native helpers only. If Wayland session
+// quirks ever bite, the text-path fallback below still catches pasted paths.
 pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        if let Ok(img) = clipboard.get_image() {
-            let w = img.width as u32;
-            let h = img.height as u32;
-            if let Some(rgba) = image::RgbaImage::from_raw(w, h, img.bytes.into_owned())
-                && let Ok(mut tmp) = tempfile::Builder::new().suffix(".png").tempfile()
-                && image::DynamicImage::ImageRgba8(rgba)
-                    .write_to(&mut tmp, image::ImageFormat::Png)
-                    .is_ok()
-                && let Ok((_file, path)) = tmp.keep()
-            {
-                attach_image(tui, path);
-                return true;
-            }
-        }
-        if let Ok(text) = clipboard.get_text()
-            && try_attach_image_paste(tui, &text)
-        {
-            return true;
-        }
-    }
     for (cmd, args) in [
         ("wl-paste", vec!["--type", "image/png"]),
         (
@@ -165,6 +146,11 @@ pub(crate) fn try_attach_clipboard_image(tui: &mut Tui) -> bool {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+    if let Some(text) = clipboard::read_system_clipboard_text()
+        && try_attach_image_paste(tui, &text)
+    {
+        return true;
     }
     false
 }

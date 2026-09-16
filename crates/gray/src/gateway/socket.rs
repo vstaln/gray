@@ -29,7 +29,7 @@ pub fn identify_payload(home: &Path) -> serde_json::Value {
     let me = std::process::id();
     let started_at = super::pid::read(home)
         .map(|r| r.started_at)
-        .unwrap_or_else(gray_cron::now_secs);
+        .unwrap_or_else(crate::cron::now_secs);
     serde_json::json!({
         "protocol": PROTOCOL,
         "kind": "gray-gateway",
@@ -38,7 +38,7 @@ pub fn identify_payload(home: &Path) -> serde_json::Value {
         "gray_home": home.display().to_string(),
         "version": env!("CARGO_PKG_VERSION"),
         "supervisor": super::service::supervisor_kind(),
-        "uptime_secs": gray_cron::now_secs().saturating_sub(started_at),
+        "uptime_secs": crate::cron::now_secs().saturating_sub(started_at),
         "argv": std::env::args().collect::<Vec<_>>(),
     })
 }
@@ -62,7 +62,7 @@ pub fn status_payload(home: &Path, now: i64) -> serde_json::Value {
 }
 
 fn cron_payload(home: &Path, now: i64) -> serde_json::Value {
-    match gray_cron::CronStore::open(home.join("cron")) {
+    match crate::cron::CronStore::open(home.join("cron")) {
         Ok(store) => {
             let health = store.health(now).ok();
             let jobs = store.list().map(|v| v.len()).unwrap_or(0);
@@ -173,7 +173,7 @@ async fn serve_connection(home: PathBuf, stream: tokio::net::UnixStream) {
         && n > 0
         && n <= MAX_REQUEST_BYTES
     {
-        let response = handle_request_line(&home, raw.trim_ascii_end(), gray_cron::now_secs());
+        let response = handle_request_line(&home, raw.trim_ascii_end(), crate::cron::now_secs());
         let _ = wr.write_all(&response).await;
     }
     let _ = wr.shutdown().await;

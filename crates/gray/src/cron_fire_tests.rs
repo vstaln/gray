@@ -93,11 +93,11 @@ async fn script_missing_file_is_not_ok() {
 #[test]
 fn local_output_writes_atomic_md() {
     let home = tempfile::tempdir().unwrap();
-    let job = gray_cron::CronJob {
+    let job = crate::cron::CronJob {
         id: "abc123".to_string(),
         name: "n".to_string(),
         prompt: "p".to_string(),
-        schedule: gray_cron::Schedule::Interval { secs: 3600 },
+        schedule: crate::cron::Schedule::Interval { secs: 3600 },
         enabled: true,
         state: Default::default(),
         created_at: 1,

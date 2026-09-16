@@ -9,32 +9,6 @@ fn lines_text(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
 }
 
 #[test]
-fn torn_inline_latex_delimiter_across_chunks_matches_full_render() {
-    // `\(...\)` split mid-delimiter (between `\` and `(`) — the
-    // normalizer must hold back the trailing `\` until the next chunk.
-    let full = "Intro \\(\\alpha + \\beta\\) end.\n\n";
-    let split = full.find("\\(").unwrap() + 1; // after `\`, before `(`
-    let (a, b) = full.split_at(split);
-    assert!(a.ends_with('\\'), "a={a:?}");
-    assert!(b.starts_with('('), "b={b:?}");
-
-    let (expected, _) = render_markdown_ratatui_full(full, test_style::STYLE, true, None);
-    let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-    r.push_and_render(a, None);
-    r.push_and_render(b, None);
-    let view = r.finish(None);
-
-    assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
-    // latex passthrough: `\alpha + \beta` -> `α + β`, delimiters hidden
-    let joined = lines_text(&view.lines).join("\n");
-    assert!(joined.contains("α + β"), "got: {joined:?}");
-    assert!(
-        !joined.contains("\\("),
-        "delimiters must be hidden: {joined:?}"
-    );
-}
-
-#[test]
 fn repro_soft_break_space_across_chunks() {
     let full = "Analyzing possible latency causes like API delay, cold start, network, and system load for a concise explanation.\nSeparating local execution from external API latency and noting the absence of internal timing data.\n\n";
     let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);

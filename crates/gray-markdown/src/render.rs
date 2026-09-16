@@ -708,12 +708,6 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
     }
 }
 
-/// Integration tests for LaTeX math rendering across all four delimiter
-/// forms (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`).
-#[path = "math_tests.rs"]
-#[cfg(test)]
-mod math_tests;
-
 /// Tests for HTML character-entity decoding in prose (`&lt;` → `<`, etc.).
 #[path = "entity_tests.rs"]
 #[cfg(test)]

@@ -7,7 +7,7 @@
 //! renders through here instead of implying a schedule is armed when no
 //! ticker runs.
 
-use gray_cron::{CronHealth, TICKER_STALE_SECS, TickStamp};
+use crate::cron::{CronHealth, TICKER_STALE_SECS, TickStamp};
 
 /// Driver recipe shared by every warning, so the fix is one copy-paste.
 const DRIVERS: &str = "install the gateway (`gray gateway install`), or run `gray cron serve`, `gray cron tick`, or a REPL";

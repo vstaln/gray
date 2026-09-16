@@ -27,7 +27,7 @@ pub fn path(home: &Path) -> PathBuf {
 }
 
 pub fn write(home: &Path, state: &RuntimeState) -> anyhow::Result<()> {
-    gray_cron::store::atomic_write_json(&path(home), state)
+    crate::cron::store::atomic_write_json(&path(home), state)
 }
 
 pub fn read(home: &Path) -> Option<RuntimeState> {
@@ -42,7 +42,7 @@ pub fn record(gateway_state: &str, exit_reason: Option<&str>, started_at: i64) -
         exit_reason: exit_reason.map(str::to_string),
         pid: std::process::id(),
         started_at,
-        updated_at: gray_cron::now_secs(),
+        updated_at: crate::cron::now_secs(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
