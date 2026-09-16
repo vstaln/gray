@@ -39,11 +39,19 @@ impl Tool for BashTool {
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "bash",
-            "Run a shell command via `sh -c` and capture stdout/stderr. \
+            if cfg!(windows) {
+                "Run a POSIX command with Git for Windows sh -c (not PowerShell or WSL). \
+                 No terminal or stdin. Native cwd is supplied by Gray; use Git Bash path syntax in commands. \
+                 Timeout defaults to 30s, capped at 600s. Timeout/cancellation terminates the owned process tree. \
+                 Background descendants never outlive this call. Captures stdout/stderr; \
+                 non-zero exits are data, not tool errors. Read the header."
+            } else {
+                "Run a shell command via `sh -c` and capture stdout/stderr. \
              Blocks until the command exits. Times out after `timeout` seconds \
              (default 30, capped at 600): the process group is killed and \
              partial output is returned. \
-             Non-zero exits are data, not tool errors — read the header.",
+             Non-zero exits are data, not tool errors — read the header."
+            },
             json!({
                 "type": "object",
                 "properties": {
@@ -110,6 +118,10 @@ impl Tool for BashTool {
             Ok(s) => s,
             Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
         };
+        #[cfg(not(windows))]
+        let target = spawned.pgid;
+        #[cfg(windows)]
+        let target = &spawned.job;
         let mut child = spawned.child;
         let pump = Pump::start(child.stdout.take(), child.stderr.take(), log_path.clone());
 
@@ -123,8 +135,8 @@ impl Tool for BashTool {
             s = child.wait() => match s {
                 Ok(st) => { exited = Some(st); Cause::Exit }
                 Err(e) => {
-                    let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
-                    let _ = child.wait().await;
+                    let _ = term_then_kill(target, Duration::from_secs(2)).await;
+                    let _ = child.start_kill();
                     abort_pump(pump).await;
                     return fail(format!("failed to wait for command: {e}"));
                 }
@@ -138,13 +150,18 @@ impl Tool for BashTool {
             }
             _ = ctx.cancel.cancelled() => Cause::Cancel,
         };
-        // Timeout and cancel both escalate SIGTERM → SIGKILL on our own
-        // group, then reap. Refusal (degenerate pgid) still falls through
-        // to wait — the child is ours, wait reaps it.
+        // Unix escalates SIGTERM → SIGKILL; Windows terminates the owned job.
+        // Failed termination is a harness error, never a successful timeout.
         let first_line: Option<String> = match cause {
             Cause::Exit => None,
             Cause::Timeout => {
-                let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
+                if let Err(e) = term_then_kill(target, Duration::from_secs(2)).await {
+                    // Never claim a tree was killed after a failed OS call, or
+                    // wait forever for a child whose termination was refused.
+                    let _ = child.start_kill();
+                    abort_pump(pump).await;
+                    return fail(e);
+                }
                 match child.wait().await {
                     Ok(st) => {
                         exited = Some(st);
@@ -157,7 +174,13 @@ impl Tool for BashTool {
                 Some(format!("timed out after {secs}s (process group killed)"))
             }
             Cause::Cancel => {
-                let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
+                if let Err(e) = term_then_kill(target, Duration::from_secs(2)).await {
+                    // Never claim a tree was killed after a failed OS call, or
+                    // wait forever for a child whose termination was refused.
+                    let _ = child.start_kill();
+                    abort_pump(pump).await;
+                    return fail(e);
+                }
                 match child.wait().await {
                     Ok(st) => {
                         exited = Some(st);
@@ -173,6 +196,11 @@ impl Tool for BashTool {
                 ))
             }
         };
+        // A Windows shell may exit before background descendants release the
+        // pipes. End this call's job before draining, not after a 30s pipe wait.
+        // Native Windows shell background jobs therefore never outlive a call.
+        #[cfg(windows)]
+        drop(spawned.job);
         let status = exited.expect("every cause resolves a status");
         let (summary, drain_truncated) = match drain_pump(pump, &log_path).await {
             Ok(v) => v,

@@ -61,9 +61,13 @@ pub struct PumpSummary {
     pub log_write_failed: bool,
 }
 
-// spawn.rs: the detached child plus its group id (setsid: pgid == pid).
+// Unix owns a detached process group; Windows owns a non-inheritable job.
+// Keep the job alive until termination/reaping; a PID cannot replace it.
 pub struct Spawned {
     pub child: Child,
     pub pid: u32,
+    #[cfg(not(windows))]
     pub pgid: i32,
+    #[cfg(windows)]
+    pub job: super::windows::Job,
 }

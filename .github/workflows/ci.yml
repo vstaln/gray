@@ -53,14 +53,35 @@ jobs:
           GRAY_CDN_URL="file://$FAKE" GRAY_INSTALL_DIR="$BIN" sh dist/install.sh
           "$BIN/gray" --version
 
-  windows-check:
-    # Baseline only: native Windows port is unproven (unix-only cfg sites in
-    # gray-tools/gray) and no Windows tarballs are published yet. Enforce
-    # (drop continue-on-error) once this is green + install.ps1 goes native.
-    runs-on: windows-latest
-    continue-on-error: true
+  windows-runtime:
+    # This is a runtime gate, not a Windows support announcement. The first
+    # port must prove Git Bash timeout/cancel kills descendants before we
+    # publish a native installer. Do not suppress failures with continue-on-error.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p gray
+      - name: Configure explicit Git for Windows shell and isolated storage
+        shell: pwsh
+        run: |
+          # Avoid System32 bash.exe (the WSL launcher). Git's usr/bin/sh.exe
+          # also supplies sleep/printf for the identical Unix/Windows fixture.
+          $shellDir = Join-Path $env:ProgramFiles 'Git\usr\bin'
+          if (-not (Test-Path (Join-Path $shellDir 'sh.exe'))) {
+            throw 'Git for Windows POSIX shell is required for native tests'
+          }
+          $shellDir >> $env:GITHUB_PATH
+          "GRAY_BASH=$(Join-Path $shellDir 'sh.exe')" >> $env:GITHUB_ENV
+          "GRAY_HOME=$(Join-Path $env:RUNNER_TEMP 'gray-test-home')" >> $env:GITHUB_ENV
+      - run: cargo check --locked -p gray
+      - name: Run complete cross-platform shell lifecycle regression file
+        run: cargo test --locked -p gray-tools --test platform_shell -- --nocapture
+      - name: Run existing shell contract unchanged to expose portability gaps
+        # Run even if the new lifecycle regression fails, so both complete
+        # test files report native evidence instead of stopping at one failure.
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p gray-tools --test shell_contract -- --nocapture

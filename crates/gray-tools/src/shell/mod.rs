@@ -9,3 +9,6 @@ pub mod spawn;
 pub mod split;
 pub mod tools;
 pub mod view;
+
+#[cfg(windows)]
+mod windows;
