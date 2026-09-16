@@ -1,59 +1,11 @@
-//! Agent skills backend: search/install/list/remove over `<agent_dir>/skills/`.
+//! Agent skills backend: install/list/remove over `<agent_dir>/skills/`.
 //!
-//! Search is a skill-shaped view over [`crate::ops::search_all`] (ClawHub
-//! skills + Claude bundles containing skills; one fan-out, never re-fetched
-//! per source). Install resolves `clawhub:` / `github:` / `url:` /
+//! Install resolves `clawhub:` / `github:` / `url:` /
 //! local-path specs into `<agent_dir>/skills/<slug>/` (agent dir is
 //! [`crate::gray_home`], exactly like [`crate::ops`]), reusing the Task 2
 //! download/verify paths. `update` is OUT (later task).
 
 use std::path::{Path, PathBuf};
-
-/// Skill-shaped search hit: [`crate::ops::SearchHit`] projected onto the
-/// skill-bearing sources (ClawHub skills, Claude bundles). `popularity`
-/// rides along but both sources report 0.0, so popularity sort on the
-/// Skills tab is a documented name-fallback.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SkillHit {
-    pub name: String,
-    pub version: String,
-    pub desc: String,
-    pub source: String,
-    pub trust: String,
-    pub popularity: f32,
-}
-
-/// Skill-shaped view over [`crate::ops::search_all`]: one fan-out, then keep
-/// ClawHub + Claude hits only (Gray Index / Pi hits are plugin packages,
-/// installed via the ops arms). Never errors on a fetch failure — only on
-/// corrupt local state, like the underlying fan-out.
-pub async fn search(query: &str) -> anyhow::Result<Vec<SkillHit>> {
-    search_inner(query).await.map_err(|e| {
-        crate::errors::record("skills", query, format!("{e:#}"));
-        e
-    })
-}
-
-async fn search_inner(query: &str) -> anyhow::Result<Vec<SkillHit>> {
-    let out = crate::ops::search_all(query).await?;
-    Ok(out
-        .hits
-        .into_iter()
-        .filter_map(|h| match h.source {
-            crate::sources::Source::ClawHub | crate::sources::Source::ClaudeRepo => {
-                Some(SkillHit {
-                    name: h.name,
-                    version: h.version,
-                    desc: h.desc,
-                    source: h.source.label().to_string(),
-                    trust: h.trust,
-                    popularity: h.popularity,
-                })
-            }
-            crate::sources::Source::GrayIndex | crate::sources::Source::PiGallery => None,
-        })
-        .collect())
-}
 
 /// Install origin, written to `<skill>/.gray-origin.json` (mirrors ClawHub's
 /// origin.json shape: version + registry/slug/owner + pinned version +

@@ -71,7 +71,6 @@ pub mod tabs;
 mod context_modal;
 mod effort;
 mod install_manager;
-mod marketplace_modal;
 mod model_modal;
 
 pub use context_modal::run_context_modal;
@@ -82,7 +81,6 @@ mod connect_models;
 pub use connect::run_connect_modal;
 pub use effort::run_effort_modal;
 pub use install_manager::{run_plugins_modal, run_skills_modal};
-pub use marketplace_modal::run_marketplace_modal;
 pub(crate) use model_modal::{provider_models_for, run_model_modal, validate_direct_model_id};
 
 use crate::{config::Config, tui::print_wrapped};
@@ -124,5 +122,21 @@ pub async fn run_onboarding(config: &mut Config) -> anyhow::Result<bool> {
         2,
     );
     print!("\r\n");
+    // Returning users with a saved model + key skip the picker entirely:
+    // the modal only earns its interruption on first run.
+    let model_ok = config
+        .model
+        .as_deref()
+        .is_some_and(|m| !m.trim().is_empty());
+    let key_ok = config
+        .api_key
+        .as_deref()
+        .is_some_and(|k| !k.trim().is_empty());
+    if model_ok && key_ok {
+        let model = config.model.as_deref().unwrap_or("default");
+        print_wrapped(&format!("using {model} — /connect to change"), 2);
+        print!("\r\n");
+        return Ok(true);
+    }
     run_connect_modal(config, None)
 }

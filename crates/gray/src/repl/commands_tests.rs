@@ -40,7 +40,7 @@ fn context_renamed_no_window_alias() {
 fn usage_command_and_cost_alias() {
     assert!(matches!(parse_command("/usage"), ReplCommand::Usage));
     assert!(matches!(parse_command("/copy"), ReplCommand::Copy));
-    assert!(matches!(parse_command("/doctor"), ReplCommand::Doctor));
+    assert!(matches!(parse_command("/doctor"), ReplCommand::Unknown(_)));
     assert!(matches!(parse_command("/cost"), ReplCommand::Usage));
     use std::path::Path;
     let cwd = Path::new(".");
@@ -103,21 +103,8 @@ fn empty_prompt_hides_slash_popup_like_codex() {
 #[test]
 fn registry_resolve_canonical_and_aliases() {
     for name in [
-        "connect",
-        "model",
-        "thinking",
-        "context",
-        "resume",
-        "new",
-        "compact",
-        "usage",
-        "feedback",
-        "agentsmd",
-        "skills",
-        "plugin",
-        "marketplace",
-        "help",
-        "quit",
+        "connect", "model", "thinking", "context", "resume", "new", "compact", "usage", "feedback",
+        "agentsmd", "skills", "plugin", "help", "quit",
     ] {
         let d = super::resolve(name).unwrap_or_else(|| panic!("resolve {name}"));
         assert_eq!(d.name, name);
@@ -176,7 +163,7 @@ fn registry_completion_covers_aliases() {
             "completion {alias} -> {target}"
         );
     }
-    // `/plug` surfaces `plugin`; bare `/plugin ` leads with itself + all 8 subcommands.
+    // `/plug` surfaces `plugin`; bare `/plugin ` leads with itself + all 7 subcommands.
     use std::path::Path;
     let cwd = Path::new(".");
     assert!(
@@ -185,7 +172,7 @@ fn registry_completion_covers_aliases() {
             .any(|(n, _)| n == "plugin")
     );
     let plugin_all = super::complete_command_args("plugin", "", cwd);
-    assert_eq!(plugin_all.len(), 9);
+    assert_eq!(plugin_all.len(), 8);
     assert_eq!(plugin_all[0].0, "plugin");
 }
 
@@ -207,7 +194,7 @@ fn registry_parse_uses_canonical() {
     ));
     assert!(matches!(
         parse_command("/marketplace"),
-        ReplCommand::Marketplace(_)
+        ReplCommand::Unknown(_)
     ));
     assert!(matches!(parse_command("/exit"), ReplCommand::Quit));
     // gateway left the TUI: /gateway and /gw are unknown (the deleted

@@ -230,10 +230,6 @@ pub(crate) async fn dispatch_command(
             handle_copy(agent, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
-        ReplCommand::Doctor => {
-            handle_doctor(config, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
         ReplCommand::Feedback(text) => {
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
@@ -287,10 +283,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Plugin(raw) => {
             handle_plugin_command(&raw, tui.as_ref().map(|(s, _)| s)).await;
-            Flow::Continue
-        }
-        ReplCommand::Marketplace(raw) => {
-            handle_marketplace_command(&raw, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
         }
         ReplCommand::Unknown(cmd) => {

@@ -33,10 +33,7 @@ fn manager_specs_differ_only_where_expected() {
     // must update this test deliberately.
     let skills = &super::SKILLS_SPEC;
     assert_eq!(skills.title, "Skills");
-    assert_eq!(
-        skills.empty_hint,
-        "no skills discovered — /marketplace to browse"
-    );
+    assert_eq!(skills.empty_hint, "no skills discovered");
     assert_eq!(skills.error_verb, "remove failed");
     assert!(!skills.supports_toggle);
     assert!(!skills.keep_stale_on_relist_error);

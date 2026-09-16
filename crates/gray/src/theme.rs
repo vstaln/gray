@@ -54,11 +54,6 @@ pub struct UiTheme {
     pub ctx_skills: Color,
     pub ctx_messages: Color,
     pub ctx_free: Color,
-    // Marketplace source badges — external brand colors, intentionally
-    // identical across themes (like the logo).
-    pub badge_pi: Color,
-    pub badge_claw: Color,
-    pub badge_claude: Color,
     // Shimmer sweep base (highlight is text_bright)
     pub shimmer_base: Color,
 }
@@ -104,9 +99,6 @@ pub const GRAY_UI_THEME: UiTheme = UiTheme {
     ctx_skills: rgb(217, 249, 157),
     ctx_messages: rgb(254, 240, 138),
     ctx_free: rgb(100, 116, 139),
-    badge_pi: rgb(125, 211, 252),
-    badge_claw: rgb(134, 239, 172),
-    badge_claude: rgb(196, 181, 253),
     shimmer_base: rgb(150, 148, 144),
 };
 /// The active palette — the single gray theme (no switching).

@@ -43,7 +43,7 @@ pub(crate) struct ManagerSpec {
 
 const SKILLS_SPEC: ManagerSpec = ManagerSpec {
     title: "Skills",
-    empty_hint: "no skills discovered — /marketplace to browse",
+    empty_hint: "no skills discovered",
     error_verb: "remove failed",
     supports_toggle: false,
     keep_stale_on_relist_error: false,

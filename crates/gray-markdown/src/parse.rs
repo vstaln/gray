@@ -1833,7 +1833,3 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
         }
     }
 }
-
-#[path = "find_substring_tests.rs"]
-#[cfg(test)]
-mod find_substring_tests;

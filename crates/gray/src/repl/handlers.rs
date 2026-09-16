@@ -3,19 +3,11 @@
 use super::*;
 
 /// Renders the exact text sent to the model for `/skills <name> [args]`:
-/// the skill body (frontmatter stripped) in a `<skill>` envelope, with the
-/// invocation args appended. Pure so both the visible paste and the model
-/// turn share one string — what you see in chat is what the model gets.
-pub(crate) fn format_skill_paste(
-    name: &str,
-    path: &Path,
-    body: &str,
-    args: Option<&str>,
-) -> String {
-    let mut out = format!(
-        "<skill name=\"{name}\" path=\"{}\">\n{body}\n</skill>",
-        path.display()
-    );
+/// the skill body (frontmatter stripped), with the invocation args appended.
+/// Pure so both the visible paste and the model turn share one string — what
+/// you see in chat is what the model gets.
+pub(crate) fn format_skill_paste(body: &str, args: Option<&str>) -> String {
+    let mut out = body.to_string();
     if let Some(a) = args.filter(|a| !a.is_empty()) {
         out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
     }
@@ -23,7 +15,7 @@ pub(crate) fn format_skill_paste(
 }
 
 /// Pastes the expanded skill into the chat transcript so the invocation is
-/// visible: a `Skill "name"` box in the TUI, the raw envelope on headless.
+/// visible: a `Skill "name"` box in the TUI, the raw body on headless.
 /// Runs before the model turn, so the transcript shows the skill and then
 /// the model's response to it.
 fn paste_skill_into_chat(
@@ -49,8 +41,8 @@ fn paste_skill_into_chat(
 
 /// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
-/// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). The same text is pasted visibly into the chat transcript first,
+/// (Grok-style: frontmatter stripped, args appended). The same text is pasted
+/// visibly into the chat transcript first,
 /// so invoking a skill shows the actual skill in chat instead of silently
 /// handing the model a hidden prompt. Bare `/skills` opens the skills manager
 /// (TTY) or prints the text list (headless). Both list *discovered* skills
@@ -103,7 +95,7 @@ pub(crate) fn expand_skill_command(
                 }
             }
         } else if discovered.skills.is_empty() {
-            say(tui, "no skills discovered — /marketplace to browse");
+            say(tui, "no skills discovered");
         } else {
             for s in &discovered.skills {
                 say(tui, &crate::skills::format_discovered_skill_row(s));
@@ -138,7 +130,7 @@ pub(crate) fn expand_skill_command(
     let expanded = match std::fs::read_to_string(&skill.file_path) {
         Ok(content) => {
             let body = crate::skills_tool::strip_frontmatter(&content);
-            format_skill_paste(&skill.name, &skill.file_path, body, args.as_deref())
+            format_skill_paste(body, args.as_deref())
         }
         Err(e) => {
             say(

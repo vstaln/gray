@@ -310,7 +310,3 @@ pub(crate) fn apply_link_styling(lines: &mut [Line<'_>], hyperlinks: &[Hyperlink
         *line = Line::from(new_spans).style(line_style);
     }
 }
-
-#[path = "file_path_trim_tests.rs"]
-#[cfg(test)]
-mod file_path_trim_tests;

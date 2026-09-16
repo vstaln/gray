@@ -48,25 +48,6 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// All builtin tools that live in this crate (no Skill/Cron: those are
-    /// wired by `gray::profile` from their home crates).
-    pub fn builtin() -> Self {
-        // T3.2/T3.3 wiring: read/write/edit share one ledger (pointer-eq with
-        // file_ledger() below), so reads authorize writes and arm dedup.
-        let ledger = Arc::new(FileLedger::new());
-        let mut out = Self::new(vec![
-            Arc::new(ReadTool::new(ledger.clone())),
-            Arc::new(WriteTool::new(ledger.clone())),
-            Arc::new(EditTool::new(ledger.clone())),
-            Arc::new(BashTool),
-            Arc::new(GrepTool),
-            Arc::new(FindTool),
-            Arc::new(LsTool),
-        ]);
-        out.file_ledger = ledger;
-        out
-    }
-
     /// Collects tools in order; on name conflict later entries win.
     pub fn new(tools: Vec<Arc<dyn Tool>>) -> Self {
         let mut out: Vec<Arc<dyn Tool>> = Vec::new();
@@ -91,7 +72,6 @@ impl Registry {
 
     /// T3.4 adoption: point the registry at the ledger the session tools
     /// share (`from_plugins` rebuilds tools-basic read/write/edit on it).
-    /// `builtin()` already shares; this is for plugin-assembled registries.
     pub fn set_file_ledger(&mut self, ledger: Arc<FileLedger>) {
         self.file_ledger = ledger;
     }

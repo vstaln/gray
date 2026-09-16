@@ -222,7 +222,13 @@ async fn builtin_tools_share_the_registry_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("note.txt");
     std::fs::write(&p, "hello\n").unwrap();
-    let reg = Registry::builtin();
+    let ledger = Arc::new(FileLedger::new());
+    let mut reg = Registry::new(vec![
+        Arc::new(ReadTool::new(ledger.clone())),
+        Arc::new(WriteTool::new(ledger.clone())),
+        Arc::new(EditTool::new(ledger.clone())),
+    ]);
+    reg.set_file_ledger(ledger.clone());
     let ctx = ToolContext {
         cwd: dir.path().to_path_buf(),
         ..ToolContext::default()
@@ -247,7 +253,7 @@ async fn builtin_tools_share_the_registry_ledger() {
 
 #[test]
 fn set_file_ledger_swaps_shared_state() {
-    let mut reg = Registry::builtin();
+    let mut reg = Registry::new(vec![]);
     let ledger = Arc::new(FileLedger::new());
     reg.set_file_ledger(ledger.clone());
     assert!(Arc::ptr_eq(reg.file_ledger(), &ledger));

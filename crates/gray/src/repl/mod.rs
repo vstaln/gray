@@ -101,14 +101,13 @@ pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
-pub(crate) use plugin_cmds::{handle_marketplace_command, handle_plugin_command};
+pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
     dispatch_agent_event, handle_resume, maybe_overflow_compact, maybe_threshold_compact,
     persist_turn_messages, print_exit_hint,
 };
 pub(crate) use status::{
-    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_doctor, handle_usage,
-    turn_footer,
+    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_usage, turn_footer,
 };
 pub(crate) use user_cmds::handle_feedback;
 
@@ -214,6 +213,11 @@ pub(crate) fn push_provider_connected(
         })
         .unwrap_or_else(|| "provider".to_string());
     t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
+    // Close the loop: what you got, and where to change it.
+    let effort = config.thinking_effort.as_deref().unwrap_or("high");
+    t.push_dim(format!(
+        "└ thinking {effort} · /model to switch, /thinking for effort"
+    ));
     if let Some((old, new)) = clamped {
         t.push_dim(format!(
             "└ thinking effort clamped from {old} to {new} (not supported by this model)"

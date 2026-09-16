@@ -1,4 +1,4 @@
-//! Shared tab-bar scaffolding for manager modals (`/plugins`, Task 6 store).
+//! Shared tab-bar scaffolding for manager modals (`/plugins`).
 //!
 //! Pure, unit-testable, no crossterm/ratatui: helpers return plain data and
 //! the caller applies styling. The free functions are tab-agnostic (they
@@ -41,7 +41,6 @@ macro_rules! wrapped_tab {
         }
     };
 }
-pub(crate) use wrapped_tab;
 
 /// Tabs of the plugins manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

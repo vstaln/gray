@@ -130,102 +130,6 @@ pub fn clawhub_base() -> String {
         .unwrap_or_else(|| DEFAULT_CLAWHUB_BASE.to_string())
 }
 
-/// One search hit: `name` is `owner/slug` when the owner is known (that is
-/// the installable `clawhub:` spec), else the bare slug.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ClawHubEntry {
-    pub name: String,
-    pub slug: String,
-    pub owner: String,
-    pub summary: String,
-    pub version: String,
-    pub official: bool,
-    pub scan: String,
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClawHubResult {
-    #[serde(default)]
-    slug: String,
-    #[serde(default)]
-    summary: String,
-    #[serde(default)]
-    version: Option<String>,
-    #[serde(default)]
-    owner_handle: Option<String>,
-    #[serde(default)]
-    official: bool,
-    #[serde(default)]
-    trust: serde_json::Value,
-    /// Older/alternate shapes nest the same fields one level down.
-    #[serde(default)]
-    tags: serde_json::Value,
-}
-
-/// Parse a `GET /search` body (`{results:[...]}`). Tolerant: missing
-/// version/official/trust degrade to empty/false, nameless rows drop.
-pub fn parse_clawhub_search(raw: &serde_json::Value) -> Vec<ClawHubEntry> {
-    let results = raw
-        .get("results")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    for r in &results {
-        let r: ClawHubResult = serde_json::from_value(r.clone()).unwrap_or_default();
-        let slug = r.slug.trim().to_string();
-        if slug.is_empty() {
-            continue;
-        }
-        let owner = r.owner_handle.as_deref().unwrap_or("").trim().to_string();
-        let name = if owner.is_empty() || slug.contains('/') {
-            slug.clone()
-        } else {
-            format!("{owner}/{slug}")
-        };
-        let version = r
-            .version
-            .filter(|v| !v.trim().is_empty())
-            .or_else(|| {
-                r.tags
-                    .get("latest")
-                    .and_then(|v| v.as_str())
-                    .filter(|v| !v.trim().is_empty())
-                    .map(str::to_string)
-            })
-            .unwrap_or_default();
-        let scan = r
-            .trust
-            .get("clawHubVerdict")
-            .or_else(|| r.trust.get("verdict"))
-            .and_then(|v| v.as_str())
-            .filter(|v| !v.trim().is_empty() && *v != "null")
-            .unwrap_or("")
-            .to_string();
-        out.push(ClawHubEntry {
-            name,
-            slug,
-            owner,
-            summary: r.summary,
-            version,
-            official: r.official,
-            scan,
-        });
-    }
-    out
-}
-
-/// Display trust: `official|community` plus ` + scan:<status>` when known.
-pub fn clawhub_trust(official: bool, scan: &str) -> String {
-    let base = if official { "official" } else { "community" };
-    if scan.trim().is_empty() {
-        base.to_string()
-    } else {
-        format!("{base} + scan:{}", scan.trim())
-    }
-}
-
 /// Split `owner/slug` (install reference form) from a bare slug.
 pub fn split_clawhub_slug(slug: &str) -> (Option<String>, String) {
     match slug.trim().split_once('/') {
@@ -281,32 +185,6 @@ async fn clawhub_get(
     };
     let resp = send().await?;
     clawhub_retry_once(resp, send).await
-}
-
-/// Search ClawHub (`limit=20`). Any failure is `Err` for the caller to
-/// downgrade to the advisory path.
-pub async fn clawhub_search(
-    client: &reqwest::Client,
-    query: &str,
-) -> anyhow::Result<Vec<ClawHubEntry>> {
-    let url = format!("{}/search", clawhub_base().trim_end_matches('/'));
-    let resp = clawhub_get(client, &url, &[("q", query), ("limit", "20")], 10).await?;
-    let body: serde_json::Value = resp.error_for_status()?.json().await?;
-    let mut entries = parse_clawhub_search(&body);
-    entries.truncate(20);
-    // Exact-version verdicts (one batch POST, best-effort) are fresher
-    // than the search-payload scan; the payload stays the fallback.
-    let keys: Vec<(String, String, String)> = entries
-        .iter()
-        .map(|e| (e.slug.clone(), e.owner.clone(), e.version.clone()))
-        .collect();
-    let verdicts = clawhub_verdicts_batch(client, &keys).await;
-    for e in &mut entries {
-        if let Some(scan) = verdicts.get(&(e.slug.clone(), e.owner.clone(), e.version.clone())) {
-            e.scan = scan.clone();
-        }
-    }
-    Ok(entries)
 }
 
 /// Resolved ClawHub skill: pinned version plus the versions-endpoint file
@@ -861,15 +739,6 @@ pub fn claude_qualifier(source: &PluginSource) -> String {
     }
 }
 
-/// A Claude search hit (mapped to [`crate::ops::SearchHit`] by the caller).
-#[derive(Debug, Clone)]
-pub struct ClaudeEntry {
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub qualifier: String,
-}
-
 /// Split an `owner/repo` spec (exactly two non-empty parts).
 pub fn marketplace_repo_parts(spec: &str) -> anyhow::Result<(String, String)> {
     match spec.trim().split_once('/') {
@@ -980,45 +849,6 @@ fn fetch_catalog(spec: &str) -> anyhow::Result<MarketplaceCatalog> {
     let cat = parse_marketplace_json(&raw)?;
     drop(tmp);
     Ok(cat)
-}
-
-/// Search all configured marketplaces (substring over name/description,
-/// mirroring the Gray arm). `command` plugins are skipped (not
-/// installable — the install arm refuses them with the warning string).
-/// Returns `(entries, any_failed)`: any single-marketplace failure sets
-/// the flag (partial results stay usable).
-pub fn claude_search_entries(query: &str) -> (Vec<ClaudeEntry>, bool) {
-    let mut out = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    let mut any_failed = false;
-    for spec in claude_marketplaces() {
-        let cat = match fetch_catalog(&spec) {
-            Ok(c) => c,
-            Err(e) => {
-                log::debug!("claude marketplace {spec} failed: {e:#}");
-                any_failed = true;
-                continue;
-            }
-        };
-        for p in &cat.plugins {
-            if matches!(p.source, PluginSource::Command { .. }) {
-                continue;
-            }
-            if !p.name.contains(query) && !p.description.contains(query) {
-                continue;
-            }
-            if !seen.insert(p.name.clone()) {
-                continue;
-            }
-            out.push(ClaudeEntry {
-                name: p.name.clone(),
-                description: p.description.clone(),
-                version: p.version.clone(),
-                qualifier: claude_qualifier(&p.source),
-            });
-        }
-    }
-    (out, any_failed)
 }
 
 /// Does `plugin`'s marketplace filter match this catalog? The filter is

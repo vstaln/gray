@@ -57,11 +57,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         aliases: &[],
     },
     CmdDef {
-        name: "doctor",
-        desc: "health checks (config, store, provider)",
-        aliases: &[],
-    },
-    CmdDef {
         name: "feedback",
         desc: "send feedback",
         aliases: &[],
@@ -80,11 +75,6 @@ pub(crate) const REGISTRY: &[CmdDef] = &[
         name: "plugin",
         desc: "manage plugins",
         aliases: &["plugins"],
-    },
-    CmdDef {
-        name: "marketplace",
-        desc: "browse and install plugins/skills",
-        aliases: &[],
     },
     CmdDef {
         name: "help",
@@ -302,7 +292,6 @@ fn complete_plugin_args(
 ) -> Vec<(String, String)> {
     const SUBS: &[(&str, &str)] = &[
         ("list", "list installed plugins"),
-        ("search", "search Gray Index"),
         ("install", "install a plugin"),
         ("remove", "remove a plugin"),
         ("update", "update plugins"),
@@ -407,17 +396,13 @@ pub enum ReplCommand {
     CronJobs(Option<String>),
     /// Copy the last assistant response to the clipboard (`/copy`).
     Copy,
-    /// Health checks: config, session store, provider reachability (`/doctor`).
-    Doctor,
     /// Send feedback (`/feedback <what happened>`): saves locally, opens a prefilled issue.
     Feedback(Option<String>),
     /// Unknown slash command (`/word`).
     Unknown(String),
-    /// Plugin manager: /plugin <list|search|install|remove|update|enable|disable|check>.
+    /// Plugin manager: /plugin <list|install|remove|update|enable|disable|check>.
     /// `/plugins` is an alias.
     Plugin(String),
-    /// Store: /marketplace browses+installs plugins/skills.
-    Marketplace(String),
     /// Skills: bare /skills lists discovered; /skills <name> [args] (alias /skill <name>) runs one
     Skill(Option<String>),
     /// Regular user prompt to feed to the agent.
@@ -514,7 +499,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("usage") => ReplCommand::Usage,
         Some("cron") => ReplCommand::CronJobs(opt(rest)),
         Some("copy") => ReplCommand::Copy,
-        Some("doctor") => ReplCommand::Doctor,
         Some("feedback") => ReplCommand::Feedback(opt(rest)),
         Some("help") => ReplCommand::Help,
         // Every connect alias accepts optional args like `/key openrouter`
@@ -522,7 +506,6 @@ pub fn parse_command(line: &str) -> ReplCommand {
         Some("connect") => ReplCommand::Provider,
         Some("model") => ReplCommand::Model(opt(t[6..].trim())),
         Some("plugin") => ReplCommand::Plugin(t.to_string()),
-        Some("marketplace") => ReplCommand::Marketplace(t.to_string()),
         Some("skills") => {
             if rest.is_empty() {
                 ReplCommand::Skill(None)

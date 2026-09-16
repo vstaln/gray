@@ -1,5 +1,5 @@
 use super::dispatch::{Flow, dispatch_command};
-use super::{PluginAction, is_bare_marketplace_cmd, is_bare_plugin_cmd, parse_plugin_args};
+use super::{PluginAction, is_bare_plugin_cmd, parse_plugin_args};
 
 #[test]
 fn bare_detection_covers_case_and_trailing_space() {
@@ -10,16 +10,6 @@ fn bare_detection_covers_case_and_trailing_space() {
     assert!(!is_bare_plugin_cmd("/plugin list foo"));
     assert!(!is_bare_plugin_cmd("/plugin install foo"));
     assert!(!is_bare_plugin_cmd("/plugin enable foo"));
-}
-
-#[test]
-fn marketplace_bare_detection_covers_case_and_trailing_space() {
-    assert!(is_bare_marketplace_cmd("/marketplace"));
-    assert!(is_bare_marketplace_cmd("/MARKETPLACE"));
-    assert!(is_bare_marketplace_cmd("/marketplace  "));
-    assert!(!is_bare_marketplace_cmd("/marketplace foo"));
-    assert!(!is_bare_marketplace_cmd("/plugin"));
-    assert!(!is_bare_marketplace_cmd("/marketplaces"));
 }
 
 #[test]
@@ -46,10 +36,6 @@ fn parse_covers_every_subcommand() {
     ));
     assert!(parse_plugin_args("/plugin list foo").is_err());
     assert!(parse_plugin_args("/plugin list foo bar").is_err());
-    assert!(matches!(
-        parse_plugin_args("/plugin search foo"),
-        Ok(PluginAction::Search(_))
-    ));
     assert!(matches!(
         parse_plugin_args("/plugin install foo"),
         Ok(PluginAction::Install(_))
@@ -80,7 +66,7 @@ fn parse_covers_every_subcommand() {
         Ok(PluginAction::Check(_))
     ));
     assert!(parse_plugin_args("/plugin install").is_err());
-    assert!(parse_plugin_args("/plugin search").is_err());
+    assert!(parse_plugin_args("/plugin search foo").is_err());
     assert!(parse_plugin_args("/plugin frobnicate x").is_err());
 }
 

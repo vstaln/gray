@@ -10,46 +10,6 @@ fn source_labels_are_exact() {
 }
 
 #[test]
-fn clawhub_search_fixture_parses_brief_shape() {
-    let v: serde_json::Value = serde_json::from_str(
-        r#"{"results":[
-                {"slug":"gifgrep","displayName":"GifGrep","summary":"grep gifs","version":"1.2.3"},
-                {"slug":"bare","displayName":"Bare","summary":"no version"},
-                {"slug":"","displayName":"Nameless","summary":"dropped"}
-            ]}"#,
-    )
-    .unwrap();
-    let entries = parse_clawhub_search(&v);
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].slug, "gifgrep");
-    assert_eq!(entries[0].name, "gifgrep");
-    assert_eq!(entries[0].version, "1.2.3");
-    assert_eq!(entries[0].summary, "grep gifs");
-    assert!(!entries[0].official);
-    assert_eq!(entries[1].version, "");
-}
-
-#[test]
-fn clawhub_search_keeps_owner_and_scan() {
-    let v: serde_json::Value = serde_json::from_str(
-        r#"{"results":[
-                {"slug":"test","displayName":"Test","summary":"s","version":"0.0.1",
-                 "ownerHandle":"arein","official":true,
-                 "trust":{"clawHubVerdict":"clean"}}
-            ]}"#,
-    )
-    .unwrap();
-    let entries = parse_clawhub_search(&v);
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].name, "arein/test");
-    assert_eq!(entries[0].owner, "arein");
-    assert!(entries[0].official);
-    assert_eq!(entries[0].scan, "clean");
-    assert_eq!(clawhub_trust(true, "clean"), "official + scan:clean");
-    assert_eq!(clawhub_trust(false, ""), "community");
-}
-
-#[test]
 fn clawhub_key_input_qualifies_owner() {
     assert_eq!(clawhub_key_input("arein", "test"), "arein/test");
     assert_eq!(clawhub_key_input("", "test"), "test");

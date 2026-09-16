@@ -22,8 +22,11 @@ fn skill_paste_is_what_the_model_gets() {
     let ReplCommand::Prompt(expanded) = out else {
         panic!("expected Prompt, got {out:?}");
     };
-    assert!(expanded.contains("<skill"), "envelope missing: {expanded}");
-    assert!(expanded.contains("paste-me"), "name missing: {expanded}");
+    assert!(!expanded.contains("<skill"), "envelope leaked: {expanded}");
+    assert!(
+        !expanded.contains("</skill>"),
+        "envelope leaked: {expanded}"
+    );
     assert!(expanded.contains("# temp"), "body missing: {expanded}");
     // Args ride along in the same text.
     let dir2 = temp_skill_cwd_for_handlers_test("paste-args");
@@ -49,23 +52,15 @@ fn skill_paste_is_what_the_model_gets() {
 }
 
 #[test]
-fn format_skill_paste_envelope_and_args() {
-    let text = format_skill_paste(
-        "demo",
-        std::path::Path::new("/s/demo/SKILL.md"),
-        "Do things.",
-        Some("fast"),
-    );
-    assert!(text.contains("<skill name=\"demo\""), "{text}");
+fn format_skill_paste_body_and_args() {
+    let text = format_skill_paste("Do things.", Some("fast"));
+    assert!(!text.contains("<skill"), "{text}");
+    assert!(!text.contains("</skill>"), "{text}");
     assert!(text.contains("Do things."), "{text}");
     assert!(text.contains("**ARGUMENTS:** fast"), "{text}");
-    let bare = format_skill_paste(
-        "demo",
-        std::path::Path::new("/s/demo/SKILL.md"),
-        "Do things.",
-        None,
-    );
+    let bare = format_skill_paste("Do things.", None);
     assert!(!bare.contains("ARGUMENTS"), "{bare}");
+    assert!(!bare.contains("<skill"), "{bare}");
 }
 
 // UNRUN (cargo test banned under X): run in TTY/CI.
