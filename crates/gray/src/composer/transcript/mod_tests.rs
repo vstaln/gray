@@ -238,3 +238,59 @@ fn history_entries_cap_keeps_at_most_1000_unrun() {
     cap_history_entries(&mut entries);
     assert_eq!(entries.len(), 1000);
 }
+
+#[test]
+fn thinking_blank_never_stacks_on_blank() {
+    // Sibling `stream()` parity: a drained blank must not stack on a
+    // trailing blank, or provider `\n\n` paragraph breaks paint the
+    // double gap from the report (`[gap][gap AGAIN]`).
+    // Pure drain simulation: `stream_thinking` pushes every drained line
+    // via `push_line_styled` (needs a TTY `Tui`), so mirror its exact
+    // guard here — `trimmed` blank + blank tail means skip.
+    let tail_blank = Line::from("");
+    let tail_text = Line::from(vec![Span::styled("hello".to_string(), thinking_style())]);
+    let drained = "\n\nhello\n\n";
+    // blank tail: leading `\n\n` skipped, `hello` + one trailing blank
+    // land (2 rows). text tail: the two leading blanks and `hello` land,
+    // the single trailing blank lands too — but the second trailing blank
+    // would stack on it, so it skips (3 rows, never a stacked pair).
+    for (tail, want_rows) in [(&tail_blank, 2usize), (&tail_text, 3usize)] {
+        let mut transcript = vec![tail.clone()];
+        let mut pending = drained.to_string();
+        let mut pushed = 0usize;
+        while let Some(idx) = pending.find('\n') {
+            let line: String = pending.drain(..=idx).collect();
+            let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+            if trimmed.trim().is_empty() && transcript.last().is_some_and(transcript_row_is_blank) {
+                continue;
+            }
+            transcript.push(Line::from(vec![Span::styled(
+                trimmed.to_string(),
+                thinking_style(),
+            )]));
+            pushed += 1;
+        }
+        assert_eq!(pushed, want_rows, "tail={tail:?}");
+        let blanks = transcript
+            .windows(2)
+            .filter(|w| transcript_row_is_blank(&w[0]) && transcript_row_is_blank(&w[1]))
+            .count();
+        assert_eq!(blanks, 0, "stacked blanks: {transcript:?}");
+    }
+}
+
+#[test]
+fn transcript_row_is_blank_matches_gap_predicates() {
+    // The shared predicate must agree with `ensure_gap` /
+    // `transcript_ends_blank`, or the live drain and the gap logic drift.
+    assert!(transcript_row_is_blank(&Line::from("")));
+    assert!(transcript_row_is_blank(&Line::from(" ")));
+    assert!(transcript_row_is_blank(&Line::from(vec![Span::raw(" ")])));
+    assert!(!transcript_row_is_blank(&Line::from("text")));
+    let bg = Style::default().bg(crate::theme::theme().surface_bg);
+    assert!(!transcript_row_is_blank(&Line::from("").style(bg)));
+    assert!(!transcript_row_is_blank(&Line::from(vec![Span::styled(
+        "".to_string(),
+        Style::default().bg(crate::theme::theme().surface_bg)
+    )])));
+}

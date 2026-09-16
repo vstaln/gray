@@ -9,6 +9,17 @@ pub(crate) fn thinking_style() -> Style {
         .add_modifier(Modifier::ITALIC)
 }
 
+/// True when a transcript row is a bare blank (no bg, no glyphs): the same
+/// predicate `ensure_gap` / `transcript_ends_blank` use, shared so the live
+/// thinking drain skips a blank exactly when `stream` would.
+pub(crate) fn transcript_row_is_blank(line: &Line<'static>) -> bool {
+    line.style.bg.is_none()
+        && line
+            .spans
+            .iter()
+            .all(|s| s.style.bg.is_none() && s.content.trim().is_empty())
+}
+
 /// Left padding, omp-style: one space.
 pub(crate) fn left_pad() -> Span<'static> {
     Span::raw(" ")

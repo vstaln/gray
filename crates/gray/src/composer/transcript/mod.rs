@@ -20,8 +20,8 @@ mod rows;
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
-    format_user_prompt_lines, left_pad, thinking_replay_lines, thinking_style, word_flush_cut,
-    wrap_styled_line, wrap_styled_line_with_ranges,
+    format_user_prompt_lines, left_pad, thinking_replay_lines, thinking_style,
+    transcript_row_is_blank, word_flush_cut, wrap_styled_line, wrap_styled_line_with_ranges,
 };
 
 // ---------------------------------------------------------------------------
@@ -127,6 +127,14 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+            // Sibling `stream()` parity: never stack a blank on a blank
+            // (provider `\n\n` paragraph breaks / leading newlines), so
+            // reasoning keeps single spacing like the answer path does.
+            if trimmed.trim().is_empty()
+                && self.transcript.last().is_some_and(transcript_row_is_blank)
+            {
+                continue;
+            }
             self.push_line_styled(trimmed.to_string(), thinking_style());
         }
         if display_width(&self.pending) >= max_w {
