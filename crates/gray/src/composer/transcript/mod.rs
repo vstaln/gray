@@ -20,7 +20,7 @@ mod rows;
 pub(crate) use crate::tui::strip_ansi;
 pub(crate) use cards::format_tool_box_lines;
 pub(crate) use rows::{
-    format_user_prompt_lines, left_pad, thinking_replay_lines, thinking_style,
+    format_user_prompt_lines, left_pad, thinking_replay_lines, thinking_run_rows, thinking_style,
     transcript_row_is_blank, word_flush_cut, wrap_styled_line, wrap_styled_line_with_ranges,
 };
 
@@ -127,22 +127,19 @@ impl Tui {
         while let Some(idx) = self.pending.find('\n') {
             let line: String = self.pending.drain(..=idx).collect();
             let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            // Sibling `stream()` parity: never stack a blank on a blank
-            // (provider `\n\n` paragraph breaks / leading newlines), so
-            // reasoning keeps single spacing like the answer path does.
-            if trimmed.trim().is_empty()
-                && self.transcript.last().is_some_and(transcript_row_is_blank)
-            {
-                continue;
-            }
-            self.push_line_styled(trimmed.to_string(), thinking_style());
+            // Stored terminated (its `\n` rides along); the blank-on-blank
+            // guard lives in `paint_thinking_fragment` and in the reflow
+            // renderer alike, so stored source and paint agree exactly.
+            self.append_thinking_text(trimmed, true);
+            self.paint_thinking_fragment(trimmed.to_string());
         }
         if display_width(&self.pending) >= max_w {
             let chars: Vec<char> = self.pending.chars().collect();
             let cut = word_flush_cut(&chars, max_w);
             let line: String = chars[..cut].iter().collect();
             self.pending = chars[cut..].iter().collect();
-            self.push_line_styled(line, thinking_style());
+            self.append_thinking_text(&line, false);
+            self.paint_thinking_fragment(line);
         }
         let _ = self.draw();
     }
@@ -191,8 +188,8 @@ impl Tui {
         if !self.thinking && self.pending.is_empty() {
             return;
         }
-        // Rows already streamed live; only the `✻ Thought for <duration>`
-        // summary lands here, after the body (scrollback is append-only).
+        // The run's rows already streamed live; only the tail (never
+        // flushed) and the `✻ Thought for <duration>` summary land here.
         let elapsed = self.thinking_started.take().map(|s| s.elapsed());
         self.thinking = false;
         if self.hide_thinking {
@@ -201,7 +198,8 @@ impl Tui {
         }
         if !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            self.push_line_styled(rest, thinking_style());
+            self.append_thinking_text(&rest, false);
+            self.paint_thinking_fragment(rest);
         }
         if let Some(d) = elapsed {
             self.ensure_gap(1);

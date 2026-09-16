@@ -307,6 +307,52 @@ fn char_chunk_fallback(line: Line<'static>, max_w: usize) -> Vec<Line<'static>> 
     result
 }
 
+/// Split raw thinking-run source into `\n`-separated logical lines.
+/// `ThinkingRun` stores `\n`-drained lines with their terminator and live
+/// word-cut continuations bare, so concatenating the run reproduces the
+/// live logical lines exactly. Drops the trailing empty piece of a
+/// terminal `\n` (a terminator, never a painted row) and blank-on-blank
+/// pieces (live `stream_thinking` parity), threading `tail_blank` through
+/// so reflow replays the live guard against the rebuilt transcript.
+pub(crate) fn split_thinking_run(text: &str, mut tail_blank: bool) -> Vec<String> {
+    let mut pieces: Vec<&str> = text.split('\n').collect();
+    if text.ends_with('\n') {
+        pieces.pop();
+    }
+    let mut out = Vec::new();
+    for p in pieces {
+        let line = p.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            if tail_blank {
+                continue;
+            }
+            tail_blank = true;
+        } else {
+            tail_blank = false;
+        }
+        out.push(line.to_string());
+    }
+    out
+}
+
+/// Display rows for a thinking run at `max_w`: one word-aware wrap per
+/// logical line (same wrapper + left pad as the live insert path), so a
+/// resize re-flows from source and widening actually widens. Pure for
+/// testability (`Tui` needs a TTY).
+pub(crate) fn thinking_run_rows(text: &str, max_w: usize, tail_blank: bool) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for logical in split_thinking_run(text, tail_blank) {
+        let line = Line::from(vec![Span::styled(logical, thinking_style())]);
+        for mut row in wrap_styled_line(line, max_w) {
+            if !row.spans.is_empty() {
+                row.spans.insert(0, left_pad());
+            }
+            out.push(row);
+        }
+    }
+    out
+}
+
 /// Cut point for flushing the live thinking buffer: the last space within
 /// the first `max_w` cells so rows break between words, never mid-word
 /// ("r|espond"). Falls back to a hard cut at the cell budget when there is

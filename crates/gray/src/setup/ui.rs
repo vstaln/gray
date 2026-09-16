@@ -61,6 +61,16 @@ impl BackgroundSnapshot {
                 } => {
                     lines.extend(styled.clone());
                 }
+                crate::composer::TranscriptEntry::ThinkingRun(text) => {
+                    let tail_blank = lines
+                        .last()
+                        .is_some_and(crate::composer::transcript::transcript_row_is_blank);
+                    lines.extend(crate::composer::transcript::thinking_run_rows(
+                        text,
+                        w.saturating_sub(2).max(1),
+                        tail_blank,
+                    ));
+                }
                 crate::composer::TranscriptEntry::Gap(n) => {
                     for _ in 0..*n {
                         lines.push(ratatui::text::Line::from(""));

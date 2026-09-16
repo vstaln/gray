@@ -29,6 +29,49 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(vec![l], &[], 0);
     }
 
+    /// Appends flushed thinking text to the open run, creating one when the
+    /// tail entry isn't a run (fresh turn, evicted history). Raw fragments
+    /// concatenate back into logical lines, so resize re-wraps from source.
+    /// `terminated` marks `\n`-drained lines (their terminator is stored,
+    /// word-cut continuations and the final tail stay bare).
+    pub(crate) fn append_thinking_text(&mut self, fragment: &str, terminated: bool) {
+        if !matches!(
+            self.history_entries.last(),
+            Some(crate::composer::TranscriptEntry::ThinkingRun(_))
+        ) {
+            self.history_entries
+                .push(crate::composer::TranscriptEntry::ThinkingRun(String::new()));
+            cap_history_entries(&mut self.history_entries);
+        }
+        if let Some(crate::composer::TranscriptEntry::ThinkingRun(run)) =
+            self.history_entries.last_mut()
+        {
+            run.push_str(fragment);
+            if terminated {
+                run.push('\n');
+            }
+        }
+    }
+
+    /// Paints one flushed thinking fragment (a `\n`-drained logical line, a
+    /// live word-cut, or the run tail) without touching `history_entries` —
+    /// the run's raw text is the history. Blank-on-blank skips here, so
+    /// paint and stored source agree exactly.
+    pub(crate) fn paint_thinking_fragment(&mut self, fragment: String) {
+        if fragment.trim().is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank)
+        {
+            return;
+        }
+        let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
+        let w = self.width().max(10);
+        let painted = self.render_and_insert_styled_lines(&[line], &[], w);
+        self.transcript.extend(painted);
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
+        let _ = std::io::stdout().flush();
+    }
+
     pub fn push_line_spans(&mut self, line: Line<'static>) {
         self.push_styled_lines_with_hyperlinks(vec![line], &[], 0);
     }

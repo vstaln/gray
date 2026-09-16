@@ -265,6 +265,13 @@ pub enum TranscriptEntry {
         lines: Vec<Line<'static>>,
         hyperlinks: Vec<HyperlinkTarget>,
     },
+    /// One live reasoning run as raw source text (`\n`-terminated logical
+    /// lines plus word-cut continuations concatenated back-to-back). The
+    /// live path paints incrementally without touching history; reflow
+    /// re-wraps from this source, so widening re-joins what the live
+    /// word-cut split — unlike `StyledLines` fragments, which re-wrap
+    /// alone and can only shrink, never expand.
+    ThinkingRun(String),
     Gap(usize),
 }
 
@@ -476,8 +483,8 @@ impl Tui {
     ///
     /// Two buffers qualify:
     /// - `pending`: the live thinking tail [`Tui::stream_thinking`] has not
-    ///   flushed yet. Drained via the thinking path so it keeps its italic
-    ///   muted style and its share of the `Thought for` timing.
+    ///   flushed yet. Folded into the open `ThinkingRun` (raw source, no
+    ///   paint — the reflow below repaints everything from source).
     /// - the unfrozen markdown renderer: frozen rows are already committed
     ///   through [`Tui::stream_text`]; only the not-yet-frozen tail is
     ///   forced out here. The renderer only freezes complete block rows, so
@@ -487,7 +494,7 @@ impl Tui {
     pub(crate) fn drain_inflight_for_reflow(&mut self) {
         if self.thinking && !self.pending.is_empty() {
             let rest = std::mem::take(&mut self.pending);
-            self.push_line_styled(rest, crate::composer::transcript::thinking_style());
+            self.append_thinking_text(&rest, false);
         }
         self.commit_markdown_tail();
     }
@@ -547,6 +554,20 @@ impl Tui {
                 TranscriptEntry::StyledLines { lines, hyperlinks } => {
                     let lines_only = self.render_and_insert_styled_lines(lines, hyperlinks, w);
                     new_transcript.extend(lines_only);
+                }
+                TranscriptEntry::ThinkingRun(text) => {
+                    let tail_blank = new_transcript
+                        .last()
+                        .is_some_and(crate::composer::transcript::transcript_row_is_blank);
+                    let rows = crate::composer::transcript::thinking_run_rows(
+                        text,
+                        w.saturating_sub(2).max(1),
+                        tail_blank,
+                    );
+                    if !rows.is_empty() {
+                        self.insert_paragraph(&rows, None);
+                        new_transcript.extend(rows);
+                    }
                 }
                 TranscriptEntry::Gap(need) => {
                     let trailing = new_transcript

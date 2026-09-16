@@ -149,51 +149,104 @@ fn wrap_ranges_round_trip_and_identity() {
     }
 }
 
-/// Resize regression: the live thinking cut (`word_flush_cut` at the
-/// old width) followed by a reflow re-wrap (each stored chunk wrapped
-/// at the new width) must preserve every word — narrowing or widening
-/// the window mid-turn must never "shorten" the reasoning.
+/// Resize regression: the live thinking cut (`word_flush_cut` at the old
+/// width) stores raw run text, and reflow re-wraps whole logical lines at
+/// the new width (`thinking_run_rows`). Narrowing must never lose words
+/// (no hard-clipped "shortened" rows); widening must re-join the live
+/// fragments into full-width rows instead of leaving narrow shards.
 #[test]
 fn thinking_survives_resize_round_trip() {
     let text = "The second command was blocked by a guard because of `curl ... | python3`? \
             Weird, the first one worked. Let me avoid pipes into interpreters and write to a file instead";
     let norm = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    for (w_live, w_new) in [(100usize, 40usize), (40usize, 100usize)] {
-        // live cut, mirroring `stream_thinking`
+    let row_text = |rows: &[Line<'static>]| {
+        rows.iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+    };
+    // Live accumulation at the old width, mirroring `stream_thinking`:
+    // `\n`-drains store terminated, word-cuts concatenate bare (which for
+    // `\n`-free text reproduces the source exactly).
+    let accumulate = |w_live: usize| {
         let max_live = w_live.saturating_sub(4).max(1);
-        let mut chunks: Vec<String> = Vec::new();
+        let mut run = String::new();
         let mut rest: Vec<char> = text.chars().collect();
         while !rest.is_empty() {
             let s: String = rest.iter().collect();
             if display_width(&s) < max_live {
-                chunks.push(s);
+                run.push_str(&s);
                 break;
             }
             let cut = word_flush_cut(&rest, max_live);
             assert!(cut > 0, "cut must progress");
-            chunks.push(rest[..cut].iter().collect());
+            run.push_str(&rest[..cut].iter().collect::<String>());
             rest = rest[cut..].to_vec();
         }
-        // reflow re-wrap, mirroring `reflow_on_resize` (render budget w-2)
-        let mut rows: Vec<String> = Vec::new();
-        for c in &chunks {
-            let line = Line::from(vec![Span::styled(c.clone(), thinking_style())]);
-            for w in wrap_styled_line(line, w_new.saturating_sub(2).max(1)) {
-                rows.push(w.spans.iter().map(|s| s.content.as_ref()).collect());
-            }
+        run
+    };
+    for (w_live, w_new) in [(100usize, 40usize), (40usize, 100usize)] {
+        let run = accumulate(w_live);
+        let rows = thinking_run_rows(&run, w_new.saturating_sub(2).max(1), false);
+        assert!(!rows.is_empty(), "run must paint at {w_new}");
+        // Render budget is w-2 with the 1-cell left pad on top: padded
+        // rows may reach w-1 but never the full width (Paragraph would
+        // hard-clip anything wider — the "shortened" symptom).
+        for r in &rows {
+            let rw: usize = r.spans.iter().map(|s| s.width()).sum();
+            assert!(
+                rw <= w_new.saturating_sub(1).max(1),
+                "row overflows {w_new}: {r:?}"
+            );
         }
-        // inter-row boundary spaces are re-flowable (live chunks keep
-        // a trailing space the wrapper then drops); words must survive
-        let got = rows
+        let got = row_text(&rows)
             .join(" ")
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        assert_eq!(
-            got, norm,
-            "text lost resizing {w_live} -> {w_new}: {rows:?}"
-        );
+        assert_eq!(got, norm, "text lost resizing {w_live} -> {w_new}");
     }
+    // The reported bug: streamed narrow (40), widened to 100 — rows must
+    // expand past the narrow cut budget instead of lingering as shards.
+    let narrow_rows = thinking_run_rows(&accumulate(40), 40usize - 2, false);
+    let wide_rows = thinking_run_rows(&accumulate(40), 100usize - 2, false);
+    let max_cells = |rows: &[Line<'static>]| {
+        rows.iter()
+            .map(|r| r.spans.iter().map(|s| s.width()).sum::<usize>())
+            .max()
+            .unwrap_or(0)
+    };
+    assert!(
+        wide_rows.len() < narrow_rows.len(),
+        "widening must re-join rows: {} vs {}",
+        wide_rows.len(),
+        narrow_rows.len()
+    );
+    assert!(
+        max_cells(&wide_rows) > 40 - 2,
+        "widened rows must exceed the narrow budget: {wide_rows:?}"
+    );
+}
+
+#[test]
+fn thinking_run_rows_collapse_stacked_blanks() {
+    // Live parity: blank-on-blank never paints, at run start (blank tail
+    // from the opening gap) or mid-run (provider `\n\n` breaks).
+    let rows = thinking_run_rows("\nfoo\n\n\nbar\n", 40, true);
+    let texts: Vec<String> = rows
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect();
+    // Live blank rows carry the 1-space left pad (`" "`); the blank
+    // predicate treats them as blank, so no stacked gaps ever paint.
+    assert_eq!(
+        texts,
+        vec![" foo".to_string(), " ".to_string(), " bar".to_string()]
+    );
 }
 
 /// Paragraph has no `.wrap()`: any row wider than the viewport is
@@ -214,8 +267,8 @@ fn wrapped_rows_never_exceed_budget() {
     }
 }
 
-// UNRUN (cargo test banned in X session; run in TTY/CI): over-cap push
-// evicts oldest-first, mirroring the transcript >1000/drain-100 guard.
+// Over-cap push evicts oldest-first, mirroring the transcript
+// >1000/drain-100 guard.
 #[test]
 fn history_entries_cap_evicts_oldest_first_unrun() {
     let mut entries: Vec<crate::composer::TranscriptEntry> = (0..1001)
@@ -229,7 +282,7 @@ fn history_entries_cap_evicts_oldest_first_unrun() {
     }
 }
 
-// UNRUN (cargo test banned in X session; run in TTY/CI): at-cap is a no-op.
+// At-cap is a no-op.
 #[test]
 fn history_entries_cap_keeps_at_most_1000_unrun() {
     let mut entries: Vec<crate::composer::TranscriptEntry> = (0..1000)
