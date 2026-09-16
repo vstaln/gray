@@ -9,7 +9,6 @@
 // ---------------------------------------------------------------------------
 use std::ops::Range;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct TextElement {
     pub(crate) range: Range<usize>,
@@ -23,7 +22,6 @@ pub(crate) struct TextArea {
     preferred_col: Option<usize>,
 }
 
-#[allow(dead_code)]
 impl TextArea {
     pub(crate) fn new() -> Self {
         Self {

@@ -3,19 +3,11 @@
 use super::*;
 
 /// Renders the exact text sent to the model for `/skills <name> [args]`:
-/// the skill body (frontmatter stripped) in a `<skill>` envelope, with the
-/// invocation args appended. Pure so both the visible paste and the model
-/// turn share one string — what you see in chat is what the model gets.
-pub(crate) fn format_skill_paste(
-    name: &str,
-    path: &Path,
-    body: &str,
-    args: Option<&str>,
-) -> String {
-    let mut out = format!(
-        "<skill name=\"{name}\" path=\"{}\">\n{body}\n</skill>",
-        path.display()
-    );
+/// the skill body (frontmatter stripped), with the invocation args appended.
+/// Pure so both the visible paste and the model turn share one string — what
+/// you see in chat is what the model gets.
+pub(crate) fn format_skill_paste(body: &str, args: Option<&str>) -> String {
+    let mut out = body.to_string();
     if let Some(a) = args.filter(|a| !a.is_empty()) {
         out.push_str(&format!("\n\n**ARGUMENTS:** {a}"));
     }
@@ -23,7 +15,7 @@ pub(crate) fn format_skill_paste(
 }
 
 /// Pastes the expanded skill into the chat transcript so the invocation is
-/// visible: a `Skill "name"` box in the TUI, the raw envelope on headless.
+/// visible: a `Skill "name"` box in the TUI, the raw body on headless.
 /// Runs before the model turn, so the transcript shows the skill and then
 /// the model's response to it.
 fn paste_skill_into_chat(
@@ -49,8 +41,8 @@ fn paste_skill_into_chat(
 
 /// Expands `/skills <name> [args]` (or the `/skill <name>` alias —
 /// both parse to the identical payload) into a Prompt carrying the skill body
-/// (Grok-style: frontmatter stripped, wrapped in a `<skill>` envelope, args
-/// appended). The same text is pasted visibly into the chat transcript first,
+/// (Grok-style: frontmatter stripped, args appended). The same text is pasted
+/// visibly into the chat transcript first,
 /// so invoking a skill shows the actual skill in chat instead of silently
 /// handing the model a hidden prompt. Bare `/skills` opens the skills manager
 /// (TTY) or prints the text list (headless). Both list *discovered* skills
@@ -103,7 +95,7 @@ pub(crate) fn expand_skill_command(
                 }
             }
         } else if discovered.skills.is_empty() {
-            say(tui, "no skills discovered — /marketplace to browse");
+            say(tui, "no skills discovered");
         } else {
             for s in &discovered.skills {
                 say(tui, &crate::skills::format_discovered_skill_row(s));
@@ -138,7 +130,7 @@ pub(crate) fn expand_skill_command(
     let expanded = match std::fs::read_to_string(&skill.file_path) {
         Ok(content) => {
             let body = crate::skills_tool::strip_frontmatter(&content);
-            format_skill_paste(&skill.name, &skill.file_path, body, args.as_deref())
+            format_skill_paste(body, args.as_deref())
         }
         Err(e) => {
             say(
@@ -289,6 +281,7 @@ pub(crate) async fn handle_model(
     agent: &mut Option<Agent>,
     tui: Option<&crate::composer::SharedTui>,
     session_id: Option<&str>,
+    hide_thinking: &mut bool,
 ) {
     if let Some(m) = direct {
         let (_, _, known) =
@@ -301,6 +294,12 @@ pub(crate) async fn handle_model(
             }
         };
         config.model = Some(m.clone());
+        // Clamp a stale effort before painting (e.g. deepseek `max` → Spark
+        // `xhigh`) so the footer never shows an unsupported level.
+        let clamped = super::clamp_thinking_to_model(config);
+        if clamped.is_some() {
+            *hide_thinking = config.reasoning_hidden();
+        }
         if let Ok(path) = crate::setup::saved_config_path() {
             let mut saved = crate::setup::load_saved_config_at(&path);
             saved.model = Some(m.clone());
@@ -309,10 +308,25 @@ pub(crate) async fn handle_model(
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
             t.set_model(m.clone());
+            if let Some((_, ref new)) = clamped {
+                t.set_thinking_effort(new.clone());
+                t.set_hide_thinking(*hide_thinking);
+            }
             t.push_action("Model set to", Some(&m));
+            if let Some((old, new)) = clamped {
+                t.push_dim(format!(
+                    "└ thinking effort clamped from {old} to {new} (not supported by this model)"
+                ));
+            }
             t.ensure_gap(1);
+            let _ = t.draw();
         } else {
             println!("✓ Model set to {m}");
+            if let Some((old, new)) = clamped {
+                println!(
+                    "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                );
+            }
         }
         if crate::setup::get_user_context_window().is_none()
             && crate::setup::get_cached_model_context(&m).is_none()
@@ -341,14 +355,33 @@ pub(crate) async fn handle_model(
     let result = with_modal(tui, crate::setup::run_model_menu(config, bg.as_ref())).await;
     match result {
         Ok(true) => {
+            // Picker switched the model: clamp a stale effort before
+            // painting so the footer never shows an unsupported level.
+            let clamped = super::clamp_thinking_to_model(config);
+            if clamped.is_some() {
+                *hide_thinking = config.reasoning_hidden();
+            }
             if let Some(shared) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 if let Some(m) = &config.model {
                     t.set_model(m.clone());
                     t.push_action("Model set to", Some(m));
-                    t.ensure_gap(1);
                 }
+                if let Some((_, ref new)) = clamped {
+                    t.set_thinking_effort(new.clone());
+                    t.set_hide_thinking(*hide_thinking);
+                }
+                if let Some((old, new)) = clamped {
+                    t.push_dim(format!(
+                        "└ thinking effort clamped from {old} to {new} (not supported by this model)"
+                    ));
+                }
+                t.ensure_gap(1);
                 let _ = t.draw();
+            } else if let Some((old, new)) = clamped {
+                println!(
+                    "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                );
             }
             if let Some(m) = config.model.clone()
                 && crate::setup::get_user_context_window().is_none()
@@ -396,11 +429,14 @@ pub(crate) async fn handle_thinking(
 ) {
     if let Some(eff) = direct {
         let eff_clean = eff.to_lowercase();
-        if eff_clean == "off"
-            || crate::setup::THINKING_LEVELS
+        // Validate against what the CURRENT model accepts, not the global
+        // catalog — Prime-Agent rejects unknown-for-model levels the same way.
+        let supported: Vec<&str> =
+            crate::setup::supported_thinking_levels(&config.model.clone().unwrap_or_default())
                 .iter()
-                .any(|(l, _)| *l == eff_clean)
-        {
+                .map(|(l, _)| *l)
+                .collect();
+        if eff_clean == "off" || supported.iter().any(|l| *l == eff_clean) {
             config.thinking_effort = Some(eff_clean.clone());
             if let Ok(path) = crate::setup::saved_config_path() {
                 let mut saved = crate::setup::load_saved_config_at(&path);
@@ -414,6 +450,7 @@ pub(crate) async fn handle_thinking(
                 t.set_hide_thinking(*hide_thinking);
                 t.push_action("Thinking effort set to", Some(&eff_clean));
                 t.ensure_gap(1);
+                let _ = t.draw();
             } else {
                 println!("✓ Thinking effort set to {eff_clean}");
             }
@@ -421,7 +458,8 @@ pub(crate) async fn handle_thinking(
             return;
         }
         let msg = format!(
-            "unknown level '{eff_clean}' — try: off, minimal, low, medium, high, xhigh, max"
+            "unknown level '{eff_clean}' for this model — try: {}",
+            supported.join(", ")
         );
         if let Some(shared) = tui {
             let mut t = shared.lock().expect("tui lock");
@@ -514,105 +552,6 @@ pub(crate) async fn handle_thinking(
     }
 }
 
+#[path = "handlers_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_skill_cwd_for_handlers_test(name: &str) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        let skill_dir = dir.path().join(".gray").join("skills").join(name);
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\ndescription: Temp skill for completion tests\n---\n# temp\n",
-        )
-        .unwrap();
-        dir
-    }
-
-    #[test]
-    fn skill_paste_is_what_the_model_gets() {
-        // The visible paste and the model turn must be the same string:
-        // what you see in chat is what the model gets.
-        let dir = temp_skill_cwd_for_handlers_test("paste-me");
-        let cwd = dir.path();
-        let out = expand_skill_command(parse_command("/skills paste-me"), cwd, None, false);
-        let ReplCommand::Prompt(expanded) = out else {
-            panic!("expected Prompt, got {out:?}");
-        };
-        assert!(expanded.contains("<skill"), "envelope missing: {expanded}");
-        assert!(expanded.contains("paste-me"), "name missing: {expanded}");
-        assert!(expanded.contains("# temp"), "body missing: {expanded}");
-        // Args ride along in the same text.
-        let dir2 = temp_skill_cwd_for_handlers_test("paste-args");
-        let skill_dir = dir2.path().join(".gray").join("skills").join("paste-args");
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\ndescription: Temp skill with args\nargs: env\n---\n# temp $ARGUMENTS\n",
-        )
-        .unwrap();
-        let out = expand_skill_command(
-            parse_command("/skills paste-args env"),
-            dir2.path(),
-            None,
-            false,
-        );
-        let ReplCommand::Prompt(expanded) = out else {
-            panic!("expected Prompt, got {out:?}");
-        };
-        assert!(
-            expanded.contains("**ARGUMENTS:** env"),
-            "args missing: {expanded}"
-        );
-    }
-
-    #[test]
-    fn format_skill_paste_envelope_and_args() {
-        let text = format_skill_paste(
-            "demo",
-            std::path::Path::new("/s/demo/SKILL.md"),
-            "Do things.",
-            Some("fast"),
-        );
-        assert!(text.contains("<skill name=\"demo\""), "{text}");
-        assert!(text.contains("Do things."), "{text}");
-        assert!(text.contains("**ARGUMENTS:** fast"), "{text}");
-        let bare = format_skill_paste(
-            "demo",
-            std::path::Path::new("/s/demo/SKILL.md"),
-            "Do things.",
-            None,
-        );
-        assert!(!bare.contains("ARGUMENTS"), "{bare}");
-    }
-
-    // UNRUN (cargo test banned under X): run in TTY/CI.
-    // reload_agent with no model configured fails soft through say()
-    // (headless println path) and preserves the previous agent.
-    #[tokio::test]
-    async fn reload_agent_failure_preserves_agent() {
-        let config = Config {
-            model: None,
-            base_url: String::new(),
-            api_key: None,
-            thinking_effort: None,
-            show_reasoning: None,
-            context_window: None,
-            context_reserve: None,
-            context_keep: None,
-            max_turns: None,
-            max_cost_micros: None,
-            max_wall_secs: None,
-        };
-        let mut agent: Option<Agent> = None;
-        reload_agent(
-            &mut agent,
-            &config,
-            std::path::Path::new("/tmp"),
-            None,
-            None,
-        )
-        .await;
-        assert!(agent.is_none());
-    }
-}
+mod tests;

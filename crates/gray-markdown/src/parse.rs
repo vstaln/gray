@@ -20,8 +20,6 @@ use crate::buffers::{
 };
 use crate::checkpoint::CheckpointKind;
 use crate::colors::anstyle_to_ratatui_style;
-use crate::latex;
-use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::style::{MarkdownStyle, TableBorders};
 use crate::syntax::{Syntect, syntax_highlight_raw};
 
@@ -101,15 +99,11 @@ fn has_blank_line_after(text: &str, pos: usize) -> bool {
 ///
 /// After calling `parse()`, the transient state (tag_stack, table_state, depth)
 /// is dropped and a `ParsedMarkdown` is returned for rendering.
-pub struct MarkdownParser<'a, 'b, 'syn, 'oc> {
+pub struct MarkdownParser<'a, 'b, 'syn> {
     text: &'a str,
     ms: MarkdownStyle,
     buffers: &'b mut MarkdownBuffers,
     syntect: Option<&'syn Syntect>,
-    /// Incremental highlighter for the trailing still-open fenced code block.
-    /// Only set by the streaming tail re-render; `None` for batch renders, in
-    /// which case code blocks go through the from-scratch [`syntax_highlight_raw`].
-    open_code: Option<&'oc mut OpenCodeHighlighter>,
     // Transient state (dropped after parse)
     tag_stack: Vec<Tag<'a>>,
     table_state: Option<TableState>,
@@ -320,7 +314,7 @@ struct FormattedTable {
     hyperlinks: Vec<TableHyperlink>,
 }
 
-impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
+impl<'a, 'b, 'syn> MarkdownParser<'a, 'b, 'syn> {
     pub fn new(
         text: &'a str,
         ms: MarkdownStyle,
@@ -332,7 +326,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
             ms,
             buffers,
             syntect,
-            open_code: None,
             tag_stack: Vec::new(),
             table_state: None,
             depth: 0,
@@ -359,17 +352,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
     /// `StreamingMarkdownRenderer` instead of touching the parser directly.
     pub(crate) fn link_id_start(mut self, id: u32) -> Self {
         self.link_id_counter = id;
-        self
-    }
-
-    /// Provide an incremental highlighter for the trailing still-open fenced
-    /// code block (streaming tail re-render only).
-    ///
-    /// Internal: lets `rerender_tail` persist syntect's resumable per-line state
-    /// across passes so an open code block is highlighted in O(N) total instead
-    /// of O(N²). Batch/non-streaming callers leave this `None`.
-    pub(crate) fn open_code(mut self, cache: Option<&'oc mut OpenCodeHighlighter>) -> Self {
-        self.open_code = cache;
         self
     }
 
@@ -483,25 +465,9 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
 
                 if let Some(parent_code_block) = parent_code_block {
                     let highlighted = match parent_code_block {
-                        Some(lang) => {
-                            if let Some(syn) = self.syntect
-                                && let Some(cache) = self.open_code.as_deref_mut()
-                            {
-                                // Streaming tail: the cache routes between the
-                                // incremental open-block path and the
-                                // closed-fence memo.
-                                cache.highlight_block(
-                                    syn,
-                                    &lang,
-                                    range.start,
-                                    range.end >= self.text.len(),
-                                    &text,
-                                )
-                            } else {
-                                // Batch render (no streaming caches attached).
-                                syntax_highlight_raw(self.syntect, &lang, &text)
-                            }
-                        }
+                        // ponytail: incremental open-block cache removed;
+                        // the tail re-highlights from scratch (unnoticeable).
+                        Some(lang) => syntax_highlight_raw(self.syntect, &lang, &text),
                         None => None,
                     };
                     if let Some(highlighted) = highlighted {
@@ -538,43 +504,16 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 self.style_inline_code_span(&code, &range);
             }
             Event::InlineMath(math) => {
-                // `$...$` inline math: render the TeX to Unicode and swap it
-                // in via a pretty-mode transform. Falls back to inline-code
-                // presentation when conversion declines (oversized input) or
-                // produces nothing visible.
-                let rendered = latex::latex_to_unicode_inline(&math).filter(|r| !r.is_empty());
-
+                // `$...$` inline math: passthrough as inline code.
+                // ponytail: latex-to-unicode stack removed; raw TeX shows.
                 if let Some(ref mut state) = self.table_state {
-                    match &rendered {
-                        Some(r) => {
-                            let prev_italic = state.cell_italic;
-                            state.cell_italic = true;
-                            state.push_text(r);
-                            state.cell_italic = prev_italic;
-                        }
-                        None => {
-                            let prev_code = state.cell_code;
-                            state.cell_code = true;
-                            state.push_text(&math);
-                            state.cell_code = prev_code;
-                        }
-                    }
+                    let prev_code = state.cell_code;
+                    state.cell_code = true;
+                    state.push_text(&math);
+                    state.cell_code = prev_code;
                 }
 
-                match rendered {
-                    Some(r) => {
-                        // One highlight + one transform spanning the entire
-                        // `$...$` range: pretty mode shows the rendered math,
-                        // raw mode shows the TeX source in the math style.
-                        self.push_highlight(Some(self.ms.math), &range);
-                        self.buffers.transforms.push(Transform {
-                            range: range.clone(),
-                            to: r,
-                            force: false,
-                        });
-                    }
-                    None => self.style_inline_code_span(&math, &range),
-                }
+                self.style_inline_code_span(&math, &range);
             }
             Event::SoftBreak => {
                 // Collapse soft breaks to spaces unless the next source
@@ -638,32 +577,15 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
                 }
             }
             Event::DisplayMath(math) => {
-                // `$$...$$` display math: render to Unicode block lines.
+                // `$$...$$` display math: passthrough, TeX source as code.
+                // ponytail: latex-to-unicode stack removed; raw TeX shows.
                 if let Some(ref mut state) = self.table_state {
-                    // Inside a table cell there is no room for a block:
-                    // render single-line (rows joined with `; `).
-                    match latex::latex_to_unicode_inline(&math).filter(|r| !r.is_empty()) {
-                        Some(r) => {
-                            let prev_italic = state.cell_italic;
-                            state.cell_italic = true;
-                            state.push_text(&r);
-                            state.cell_italic = prev_italic;
-                        }
-                        None => {
-                            let prev_code = state.cell_code;
-                            state.cell_code = true;
-                            state.push_text(&math);
-                            state.cell_code = prev_code;
-                        }
-                    }
-                    self.push_highlight(Some(self.ms.math), &range);
-                } else if self.push_display_math_block(range.clone(), &math) {
-                    // Raw mode shows the TeX source in the math style; pretty
-                    // mode consumes the range via the block replacement.
+                    let prev_code = state.cell_code;
+                    state.cell_code = true;
+                    state.push_text(&math);
+                    state.cell_code = prev_code;
                     self.push_highlight(Some(self.ms.math), &range);
                 } else {
-                    // Fallback (conversion declined / nothing visible):
-                    // legacy presentation — TeX source highlighted as code.
                     self.push_highlight(Some(self.ms.code_outer), &range);
                     let outer_text = &self.text[range.clone()];
                     if let Some(r) = find_substring(outer_text, &math, true, false) {
@@ -1307,57 +1229,6 @@ impl<'a, 'b, 'syn, 'oc> MarkdownParser<'a, 'b, 'syn, 'oc> {
         }
     }
 
-    /// Push a pretty-mode block replacement rendering `latex_src` as display
-    /// math over `range`. Returns `false` when conversion declines
-    /// (oversized input) or produces nothing visible; callers then fall back
-    /// to a raw presentation.
-    ///
-    /// Reuses the table block-replacement machinery: pre-rendered styled
-    /// lines that substitute the source range in pretty mode only, so raw
-    /// mode keeps showing the TeX source.
-    fn push_display_math_block(&mut self, range: Range<usize>, latex_src: &str) -> bool {
-        let Some(rendered) = latex::latex_to_unicode_display(latex_src) else {
-            return false;
-        };
-        if rendered.is_empty() {
-            return false;
-        }
-        // Consume the line ending right after the closing delimiter, like
-        // table ranges do. Without this, a batch render emits an extra blank
-        // line after the block (the source newline) that the streaming
-        // checkpoint+tail path does not, breaking render convergence.
-        let mut range = range;
-        if self.text[range.end..].starts_with("\r\n") {
-            range.end += 2;
-        } else if self.text[range.end..].starts_with('\n') {
-            range.end += 1;
-        }
-        let style: ratatui::style::Style = anstyle_to_ratatui_style(self.ms.math);
-        let src_newlines = self.text[range.clone()]
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count();
-        let mut lines = Vec::with_capacity(rendered.len());
-        let mut styled_lines = Vec::with_capacity(rendered.len());
-        let mut line_source_offsets = Vec::with_capacity(rendered.len());
-        for (i, line) in rendered.iter().enumerate() {
-            let text = format!("  {line}");
-            styled_lines.push(Line::from(Span::styled(text.clone(), style)));
-            lines.push(text);
-            // Best-effort scroll mapping: the i-th rendered line maps to the
-            // i-th content line of the block (clamped to its source lines).
-            line_source_offsets.push((i + 1).min(src_newlines));
-        }
-        self.buffers.table_replaces.push(TableReplace {
-            lines,
-            styled_lines,
-            range,
-            line_source_offsets,
-            hyperlinks: Vec::new(),
-        });
-        true
-    }
-
     /// Format a buffered table into lines with box-drawing borders.
     fn format_table(&self, state: &TableState) -> FormattedTable {
         let borders = TableBorders::BOX;
@@ -1960,36 +1831,5 @@ impl<'a, 'b> ParsedMarkdown<'a, 'b> {
             last_checkpoint,
             next_link_id,
         }
-    }
-}
-
-#[cfg(test)]
-mod find_substring_tests {
-    use super::find_substring;
-    use pulldown_cmark::CowStr;
-
-    #[test]
-    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
-    fn borrowed_subslice_resolves_to_its_range() {
-        let hay = String::from("hello [world](url)");
-        let sub: &str = &hay[6..13];
-        assert_eq!(
-            find_substring(&hay, &CowStr::Borrowed(sub), false, false),
-            Some(6..13)
-        );
-    }
-
-    #[test]
-    #[ignore = "UNRUN: cargo test banned in X (amdgpu page-flip); run in TTY/CI"]
-    fn borrowed_str_from_other_allocation_never_matches() {
-        // Same bytes, different allocation: raw-pointer subtraction across
-        // allocations is UB and could yield a bogus range; address arithmetic
-        // plus the byte guard must return `None`.
-        let hay = String::from("hello [world](url)");
-        let other = String::from("[world](url)");
-        assert_eq!(
-            find_substring(&hay, &CowStr::Borrowed(other.as_str()), false, false),
-            None
-        );
     }
 }

@@ -26,10 +26,9 @@
 //! }
 //! ```
 
-use crate::open_code_highlighter::OpenCodeHighlighter;
 use crate::{
-    HyperlinkTarget, LatexDelimiterNormalizer, MarkdownBuffers, MarkdownRenderOutput,
-    MarkdownStyle, Syntect, render_markdown_ratatui_with_link_id,
+    HyperlinkTarget, MarkdownBuffers, MarkdownRenderOutput, MarkdownStyle, Syntect,
+    render_markdown_ratatui_with_link_id,
 };
 
 /// Tracks the frozen state for truncation.
@@ -87,21 +86,6 @@ pub struct StreamingMarkdownRenderer {
     /// Maximum width for rendered tables (in display columns).
     max_table_width: Option<usize>,
 
-    /// Incremental highlighter for the trailing still-open fenced code block.
-    ///
-    /// Persists syntect's resumable per-line state across `rerender_tail` calls
-    /// so a large open code block is highlighted in O(N) total instead of O(N²).
-    /// Created lazily on the first render with syntect, and cleared (so it
-    /// rebuilds) whenever `set_max_table_width` resets the frozen state.
-    open_code: Option<OpenCodeHighlighter>,
-
-    /// Streaming LaTeX delimiter normalizer. Rewrites `\(…\)` / `\[…\]` /
-    /// `\begin{equation}` into the canonical `$` / `$$` forms before text is
-    /// appended to `source`, so the math handlers convert them uniformly —
-    /// including inside table cells. Held-back ambiguous bytes (a partial
-    /// delimiter at a chunk boundary) are flushed by `finish()`.
-    normalizer: LatexDelimiterNormalizer,
-
     /// Whether the current output was built with syntax highlighting.
     ///
     /// Threaded from the `syntect` argument of the last render
@@ -136,11 +120,7 @@ impl Clone for StreamingMarkdownRenderer {
         // clone.
         let mut new = Self::new(self.style, self.pretty);
         new.set_max_table_width(self.max_table_width);
-        // `self.source` is already normalized, so append it verbatim (do NOT
-        // re-run the normalizer, which could hold back a trailing ambiguous
-        // suffix and make the clone's source diverge). Copy the normalizer
-        // state separately so any held-back bytes survive the clone.
-        new.push_normalized(&self.source);
+        new.source.push_str(&self.source);
         // Preserve highlight state: replay the render with `get_syntect()`
         // when the original was highlighted instead of `None` — otherwise
         // fenced code blocks lose their colors in the clone. (A custom-theme
@@ -151,7 +131,6 @@ impl Clone for StreamingMarkdownRenderer {
         } else {
             None
         });
-        new.normalizer = self.normalizer.clone();
         new
     }
 }
@@ -167,8 +146,6 @@ impl StreamingMarkdownRenderer {
             style,
             pretty,
             max_table_width: None,
-            open_code: None,
-            normalizer: LatexDelimiterNormalizer::new(),
             highlighted: false,
         }
     }
@@ -189,16 +166,7 @@ impl StreamingMarkdownRenderer {
             // Reset frozen state since table formatting may change
             self.frozen = FrozenState::default();
             self.output.clear();
-            self.open_code = None;
         }
-    }
-
-    /// Append already-normalized source text, bypassing the delimiter
-    /// normalizer. Used by `clone()` to reproduce an existing (already
-    /// normalized) `source` exactly; the cloned normalizer state is copied
-    /// separately so any held-back bytes are preserved.
-    fn push_normalized(&mut self, text: &str) {
-        self.source.push_str(text);
     }
 
     /// Render accumulated content.
@@ -208,21 +176,18 @@ impl StreamingMarkdownRenderer {
     ///
     /// Pass `None` for syntect to disable syntax highlighting for code blocks.
     ///
-    /// Theme stability: a still-open fenced code block is highlighted
-    /// incrementally, caching the colors of the `syntect` theme seen so far.
-    /// The `syntect` theme must stay stable between renders. (Passing a
-    /// different theme would leave already-committed lines in the old colors.)
+    /// Theme stability: a still-open fenced code block re-highlights from
+    /// scratch each pass, so colors always match the current theme.
     pub fn render(&mut self, syntect: Option<&Syntect>) {
         self.rerender_tail(syntect);
     }
 
     /// Push a chunk and render immediately (convenience method).
     ///
-    /// Normalizes and appends `chunk`, then rerenders the unfrozen tail.
+    /// Appends `chunk`, then rerenders the unfrozen tail.
     /// Use this for real-time streaming where you want to display after each chunk.
     pub fn push_and_render(&mut self, chunk: &str, syntect: Option<&Syntect>) {
-        let normalized = self.normalizer.push(chunk);
-        self.source.push_str(&normalized);
+        self.source.push_str(chunk);
         self.rerender_tail(syntect);
     }
 
@@ -255,16 +220,8 @@ impl StreamingMarkdownRenderer {
             tail_start += 1;
         }
         let tail = &self.source[tail_start..];
-        // Lazily create the incremental open-code cache once syntect is present.
-        // It rebuilds itself on fence/offset change, so a stale cache from a
-        // previous tail (e.g. after a checkpoint advanced) is self-correcting.
-        let open_code = match syntect {
-            Some(syn) => Some(
-                self.open_code
-                    .get_or_insert_with(|| OpenCodeHighlighter::new(syn)),
-            ),
-            None => None,
-        };
+        // ponytail: incremental open-block cache removed; the tail
+        // re-highlights from scratch each pass.
         let (tail_output, checkpoint, tail_next_link_id) = render_markdown_ratatui_with_link_id(
             tail,
             self.style,
@@ -273,7 +230,6 @@ impl StreamingMarkdownRenderer {
             syntect,
             self.max_table_width,
             self.frozen.next_link_id,
-            open_code,
         );
 
         // Append tail to output
@@ -386,11 +342,6 @@ impl StreamingMarkdownRenderer {
     ///
     /// Returns a view of the finalized output.
     pub fn finish(&mut self, syntect: Option<&Syntect>) -> &MarkdownRenderOutput {
-        // Flush any bytes the normalizer held back at the last chunk boundary
-        // (e.g. a trailing partial delimiter) so the full re-render sees the
-        // complete, normalized source.
-        let flushed = self.normalizer.finish();
-        self.source.push_str(&flushed);
         // Thread highlight state for `clone()` (see field docs).
         self.highlighted = syntect.is_some();
 
@@ -406,8 +357,6 @@ impl StreamingMarkdownRenderer {
             // NOTE: Since full render restarts link IDs at 0, we MUST also reset our
             // counter to the post-render value :sadge:
             0,
-            // finish() is a full batch re-render: never use the incremental cache.
-            None,
         );
 
         // Replace the output with the full render
@@ -443,11 +392,6 @@ impl StreamingMarkdownRenderer {
             next_link_id: post_scan_next_id,
         };
 
-        // Streaming is over: release the highlighter caches (open-block state
-        // + closed-fence memo) instead of retaining them for the lifetime of
-        // the rendered block. Lazily rebuilt if rendering ever resumes.
-        self.open_code = None;
-
         &self.output
     }
 
@@ -461,190 +405,6 @@ impl StreamingMarkdownRenderer {
     }
 }
 
+#[path = "streaming_torn_tests.rs"]
 #[cfg(test)]
-mod streaming_torn_tests {
-    use crate::style::test_style;
-    use crate::{StreamingMarkdownRenderer, render_markdown_ratatui_full};
-
-    fn lines_text(lines: &[ratatui::text::Line<'static>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
-    }
-
-    #[test]
-    fn torn_inline_latex_delimiter_across_chunks_matches_full_render() {
-        // `\(...\)` split mid-delimiter (between `\` and `(`) — the
-        // normalizer must hold back the trailing `\` until the next chunk.
-        let full = "Intro \\(\\alpha + \\beta\\) end.\n\n";
-        let split = full.find("\\(").unwrap() + 1; // after `\`, before `(`
-        let (a, b) = full.split_at(split);
-        assert!(a.ends_with('\\'), "a={a:?}");
-        assert!(b.starts_with('('), "b={b:?}");
-
-        let (expected, _) = render_markdown_ratatui_full(full, test_style::STYLE, true, None);
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        r.push_and_render(a, None);
-        r.push_and_render(b, None);
-        let view = r.finish(None);
-
-        assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
-        // latex passthrough: `\alpha + \beta` -> `α + β`, delimiters hidden
-        let joined = lines_text(&view.lines).join("\n");
-        assert!(joined.contains("α + β"), "got: {joined:?}");
-        assert!(
-            !joined.contains("\\("),
-            "delimiters must be hidden: {joined:?}"
-        );
-    }
-
-    #[test]
-    fn repro_soft_break_space_across_chunks() {
-        let full = "Analyzing possible latency causes like API delay, cold start, network, and system load for a concise explanation.\nSeparating local execution from external API latency and noting the absence of internal timing data.\n\n";
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        let chars: Vec<char> = full.chars().collect();
-        for w in chars.chunks(7) {
-            let s: String = w.iter().collect();
-            r.push_and_render(&s, None);
-        }
-        let view = r.finish(None);
-        let flat: String = lines_text(&view.lines).join("");
-        assert!(
-            flat.contains("explanation. Separating"),
-            "soft break must collapse to a space, got: {flat:?}"
-        );
-    }
-
-    #[test]
-    fn torn_hyperlink_brackets_across_chunks_preserve_hyperlink_offset() {
-        // `[click](url)` split inside `](` — pretty mode rewrites `[`/`](` so
-        // column ranges must still land on the visible "click" glyphs.
-        let full = "See [click](https://example.com) here.\n\n";
-        let split = full.find("](").unwrap() + 1; // after `]`, before `(`
-        let (a, b) = full.split_at(split);
-        assert!(a.ends_with(']'), "a={a:?}");
-        assert!(b.starts_with('('), "b={b:?}");
-
-        let (expected, _) = render_markdown_ratatui_full(full, test_style::STYLE, true, None);
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        r.push_and_render(a, None);
-        r.push_and_render(b, None);
-        let view = r.finish(None);
-
-        assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
-
-        // Parser-produced link-text hyperlink must cover exactly "click" (4 cells)
-        let line0: String = view.lines[0]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect();
-        let hit = view
-            .hyperlinks
-            .iter()
-            .find(|h| {
-                h.url == "https://example.com" && {
-                    let slice: String = line0
-                        .chars()
-                        .skip(h.column_range.start)
-                        .take(h.column_range.len())
-                        .collect();
-                    slice == "click"
-                }
-            })
-            .expect("hyperlink over link text should survive torn chunk");
-        assert_eq!(hit.column_range.len(), 5);
-    }
-
-    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
-    // (`cargo test` under X kills the session; see repo AGENTS.md.)
-    // Run: `cargo test -p gray-markdown tail_hyperlink -- --ignored`
-    //
-    // Regression test for tail-scoped hyperlink handling in `rerender_tail`:
-    // the global sort invariant must hold after every push and hyperlinks on
-    // frozen lines must only grow (never be reordered/restyled). Link ids are
-    // intentionally NOT compared: streaming interleaves parser/url_scan ids
-    // per tail while a one-shot render numbers all parser links first.
-    #[test]
-    #[ignore]
-    fn unrun_tail_hyperlinks_sorted_and_frozen_stable() {
-        let mut full = String::new();
-        for i in 0..50 {
-            full.push_str(&format!("See [link{i}](https://example.com/{i}) here.\n\n"));
-        }
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        let mut prev_frozen: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
-        let bytes = full.as_bytes();
-        for chunk in bytes.chunks(7) {
-            // ASCII-only doc, so byte chunks are always char boundaries.
-            r.push_and_render(std::str::from_utf8(chunk).unwrap(), None);
-            let view = r.view();
-            let keys: Vec<(usize, usize)> = view
-                .hyperlinks
-                .iter()
-                .map(|h| (h.line_index, h.column_range.start))
-                .collect();
-            let mut sorted = keys.clone();
-            sorted.sort_unstable();
-            assert_eq!(keys, sorted, "hyperlinks must stay globally sorted");
-            let frozen = r.frozen_lines_len();
-            let cur: Vec<(usize, std::ops::Range<usize>, String)> = view
-                .hyperlinks
-                .iter()
-                .filter(|h| h.line_index < frozen)
-                .map(|h| (h.line_index, h.column_range.clone(), h.url.clone()))
-                .collect();
-            assert!(
-                cur.starts_with(&prev_frozen),
-                "frozen hyperlinks must only grow: {cur:?} prev {prev_frozen:?}"
-            );
-            prev_frozen = cur;
-        }
-        let view = r.finish(None);
-        let (expected, _) = render_markdown_ratatui_full(&full, test_style::STYLE, true, None);
-        assert_eq!(lines_text(&view.lines), lines_text(&expected.lines));
-        let geom = |hs: &[crate::HyperlinkTarget]| {
-            hs.iter()
-                .map(|h| (h.line_index, h.column_range.clone(), h.url.clone()))
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(geom(&view.hyperlinks), geom(&expected.hyperlinks));
-    }
-
-    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
-    // (`cargo test` under X kills the session; see repo AGENTS.md.)
-    // Run: `cargo test -p gray-markdown clone_ -- --ignored`
-    //
-    // Wiring (1): `Clone` must preserve highlight state — the clone replays
-    // its render with `get_syntect()` when the original was highlighted.
-    #[test]
-    #[ignore]
-    fn unrun_clone_preserves_highlight_state() {
-        let src = "Intro.\n\n```rust\nfn main() {}\n```\n\n";
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        r.push_and_render(src, Some(crate::get_syntect()));
-        let c = r.clone();
-        // Exact equality: text AND styles (ratatui `Line: PartialEq`).
-        assert_eq!(c.view().lines, r.view().lines);
-        assert_eq!(c.frozen_lines_len(), r.frozen_lines_len());
-        // And the clone actually carries highlight colors (not a `None` render).
-        let mut plain = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        plain.push_and_render(src, None);
-        assert_ne!(c.view().lines, plain.view().lines);
-        assert_eq!(lines_text(&c.view().lines), lines_text(&r.view().lines));
-    }
-
-    // UNRUN: marked #[ignore] — run explicitly, never in bulk.
-    // (`cargo test` under X kills the session; see repo AGENTS.md.)
-    // Run: `cargo test -p gray-markdown clone_ -- --ignored`
-    #[test]
-    #[ignore]
-    fn unrun_clone_without_highlight_stays_plain() {
-        let src = "Intro.\n\n```rust\nfn main() {}\n```\n\n";
-        let mut r = StreamingMarkdownRenderer::new(test_style::STYLE, true);
-        r.push_and_render(src, None);
-        let c = r.clone();
-        assert_eq!(c.view().lines, r.view().lines);
-    }
-}
+mod streaming_torn_tests;

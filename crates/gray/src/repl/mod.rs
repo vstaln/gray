@@ -5,11 +5,11 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 
+use crate::session_store::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 use gray_core::agent::{Agent, CommandOutcome, PluginHooks, ToolContext};
 use gray_core::error::CoreError;
 use gray_core::event::AgentEvent;
 use gray_core::message::Message;
-use gray_session::{JsonlSessionStore, SessionId, SessionMeta, default_root};
 
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -101,14 +101,13 @@ pub use format::{THINKING_STYLE, fmt_usage, format_core_error};
 pub(crate) use handlers::{
     expand_skill_command, handle_model, handle_sys, handle_thinking, reload_agent,
 };
-pub(crate) use plugin_cmds::{handle_marketplace_command, handle_plugin_command};
+pub(crate) use plugin_cmds::handle_plugin_command;
 pub(crate) use session::{
     dispatch_agent_event, handle_resume, maybe_overflow_compact, maybe_threshold_compact,
     persist_turn_messages, print_exit_hint,
 };
 pub(crate) use status::{
-    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_doctor, handle_usage,
-    turn_footer,
+    SessionTotals, handle_compact, handle_context_window, handle_copy, handle_usage, turn_footer,
 };
 pub(crate) use user_cmds::handle_feedback;
 
@@ -119,8 +118,8 @@ pub(crate) type TuiOpt = Option<(
 )>;
 
 pub(crate) struct SessionState {
-    pub(crate) store: gray_session::JsonlSessionStore,
-    pub(crate) session_id: gray_session::SessionId,
+    pub(crate) store: crate::session_store::JsonlSessionStore,
+    pub(crate) session_id: crate::session_store::SessionId,
 }
 
 /// Command feedback: through the composer when it owns the terminal, else stdout.
@@ -139,16 +138,70 @@ pub(crate) fn say(tui: Option<&crate::composer::SharedTui>, msg: &str) {
     }
 }
 
+/// Clamp `config.thinking_effort` to the levels `model` accepts
+/// (Prime-Agent `clampThinkingLevel` parity). `None`/empty effort stays
+/// as-is; unknown family keeps the current level. Persists to saved config.
+/// Returns `(old, new)` when a clamp happened.
+pub(crate) fn clamp_thinking_to_model_name(
+    config: &mut Config,
+    model: &str,
+) -> Option<(String, String)> {
+    if model.is_empty() {
+        return None;
+    }
+    let current = config.thinking_effort.clone()?;
+    if current.is_empty() {
+        return None;
+    }
+    let clamped = crate::setup::clamp_thinking_level(model, &current);
+    if clamped == current {
+        return None;
+    }
+    let (old, new) = (current, clamped.to_string());
+    config.thinking_effort = Some(new.clone());
+    if let Ok(path) = crate::setup::saved_config_path() {
+        let mut saved = crate::setup::load_saved_config_at(&path);
+        saved.thinking_effort = Some(new.clone());
+        let _ = crate::setup::save_saved_config_at(&path, &saved);
+    }
+    Some((old, new))
+}
+
+/// Clamp `config.thinking_effort` to what `config.model` accepts.
+/// See [`clamp_thinking_to_model_name`].
+pub(crate) fn clamp_thinking_to_model(config: &mut Config) -> Option<(String, String)> {
+    let model = config.model.clone().unwrap_or_default();
+    clamp_thinking_to_model_name(config, &model)
+}
+
 /// Post-`run_connect_modal` feedback shared by `/connect` and the
 /// first-turn setup path: sync the chosen model into the composer and echo
-/// the provider name.
-pub(crate) fn push_provider_connected(config: &Config, tui: &TuiOpt) {
+/// the provider name. Clamps a stale effort (e.g. deepseek `max` → Spark
+/// `xhigh`) before painting so the footer never shows an unsupported level.
+pub(crate) fn push_provider_connected(
+    config: &mut Config,
+    tui: &TuiOpt,
+    hide_thinking: Option<&mut bool>,
+) {
+    let clamped = clamp_thinking_to_model(config);
+    if clamped.is_some()
+        && let Some(h) = hide_thinking
+    {
+        *h = config.reasoning_hidden();
+    }
     let Some((shared, _)) = tui else {
+        if let Some((old, new)) = clamped {
+            println!("Thinking effort clamped from {old} to {new} (not supported by this model)");
+        }
         return;
     };
     let mut t = shared.lock().expect("tui lock");
     if let Some(m) = &config.model {
         t.set_model(m.clone());
+    }
+    if let Some((_, ref new)) = clamped {
+        t.set_thinking_effort(new.clone());
+        t.set_hide_thinking(config.reasoning_hidden());
     }
     let model_str = config.model.as_deref().unwrap_or("default");
     let prov_name = crate::setup::load_catalog()
@@ -160,6 +213,16 @@ pub(crate) fn push_provider_connected(config: &Config, tui: &TuiOpt) {
         })
         .unwrap_or_else(|| "provider".to_string());
     t.push_dim(format!("└ connected to {prov_name} · {model_str}"));
+    // Close the loop: what you got, and where to change it.
+    let effort = config.thinking_effort.as_deref().unwrap_or("high");
+    t.push_dim(format!(
+        "└ thinking {effort} · /model to switch, /thinking for effort"
+    ));
+    if let Some((old, new)) = clamped {
+        t.push_dim(format!(
+            "└ thinking effort clamped from {old} to {new} (not supported by this model)"
+        ));
+    }
     t.ensure_gap(1);
     let _ = t.draw();
 }
@@ -374,14 +437,15 @@ pub async fn run_repl_mode(
     let mut session_state: Option<SessionState> = None;
     let mut session_totals = SessionTotals::default();
     let mut pending_history: Vec<Message> = Vec::new();
-    let mut resumed_session_info: Option<(SessionId, Vec<gray_session::SessionEntry>)> = None;
+    let mut resumed_session_info: Option<(SessionId, Vec<crate::session_store::SessionEntry>)> =
+        None;
 
     // `--session <id>` reopens that exact session; `-c`/`--last` reopens the
     // most recent. Both resolve into `loaded` and share one apply block.
     type Resumed = (
         SessionId,
-        gray_session::SessionMeta,
-        Vec<gray_session::SessionEntry>,
+        crate::session_store::SessionMeta,
+        Vec<crate::session_store::SessionEntry>,
         JsonlSessionStore,
     );
     let mut loaded: Option<Resumed> = None;
@@ -413,8 +477,8 @@ pub async fn run_repl_mode(
         // (session id, meta, entries) — one load per path, never two.
         type Best = (
             SessionId,
-            gray_session::SessionMeta,
-            Vec<gray_session::SessionEntry>,
+            crate::session_store::SessionMeta,
+            Vec<crate::session_store::SessionEntry>,
         );
         let mut recalled: Option<Best> = None;
         if let Some(c) = cwd_now.as_deref()
@@ -449,6 +513,12 @@ pub async fn run_repl_mode(
     if let Some((sid, meta, entries, store)) = loaded {
         if config.model.is_none() && !meta.model.is_empty() {
             config.model = Some(meta.model.clone());
+        }
+        // Startup resume lands on the session's model: clamp a stale effort
+        // (e.g. saved `max` under a Spark session) before the first build
+        // and before the TUI init below paints the footer.
+        if let Some((old, new)) = clamp_thinking_to_model(config) {
+            println!("Thinking effort clamped from {old} to {new} (not supported by this model)");
         }
         let history: Vec<Message> = entries.iter().map(|e| e.message.clone()).collect();
         pending_history = history.clone();
@@ -553,7 +623,7 @@ pub async fn run_repl_mode(
     if interactive {
         let cfg = config.clone();
         if let Ok(home) = crate::setup::gray_home()
-            && let Ok(store) = gray_cron::CronStore::open(home.join("cron"))
+            && let Ok(store) = crate::cron::CronStore::open(home.join("cron"))
         {
             std::thread::spawn(move || {
                 let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -744,48 +814,6 @@ pub async fn run_repl_mode(
 #[cfg(test)]
 mod tests;
 
+#[path = "mod_ctrl_c_policy_tests.rs"]
 #[cfg(test)]
-mod ctrl_c_policy_tests {
-    use super::*;
-
-    #[test]
-    fn sigint_second_press_within_window_exits() {
-        // First press (no prior) never exits — verified by last==0 guard at
-        // the call site; pure helper: far apart → false, close → true.
-        assert!(!sigint_should_exit(
-            1_000,
-            1_000 + CTRL_C_EXIT_WINDOW_MS + 1
-        ));
-        assert!(sigint_should_exit(1_000, 1_000 + 1_000));
-        assert!(sigint_should_exit(1_000, 1_000 + CTRL_C_EXIT_WINDOW_MS));
-        // Clock skew backwards → wrapping_sub is huge → false.
-        assert!(!sigint_should_exit(2_000, 1_000));
-    }
-
-    #[test]
-    fn totals_sum_durations_and_skip_untimed() {
-        let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
-            compaction_boundary: false,
-            entry_id: id,
-            parent_id: None,
-            timestamp: 0,
-            message: gray_core::message::Message::user("hi"),
-            usage: Some(gray_core::event::Usage::new(10, 5)),
-            duration_ms,
-        };
-        let entries = vec![entry(0, Some(6000)), entry(1, Some(4000)), entry(2, None)];
-        let t = super::SessionTotals::from_entries(&entries, "test-persist-model");
-        assert_eq!(t.turns, 3);
-        assert_eq!(t.total_duration_ms, 10_000);
-        assert_eq!(t.timed_turns, 2);
-    }
-
-    #[test]
-    fn turn_footer_includes_duration_when_known() {
-        let usage = gray_core::event::Usage::new(1000, 500);
-        let totals = super::SessionTotals::default();
-        let line = super::turn_footer(&usage, "test-persist-model", &totals, Some(6500));
-        assert!(line.contains("6.5s"), "footer should show time: {line}");
-        assert!(line.contains("tok"), "footer should keep tokens: {line}");
-    }
-}
+mod ctrl_c_policy_tests;

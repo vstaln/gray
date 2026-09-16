@@ -307,6 +307,38 @@ pub fn supported_thinking_levels(model_id: &str) -> Vec<(&'static str, &'static 
         .collect()
 }
 
+/// Clamps a thinking level to what `model_id` actually accepts (Prime-Agent
+/// `clampThinkingLevel` parity). Keeps `level` when supported, else the
+/// nearest level in `THINKING_LEVELS` order — upward first, then downward
+/// (so `max`→`xhigh` on Spark). `off` is always valid; unknown family
+/// → full catalog (kept); `model_supports_reasoning == Some(false)` →
+/// `off` only. Unknown/empty `level` falls back to the first supported level
+/// (`off`).
+pub fn clamp_thinking_level(model_id: &str, level: &str) -> &'static str {
+    let supported = supported_thinking_levels(model_id);
+    if let Some((l, _)) = supported.iter().find(|(l, _)| *l == level) {
+        return l;
+    }
+    let order: Vec<&str> = super::super::THINKING_LEVELS
+        .iter()
+        .map(|(l, _)| *l)
+        .collect();
+    let Some(req_idx) = order.iter().position(|l| *l == level) else {
+        return supported.first().map(|(l, _)| *l).unwrap_or("off");
+    };
+    for cand in order.iter().skip(req_idx) {
+        if let Some((l, _)) = supported.iter().find(|(l, _)| l == cand) {
+            return l;
+        }
+    }
+    for cand in order[..req_idx].iter().rev() {
+        if let Some((l, _)) = supported.iter().find(|(l, _)| l == cand) {
+            return l;
+        }
+    }
+    supported.first().map(|(l, _)| *l).unwrap_or("off")
+}
+
 /// Dynamically queries the provider's live /models endpoint (e.g. OpenAI, OpenRouter, Ollama, vLLM, LMStudio, etc.).
 pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
@@ -1002,31 +1034,6 @@ pub(crate) fn ensure_disk_loaded() {
     });
 }
 
+#[path = "providers_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // UNRUN (cargo test banned under X — verified via check + clippy only).
-    #[test]
-    fn merged_cache_skips_write_when_unchanged() {
-        let disk: std::collections::HashMap<String, usize> =
-            [("a".to_string(), 1)].into_iter().collect();
-        let mem = vec![("a".to_string(), 1)];
-        assert!(merged_models_cache(disk, mem).is_none());
-    }
-
-    // UNRUN (cargo test banned under X — verified via check + clippy only).
-    #[test]
-    fn merged_cache_returns_map_on_new_or_changed() {
-        let disk: std::collections::HashMap<String, usize> =
-            [("a".to_string(), 1)].into_iter().collect();
-        let out =
-            merged_models_cache(disk, vec![("b".to_string(), 2)]).expect("new key must dirty");
-        assert_eq!(out.get("b"), Some(&2));
-        let disk: std::collections::HashMap<String, usize> =
-            [("a".to_string(), 1)].into_iter().collect();
-        let out = merged_models_cache(disk, vec![("a".to_string(), 9)])
-            .expect("changed value must dirty");
-        assert_eq!(out.get("a"), Some(&9));
-    }
-}
+mod tests;

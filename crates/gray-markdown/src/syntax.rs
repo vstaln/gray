@@ -54,7 +54,7 @@ impl Default for Syntect {
             .cloned()
             .or_else(|| ts.themes.values().next().cloned())
             .unwrap_or_default();
-        let syntax_set = two_face::syntax::extra_newlines();
+        let syntax_set = SyntaxSet::load_defaults_newlines();
         Self { theme, syntax_set }
     }
 }

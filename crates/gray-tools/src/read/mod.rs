@@ -57,6 +57,7 @@ impl Tool for ReadTool {
             "Read a UTF-8 text file. Returns file contents, capped at \
              2000 lines / 50 KiB. Lines are prefixed with `<n>\\t` like \
              cat -n; do not include the prefix when quoting text for edit. \
+             Image files (png/jpg/gif/webp) are shown to you as vision. \
              Pass `paths` (files/globs) to read several files at once \
              (limit applies per file).",
             json!({
@@ -198,6 +199,24 @@ impl ReadTool {
         // Binary notes are facts (is_error=false), not failures. No ledger
         // entry: nothing was shown to authorize a later write.
         if let Some(note) = s.binary_note() {
+            // Images ride as vision blocks (opencode parity: "Image read
+            // successfully" + attachment), not refusal notes. Magic bytes
+            // still decide inside normalize, so a mislabeled file falls
+            // back to the binary note.
+            if crate::images::is_image_extension(full)
+                && let Ok(bytes) = std::fs::read(full)
+                && let Ok((mime, out)) = crate::images::normalize_image_bytes(&bytes)
+            {
+                use base64::Engine as _;
+                return ToolOutput::image(
+                    with_repaired(
+                        repaired,
+                        format!("Image read successfully: {}", full.display()),
+                    ),
+                    mime,
+                    base64::engine::general_purpose::STANDARD.encode(&out),
+                );
+            }
             return ToolOutput::ok(with_repaired(repaired, note.to_string()));
         }
         let file_size = s.file_size();
@@ -631,69 +650,10 @@ impl ReadTool {
     }
 }
 
+#[path = "mod_capped_count_tests.rs"]
 #[cfg(test)]
-mod capped_count_tests {
-    use super::*;
-    use gray_core::agent::ToolContext;
+mod capped_count_tests;
 
-    #[tokio::test]
-    async fn huge_line_count_uses_count_skipped_wording() {
-        let dir = tempfile::TempDir::new().unwrap();
-        std::fs::write(dir.path().join("huge.txt"), "x\n".repeat(150_000)).unwrap();
-        let ctx = ToolContext {
-            cwd: dir.path().to_path_buf(),
-            ..ToolContext::default()
-        };
-        let out = ReadTool::default()
-            .execute(&ctx, serde_json::json!({"path": "huge.txt", "limit": 10}))
-            .await;
-        assert!(!out.is_error, "{}", out.content);
-        assert!(
-            out.content.contains("count skipped"),
-            "{}",
-            tail(&out.content)
-        );
-        assert!(out.content.contains("offset=11"), "{}", tail(&out.content));
-        assert!(!out.content.contains("of 150000"), "{}", tail(&out.content));
-    }
-
-    fn tail(s: &str) -> &str {
-        &s[s.len().saturating_sub(500)..]
-    }
-}
-
+#[path = "mod_bulk_wiring_tests.rs"]
 #[cfg(test)]
-mod bulk_wiring_tests {
-    use super::*;
-
-    #[test]
-    fn schema_has_single_scalar_types_paths_exclude_and_empty_required() {
-        let def = ReadTool::default().def();
-        let props = def
-            .parameters
-            .get("properties")
-            .and_then(|p| p.as_object())
-            .expect("properties");
-        for key in ["path", "paths", "exclude", "offset", "limit"] {
-            assert!(props.contains_key(key), "schema missing {key}");
-        }
-        for (name, schema) in props {
-            let t = schema
-                .get("type")
-                .unwrap_or_else(|| panic!("property {name} missing scalar type"));
-            assert!(
-                t.is_string(),
-                "property {name} must have exactly one scalar type (no unions), got {t}"
-            );
-        }
-        let req = def
-            .parameters
-            .get("required")
-            .and_then(|r| r.as_array())
-            .expect("required");
-        assert!(
-            req.is_empty(),
-            "required must be [] (path-or-paths enforced at runtime)"
-        );
-    }
-}
+mod bulk_wiring_tests;

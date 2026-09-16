@@ -19,9 +19,7 @@ gray-core = { workspace = true }
 gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }
 gray-tools = { workspace = true }
-gray-session = { workspace = true }
 gray-markdown = { workspace = true }
-gray-cron = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 crossterm = { workspace = true }
@@ -33,10 +31,11 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
+cron = { workspace = true }
+thiserror = { workspace = true }
 uuid = { workspace = true }
 log = { workspace = true }
 percent-encoding = { workspace = true }
-arboard = { workspace = true }
 image = { workspace = true }
 tempfile = { workspace = true }
 base64 = { workspace = true }

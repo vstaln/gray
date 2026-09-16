@@ -30,10 +30,7 @@ mod buffers;
 pub mod checkpoint;
 mod colors;
 mod hyperlinks;
-mod latex;
-mod latex_delimiters;
 pub mod markdown_core;
-mod open_code_highlighter;
 mod output;
 mod parse;
 mod render;
@@ -47,7 +44,6 @@ mod url_scan;
 pub use buffers::MarkdownBuffers;
 pub use checkpoint::{Checkpoint, CheckpointKind};
 pub use colors::{ColorLevel, adapt_color, adapt_style, detect_color_level};
-pub use latex_delimiters::{LatexDelimiterNormalizer, normalize_latex_delimiters};
 pub use output::{HyperlinkTarget, MarkdownRenderOutput};
 pub use parse::{MarkdownParser, ParsedMarkdown};
 pub use streaming::StreamingMarkdownRenderer;
@@ -81,14 +77,9 @@ pub fn render_markdown_ratatui_with_buffers_width(
     syntect: Option<&Syntect>,
     max_table_width: Option<usize>,
 ) -> (MarkdownRenderOutput, Option<Checkpoint>) {
-    // Normalize LaTeX delimiters (`\(…\)`/`\[…\]`/`\begin{equation}`) into the
-    // canonical `$`/`$$` forms before parsing, so the math handlers convert them
-    // uniformly (incl. inside table cells). All offsets are in normalized space;
-    // `StreamingMarkdownRenderer` normalizes at ingestion so its stored source
-    // matches. Streaming tail renders (`render_markdown_ratatui_with_link_id`)
-    // do NOT re-normalize — they receive already-normalized source.
-    let normalized = latex_delimiters::normalize_latex_delimiters(text);
-    let mut parsed = MarkdownParser::new(&normalized, ms, buffers, syntect)
+    // ponytail: latex delimiter normalization removed with the
+    // latex-to-unicode stack; `$`/`$$` pass through as raw TeX.
+    let mut parsed = MarkdownParser::new(text, ms, buffers, syntect)
         .max_table_width(max_table_width)
         .parse();
     let next_link_id = parsed.next_link_id;
@@ -112,13 +103,6 @@ pub fn render_markdown_ratatui_with_buffers_width(
 
 /// Render markdown to ratatui Lines and provide `next_link_id` so the
 /// streaming renderer can resume link ID assignment across tail re-renders.
-///
-/// `open_code` threads an optional incremental highlighter for the trailing
-/// still-open fenced code block: only the streaming tail re-render passes
-/// `Some(cache)`; `finish()` and non-streaming callers pass `None`. Everything
-/// other than that one open block (closed code blocks, HTML, math, tables,
-/// inline) always goes through the unchanged batch highlighter, so output is
-/// byte-for-byte identical to the cache-less path. See [`open_code_highlighter`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_markdown_ratatui_with_link_id(
     text: &str,
@@ -128,12 +112,10 @@ pub(crate) fn render_markdown_ratatui_with_link_id(
     syntect: Option<&Syntect>,
     max_table_width: Option<usize>,
     link_id_start: u32,
-    open_code: Option<&mut open_code_highlighter::OpenCodeHighlighter>,
 ) -> (MarkdownRenderOutput, Option<Checkpoint>, u32) {
     let mut parsed = MarkdownParser::new(text, ms, buffers, syntect)
         .max_table_width(max_table_width)
         .link_id_start(link_id_start)
-        .open_code(open_code)
         .parse();
 
     // NOTE: There can be multiple links in a tail, hence next_link_id is the return.
@@ -190,34 +172,6 @@ pub fn gray_markdown_style() -> MarkdownStyle {
     .adapt()
 }
 
+#[path = "lib_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::buffers::unicode_display_width;
-
-    fn line_text(l: &ratatui::text::Line<'_>) -> String {
-        l.spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    #[test]
-    fn wide_table_fits_max_width() {
-        let md = "| Check | Result |\n|---|---|\n| node --check on extracted module with a very long trailing description that keeps going | SYNTAX OK with even more trailing words to force wrapping across several visual lines |\n| persistence survived reload across sessions | {\"total\":417,\"bestCatch\":158} plus extra prose to widen the second column further |\n";
-        let mut buffers = MarkdownBuffers::new();
-        let (out, _) = render_markdown_ratatui_with_buffers_width(
-            md,
-            gray_markdown_style(),
-            true,
-            &mut buffers,
-            None,
-            Some(40),
-        );
-        assert!(!out.lines.is_empty());
-        for l in &out.lines {
-            let t = line_text(l);
-            assert!(
-                unicode_display_width(&t) <= 40,
-                "table row overflows: {t:?}"
-            );
-        }
-    }
-}
+mod tests;

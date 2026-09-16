@@ -10,9 +10,8 @@
 //! empty-bracketed-paste → clipboard-read fallback. This module is that
 //! backend half; the frontend (draw code) is untouched.
 //!
-//! Text reads are dependency-free native helpers (`pbpaste`, `wl-paste`,
-//! `xclip`, `xsel`, PowerShell, termux); arboard is tried first (it also
-//! covers Wayland session quirks the CLI helpers sometimes miss).
+//! Text reads are native helpers only (`pbpaste`, `wl-paste`,
+//! `xclip`, `xsel`, PowerShell, termux) with timeout + tests.
 
 use super::Tui;
 
@@ -99,14 +98,10 @@ pub(crate) fn resolve_in(cmd: &str, paths: &str) -> Option<std::path::PathBuf> {
     })
 }
 
-fn arboard_text() -> Option<String> {
-    if let Ok(mut clipboard) = arboard::Clipboard::new()
-        && let Ok(text) = clipboard.get_text()
-        && !text.trim().is_empty()
-    {
-        return Some(text);
-    }
-    None
+/// Production entry: native helpers on the real PATH.
+pub(crate) fn read_system_clipboard_text() -> Option<String> {
+    let paths = std::env::var_os("PATH").unwrap_or_default();
+    read_system_clipboard_text_with_paths(&paths.to_string_lossy())
 }
 
 /// Bound for one clipboard helper: `wl-paste` blocks until the compositor
@@ -114,7 +109,7 @@ fn arboard_text() -> Option<String> {
 const CLIPBOARD_CMD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
 
 /// `Command::output` on a spawned thread (`std::thread::spawn` + mpsc, same
-/// shape as the marketplace modal flights) with a bounded wait so a hung
+/// shape as other modal flights) with a bounded wait so a hung
 /// helper can't block the UI thread. `None` on spawn failure/timeout —
 /// same as the old blocking `.ok()?` path. The orphaned thread exits on
 /// its own when the helper does; its send then fails silently.
@@ -152,15 +147,6 @@ pub(crate) fn read_system_clipboard_text_with_paths(paths: &str) -> Option<Strin
     None
 }
 
-/// Production entry: arboard first, then native helpers on the real PATH.
-pub(crate) fn read_system_clipboard_text() -> Option<String> {
-    if let Some(text) = arboard_text() {
-        return Some(text);
-    }
-    let paths = std::env::var_os("PATH").unwrap_or_default();
-    read_system_clipboard_text_with_paths(&paths.to_string_lossy())
-}
-
 /// opencode `prompt.paste`: image attach first, then clipboard text through
 /// the normal bracketed-paste path (normalization + large-paste collapse).
 /// True when anything landed in the composer.
@@ -176,39 +162,6 @@ pub(crate) fn paste_from_system_clipboard(tui: &mut Tui) -> bool {
     false
 }
 
+#[path = "clipboard_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_paste_handles_crlf_and_lone_cr() {
-        assert_eq!(normalize_paste("a\r\nb"), "a\nb");
-        assert_eq!(normalize_paste("a\rb"), "a\nb");
-        assert_eq!(normalize_paste("a\r\nb\rc\nd"), "a\nb\nc\nd");
-        assert_eq!(normalize_paste("plain\ntext"), "plain\ntext");
-        assert_eq!(normalize_paste(""), "");
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    #[test]
-    fn clipboard_chain_reads_through_fake_xclip() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let shim = dir.path().join("xclip");
-        std::fs::write(&shim, "#!/bin/sh\nprintf 'pasted-text'").expect("write shim");
-        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let paths = dir.path().to_string_lossy().into_owned();
-        // wl-paste is absent so the chain must fall through to the xclip shim.
-        assert_eq!(
-            read_system_clipboard_text_with_paths(&paths),
-            Some("pasted-text".to_string())
-        );
-    }
-
-    #[test]
-    fn clipboard_chain_empty_path_gives_none_fast() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let paths = dir.path().to_string_lossy().into_owned();
-        assert_eq!(read_system_clipboard_text_with_paths(&paths), None);
-    }
-}
+mod tests;

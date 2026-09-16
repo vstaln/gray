@@ -187,17 +187,18 @@ impl Agent {
                 return Err(CoreError::Cancelled);
             }
 
-            // Pre-turn budget: compact before the provider ever sees an overflow.
-            // Cheapest relief first: elide older historical command outputs
-            // (mini-SWE-agent parity, recent observations stay in full) — and
-            // only under actual pressure, since eliding observations while the
-            // window has room makes the model re-run searches it can no longer
-            // see.
+            // Pre-turn budget, gated on real pressure: history rewrites
+            // (elision, compaction) break provider prefix cache (99% hits
+            // → miss for a turn), so quiet turns leave history append-only
+            // and cache-hot. Cheapest relief first under pressure: batched
+            // elision, then the compaction loop as backstop.
             if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
-                crate::compact::prune_old_tool_observations(
-                    &mut self.messages,
-                    crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
-                );
+                if crate::compact::should_elide_observations(&self.messages) {
+                    crate::compact::prune_old_tool_observations(
+                        &mut self.messages,
+                        crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
+                    );
+                }
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
@@ -578,7 +579,7 @@ impl Agent {
                 } else {
                     0.0
                 };
-                log::info!(target: "gray_agent", "agent run end: stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
+                log::info!(target: "gray_agent", "agent run end: session={} stop={stop_reason:?}, usage in={} out={} cached={} hit={:.0}%, {} messages", ctx.session_id.as_deref().unwrap_or("-"), total_usage.input_tokens, total_usage.output_tokens, total_usage.cached_tokens, hit, self.messages.len());
                 emit!(AgentEvent::turn_end(stop_reason, billed));
                 self.emit_turn_end(&billed).await;
                 return Ok(events);
@@ -770,11 +771,7 @@ impl Agent {
                                 ));
                                 self.messages.push(Message {
                                     role: Role::User,
-                                    content: vec![ContentBlock::ToolResult {
-                                        id: id.clone(),
-                                        content: output.content.clone(),
-                                        is_error: output.is_error,
-                                    }],
+                                    content: output.message_blocks(id),
                                 });
                             }
                             _ => {
@@ -884,11 +881,7 @@ impl Agent {
                 ));
                 self.messages.push(Message {
                     role: Role::User,
-                    content: vec![ContentBlock::ToolResult {
-                        id: id.clone(),
-                        content: output.content,
-                        is_error: output.is_error,
-                    }],
+                    content: output.message_blocks(id),
                 });
             }
 

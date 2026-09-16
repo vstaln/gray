@@ -66,8 +66,8 @@ fn totals_rebuild_from_stored_entries() {
         },
     });
     crate::setup::parse_litellm_context_json(&v);
-    let entry =
-        |id: u64, text: &str, usage: Option<gray_core::event::Usage>| gray_session::SessionEntry {
+    let entry = |id: u64, text: &str, usage: Option<gray_core::event::Usage>| {
+        crate::session_store::SessionEntry {
             compaction_boundary: false,
             entry_id: id,
             parent_id: if id == 1 { None } else { Some(id - 1) },
@@ -75,7 +75,8 @@ fn totals_rebuild_from_stored_entries() {
             message: gray_core::message::Message::user(text),
             usage,
             duration_ms: None,
-        };
+        }
+    };
     let entries = vec![
         entry(1, "hi", Some(gray_core::event::Usage::new(1000, 500))),
         entry(2, "yo", None),
@@ -91,7 +92,7 @@ fn totals_rebuild_from_stored_entries() {
 
 #[test]
 fn totals_sum_durations_and_skip_untimed() {
-    let entry = |id: u64, duration_ms: Option<u64>| gray_session::SessionEntry {
+    let entry = |id: u64, duration_ms: Option<u64>| crate::session_store::SessionEntry {
         compaction_boundary: false,
         entry_id: id,
         parent_id: None,

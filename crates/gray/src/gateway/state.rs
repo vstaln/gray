@@ -27,7 +27,7 @@ pub fn path(home: &Path) -> PathBuf {
 }
 
 pub fn write(home: &Path, state: &RuntimeState) -> anyhow::Result<()> {
-    gray_cron::store::atomic_write_json(&path(home), state)
+    crate::cron::store::atomic_write_json(&path(home), state)
 }
 
 pub fn read(home: &Path) -> Option<RuntimeState> {
@@ -42,27 +42,11 @@ pub fn record(gateway_state: &str, exit_reason: Option<&str>, started_at: i64) -
         exit_reason: exit_reason.map(str::to_string),
         pid: std::process::id(),
         started_at,
-        updated_at: gray_cron::now_secs(),
+        updated_at: crate::cron::now_secs(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 
+#[path = "state_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn write_read_roundtrip() {
-        let home = tempfile::tempdir().unwrap();
-        let rec = record(STATE_RUNNING, None, 42);
-        write(home.path(), &rec).unwrap();
-        assert_eq!(read(home.path()), Some(rec));
-    }
-
-    #[test]
-    fn corrupt_state_reads_as_none() {
-        let home = tempfile::tempdir().unwrap();
-        std::fs::write(path(home.path()), "not json").unwrap();
-        assert!(read(home.path()).is_none());
-    }
-}
+mod tests;

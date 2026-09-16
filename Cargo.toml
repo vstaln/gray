@@ -3,10 +3,8 @@ resolver = "3"
 members = [
     "crates/gray",
     "crates/gray-core",
-    "crates/gray-cron",
     "crates/gray-markdown",
     "crates/gray-provider",
-    "crates/gray-session",
     "crates/gray-tools",
     "crates/gray-plugin",
     "crates/gray-pkg",
@@ -16,7 +14,6 @@ default-members = [
     "crates/gray",
     "crates/gray-core",
     "crates/gray-provider",
-    "crates/gray-session",
     "crates/gray-tools",
     "crates/gray-plugin",
     "crates/gray-markdown",
@@ -31,11 +28,9 @@ license = "MIT"
 # Workspace crates
 gray = { path = "crates/gray" }
 gray-core = { path = "crates/gray-core" }
-gray-cron = { path = "crates/gray-cron" }
 gray-provider = { path = "crates/gray-provider" }
 gray-tools = { path = "crates/gray-tools" }
 gray-plugin = { path = "crates/gray-plugin" }
-gray-session = { path = "crates/gray-session" }
 gray-markdown = { path = "crates/gray-markdown" }
 gray-pkg = { path = "crates/gray-pkg" }
 
@@ -55,7 +50,6 @@ uuid = { version = "1", features = ["v4"] }
 log = { version = "0.4", features = ["std"] }
 crossterm = "0.28"
 ratatui = "0.29"
-arboard = "3"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 tempfile = "3"
 chrono = { version = "0.4", features = ["serde"] }

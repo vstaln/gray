@@ -17,14 +17,17 @@ pub(crate) fn print_exit_hint(session_state: &Option<SessionState>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+// Mechanical split of `run_repl_mode`: params are the loop state the arm borrows.
 pub(crate) async fn handle_resume(
-    config: &Config,
+    config: &mut Config,
     cwd: &Path,
     args: ResumeArgs,
     agent: &mut Option<Agent>,
     session_state: &mut Option<SessionState>,
     totals: &mut SessionTotals,
     tui: Option<&crate::composer::SharedTui>,
+    hide_thinking: &mut bool,
 ) {
     let bg = tui.as_ref().map(|s| s.lock().expect("tui lock").snapshot());
     // Recall-first resolution for cwd-scoped `--last` (`--all` keeps the
@@ -162,6 +165,28 @@ pub(crate) async fn handle_resume(
             let model = eff_model.as_deref().unwrap_or("");
             let mut build_config = config.clone();
             build_config.model = eff_model.clone();
+            // Resume lands on the session's model: clamp a stale effort
+            // (e.g. saved `max` under a Spark session) before painting,
+            // and write the result back to the live config + saved file
+            // so the footer and the next boot agree.
+            if !model.is_empty()
+                && let Some((old, new)) =
+                    super::clamp_thinking_to_model_name(&mut build_config, model)
+            {
+                config.thinking_effort = Some(new.clone());
+                if let Ok(path) = crate::setup::saved_config_path() {
+                    let mut saved = crate::setup::load_saved_config_at(&path);
+                    saved.thinking_effort = Some(new.clone());
+                    let _ = crate::setup::save_saved_config_at(&path, &saved);
+                }
+                *hide_thinking = build_config.reasoning_hidden();
+                say(
+                    tui,
+                    &format!(
+                        "Thinking effort clamped from {old} to {new} (not supported by this model)"
+                    ),
+                );
+            }
             match build_agent(&build_config, cwd, Some(sid.as_str())).await {
                 Ok(built) => {
                     *agent = Some(built.with_messages(history));
@@ -184,11 +209,19 @@ pub(crate) async fn handle_resume(
                         if !model.is_empty() {
                             t.set_model(model.to_string());
                         }
+                        // The resumed model keeps its own effort: paint it so
+                        // the footer follows the switch instead of the stale
+                        // pre-resume level.
+                        if let Some(eff) = &build_config.thinking_effort {
+                            t.set_thinking_effort(eff.clone());
+                            t.set_hide_thinking(build_config.reasoning_hidden());
+                        }
                         t.push_dim(format!(
                             "\u{2b22} Resumed session {} ({n} messages)",
                             sid.as_str()
                         ));
                         t.ensure_gap(1);
+                        let _ = t.draw();
                     } else {
                         println!(
                             "\x1b[2m\u{2b22} Resumed session {} ({n} messages)\x1b[0m",
@@ -314,8 +347,11 @@ pub(crate) fn dispatch_agent_event(
                 t.end_thinking();
                 pending_tools.insert(id.clone(), (name.clone(), None));
                 // pi `ToolExecutionComponent` appears immediately (partial):
-                // surface the tool on the status dock instead of leaving
-                // "Thinking…" frozen while args stream in.
+                // viewport-anchored live card, same header family as the
+                // final scrollback card. Single scrollback commit stays at
+                // `ToolResult`, so this never duplicates.
+                let header = crate::tool_fmt::format_live_tool_header(name, "", None);
+                t.upsert_live_tool(id, header, false);
                 t.set_status(Some(&format!("Preparing tool: {name}")));
             }
             AgentEvent::ToolCallProgress {
@@ -323,13 +359,15 @@ pub(crate) fn dispatch_agent_event(
                 name,
                 args_so_far,
             } => {
-                // Live args streaming: truncated preview on the status dock.
-                // ponytail: status-line preview only, no in-place box update.
+                // pi `updateArgs`: stream the in-progress command into the
+                // live card head (same header family as the final card).
                 // (No token accounting: the pill carries no estimate — exact
                 // counts come from usage reports, never chars/4.)
+                pending_tools.insert(id.clone(), (name.clone(), None));
+                let header = crate::tool_fmt::format_live_tool_header(name, args_so_far, None);
+                t.upsert_live_tool(id, header, false);
                 let preview = args_so_far.split_whitespace().collect::<Vec<_>>().join(" ");
                 let preview = crate::repl::format::truncate_chars(&preview, 60);
-                pending_tools.insert(id.clone(), (name.clone(), None));
                 if preview.is_empty() {
                     t.set_status(Some(&format!("Preparing tool: {name}")));
                 } else {
@@ -351,10 +389,12 @@ pub(crate) fn dispatch_agent_event(
                         e.1 = Some(args.clone());
                     })
                     .or_insert((name.clone(), Some(args.clone())));
-                // No transcript line here: the result card below is the single
-                // render of the call. The live signal rides the status dock
-                // (`Preparing tool:` at Start, `Working` here) so a duplicate
-                // header never lands in the transcript.
+                // pi `markExecutionStarted` + `setArgsComplete`: the live
+                // card flips to its final header + `running…` marker. No
+                // transcript line here: the result card below is the single
+                // scrollback render, so a duplicate never lands.
+                let header = crate::tool_fmt::format_tool_call_header(&name, args, Some(cwd));
+                t.upsert_live_tool(id, header, true);
                 t.set_status(Some("Working"));
             }
             AgentEvent::ToolResult {
@@ -378,8 +418,9 @@ pub(crate) fn dispatch_agent_event(
                         *is_error,
                         Some(cwd),
                     );
-                    // The box is the single render of the call — always push
-                    // it (no live line exists to duplicate it).
+                    // pi `updateResult`: the scrollback commit is the flip —
+                    // drop the live card, then push the single render.
+                    t.remove_live_tool(id);
                     {
                         let header = args
                             .as_ref()
@@ -408,6 +449,9 @@ pub(crate) fn dispatch_agent_event(
                 *turn_usage = Some(*usage);
                 let ms = elapsed_ms();
                 *turn_duration_ms = Some(ms);
+                // pi `settle_pending_cards`: leftovers never stick (cancel/
+                // error paths emit no ToolResult for in-flight calls).
+                t.clear_live_tools();
                 t.end_thinking();
                 // Billed Σ-per-round totals are the cost basis (`totals`,
                 // `turn_footer`, persisted entry) — they must NOT overwrite
@@ -676,26 +720,6 @@ pub(crate) async fn maybe_overflow_compact(
     }
 }
 
+#[path = "session_tests.rs"]
 #[cfg(test)]
-mod tests {
-    // UNRUN (cargo test banned under X): run in TTY/CI.
-    // The lazy-build gate: a fresh session with a model mints before the
-    // first build (real sid from turn one); no model (or existing session)
-    // never mints, so the unconfigured REPL still opens session-free.
-    use super::should_ensure_session_before_build;
-
-    #[test]
-    fn first_build_ensures_session_only_when_model_configured() {
-        assert!(should_ensure_session_before_build(
-            false,
-            Some("openai/gpt-4o")
-        ));
-        assert!(!should_ensure_session_before_build(false, None));
-        assert!(!should_ensure_session_before_build(false, Some("")));
-        assert!(!should_ensure_session_before_build(
-            true,
-            Some("openai/gpt-4o")
-        ));
-        assert!(!should_ensure_session_before_build(true, None));
-    }
-}
+mod tests;

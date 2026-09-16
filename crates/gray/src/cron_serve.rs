@@ -54,7 +54,8 @@ pub const FIRE_TIMEOUT_SECS: u64 = 600;
 /// `last_delivery_error`; run columns stay untouched.
 #[async_trait::async_trait(?Send)]
 pub trait CronDeliver {
-    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String>;
+    async fn deliver(&self, job: &crate::cron::CronJob, now: i64, text: &str)
+    -> Result<(), String>;
 }
 
 /// Local delivery: transcript to `$HOME/cron/output/<id>/<ts>.md`.
@@ -64,7 +65,12 @@ pub struct LocalDeliver {
 
 #[async_trait::async_trait(?Send)]
 impl CronDeliver for LocalDeliver {
-    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String> {
+    async fn deliver(
+        &self,
+        job: &crate::cron::CronJob,
+        now: i64,
+        text: &str,
+    ) -> Result<(), String> {
         crate::cron_fire::write_local_output(&self.home, job, now, text)
             .map(|_| ())
             .map_err(|e| format!("local write failed: {e:#}"))
@@ -80,8 +86,13 @@ pub struct SaveLocalDeliver {
 
 #[async_trait::async_trait(?Send)]
 impl CronDeliver for SaveLocalDeliver {
-    async fn deliver(&self, job: &gray_cron::CronJob, now: i64, text: &str) -> Result<(), String> {
-        if !matches!(job.deliver, gray_cron::Deliver::Local) {
+    async fn deliver(
+        &self,
+        job: &crate::cron::CronJob,
+        now: i64,
+        text: &str,
+    ) -> Result<(), String> {
+        if !matches!(job.deliver, crate::cron::Deliver::Local) {
             log::warn!(
                 "cron {}: unknown target {:?}, saved locally",
                 job.id,
@@ -104,13 +115,13 @@ pub fn owner_stamp() -> String {
 /// Returns the recorded status for the tick report. Never propagates
 /// job-level failure: every path ends in `mark_done` (claim released).
 pub async fn fire_one(
-    store: &gray_cron::CronStore,
+    store: &crate::cron::CronStore,
     runner: &dyn AsyncRunner,
-    job: gray_cron::CronJob,
+    job: crate::cron::CronJob,
     now: i64,
     deliver: &dyn CronDeliver,
-) -> gray_cron::RunStatus {
-    use gray_cron::RunStatus;
+) -> crate::cron::RunStatus {
+    use crate::cron::RunStatus;
     let fail = |msg: String| {
         let _ = store.mark_done(&job.id, RunStatus::Error, Some(&msg));
         RunStatus::Error
@@ -180,12 +191,12 @@ pub async fn fire_one(
 /// Per-job failure is recorded on the job and counted; only pass-level
 /// store failure propagates as `Err`.
 pub async fn tick_once(
-    store: &gray_cron::CronStore,
+    store: &crate::cron::CronStore,
     runner: &dyn AsyncRunner,
     deliver: &dyn CronDeliver,
     kind: &str,
 ) -> anyhow::Result<TickReport> {
-    let now = gray_cron::now_secs();
+    let now = crate::cron::now_secs();
     // Liveness first, before any job runs: every pass stamps the store so a
     // later reader can tell "nothing was due" from "nothing was ticking".
     // Best-effort — a failed heartbeat must not stop jobs from firing.
@@ -202,7 +213,7 @@ pub async fn tick_once(
         report.fired += 1;
         if !matches!(
             fire_one(store, runner, job, now, deliver).await,
-            gray_cron::RunStatus::Ok
+            crate::cron::RunStatus::Ok
         ) {
             report.errors += 1;
         }
@@ -213,7 +224,7 @@ pub async fn tick_once(
 /// Tick every 60s until SIGINT. Supervision owns the process; there is no
 /// daemonization here. Tick-level store errors log and continue.
 pub async fn serve_loop(
-    store: gray_cron::CronStore,
+    store: crate::cron::CronStore,
     deliver: impl CronDeliver + 'static,
     runner: impl AsyncRunner + 'static,
 ) -> anyhow::Result<()> {
@@ -232,134 +243,6 @@ pub async fn serve_loop(
     Ok(())
 }
 
+#[path = "cron_serve_tests.rs"]
 #[cfg(test)]
-mod tests {
-    // UNRUN (cargo test banned under X): run in TTY/CI.
-    use super::*;
-
-    struct StubRunner {
-        text: String,
-        fail: bool,
-        seen: std::sync::Mutex<Vec<String>>,
-    }
-
-    #[async_trait::async_trait(?Send)]
-    impl AsyncRunner for StubRunner {
-        async fn run(&self, prompt: String) -> anyhow::Result<String> {
-            self.seen.lock().unwrap().push(prompt);
-            if self.fail {
-                anyhow::bail!("boom")
-            } else {
-                Ok(self.text.clone())
-            }
-        }
-    }
-
-    fn due_store(home: &tempfile::TempDir, records: serde_json::Value) -> gray_cron::CronStore {
-        let store = gray_cron::CronStore::open(home.path().join("cron")).unwrap();
-        std::fs::write(
-            home.path().join("cron").join("jobs.json"),
-            serde_json::to_string_pretty(&records).unwrap(),
-        )
-        .unwrap();
-        store
-    }
-
-    fn one_due(id: &str, deliver: serde_json::Value) -> serde_json::Value {
-        serde_json::json!([{
-            "id": id, "name": id, "prompt": "say hi",
-            "schedule": {"Interval": {"secs": 3600}}, "enabled": true,
-            "created_at": 1, "next_run_at": 1, "deliver": deliver,
-        }])
-    }
-
-    #[tokio::test]
-    async fn tick_fires_due_job_and_marks_ok() {
-        let home = tempfile::tempdir().unwrap();
-        let store = due_store(&home, one_due("j1", serde_json::json!("local")));
-        let runner = StubRunner {
-            text: "hello".to_string(),
-            fail: false,
-            seen: Default::default(),
-        };
-        let rep = tick_once(
-            &store,
-            &runner,
-            &LocalDeliver {
-                home: home.path().to_path_buf(),
-            },
-            "test",
-        )
-        .await
-        .unwrap();
-        assert_eq!(rep.fired, 1);
-        assert_eq!(rep.errors, 0);
-        let job = store.get("j1").unwrap().unwrap();
-        assert_eq!(job.last_status, Some(gray_cron::RunStatus::Ok));
-        assert!(job.fire_claim.is_none());
-        assert_eq!(runner.seen.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn tick_agent_failure_records_error_and_continues() {
-        let home = tempfile::tempdir().unwrap();
-        let store = due_store(
-            &home,
-            serde_json::json!([
-                {"id": "a", "name": "a", "prompt": "x",
-                 "schedule": {"Interval": {"secs": 3600}}, "enabled": true,
-                 "created_at": 1, "next_run_at": 1},
-                {"id": "b", "name": "b", "prompt": "y",
-                 "schedule": {"Interval": {"secs": 3600}}, "enabled": true,
-                 "created_at": 1, "next_run_at": 1},
-            ]),
-        );
-        let runner = StubRunner {
-            text: String::new(),
-            fail: true,
-            seen: Default::default(),
-        };
-        let rep = tick_once(
-            &store,
-            &runner,
-            &LocalDeliver {
-                home: home.path().to_path_buf(),
-            },
-            "test",
-        )
-        .await
-        .unwrap();
-        assert_eq!(rep.fired, 2);
-        assert_eq!(rep.errors, 2);
-        for id in ["a", "b"] {
-            let job = store.get(id).unwrap().unwrap();
-            assert_eq!(job.last_status, Some(gray_cron::RunStatus::Error));
-            assert!(job.fire_claim.is_none());
-        }
-    }
-
-    #[tokio::test]
-    async fn tick_silent_response_skips_write_but_ok() {
-        let home = tempfile::tempdir().unwrap();
-        let store = due_store(&home, one_due("s1", serde_json::json!("local")));
-        let runner = StubRunner {
-            text: "nothing to report\n[SILENT]".to_string(),
-            fail: false,
-            seen: Default::default(),
-        };
-        let rep = tick_once(
-            &store,
-            &runner,
-            &LocalDeliver {
-                home: home.path().to_path_buf(),
-            },
-            "test",
-        )
-        .await
-        .unwrap();
-        assert_eq!((rep.fired, rep.errors), (1, 0));
-        let job = store.get("s1").unwrap().unwrap();
-        assert_eq!(job.last_status, Some(gray_cron::RunStatus::Ok));
-        assert!(!home.path().join("cron").join("output").join("s1").exists());
-    }
-}
+mod tests;

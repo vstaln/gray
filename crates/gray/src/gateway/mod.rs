@@ -62,7 +62,7 @@ pub async fn run_cli(cmd: crate::GatewayCmd, config: &crate::config::Config) -> 
 /// Human report for `gateway status`. Live socket first (hermes liveness
 /// doctrine), pid file fallback, state file for "why did it stop".
 fn report(home: &Path) -> (bool, Vec<String>) {
-    let now = gray_cron::now_secs();
+    let now = crate::cron::now_secs();
     let sup = service::detect();
     let mut lines = Vec::new();
     let mut running = false;
@@ -110,7 +110,7 @@ fn report(home: &Path) -> (bool, Vec<String>) {
     }
 
     // Cron liveness — the reason this daemon exists.
-    match gray_cron::CronStore::open(home.join("cron")) {
+    match crate::cron::CronStore::open(home.join("cron")) {
         Ok(store) => {
             let health = store.health(now).unwrap_or_default();
             let jobs = store.list().map(|v| v.len()).unwrap_or(0);

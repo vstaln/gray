@@ -4,13 +4,12 @@
 //! stills for video. Audio has no model-agnostic wire path on our
 //! OpenAI-compatible providers — reported loudly, never silently dropped.
 
-use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
 
-/// opencode caps: 2000px longest side, 5MB base64.
-pub const MAX_IMAGE_SIDE: u32 = 2000;
-pub const MAX_BASE64_BYTES: usize = 5 * 1024 * 1024;
+// Image downscale lives in gray-tools (the `read` tool attaches vision
+// blocks too); re-exported so existing users keep working.
+pub use gray_tools::images::{MAX_BASE64_BYTES, MAX_IMAGE_SIDE, MediaError, normalize_image_bytes};
 /// PDF text cap per file (chars).
 pub const MAX_PDF_CHARS: usize = 60_000;
 
@@ -41,76 +40,6 @@ pub fn attachment_kind(path: &Path) -> AttachmentKind {
         }
         _ => AttachmentKind::Unsupported,
     }
-}
-
-#[derive(Debug)]
-pub enum MediaError {
-    Decode(String),
-    TooBig(String),
-    Extract(String),
-    Unsupported(String),
-}
-
-impl std::fmt::Display for MediaError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Decode(e) => write!(f, "could not decode image: {e}"),
-            Self::TooBig(e) => write!(f, "image still too big after downscale: {e}"),
-            Self::Extract(e) => write!(f, "extract failed: {e}"),
-            Self::Unsupported(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-/// Downscale-before-send (opencode `Image.normalize`): longest side capped
-/// at 2000px, JPEG stays JPEG, everything else becomes PNG, base64 under
-/// 5MB (halve and retry up to 3 times, then fail loudly like SizeError).
-/// Returns `(media_type, bytes)`.
-pub fn normalize_image_bytes(bytes: &[u8]) -> Result<(String, Vec<u8>), MediaError> {
-    use image::ImageFormat;
-    let format = image::guess_format(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
-    let out_format = match format {
-        ImageFormat::Jpeg => ImageFormat::Jpeg,
-        ImageFormat::Png | ImageFormat::Gif | ImageFormat::WebP => ImageFormat::Png,
-        // bmp/heic/etc: not in our decoder set — loud, like opencode DecodeError.
-        other => {
-            return Err(MediaError::Decode(format!(
-                "{other:?} decoding not enabled"
-            )));
-        }
-    };
-    let mut img = image::load_from_memory(bytes).map_err(|e| MediaError::Decode(e.to_string()))?;
-    for _ in 0..4 {
-        if img.width().max(img.height()) > MAX_IMAGE_SIDE {
-            img = img.resize(
-                MAX_IMAGE_SIDE,
-                MAX_IMAGE_SIDE,
-                image::imageops::FilterType::Triangle,
-            );
-        }
-        let mut buf = Vec::new();
-        img.write_to(&mut Cursor::new(&mut buf), out_format)
-            .map_err(|e| MediaError::Decode(e.to_string()))?;
-        if base64_len(&buf) <= MAX_BASE64_BYTES {
-            let mime = if out_format == ImageFormat::Jpeg {
-                "image/jpeg"
-            } else {
-                "image/png"
-            };
-            return Ok((mime.to_string(), buf));
-        }
-        // Still too big: halve and retry (animated GIFs arrive as frame 0).
-        let (w, h) = (img.width().max(1) / 2, img.height().max(1) / 2);
-        img = img.resize(w.max(1), h.max(1), image::imageops::FilterType::Triangle);
-    }
-    Err(MediaError::TooBig(format!(
-        "{} bytes",
-        base64_len(&img.to_rgba8().into_raw())
-    )))
-}
-
-fn base64_len(raw: &[u8]) -> usize {
-    raw.len().div_ceil(3) * 4
 }
 
 /// PDF → text via poppler (`pdftotext -layout file -`). Universal: works on
@@ -175,55 +104,6 @@ pub fn video_frame(path: &Path) -> Result<Vec<u8>, MediaError> {
     Ok(out.stdout)
 }
 
+#[path = "attachments_tests.rs"]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn kind_map_covers_media() {
-        assert_eq!(attachment_kind(Path::new("a.png")), AttachmentKind::Image);
-        assert_eq!(attachment_kind(Path::new("a.JPG")), AttachmentKind::Image);
-        assert_eq!(attachment_kind(Path::new("a.pdf")), AttachmentKind::Pdf);
-        assert_eq!(attachment_kind(Path::new("a.mp4")), AttachmentKind::Video);
-        assert_eq!(attachment_kind(Path::new("a.mkv")), AttachmentKind::Video);
-        assert_eq!(attachment_kind(Path::new("a.mp3")), AttachmentKind::Audio);
-        assert_eq!(attachment_kind(Path::new("a.wav")), AttachmentKind::Audio);
-        assert_eq!(
-            attachment_kind(Path::new("a.zip")),
-            AttachmentKind::Unsupported
-        );
-        assert_eq!(
-            attachment_kind(Path::new("noext")),
-            AttachmentKind::Unsupported
-        );
-    }
-
-    #[test]
-    fn normalize_caps_long_side() {
-        let img = image::RgbaImage::from_pixel(3000, 100, image::Rgba([9, 9, 9, 255]));
-        let mut buf = Vec::new();
-        image::DynamicImage::ImageRgba8(img)
-            .write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
-            .unwrap();
-        let (mime, out) = normalize_image_bytes(&buf).unwrap();
-        assert_eq!(mime, "image/png");
-        let back = image::load_from_memory(&out).unwrap();
-        assert!(back.width().max(back.height()) <= MAX_IMAGE_SIDE);
-    }
-
-    #[test]
-    fn normalize_rejects_garbage_loudly() {
-        assert!(matches!(
-            normalize_image_bytes(b"not an image"),
-            Err(MediaError::Decode(_))
-        ));
-    }
-
-    #[test]
-    fn pdf_missing_file_errors() {
-        assert!(matches!(
-            pdf_text(Path::new("/tmp/gray-test-no-such-file-xyz.pdf")),
-            Err(MediaError::Extract(_))
-        ));
-    }
-}
+mod tests;

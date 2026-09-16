@@ -61,7 +61,7 @@ pub(crate) async fn run_prompt_turn(
             match result {
                 Ok(true) => {
                     *unconfigured = false;
-                    push_provider_connected(config, tui);
+                    push_provider_connected(config, tui, None);
                 }
                 Ok(false) => {
                     if let Some((shared, _)) = tui {
@@ -220,6 +220,9 @@ pub(crate) async fn run_prompt_turn(
         .await
     {
         pending_tools.clear();
+        if let Some(t) = &tui_stream {
+            t.lock().expect("tui lock").clear_live_tools();
+        }
         let ctx2 = ToolContext {
             cwd: cwd.to_path_buf(),
             cancel: cancel.clone(),
@@ -347,19 +350,6 @@ pub(crate) async fn run_prompt_turn(
     Ok(())
 }
 
+#[path = "prompt_turn_tests.rs"]
 #[cfg(test)]
-mod tests {
-    // UNRUN (cargo test banned under X): run in TTY/CI.
-    // Guards the exact TURN_STATE idiom used above: a poisoned turn-state
-    // mutex must recover, never panic the REPL.
-    #[test]
-    fn turn_state_lock_survives_poison() {
-        let m = std::sync::Mutex::new(Some(tokio_util::sync::CancellationToken::new()));
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _g = m.lock().unwrap();
-            panic!("poison the mutex");
-        }));
-        *m.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        assert!(m.lock().unwrap_or_else(|e| e.into_inner()).is_none());
-    }
-}
+mod tests;

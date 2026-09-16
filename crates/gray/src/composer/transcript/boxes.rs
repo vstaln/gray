@@ -6,6 +6,7 @@ impl Tui {
     pub fn push_tool_box(&mut self, header: Line<'static>, body: Vec<Line<'static>>) {
         self.insert_tool_box(header, body);
         self.ensure_gap(1);
+        self.release_dock_seam();
         if self.transcript.len() > 1000 {
             self.transcript.drain(0..100);
         }
@@ -26,6 +27,49 @@ impl Tui {
     pub(crate) fn push_line_styled(&mut self, line: String, style: Style) {
         let l = Line::from(vec![Span::styled(line, style)]);
         self.push_styled_lines_with_hyperlinks(vec![l], &[], 0);
+    }
+
+    /// Appends flushed thinking text to the open run, creating one when the
+    /// tail entry isn't a run (fresh turn, evicted history). Raw fragments
+    /// concatenate back into logical lines, so resize re-wraps from source.
+    /// `terminated` marks `\n`-drained lines (their terminator is stored,
+    /// word-cut continuations and the final tail stay bare).
+    pub(crate) fn append_thinking_text(&mut self, fragment: &str, terminated: bool) {
+        if !matches!(
+            self.history_entries.last(),
+            Some(crate::composer::TranscriptEntry::ThinkingRun(_))
+        ) {
+            self.history_entries
+                .push(crate::composer::TranscriptEntry::ThinkingRun(String::new()));
+            cap_history_entries(&mut self.history_entries);
+        }
+        if let Some(crate::composer::TranscriptEntry::ThinkingRun(run)) =
+            self.history_entries.last_mut()
+        {
+            run.push_str(fragment);
+            if terminated {
+                run.push('\n');
+            }
+        }
+    }
+
+    /// Paints one flushed thinking fragment (a `\n`-drained logical line, a
+    /// live word-cut, or the run tail) without touching `history_entries` —
+    /// the run's raw text is the history. Blank-on-blank skips here, so
+    /// paint and stored source agree exactly.
+    pub(crate) fn paint_thinking_fragment(&mut self, fragment: String) {
+        if fragment.trim().is_empty() && self.transcript.last().is_some_and(transcript_row_is_blank)
+        {
+            return;
+        }
+        let line = Line::from(vec![Span::styled(fragment, thinking_style())]);
+        let w = self.width().max(10);
+        let painted = self.render_and_insert_styled_lines(&[line], &[], w);
+        self.transcript.extend(painted);
+        if self.transcript.len() > 1000 {
+            self.transcript.drain(0..100);
+        }
+        let _ = std::io::stdout().flush();
     }
 
     pub fn push_line_spans(&mut self, line: Line<'static>) {
@@ -150,6 +194,20 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(lines, &[], 0);
     }
 
+    /// Renders a `/compact` summary (LLM markdown) through the same
+    /// pipeline as assistant answers: `**bold**`/`##` markers become
+    /// styled rows (BOLD headings/prose, links, tables) instead of
+    /// printing literally. Pure over the markdown renderer so tests
+    /// cover it without `Tui::new` (needs a TTY). Blank input yields
+    /// no rows so compact never paints empty gaps.
+    pub fn push_compaction_summary(&mut self, summary: &str) {
+        let (lines, hyperlinks) = render_markdown_lines(summary, Some(self.width()));
+        if lines.is_empty() {
+            return;
+        }
+        self.push_styled_lines_with_hyperlinks(lines, &hyperlinks, 0);
+    }
+
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
         let mut spans = vec![
             Span::styled(
@@ -179,7 +237,7 @@ impl Tui {
     /// Replays a previous session's message history into the TUI scrollback.
     pub fn replay_session_history(
         &mut self,
-        entries: &[gray_session::SessionEntry],
+        entries: &[crate::session_store::SessionEntry],
         cwd: &std::path::Path,
     ) {
         let mut tool_calls: HashMap<String, (String, serde_json::Value)> = HashMap::new();
@@ -356,51 +414,31 @@ pub(crate) fn rebase_hyperlinks_for_slice(
         .collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn replayed_thinking_keeps_every_line_dim_italic() {
-        // Resume must show persisted reasoning: one row per source line,
-        // in the live thinking style. Blank blocks paint nothing.
-        let rows = thinking_replay_lines("first\nsecond");
-        assert_eq!(rows.len(), 2, "{rows:?}");
-        for r in &rows {
-            assert!(r.spans.iter().all(|s| s.style == thinking_style()), "{r:?}");
-        }
-        assert!(thinking_replay_lines("   \n  ").is_empty());
-        assert!(thinking_replay_lines("").is_empty());
+/// Renders markdown to ratatui rows with the live insert budget
+/// (`width - 2`, same as the replay Text arm): tables fit by construction
+/// instead of shredding. Blank input yields no rows. Pure so the
+/// `/compact` summary path is testable without `Tui::new` (needs a TTY).
+pub(crate) fn render_markdown_lines(
+    text: &str,
+    width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<HyperlinkTarget>) {
+    let clean = strip_ansi(text);
+    if clean.trim().is_empty() {
+        return (Vec::new(), Vec::new());
     }
-
-    #[test]
-    fn adjacent_file_links_do_not_steal_previous_url() {
-        // TODO-list shape: two adjacent bullets carrying different file URLs.
-        // Second commit arrives as slice [line 1] with absolute hyperlinks
-        // for lines 0..2 and offset 1; it must resolve to NOTES.txt, not the
-        // previous line's src/main.rs URL.
-        let hyperlinks = vec![
-            HyperlinkTarget {
-                line_index: 0,
-                column_range: 2..14,
-                url: "file:///repo/src/main.rs".to_string(),
-                id: 1,
-            },
-            HyperlinkTarget {
-                line_index: 1,
-                column_range: 2..13,
-                url: "file:///repo/NOTES.txt".to_string(),
-                id: 2,
-            },
-        ];
-        let rebased = rebase_hyperlinks_for_slice(&hyperlinks, 1, 1);
-        assert_eq!(
-            rebased.len(),
-            1,
-            "only the sliced line's link survives: {rebased:?}"
-        );
-        assert_eq!(rebased[0].line_index, 0);
-        assert_eq!(rebased[0].url, "file:///repo/NOTES.txt");
-        assert_eq!(rebased[0].column_range, 2..13);
-    }
+    let tw = width.unwrap_or(80).max(10).saturating_sub(2);
+    let mut buffers = gray_markdown::MarkdownBuffers::new();
+    let (output, _) = gray_markdown::render_markdown_ratatui_with_buffers_width(
+        &clean,
+        gray_markdown::gray_markdown_style(),
+        true,
+        &mut buffers,
+        Some(gray_markdown::get_syntect()),
+        Some(tw),
+    );
+    (output.lines, output.hyperlinks)
 }
+
+#[path = "boxes_tests.rs"]
+#[cfg(test)]
+mod tests;

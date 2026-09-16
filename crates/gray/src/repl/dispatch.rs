@@ -57,6 +57,7 @@ pub(crate) async fn dispatch_command(
                 &mut *agent,
                 tui.as_ref().map(|(s, _)| s),
                 session_state.as_ref().map(|s| s.session_id.as_str()),
+                &mut *hide_thinking,
             )
             .await;
             Flow::Continue
@@ -98,6 +99,7 @@ pub(crate) async fn dispatch_command(
                 &mut *session_state,
                 &mut *session_totals,
                 tui.as_ref().map(|(s, _)| s),
+                &mut *hide_thinking,
             )
             .await;
             Flow::Continue
@@ -208,9 +210,9 @@ pub(crate) async fn dispatch_command(
             Flow::Continue
         }
         ReplCommand::CronJobs(arg) => {
-            let store = gray_cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
+            let store = crate::cron::CronStore::open(crate::setup::gray_home()?.join("cron"))?;
             let jobs = store.list()?;
-            let now = gray_cron::now_secs();
+            let now = crate::cron::now_secs();
             // Health is store-level (one ticker serves every job); a read
             // failure only drops the liveness line, never the listing.
             let health = store.health(now).ok();
@@ -228,10 +230,6 @@ pub(crate) async fn dispatch_command(
             handle_copy(agent, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
         }
-        ReplCommand::Doctor => {
-            handle_doctor(config, tui.as_ref().map(|(s, _)| s));
-            Flow::Continue
-        }
         ReplCommand::Feedback(text) => {
             handle_feedback(text, config, session_state, tui.as_ref().map(|(s, _)| s));
             Flow::Continue
@@ -246,7 +244,7 @@ pub(crate) async fn dispatch_command(
             match result {
                 Ok(true) => {
                     *unconfigured = false;
-                    push_provider_connected(config, tui);
+                    push_provider_connected(config, tui, Some(&mut *hide_thinking));
                     reload_agent(
                         &mut *agent,
                         config,
@@ -285,10 +283,6 @@ pub(crate) async fn dispatch_command(
         }
         ReplCommand::Plugin(raw) => {
             handle_plugin_command(&raw, tui.as_ref().map(|(s, _)| s)).await;
-            Flow::Continue
-        }
-        ReplCommand::Marketplace(raw) => {
-            handle_marketplace_command(&raw, tui.as_ref().map(|(s, _)| s)).await;
             Flow::Continue
         }
         ReplCommand::Unknown(cmd) => {
