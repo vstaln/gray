@@ -155,39 +155,41 @@ impl Tool for BashTool {
         let first_line: Option<String> = match cause {
             Cause::Exit => None,
             Cause::Timeout => {
-                if let Err(e) = term_then_kill(target, Duration::from_secs(2)).await {
-                    // Never claim a tree was killed after a failed OS call, or
-                    // wait forever for a child whose termination was refused.
-                    let _ = child.start_kill();
-                    abort_pump(pump).await;
-                    return fail(e);
-                }
-                match child.wait().await {
-                    Ok(st) => {
-                        exited = Some(st);
-                    }
+                // Reap while Unix escalation polls: macOS can return EPERM
+                // when only an unreaped zombie remains in the process group.
+                // try_join also stops waiting if termination fails; never hide
+                // that failure or block forever waiting for an unkillable child.
+                match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|e| format!("failed to wait for command: {e}"))
+                }) {
+                    Ok(((), st)) => exited = Some(st),
                     Err(e) => {
+                        let _ = child.start_kill();
                         abort_pump(pump).await;
-                        return fail(format!("failed to wait for command: {e}"));
+                        return fail(e);
                     }
                 }
                 Some(format!("timed out after {secs}s (process group killed)"))
             }
             Cause::Cancel => {
-                if let Err(e) = term_then_kill(target, Duration::from_secs(2)).await {
-                    // Never claim a tree was killed after a failed OS call, or
-                    // wait forever for a child whose termination was refused.
-                    let _ = child.start_kill();
-                    abort_pump(pump).await;
-                    return fail(e);
-                }
-                match child.wait().await {
-                    Ok(st) => {
-                        exited = Some(st);
-                    }
+                // Reap while Unix escalation polls: macOS can return EPERM
+                // when only an unreaped zombie remains in the process group.
+                // try_join also stops waiting if termination fails; never hide
+                // that failure or block forever waiting for an unkillable child.
+                match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|e| format!("failed to wait for command: {e}"))
+                }) {
+                    Ok(((), st)) => exited = Some(st),
                     Err(e) => {
+                        let _ = child.start_kill();
                         abort_pump(pump).await;
-                        return fail(format!("failed to wait for command: {e}"));
+                        return fail(e);
                     }
                 }
                 Some(format!(

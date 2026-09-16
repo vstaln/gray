@@ -79,3 +79,17 @@ cannot hide the line (empty/unclosed cases assert it still appears). JSON
 quoting keeps Unicode, spaces, quotes and Windows backslashes unambiguous.
 - `cargo test -p gray --test working_directory` fails before, passes after.
 - All gray tests pass (unit + integration, serial).
+
+## Native CI failure repairs
+
+CI reproduced macOS SIGKILL/EPERM in the existing timeout test; the kill tests
+already reaped concurrently, but the production caller waited until after
+escalation. Production now uses try_join for termination plus reaping, retaining
+OS failures as errors. Existing shell fixture arguments now use POSIX quoting and
+Windows forward slashes; log assertions validate real files with GRAY_HOME rather
+than hard-coding a Unix home. No signal-status expectation has been relaxed.
+
+Linux CI also caught socket startup's process-wide umask(0177) removing owner
+traversal from concurrently created directories. Use 0077, retaining owner access
+while still excluding group/other. Full workspace tests passed in parallel locally;
+fmt and workspace clippy passed. Native confirmation remains the next CI run.

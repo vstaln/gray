@@ -11,10 +11,26 @@ use gray_core::agent::{Tool, ToolContext};
 use gray_tools::BashTool;
 use serde_json::json;
 
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn fixture(name: &str) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/shell")
-        .join(name)
+        .join(name);
+    // Fixtures are command arguments, not native process paths. Git Bash
+    // accepts D:/... but consumes unquoted backslashes as shell escapes.
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    let path = path.replace('\\', "/");
+    format!("'{}'", path.replace('\'', "'\"'\"'"))
+}
+
+fn log_path(header: &str) -> PathBuf {
+    let raw = header.rsplit(" · log ").next().expect("log field");
+    // Preserve native paths and GRAY_HOME overrides; expand only a leading
+    // home abbreviation, never every tilde in an arbitrary filename.
+    match raw.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME").expect("abbreviated HOME")).join(rest),
+        None => PathBuf::from(raw),
+    }
 }
 
 fn first_line(out: &gray_core::agent::ToolOutput) -> &str {
@@ -29,8 +45,19 @@ async fn echo_hi_header_and_fence() {
     assert!(!out.is_error, "{}", out.content);
     let head = first_line(&out);
     assert!(head.starts_with("exit 0 \u{b7} 0."), "{head}");
-    assert!(head.contains(" \u{b7} 1 lines \u{b7} log ~/"), "{head}");
-    assert!(head.contains("/.gray/shell/"), "{head}");
+    assert!(head.contains(" \u{b7} 1 lines \u{b7} log "), "{head}");
+    let path = log_path(head);
+    assert_eq!(path.parent().unwrap().file_name().unwrap(), "nosession");
+    assert_eq!(
+        path.parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap(),
+        "shell"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"hi\n");
     assert!(head.ends_with(".log"), "{head}");
     // No phantom blank line: the fence supplies the closing newline, so a
     // body ending in `\n` must not render an extra blank line before the
@@ -82,7 +109,7 @@ async fn grep_miss_is_benign() {
 async fn sigkill_is_honest() {
     // `exec`: without it an extra `sh` layer converts the signal into a
     // plain 137 exit code (POSIX shells report signaled children as 128+N).
-    let cmd = format!("exec sh {}", fixture("sigkill_self.sh").display());
+    let cmd = format!("exec sh {}", fixture("sigkill_self.sh"));
     let out = BashTool
         .execute(&ToolContext::default(), json!({"command": cmd}))
         .await;
@@ -96,7 +123,7 @@ async fn sigkill_is_honest() {
 
 #[tokio::test]
 async fn spew_is_bounded_but_logged_whole() {
-    let cmd = format!("sh {} 30000", fixture("spew.sh").display());
+    let cmd = format!("sh {} 30000", fixture("spew.sh"));
     let out = BashTool
         .execute(&ToolContext::default(), json!({"command": cmd}))
         .await;
@@ -110,18 +137,13 @@ async fn spew_is_bounded_but_logged_whole() {
     );
     assert!(out.content.contains("grep the log for more"), "{}", head);
     // The full 30,000 lines are on disk at the logged path.
-    let log_field = head
-        .rsplit("\u{b7} log ")
-        .next()
-        .expect("header has log path");
-    let log_path = log_field
-        .trim_end()
-        .replace('~', &std::env::var("HOME").unwrap());
+    let log_path = log_path(&head);
     let logged = std::fs::read_to_string(&log_path).expect("log file exists");
     assert_eq!(
         logged.bytes().filter(|&b| b == b'\n').count(),
         30_000,
-        "{log_path}"
+        "{}",
+        log_path.display()
     );
     assert!(out.content.contains("spew line 1 payload"), "head kept");
     assert!(out.content.contains("spew line 30000 payload"), "tail kept");
@@ -163,7 +185,7 @@ async fn cancel_returns_promptly() {
         tokio::time::sleep(Duration::from_millis(500)).await;
         cancel.cancel();
     });
-    let cmd = format!("sh {}", fixture("slow.sh").display());
+    let cmd = format!("sh {}", fixture("slow.sh"));
     let t0 = Instant::now();
     let out = BashTool
         .execute(&ctx, json!({"command": cmd, "timeout": 30}))

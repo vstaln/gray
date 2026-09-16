@@ -14,6 +14,8 @@ jobs:
       contents: read
       checks: write
     strategy:
+      # A macOS failure must not cancel the independent Linux evidence.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -80,7 +82,7 @@ jobs:
       - run: cargo check --locked -p gray
       - name: Run complete cross-platform shell lifecycle regression file
         run: cargo test --locked -p gray-tools --test platform_shell -- --nocapture
-      - name: Run existing shell contract unchanged to expose portability gaps
+      - name: Run complete shell contract with native fixture paths
         # Run even if the new lifecycle regression fails, so both complete
         # test files report native evidence instead of stopping at one failure.
         if: ${{ !cancelled() }}
