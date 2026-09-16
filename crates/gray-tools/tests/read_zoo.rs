@@ -448,4 +448,15 @@ async fn zoo_smoke_every_small_fixture_reads() {
     // ponytail: magic-sniff removed, so binary fixtures report the NUL
     // note instead of a mime note. Still refused, still is_error=false.
     assert!(miss.content.contains("not shown"), "{}", miss.content);
+    // A decodable image rides as vision (opencode parity).
+    let tiny = zoo.read("tiny.png", None, None).await;
+    assert!(!tiny.is_error, "tiny.png reads as vision: {}", tiny.content);
+    assert!(
+        tiny.content.contains("Image read successfully"),
+        "{}",
+        tiny.content
+    );
+    assert_eq!(tiny.images.len(), 1, "one vision block");
+    assert_eq!(tiny.images[0].media_type, "image/png");
+    assert!(!tiny.images[0].data.is_empty());
 }

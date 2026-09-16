@@ -770,11 +770,7 @@ impl Agent {
                                 ));
                                 self.messages.push(Message {
                                     role: Role::User,
-                                    content: vec![ContentBlock::ToolResult {
-                                        id: id.clone(),
-                                        content: output.content.clone(),
-                                        is_error: output.is_error,
-                                    }],
+                                    content: output.message_blocks(id),
                                 });
                             }
                             _ => {
@@ -884,11 +880,7 @@ impl Agent {
                 ));
                 self.messages.push(Message {
                     role: Role::User,
-                    content: vec![ContentBlock::ToolResult {
-                        id: id.clone(),
-                        content: output.content,
-                        is_error: output.is_error,
-                    }],
+                    content: output.message_blocks(id),
                 });
             }
 

@@ -57,6 +57,7 @@ impl Tool for ReadTool {
             "Read a UTF-8 text file. Returns file contents, capped at \
              2000 lines / 50 KiB. Lines are prefixed with `<n>\\t` like \
              cat -n; do not include the prefix when quoting text for edit. \
+             Image files (png/jpg/gif/webp) are shown to you as vision. \
              Pass `paths` (files/globs) to read several files at once \
              (limit applies per file).",
             json!({
@@ -198,6 +199,24 @@ impl ReadTool {
         // Binary notes are facts (is_error=false), not failures. No ledger
         // entry: nothing was shown to authorize a later write.
         if let Some(note) = s.binary_note() {
+            // Images ride as vision blocks (opencode parity: "Image read
+            // successfully" + attachment), not refusal notes. Magic bytes
+            // still decide inside normalize, so a mislabeled file falls
+            // back to the binary note.
+            if crate::images::is_image_extension(full)
+                && let Ok(bytes) = std::fs::read(full)
+                && let Ok((mime, out)) = crate::images::normalize_image_bytes(&bytes)
+            {
+                use base64::Engine as _;
+                return ToolOutput::image(
+                    with_repaired(
+                        repaired,
+                        format!("Image read successfully: {}", full.display()),
+                    ),
+                    mime,
+                    base64::engine::general_purpose::STANDARD.encode(&out),
+                );
+            }
             return ToolOutput::ok(with_repaired(repaired, note.to_string()));
         }
         let file_size = s.file_size();

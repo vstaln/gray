@@ -105,10 +105,19 @@ pub fn write_fixtures(root: &Path, big: bool) -> std::io::Result<()> {
         "this is plain text wearing a .png extension\nsecond line\n",
     )?;
 
-    // real.png: 8-byte PNG magic + junk (sniff must say binary).
+    // real.png: 8-byte PNG magic + junk (sniff must say binary, and
+    // normalize can't decode it, so it stays a refusal note).
     let mut real = b"\x89PNG\r\n\x1a\n".to_vec();
     real.extend((0..1024).map(|i| (i % 256) as u8));
     std::fs::write(root.join("real.png"), real)?;
+
+    // tiny.png: a valid 1x1 red PNG (reads as vision, not text).
+    let tiny: &[u8] = &[
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2,
+        0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 0, 0,
+        3, 1, 1, 0, 201, 254, 146, 239, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+    std::fs::write(root.join("tiny.png"), tiny)?;
 
     // nul.bin: 4 KiB laced with NUL bytes.
     let nul: Vec<u8> = (0..4096)

@@ -970,9 +970,11 @@ name = "gray-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "globset",
  "gray-core",
  "ignore",
+ "image",
  "libc",
  "log",
  "serde_json",

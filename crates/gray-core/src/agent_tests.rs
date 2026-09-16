@@ -1864,3 +1864,26 @@ async fn eof_with_tool_pending_executes_nothing() {
         "no orphaned call/result may land in history"
     );
 }
+
+#[test]
+fn tool_output_image_blocks_thread_after_text_result() {
+    let out = ToolOutput::image(
+        "Image read successfully: tiny.png",
+        "image/png".into(),
+        "AAA".into(),
+    );
+    let blocks = out.message_blocks("call_1");
+    assert_eq!(blocks.len(), 2);
+    assert!(matches!(
+        &blocks[0],
+        ContentBlock::ToolResult { id, content, is_error: false }
+        if id == "call_1" && content.contains("Image read successfully")
+    ));
+    assert!(matches!(
+        &blocks[1],
+        ContentBlock::Image { media_type, data }
+        if media_type == "image/png" && data == "AAA"
+    ));
+    // Plain results carry no vision blocks.
+    assert_eq!(ToolOutput::ok("hi").message_blocks("c").len(), 1);
+}

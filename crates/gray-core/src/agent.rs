@@ -48,6 +48,19 @@ impl ProviderError {
 pub struct ToolOutput {
     pub content: String,
     pub is_error: bool,
+    /// Vision attachments (opencode `read` parity: "Image read successfully"
+    /// + file part). Empty for every other tool.
+    ///
+    /// `#[serde(default)]` keeps old transcripts parsing.
+    #[serde(default)]
+    pub images: Vec<AttachedImage>,
+}
+
+/// One downscaled image riding with a tool result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachedImage {
+    pub media_type: String,
+    pub data: String,
 }
 
 impl ToolOutput {
@@ -55,13 +68,38 @@ impl ToolOutput {
         Self {
             content: content.into(),
             is_error: false,
+            images: Vec::new(),
         }
     }
     pub fn error(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             is_error: true,
+            images: Vec::new(),
         }
+    }
+    /// Image read success: text note + one vision block (opencode parity).
+    pub fn image(content: impl Into<String>, media_type: String, data: String) -> Self {
+        Self {
+            content: content.into(),
+            is_error: false,
+            images: vec![AttachedImage { media_type, data }],
+        }
+    }
+    /// Message blocks for this result: the text result first, then one
+    /// vision block per attached image. Image blocks in user-role messages
+    /// already serialize as vision parts on every provider path.
+    pub fn message_blocks(&self, id: &str) -> Vec<ContentBlock> {
+        let mut blocks = vec![ContentBlock::ToolResult {
+            id: id.to_string(),
+            content: self.content.clone(),
+            is_error: self.is_error,
+        }];
+        blocks.extend(self.images.iter().map(|img| ContentBlock::Image {
+            media_type: img.media_type.clone(),
+            data: img.data.clone(),
+        }));
+        blocks
     }
 }
 

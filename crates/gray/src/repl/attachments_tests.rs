@@ -1,4 +1,5 @@
 use super::*;
+use std::io::Cursor;
 
 #[test]
 fn kind_map_covers_media() {
