@@ -126,3 +126,13 @@ original target directory produced a stale gray-core symbol error despite correc
 source, so subsequent builds are isolated too. The parallel full workspace run
 hit the pre-existing process-global skills env race; serial full workspace passed.
 No full native release, ACL guarantee, or interactive TUI acceptance is claimed.
+
+
+## Test environment isolation
+
+Repeated full-suite failures showed the skills tests alternately seeing a private
+HOME and the real user's skills while two tests mutated the same process-global
+environment. An isolated run passed. Preserve all assertions but move each
+home-sensitive test into a single-test subprocess with HOME/USERPROFILE/GRAY_HOME
+set before startup (same pattern as home_paths). Full parallel workspace tests
+and workspace clippy passed after removing those unsafe parent env mutations.

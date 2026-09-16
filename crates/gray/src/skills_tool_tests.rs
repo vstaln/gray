@@ -1,5 +1,30 @@
 use super::*;
 
+// These tests used to mutate HOME while unrelated tests read it. A mutex
+// local to this file cannot protect those readers. Reuse the subprocess pattern
+// from home_paths: set environment before startup, run one exact test per child.
+fn isolated_home(test: &str) -> bool {
+    if std::env::var("GRAY_SKILLS_TEST_CHILD").as_deref() == Ok(test) {
+        return false;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("skills_tool::tests::{test}"),
+            "--nocapture",
+        ])
+        .env("GRAY_SKILLS_TEST_CHILD", test)
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("GRAY_HOME", home.path().join(".gray"))
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .status()
+        .unwrap();
+    assert!(status.success(), "isolated {test} failed");
+    true
+}
+
 #[test]
 fn strip_frontmatter_removes_yaml_header() {
     let content = "---\nname: test\ndescription: A test skill\n---\n\nBody here.\n";
@@ -41,33 +66,10 @@ fn resolve_skill_name_finds_project_skill() {
 
 #[tokio::test]
 async fn skills_context_matches_fresh_discovery_and_rescans_on_change() {
-    use gray_plugin::Plugin;
-    // Isolate from the user's real skills (see the test above for why
-    // this save/set/restore dance exists).
-    let prev_home = std::env::var("HOME").ok();
-    let prev_gray = std::env::var("GRAY_HOME").ok();
-    let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-    let iso = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("HOME", iso.path());
-        std::env::set_var("GRAY_HOME", iso.path().join(".gray"));
-        std::env::set_var("XDG_CONFIG_HOME", iso.path().join(".config"));
+    if isolated_home("skills_context_matches_fresh_discovery_and_rescans_on_change") {
+        return;
     }
-    let restore = || unsafe {
-        match &prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match &prev_gray {
-            Some(v) => std::env::set_var("GRAY_HOME", v),
-            None => std::env::remove_var("GRAY_HOME"),
-        }
-        match &prev_xdg {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
-    };
-
+    use gray_plugin::Plugin;
     let work = tempfile::tempdir().unwrap();
     let cwd = work.path().to_str().unwrap().to_string();
     let fresh_block = || {
@@ -119,12 +121,13 @@ async fn skills_context_matches_fresh_discovery_and_rescans_on_change() {
     let fp4 = crate::skills::discovery_fingerprint(work.path());
     assert_ne!(fp3, fp4, "fingerprint must move on removal");
     assert_eq!(plugin.prompt_context(&cwd).await, fresh_block());
-
-    restore();
 }
 
 #[tokio::test]
 async fn skills_plugin_is_context_only_and_serves_block() {
+    if isolated_home("skills_plugin_is_context_only_and_serves_block") {
+        return;
+    }
     use gray_plugin::Plugin;
     let plugin = SkillsPlugin::default();
     // Bash-only: no tools ride this plugin.
@@ -136,35 +139,9 @@ async fn skills_plugin_is_context_only_and_serves_block() {
         plugin.manifest().tools.is_empty(),
         "manifest must advertise no tools"
     );
-    // Isolate from global skills for the empty case.
-    let prev_home = std::env::var("HOME").ok();
-    let prev_gray = std::env::var("GRAY_HOME").ok();
-    let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
-    let iso = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("HOME", iso.path());
-        std::env::set_var("GRAY_HOME", iso.path().join(".gray"));
-        std::env::set_var("XDG_CONFIG_HOME", iso.path().join(".config"));
-    }
     let empty = tempfile::tempdir().unwrap();
     let none = plugin.prompt_context(empty.path().to_str().unwrap()).await;
     assert_eq!(none, None);
-    // Restore before the project-skill case (discovery walks cwd only,
-    // globals stay isolated only for the empty check above).
-    unsafe {
-        match &prev_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match &prev_gray {
-            Some(v) => std::env::set_var("GRAY_HOME", v),
-            None => std::env::remove_var("GRAY_HOME"),
-        }
-        match &prev_xdg {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
-    }
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join(".gray/skills/paste-demo");
     std::fs::create_dir_all(&dir).unwrap();
