@@ -60,11 +60,6 @@ pub const DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS: usize = 5;
 /// survives every non-elision turn.
 pub const TOOL_OBSERVATION_ELISION_BATCH: usize = 10;
 
-/// Rolling middle-summarization threshold (OpenHands parity): past this many
-/// retained messages the v2 pipeline runs at most once per turn. Its
-/// internal no-gain bail keeps quiet turns free of summary calls.
-pub const ROLLING_COMPACT_MESSAGE_THRESHOLD: usize = 100;
-
 /// Elided-output stub marker, shared by the writer
 /// ([`prune_old_tool_observations`]) and the counter below so "already
 /// elided" can never drift out of sync.
