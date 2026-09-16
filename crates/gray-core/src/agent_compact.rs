@@ -6,9 +6,7 @@
 //! [`Agent::complete_with_history`].
 
 use crate::agent::Agent;
-use crate::compact::{
-    RETAINED_MESSAGE_TOKEN_BUDGET, build_retained, run_compaction_call, trim_tool_results_to_fit,
-};
+use crate::compact::{RETAINED_MESSAGE_TOKEN_BUDGET, build_retained, run_compaction_call};
 use crate::error::CoreError;
 use crate::message::Message;
 
@@ -28,15 +26,15 @@ pub fn summary_pair(summary: &str) -> [Message; 2] {
 }
 
 impl Agent {
-    /// One-shot transcript compaction via the compaction-v2 pipeline: trim
-    /// tool results to fit, summarize the full trimmed history with one
-    /// in-band trigger call, retain the newest history within budget, then
-    /// `messages = retained + summary_pair` (summary LAST). Returns `Ok(true)`
-    /// iff the replacement history is strictly smaller in estimated tokens;
-    /// otherwise `self.messages` is left untouched and `Ok(false)` is returned
-    /// (empty, blank summary, or the summary would not shrink history).
-    /// Callers can therefore retry on `Ok(true)` knowing each success makes
-    /// progress, and must stop on `Ok(false)`.
+    /// One-shot transcript compaction via the compaction-v2 pipeline: summarize
+    /// the history with one in-band trigger call, retain the newest history
+    /// within budget, then `messages = retained + summary_pair` (summary LAST).
+    /// Returns `Ok(true)` iff the replacement history is strictly smaller in
+    /// estimated tokens; otherwise `self.messages` is left untouched and
+    /// `Ok(false)` is returned (empty, under budget, blank summary, or the
+    /// summary would not shrink history). Callers can therefore retry on
+    /// `Ok(true)` knowing each success makes progress, and must stop on
+    /// `Ok(false)`.
     pub(crate) async fn try_compact_budgeted(&mut self) -> Result<bool, CoreError> {
         Ok(self.compact_v2(None, None).await?.is_some())
     }
@@ -59,29 +57,37 @@ impl Agent {
         if self.messages.is_empty() {
             return Ok(None);
         }
-        // Clone-then-commit: trim/summarize/validate on a candidate so a
-        // failed call (provider error, blank summary, non-shrinking result)
-        // leaves the live history byte-identical — the single swap below is
-        // the only write to `self.messages`.
-        let mut candidate = self.messages.clone();
-        // Stage 1 (v2): newest-first tool-output pre-trim, so the summary
-        // call and the budget walk below both see the trimmed history.
-        trim_tool_results_to_fit(&mut candidate, self.context_window);
-        // Stage 2 (v2): one trigger call over the full trimmed history with
-        // the live system + tools; empty summary compacts nothing.
-        let summary = run_compaction_call(self, &candidate, instructions).await?;
-        if summary.trim().is_empty() {
-            return Ok(None);
-        }
-        // Stage 3 (v2 + adaptation #2): retained budget defaults to min(64k,
-        // window−16k reserve); unknown window keeps the 64k ceiling. Callers
-        // (the user keep-recent setting) may override it.
+        // Clone-then-commit: summarize/validate on a candidate so a failed
+        // call (provider error, blank summary, non-shrinking result) leaves
+        // the live history byte-identical — the single swap below is the
+        // only write to `self.messages`.
+        let candidate = self.messages.clone();
+        // Retained budget first (v2 + adaptation #2): min(64k, window−16k
+        // reserve); unknown window keeps the 64k ceiling. Callers (the user
+        // keep-recent setting) may override it.
         let budget = retained_budget.unwrap_or(match self.context_window {
             None => RETAINED_MESSAGE_TOKEN_BUDGET,
             Some(w) => RETAINED_MESSAGE_TOKEN_BUDGET.min(w.saturating_sub(COMPACT_RESERVE_TOKENS)),
         });
+        // Cheap no-gain bail before the summary call: the retained walk can
+        // cost at most `budget`, so a transcript already within budget cannot
+        // strictly shrink once the summary pair lands. Makes proactive
+        // rolling callers (and manual /compact on tiny transcripts) free
+        // instead of burning an LLM call that the shrink check would reject.
+        if est_tokens(&candidate) <= budget {
+            return Ok(None);
+        }
+        // Stage 1 (v2): one trigger call over the history with the live
+        // system + tools; empty summary compacts nothing. (Proactive output
+        // elision upstream already slimmed old tool results, so no separate
+        // pre-trim stage: one trimmer, not two.)
+        let summary = run_compaction_call(self, &candidate, instructions).await?;
+        if summary.trim().is_empty() {
+            return Ok(None);
+        }
+        // Stage 2: retained newest history within budget (computed above).
         let retained = build_retained(&candidate, budget);
-        // Stage 4 (v2): summary appended LAST (order change from prepend).
+        // Stage 3 (v2): summary appended LAST (order change from prepend).
         let mut next = retained;
         next.extend(summary_pair(&summary));
         // Enforced shrink: a replacement that is not strictly smaller is not

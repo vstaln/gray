@@ -2,12 +2,6 @@ use crate::agent::Agent;
 use crate::error::CoreError;
 use crate::message::{ContentBlock, Message, Role};
 
-/// Verbatim copy of codex's `CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE`
-/// (`compact_remote.rs`): user-facing model text, kept identical for
-/// behavioral parity.
-pub(crate) const CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE: &str =
-    "Output exceeded the available model context and was truncated";
-
 /// One message's token estimate: image-aware budgeting over the shared
 /// `agent_compact::est_tokens` owner (bytes/4 over billable text). Messages
 /// without images delegate verbatim so text/tool/thinking estimates can never
@@ -57,54 +51,46 @@ pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize 
     (base64_len.saturating_mul(3) / 4 / 4).max(1_000)
 }
 
-/// Replace newest-first `ToolResult` block contents with the placeholder until
-/// the transcript estimate fits `window`. Mirrors codex's
-/// `trim_function_call_history_to_fit_context_window` newest-first loop +
-/// running-estimate update (subtract-old/add-new per rewrite).
-///
-/// Differences from codex, both forced by gray's flat `Vec<Message>` shape:
-/// - codex splices rewritten groups back contiguously and so *breaks* on the
-///   first non-rewritable group; gray mutates blocks in place, so messages
-///   without a `ToolResult` are skipped and older ones are still trimmed.
-/// - each `ToolResult` block is independently replaceable: `id`/`is_error`
-///   are kept, so pairing and alternation are untouched.
-///
-/// Unknown window (`None`) returns immediately, mirroring v2's early
-/// return.
-// Slice (not `&mut Vec`): only iteration is needed, so the narrower type
-// keeps `ptr_arg` clean without an allow.
-pub(crate) fn trim_tool_results_to_fit(messages: &mut [Message], window: Option<usize>) {
-    let Some(window) = window else {
-        return;
-    };
-    let mut estimated: usize = messages.iter().map(message_tokens).sum();
-    for msg in messages.iter_mut().rev() {
-        if estimated <= window {
-            break;
-        }
-        for i in (0..msg.content.len()).rev() {
-            if estimated <= window {
-                break;
-            }
-            let replaceable = matches!(
-                &msg.content[i],
-                ContentBlock::ToolResult { content, .. }
-                if content.as_str() != CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE
-            );
-            if !replaceable {
-                continue;
-            }
-            let old_msg_tokens = message_tokens(msg);
-            if let ContentBlock::ToolResult { content, .. } = &mut msg.content[i] {
-                *content = CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE.to_string();
-            }
-            estimated = estimated - old_msg_tokens + message_tokens(msg);
-        }
-    }
-}
-
 /// Default number of recent tool observations to keep in full (mini-SWE-agent / SWE-agent parity).
 pub const DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS: usize = 5;
+
+/// Elision batch size (SWE-agent `polling` parity): proactive elision only
+/// runs once this many full observations pile up past the keep-line, so
+/// history is append-only between elisions and the provider prefix cache
+/// survives every non-elision turn.
+pub const TOOL_OBSERVATION_ELISION_BATCH: usize = 10;
+
+/// Rolling middle-summarization threshold (OpenHands parity): past this many
+/// retained messages the v2 pipeline runs at most once per turn. Its
+/// internal no-gain bail keeps quiet turns free of summary calls.
+pub const ROLLING_COMPACT_MESSAGE_THRESHOLD: usize = 100;
+
+/// Elided-output stub marker, shared by the writer
+/// ([`prune_old_tool_observations`]) and the counter below so "already
+/// elided" can never drift out of sync.
+pub(crate) const ELIDED_OUTPUT_PREFIX: &str = "Old command output: (";
+
+/// Full (still billable) tool observations: the batching gauge for proactive
+/// elision. Elided stubs never count; tiny outputs (never elided, same >120
+/// guard as the writer) don't count toward pressure either.
+pub(crate) fn full_tool_observations(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .filter(|b| {
+            matches!(b, ContentBlock::ToolResult { content, .. }
+                if content.len() > 120 && !content.starts_with(ELIDED_OUTPUT_PREFIX))
+        })
+        .count()
+}
+
+/// True when a new elision batch is due: more than keep + batch full
+/// observations outstanding. Cheap enough to ask every turn; only fires
+/// about once per batch so the cache prefix stays stable between firings.
+pub(crate) fn should_elide_observations(messages: &[Message]) -> bool {
+    full_tool_observations(messages)
+        > DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS + TOOL_OBSERVATION_ELISION_BATCH
+}
 
 /// Mini-SWE-agent / SWE-agent parity: keeps the last `keep_last_n` tool observations
 /// in full; older tool observations are elided to a concise line since the agent
@@ -138,10 +124,10 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
             *content = match log_path {
                 Some(p) => {
                     format!(
-                        "Old command output: ({lines} lines omitted; full output logged at {p})"
+                        "{ELIDED_OUTPUT_PREFIX}{lines} lines omitted; full output logged at {p})"
                     )
                 }
-                None => format!("Old command output: ({lines} lines omitted)"),
+                None => format!("{ELIDED_OUTPUT_PREFIX}{lines} lines omitted)"),
             };
         }
     }

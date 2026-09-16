@@ -6,75 +6,6 @@ use async_trait::async_trait;
 use futures::future::BoxFuture;
 use std::sync::{Arc, Mutex};
 
-fn tool_msgs() -> Vec<Message> {
-    ["c1", "c2", "c3"]
-        .into_iter()
-        .map(|id| Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult {
-                id: id.to_string(),
-                content: "x".repeat(10_000),
-                is_error: false,
-            }],
-        })
-        .collect()
-}
-
-#[test]
-fn trim_replaces_newest_tool_results_first_keeping_ids() {
-    let mut msgs = tool_msgs();
-    // Total estimate: 3 × 2500 = 7500. One trim lands at 5000 + 14 = 5014.
-    trim_tool_results_to_fit(&mut msgs, Some(5100));
-    for (msg, id) in msgs.iter().zip(["c1", "c2", "c3"]) {
-        let ContentBlock::ToolResult {
-            id: got_id,
-            content,
-            ..
-        } = &msg.content[0]
-        else {
-            panic!("expected ToolResult block");
-        };
-        assert_eq!(got_id, id);
-        if id == "c3" {
-            assert_eq!(content, CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE);
-        } else {
-            assert_eq!(content.len(), 10_000);
-        }
-    }
-}
-
-#[test]
-fn trim_unknown_window_is_noop() {
-    let mut msgs = tool_msgs();
-    let before = msgs.clone();
-    trim_tool_results_to_fit(&mut msgs, None);
-    assert_eq!(msgs, before);
-}
-
-#[test]
-fn trim_shrinks_the_estimate_to_fit() {
-    let mut msgs = tool_msgs();
-    trim_tool_results_to_fit(&mut msgs, Some(5100));
-    let replaced = msgs
-        .iter()
-        .filter(|m| {
-            m.content.iter().any(|b| {
-                matches!(
-                    b,
-                    ContentBlock::ToolResult { content, .. }
-                        if content == CONTEXT_WINDOW_TRUNCATED_OUTPUT_MESSAGE
-                )
-            })
-        })
-        .count();
-    assert_eq!(replaced, 1, "exactly the newest tool result is rewritten");
-    let estimated: usize = msgs.iter().map(message_tokens).sum();
-    assert!(
-        estimated <= 5100,
-        "estimate {estimated} must fit the window"
-    );
-}
-
 // --- Task 2 (RED): retention grouping + budget walk --------------------
 
 fn assistant_tool_use(id: &str) -> Message {
@@ -614,4 +545,38 @@ fn prune_keeps_log_path_from_header() {
         panic!()
     };
     assert!(content.starts_with(header));
+}
+
+fn big_result(id: &str) -> Message {
+    Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            id: id.to_string(),
+            content: format!("header · log /tmp/{id}.log\n{}", "x".repeat(500)),
+            is_error: false,
+        }],
+    }
+}
+
+#[test]
+fn elision_gate_fires_only_on_full_batches() {
+    // keep(5) + batch(10) = 15: at 15 full observations nothing fires
+    // (prefix stays append-only for the cache); the 16th arms the gate.
+    let mut msgs: Vec<Message> = (0..15).map(|i| big_result(&format!("c{i}"))).collect();
+    assert_eq!(full_tool_observations(&msgs), 15);
+    assert!(!should_elide_observations(&msgs));
+    msgs.push(big_result("c15"));
+    assert!(should_elide_observations(&msgs));
+    prune_old_tool_observations(&mut msgs, DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS);
+    // 5 newest stay full, the rest are stubs — and stubs never re-arm it.
+    assert_eq!(full_tool_observations(&msgs), 5);
+    assert!(!should_elide_observations(&msgs));
+    let ContentBlock::ToolResult { content, .. } = &msgs[0].content[0] else {
+        panic!()
+    };
+    assert!(content.starts_with(ELIDED_OUTPUT_PREFIX));
+    assert!(
+        content.contains("/tmp/c0.log"),
+        "log path survives: {content}"
+    );
 }

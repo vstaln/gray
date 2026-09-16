@@ -187,17 +187,30 @@ impl Agent {
                 return Err(CoreError::Cancelled);
             }
 
-            // Pre-turn budget: compact before the provider ever sees an overflow.
-            // Cheapest relief first: elide older historical command outputs
-            // (mini-SWE-agent parity, recent observations stay in full) — and
-            // only under actual pressure, since eliding observations while the
-            // window has room makes the model re-run searches it can no longer
-            // see.
-            if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
+            // Pre-turn budget, cheapest relief first and proactive — waiting
+            // for overflow lets cost compound quadratically most of the way
+            // to the window. (1) Elide old tool observations (SWE-agent
+            // parity: recent stay full); batched, so history is append-only
+            // between elisions and the provider prefix cache survives every
+            // non-elision turn. (2) Rolling middle summarization (OpenHands
+            // parity): past the message threshold the v2 pipeline
+            // (summary + retained head/tail) runs at most once per turn;
+            // its no-gain bail keeps quiet turns free of summary calls.
+            if crate::compact::should_elide_observations(&self.messages) {
                 crate::compact::prune_old_tool_observations(
                     &mut self.messages,
                     crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
                 );
+            }
+            if self.messages.len() > crate::compact::ROLLING_COMPACT_MESSAGE_THRESHOLD
+                && let Err(e) = self.try_compact_budgeted().await
+            {
+                self.emit_turn_end(&billed).await;
+                return Err(e);
+            }
+            // Overflow backstop: still gated on real pressure — proactive
+            // relief above only, never this loop, runs on quiet turns.
+            if needs_pre_turn_compact(self.estimate_tokens(), self.context_window) {
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
                 // history, so re-check without looping forever. Errors finalize
