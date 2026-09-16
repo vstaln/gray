@@ -580,3 +580,29 @@ fn elision_gate_fires_only_on_full_batches() {
         "log path survives: {content}"
     );
 }
+
+#[test]
+fn elided_stub_keeps_head_and_tail() {
+    // mini-SWE-agent parity: an elided observation must keep head+tail so
+    // the tail (errors live at the end) is not a dead end. Current code
+    // drops both (line count only).
+    let header = "exit 0 \u{b7} 0.1s \u{b7} 40 lines \u{b7} log /tmp/x.log";
+    let body = (0..30)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut msgs = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::ToolResult {
+            id: "c0".into(),
+            content: format!("{header}\n{body}\n{}", "x".repeat(200)),
+            is_error: false,
+        }],
+    }];
+    prune_old_tool_observations(&mut msgs, 0);
+    let ContentBlock::ToolResult { content, .. } = &msgs[0].content[0] else {
+        panic!()
+    };
+    assert!(content.contains("line 0"), "head lost: {content}");
+    assert!(content.contains("line 29"), "tail lost: {content}");
+}

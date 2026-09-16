@@ -43,3 +43,30 @@ fn adjacent_file_links_do_not_steal_previous_url() {
     assert_eq!(rebased[0].url, "file:///repo/NOTES.txt");
     assert_eq!(rebased[0].column_range, 2..13);
 }
+
+#[test]
+fn compaction_summary_renders_markdown_not_literal() {
+    // `/compact` summary is LLM markdown (`**bold**`, `##` headings):
+    // it must render through the markdown pipeline like assistant
+    // answers, not `push_dim` literally (screenshot: raw `**` markers).
+    let (lines, _) = render_markdown_lines("**Active request:** foo", Some(80));
+    let text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !text.contains("**"),
+        "markers must render, not print: {text:?}"
+    );
+    assert!(text.contains("Active request:"), "{text:?}");
+    assert!(
+        lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .any(|s| s.style.add_modifier.contains(Modifier::BOLD)),
+        "strong must carry BOLD: {lines:?}"
+    );
+    assert!(render_markdown_lines("   \n  ", Some(80)).0.is_empty());
+    assert!(render_markdown_lines("", Some(80)).0.is_empty());
+}

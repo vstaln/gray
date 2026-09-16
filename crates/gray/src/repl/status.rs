@@ -140,86 +140,6 @@ fn copy_to_clipboard(text: &str) -> bool {
     false
 }
 
-/// Handles `/doctor`: fast offline health checks (config, session store,
-/// provider catalog). One `✓`/`✗` line each, no network.
-pub(crate) fn handle_doctor(config: &Config, tui: Option<&crate::composer::SharedTui>) {
-    let mut lines: Vec<String> = Vec::new();
-    let ok = |b: bool| if b { "✓" } else { "✗" };
-    // Model + auth.
-    let model_ok = config
-        .model
-        .as_deref()
-        .is_some_and(|m| !m.trim().is_empty());
-    lines.push(format!(
-        "{} model: {}",
-        ok(model_ok),
-        config.model.as_deref().unwrap_or("(unset — /connect)"),
-    ));
-    let key_ok = config
-        .api_key
-        .as_deref()
-        .is_some_and(|k| !k.trim().is_empty());
-    lines.push(format!(
-        "{} api key: {}",
-        ok(key_ok),
-        if key_ok {
-            "set"
-        } else {
-            "(unset — /connect)"
-        },
-    ));
-    // Session store writable (0700 dir, round-trip pointer probe).
-    let store_ok = crate::session_store::default_root().is_some_and(|root| {
-        std::fs::create_dir_all(&root).is_ok()
-            && std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(root.join(".doctor-probe"))
-                .map(|_| std::fs::remove_file(root.join(".doctor-probe")).is_ok())
-                .unwrap_or(false)
-    });
-    lines.push(format!(
-        "{} session store: {}",
-        ok(store_ok),
-        crate::session_store::default_root()
-            .map(|r| r.display().to_string())
-            .unwrap_or("(unresolvable HOME)".to_string()),
-    ));
-    // Provider catalog loads.
-    let catalog_ok = crate::setup::load_catalog().is_ok();
-    lines.push(format!(
-        "{} provider catalog: {}",
-        ok(catalog_ok),
-        if catalog_ok {
-            "loads"
-        } else {
-            "FAILED to load"
-        },
-    ));
-    // Caps, when set.
-    if config.max_turns.is_some()
-        || config.max_cost_micros.is_some()
-        || config.max_wall_secs.is_some()
-    {
-        lines.push(format!(
-            "· caps: turns={} spend={} wall={}",
-            config
-                .max_turns
-                .map(|n| n.to_string())
-                .unwrap_or("-".to_string()),
-            config
-                .max_cost_micros
-                .map(|m| format!("${:.2}", m as f64 / 1_000_000.0))
-                .unwrap_or("-".to_string()),
-            config
-                .max_wall_secs
-                .map(|n| format!("{n}s"))
-                .unwrap_or("-".to_string()),
-        ));
-    }
-    super::say(tui, &lines.join("\n"));
-}
-
 /// Handles `/usage` / `/cost`: session totals plus the active model's rate.
 /// TUI renders like `/model` — `✓` action header + dim detail lines.
 pub(crate) fn handle_usage(
@@ -699,7 +619,7 @@ pub(crate) async fn handle_compact(
                     "└ Context compacted · {elapsed_str} ({msg_count} messages -> summary)"
                 ));
                 tui.ensure_gap(1);
-                tui.push_dim(summary);
+                tui.push_compaction_summary(&summary);
                 tui.ensure_gap(1);
                 tui.release_dock_seam();
             } else {

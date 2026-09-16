@@ -112,24 +112,54 @@ pub(crate) fn prune_old_tool_observations(messages: &mut [Message], keep_last_n:
         if let ContentBlock::ToolResult { content, .. } = &mut messages[m_idx].content[b_idx]
             && content.len() > 120
         {
-            let lines = content.lines().count();
-            // Keep the header's `log <path>` so the elided output stays
-            // recoverable (`tail`/`grep` the file) instead of a dead end.
-            let log_path = content
-                .lines()
-                .next()
-                .and_then(|h| h.split_once(" · log "))
-                .map(|(_, p)| p.trim())
-                .filter(|p| !p.is_empty());
-            *content = match log_path {
-                Some(p) => {
-                    format!(
-                        "{ELIDED_OUTPUT_PREFIX}{lines} lines omitted; full output logged at {p})"
-                    )
-                }
-                None => format!("{ELIDED_OUTPUT_PREFIX}{lines} lines omitted)"),
-            };
+            *content = elided_stub(content);
         }
+    }
+}
+
+/// mini-SWE-agent parity: an elided observation keeps head+tail (their
+/// template shows `output[:5000]` ++ `output[-5000:]`), not just a count.
+/// Errors live at the tail, stdout context at the head; a count-only stub
+/// is a dead end for the next turn. The log path (when present) stays so
+/// the full output remains recoverable via grep.
+fn elided_stub(content: &str) -> String {
+    // ponytail: 5-line head+tail is the smallest shape that keeps failure
+    // context on both ends; grow to byte budgets only if a stub ever
+    // demonstrably loses the failing line.
+    const KEEP: usize = 5;
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    if total <= KEEP * 2 + 1 {
+        let sep = " \u{b7} log ";
+        let log_path = lines
+            .first()
+            .and_then(|h| h.split_once(sep))
+            .map(|(_, q)| q.trim())
+            .filter(|q| !q.is_empty());
+        return match log_path {
+            Some(q) => {
+                format!("{ELIDED_OUTPUT_PREFIX}{total} lines omitted; full output logged at {q})",)
+            }
+            None => format!("{ELIDED_OUTPUT_PREFIX}{total} lines omitted)"),
+        };
+    }
+    let sep = " \u{b7} log ";
+    let log_path = lines
+        .first()
+        .and_then(|h| h.split_once(sep))
+        .map(|(_, q)| q.trim())
+        .filter(|q| !q.is_empty());
+    let head = lines[..KEEP].join("\n");
+    let tail = lines[total - KEEP..].join("\n");
+    let omitted = total - KEEP * 2;
+    let marker = "[\u{2026} omitted ";
+    match log_path {
+        Some(q) => format!(
+            "{ELIDED_OUTPUT_PREFIX}{omitted} lines omitted; full output logged at {q})\n{head}\n{marker}{omitted} lines \u{2014} grep {q}]\n{tail}",
+        ),
+        None => format!(
+            "{ELIDED_OUTPUT_PREFIX}{omitted} lines omitted)\n{head}\n{marker}{omitted} lines]\n{tail}",
+        ),
     }
 }
 

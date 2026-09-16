@@ -151,6 +151,20 @@ impl Tui {
         self.push_styled_lines_with_hyperlinks(lines, &[], 0);
     }
 
+    /// Renders a `/compact` summary (LLM markdown) through the same
+    /// pipeline as assistant answers: `**bold**`/`##` markers become
+    /// styled rows (BOLD headings/prose, links, tables) instead of
+    /// printing literally. Pure over the markdown renderer so tests
+    /// cover it without `Tui::new` (needs a TTY). Blank input yields
+    /// no rows so compact never paints empty gaps.
+    pub fn push_compaction_summary(&mut self, summary: &str) {
+        let (lines, hyperlinks) = render_markdown_lines(summary, Some(self.width()));
+        if lines.is_empty() {
+            return;
+        }
+        self.push_styled_lines_with_hyperlinks(lines, &hyperlinks, 0);
+    }
+
     pub fn push_action(&mut self, text: &str, detail: Option<&str>) {
         let mut spans = vec![
             Span::styled(
@@ -355,6 +369,31 @@ pub(crate) fn rebase_hyperlinks_for_slice(
             Some(hc)
         })
         .collect()
+}
+
+/// Renders markdown to ratatui rows with the live insert budget
+/// (`width - 2`, same as the replay Text arm): tables fit by construction
+/// instead of shredding. Blank input yields no rows. Pure so the
+/// `/compact` summary path is testable without `Tui::new` (needs a TTY).
+pub(crate) fn render_markdown_lines(
+    text: &str,
+    width: Option<usize>,
+) -> (Vec<Line<'static>>, Vec<HyperlinkTarget>) {
+    let clean = strip_ansi(text);
+    if clean.trim().is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let tw = width.unwrap_or(80).max(10).saturating_sub(2);
+    let mut buffers = gray_markdown::MarkdownBuffers::new();
+    let (output, _) = gray_markdown::render_markdown_ratatui_with_buffers_width(
+        &clean,
+        gray_markdown::gray_markdown_style(),
+        true,
+        &mut buffers,
+        Some(gray_markdown::get_syntect()),
+        Some(tw),
+    );
+    (output.lines, output.hyperlinks)
 }
 
 #[path = "boxes_tests.rs"]
