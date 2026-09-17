@@ -377,7 +377,27 @@ fn model_completes_cached_ids() {
     use super::complete_command_args;
     use std::path::Path;
     let cwd = Path::new(".");
-    crate::setup::cache_model_context("test-completion-model-xyz", 128000);
+    // Discovery, not the global context/pricing cache, supplies completions.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", server.local_addr().unwrap());
+    let response = std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let (mut stream, _) = server.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut request = [0; 4096];
+        stream.read(&mut request).unwrap();
+        let body = r#"{"data":[{"id":"test-completion-model-xyz"}]}"#;
+        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    crate::setup::set_active_model_provider(&base);
+    runtime.block_on(async {
+        let models = crate::setup::fetch_live_provider_models(&base, None);
+        assert_eq!(models.len(), 1);
+    });
+    response.join().unwrap();
     let rows = complete_command_args("model", "", cwd);
     assert!(
         rows.iter()
@@ -393,6 +413,17 @@ fn model_completes_cached_ids() {
     // an impossible filter still yields nothing (deterministic even
     // when other tests pollute the process-global cache)
     assert!(complete_command_args("model", "no-such-model-xyz-123", cwd).is_empty());
+    // Switching to an unfetched/offline provider clears the visible list.
+    crate::setup::set_active_model_provider("http://127.0.0.1:1/v1");
+    assert!(complete_command_args("model", "xyz", cwd).is_empty());
+    // Trailing slashes do not create a different connection scope.
+    crate::setup::set_active_model_provider(&format!("{base}/"));
+    assert!(
+        complete_command_args("models", "xyz", cwd)
+            .iter()
+            .any(|(n, _)| n == "models test-completion-model-xyz")
+    );
+    crate::setup::set_active_model_provider("");
 }
 
 #[test]
@@ -464,4 +495,24 @@ fn cron_parses_bare_and_single_arg() {
         panic!("expected CronJobs(Some)");
     };
     assert_eq!(id, "abc123");
+}
+
+#[test]
+fn models_alias_opens_picker_and_preserves_direct_argument() {
+    assert!(matches!(parse_command("/models"), ReplCommand::Model(None)));
+    assert!(
+        matches!(parse_command("/models deepseek-v4.1-flash"), ReplCommand::Model(Some(id)) if id == "deepseek-v4.1-flash")
+    );
+    assert!(matches!(
+        parse_command("/modelxyz"),
+        ReplCommand::Unknown(_)
+    ));
+}
+
+#[test]
+fn model_completion_does_not_offer_global_context_catalog() {
+    crate::setup::cache_model_context("unconnected-provider/unique-foreign-model", 128000);
+    let rows =
+        super::complete_command_args("model", "unique-foreign-model", std::path::Path::new("."));
+    assert!(rows.is_empty(), "unconnected models leaked: {rows:?}");
 }

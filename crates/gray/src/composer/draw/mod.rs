@@ -217,9 +217,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                 continue;
             }
             frame.render_widget(
-                Paragraph::new(line.clone()).block(
-                    Block::default().style(Style::default().bg(crate::theme::theme().surface_bg)),
-                ),
+                live_tool_row(line.clone()),
                 Rect::new(area.x, y, area.width, 1),
             );
         }
@@ -533,3 +531,12 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
 #[path = "mod_tests.rs"]
 #[cfg(test)]
 mod tests;
+
+/// Shared live-card background and inset, including wrapped continuation rows.
+fn live_tool_row(line: Line<'static>) -> Paragraph<'static> {
+    Paragraph::new(line).block(
+        Block::default()
+            .padding(ratatui::widgets::Padding::left(1))
+            .style(Style::default().bg(crate::theme::theme().surface_bg)),
+    )
+}

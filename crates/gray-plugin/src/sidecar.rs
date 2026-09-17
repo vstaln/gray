@@ -111,12 +111,35 @@ fn spawn_child(argv: &[String]) -> anyhow::Result<(Child, ChildStdin, ChildStdou
     let (prog, args) = argv
         .split_first()
         .ok_or_else(|| anyhow::anyhow!("empty argv"))?;
-    let mut child = Command::new(prog)
+    // Windows cannot exec a shebang script directly (os error 193). Shell
+    // plugins documented for Git Bash go through the same POSIX shell the
+    // bash tool owns; native executables spawn directly as before.
+    #[cfg(windows)]
+    if prog.to_ascii_lowercase().ends_with(".sh") {
+        let script = prog.replace('\\', "/");
+        let mut cmd = Command::new(gray_tools::shell::shell_path()?);
+        cmd.arg("-c")
+            .arg("exec \"$1\"")
+            .arg("sh")
+            .arg(script)
+            .args(args);
+        let child = cmd
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()?;
+        return finish_spawn(child);
+    }
+    let child = Command::new(prog)
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
+    finish_spawn(child)
+}
+
+fn finish_spawn(mut child: Child) -> anyhow::Result<(Child, ChildStdin, ChildStdout)> {
     let stdin = child
         .stdin
         .take()

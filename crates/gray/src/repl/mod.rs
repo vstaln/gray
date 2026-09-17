@@ -185,6 +185,7 @@ pub(crate) fn push_provider_connected(
     tui: &TuiOpt,
     hide_thinking: Option<&mut bool>,
 ) {
+    crate::setup::set_active_model_provider(&config.base_url);
     let clamped = clamp_thinking_to_model(config);
     if clamped.is_some()
         && let Some(h) = hide_thinking
@@ -376,24 +377,17 @@ pub async fn run_repl_mode(
     crate::setup::set_user_context_window(config.context_window);
     crate::setup::set_user_reserve_tokens(config.context_reserve);
     crate::setup::set_user_keep_recent_tokens(config.context_keep);
-    // auto-fetch provider context window in background if not yet cached and no user override
-    // models.dev doubles as the reasoning-effort source for the thinking
-    // picker, so it fetches unconditionally — gating it on the context
-    // override starved the picker (unknown families fell back to the full
-    // catalog, offering efforts the model rejects).
+    crate::setup::set_active_model_provider(&config.base_url);
+    // Discovery also feeds completion, even with a cached/overridden context window.
+    let base = config.base_url.clone();
+    let key = config.api_key.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::setup::fetch_live_provider_models(&base, key.as_deref());
+    });
     tokio::spawn(crate::setup::fetch_models_dev_context());
     if crate::setup::get_user_context_window().is_none() {
         tokio::spawn(crate::setup::fetch_litellm_context_windows());
         tokio::spawn(crate::setup::fetch_openrouter_rates());
-        if let Some(m) = config.model.clone()
-            && crate::setup::get_cached_model_context(&m).is_none()
-        {
-            let base = config.base_url.clone();
-            let key = config.api_key.clone();
-            tokio::spawn(async move {
-                crate::setup::fetch_live_provider_models(&base, key.as_deref());
-            });
-        }
     }
 
     // boot: no forced wizard. A dim hint appears when unconfigured,
@@ -413,6 +407,7 @@ pub async fn run_repl_mode(
             );
         }
         print!("\r\n");
+        crate::setup::set_active_model_provider(&config.base_url);
         // onboarding may have set model/base_url — re-sync context window override and prime cache
         crate::setup::set_user_context_window(config.context_window);
         crate::setup::set_user_reserve_tokens(config.context_reserve);
@@ -539,6 +534,11 @@ pub async fn run_repl_mode(
         session_totals =
             SessionTotals::from_entries(&entries, config.model.as_deref().unwrap_or(""));
         resumed_session_info = Some((sid, entries));
+    }
+
+    // Fresh sessions need the same normalization as model switches and resumes.
+    if let Some((old, new)) = clamp_thinking_to_model(config) {
+        println!("Thinking effort clamped from {old} to {new} (not supported by this model)");
     }
 
     // Interactive terminals get the ratatui composer; piped input falls back

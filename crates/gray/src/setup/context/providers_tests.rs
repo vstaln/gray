@@ -68,3 +68,14 @@ fn merged_cache_returns_map_on_new_or_changed() {
         merged_models_cache(disk, vec![("a".to_string(), 9)]).expect("changed value must dirty");
     assert_eq!(out.get("a"), Some(&9));
 }
+
+#[test]
+fn deepseek_flash_clamps_carried_xhigh_to_max() {
+    for model in [
+        "deepseek-v4-flash",
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+    ] {
+        assert_eq!(clamp_thinking_level(model, "xhigh"), "max", "{model}");
+    }
+}

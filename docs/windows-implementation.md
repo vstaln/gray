@@ -136,3 +136,139 @@ environment. An isolated run passed. Preserve all assertions but move each
 home-sensitive test into a single-test subprocess with HOME/USERPROFILE/GRAY_HOME
 set before startup (same pattern as home_paths). Full parallel workspace tests
 and workspace clippy passed after removing those unsafe parent env mutations.
+
+## Release-readiness follow-up: full native validation gate
+
+The approved first release remains Windows 11 x64 + Git Bash, external reinstall,
+with native gateway/cron execution excluded. This follow-up is not a release
+announcement or authorization to publish.
+
+Reproduced `cargo check --locked --workspace --all-targets` for Windows GNU:
+`builder_enabled.rs` unconditionally imported Unix permissions. Its two existing
+integration tests now use a real native echo sidecar compiled by the host Rust
+compiler, retaining enable/disable, fallback, and project-overlay assertions.
+The full cross-target check passes. Windows-target workspace clippy reproduced
+unused Unix-only imports/constants, unreachable post-signal code, and needless
+returns; these are fixed without suppressing warnings or removing assertions.
+
+CI now requires all-target compilation, workspace clippy, and full workspace
+runtime tests on Windows, with ripgrep installed and all test binaries attempted
+using `--no-fail-fast`. The targeted preview checks remain. Packaging still
+requires success; the public installer and release support claims are unchanged.
+
+Verified locally on Linux: complete workspace tests, gray build, workspace
+clippy with warnings denied, formatting, and diff whitespace checks. Repeated
+Windows GNU all-target check and workspace clippy pass using the previously
+cached MinGW toolchain. Cross-compilation does not verify Windows runtime.
+
+Next checkpoint requires permission to push/open a follow-up PR against main so
+native CI can execute the expanded suite. No native result exists for these
+changes yet. Shell-script fixtures elsewhere, Windows permissions/persistence,
+file-device guards, installer/release acceptance, and clean-machine/TUI checks
+remain open. Do not mark the release ready until those gates have evidence.
+
+## Windows CI failure round 1: root causes and repairs (evidence-driven)
+
+Full workspace Windows CI (run 35211813924) exposed five distinct root causes;
+each fix below cites its captured failure, and no suite was skipped or
+weakened. Shell-script test fixtures that exec directly (os error 193) and
+shebang-only execution remain the largest known gap, tracked separately.
+
+1. grep fast lane (CI `fast_path_parity` left: []): vimgrep output on Windows
+   is `C:\path:line:col:text`; the naive colon split produced an unparseable
+   line field and silently dropped every native match. Extraction is now a
+   pure `parse_vimgrep` with hand-computed unit tests for drive paths and a
+   one-letter Unix path (`a:3:12:x` is not a drive). A second, latent parity
+   bug surfaced locally: the extracted loop lost the match increment, so the
+   limit never fired; the --json lane's count-then-limit ordering is mirrored
+   and the exact failing shape now passes.
+2. Sidecar/cron shebang spawns (os error 193): cron pre-scripts now run
+   through the same Git Bash resolver as the bash tool (exported via the
+   shell facade; a missing shell maps to the normal failure outcome, not a
+   panic). Sidecar shell fixtures on Windows are still open work.
+3. Plugin-name derivation (CI: cannot derive a plugin name from
+   `file://C:\...`): a single-letter drive prefix no longer reads as an
+   scp-style host split, pinned by a Windows-only assertion.
+4. Archive guards (CI: unpack_tar_gz/unpack_zip traversal assertions):
+   `/abs` is drive-relative on Windows, so raw `/` and `\` prefixes are now
+   refused in addition to `is_absolute()`.
+5. ENV_GUARD PoisonError cascades: one root panic poisoned the shared test
+   mutex and failed ~30 unrelated suites. The lock helper now recovers from
+   poison (root failures still fail their own test).
+
+Also: `runit_log_script` forces POSIX separators (CI showed
+`'/tmp/gh\logs/gateway'`), and `home_relative` matches both separators.
+`gray_tools::shell::shell_path` is public for the cron runner; the private
+`windows` module and discovery rules are unchanged.
+
+Verified locally: full Linux workspace tests (41 test binaries, all green),
+Linux and Windows-GNU workspace clippy, Windows all-target check, fmt, and
+diff whitespace checks. Native runtime evidence remains CI's to produce.
+
+## Windows CI failure round 3 preparation: remaining roots from run 35223251606
+
+1. Git URL parsing completed (Linux-runnable reproducers now pass):
+   `split_authority` scans `\` after a drive letter, `name_from_git_url`
+   keeps the drive in the path and splits on both separators, and the
+   no-scheme branch mirrors the same drive-letter rule. The round-1
+   `file://C:\tmp\repo@feature` and empty-name shapes are pinned by tests.
+2. Key-derivation security invariant preserved: backslash-carrying names
+   stay illegal (`install_key("a\b").is_err()` untouched); the mangle
+   attempt was reverted.
+3. Cron pre-scripts: the script path is data, not shell code —
+   `sh -c <path>` ate backslashes (`C:UsersRUNNER~1...sh: command not
+   found`). Now `exec "$1"` with a forward-slashed positional.
+4. Sidecar `.sh` plugins (os error 193): Windows cannot exec shebang
+   scripts, so documented Git Bash shell plugins route through the same
+   POSIX shell resolver as the bash tool; native executables unchanged.
+5. shell_contract log-path regression from round 2 (self-inflicted):
+   home_relative emitted `~\...`; the header now always emits the
+   documented `~/...` shape, and the test helper resolves the
+   abbreviation against GRAY_HOME (logs live there), HOME fallback.
+
+Verified locally: full Linux workspace suite (41 binaries green), both
+Linux and Windows-GNU clippy at `-D warnings`, Windows all-target check,
+fmt. Windows runtime evidence remains CI's job (next run).
+
+## Windows CI failure round 3: final three roots (run 35226808237)
+
+1. Git for Windows defaults core.autocrlf=true; clones rewrote LF to CRLF,
+   so hash-verified install content diverged (`---\r\n` vs `---\n`).
+   Installs now clone with `-c core.autocrlf=false`: installed bytes are
+   exactly what the source committed, on every platform.
+2. `Read more:` recovery commands embed the log path as a Git Bash command
+   string; backslashes there are shell escapes (round-1 leftover,
+   `bash_tests.rs:149`). The path is forward-slashed per the documented
+   "Git Bash paths in command strings" contract; recovery executes under
+   `sh` with the same spelling.
+
+Remaining failures from previous rounds (sidecar .sh, cron quoting, URL
+parsing, guards) all passed natively in this run. Local verification: full
+Linux workspace suite green, both clippy lanes, fmt, cross-target check.
+
+## Full native Windows validation: GREEN (run 35230927707)
+
+Run 35230927707 (commit cf834a1) passed every gate of the expanded
+windows-runtime job: all-target compilation, workspace clippy, complete
+shell lifecycle/contract/home/cwd/limits regressions, the full workspace
+test suite with `--no-fail-fast`, the native release build, installer tests
+under PowerShell 7 and Windows PowerShell 5.1, and preview packaging.
+Linux and macOS matrix jobs and installer-smoke passed in the same run.
+
+Final diagnostic resolution: the last failing assertion was the
+`Read more:` recovery path. The captured bytes (610a... under Git Bash vs
+610d0a on Unix) proved Git Bash's sed pipes CRLF text to native readers
+through a text-mode MSYS pipe, folding EOLs. The disk log stays
+byte-verbatim (separately asserted natively); recovery output is
+byte-exact on Unix and EOL-folded on Windows. Both shapes are asserted
+with hex-dump failure output; the strict raw-bytes assertion remains on
+Unix. Nothing was skipped or weakened beyond this documented platform
+behavior. A windows-focused workflow_dispatch workflow exists for
+single-test iteration; it does not gate the ci workflow.
+
+Verification status after this run:
+- Native build, full native test suite, clippy, installer (pwsh 7 + 5.1):
+  passing on windows-2025.
+- Public installer default, README support matrix, and release publishing
+  remain WSL-only pending the spec's clean-machine, ACL, TUI, and release
+  integrity gates. PR #103 stays open and unmerged per user instruction.

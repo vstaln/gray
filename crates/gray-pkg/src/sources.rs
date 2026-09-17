@@ -693,8 +693,11 @@ pub(crate) fn clone_into_tmp(
         tempfile::tempdir()?
     };
     let dst = tmp.path().join("repo");
+    // Installs are hash-verified content copies, not working trees: line
+    // endings must reach the disk exactly as committed. Windows runners
+    // default core.autocrlf=true, which rewrites every text file.
     let mut cmd = std::process::Command::new("git");
-    cmd.args(["clone", "--depth", "1"])
+    cmd.args(["-c", "core.autocrlf=false", "clone", "--depth", "1"])
         .args(extra)
         .arg("--")
         .arg(url)

@@ -159,9 +159,23 @@ pub fn parse_spec(s: &str) -> NameOrUrl {
 }
 
 /// Split `scheme://authority` off; returns `(head, remainder)`.
+/// A `file://C:\...`-style Windows path keeps its drive in the path: the
+/// authority ends at the first separator *after* the drive, never at the
+/// drive colon itself.
 fn split_authority(s: &str) -> Option<(&str, &str)> {
     let (scheme, rest) = s.split_once("://")?;
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let is_win_path =
+        rest.len() >= 2 && rest.as_bytes()[1] == b':' && rest.as_bytes()[0].is_ascii_alphabetic();
+    let end = if is_win_path {
+        // Backslash is a Windows path separator: without it the drive path
+        // never ends, the remainder collapses to empty, and @ref splitting
+        // is lost (CI round 2: `file://C:\tmp\repo@feature` stayed whole).
+        rest[2..]
+            .find(['/', '\\', '?', '#'])
+            .map_or(rest.len(), |i| i + 2)
+    } else {
+        rest.find(['/', '?', '#']).unwrap_or(rest.len())
+    };
     Some((&s[..scheme.len() + 3 + end], &rest[end..]))
 }
 
@@ -242,15 +256,38 @@ fn https_is_bare_github_repo(t: &str) -> bool {
 /// Install name from a git URL: last path segment minus `.git`.
 fn name_from_git_url(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
+    // After the scheme, treat everything up to the first separator as the
+    // authority — except a Windows drive letter, which stays in the path.
+    // `git@host:path` (no scheme) keeps its scp-style host split.
     let after_host = match path.split_once("://") {
-        Some((_, rest)) => rest.find('/').map(|i| &rest[i + 1..]).unwrap_or(""),
+        Some((_, rest)) => {
+            let is_win = rest.len() >= 2
+                && rest.as_bytes()[1] == b':'
+                && rest.as_bytes()[0].is_ascii_alphabetic();
+            if is_win {
+                rest
+            } else {
+                rest.find('/').map(|i| &rest[i + 1..]).unwrap_or("")
+            }
+        }
+        // Same drive-letter rule as split_authority: "C:..." stays whole,
+        // while a later colon (scp-style git@host:path) splits.
         None => match path.find(':') {
+            Some(i)
+                if i == 1
+                    && path.len() > 2
+                    && (path.as_bytes()[2] == b'\\' || path.as_bytes()[2] == b'/') =>
+            {
+                path
+            }
             Some(i) => &path[i + 1..],
             None => path,
         },
     };
     let after_host = after_host.trim_end_matches('/');
-    let last = after_host.rsplit('/').next().unwrap_or(after_host);
+    // Windows paths may use backslashes; the name is the last segment of
+    // either separator spelling.
+    let last = after_host.rsplit(['/', '\\']).next().unwrap_or(after_host);
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
 
@@ -498,6 +535,9 @@ pub(crate) async fn stage_npm_package(
 /// closes the parked npm-side `..` gap as well as the git `..` path:
 /// both arms derive keys through [`install_key`].
 pub fn sanitize_npm_key(name: &str) -> String {
+    // Backslashes stay illegal: a name still carrying them (e.g. a whole
+    // drive path) must be rejected by validate_install_key, never mangled
+    // into a plausible key.
     name.strip_prefix('@')
         .unwrap_or(name)
         .replace('/', "-")

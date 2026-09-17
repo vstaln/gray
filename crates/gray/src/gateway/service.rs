@@ -439,17 +439,20 @@ fn stop_by_pid(home: &Path) -> anyhow::Result<String> {
             rec.pid
         );
     }
-    for _ in 0..80 {
-        if super::pid::running(home).is_none() {
-            return Ok(format!("stopped (pid {})", rec.pid));
+    #[cfg(unix)]
+    {
+        for _ in 0..80 {
+            if super::pid::running(home).is_none() {
+                return Ok(format!("stopped (pid {})", rec.pid));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
         }
-        std::thread::sleep(std::time::Duration::from_millis(250));
+        anyhow::bail!(
+            "pid {} is still up after 20s — kill -9 {} only if `gray gateway status` still shows it running",
+            rec.pid,
+            rec.pid
+        )
     }
-    anyhow::bail!(
-        "pid {} is still up after 20s — kill -9 {} only if `gray gateway status` still shows it running",
-        rec.pid,
-        rec.pid
-    )
 }
 
 fn install_runit(
@@ -589,7 +592,15 @@ fn runit_run_script(home: &Path, exe: &Path) -> String {
 }
 
 fn runit_log_script(home: &Path) -> String {
-    let logs = shell_quote(&home.join("logs/gateway").display().to_string());
+    // runit scripts run under sh: force forward slashes so a Windows-style
+    // join can never inject backslashes into the quoted path.
+    let logs = shell_quote(
+        &home
+            .join("logs/gateway")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
+    );
     format!("#!/bin/sh\nmkdir -p {logs}\nexec svlogd -tt {logs}\n")
 }
 
