@@ -49,12 +49,12 @@ impl Plugin for ToolsBasicPlugin {
             Arc::new(gray_tools::ReadTool::new(ledger.clone())),
             Arc::new(gray_tools::WriteTool::new(ledger.clone())),
             Arc::new(gray_tools::EditTool::new(ledger.clone())),
-            Arc::new(gray_tools::BashTool),
+            Arc::new(gray_tools::BashTool::default()),
         ]
     }
 }
 
-/// `tools-minimal`: the default surface — the single blocking `bash` only.
+/// `tools-minimal`: the default surface — the single `bash` tool (including managed jobs).
 /// Everything — read, search, edit, run — goes through `bash`.
 pub struct ToolsMinimalPlugin;
 
@@ -64,7 +64,7 @@ impl Plugin for ToolsMinimalPlugin {
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        vec![Arc::new(gray_tools::BashTool)]
+        vec![Arc::new(gray_tools::BashTool::default())]
     }
 }
 

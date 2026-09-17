@@ -178,7 +178,7 @@ pub(crate) async fn run_prompt_turn(
     let watcher_stopped = watch_stop.clone();
     let watcher_tui = tui_stream.clone();
     let cwd_for_watcher = cwd.to_path_buf();
-    let _key_watcher = key_watcher::spawn_key_watcher_with_typing(
+    let key_watcher = key_watcher::spawn_key_watcher_with_typing(
         watch_cancel,
         watcher_stopped,
         watcher_tui,
@@ -255,9 +255,10 @@ pub(crate) async fn run_prompt_turn(
         .await;
     }
     TURN_STATE.lock().unwrap_or_else(|e| e.into_inner()).take();
-    // signal the watcher to exit; it dies within one 100ms tick.
-    // (Never .await it here without the flag — deadlock.)
+    // Stop and join before the idle reader starts. Otherwise the old watcher
+    // can steal its first key between poll() and read(). No TUI lock held here.
     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = key_watcher.await;
     if turn_duration_ms.is_none() {
         turn_duration_ms = Some(turn_start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
     }

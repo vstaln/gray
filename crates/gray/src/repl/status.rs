@@ -576,7 +576,7 @@ pub(crate) async fn handle_compact(
 
     let watch_cancel = tokio_util::sync::CancellationToken::new();
     let watch_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let _key_watcher = tui.map(|shared| {
+    let key_watcher = tui.map(|shared| {
         crate::repl::key_watcher::spawn_key_watcher_with_typing(
             watch_cancel,
             watch_stop.clone(),
@@ -593,6 +593,9 @@ pub(crate) async fn handle_compact(
     .await;
 
     watch_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(watcher) = key_watcher {
+        let _ = watcher.await;
+    }
 
     // Restore idle (manual has no turn to return to) in the same lock;
     // the `Context compacted` line below is the single completion signal.

@@ -1998,3 +1998,84 @@ fn image_budget_is_bounded_and_rewrites_notify_session() {
     assert_ne!(agent.history_revision(), before);
     assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// Notices may arrive during inference or tool execution, but must not split
+/// an assistant tool-call batch from its results or hold an idle turn open.
+#[tokio::test]
+async fn background_notices_land_at_safe_boundaries_without_waiting() {
+    struct Notices {
+        polls: std::sync::atomic::AtomicUsize,
+        at: usize,
+    }
+    #[async_trait]
+    impl ToolExecutor for Notices {
+        fn execute(
+            &self,
+            _: &ToolContext,
+            _: &str,
+            _: serde_json::Value,
+        ) -> BoxFuture<'static, ToolOutput> {
+            Box::pin(async { ToolOutput::ok("job started; still running") })
+        }
+        fn drain_notifications(&self, _: &ToolContext) -> Vec<String> {
+            let poll = self.polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if poll == self.at {
+                vec!["job finished".into()]
+            } else {
+                vec![]
+            }
+        }
+    }
+    // Poll 0: before inference. Poll 1: next round after all tool results.
+    // Poll 2: just before returning a final answer (job finished mid-inference).
+    // Never: an unfinished job must not keep the turn open.
+    for at in [0, 1, 2, usize::MAX] {
+        let provider = FakeProvider::new(vec![tool_script("bg-call"), end_script(), end_script()]);
+        let executor = Arc::new(Notices {
+            polls: std::sync::atomic::AtomicUsize::new(0),
+            at,
+        });
+        let mut agent = Agent::new(Box::new(provider), executor).with_tools(vec![tool_def()]);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            agent.run(Message::user("go"), ToolContext::default()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let messages = agent.messages();
+        let call = messages
+            .iter()
+            .position(|m| {
+                m.content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { id, .. } if id == "bg-call"))
+            })
+            .unwrap();
+        assert!(
+            messages[call + 1]
+                .content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolResult { id, .. } if id == "bg-call"))
+        );
+        let notices: Vec<_> = messages.iter().enumerate().filter(|(_, m)| m.content.iter().any(|b| matches!(b, ContentBlock::Text { text } if text.contains("[Background task notification]")))).collect();
+        if at == usize::MAX {
+            assert!(notices.is_empty());
+        } else {
+            assert_eq!(notices.len(), 1);
+            if at == 0 {
+                assert!(notices[0].0 < call);
+            } else {
+                assert!(notices[0].0 > call + 1);
+            }
+            assert!(
+                messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { text } if text == "done"))
+            );
+        }
+    }
+}

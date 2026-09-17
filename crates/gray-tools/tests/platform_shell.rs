@@ -25,7 +25,7 @@ async fn shell_preserves_command_cwd_and_nonzero_exit() {
     };
     let out = tokio::time::timeout(
         Duration::from_secs(15),
-        BashTool.execute(
+        BashTool::default().execute(
             &ctx,
             json!({"command": "printf 'exact bytes' > result.txt; printf 'hello'; exit 7"}),
         ),
@@ -56,7 +56,7 @@ async fn stopped_tree_cannot_write_later(cancel: bool) {
     });
     let out = tokio::time::timeout(
         Duration::from_secs(12),
-        BashTool.execute(
+        BashTool::default().execute(
             &ctx,
             json!({
                 // Parent waits for a background subshell and its sleep child.

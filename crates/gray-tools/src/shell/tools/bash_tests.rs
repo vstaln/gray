@@ -44,7 +44,7 @@ fn shell_dir_respects_gray_home() {
 async fn echo_returns_exit_zero_with_output() {
     let session = sess("echo");
     let ctx = ctx_for(&session);
-    let r = BashTool
+    let r = BashTool::default()
         .execute(&ctx, json!({"command": "echo hello"}))
         .await;
     assert!(!r.is_error, "{}", r.content);
@@ -61,14 +61,14 @@ async fn echo_returns_exit_zero_with_output() {
 }
 
 #[tokio::test]
-async fn removed_background_arg_fails_loud() {
+async fn malformed_background_arg_fails_loud() {
     let session = sess("bgone");
     let ctx = ctx_for(&session);
-    let r = BashTool
-        .execute(&ctx, json!({"command": "echo hi", "background": true}))
+    let r = BashTool::default()
+        .execute(&ctx, json!({"command": "echo hi", "background": []}))
         .await;
     assert!(r.is_error, "{}", r.content);
-    assert!(r.content.contains("blocking-only"), "{}", r.content);
+    assert!(r.content.contains("background"), "{}", r.content);
 }
 
 #[cfg(unix)]
@@ -79,7 +79,7 @@ async fn timeout_kills_and_returns_partial_output() {
     let session = sess("timeout");
     let ctx = ctx_for(&session);
     let t0 = Instant::now();
-    let r = BashTool
+    let r = BashTool::default()
         .execute(&ctx, json!({"command": "echo out; sleep 30", "timeout": 1}))
         .await;
     let dt = t0.elapsed();
@@ -101,7 +101,9 @@ async fn timeout_kills_and_returns_partial_output() {
 async fn empty_command_is_an_error() {
     let session = sess("empty");
     let ctx = ctx_for(&session);
-    let r = BashTool.execute(&ctx, json!({"command": "   "})).await;
+    let r = BashTool::default()
+        .execute(&ctx, json!({"command": "   "}))
+        .await;
     assert!(r.is_error, "{}", r.content);
 }
 

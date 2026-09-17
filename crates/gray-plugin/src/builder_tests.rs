@@ -98,3 +98,40 @@ fn search_tools_keep_plugin_order_across_builds() {
         assert_eq!(registry.tool_names(), vec!["grep", "find", "ls"]);
     }
 }
+
+#[tokio::test]
+async fn minimal_profile_keeps_background_jobs_between_calls() {
+    let (reg, _) = from_plugins(&[Arc::new(ToolsMinimalPlugin)]);
+    let ctx = ToolContext {
+        session_id: Some("builder-background".into()),
+        ..Default::default()
+    };
+    let started = reg
+        .execute(
+            &ctx,
+            "bash",
+            json!({"command":"echo ready", "background":true}),
+        )
+        .await;
+    assert!(!started.is_error, "{}", started.content);
+    let id = started
+        .content
+        .split(" · job ")
+        .nth(1)
+        .unwrap()
+        .split(" · ")
+        .next()
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while reg.drain_notifications(&ctx).is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let result = reg
+        .execute(&ctx, "bash", json!({"action":"output", "job_id":id}))
+        .await;
+    assert!(result.content.contains("ready"), "{}", result.content);
+    assert!(result.content.contains("exit 0"), "{}", result.content);
+}

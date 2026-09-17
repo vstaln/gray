@@ -58,7 +58,7 @@ async fn baseline_tool_tax() {
     let read = ReadTool::new(ledger);
     let grep = GrepTool;
     let find = FindTool;
-    let bash = BashTool;
+    let bash = BashTool::default();
 
     // Warm up (page cache, tokio runtime, rg binary).
     read.execute(&ctx, json!({"path": "src/file00.py", "limit": 100}))
