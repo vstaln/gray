@@ -68,12 +68,14 @@ jobs:
     # port must prove Git Bash timeout/cancel kills descendants before we
     # publish a native installer. Do not suppress failures with continue-on-error.
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: 4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Configure explicit Git for Windows shell and isolated storage
         shell: pwsh
@@ -87,7 +89,17 @@ jobs:
           $shellDir >> $env:GITHUB_PATH
           "GRAY_BASH=$(Join-Path $shellDir 'sh.exe')" >> $env:GITHUB_ENV
           "GRAY_HOME=$(Join-Path $env:RUNNER_TEMP 'gray-test-home')" >> $env:GITHUB_ENV
-      - run: cargo check --locked -p gray
+      - name: Require ripgrep for the complete search-tool tests
+        shell: pwsh
+        run: |
+          if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
+            choco install ripgrep --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'ripgrep installation failed' }
+          }
+          rg --version
+      - run: cargo check --locked --workspace --all-targets
+      - name: Check native Windows lint paths
+        run: cargo clippy --locked --workspace -- -D warnings
       - name: Run complete cross-platform shell lifecycle regression file
         run: cargo test --locked -p gray-tools --test platform_shell -- --nocapture
       - name: Run complete shell contract with native fixture paths
@@ -99,6 +111,12 @@ jobs:
         run: cargo test --locked -p gray --test home_paths -- --nocapture
       - name: Check explicit preview limitations and real first-request cwd
         run: cargo test --locked -p gray --test windows_limits --test working_directory -- --nocapture
+      - name: Run full native workspace tests (report every test binary)
+        # Selected preview files above are not a substitute for the full suite.
+        # Keep collecting evidence after a failed lint/targeted test, but never
+        # package an artifact from a failed run.
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --workspace --no-fail-fast
       - name: Build native preview artifact (not a release)
         env:
           GRAY_CHANNEL: beta

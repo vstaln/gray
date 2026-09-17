@@ -128,7 +128,7 @@ pub fn check_metadata(meta: &fs::Metadata, display: &str) -> Result<MetadataDeci
     }
     #[cfg(not(unix))]
     {
-        return Err(refusal(display, "special file"));
+        Err(refusal(display, "special file"))
     }
 }
 

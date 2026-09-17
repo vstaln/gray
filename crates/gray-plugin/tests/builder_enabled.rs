@@ -7,6 +7,32 @@ use gray_plugin::builder::{
 };
 use gray_plugin::lock::{LockEntry, LockFile, lock_path, project_lock_path};
 
+// Build once from an absolute source path. This exercises a real native sidecar
+// on every platform, including Windows where shebang scripts are not executables.
+fn echo_fixture() -> &'static std::path::Path {
+    static FIXTURE: std::sync::OnceLock<(tempfile::TempDir, std::path::PathBuf)> =
+        std::sync::OnceLock::new();
+    &FIXTURE
+        .get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let exe = dir
+                .path()
+                .join(format!("echo{}", std::env::consts::EXE_SUFFIX));
+            let status = std::process::Command::new("rustc")
+                .arg(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/testdata/echo_plugin.rs"
+                ))
+                .arg("-o")
+                .arg(&exe)
+                .status()
+                .expect("host rustc must build native sidecar fixture");
+            assert!(status.success(), "native sidecar fixture failed to compile");
+            (dir, exe)
+        })
+        .1
+}
+
 /// Test-local copy of the two builtin plugins (no surface extras).
 fn default_plugins() -> Vec<Arc<dyn Plugin>> {
     vec![
@@ -53,7 +79,7 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
 
     // Absolute argv so the profile entry and the lock entry match exactly
     // regardless of cwd (the filter compares argv lists verbatim).
-    let echo = format!("{}/testdata/echo_plugin.sh", env!("CARGO_MANIFEST_DIR"));
+    let echo = echo_fixture().to_string_lossy().into_owned();
     let dead = "definitely-not-a-real-binary-xyz".to_string();
     let profile = work.path().join("gray.yml");
     std::fs::write(
@@ -168,7 +194,6 @@ async fn disabled_profile_sidecars_warn_and_skip_before_spawn() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // GUARD serializes process-global env/cwd for the whole test
 async fn lock_install_dir_activates_and_respects_enabled_flag() {
-    use std::os::unix::fs::PermissionsExt;
     let _guard = GUARD.lock().unwrap();
     let home = tempfile::tempdir().unwrap();
     let work = tempfile::tempdir().unwrap();
@@ -181,16 +206,10 @@ async fn lock_install_dir_activates_and_respects_enabled_flag() {
     }
 
     // Fake install: executable dir like a real `install` unpack.
-    let fixture = std::fs::read(format!(
-        "{}/testdata/echo_plugin.sh",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .unwrap();
     let dir = home.path().join("plugins").join("demo-echo");
     std::fs::create_dir_all(&dir).unwrap();
-    let script = dir.join("plugin.sh");
-    std::fs::write(&script, &fixture).unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let executable = dir.join(format!("plugin{}", std::env::consts::EXE_SUFFIX));
+    std::fs::copy(echo_fixture(), &executable).unwrap();
 
     // Missing profile: lock installs still activate (no gray.yml needed).
     let missing_profile = work

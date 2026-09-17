@@ -136,3 +136,33 @@ environment. An isolated run passed. Preserve all assertions but move each
 home-sensitive test into a single-test subprocess with HOME/USERPROFILE/GRAY_HOME
 set before startup (same pattern as home_paths). Full parallel workspace tests
 and workspace clippy passed after removing those unsafe parent env mutations.
+
+## Release-readiness follow-up: full native validation gate
+
+The approved first release remains Windows 11 x64 + Git Bash, external reinstall,
+with native gateway/cron execution excluded. This follow-up is not a release
+announcement or authorization to publish.
+
+Reproduced `cargo check --locked --workspace --all-targets` for Windows GNU:
+`builder_enabled.rs` unconditionally imported Unix permissions. Its two existing
+integration tests now use a real native echo sidecar compiled by the host Rust
+compiler, retaining enable/disable, fallback, and project-overlay assertions.
+The full cross-target check passes. Windows-target workspace clippy reproduced
+unused Unix-only imports/constants, unreachable post-signal code, and needless
+returns; these are fixed without suppressing warnings or removing assertions.
+
+CI now requires all-target compilation, workspace clippy, and full workspace
+runtime tests on Windows, with ripgrep installed and all test binaries attempted
+using `--no-fail-fast`. The targeted preview checks remain. Packaging still
+requires success; the public installer and release support claims are unchanged.
+
+Verified locally on Linux: complete workspace tests, gray build, workspace
+clippy with warnings denied, formatting, and diff whitespace checks. Repeated
+Windows GNU all-target check and workspace clippy pass using the previously
+cached MinGW toolchain. Cross-compilation does not verify Windows runtime.
+
+Next checkpoint requires permission to push/open a follow-up PR against main so
+native CI can execute the expanded suite. No native result exists for these
+changes yet. Shell-script fixtures elsewhere, Windows permissions/persistence,
+file-device guards, installer/release acceptance, and clean-machine/TUI checks
+remain open. Do not mark the release ready until those gates have evidence.
