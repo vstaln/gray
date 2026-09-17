@@ -1,7 +1,7 @@
 use super::*;
 
 fn setup() -> (tempfile::TempDir, MemoryStore) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let store = MemoryStore::new(dir.path(), dir.path()).unwrap();
     (dir, store)
 }

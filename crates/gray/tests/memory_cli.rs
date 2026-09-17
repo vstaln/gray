@@ -15,7 +15,7 @@ fn command(home: &Path, cwd: &Path, args: &[&str]) -> Output {
 
 #[test]
 fn memory_commands_work_without_provider_and_keep_scopes_separate() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let home = tmp.path().join("home");
     let a = tmp.path().join("a");
     let b = tmp.path().join("b");
@@ -75,7 +75,7 @@ fn memory_commands_work_without_provider_and_keep_scopes_separate() {
 
 #[test]
 fn rejects_bad_input_without_echoing_secret() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     for (key, value) in [
         ("../escape", "value"),
         ("blank", " "),
@@ -90,7 +90,7 @@ fn rejects_bad_input_without_echoing_secret() {
 
 #[test]
 fn concurrent_processes_preserve_different_entries() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let mut children = Vec::new();
     for i in 0..8 {
         children.push(
@@ -119,7 +119,7 @@ fn concurrent_processes_preserve_different_entries() {
 
 #[test]
 fn opt_out_prevents_saves_but_allows_inspection_and_removal() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     assert!(
         command(
             tmp.path(),
