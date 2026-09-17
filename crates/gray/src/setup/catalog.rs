@@ -61,6 +61,9 @@ pub struct SavedConfig {
     pub api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Most recently selected model IDs first, scoped by normalized API base URL.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub recent_models: BTreeMap<String, Vec<String>>,
     /// How the provider authenticates: "api_key" | "oauth" | "none".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_mode: Option<String>,
@@ -146,6 +149,7 @@ fn partial_saved_config(obj: &serde_json::Map<String, serde_json::Value>) -> Sav
         base_url: opt_field(obj, "base_url"),
         api_key: opt_field(obj, "api_key"),
         model: opt_field(obj, "model"),
+        recent_models: opt_field(obj, "recent_models").unwrap_or_default(),
         auth_mode: opt_field(obj, "auth_mode"),
         thinking_effort: opt_field(obj, "thinking_effort"),
         show_reasoning: opt_field(obj, "show_reasoning"),
@@ -170,7 +174,21 @@ where
 /// Writes the config pretty-printed so users can hand-edit it too.
 /// Mode 0600: the file stores the plaintext api_key.
 pub fn save_saved_config_at(path: &Path, cfg: &SavedConfig) -> anyhow::Result<()> {
-    let body = serde_json::to_string_pretty(cfg)?;
+    let previous = load_saved_config_at(path);
+    let mut persisted = cfg.clone();
+    // Seed older configs and preserve the provider we are leaving. Do not
+    // reorder history when merely saving effort/context settings.
+    for selection in [&previous, cfg] {
+        if let (Some(base), Some(model)) = (&selection.base_url, &selection.model) {
+            let base = normalize_custom_base_url(base);
+            if !base.is_empty() && !model.trim().is_empty() {
+                let recent = persisted.recent_models.entry(base).or_default();
+                recent.retain(|id| id != model);
+                recent.insert(0, model.clone());
+            }
+        }
+    }
+    let body = serde_json::to_string_pretty(&persisted)?;
     save_private_json(path, &serde_json::from_str::<serde_json::Value>(&body)?)
 }
 
@@ -321,6 +339,67 @@ pub struct ConnectItem {
     pub no_auth: bool,
 }
 
+impl ConnectItem {
+    pub(crate) fn is_connected(
+        &self,
+        config: &crate::config::Config,
+        auth: &BTreeMap<String, AuthEntry>,
+    ) -> bool {
+        // Custom is an action for adding an endpoint, not a saved provider.
+        self.id != "custom"
+            && (auth.contains_key(&self.id)
+                || (normalize_custom_base_url(&config.base_url)
+                    == normalize_custom_base_url(&self.base_url)
+                    && (config.api_key.as_ref().is_some_and(|key| !key.is_empty())
+                        || self.no_auth)))
+    }
+}
+
+pub(crate) fn load_connect_auth() -> BTreeMap<String, AuthEntry> {
+    auth_store_path()
+        .map(|path| load_mixed_store(&path))
+        .unwrap_or_default()
+}
+
+pub(crate) fn sort_connect_items(
+    items: &mut [ConnectItem],
+    config: &crate::config::Config,
+    auth: &BTreeMap<String, AuthEntry>,
+) {
+    items.sort_by_key(|item| {
+        if item.is_connected(config, auth) {
+            0
+        } else if item.id == "custom" {
+            1
+        } else {
+            2
+        }
+    });
+}
+
+impl SavedConfig {
+    /// Only reorder available IDs: history must not resurrect removed models
+    /// or change the validation contract of the provider's live model list.
+    pub(crate) fn sort_models(&self, base_url: &str, models: &mut [(String, String)]) {
+        let base = normalize_custom_base_url(base_url);
+        let current = self
+            .base_url
+            .as_deref()
+            .filter(|url| normalize_custom_base_url(url) == base)
+            .and(self.model.as_deref());
+        let recent = self.recent_models.get(&base);
+        models.sort_by_key(|(id, _)| {
+            if current == Some(id.as_str()) {
+                0
+            } else {
+                recent
+                    .and_then(|ids| ids.iter().position(|m| m == id))
+                    .map_or(usize::MAX, |rank| rank + 1)
+            }
+        });
+    }
+}
+
 /// Trims a pasted custom base URL to the API root: strips whitespace,
 /// trailing slashes, and route suffixes (`/chat/completions`, `/messages`,
 /// `/models`) so `…/v1/chat/completions` becomes `…/v1`.
@@ -343,7 +422,8 @@ pub fn normalize_custom_base_url(raw: &str) -> String {
 }
 
 /// Builds the full list of providers for the connect modal:
-/// Custom on top, then popular, followed by all catalog providers.
+/// Default order: Custom, then popular, followed by all catalog providers.
+/// The modal stably promotes connected providers above Custom.
 pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let popular_defs = [
         (
@@ -428,7 +508,7 @@ pub fn build_connect_items(catalog: &Catalog) -> Vec<ConnectItem> {
     let mut items = Vec::new();
     let mut popular_ids = std::collections::HashSet::new();
 
-    // Custom OpenAI/Anthropic-compatible endpoint, always first (separator drawn under it).
+    // Custom OpenAI/Anthropic-compatible endpoint (separator drawn under it).
     popular_ids.insert("custom".to_string());
     items.push(ConnectItem {
         id: "custom".to_string(),

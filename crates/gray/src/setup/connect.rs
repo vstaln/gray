@@ -33,7 +33,6 @@ pub fn run_connect_modal(
     use std::time::Duration;
 
     let catalog = load_catalog()?;
-    let all_items = build_connect_items(&catalog);
     let mut filter = String::new();
     let mut sel = 0usize;
     let mut scroll_top = 0usize;
@@ -92,7 +91,9 @@ pub fn run_connect_modal(
 
     let result = (|| -> anyhow::Result<bool> {
         loop {
-            let auth_keys = load_auth_keys();
+            let auth = catalog::load_connect_auth();
+            let mut all_items = build_connect_items(&catalog);
+            catalog::sort_connect_items(&mut all_items, config, &auth);
 
             terminal.draw(|frame| {
                 let area = frame.area();
@@ -111,7 +112,7 @@ pub fn run_connect_modal(
                         sel,
                         &mut scroll_top,
                         config,
-                        &auth_keys,
+                        &auth,
                         &colors,
                     ),
                     ModalState::EnteringBaseUrl {
@@ -232,8 +233,10 @@ pub fn run_connect_modal(
                                     } else if item.no_auth {
                                         config.base_url = item.base_url.clone();
                                         config.api_key = None;
-                                        let models =
-                                            fetch_live_provider_models(&item.base_url, None);
+                                        let models = super::model_modal::picker_models_for(
+                                            &item.base_url,
+                                            None,
+                                        );
                                         state = ModalState::SelectingModel {
                                             item: item.clone(),
                                             models,
@@ -380,7 +383,8 @@ pub fn run_connect_modal(
                                     // auth save and go straight to model picking.
                                     config.base_url = item.base_url.clone();
                                     config.api_key = None;
-                                    let models = fetch_live_provider_models(&item.base_url, None);
+                                    let models =
+                                        super::model_modal::picker_models_for(&item.base_url, None);
                                     state = ModalState::SelectingModel {
                                         item: item.clone(),
                                         models,
@@ -405,7 +409,7 @@ pub fn run_connect_modal(
                                 saved.api_key = config.api_key.clone();
                                 saved.auth_mode = Some(AUTH_MODE_API_KEY.into());
                                 if is_switching {
-                                    let models = fetch_live_provider_models(
+                                    let models = super::model_modal::picker_models_for(
                                         &item.base_url,
                                         Some(&final_key),
                                     );
@@ -415,7 +419,7 @@ pub fn run_connect_modal(
                                     if let Some(m) = &config.model {
                                         saved.model = Some(m.clone());
                                     } else {
-                                        let models = fetch_live_provider_models(
+                                        let models = super::model_modal::picker_models_for(
                                             &item.base_url,
                                             Some(&final_key),
                                         );
@@ -431,8 +435,10 @@ pub fn run_connect_modal(
                                 save_auth_key(&item.id, &final_key)?;
                                 config.base_url = item.base_url.clone();
                                 config.api_key = Some(final_key.clone());
-                                let models =
-                                    fetch_live_provider_models(&item.base_url, Some(&final_key));
+                                let models = super::model_modal::picker_models_for(
+                                    &item.base_url,
+                                    Some(&final_key),
+                                );
                                 state = ModalState::SelectingModel {
                                     item: item.clone(),
                                     models,
