@@ -12,6 +12,7 @@ const CATALOG: &[(&str, &str, &str)] = &[(
     "gray_discord",
 )];
 
+
 pub fn home() -> anyhow::Result<PathBuf> {
     Ok(crate::sys_prompt_path()?
         .parent()
