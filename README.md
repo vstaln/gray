@@ -53,7 +53,26 @@ cargo build --release -p gray                          # harness core (image pas
 
 harness core: CLI, TUI (with image paste), provider, sessions, tools, cron.
 
-Windows runs via WSL; macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
+### Windows
+
+**Supported route: WSL.** Run the Linux installation command above inside WSL.
+
+**Native Windows 11 x64 preview:** no WSL required; Git for Windows supplies the
+shell. Download the `windows-native-preview` artifact from a successful
+[CI run](https://github.com/vstaln/gray/actions/workflows/ci.yml), extract it, and
+follow the [native installation guide](docs/windows-preview.md). From the artifact
+root, with both scripts in its `dist` folder:
+
+```powershell
+$hash = ((Get-Content .\gray-beta-x86_64-windows.zip.sha256).Trim() -split '\s+')[0]
+.\dist\install.ps1 -Native -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
+```
+
+The preview is unsigned and not release-ready. Avoid sensitive credentials and
+transcripts until Windows storage permissions have been validated. Native installs
+do not silently fall back to WSL. Close Gray and rerun the installer to update.
+
+macOS binaries are Rust-static but **not notarized** — curl-installed binaries run fine, browser downloads may hit Gatekeeper quarantine.
 
 ## Quick start
 

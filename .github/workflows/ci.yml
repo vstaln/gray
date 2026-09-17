@@ -118,12 +118,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --locked --workspace --no-fail-fast
       - name: Build native preview artifact (not a release)
+        # Installer evidence is independent of workspace runtime failures.
+        id: native-build
+        if: ${{ !cancelled() }}
         env:
           GRAY_CHANNEL: beta
         run: cargo build --locked --release -p gray
       - name: Test native installer with PowerShell 7
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
       - name: Test native installer with Windows PowerShell 5.1
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
         shell: powershell
         run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
       - name: Package preview ZIP and checksum
@@ -143,3 +148,4 @@ jobs:
             gray-beta-x86_64-windows.zip
             gray-beta-x86_64-windows.zip.sha256
             dist/install-native.ps1
+            dist/install.ps1

@@ -1,10 +1,31 @@
 # gray installer for Windows — https://gray.alignment.id
-# iwr https://gray.alignment.id/install.ps1 -UseBasicParsing | iex
-#
-# Windows native builds are not packaged yet, so this drives the Linux binary
-# through WSL (Windows Subsystem for Linux) — which gives you a full gray REPL.
+# Native installation is opt-in until the Windows release gates pass.
+# Download and inspect scripts rather than piping native installation to iex.
+[CmdletBinding(DefaultParameterSetName='Wsl')]
+param(
+    [Parameter(Mandatory=$true, ParameterSetName='Native')][switch]$Native,
+    [Parameter(ParameterSetName='Wsl')][switch]$Wsl,
+    [Parameter(ParameterSetName='Native')][ValidateSet('stable', 'beta')][string]$Channel = 'beta',
+    [Parameter(ParameterSetName='Native')][string]$InstallDir = $env:GRAY_INSTALL_DIR,
+    [Parameter(ParameterSetName='Native')][switch]$NoPath,
+    [Parameter(ParameterSetName='Native')][string]$ArchivePath,
+    [Parameter(ParameterSetName='Native')][string]$Sha256,
+    [Parameter(ParameterSetName='Native')][uri]$BaseUri = 'https://gray.alignment.id/dl/'
+)
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+if ($Native) {
+    # Reuse the tested native implementation; never fall back to WSL on failure.
+    if (-not $PSScriptRoot) { throw 'Save install.ps1 and install-native.ps1 together before running -Native.' }
+    $installer = Join-Path $PSScriptRoot 'install-native.ps1'
+    if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+        throw 'Missing install-native.ps1. Extract both installer scripts from the native preview artifact.'
+    }
+    & $installer -Channel $Channel -InstallDir $InstallDir -NoPath:$NoPath -ArchivePath $ArchivePath -Sha256 $Sha256 -BaseUri $BaseUri
+    return
+}
+
+# Compatibility default remains WSL. Native release promotion is a separate gate.
 
 Write-Host ""
 Write-Host "  gray installer" -ForegroundColor Cyan
