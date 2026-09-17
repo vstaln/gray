@@ -146,12 +146,23 @@ fn truncated_log_has_executable_bounded_recovery() {
                 vec![b'z'; (raw.len() - INLINE_BUDGET_BYTES).min(4096)]
             );
         } else {
-            // Windows CI round 4: this assertion failed while the command
-            // itself succeeded. Emit the exact recovered bytes so the next
-            // run captures what Git Bash's sed/dd actually returned.
+            // Run 35229845737 captured the recovered bytes: Git Bash's sed
+            // pipes CRLF text to native readers through a text-mode MSYS
+            // pipe, folding CRLF to LF (`a\r\n` -> `a\n`). The disk log
+            // stays byte-verbatim (asserted in
+            // progress_is_line_safe_but_log_retains_carriage_returns);
+            // recovery output is byte-exact on Unix, EOL-folded on Windows.
+            // Emit both sides in hex on failure for direct comparison.
+            #[cfg(windows)]
+            assert!(
+                out.stdout.starts_with(b"a\n"),
+                "expected 610a-prefixed folded recovery, got {:02x?} (command: {command})",
+                out.stdout
+            );
+            #[cfg(not(windows))]
             assert!(
                 out.stdout.starts_with(b"a\r\n"),
-                "recovery bytes: {:?} (command: {command})",
+                "expected raw 610d0a recovery, got {:02x?} (command: {command})",
                 out.stdout
             );
         }
