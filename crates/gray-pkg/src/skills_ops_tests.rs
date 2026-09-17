@@ -113,7 +113,7 @@ fn url_slugs_derive_from_skill_path() {
 
 #[tokio::test]
 async fn install_local_copies_bundle_and_writes_origin() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let (_root, bundle) = fixture_bundle();
     let _home = use_skills_env();
 
@@ -142,7 +142,7 @@ async fn install_local_copies_bundle_and_writes_origin() {
 
 #[tokio::test]
 async fn install_from_skill_md_file_uses_parent_bundle() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let (_root, bundle) = fixture_bundle();
     let _home = use_skills_env();
 
@@ -154,7 +154,7 @@ async fn install_from_skill_md_file_uses_parent_bundle() {
 
 #[tokio::test]
 async fn list_round_trips_install() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let (_root, bundle) = fixture_bundle();
     let _home = use_skills_env();
     assert!(list().unwrap().is_empty());
@@ -172,7 +172,7 @@ async fn list_round_trips_install() {
 
 #[tokio::test]
 async fn remove_deletes_dir_and_miss_matches_ops_voice() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let (_root, bundle) = fixture_bundle();
     let _home = use_skills_env();
 
@@ -188,7 +188,7 @@ async fn remove_deletes_dir_and_miss_matches_ops_voice() {
 
 #[tokio::test]
 async fn install_refuses_bundle_without_skill_md() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let root = tempfile::tempdir().unwrap();
     let bundle = root.path().join("empty-skill");
     std::fs::create_dir_all(&bundle).unwrap();
@@ -206,7 +206,7 @@ async fn install_refuses_bundle_without_skill_md() {
 
 #[tokio::test]
 async fn install_refuses_missing_description() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let root = tempfile::tempdir().unwrap();
     let bundle = root.path().join("nodesc");
     std::fs::create_dir_all(&bundle).unwrap();
@@ -226,7 +226,7 @@ async fn install_refuses_missing_description() {
 
 #[tokio::test]
 async fn install_refuses_missing_name() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let root = tempfile::tempdir().unwrap();
     let bundle = root.path().join("noname");
     std::fs::create_dir_all(&bundle).unwrap();
@@ -247,7 +247,7 @@ async fn install_refuses_missing_name() {
 
 #[tokio::test]
 async fn install_warns_not_refuses_on_name_dir_mismatch() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let root = tempfile::tempdir().unwrap();
     let bundle = root.path().join("dir-name");
     std::fs::create_dir_all(&bundle).unwrap();
@@ -266,7 +266,7 @@ async fn install_warns_not_refuses_on_name_dir_mismatch() {
 
 #[tokio::test]
 async fn install_url_downloads_skill_md_over_loopback() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     use axum::{Router, routing::get};
     let router = Router::new().route("/x-skill/SKILL.md", get(|| async { FIXTURE_SKILL }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

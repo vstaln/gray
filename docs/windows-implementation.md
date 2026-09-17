@@ -166,3 +166,41 @@ native CI can execute the expanded suite. No native result exists for these
 changes yet. Shell-script fixtures elsewhere, Windows permissions/persistence,
 file-device guards, installer/release acceptance, and clean-machine/TUI checks
 remain open. Do not mark the release ready until those gates have evidence.
+
+## Windows CI failure round 1: root causes and repairs (evidence-driven)
+
+Full workspace Windows CI (run 35211813924) exposed five distinct root causes;
+each fix below cites its captured failure, and no suite was skipped or
+weakened. Shell-script test fixtures that exec directly (os error 193) and
+shebang-only execution remain the largest known gap, tracked separately.
+
+1. grep fast lane (CI `fast_path_parity` left: []): vimgrep output on Windows
+   is `C:\path:line:col:text`; the naive colon split produced an unparseable
+   line field and silently dropped every native match. Extraction is now a
+   pure `parse_vimgrep` with hand-computed unit tests for drive paths and a
+   one-letter Unix path (`a:3:12:x` is not a drive). A second, latent parity
+   bug surfaced locally: the extracted loop lost the match increment, so the
+   limit never fired; the --json lane's count-then-limit ordering is mirrored
+   and the exact failing shape now passes.
+2. Sidecar/cron shebang spawns (os error 193): cron pre-scripts now run
+   through the same Git Bash resolver as the bash tool (exported via the
+   shell facade; a missing shell maps to the normal failure outcome, not a
+   panic). Sidecar shell fixtures on Windows are still open work.
+3. Plugin-name derivation (CI: cannot derive a plugin name from
+   `file://C:\...`): a single-letter drive prefix no longer reads as an
+   scp-style host split, pinned by a Windows-only assertion.
+4. Archive guards (CI: unpack_tar_gz/unpack_zip traversal assertions):
+   `/abs` is drive-relative on Windows, so raw `/` and `\` prefixes are now
+   refused in addition to `is_absolute()`.
+5. ENV_GUARD PoisonError cascades: one root panic poisoned the shared test
+   mutex and failed ~30 unrelated suites. The lock helper now recovers from
+   poison (root failures still fail their own test).
+
+Also: `runit_log_script` forces POSIX separators (CI showed
+`'/tmp/gh\logs/gateway'`), and `home_relative` matches both separators.
+`gray_tools::shell::shell_path` is public for the cron runner; the private
+`windows` module and discovery rules are unchanged.
+
+Verified locally: full Linux workspace tests (41 test binaries, all green),
+Linux and Windows-GNU workspace clippy, Windows all-target check, fmt, and
+diff whitespace checks. Native runtime evidence remains CI's to produce.

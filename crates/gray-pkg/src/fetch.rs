@@ -246,10 +246,17 @@ pub fn unpack_zip(archive: &Path, dest: &Path) -> anyhow::Result<()> {
         if name.ends_with('/') {
             continue;
         }
-        let rel = Path::new(name);
-        if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        // Raw-prefix check, not just is_absolute(): on Windows "/abs" and
+        // "\abs" are drive-relative (not absolute), but must still be refused.
+        if name.starts_with('/')
+            || name.starts_with('\\')
+            || Path::new(name)
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+        {
             anyhow::bail!("refusing unsafe archive entry: {name}");
         }
+        let rel = Path::new(name);
         // Local header: skip name+extra to reach the data.
         if bytes.get(local_off..local_off + 4) != Some(b"PK\x03\x04".as_slice()) {
             anyhow::bail!("invalid zip archive");
@@ -310,8 +317,14 @@ pub fn unpack_tar_gz(archive: &Path, dest: &Path) -> anyhow::Result<()> {
             .checked_add(entry.size())
             .ok_or_else(|| anyhow::anyhow!("archive size overflow"))?;
         anyhow::ensure!(total <= MAX_OUT, "tar archive exceeds output cap");
+        // Raw-prefix check, not just is_absolute(): on Windows "/abs" is
+        // drive-relative (not absolute), but must still be refused.
         let path = entry.path()?.into_owned();
-        if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir)) {
+        let raw = path.to_string_lossy();
+        if raw.starts_with('/')
+            || raw.starts_with('\\')
+            || path.components().any(|c| matches!(c, Component::ParentDir))
+        {
             anyhow::bail!("refusing unsafe archive entry: {}", path.display());
         }
         entry.unpack_in(dest)?;

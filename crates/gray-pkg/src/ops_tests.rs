@@ -6,6 +6,13 @@ use super::*;
 // Shared with `errors::tests` (same process-global env).
 pub(crate) static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One panicked test holding ENV_GUARD must not poison ~30 unrelated
+/// suites (CI cascade). Recover the guard instead of propagating the
+/// panic; the panicking test still fails on its own assertion.
+pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+    ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[test]
 fn default_entry_is_enabled() {
     assert!(LockEntry::default().enabled);
@@ -266,7 +273,7 @@ fn use_npm_env(registry_base: &str) -> tempfile::TempDir {
 
 #[tokio::test]
 async fn npm_resolve_picks_exact_version() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tarball = spawn_tarball(tiny_tgz()).await;
     let meta = serde_json::json!({
         "dist-tags": {"latest": "2.0.0"},
@@ -287,7 +294,7 @@ async fn npm_resolve_picks_exact_version() {
 
 #[tokio::test]
 async fn npm_resolve_falls_back_to_latest() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tarball = spawn_tarball(tiny_tgz()).await;
     let meta = serde_json::json!({
         "dist-tags": {"latest": "2.0.0"},
@@ -308,7 +315,7 @@ async fn npm_resolve_falls_back_to_latest() {
 
 #[tokio::test]
 async fn npm_resolve_shasum_fallback() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tarball = spawn_tarball(tiny_tgz()).await;
     let meta = serde_json::json!({
         "dist-tags": {"latest": "1.0.0"},
@@ -326,7 +333,7 @@ async fn npm_resolve_shasum_fallback() {
 
 #[tokio::test]
 async fn npm_resolve_missing_version_bails() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tarball = spawn_tarball(tiny_tgz()).await;
     let meta = serde_json::json!({
         "dist-tags": {"latest": "1.0.0"},
@@ -347,7 +354,7 @@ async fn npm_resolve_missing_version_bails() {
 
 #[tokio::test]
 async fn npm_resolve_missing_integrity_bails() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tarball = spawn_tarball(tiny_tgz()).await;
     let meta = serde_json::json!({
         "dist-tags": {"latest": "1.0.0"},
@@ -368,7 +375,7 @@ async fn npm_resolve_missing_integrity_bails() {
 
 #[tokio::test]
 async fn stage_npm_package_downloads_verifies_unpacks() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tgz = tiny_tgz();
     let tarball = spawn_tarball(tgz.clone()).await;
     let integrity = sha512_integrity(&tgz);
@@ -394,7 +401,7 @@ async fn stage_npm_package_downloads_verifies_unpacks() {
 
 #[tokio::test]
 async fn stage_npm_package_hash_mismatch_bails() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tarball = spawn_tarball(tiny_tgz()).await;
     let meta = serde_json::json!({
         "dist-tags": {"latest": "1.0.0"},
@@ -415,7 +422,7 @@ async fn stage_npm_package_hash_mismatch_bails() {
 
 #[tokio::test]
 async fn download_verifies_sha512_base64() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let _home = use_npm_env("http://127.0.0.1:1");
     let body = b"plugin bytes".to_vec();
     let url = spawn_tarball(body.clone()).await;
@@ -431,7 +438,7 @@ async fn download_verifies_sha512_base64() {
 
 #[tokio::test]
 async fn download_verifies_sha256_hex() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let _home = use_npm_env("http://127.0.0.1:1");
     let body = b"plugin bytes".to_vec();
     let url = spawn_tarball(body.clone()).await;
@@ -447,7 +454,7 @@ async fn download_verifies_sha256_hex() {
 
 #[tokio::test]
 async fn download_rejects_sha512_mismatch() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let _home = use_npm_env("http://127.0.0.1:1");
     let url = spawn_tarball(b"plugin bytes".to_vec()).await;
 
@@ -462,7 +469,7 @@ async fn download_rejects_sha512_mismatch() {
 
 #[tokio::test]
 async fn download_rejects_unknown_algorithm() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let _home = use_npm_env("http://127.0.0.1:1");
     let url = spawn_tarball(b"plugin bytes".to_vec()).await;
 
@@ -513,7 +520,7 @@ fn install_key_confines_dotdot_and_backslash() {
     assert!(validate_install_key("a\\b").is_err());
     assert!(install_key("a\\b").is_err());
     // `remove()` works on the sanitized forms (no traversal trap).
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: serialized by ENV_GUARD.
     unsafe {
@@ -590,7 +597,7 @@ fn pi_foo_meta(tarball: &str, integrity: &str) -> serde_json::Value {
 
 #[tokio::test]
 async fn install_npm_extracts_skills_and_writes_lock() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tgz = skill_tgz(&[
         (
             "package.json",
@@ -640,7 +647,7 @@ async fn install_npm_extracts_skills_and_writes_lock() {
 
 #[tokio::test]
 async fn install_npm_scoped_name_sanitizes_key_and_dir() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tgz = skill_tgz(&[("skills/a/SKILL.md", MULCH_SKILL)]);
     let tarball = spawn_tarball(tgz.clone()).await;
     let integrity = sha512_integrity(&tgz);
@@ -670,7 +677,7 @@ async fn install_npm_scoped_name_sanitizes_key_and_dir() {
 
 #[tokio::test]
 async fn install_npm_honors_manifest_skill_globs() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tgz = skill_tgz(&[
         (
             "package.json",
@@ -791,7 +798,7 @@ fn git_fixture_key(dir: &tempfile::TempDir) -> String {
 
 #[tokio::test]
 async fn install_git_clones_and_extracts_skills() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let (repo, url) = init_git_fixture(&[
         ("skills/mulch/SKILL.md", MULCH_SKILL),
         ("extensions/mulch.ts", "export const x = 1;\n"),
@@ -827,7 +834,7 @@ async fn install_git_clones_and_extracts_skills() {
 
 #[tokio::test]
 async fn install_git_pinned_ref_records_version() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let (repo, url) = init_git_fixture(&[("skills/a/SKILL.md", MULCH_SKILL)]);
     let run = |args: &[&str]| {
         let status = std::process::Command::new("git")
@@ -868,7 +875,7 @@ async fn install_git_pinned_ref_records_version() {
 
 #[tokio::test]
 async fn install_git_without_skills_bails_without_half_state() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let (repo, _url) = init_git_fixture(&[("notes.txt", "no skills here\n")]);
     let key = git_fixture_key(&repo);
     let _home = use_git_env();
@@ -887,7 +894,7 @@ async fn install_git_without_skills_bails_without_half_state() {
 
 #[tokio::test]
 async fn install_npm_without_skills_bails_without_half_state() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let tgz = tiny_tgz();
     let tarball = spawn_tarball(tgz.clone()).await;
     let integrity = sha512_integrity(&tgz);
@@ -907,7 +914,7 @@ async fn install_npm_without_skills_bails_without_half_state() {
 
 #[test]
 fn remove_deletes_pi_subdir() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: serialized by ENV_GUARD.
     unsafe {
@@ -988,7 +995,7 @@ fn lock_enabled_defaults_true_and_roundtrips_false() {
 fn set_enabled_flips_flag_and_bails_on_miss() {
     // GRAY_HOME points at a tempdir so the real lockfile is never
     // disturbed (serialized by ENV_GUARD).
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: serialized by ENV_GUARD.
     unsafe {
@@ -1015,7 +1022,7 @@ fn set_enabled_flips_flag_and_bails_on_miss() {
 
 #[test]
 fn remove_rejects_traversal_and_empty_names() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: serialized by ENV_GUARD.
     unsafe {
@@ -1045,7 +1052,7 @@ fn remove_rejects_traversal_and_empty_names() {
 
 #[test]
 fn remove_deletes_entry_and_dir() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = tempfile::tempdir().unwrap();
     // SAFETY: serialized by ENV_GUARD.
     unsafe {
@@ -1343,7 +1350,7 @@ fn init_claude_fixture() -> tempfile::TempDir {
 
 #[tokio::test]
 async fn install_clawhub_downloads_and_writes_lock() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let zip = skill_zip(&[
         ("skills/greeter/SKILL.md", MULCH_SKILL),
         ("README.md", "# demo\n"),
@@ -1371,7 +1378,7 @@ async fn install_clawhub_downloads_and_writes_lock() {
 
 #[tokio::test]
 async fn install_claude_path_source_and_command_refusal() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let market = init_claude_fixture();
     let markets = format!("file://{}", market.path().display());
     let index_url = spawn_index_stub(index_fixture(&[])).await;
@@ -1428,11 +1435,18 @@ fn git_names_allow_trailing_slashes() {
     ] {
         assert_eq!(name_from_git_url(url), "repo");
     }
+    // Windows file:// fixtures carry a drive letter: the name is still the
+    // last path segment, and the drive colon must not read as a host split.
+    #[cfg(windows)]
+    assert_eq!(
+        name_from_git_url("file://C:\\Users\\someone\\AppData\\Local\\Temp\\fixture"),
+        "fixture"
+    );
 }
 
 #[tokio::test]
 async fn install_git_trailing_slash_extracts_and_records() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let (repo, url) = init_git_fixture(&[("skills/a/SKILL.md", MULCH_SKILL)]);
     let _home = use_git_env();
     let url = format!("{url}/");
@@ -1449,7 +1463,7 @@ async fn install_git_trailing_slash_extracts_and_records() {
 
 #[tokio::test]
 async fn failed_reinstall_preserves_existing_plugin() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let _home = use_git_env();
     let url = spawn_tarball(b"not an archive".to_vec()).await;
     let dest = crate::plugins_dir().join("pi-foo");
@@ -1469,7 +1483,7 @@ async fn failed_reinstall_preserves_existing_plugin() {
 
 #[test]
 fn archive_replacement_removes_stale_files_and_rolls_back_lock_failure() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = use_git_env();
     let dest = crate::plugins_dir().join("demo");
     std::fs::create_dir_all(&dest).unwrap();
@@ -1501,7 +1515,7 @@ async fn unsafe_url_names_rejected_before_download() {
 
 #[test]
 fn archive_rollback_preserves_backup_when_cleanup_fails() {
-    let _guard = ENV_GUARD.lock().unwrap();
+    let _guard = env_guard();
     let home = use_git_env();
     let root = crate::plugins_dir();
     let dest = root.join("demo");

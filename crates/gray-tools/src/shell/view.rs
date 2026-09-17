@@ -61,15 +61,23 @@ pub fn format_elapsed(d: Duration) -> String {
 /// Home-relative log path: $GRAY_HOME/... -> ~/... else $HOME/... -> ~/...
 pub fn home_relative(p: &Path) -> String {
     let s = p.to_string_lossy();
+    // Prefix match must accept both separators: Windows paths arrive with
+    // backslashes while GRAY_HOME/HOME may hold either spelling.
+    let under = |root: &str| -> bool {
+        !root.is_empty()
+            && (s.as_ref() == root
+                || s.starts_with(&format!("{root}/"))
+                || s.starts_with(&format!("{root}\\"))
+                || s.eq_ignore_ascii_case(root))
+    };
     if let Ok(gray) = std::env::var("GRAY_HOME")
         && !gray.trim().is_empty()
-        && (s.as_ref() == gray || s.starts_with(&format!("{gray}/")))
+        && under(gray.trim())
     {
-        return format!("~{}", &s[gray.len()..]);
+        return format!("~{}", &s[gray.trim().len()..]);
     }
     if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-        && (s.as_ref() == home || s.starts_with(&format!("{home}/")))
+        && under(&home)
     {
         return format!("~{}", &s[home.len()..]);
     }

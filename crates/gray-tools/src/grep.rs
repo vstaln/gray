@@ -19,6 +19,35 @@ const GREP_MAX_LINE_LENGTH: usize = 500;
 /// Search file contents with ripgrep. Respects .gitignore.
 pub struct GrepTool;
 
+/// `path:line:col:text` — split off the first three fields; the text keeps
+/// any further colons. A leading Windows drive letter ("C:") belongs to the
+/// path, not a field separator: peel it off, split the rest, restore it, or
+/// every native match is silently dropped (CI: fast_path_parity `left: []`).
+/// Returns `(path, line_number_text, text)`; the path is owned because a
+/// drive prefix makes it non-contiguous with the input.
+fn parse_vimgrep(line: &str) -> Option<(String, &str, &str)> {
+    // The peel fires only when byte 2 is a separator, so a bare Unix path
+    // like `a:3:12:x` still splits as path/line/col/text.
+    let is_drive = line.len() >= 3
+        && line.as_bytes()[1] == b':'
+        && line.as_bytes()[0].is_ascii_alphabetic()
+        && (line.as_bytes()[2] == b'\\' || line.as_bytes()[2] == b'/');
+    let (drive, body) = if is_drive {
+        (&line[..2], &line[2..])
+    } else {
+        ("", line)
+    };
+    let mut fields = body.splitn(4, ':');
+    let fp = fields.next()?;
+    let no = fields.next()?;
+    let _col = fields.next()?;
+    let text = fields.next()?;
+    if no.is_empty() || !no.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((format!("{drive}{fp}"), no, text))
+}
+
 impl GrepTool {
     /// Match-only fast path over `rg --vimgrep` (`path:line:col:text`).
     ///
@@ -39,6 +68,10 @@ impl GrepTool {
         literal: bool,
         effective_limit: usize,
     ) -> Option<ToolOutput> {
+        // Windows CreateProcess finds "rg" only via PATH-with-.exe; the
+        // documented surface is a ripgrep on PATH (CI installs it). A miss
+        // must fall through to the `--json` lane's clear "not installed"
+        // error, not fabricate matches — so no shell layer is added here.
         let mut cmd = Command::new("rg");
         cmd.arg("--vimgrep").arg("--color=never").arg("--hidden");
         if ignore_case {
@@ -93,16 +126,9 @@ impl GrepTool {
                     if line.trim().is_empty() {
                         continue;
                     }
-                    if match_count >= effective_limit {
-                        break;
-                    }
-                    // `path:line:col:text` — split off the first three fields;
-                    // the text keeps any further colons. Mirrors the `--json`
-                    // path: only lines with a real path + line number survive.
-                    let mut parts = line.splitn(4, ':');
-                    let (Some(fp), Some(no), Some(_col), Some(text)) =
-                        (parts.next(), parts.next(), parts.next(), parts.next())
-                    else {
+                    // `path:line:col:text` — see parse_vimgrep for the
+                    // Windows drive-letter contract and its unit tests.
+                    let Some((fp, no, text)) = parse_vimgrep(&line) else {
                         continue;
                     };
                     let line_number: usize = match no.parse() {
@@ -112,8 +138,14 @@ impl GrepTool {
                     if fp.is_empty() {
                         continue;
                     }
+                    // Mirror the --json lane exactly: count and emit the
+                    // match first, then enforce the limit (a missing
+                    // increment here silently returns every match).
                     match_count += 1;
-                    matches.push((fp.to_string(), line_number, text.to_string()));
+                    // Native vimgrep prints backslash paths; the --json
+                    // lane reports forward slashes (relativize() maps both,
+                    // but the raw parity comparison must agree).
+                    matches.push((fp.replace('\\', "/"), line_number, text.to_string()));
                     if match_count >= effective_limit {
                         match_limit_reached = true;
                         let _ = child.kill().await;
@@ -542,5 +574,50 @@ impl Tool for GrepTool {
         append_notices(&mut output, &notices);
 
         finish(output)
+    }
+}
+
+#[cfg(test)]
+mod vimgrep_tests {
+    use super::parse_vimgrep;
+
+    #[test]
+    fn unix_vimgrep_line_splits_into_three_fields() {
+        let (fp, no, text) = parse_vimgrep("src/a.txt:3:12:hello: world").unwrap();
+        assert_eq!(fp, "src/a.txt");
+        assert_eq!(no, "3");
+        assert_eq!(text, "hello: world");
+    }
+
+    #[test]
+    fn windows_drive_path_keeps_colon_in_path() {
+        let (fp, no, text) = parse_vimgrep(r"C:\repo\src\a.txt:3:12:hello: world").unwrap();
+        assert_eq!(fp, r"C:\repo\src\a.txt");
+        assert_eq!(no, "3");
+        assert_eq!(text, "hello: world");
+    }
+
+    #[test]
+    fn forward_slash_drive_path_exact_case() {
+        let (fp, no, text) = parse_vimgrep("C:/path/file.rs:12:34:content").unwrap();
+        assert_eq!(fp, "C:/path/file.rs");
+        assert_eq!(no, "12");
+        assert_eq!(text, "content");
+    }
+
+    #[test]
+    fn single_letter_unix_path_is_not_a_drive() {
+        // A bare one-letter relative path must split normally, not as "a:".
+        let (fp, no, text) = parse_vimgrep("a:3:12:content").unwrap();
+        assert_eq!(fp, "a");
+        assert_eq!(no, "3");
+        assert_eq!(text, "content");
+    }
+
+    #[test]
+    fn garbage_lines_decline() {
+        assert!(parse_vimgrep("summary line").is_none());
+        assert!(parse_vimgrep("path:line:text").is_none());
+        assert!(parse_vimgrep("path:x:12:text").is_none());
     }
 }

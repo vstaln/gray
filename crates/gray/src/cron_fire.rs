@@ -113,6 +113,25 @@ async fn run_pre_script_with_timeout(
     workdir: &std::path::Path,
     timeout: std::time::Duration,
 ) -> ScriptOutcome {
+    // Shebang scripts are not executables on Windows: go through the same
+    // POSIX shell the bash tool uses. A missing shell is a spawn failure,
+    // not a panic path, so it maps into the same ScriptOutcome.
+    #[cfg(windows)]
+    let mut command = match gray_tools::shell::shell_path() {
+        Ok(shell) => {
+            let mut cmd = tokio::process::Command::new(shell);
+            cmd.arg("-c").arg(script);
+            cmd
+        }
+        Err(e) => {
+            return ScriptOutcome {
+                ok: false,
+                stdout: String::new(),
+                stderr_tail: format!("pre-script spawn failed: {e}"),
+            };
+        }
+    };
+    #[cfg(not(windows))]
     let mut command = tokio::process::Command::new(script);
     command.current_dir(workdir).kill_on_drop(true);
     let res = tokio::time::timeout(timeout, command.output()).await;

@@ -592,7 +592,15 @@ fn runit_run_script(home: &Path, exe: &Path) -> String {
 }
 
 fn runit_log_script(home: &Path) -> String {
-    let logs = shell_quote(&home.join("logs/gateway").display().to_string());
+    // runit scripts run under sh: force forward slashes so a Windows-style
+    // join can never inject backslashes into the quoted path.
+    let logs = shell_quote(
+        &home
+            .join("logs/gateway")
+            .display()
+            .to_string()
+            .replace('\\', "/"),
+    );
     format!("#!/bin/sh\nmkdir -p {logs}\nexec svlogd -tt {logs}\n")
 }
 

@@ -242,11 +242,16 @@ fn https_is_bare_github_repo(t: &str) -> bool {
 /// Install name from a git URL: last path segment minus `.git`.
 fn name_from_git_url(url: &str) -> String {
     let path = url.split(['?', '#']).next().unwrap_or(url);
+    // On Windows a `file://C:\...` fixture must yield the last path segment,
+    // not bail: a single-letter drive prefix is not an scp-style host split.
     let after_host = match path.split_once("://") {
         Some((_, rest)) => rest.find('/').map(|i| &rest[i + 1..]).unwrap_or(""),
         None => match path.find(':') {
-            Some(i) => &path[i + 1..],
+            Some(i) if !(path.len() == i + 2 && path.as_bytes()[i + 1].is_ascii_alphabetic()) => {
+                &path[i + 1..]
+            }
             None => path,
+            _ => path,
         },
     };
     let after_host = after_host.trim_end_matches('/');
