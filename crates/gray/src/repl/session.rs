@@ -196,6 +196,7 @@ pub(crate) async fn handle_resume(
                         ledger.clear();
                     }
                     *session_state = Some(SessionState {
+                        full_save_pending: false,
                         session_id: sid.clone(),
                         store,
                     });
@@ -269,9 +270,16 @@ pub(crate) async fn persist_turn_messages(
     duration_ms: Option<u64>,
 ) {
     ensure_session_state(session_state, config, cwd).await;
-    if let Some(state) = session_state
-        && agent.messages().len() > initial_count
-    {
+    if let Some(state) = session_state {
+        if state.full_save_pending {
+            if let Err(error) = save_full_history(state, agent.messages()).await {
+                crate::profile::queue_profile_warning(error);
+            }
+            return;
+        }
+        if agent.messages().len() <= initial_count {
+            return;
+        }
         let new_messages = &agent.messages()[initial_count..];
         for (i, msg) in new_messages.iter().enumerate() {
             let is_last = i == new_messages.len() - 1;
@@ -282,7 +290,11 @@ pub(crate) async fn persist_turn_messages(
                 .append_with_usage_and_duration(&state.session_id, msg, usage, duration)
                 .await
             {
-                log::warn!(target: "gray_session", "session append failed: {e}");
+                state.full_save_pending = true;
+                let warning = save_failure_message("session save", &e);
+                log::warn!(target: "gray_session", "{warning}");
+                crate::profile::queue_profile_warning(warning);
+                break;
             }
         }
     }
@@ -316,7 +328,11 @@ pub(crate) async fn ensure_session_state(
         if let Err(e) = store.create(meta).await {
             log::warn!(target: "gray_session", "session create failed: {e}");
         }
-        *session_state = Some(SessionState { store, session_id });
+        *session_state = Some(SessionState {
+            full_save_pending: false,
+            store,
+            session_id,
+        });
     }
 }
 
@@ -567,10 +583,40 @@ async fn persist_compaction_tail(
     }
     ensure_session_state(session_state, config, cwd).await;
     if let Some(state) = session_state {
-        let _ = state
-            .store
-            .append_compaction_replacement(&state.session_id, agent.messages())
-            .await;
+        if let Err(warning) = save_full_history(state, agent.messages()).await {
+            say(tui, &warning);
+        }
+    } else {
+        say(
+            tui,
+            "WARNING: compaction save failed: no session storage available. History remains in memory; do not exit before saving it.",
+        );
+    }
+}
+
+fn save_failure_message(operation: &str, error: &impl std::fmt::Display) -> String {
+    let detail = crate::print::scrub_error_text(&error.to_string());
+    format!(
+        "WARNING: {operation} failed: {detail}. History remains in memory; a full save will be retried on the next turn. Do not exit before it succeeds."
+    )
+}
+
+async fn save_full_history(state: &mut SessionState, messages: &[Message]) -> Result<(), String> {
+    state.full_save_pending = true;
+    match state
+        .store
+        .append_compaction_replacement(&state.session_id, messages)
+        .await
+    {
+        Ok(()) => {
+            state.full_save_pending = false;
+            Ok(())
+        }
+        Err(error) => {
+            let warning = save_failure_message("compaction save", &error);
+            log::warn!(target: "gray_session", "{warning}");
+            Err(warning)
+        }
     }
 }
 

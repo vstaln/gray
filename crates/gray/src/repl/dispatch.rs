@@ -131,7 +131,11 @@ pub(crate) async fn dispatch_command(
                     .unwrap_or("new")
                     .to_string();
                 new_sid = Some(session_id.clone());
-                *session_state = Some(SessionState { store, session_id });
+                *session_state = Some(SessionState {
+                    full_save_pending: false,
+                    store,
+                    session_id,
+                });
             }
             // Build with the new session id so the prompt-cache shard
             // survives future resumes of this session.
