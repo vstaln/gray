@@ -1,9 +1,3 @@
-<!-- ────────────────────────────────────────────────────────────────────────
-     LOGO PLACEHOLDER
-     The <img> below points at assets/logo-dark.svg — right now that's a
-     stand-in pulled from gray.alignment.id. Drop the real mark in at that
-     path (SVG, white on transparent, ~360px wide) and delete this comment.
-     ───────────────────────────────────────────────────────────────────────── -->
 <div align="center">
   <img alt="Gray" src="assets/logo-dark.svg" width="108" />
   <h1>gray</h1>
@@ -24,7 +18,7 @@
 <br/>
 
 <div align="center">
-  <img alt="Dithered Carina Nebula — cosmic cliffs" src="assets/space/carina-dither.png" width="100%" />
+  <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
 </div>
 
 Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises.
@@ -142,9 +136,7 @@ The agent stores recurring work with `gray cron add "<schedule>" "<prompt>"` (ma
 **Gateway** — `gray gateway install` writes a user service (runit on Void, systemd `--user` elsewhere; `install --print` previews) running `gray gateway run`: a 60s cron ticker plus a control socket at `$GRAY_HOME/gateway.sock` answering `identify`/`status` (one JSON line in, one out — a connectable socket with a well-formed answer *is* liveness). `gray gateway status` reports daemon + service + ticker health and exits 1 when down; `start`/`stop`/`restart` drive the service, `uninstall` removes it. The daemon claims `$GRAY_HOME/gateway.pid` (O_EXCL, start-time-checked against PID reuse), records why it stopped in `gateway.state.json`, and drains an in-flight fire up to 65s on SIGTERM.
 
 <div align="center">
-  <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
   <img alt="Dithered Jupiter storm" src="assets/space/jupiter-dither.png" width="31%" />
-  <img alt="Dithered Saturn" src="assets/space/saturn-dither.png" width="31%" />
 </div>
 
 ## Safety
@@ -202,6 +194,10 @@ The essentials — everything else is one `--help` or doc page away.
 ## Stability
 
 The 1.x stability contract (CLI flags, session JSONL schema, plugin wire v1, `~/.gray` layout) takes effect at 1.0 — on 0.x these are best-effort. Not stable: the TUI, internal crate APIs, `gray-markdown`. Per-release changes: [CHANGELOG.md](CHANGELOG.md). Rollback is publisher-side today (manifest re-point); user-side `gray update --to <version>` is planned.
+
+<div align="center">
+  <img alt="Dithered Saturn" src="assets/space/saturn-dither.png" width="31%" />
+</div>
 
 ---
 
