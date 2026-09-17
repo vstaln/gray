@@ -232,12 +232,12 @@ pub(crate) fn push_provider_connected(
 /// Split a `/name argv…` line into (`/name`, argv words) for plugin
 /// slash-command routing. `None` when the line isn't a slash command.
 fn split_plugin_command(line: &str) -> Option<(String, Vec<String>)> {
-    let mut words = line.trim().strip_prefix('/')?.split_whitespace();
-    let first = words.next()?;
+    let words = shlex::split(line.trim().strip_prefix('/')?)?;
+    let (first, rest) = words.split_first()?;
     if first.is_empty() {
         return None;
     }
-    Some((format!("/{first}"), words.map(|w| w.to_string()).collect()))
+    Some((format!("/{first}"), rest.to_vec()))
 }
 
 /// Claimed plugin slash commands for `/help`, in hook order. Names drop

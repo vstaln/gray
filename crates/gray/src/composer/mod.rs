@@ -26,6 +26,7 @@ pub(crate) const VIEWPORT_H: u16 = 14;
 /// bottom pad + context footer. No cleared slack below the footer.
 pub(crate) const MIN_VIEWPORT_H: u16 = 4;
 
+mod plugin_widget;
 mod terminal;
 pub(crate) use terminal::CustomTerminal;
 
@@ -238,6 +239,7 @@ pub struct Tui {
     /// input box by `draw`; the scrollback commit at `ToolResult` stays the
     /// single transcript render, so resume/reflow never see this.
     live_tools: Vec<LiveTool>,
+    plugin_widget: plugin_widget::Widget,
 }
 
 /// One in-flight tool call rendered live above the input box while the
@@ -405,6 +407,7 @@ impl Tui {
             turn_billed_output: None,
             viewport_h: MIN_VIEWPORT_H,
             live_tools: Vec::new(),
+            plugin_widget: plugin_widget::Widget::new(std::env::current_dir().unwrap_or_default()),
         })
     }
 
@@ -935,7 +938,12 @@ impl Tui {
                 return;
             }
         }
-        if self.status.is_none() && self.live_tools.is_empty() {
+        let widget_changed = self.plugin_widget.refresh();
+        if self.status.is_none()
+            && self.live_tools.is_empty()
+            && !self.plugin_widget.active()
+            && !widget_changed
+        {
             return;
         }
         let _ = self.draw();

@@ -70,23 +70,24 @@ pub(crate) async fn dispatch_command(
                 out.push_str(&commands::format_help_line(d));
                 out.push('\n');
             }
-            if let Some((shared, _)) = tui {
-                if let Some(a) = agent.as_ref() {
-                    for (n, d) in plugin_help_entries(a.hooks()) {
-                        out.push_str(&format!("  /{n:<10} {d}\n"));
-                    }
+            let mut entries = crate::plugin_cli::completions("");
+            if let Some(a) = agent.as_ref() {
+                entries.extend(plugin_help_entries(a.hooks()));
+            }
+            let mut seen: std::collections::HashSet<String> =
+                REGISTRY.iter().map(|d| d.name.to_string()).collect();
+            for (name, description) in entries {
+                if seen.insert(name.clone()) {
+                    out.push_str(&format!("  /{name:<10} {description}\n"));
                 }
+            }
+            if let Some((shared, _)) = tui {
                 let mut t = shared.lock().expect("tui lock");
                 t.push_dim(out.trim_end().to_string());
                 t.ensure_gap(1);
             } else {
                 println!("{}", crate::rule("commands"));
                 print!("{out}");
-                if let Some(a) = agent.as_ref() {
-                    for (n, d) in plugin_help_entries(a.hooks()) {
-                        println!("  /{n:<8} {d}");
-                    }
-                }
             }
             Flow::Continue
         }
@@ -296,10 +297,15 @@ pub(crate) async fn dispatch_command(
                 .as_ref()
                 .map(|a| a.hooks().to_vec())
                 .unwrap_or_default();
+            let Some((name, argv)) = split_plugin_command(&cmd) else {
+                say(
+                    tui.as_ref().map(|(s, _)| s),
+                    "invalid plugin command: check quotes and escapes",
+                );
+                return Ok(Flow::Continue);
+            };
             let mut handled = false;
-            if let Some((name, argv)) = split_plugin_command(&cmd)
-                && let Some(outcome) = run_plugin_command(&hooks, &name, argv).await
-            {
+            if let Some(outcome) = run_plugin_command(&hooks, &name, argv.clone()).await {
                 match outcome {
                     CommandOutcome::Say(text) => {
                         say(tui.as_ref().map(|(s, _)| s), &text);
@@ -312,6 +318,22 @@ pub(crate) async fn dispatch_command(
                     }
                 }
                 handled = true;
+            }
+            if !handled {
+                match crate::plugin_cli::capture_slash(name.trim_start_matches('/'), &argv).await {
+                    Ok(Some(text)) => {
+                        say(tui.as_ref().map(|(s, _)| s), text.trim_end());
+                        handled = true;
+                    }
+                    Err(e) => {
+                        say(
+                            tui.as_ref().map(|(s, _)| s),
+                            &format!("plugin command failed: {e}"),
+                        );
+                        handled = true;
+                    }
+                    Ok(None) => {}
+                }
             }
             if !handled {
                 // The gateway left the TUI (native gateway deleted; chat returns as a plugin):

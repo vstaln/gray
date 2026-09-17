@@ -15,6 +15,7 @@ name = "gray"
 path = "src/main.rs"
 
 [dependencies]
+shlex = "2"
 gray-core = { workspace = true }
 gray-plugin = { workspace = true }
 gray-pkg = { workspace = true }

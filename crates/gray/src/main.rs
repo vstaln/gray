@@ -32,6 +32,21 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // Plugin terminal commands do not depend on provider configuration.
+    match &cli.command {
+        Some(gray::Commands::Install {
+            cmd: gray::InstallCmd::Plugin { name },
+        }) => {
+            return gray::plugin_cli::install(&gray::plugin_cli::home()?, name).await;
+        }
+        Some(gray::Commands::External(args)) => {
+            let (name, rest) = args
+                .split_first()
+                .expect("clap external command is nonempty");
+            return gray::plugin_cli::forward(&gray::plugin_cli::home()?, name, rest);
+        }
+        _ => {}
+    }
     let mut config = Config::resolve(&cli)?;
     gray::turn_caps::init_process_start();
     gray::setup::set_user_context_window(config.context_window);
@@ -60,6 +75,11 @@ async fn main() -> anyhow::Result<()> {
             }
             gray::Commands::Sessions { cmd } => {
                 return run_sessions(cmd).await;
+            }
+            // Handled before Config::resolve so plugin commands work with no
+            // provider configured (fresh machine, venv-only install).
+            gray::Commands::Install { .. } | gray::Commands::External(_) => {
+                unreachable!("plugin CLI dispatch happens before configuration")
             }
         }
     }
