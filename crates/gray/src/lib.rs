@@ -12,6 +12,7 @@ pub mod gateway;
 pub mod host;
 pub mod logging;
 pub mod plugin_check;
+pub mod plugin_cli;
 pub mod print;
 pub mod profile;
 pub mod repl;
@@ -316,6 +317,25 @@ pub enum Commands {
     Sessions {
         #[command(subcommand)]
         cmd: SessionsCmd,
+    },
+    /// Register a native plugin executable (gray install plugin NAME)
+    Install {
+        #[command(subcommand)]
+        cmd: InstallCmd,
+    },
+    /// Plugin-provided commands (`gray NAME setup`, …) — forwarded to the plugin
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+/// `gray install plugin <name>` — native plugin registration.
+#[derive(Parser, Debug, Clone)]
+pub enum InstallCmd {
+    /// Register a plugin command from PATH or GRAY_PLUGIN_PATH
+    Plugin {
+        /// Plugin name
+        #[arg(value_name = "NAME")]
+        name: String,
     },
 }
 

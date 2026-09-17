@@ -871,6 +871,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "thiserror",
  "tokio",
