@@ -146,7 +146,14 @@ fn truncated_log_has_executable_bounded_recovery() {
                 vec![b'z'; (raw.len() - INLINE_BUDGET_BYTES).min(4096)]
             );
         } else {
-            assert!(out.stdout.starts_with(b"a\r\n"));
+            // Windows CI round 4: this assertion failed while the command
+            // itself succeeded. Emit the exact recovered bytes so the next
+            // run captures what Git Bash's sed/dd actually returned.
+            assert!(
+                out.stdout.starts_with(b"a\r\n"),
+                "recovery bytes: {:?} (command: {command})",
+                out.stdout
+            );
         }
     }
 }
