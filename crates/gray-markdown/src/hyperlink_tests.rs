@@ -594,3 +594,70 @@ fn soft_break_inside_link_text_preserves_column_range() {
         crate::buffers::unicode_display_width("link text"),
     );
 }
+
+#[test]
+fn file_link_displays_only_underlined_label_with_original_target() {
+    let text = "Open [the file](file:///tmp/project%20space/report.md) please.\n";
+    let (out, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
+    let visible = out
+        .lines
+        .iter()
+        .map(line_to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(visible.trim(), "Open the file please.");
+    let link = parser_link_text(&out, "the file");
+    assert_eq!(link.url, "file:///tmp/project%20space/report.md");
+    assert!(out.lines[link.line_index].spans.iter().any(|s| {
+        s.content.contains("the file")
+            && s.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::UNDERLINED)
+    }));
+}
+
+#[test]
+fn file_links_stream_like_full_render_and_leave_code_literal() {
+    let text = "See [first](file:///tmp/first.md) and [second](file:///tmp/second.md).\n\n`file:///tmp/literal`\n\n";
+    let (full, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
+    let mut renderer = StreamingMarkdownRenderer::new(test_style::STYLE, true);
+    for ch in text.chars() {
+        renderer.push_and_render(&ch.to_string(), None);
+    }
+    renderer.finish(None);
+    let visible = |lines: &[Line<'static>]| lines.iter().map(line_to_string).collect::<Vec<_>>();
+    assert_eq!(visible(&renderer.view().lines), visible(&full.lines));
+    assert!(
+        visible(&full.lines)
+            .join("\n")
+            .contains("See first and second.")
+    );
+    assert!(
+        visible(&full.lines)
+            .join("\n")
+            .contains("file:///tmp/literal")
+    );
+    for out in [&full, renderer.view()] {
+        assert_eq!(parser_link_text(out, "first").url, "file:///tmp/first.md");
+        assert_eq!(parser_link_text(out, "second").url, "file:///tmp/second.md");
+    }
+}
+
+#[test]
+fn file_link_title_is_hidden_without_changing_web_links() {
+    let text =
+        "[report](file:///tmp/report.md \"private title\") and [web](https://example.com).\n";
+    let (out, _) = render_markdown_ratatui_full(text, test_style::STYLE, true, None);
+    let visible = out
+        .lines
+        .iter()
+        .map(line_to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(visible.trim(), "report and web (https://example.com).");
+    assert_eq!(
+        parser_link_text(&out, "report").url,
+        "file:///tmp/report.md"
+    );
+    assert_eq!(parser_link_text(&out, "web").url, "https://example.com");
+}
