@@ -229,3 +229,19 @@ diff whitespace checks. Native runtime evidence remains CI's to produce.
 Verified locally: full Linux workspace suite (41 binaries green), both
 Linux and Windows-GNU clippy at `-D warnings`, Windows all-target check,
 fmt. Windows runtime evidence remains CI's job (next run).
+
+## Windows CI failure round 3: final three roots (run 35226808237)
+
+1. Git for Windows defaults core.autocrlf=true; clones rewrote LF to CRLF,
+   so hash-verified install content diverged (`---\r\n` vs `---\n`).
+   Installs now clone with `-c core.autocrlf=false`: installed bytes are
+   exactly what the source committed, on every platform.
+2. `Read more:` recovery commands embed the log path as a Git Bash command
+   string; backslashes there are shell escapes (round-1 leftover,
+   `bash_tests.rs:149`). The path is forward-slashed per the documented
+   "Git Bash paths in command strings" contract; recovery executes under
+   `sh` with the same spelling.
+
+Remaining failures from previous rounds (sidecar .sh, cron quoting, URL
+parsing, guards) all passed natively in this run. Local verification: full
+Linux workspace suite green, both clippy lanes, fmt, cross-target check.
