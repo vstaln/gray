@@ -237,3 +237,24 @@ fn plugin_help_lists_claimed_commands() {
     let empty: Vec<std::sync::Arc<dyn gray_core::agent::PluginHooks>> = Vec::new();
     assert!(super::plugin_help_entries(&empty).is_empty());
 }
+
+#[test]
+fn plugin_slash_preserves_quotes_empty_args_and_literals() {
+    assert_eq!(
+        super::split_plugin_command(
+            r#"/echo run "two word task" '' '$(not-executed)' escaped\ space"#
+        ),
+        Some((
+            "/echo".into(),
+            vec![
+                "run".into(),
+                "two word task".into(),
+                "".into(),
+                "$(not-executed)".into(),
+                "escaped space".into()
+            ]
+        ))
+    );
+    assert_eq!(super::split_plugin_command("/echo 'unfinished"), None);
+    assert_eq!(super::split_plugin_command("/echo trailing\\"), None);
+}

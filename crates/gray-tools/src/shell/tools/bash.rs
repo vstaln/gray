@@ -39,11 +39,19 @@ impl Tool for BashTool {
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "bash",
-            "Run a shell command via `sh -c` and capture stdout/stderr. \
+            if cfg!(windows) {
+                "Run a POSIX command with Git for Windows sh -c (not PowerShell or WSL). \
+                 No terminal or stdin. Native cwd is supplied by Gray; use Git Bash path syntax in commands. \
+                 Timeout defaults to 30s, capped at 600s. Timeout/cancellation terminates the owned process tree. \
+                 Background descendants never outlive this call. Captures stdout/stderr; \
+                 non-zero exits are data, not tool errors. Read the header."
+            } else {
+                "Run a shell command via `sh -c` and capture stdout/stderr. \
              Blocks until the command exits. Times out after `timeout` seconds \
              (default 30, capped at 600): the process group is killed and \
              partial output is returned. \
-             Non-zero exits are data, not tool errors — read the header.",
+             Non-zero exits are data, not tool errors — read the header."
+            },
             json!({
                 "type": "object",
                 "properties": {
@@ -110,6 +118,10 @@ impl Tool for BashTool {
             Ok(s) => s,
             Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
         };
+        #[cfg(not(windows))]
+        let target = spawned.pgid;
+        #[cfg(windows)]
+        let target = &spawned.job;
         let mut child = spawned.child;
         let pump = Pump::start(child.stdout.take(), child.stderr.take(), log_path.clone());
 
@@ -123,8 +135,8 @@ impl Tool for BashTool {
             s = child.wait() => match s {
                 Ok(st) => { exited = Some(st); Cause::Exit }
                 Err(e) => {
-                    let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
-                    let _ = child.wait().await;
+                    let _ = term_then_kill(target, Duration::from_secs(2)).await;
+                    let _ = child.start_kill();
                     abort_pump(pump).await;
                     return fail(format!("failed to wait for command: {e}"));
                 }
@@ -138,33 +150,46 @@ impl Tool for BashTool {
             }
             _ = ctx.cancel.cancelled() => Cause::Cancel,
         };
-        // Timeout and cancel both escalate SIGTERM → SIGKILL on our own
-        // group, then reap. Refusal (degenerate pgid) still falls through
-        // to wait — the child is ours, wait reaps it.
+        // Unix escalates SIGTERM → SIGKILL; Windows terminates the owned job.
+        // Failed termination is a harness error, never a successful timeout.
         let first_line: Option<String> = match cause {
             Cause::Exit => None,
             Cause::Timeout => {
-                let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
-                match child.wait().await {
-                    Ok(st) => {
-                        exited = Some(st);
-                    }
+                // Reap while Unix escalation polls: macOS can return EPERM
+                // when only an unreaped zombie remains in the process group.
+                // try_join also stops waiting if termination fails; never hide
+                // that failure or block forever waiting for an unkillable child.
+                match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|e| format!("failed to wait for command: {e}"))
+                }) {
+                    Ok(((), st)) => exited = Some(st),
                     Err(e) => {
+                        let _ = child.start_kill();
                         abort_pump(pump).await;
-                        return fail(format!("failed to wait for command: {e}"));
+                        return fail(e);
                     }
                 }
                 Some(format!("timed out after {secs}s (process group killed)"))
             }
             Cause::Cancel => {
-                let _ = term_then_kill(spawned.pgid, Duration::from_secs(2)).await;
-                match child.wait().await {
-                    Ok(st) => {
-                        exited = Some(st);
-                    }
+                // Reap while Unix escalation polls: macOS can return EPERM
+                // when only an unreaped zombie remains in the process group.
+                // try_join also stops waiting if termination fails; never hide
+                // that failure or block forever waiting for an unkillable child.
+                match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+                    child
+                        .wait()
+                        .await
+                        .map_err(|e| format!("failed to wait for command: {e}"))
+                }) {
+                    Ok(((), st)) => exited = Some(st),
                     Err(e) => {
+                        let _ = child.start_kill();
                         abort_pump(pump).await;
-                        return fail(format!("failed to wait for command: {e}"));
+                        return fail(e);
                     }
                 }
                 Some(format!(
@@ -173,6 +198,11 @@ impl Tool for BashTool {
                 ))
             }
         };
+        // A Windows shell may exit before background descendants release the
+        // pipes. End this call's job before draining, not after a 30s pipe wait.
+        // Native Windows shell background jobs therefore never outlive a call.
+        #[cfg(windows)]
+        drop(spawned.job);
         let status = exited.expect("every cause resolves a status");
         let (summary, drain_truncated) = match drain_pump(pump, &log_path).await {
             Ok(v) => v,
@@ -201,15 +231,7 @@ impl Tool for BashTool {
 }
 
 fn gray_home() -> PathBuf {
-    std::env::var("GRAY_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".gray"))
-                .unwrap_or_else(|_| std::env::temp_dir().join(".gray"))
-        })
+    gray_core::paths::gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
 }
 
 fn shell_dir() -> PathBuf {
@@ -303,7 +325,28 @@ fn finish_inline(
         out.push('\n');
         out.push_str(&fence(&view.body));
     }
+    if let Some((start, end)) = view.omitted_range {
+        // Absolute, shell-quoted path: never expand the display-only ~/ shorthand.
+        let path = log_path.to_string_lossy().replace('\'', "'\"'\"'");
+        let command = if small_log_on_disk(log_path, summary) {
+            // middle_out offsets are sanitized bytes. Recover by line instead,
+            // including the last shown line in case it was cut mid-line.
+            let first = view.shown_lines.0.max(1);
+            let last = first.saturating_add(199);
+            format!("sed -n '{first},{last}p;{last}q' '{path}' | head -c 4096")
+        } else {
+            // Large-log sampling tracks raw offsets, not sanitized ones.
+            let count = end.saturating_sub(start).min(4096);
+            format!("dd if='{path}' bs=1 skip={start} count={count} 2>/dev/null")
+        };
+        out.push_str(&format!("\nRead more: {command}"));
+    }
     ToolOutput::ok(out)
+}
+
+fn small_log_on_disk(log_path: &std::path::Path, summary: &PumpSummary) -> bool {
+    let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
+    summary.total_bytes <= INLINE_BUDGET_BYTES as u64 && file_len <= INLINE_BUDGET_BYTES as u64
 }
 
 /// Bounded inline view (≤ ~12 KiB): the whole log read back from disk when
@@ -315,9 +358,7 @@ fn build_view(log_path: &std::path::Path, summary: &PumpSummary) -> View {
     // Byte-bounded: the small path reads the log back from disk — never read
     // an unbounded log on a stale/small summary. Check the real length first
     // and fall back to the bounded in-memory head ++ tail.
-    let file_len = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
-    let use_disk =
-        summary.total_bytes <= INLINE_BUDGET_BYTES as u64 && file_len <= INLINE_BUDGET_BYTES as u64;
+    let use_disk = small_log_on_disk(log_path, summary);
     // On read error fall through to the memory sample below.
     if use_disk && let Ok(bytes) = std::fs::read(log_path) {
         let mut view = middle_out(&bytes, INLINE_BUDGET_BYTES, VIEW_BUDGET_LINES, 0);

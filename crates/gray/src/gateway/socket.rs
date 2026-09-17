@@ -137,8 +137,10 @@ pub async fn serve(
     }
     // We hold the pid claim, so any file at this path is stale or ours.
     let _ = std::fs::remove_file(&path);
-    // Restrictive umask: the socket is never connectable, even before chmod.
-    let previous = unsafe { libc::umask(0o177) };
+    // umask is process-wide: 0177 also removes OWNER directory traversal
+    // from mkdir on unrelated threads (cron status then gets EACCES). 0077
+    // keeps owner access and denies all group/other access even before chmod.
+    let previous = unsafe { libc::umask(0o077) };
     let listener = tokio::net::UnixListener::bind(&path);
     unsafe { libc::umask(previous) };
     let listener = listener?;

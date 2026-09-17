@@ -50,26 +50,15 @@ pub fn redact(url: &str) -> String {
 
 /// https-only, except http loopback (127.0.0.1/::1/localhost) for tests.
 pub(crate) fn check_url(url: &str) -> anyhow::Result<()> {
-    let redacted = || redact(url);
-    let Some((scheme, rest)) = url.split_once("://") else {
-        anyhow::bail!("refusing non-https plugin URL: {}", redacted());
-    };
-    if scheme.eq_ignore_ascii_case("https") {
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| anyhow::anyhow!("invalid plugin URL: {}", redact(url)))?;
+    if parsed.scheme() == "https"
+        || (parsed.scheme() == "http"
+            && matches!(parsed.host_str(), Some("127.0.0.1" | "[::1]" | "localhost")))
+    {
         return Ok(());
     }
-    if scheme.eq_ignore_ascii_case("http") {
-        let auth_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        let authority = &rest[..auth_end];
-        let host = authority.rsplit('@').next().unwrap_or(authority);
-        let host = host
-            .strip_prefix('[')
-            .and_then(|h| h.split(']').next())
-            .unwrap_or_else(|| host.split(':').next().unwrap_or(host));
-        if host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost") {
-            return Ok(());
-        }
-    }
-    anyhow::bail!("refusing non-https plugin URL: {}", redacted());
+    anyhow::bail!("refusing non-https plugin URL: {}", redact(url));
 }
 
 /// Decode standard base64 (npm `integrity` payloads) via the workspace

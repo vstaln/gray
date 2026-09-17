@@ -44,7 +44,6 @@ pub use write::WriteTool;
 #[derive(Default)]
 pub struct Registry {
     tools: Vec<Arc<dyn Tool>>,
-    file_ledger: Arc<FileLedger>,
 }
 
 impl Registry {
@@ -58,34 +57,12 @@ impl Registry {
                 out.push(t);
             }
         }
-        Self {
-            tools: out,
-            file_ledger: Arc::new(FileLedger::new()),
-        }
-    }
-
-    /// Shared read-before-write/dedup state (T3.1 seam). Tools take a clone
-    /// of this `Arc` in the T3.2/T3.3 wiring; `ToolsBasicPlugin` (T3.4) too.
-    pub fn file_ledger(&self) -> &Arc<FileLedger> {
-        &self.file_ledger
-    }
-
-    /// T3.4 adoption: point the registry at the ledger the session tools
-    /// share (`from_plugins` rebuilds tools-basic read/write/edit on it).
-    pub fn set_file_ledger(&mut self, ledger: Arc<FileLedger>) {
-        self.file_ledger = ledger;
+        Self { tools: out }
     }
 
     /// Tool definitions in registration order (for the chat request).
     pub fn defs(&self) -> Vec<ToolDef> {
         self.tools.iter().map(|t| t.def()).collect()
-    }
-
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools
-            .iter()
-            .find(|t| t.def().name == name)
-            .map(|t| t.as_ref())
     }
 
     /// Clones an owned handle so execution futures can be `'static`.
@@ -162,6 +139,9 @@ fn strip_framing(s: &str) -> &str {
             t = stripped.trim_end();
         }
         t = t.trim();
+    }
+    if serde_json::from_str::<Value>(t).is_ok() {
+        return t;
     }
     if let (Some(start), Some(end)) = (t.find('{'), t.rfind('}'))
         && start <= end

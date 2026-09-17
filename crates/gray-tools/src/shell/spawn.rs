@@ -2,7 +2,8 @@
 //!
 //! `sh -c` with null stdin, piped stdout/stderr, non-interactive env,
 //! detached via setsid (pgid == pid). NO `kill_on_drop`: from now on a
-//! child dies only by explicit kill (timeout/cancel arm) or by exiting.
+//! Unix children die by explicit kill or exit. Windows owns a Job Object
+//! instead: dropping the job closes any remaining descendants too.
 
 use std::io;
 use std::path::Path;
@@ -13,7 +14,31 @@ use super::contract::Spawned;
 
 /// Spawn `command` via `sh -c` in `cwd`.
 pub fn spawn(command: &str, cwd: &Path) -> io::Result<Spawned> {
+    #[cfg(not(windows))]
     let mut cmd = Command::new("sh");
+    #[cfg(windows)]
+    let mut cmd = {
+        let shell = super::windows::shell_path()?;
+        let mut cmd = Command::new(&shell);
+        // Git's shell can be found without usr/bin being on PATH. Its tools
+        // (cat, sleep, etc.) must be reachable inside non-login shell commands.
+        let mut paths = vec![
+            shell
+                .parent()
+                .expect("absolute executable has parent")
+                .to_path_buf(),
+        ];
+        if let Some(path) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&path));
+        }
+        cmd.env(
+            "PATH",
+            std::env::join_paths(paths).map_err(io::Error::other)?,
+        );
+        // Do not source user startup files in this non-interactive tool.
+        cmd.env_remove("BASH_ENV").env_remove("ENV");
+        cmd
+    };
     cmd.arg("-c")
         .arg(command)
         .current_dir(cwd)
@@ -45,14 +70,20 @@ pub fn spawn(command: &str, cwd: &Path) -> io::Result<Spawned> {
             });
         }
     }
+    #[cfg(not(windows))]
     let child = cmd.spawn()?;
+    #[cfg(windows)]
+    let (child, job) = super::windows::spawn_owned(&mut cmd)?;
     let pid = child
         .id()
         .ok_or_else(|| io::Error::other("spawned child has no pid"))?;
     Ok(Spawned {
         child,
         pid,
+        #[cfg(not(windows))]
         pgid: pid as i32, // setsid: group leader, pgid == pid
+        #[cfg(windows)]
+        job,
     })
 }
 

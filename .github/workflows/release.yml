@@ -8,11 +8,11 @@ name: release
 # Matrix mirrors codex-rs: macos runner builds both darwin targets,
 # linux x86_64 via musl-tools, linux aarch64 via cross (docker).
 #
-# Atomic CDN deploy: each matrix leg uploads its tarball to a STAGING prefix
+# Staged CDN deploy: each matrix leg uploads its tarball to a STAGING prefix
 # (dl/.staging/<channel>/). The finalize job below moves the full set live and
 # rewrites the latest-<channel>.txt manifest pointers LAST, then verifies every
 # tarball + manifest over HTTP — readers never see a manifest pointing at a
-# half-published set.
+# half-published set after the manifest swap. Downloads during promotion may retry.
 #
 # Rollback: re-point the manifest at the previous set. Old tarballs are never
 # deleted by deploy, so: echo '<prev-ver>' | ssh <host> "sudo tee
@@ -28,7 +28,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-deploy
   cancel-in-progress: false
 
 jobs:
@@ -96,6 +96,7 @@ jobs:
       - name: build
         env:
           GRAY_CHANNEL: ${{ needs.meta.outputs.channel }}
+          GRAY_BUILD_ID: ${{ github.sha }}
         shell: bash
         run: |
           # Single binary. No gateway features exist anymore.
@@ -151,17 +152,12 @@ jobs:
         run: |
           CHANNEL="${{ needs.meta.outputs.channel }}"
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" opc@168.110.210.65:/tmp/
-          $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL \
-            && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/$TAR \
-            && rm -f /tmp/$TAR"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TAR" "SHA256SUMS-${{ matrix.plat }}" opc@168.110.210.65:/tmp/
+          $SSH "sudo mkdir -p /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} \
+            && sudo install -m 644 /tmp/$TAR /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/$TAR \
+            && sudo install -m 644 /tmp/SHA256SUMS-${{ matrix.plat }} /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/SHA256SUMS-${{ matrix.plat }} \
+            && rm -f /tmp/$TAR /tmp/SHA256SUMS-${{ matrix.plat }}"
 
-      - name: sync installers to gray.alignment.id (beta pushes; tag pushes sync in publish)
-        if: matrix.plat == 'x86_64-linux' && !startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
-          ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65 "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1 && rm -f /tmp/install.sh /tmp/install.ps1 && echo '✓ installers live: https://gray.alignment.id'"
 
   finalize:
     needs: [meta, build-deploy]
@@ -178,17 +174,23 @@ jobs:
           CHANNEL="${{ needs.meta.outputs.channel }}"
           VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           SSH="ssh -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes opc@168.110.210.65"
-          $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/"
+          $SSH "cd /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }} && cat SHA256SUMS-* > /tmp/SHA256SUMS-$CHANNEL && sha256sum -c /tmp/SHA256SUMS-$CHANNEL && sudo install -m 644 /tmp/SHA256SUMS-$CHANNEL /var/www/gray/dl/SHA256SUMS-$CHANNEL"
+          $SSH "sudo cp /var/www/gray/dl/.staging/$CHANNEL/${{ github.run_id }}/gray-$CHANNEL-*.tar.gz /var/www/gray/dl/"
+          scp -i ~/.config/gray-deploy/key -o StrictHostKeyChecking=yes -o BatchMode=yes dist/install.sh dist/install.ps1 opc@168.110.210.65:/tmp/
+          $SSH "sudo install -m 644 /tmp/install.sh /var/www/gray/install.sh && sudo install -m 644 /tmp/install.ps1 /var/www/gray/install.ps1"
+          echo "${{ github.sha }}" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL-build.txt > /dev/null"
           echo "$VER" | $SSH "sudo tee /var/www/gray/dl/latest-$CHANNEL.txt > /dev/null"
           echo "✓ latest-$CHANNEL.txt = $VER"
-          for f in gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz latest-$CHANNEL.txt; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://gray.alignment.id/dl/$f")
+          for f in gray-$CHANNEL-x86_64-linux.tar.gz gray-$CHANNEL-aarch64-linux.tar.gz gray-$CHANNEL-aarch64-darwin.tar.gz gray-$CHANNEL-x86_64-darwin.tar.gz latest-$CHANNEL.txt SHA256SUMS-$CHANNEL latest-$CHANNEL-build.txt; do
+            if ! code=$(curl -sI -o /dev/null -w "%{http_code}" --retry 3 --retry-all-errors --max-time 30 "https://gray.alignment.id/dl/$f"); then
+              echo "deploy published but verification failed: $f (curl transport error)"; exit 1
+            fi
             [ "$code" = "200" ] || { echo "deploy check failed: $f returned $code"; exit 1; }
           done
           echo "✓ live: https://gray.alignment.id/dl/latest-$CHANNEL.txt"
 
   publish:
-    needs: build-deploy
+    needs: [build-deploy, finalize]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

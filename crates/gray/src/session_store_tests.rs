@@ -110,6 +110,11 @@ async fn load_ignores_torn_final_line_but_preserves_prior_entries() {
     tokio::fs::write(&path, raw).await.unwrap();
     let (_, entries) = store.load(&id).await.unwrap();
     assert_eq!(entries.len(), 1);
+    store
+        .append(&id, &Message::user("after resume"))
+        .await
+        .unwrap();
+    assert_eq!(store.load(&id).await.unwrap().1.len(), 2);
 }
 
 #[tokio::test]

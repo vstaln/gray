@@ -12,7 +12,9 @@ pub mod gateway;
 pub mod host;
 pub mod logging;
 pub mod plugin_check;
+pub mod plugin_cli;
 pub mod print;
+mod print_meter;
 pub mod profile;
 pub mod repl;
 pub mod resume;
@@ -49,7 +51,8 @@ the prompt reaches the model. Nothing here is sent verbatim except the text
 outside <!-- --> comments.
 
 This file IS the stored system prompt — sent verbatim every turn. Gray
-adds only ephemeral per-turn context: the <available_skills> list (fresh
+adds the runtime working directory and ephemeral per-turn context:
+the <available_skills> list (fresh
 skill discovery for the turn's directory) — no skill tool, read matches with
 bash. Edit with `/agentsmd` (Ctrl-S save & apply, Ctrl-R reset to this
 default, Ctrl-X cancel).
@@ -69,7 +72,6 @@ Workflow (do every task this way):
 Guidelines:
 - Be concise.
 - Commands run non-interactively without a TTY. Never run commands that prompt for interactive passwords (e.g. `sudo` without passwordless setup, `ssh` without keys). Use non-interactive flags (e.g. `sudo -n`) instead.
-- When referencing files or URLs in responses, format them with absolute paths or file:// links (e.g. file:///path/to/file or [label](file:///path/to/file)) and standard web URLs so they are clickable in the terminal.
 - When the next step is clear, keep going without asking, until done or truly blocked. A failed tool call means try differently, not give up.
 - If a file changes unexpectedly under you (a parallel agent may be active), don't fight it: re-read before writing, reconcile instead of overwriting, and never get into an edit war.
 - Ground every claim about code, tests, or tools in something you actually read or ran."#;
@@ -78,10 +80,7 @@ Guidelines:
 ///
 /// Single editable system prompt — users add to this one file. Migrates legacy `sys.md` if present.
 pub fn sys_prompt_path() -> anyhow::Result<PathBuf> {
-    let base = std::env::var("GRAY_HOME")
-        .or_else(|_| std::env::var("HOME").map(|h| format!("{h}/.gray")))
-        .map_err(|_| anyhow::anyhow!("cannot resolve home: set HOME or GRAY_HOME"))?;
-    Ok(PathBuf::from(base).join("AGENTS.md"))
+    Ok(crate::setup::gray_home()?.join("AGENTS.md"))
 }
 
 /// Loads the system prompt from `path`, writing the embedded default there first if absent.
@@ -173,6 +172,8 @@ pub async fn build_agent(
     // Keyless upstreams (free tiers, local servers) run with an empty key.
     let api_key = config.api_key.as_deref().unwrap_or("");
     let body = load_or_create_system_prompt_at(&sys_prompt_path()?)?;
+    // Same directory as the tool context; never persist it in the user's file.
+    let prompt_cwd = cwd.to_path_buf();
 
     let agent = gray_plugin::builder::build_agent(gray_plugin::builder::BuilderOptions {
         model: model.clone(),
@@ -182,9 +183,11 @@ pub async fn build_agent(
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),
-        // The file IS the system prompt: sent verbatim (comments stripped).
+        // Keep stored instructions intact; append runtime cwd before any turn.
         system_prompt: gray_plugin::builder::SystemPrompt::Build(Box::new(
-            move |_registry: &gray_tools::Registry| system_prompt::build_system_prompt(Some(body)),
+            move |_registry: &gray_tools::Registry| {
+                system_prompt::build_runtime_prompt(Some(body), &prompt_cwd)
+            },
         )),
         // Sidecars get the host runner so plugin-initiated `host/run`
         // / `host/say` don't fall back to loud `{"error":…}`.
@@ -225,6 +228,20 @@ pub struct Cli {
     /// Print mode: execute prompt directly and print output
     #[arg(short = 'p', long = "print")]
     pub print: Option<String>,
+
+    /// Emit versioned NDJSON progress and a final result instead of terminal output
+    #[arg(long, requires = "print")]
+    pub json: bool,
+
+    /// Maximum provider requests in a JSON print invocation (includes compaction)
+    #[arg(long, requires = "json", value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_requests: Option<u32>,
+    /// Conservative model input USD per million tokens for budget accounting
+    #[arg(long, requires = "json")]
+    pub input_price: Option<f64>,
+    /// Conservative model output USD per million tokens for budget accounting
+    #[arg(long, requires = "json")]
+    pub output_price: Option<f64>,
 
     /// API key for authentication (overrides GRAY_API_KEY and OPENAI_API_KEY)
     #[arg(long)]
@@ -316,6 +333,25 @@ pub enum Commands {
     Sessions {
         #[command(subcommand)]
         cmd: SessionsCmd,
+    },
+    /// Install a catalog plugin or register a native executable (gray install plugin NAME)
+    Install {
+        #[command(subcommand)]
+        cmd: InstallCmd,
+    },
+    /// Plugin-provided commands (`gray NAME setup`, …) — forwarded to the plugin
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+/// `gray install plugin <name>` — native plugin registration.
+#[derive(Parser, Debug, Clone)]
+pub enum InstallCmd {
+    /// Register a plugin command from PATH or GRAY_PLUGIN_PATH
+    Plugin {
+        /// Plugin name
+        #[arg(value_name = "NAME")]
+        name: String,
     },
 }
 

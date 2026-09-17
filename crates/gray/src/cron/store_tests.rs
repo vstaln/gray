@@ -197,7 +197,14 @@ fn mark_done_clears_claim_and_records_status() {
     store.set_next_run_for_test(&id, 1).unwrap();
     let due = store.claim_due(now_secs(), "owner").unwrap();
     assert_eq!(due.len(), 1);
-    store.mark_done(&id, RunStatus::Ok, None).unwrap();
+    store
+        .mark_done(
+            &id,
+            store.get(&id).unwrap().unwrap().fire_claim.as_ref(),
+            RunStatus::Ok,
+            None,
+        )
+        .unwrap();
     let job = store.get(&id).unwrap().unwrap();
     assert!(job.fire_claim.is_none());
     assert_eq!(job.last_status, Some(RunStatus::Ok));
@@ -206,7 +213,13 @@ fn mark_done_clears_claim_and_records_status() {
     let dir2 = tempfile::tempdir().unwrap();
     let s2 = CronStore::open(dir2.path()).unwrap();
     let oid = s2.add("once", "in 10m", "hi", Deliver::Local).unwrap();
-    s2.mark_done(&oid, RunStatus::Error, Some("boom")).unwrap();
+    s2.mark_done(
+        &oid,
+        s2.get(&oid).unwrap().unwrap().fire_claim.as_ref(),
+        RunStatus::Error,
+        Some("boom"),
+    )
+    .unwrap();
     let o = s2.get(&oid).unwrap().unwrap();
     assert_eq!(o.state, JobState::Done);
     assert_eq!(o.last_status, Some(RunStatus::Error));
@@ -430,4 +443,22 @@ fn health_skips_job_with_live_fire_claim() {
     store.set_next_run_for_test(&id, 1).unwrap();
     assert_eq!(store.claim_due(now_secs(), "owner-a").unwrap().len(), 1);
     assert!(store.health(now_secs()).unwrap().overdue.is_empty());
+}
+
+#[test]
+fn old_worker_cannot_clear_reclaimed_job() {
+    let (_dir, store) = test_store();
+    let id = store.add("job", "every 1m", "hi", Deliver::Local).unwrap();
+    store.set_next_run_for_test(&id, 1).unwrap();
+    let old = store.claim_due(1000, "a").unwrap().remove(0);
+    let new = store
+        .claim_due(1000 + FIRE_CLAIM_TTL_SECS + 1, "b")
+        .unwrap()
+        .remove(0);
+    assert!(
+        store
+            .mark_done(&id, old.fire_claim.as_ref(), RunStatus::Ok, None)
+            .is_err()
+    );
+    assert_eq!(store.get(&id).unwrap().unwrap().fire_claim, new.fire_claim);
 }

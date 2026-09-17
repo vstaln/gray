@@ -26,15 +26,19 @@ use crate::{HostHandler, Manifest, Plugin, PluginHookAdapter, SidecarPlugin, mer
 /// `tools-basic` file/shell set.
 pub struct ToolsBasicPlugin;
 
+/// One manifest body for the builtin tool plugins (name + live tool defs).
+fn builtin_manifest(name: &str, tools: &[Arc<dyn Tool>]) -> Manifest {
+    Manifest {
+        name: name.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        tools: tools.iter().map(|t| t.def()).collect(),
+        ..Manifest::default()
+    }
+}
+
 impl Plugin for ToolsBasicPlugin {
     fn manifest(&self) -> Manifest {
-        let tools = self.tools();
-        Manifest {
-            name: "tools-basic".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: tools.iter().map(|t| t.def()).collect(),
-            ..Manifest::default()
-        }
+        builtin_manifest("tools-basic", &self.tools())
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -56,13 +60,7 @@ pub struct ToolsMinimalPlugin;
 
 impl Plugin for ToolsMinimalPlugin {
     fn manifest(&self) -> Manifest {
-        let tools = self.tools();
-        Manifest {
-            name: "tools-minimal".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: tools.iter().map(|t| t.def()).collect(),
-            ..Manifest::default()
-        }
+        builtin_manifest("tools-minimal", &self.tools())
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -74,13 +72,7 @@ pub struct ToolsSearchPlugin;
 
 impl Plugin for ToolsSearchPlugin {
     fn manifest(&self) -> Manifest {
-        let tools = self.tools();
-        Manifest {
-            name: "tools-search".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            tools: tools.iter().map(|t| t.def()).collect(),
-            ..Manifest::default()
-        }
+        builtin_manifest("tools-search", &self.tools())
     }
 
     fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -120,8 +112,13 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
     let builtin_names: std::collections::HashSet<String> = builtin_tools.keys().cloned().collect();
     // Builtins win manifests: a hostile claim must not displace the owner
     // either (the ledger rebuild below keys off ownership).
-    for name in &builtin_names {
-        owners.insert(name.clone(), "tools-basic".to_string());
+    for plugin in plugins {
+        let owner = plugin.manifest().name;
+        if is_builtin_owner(&owner) {
+            for tool in plugin.tools() {
+                owners.insert(tool.def().name.clone(), owner.clone());
+            }
+        }
     }
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
     for p in plugins {
@@ -154,11 +151,11 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
             tools.push(tool.clone());
         }
     }
-    // T3.4 adoption: one ledger shared by the session tools AND
-    // Registry::file_ledger, so the binary's /new + compaction lifecycle acts
-    // on the same state the tools use. ToolsBasicPlugin::tools() already
-    // shares one ledger per build, but Registry::new makes its own — rebuild
-    // the tools-basic read/write/edit on the adopted ledger instead (a
+    // Lifecycle adoption: one ledger shared by the session tools; the
+    // binary's /new + compaction lifecycle acts on the same state via
+    // `current_file_ledger`. ToolsBasicPlugin::tools() already shares one
+    // ledger per build, but that Arc dies with the plugin — rebuild the
+    // tools-basic read/write/edit on the tracked one instead (a
     // sidecar-owned name is left alone). Fresh per build on purpose: a reused
     // ledger would leak reads across sessions in multi-session hosts.
     let ledger = Arc::new(gray_tools::FileLedger::new());
@@ -177,8 +174,7 @@ pub fn from_plugins(plugins: &[Arc<dyn Plugin>]) -> (Registry, Vec<Manifest>) {
             *t = f;
         }
     }
-    let mut registry = Registry::new(tools);
-    registry.set_file_ledger(ledger.clone());
+    let registry = Registry::new(tools);
     track_current_ledger(&ledger);
     (registry, manifests)
 }
@@ -237,15 +233,7 @@ pub fn take_builder_warnings() -> Vec<String> {
 /// resolves: user-scope filtering is skipped, the project overlay still
 /// applies.
 fn gray_home() -> Option<PathBuf> {
-    std::env::var("GRAY_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".gray"))
-        })
+    gray_core::paths::gray_home()
 }
 
 /// Install dir for lock entries (`<home>/plugins`), mirroring `gray-pkg`
@@ -434,7 +422,17 @@ pub async fn active_plugins(
         false
     };
 
-    let mut plugins = Vec::new();
+    // User-installed sidecars extend the default surface when no profile exists;
+    // their presence must not suppress the default bash tool.
+    let mut plugins = if entries.is_empty() {
+        defaults
+            .iter()
+            .filter(|p| default_names.contains(&p.manifest().name.as_str()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     for (i, e) in entries.iter().enumerate() {
         match e {
             PluginEntry::Builtin(n) => {
@@ -520,7 +518,8 @@ pub async fn active_plugins(
         }
         deduped.push(p);
     }
-    Ok((deduped, false))
+    let fallback = entries.is_empty() && user_lock.plugins.values().all(|entry| !entry.enabled);
+    Ok((deduped, fallback))
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +649,7 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         plugins.push(p);
     }
     let (registry, _) = from_plugins(&plugins);
+    let ledger = current_file_ledger();
     let system = match system_prompt {
         SystemPrompt::Literal(s) => s,
         SystemPrompt::Build(f) => f(&registry),
@@ -673,6 +673,11 @@ pub async fn build_agent(opts: BuilderOptions) -> anyhow::Result<Agent> {
         .with_system(system)
         .with_tools(tool_defs)
         .with_context_window(context_window)
+        .with_history_rewrite_hook(Arc::new(move || {
+            if let Some(ledger) = &ledger {
+                ledger.disarm_all_dedup();
+            }
+        }))
         .with_hooks(hooks))
 }
 

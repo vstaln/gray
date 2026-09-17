@@ -7,7 +7,7 @@ const BASE: &str = "https://gray.alignment.id/dl";
 pub const CHANNEL: &str = env!("GRAY_CHANNEL");
 
 fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut it = v.trim().split('.');
+    let mut it = v.trim().split(['-', '+']).next()?.split('.');
     Some((
         it.next()?.parse().ok()?,
         it.next()?.parse().ok()?,
@@ -17,13 +17,22 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 
 fn is_newer(latest: &str, current: &str) -> bool {
     match (parse_version(latest), parse_version(current)) {
-        (Some(l), Some(c)) => l > c,
+        (Some(l), Some(c)) => l > c || (l == c && current.contains('-') && !latest.contains('-')),
         _ => false,
     }
 }
 
+fn update_available(channel: &str, latest: &str, current: &str, build: &str) -> bool {
+    if channel == "beta" {
+        !latest.trim().is_empty() && latest.trim() != build.trim()
+    } else {
+        is_newer(latest, current)
+    }
+}
+
 async fn latest_version() -> anyhow::Result<String> {
-    let url = format!("{BASE}/latest-{CHANNEL}.txt");
+    let suffix = if CHANNEL == "beta" { "-build" } else { "" };
+    let url = format!("{BASE}/latest-{CHANNEL}{suffix}.txt");
     let txt = reqwest::get(&url).await?.error_for_status()?.text().await?;
     Ok(txt.trim().to_string())
 }
@@ -59,6 +68,10 @@ fn confirm() -> bool {
 }
 
 fn run_installer() -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !cfg!(windows),
+        "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum"
+    );
     let status = Command::new("sh")
         .arg("-c")
         .arg(install_command())
@@ -74,8 +87,18 @@ fn update_lock_path() -> PathBuf {
         .unwrap_or_else(|_| std::env::temp_dir().join("gray-update.lock"))
 }
 
-/// Acquires the exclusive update lock; held until the returned `File` drops.
-pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<std::fs::File> {
+pub(crate) struct UpdateLock(std::fs::File);
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        // Closing alone leaves flock held if a concurrent fork inherited the
+        // descriptor. Explicit unlock ends ownership when this guard ends.
+        let _ = self.0.unlock();
+    }
+}
+
+/// Acquires the exclusive update lock; explicitly released when the guard drops.
+pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<UpdateLock> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -85,10 +108,10 @@ pub(crate) fn acquire_update_lock_at(path: &Path) -> std::io::Result<std::fs::Fi
         .write(true)
         .open(path)?;
     f.lock()?;
-    Ok(f)
+    Ok(UpdateLock(f))
 }
 
-fn acquire_update_lock() -> std::io::Result<std::fs::File> {
+fn acquire_update_lock() -> std::io::Result<UpdateLock> {
     acquire_update_lock_at(&update_lock_path())
 }
 
@@ -100,6 +123,12 @@ fn run_installer_locked() -> anyhow::Result<()> {
 
 /// Manual `gray update`: run the installer unconditionally, then exit hint.
 pub async fn update_now() -> anyhow::Result<()> {
+    // Windows locks its running executable. Never launch the Unix installer
+    // or advertise an update we could not install; external reinstall only.
+    anyhow::ensure!(
+        !cfg!(windows),
+        "self-update is not supported on native Windows: close Gray and rerun install-native.ps1 with the verified preview ZIP and checksum"
+    );
     println!("→ updating gray ({CHANNEL})...");
     run_installer_locked()?;
     println!("✓ updated. restart gray to use the new version.");
@@ -158,6 +187,11 @@ pub async fn startup_check() {
     if std::env::var("GRAY_NO_UPDATE_CHECK").as_deref() == Ok("1") {
         return;
     }
+    if cfg!(windows) && std::env::var("GRAY_AUTO_UPDATE").as_deref() == Ok("1") {
+        eprintln!(
+            "Automatic installation is not supported on native Windows; close Gray and reinstall externally."
+        );
+    }
     if cfg!(debug_assertions) || current == "0.0.0" {
         return;
     }
@@ -171,13 +205,19 @@ pub async fn startup_check() {
     else {
         return;
     };
-    if !is_newer(&latest, current) {
+    if !update_available(CHANNEL, &latest, current, env!("GRAY_BUILD_ID")) {
+        return;
+    }
+    if cfg!(windows) {
+        println!(
+            "gray {latest} available; on native Windows close Gray and rerun install-native.ps1 externally."
+        );
         return;
     }
     let auto_flag = std::env::var("GRAY_AUTO_UPDATE").ok();
     if auto_update_allowed(CHANNEL, auto_flag.as_deref()) {
         let latest = latest.clone();
-        tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
             let Ok(_lock) = acquire_update_lock() else {
                 return;
             };
@@ -187,9 +227,9 @@ pub async fn startup_check() {
                 .output()
                 .is_ok_and(|o| o.status.success());
             if ok {
-                eprintln!(
-                    "\x1b[2mgray {latest} installed in the background — restart to apply\x1b[0m"
-                );
+                crate::profile::queue_profile_warning(format!(
+                    "gray {latest} installed in the background — restart to apply"
+                ));
             }
         });
         return;

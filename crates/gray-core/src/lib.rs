@@ -7,6 +7,7 @@ pub mod error;
 pub mod event;
 pub mod message;
 pub mod parallel;
+pub mod paths;
 pub mod redaction;
 pub mod tool_out;
 

@@ -41,7 +41,7 @@ pub fn proc_start_time(pid: u32) -> Option<u64> {
 
 /// Non-unix fallback: no /proc starttime, so PID-reuse detection degrades
 /// to the existence probe (same tradeoff the old doc comment states).
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn proc_start_time(_pid: u32) -> Option<u64> {
     None
 }
@@ -63,9 +63,53 @@ pub fn pid_alive(pid: u32) -> bool {
 /// Non-unix fallback: no signal-0 probe available. A record can only be
 /// trusted when its pid is our own process (fresh claim in this session);
 /// anything else reads as not-running so a new claim replaces it.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn pid_alive(pid: u32) -> bool {
     pid != 0 && pid == std::process::id()
+}
+
+/// Query a Windows process without requiring termination rights.
+#[cfg(windows)]
+fn windows_process(pid: u32) -> Option<(bool, Option<u64>)> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, GetLastError},
+        System::Threading::{
+            GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    };
+    if pid == 0 {
+        return None;
+    }
+    // SAFETY: handle is checked, used only for process queries, and closed.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return (GetLastError() == ERROR_ACCESS_DENIED).then_some((true, None));
+        }
+        let mut code = 0;
+        let alive = GetExitCodeProcess(handle, &mut code) == 0 || code == 259;
+        let mut creation: FILETIME = std::mem::zeroed();
+        let mut exit: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let start = (GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
+            != 0)
+            .then_some(
+                (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
+            );
+        CloseHandle(handle);
+        Some((alive, start))
+    }
+}
+
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    windows_process(pid).is_some_and(|(alive, _)| alive)
+}
+
+#[cfg(windows)]
+pub fn proc_start_time(pid: u32) -> Option<u64> {
+    windows_process(pid).and_then(|(_, start)| start)
 }
 
 /// Live == the pid exists and its start time still matches the record.

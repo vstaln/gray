@@ -54,3 +54,36 @@ fn update_lock_is_exclusive() {
     assert!(probe.try_lock().is_ok());
     let _ = probe.unlock();
 }
+
+#[test]
+fn beta_uses_build_identity_not_cargo_version() {
+    assert!(update_available(
+        "beta",
+        "new-commit",
+        "0.1.0",
+        "old-commit"
+    ));
+    assert!(!update_available("beta", "same", "0.1.0", "same"));
+    assert!(!update_available("beta", "", "0.1.0", "same"));
+    assert!(is_newer("0.2.0-beta.1", "0.1.0"));
+    assert!(is_newer("0.2.0", "0.2.0-beta.1"));
+}
+
+#[test]
+fn update_lock_release_is_not_delayed_by_an_inherited_descriptor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("update.lock");
+    let guard = acquire_update_lock_at(&path).unwrap();
+    // A concurrent fork can retain this descriptor until its exec/exit. Model
+    // that lifetime deterministically rather than depending on spawn timing.
+    let inherited = guard.0.try_clone().unwrap();
+    let probe = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    assert!(probe.try_lock().is_err());
+    drop(guard);
+    assert!(
+        probe.try_lock().is_ok(),
+        "guard must explicitly release the shared lock"
+    );
+    probe.unlock().unwrap();
+    drop(inherited);
+}

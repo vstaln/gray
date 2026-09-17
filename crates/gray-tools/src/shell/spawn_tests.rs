@@ -1,4 +1,6 @@
+#[cfg(unix)]
 use super::*;
+#[cfg(unix)]
 use std::path::PathBuf;
 
 #[cfg(unix)]
@@ -10,6 +12,7 @@ fn setsid_failure_is_an_error() {
     assert!(check_setsid(1234).is_ok());
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn spawn_records_real_process_group() {
     let spawned = spawn("true", &PathBuf::from("/tmp")).expect("sh -c true must spawn");

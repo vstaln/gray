@@ -22,7 +22,7 @@ fn message_tokens(m: &Message) -> usize {
 
 /// One block's token estimate on the image path: billable bytes/4 exactly
 /// like `context_text`, except `Image` which uses [`image_block_tokens`].
-fn block_tokens(b: &ContentBlock) -> usize {
+pub(crate) fn block_tokens(b: &ContentBlock) -> usize {
     match b {
         ContentBlock::Text { text } => text.len() / 4,
         ContentBlock::Image { media_type, data } => image_block_tokens(media_type, data.len()),
@@ -41,14 +41,12 @@ fn block_tokens(b: &ContentBlock) -> usize {
 
 /// Token price of one `Image` block from its base64 length.
 ///
-/// Sanctioned adaptation #3 (binding, from the port plan): codex prices
-/// images from estimated decoded bytes × detail level
-/// (`compact_remote_v2_images.rs` + `estimate_image_bytes`); gray has no
-/// detail levels, so price = decoded bytes/4 floored at 1_000 — the floor
-/// keeps images honest instead of free. `media_type` is kept for shape parity
-/// with codex's per-image pricer (currently unused).
+/// Bounded heuristic for normalized images (maximum side 2000px in gray-tools).
+/// Encoded file length is not a vision token count: cap at 4096 to avoid
+/// treating a several-MB screenshot as hundreds of thousands of text tokens.
+/// Provider-reported usage remains authoritative after the request.
 pub(crate) fn image_block_tokens(_media_type: &str, base64_len: usize) -> usize {
-    (base64_len.saturating_mul(3) / 4 / 4).max(1_000)
+    (base64_len.saturating_mul(3) / 4 / 4).clamp(1_000, 4_096)
 }
 
 /// Default number of recent tool observations to keep in full (mini-SWE-agent / SWE-agent parity).
@@ -191,8 +189,8 @@ pub(crate) async fn run_compaction_call(
         ));
     }
     messages.push(Message::user(trigger));
-    // Empty system maps to `None`, exactly like a live turn (`agent_loop.rs`):
-    // the trigger request then carries byte-identical prefix fields.
+    // Reuse the captured live prefix, including hook context, without re-fetching it.
+    // Before the first turn, system_text() falls back to the configured base prompt.
     let system = agent.system_text();
     agent
         .complete_with_history(

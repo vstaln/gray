@@ -12,8 +12,6 @@
 //!   streams a ZIP (`SKILL.md` at root); GitHub-backed skills answer the
 //!   same route with a JSON handoff (`sourceRef: "public-github"` +
 //!   `archiveUrl`) instead of bytes.
-//! - ClawHub trust `POST /api/v1/skills/-/security-verdicts`
-//!   (`{items:[{slug,ownerHandle?,version}]}`); 429s carry `Retry-After`.
 //! - Claude `marketplace.json` source kinds: relative-path string,
 //!   `github`, `url`, `git-subdir`, `npm`, `archive`, `command` (skip).
 //! - pi.dev: SSR HTML only (no listing `/api/*` — `/api/packages` 501s,
@@ -447,109 +445,6 @@ pub(crate) async fn stage_clawhub_bundle(
         detail,
         verified,
     })
-}
-
-/// Batch trust verdicts (`POST /skills/-/security-verdicts`, up to 100
-/// `(slug, owner, version)` items in one call). Returns the scan status
-/// for the items the endpoint answers `ok` on, keyed by the request
-/// triple. Best-effort: any failure is an empty map and callers keep the
-/// search-payload scan. Versionless entries are never queried.
-pub async fn clawhub_verdicts_batch(
-    client: &reqwest::Client,
-    items: &[(String, String, String)],
-) -> std::collections::BTreeMap<(String, String, String), String> {
-    let mut out = std::collections::BTreeMap::new();
-    let items: Vec<&(String, String, String)> = items
-        .iter()
-        .filter(|(_, _, v)| !v.trim().is_empty())
-        .take(100)
-        .collect();
-    if items.is_empty() {
-        return out;
-    }
-    let url = format!(
-        "{}/skills/-/security-verdicts",
-        clawhub_base().trim_end_matches('/')
-    );
-    if crate::fetch::check_url(&url).is_err() {
-        return out;
-    }
-    let req_items: Vec<serde_json::Value> = items
-        .iter()
-        .map(|(slug, owner, version)| {
-            let mut o = serde_json::json!({"slug": slug, "version": version});
-            if !owner.trim().is_empty() {
-                o["ownerHandle"] = serde_json::Value::String(owner.clone());
-            }
-            o
-        })
-        .collect();
-    let send = || {
-        client
-            .post(&url)
-            .timeout(std::time::Duration::from_secs(10))
-            .json(&serde_json::json!({"items": req_items}))
-            .send()
-    };
-    let resp = match send().await {
-        Ok(r) => r,
-        Err(e) => {
-            log::debug!("clawhub verdicts failed: {e:#}");
-            return out;
-        }
-    };
-    let resp = match clawhub_retry_once(resp, send).await {
-        Ok(r) => r,
-        Err(e) => {
-            log::debug!("clawhub verdicts retry failed: {e:#}");
-            return out;
-        }
-    };
-    let body: serde_json::Value = match resp.error_for_status() {
-        Ok(r) => match r.json().await {
-            Ok(b) => b,
-            Err(_) => return out,
-        },
-        Err(_) => return out,
-    };
-    let results = body
-        .get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for r in &results {
-        if r.get("ok").and_then(|v| v.as_bool()) != Some(true) {
-            continue;
-        }
-        let status = r
-            .get("security")
-            .and_then(|s| s.get("status"))
-            .and_then(|v| v.as_str())
-            .filter(|v| !v.trim().is_empty())
-            .unwrap_or("");
-        if status.is_empty() {
-            continue;
-        }
-        let (Some(rs), Some(rv)) = (
-            r.get("requestedSlug").and_then(|v| v.as_str()),
-            r.get("requestedVersion").and_then(|v| v.as_str()),
-        ) else {
-            continue;
-        };
-        let ro = r
-            .get("requestedOwnerHandle")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        // Match back to the request triple (owner echoes only when the
-        // request qualified it).
-        if let Some(key) = items
-            .iter()
-            .find(|(s, o, v)| s == rs && v == rv && (ro.is_empty() || o == ro))
-        {
-            out.insert((**key).clone(), status.to_string());
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------

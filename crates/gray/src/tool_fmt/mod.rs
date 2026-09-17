@@ -9,43 +9,7 @@ use std::path::Path;
 
 // ── Palette (active theme) ─────────────────────────────────────────────────
 // GrokNight/TokyoNight heritage: green bullet, orange paths, yellow commands.
-// These read the shared [`UiTheme`] palette (single gray theme).
-// The palette seeds today's exact values, so output is
-// pixel-identical until the user switches.
-pub fn accent_tool() -> Color {
-    crate::theme::theme().tool_accent
-}
-pub fn text_primary() -> Color {
-    crate::theme::theme().text_body
-}
-pub fn path_color() -> Color {
-    crate::theme::theme().tool_path
-}
-pub fn command_color() -> Color {
-    crate::theme::theme().tool_command
-}
-pub fn dim_color() -> Color {
-    crate::theme::theme().tool_dim
-}
-
-pub fn diff_delete_bg() -> Color {
-    crate::theme::theme().diff_del_bg
-}
-pub fn diff_delete_fg() -> Color {
-    crate::theme::theme().diff_del_fg
-}
-pub fn diff_insert_bg() -> Color {
-    crate::theme::theme().diff_add_bg
-}
-pub fn diff_insert_fg() -> Color {
-    crate::theme::theme().diff_add_fg
-}
-pub fn diff_equal_fg() -> Color {
-    crate::theme::theme().text_body
-}
-pub fn diff_gutter_fg() -> Color {
-    crate::theme::theme().diff_gutter
-}
+// Call sites read the shared [`crate::theme::theme()`] palette directly.
 
 fn arg_path(args: &serde_json::Value) -> &str {
     // Schemas emit only `path` + `file_path` (write.rs); dropped
@@ -163,13 +127,13 @@ fn tool_name_line(name: &str) -> Line<'static> {
         Span::styled(
             "\u{2b22} ",
             Style::default()
-                .fg(accent_tool())
+                .fg(crate::theme::theme().tool_accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             name.to_string(),
             Style::default()
-                .fg(text_primary())
+                .fg(crate::theme::theme().text_body)
                 .add_modifier(Modifier::BOLD),
         ),
     ])
@@ -378,19 +342,19 @@ pub fn format_tool_call_header(
     let bullet = Span::styled(
         "\u{2b22} ",
         Style::default()
-            .fg(accent_tool())
+            .fg(crate::theme::theme().tool_accent)
             .add_modifier(Modifier::BOLD),
     );
     let action_style = Style::default()
-        .fg(text_primary())
+        .fg(crate::theme::theme().text_body)
         .add_modifier(Modifier::BOLD);
     let path_style = Style::default()
-        .fg(path_color())
+        .fg(crate::theme::theme().tool_path)
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
     let cmd_style = Style::default()
-        .fg(command_color())
+        .fg(crate::theme::theme().tool_command)
         .add_modifier(Modifier::BOLD);
-    let dim_style = Style::default().fg(dim_color());
+    let dim_style = Style::default().fg(crate::theme::theme().tool_dim);
 
     match name {
         "bash" => {
@@ -588,12 +552,12 @@ fn push_numbered_wrapped(
         if ci == 0 {
             spans.push(Span::styled(
                 gutter_str.clone(),
-                Style::default().fg(diff_gutter_fg()),
+                Style::default().fg(crate::theme::theme().diff_gutter),
             ));
         } else {
             spans.push(Span::styled(
                 cont_gutter_str.clone(),
-                Style::default().fg(diff_gutter_fg()),
+                Style::default().fg(crate::theme::theme().diff_gutter),
             ));
             if cont_indent_len > 0 {
                 spans.push(Span::raw(cont_indent_str.clone()));
@@ -647,7 +611,7 @@ fn render_numbered_lines(
             Span::styled(
                 format!("… +{omitted} lines"),
                 Style::default()
-                    .fg(dim_color())
+                    .fg(crate::theme::theme().tool_dim)
                     .add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -743,10 +707,13 @@ pub fn format_tool_result_lines_with_context(
                 Span::styled(
                     prefix,
                     Style::default()
-                        .fg(diff_delete_fg())
+                        .fg(crate::theme::theme().diff_del_fg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled((*l).to_string(), Style::default().fg(diff_delete_fg())),
+                Span::styled(
+                    (*l).to_string(),
+                    Style::default().fg(crate::theme::theme().diff_del_fg),
+                ),
             ]));
         }
         return lines;

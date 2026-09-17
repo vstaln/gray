@@ -615,12 +615,14 @@ impl ReadTool {
             }
         }
         let mut blocks = Vec::with_capacity(shown.len());
+        let mut images = Vec::new();
         let mut any_error = false;
         for name in &shown {
             let body = rendered.iter().find(|(n, _)| n == name).unwrap();
             if body.1.is_error {
                 any_error = true;
             }
+            images.extend(body.1.images.iter().cloned());
             blocks.push(format!("{}\n{}", bulk::header(name), body.1.content));
         }
         // Errors in skipped bodies were never delivered; still surface the
@@ -642,11 +644,11 @@ impl ReadTool {
                 format!("{out}\n\n{note}")
             };
         }
-        if any_error {
-            Some(ToolOutput::error(out))
-        } else {
-            Some(ToolOutput::ok(out))
-        }
+        Some(ToolOutput {
+            content: out,
+            is_error: any_error,
+            images,
+        })
     }
 }
 

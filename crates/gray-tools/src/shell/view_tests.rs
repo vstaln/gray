@@ -96,7 +96,7 @@ fn emoji_straddling_head_cut_is_atomic() {
 fn sanitize_drops_controls_and_folds_crlf() {
     let log = b"a\x00b\x07c\td\re\r\nf\n".to_vec();
     let v = middle_out(&log, 50 * 1024, 2000, 0);
-    assert_eq!(v.body, "abc\td\re\nf\n");
+    assert_eq!(v.body, "abc\td\ne\nf\n");
 }
 
 #[test]
@@ -235,4 +235,17 @@ fn inline_budget_keeps_head_and_tail_with_elision() {
     );
     assert!(!small.body.contains("{{MARKER}}"));
     assert!(small.omitted_range.is_none());
+}
+
+#[test]
+fn carriage_return_progress_becomes_readable_lines() {
+    let raw = "heading\r\n\r  1 84.18M 1.00M\r 10 84.18M 8.00M\r100 84.18M done ✓\n";
+    let view = middle_out(raw.as_bytes(), 50 * 1024, 2000, 0);
+    assert_eq!(
+        view.body,
+        "heading\n\n  1 84.18M 1.00M\n 10 84.18M 8.00M\n100 84.18M done ✓\n"
+    );
+    assert_eq!(view.total_lines, 5);
+    assert!(view.has_cr);
+    assert!(!view.body.contains('\r'));
 }

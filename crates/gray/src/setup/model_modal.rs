@@ -17,8 +17,17 @@ pub(crate) fn provider_models_for(
         } else {
             ("custom".to_string(), "Custom".to_string())
         };
-    let models = fetch_live_provider_models(base_url, api_key);
+    let models = picker_models_for(base_url, api_key);
     (item_id, item_name, models)
+}
+
+/// Shared ordering for /model and every connect-modal model list.
+pub(super) fn picker_models_for(base_url: &str, api_key: Option<&str>) -> Vec<(String, String)> {
+    let mut models = fetch_live_provider_models(base_url, api_key);
+    if let Ok(path) = saved_config_path() {
+        load_saved_config_at(&path).sort_models(base_url, &mut models);
+    }
+    models
 }
 
 pub fn run_model_modal(
@@ -382,6 +391,7 @@ pub fn run_model_modal(
 
                         let path = saved_config_path()?;
                         let mut saved = load_saved_config_at(&path);
+                        saved.base_url = Some(config.base_url.clone());
                         saved.model = config.model.clone();
                         save_saved_config_at(&path, &saved)?;
 

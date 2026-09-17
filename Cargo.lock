@@ -871,12 +871,14 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "shlex",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-util",
  "unicode-width 0.2.0",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -921,6 +923,7 @@ dependencies = [
  "axum",
  "base64",
  "flate2",
+ "gray-core",
  "log",
  "reqwest",
  "serde",
@@ -982,6 +985,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

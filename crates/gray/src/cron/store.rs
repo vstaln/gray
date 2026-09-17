@@ -2,7 +2,7 @@
 //!
 //! Gray-minimal port of the hermes `cron/jobs.py` claim logic: one
 //! load-modify-save pass under `<cron>/.jobs.lock` (same flock + 300s-claim
-//! shape the daemon used), 300s fire-claim TTL, 120s one-shot grace,
+//! shape the daemon used), 1200s fire-claim TTL, 120s one-shot grace,
 //! fast-forward of stale recurring jobs. Deliberate deltas vs hermes,
 //! documented at each site:
 //! - owner stamp is `pid:boot-uuid` (no pid-start-time helper in gray; a dead
@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use crate::cron::schedule::{ONESHOT_GRACE_SECS, Schedule, next_run, parse_schedule};
 
 /// Fire-claim TTL: a live claim blocks re-fire; a stale one is reclaimable
-/// after a crashed ticker (hermes number).
-pub const FIRE_CLAIM_TTL_SECS: i64 = 300;
+/// after a crashed ticker; exceeds script + agent deadlines plus delivery margin.
+pub const FIRE_CLAIM_TTL_SECS: i64 = 1200;
 /// Max job name length (keeps the `cron list` table readable).
 pub const MAX_NAME_LEN: usize = 50;
 /// Job ids are this many hex chars of a uuid v4.
@@ -516,12 +516,25 @@ impl CronStore {
     /// STILL fire once now — no grace branch is needed because stale and fresh
     /// recurring jobs behave identically. Single save at end.
     pub fn claim_due(&self, now: i64, owner: &str) -> anyhow::Result<Vec<CronJob>> {
+        self.claim_due_limited(now, owner, usize::MAX, &[])
+    }
+
+    pub(crate) fn claim_due_limited(
+        &self,
+        now: i64,
+        owner: &str,
+        limit: usize,
+        exclude: &[String],
+    ) -> anyhow::Result<Vec<CronJob>> {
         with_jobs_lock(&self.lock_path(), || {
             let mut raw = self.load_raw()?;
             let mut jobs = Self::parse_jobs(&raw);
             let mut due = Vec::new();
             let mut dirty = false;
             for job in jobs.iter_mut() {
+                if due.len() >= limit || exclude.contains(&job.id) {
+                    continue;
+                }
                 if !job.enabled || job.state != JobState::Active {
                     continue;
                 }
@@ -684,6 +697,7 @@ impl CronStore {
     pub fn mark_done(
         &self,
         id_or_name: &str,
+        claim: Option<&Claim>,
         status: RunStatus,
         err: Option<&str>,
     ) -> anyhow::Result<()> {
@@ -696,6 +710,10 @@ impl CronStore {
             else {
                 anyhow::bail!("unknown cron job {id_or_name:?}");
             };
+            anyhow::ensure!(
+                job.fire_claim.as_ref() == claim,
+                "cron claim no longer owned by this worker"
+            );
             job.fire_claim = None;
             job.last_status = Some(status);
             job.last_run_at = Some(now_secs());

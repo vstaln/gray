@@ -15,7 +15,7 @@ pub struct TickReport {
 /// directly (never `spawn`s), so no `Send` bound is needed.
 #[async_trait::async_trait(?Send)]
 pub trait AsyncRunner {
-    async fn run(&self, prompt: String) -> anyhow::Result<String>;
+    async fn run(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<String>;
 }
 
 /// The production runner (CLI tick + gateway daemon): a fresh headless agent
@@ -28,8 +28,7 @@ pub struct HeadlessRunner {
 
 #[async_trait::async_trait(?Send)]
 impl AsyncRunner for HeadlessRunner {
-    async fn run(&self, prompt: String) -> anyhow::Result<String> {
-        let cwd = std::env::current_dir()?;
+    async fn run(&self, prompt: String, cwd: PathBuf) -> anyhow::Result<String> {
         let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
         let ctx = gray_core::agent::ToolContext {
             cwd,
@@ -49,44 +48,17 @@ impl AsyncRunner for HeadlessRunner {
 /// Whole-fire wall clock (script + agent), matches the bash tool bound.
 pub const FIRE_TIMEOUT_SECS: u64 = 600;
 
-/// Delivery seam: the CLI passes `SaveLocalDeliver`; the gateway will pass
-/// its router. `Err(String)` records `delivery_failed` with the string as
-/// `last_delivery_error`; run columns stay untouched.
-#[async_trait::async_trait(?Send)]
-pub trait CronDeliver {
-    async fn deliver(&self, job: &crate::cron::CronJob, now: i64, text: &str)
-    -> Result<(), String>;
-}
-
 /// Local delivery: transcript to `$HOME/cron/output/<id>/<ts>.md`.
-pub struct LocalDeliver {
-    pub home: PathBuf,
-}
-
-#[async_trait::async_trait(?Send)]
-impl CronDeliver for LocalDeliver {
-    async fn deliver(
-        &self,
-        job: &crate::cron::CronJob,
-        now: i64,
-        text: &str,
-    ) -> Result<(), String> {
-        crate::cron_fire::write_local_output(&self.home, job, now, text)
-            .map(|_| ())
-            .map_err(|e| format!("local write failed: {e:#}"))
-    }
-}
-
-/// CLI delivery: `local` writes the file; unknown (`origin`/named) targets
-/// fail safe to save-only + warn (old-daemon rule — never misdeliver to a
-/// wrong chat). The gateway will replace this with its router.
+/// Unknown (`origin`/named) targets fail safe to save-only + warn
+/// (old-daemon rule — never misdeliver to a wrong chat). `Err(String)`
+/// records `delivery_failed` with the string as `last_delivery_error`;
+/// run columns stay untouched.
 pub struct SaveLocalDeliver {
     pub home: PathBuf,
 }
 
-#[async_trait::async_trait(?Send)]
-impl CronDeliver for SaveLocalDeliver {
-    async fn deliver(
+impl SaveLocalDeliver {
+    pub async fn deliver(
         &self,
         job: &crate::cron::CronJob,
         now: i64,
@@ -99,11 +71,9 @@ impl CronDeliver for SaveLocalDeliver {
                 job.deliver
             );
         }
-        LocalDeliver {
-            home: self.home.clone(),
-        }
-        .deliver(job, now, text)
-        .await
+        crate::cron_fire::write_local_output(&self.home, job, now, text)
+            .map(|_| ())
+            .map_err(|e| format!("local write failed: {e:#}"))
     }
 }
 
@@ -119,11 +89,16 @@ pub async fn fire_one(
     runner: &dyn AsyncRunner,
     job: crate::cron::CronJob,
     now: i64,
-    deliver: &dyn CronDeliver,
+    deliver: &SaveLocalDeliver,
 ) -> crate::cron::RunStatus {
     use crate::cron::RunStatus;
     let fail = |msg: String| {
-        let _ = store.mark_done(&job.id, RunStatus::Error, Some(&msg));
+        let _ = store.mark_done(
+            &job.id,
+            job.fire_claim.as_ref(),
+            RunStatus::Error,
+            Some(&msg),
+        );
         RunStatus::Error
     };
     let workdir: PathBuf = match &job.workdir {
@@ -152,14 +127,14 @@ pub async fn fire_one(
             return fail(format!("pre-script failed: {}", outcome.stderr_tail));
         }
         if !crate::cron_fire::parse_wake_gate(&outcome.stdout) {
-            let _ = store.mark_done(&job.id, RunStatus::Ok, None);
+            let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
             return RunStatus::Ok;
         }
         script_stdout = Some(outcome.stdout);
     }
     let prompt =
         crate::cron_fire::assemble_fire_prompt(&job.prompt, &skill_paths, script_stdout.as_deref());
-    let run_fut = std::panic::AssertUnwindSafe(runner.run(prompt));
+    let run_fut = std::panic::AssertUnwindSafe(runner.run(prompt, workdir));
     let text = match tokio::time::timeout(
         std::time::Duration::from_secs(FIRE_TIMEOUT_SECS),
         futures::FutureExt::catch_unwind(run_fut),
@@ -172,31 +147,35 @@ pub async fn fire_one(
         Ok(Ok(Ok(text))) => text,
     };
     if crate::cron_fire::is_silent_response(&text) {
-        let _ = store.mark_done(&job.id, RunStatus::Ok, None);
+        let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
         return RunStatus::Ok;
     }
     match deliver.deliver(&job, now, &text).await {
         Ok(()) => {
-            let _ = store.mark_done(&job.id, RunStatus::Ok, None);
+            let _ = store.mark_done(&job.id, job.fire_claim.as_ref(), RunStatus::Ok, None);
             RunStatus::Ok
         }
         Err(msg) => {
-            let _ = store.mark_done(&job.id, RunStatus::DeliveryFailed, Some(&msg));
+            let _ = store.mark_done(
+                &job.id,
+                job.fire_claim.as_ref(),
+                RunStatus::DeliveryFailed,
+                Some(&msg),
+            );
             RunStatus::DeliveryFailed
         }
     }
 }
 
-/// One pass: claim all due jobs, fire sequentially, record each outcome.
+/// One pass: claim each due job immediately before firing it, once per pass.
 /// Per-job failure is recorded on the job and counted; only pass-level
 /// store failure propagates as `Err`.
 pub async fn tick_once(
     store: &crate::cron::CronStore,
     runner: &dyn AsyncRunner,
-    deliver: &dyn CronDeliver,
+    deliver: &SaveLocalDeliver,
     kind: &str,
 ) -> anyhow::Result<TickReport> {
-    let now = crate::cron::now_secs();
     // Liveness first, before any job runs: every pass stamps the store so a
     // later reader can tell "nothing was due" from "nothing was ticking".
     // Best-effort — a failed heartbeat must not stop jobs from firing.
@@ -204,12 +183,17 @@ pub async fn tick_once(
         log::warn!("cron: cannot record tick heartbeat: {e:#}");
     }
     let owner = owner_stamp();
-    let due = store.claim_due(now, &owner)?;
+    let mut fired_ids = Vec::new();
     let mut report = TickReport {
         fired: 0,
         errors: 0,
     };
-    for job in due {
+    loop {
+        let now = crate::cron::now_secs();
+        let Some(job) = store.claim_due_limited(now, &owner, 1, &fired_ids)?.pop() else {
+            break;
+        };
+        fired_ids.push(job.id.clone());
         report.fired += 1;
         if !matches!(
             fire_one(store, runner, job, now, deliver).await,
@@ -225,7 +209,7 @@ pub async fn tick_once(
 /// daemonization here. Tick-level store errors log and continue.
 pub async fn serve_loop(
     store: crate::cron::CronStore,
-    deliver: impl CronDeliver + 'static,
+    deliver: SaveLocalDeliver,
     runner: impl AsyncRunner + 'static,
 ) -> anyhow::Result<()> {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));

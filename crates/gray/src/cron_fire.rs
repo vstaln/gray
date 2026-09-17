@@ -97,26 +97,25 @@ pub struct ScriptOutcome {
 
 /// Run the job's pre-script with cwd=`workdir`, piped stdio. Missing file,
 /// spawn failure, nonzero exit, or timeout → `ok: false` (caller records
-/// `error` without running the agent). Blocking `Command` runs inside
-/// `spawn_blocking` so the ticker stays responsive.
+/// `error` without running the agent). Async process I/O keeps the ticker
+/// responsive; dropping a timed-out child kills it.
 pub async fn run_pre_script(script: &std::path::Path, workdir: &std::path::Path) -> ScriptOutcome {
-    let script = script.to_path_buf();
-    let workdir = workdir.to_path_buf();
-    let join = tokio::task::spawn_blocking(move || {
-        std::process::Command::new(&script)
-            .current_dir(&workdir)
-            .output()
-    })
-    .await;
-    // The inner closure has no deadline; the timeout below fires on the
-    // *join*, abandoning a hung script thread (one blocked thread leaks
-    // until process exit — accepted, same as a hung tool call; the fire
-    // still records `error` on time).
-    let res = tokio::time::timeout(
+    run_pre_script_with_timeout(
+        script,
+        workdir,
         std::time::Duration::from_secs(SCRIPT_TIMEOUT_SECS),
-        async move { join },
     )
-    .await;
+    .await
+}
+
+async fn run_pre_script_with_timeout(
+    script: &std::path::Path,
+    workdir: &std::path::Path,
+    timeout: std::time::Duration,
+) -> ScriptOutcome {
+    let mut command = tokio::process::Command::new(script);
+    command.current_dir(workdir).kill_on_drop(true);
+    let res = tokio::time::timeout(timeout, command.output()).await;
     match res {
         Err(_) => ScriptOutcome {
             ok: false,
@@ -128,12 +127,7 @@ pub async fn run_pre_script(script: &std::path::Path, workdir: &std::path::Path)
             stdout: String::new(),
             stderr_tail: format!("pre-script spawn failed: {e:#}"),
         },
-        Ok(Ok(Err(e))) => ScriptOutcome {
-            ok: false,
-            stdout: String::new(),
-            stderr_tail: format!("pre-script failed: {e:#}"),
-        },
-        Ok(Ok(Ok(out))) => {
+        Ok(Ok(out)) => {
             let tail: String = String::from_utf8_lossy(&out.stderr)
                 .chars()
                 .rev()

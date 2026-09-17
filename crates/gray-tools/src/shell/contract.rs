@@ -13,7 +13,6 @@ use tokio::process::Child;
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_TIMEOUT_SECS: u64 = 600;
-pub const VIEW_BUDGET_BYTES: usize = 50 * 1024;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
 pub const MEM_HEAD_BYTES: usize = 6 * 1024;
@@ -61,9 +60,13 @@ pub struct PumpSummary {
     pub log_write_failed: bool,
 }
 
-// spawn.rs: the detached child plus its group id (setsid: pgid == pid).
+// Unix owns a detached process group; Windows owns a non-inheritable job.
+// Keep the job alive until termination/reaping; a PID cannot replace it.
 pub struct Spawned {
     pub child: Child,
     pub pid: u32,
+    #[cfg(not(windows))]
     pub pgid: i32,
+    #[cfg(windows)]
+    pub job: super::windows::Job,
 }

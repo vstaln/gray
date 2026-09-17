@@ -114,3 +114,99 @@ fn bad_json_falls_back_to_defaults() {
     assert_eq!(cfg.model, None);
     assert_eq!(cfg.base_url, None);
 }
+
+#[test]
+fn saved_model_selections_keep_provider_scoped_recency() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    for (base, model) in [
+        ("https://a/v1", "one"),
+        ("https://a/v1", "two"),
+        ("https://b/v1", "other"),
+        ("https://a/v1", "one"),
+    ] {
+        let mut saved = load_saved_config_at(&path);
+        saved.base_url = Some(base.into());
+        saved.model = Some(model.into());
+        save_saved_config_at(&path, &saved).unwrap();
+    }
+    let json: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        json["recent_models"]["https://a/v1"],
+        serde_json::json!(["one", "two"])
+    );
+    assert_eq!(
+        json["recent_models"]["https://b/v1"],
+        serde_json::json!(["other"])
+    );
+}
+
+#[test]
+fn model_recency_is_stable_scoped_and_does_not_add_unavailable_ids() {
+    let saved: SavedConfig = serde_json::from_value(serde_json::json!({
+        "base_url": "https://other/v1", "model": "first",
+        "recent_models": {"https://a/v1": ["removed", "last", "middle", "last"]}
+    }))
+    .unwrap();
+    let mut models: Vec<_> = ["first", "middle", "untouched", "last"]
+        .into_iter()
+        .map(|id| (id.to_string(), id.to_string()))
+        .collect();
+    saved.sort_models("https://a/v1/", &mut models);
+    assert_eq!(
+        models.iter().map(|m| m.0.as_str()).collect::<Vec<_>>(),
+        ["last", "middle", "first", "untouched"]
+    );
+    let unchanged = models.clone();
+    saved.sort_models("https://unknown/v1", &mut models);
+    assert_eq!(models, unchanged);
+    saved.sort_models("https://a/v1", &mut []);
+}
+
+#[test]
+fn legacy_current_model_is_first_and_survives_settings_save() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(&path, r#"{"base_url":"https://a/v1/","model":"chosen"}"#).unwrap();
+    let mut saved = load_saved_config_at(&path);
+    let mut models = vec![
+        ("other".into(), "Other".into()),
+        ("chosen".into(), "Chosen".into()),
+    ];
+    saved.sort_models("https://a/v1", &mut models);
+    assert_eq!(models[0].0, "chosen");
+    saved.thinking_effort = Some("high".into());
+    save_saved_config_at(&path, &saved).unwrap();
+    let saved = load_saved_config_at(&path);
+    assert_eq!(saved.recent_models["https://a/v1"], ["chosen"]);
+    save_saved_config_at(&path, &saved).unwrap();
+    assert_eq!(
+        load_saved_config_at(&path).recent_models,
+        saved.recent_models
+    );
+}
+
+#[test]
+fn malformed_history_does_not_lose_settings_and_bad_setting_keeps_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    std::fs::write(&path, r#"{"model":"m","recent_models":7}"#).unwrap();
+    let saved = load_saved_config_at(&path);
+    assert_eq!(saved.model.as_deref(), Some("m"));
+    assert!(saved.recent_models.is_empty());
+    std::fs::write(
+        &path,
+        r#"{"context_window":"bad","recent_models":{"https://a":["m"]}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        load_saved_config_at(&path).recent_models["https://a"],
+        ["m"]
+    );
+}
+
+#[test]
+fn failed_save_reports_error() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(save_saved_config_at(dir.path(), &SavedConfig::default()).is_err());
+}

@@ -19,7 +19,7 @@ pub(crate) fn render_selecting(
     sel: usize,
     scroll_top: &mut usize,
     config: &Config,
-    auth_keys: &std::collections::BTreeMap<String, String>,
+    auth: &std::collections::BTreeMap<String, catalog::AuthEntry>,
     colors: &ConnectColors,
 ) {
     let modal_w = 68.min(area.width.saturating_sub(4)).max(42).min(area.width);
@@ -125,13 +125,16 @@ pub(crate) fn render_selecting(
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
 
-    // 3. Provider List (Custom stays first with a separator line under it)
+    // The separator follows Custom even when connected providers precede it.
     let list_y = inner.y + 3;
     let list_h = inner.height.saturating_sub(4) as usize;
-    let show_sep =
-        !filtered.is_empty() && filtered[0].id == "custom" && *scroll_top == 0 && list_h > 1;
-    // Separator consumes one visual row, so one fewer provider row fits.
-    let item_cap = list_h.saturating_sub(if show_sep { 1 } else { 0 });
+    let mut rows = Vec::new();
+    for (idx, item) in filtered.iter().enumerate() {
+        rows.push(Some(idx));
+        if item.id == "custom" && idx + 1 < filtered.len() && list_h > 1 {
+            rows.push(None);
+        }
+    }
 
     if filtered.is_empty() {
         let empty_msg = Paragraph::new(Line::from(vec![Span::styled(
@@ -141,17 +144,18 @@ pub(crate) fn render_selecting(
         frame.render_widget(empty_msg, Rect::new(inner.x, list_y + 1, inner.width, 1));
     } else {
         let safe_sel = sel.min(filtered.len().saturating_sub(1));
-        if safe_sel < *scroll_top {
-            *scroll_top = safe_sel;
-        } else if safe_sel >= *scroll_top + item_cap {
-            *scroll_top = safe_sel.saturating_sub(item_cap.saturating_sub(1));
+        let selected_row = rows
+            .iter()
+            .position(|row| *row == Some(safe_sel))
+            .unwrap_or(0);
+        if selected_row < *scroll_top {
+            *scroll_top = selected_row;
+        } else if selected_row >= *scroll_top + list_h {
+            *scroll_top = selected_row.saturating_sub(list_h.saturating_sub(1));
         }
-        // Recompute: scrolling Custom out hides the separator, freeing its row.
-        let show_sep =
-            !filtered.is_empty() && filtered[0].id == "custom" && *scroll_top == 0 && list_h > 1;
 
-        for r in 0..list_h {
-            if show_sep && r == 1 {
+        for (r, row) in rows.iter().skip(*scroll_top).take(list_h).enumerate() {
+            let Some(idx) = *row else {
                 let rule = "─".repeat(inner.width as usize);
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
@@ -161,21 +165,12 @@ pub(crate) fn render_selecting(
                     Rect::new(inner.x, list_y + r as u16, inner.width, 1),
                 );
                 continue;
-            }
-            let idx = if show_sep && r > 1 {
-                r - 1
-            } else {
-                *scroll_top + r
             };
-            if idx >= filtered.len() {
-                break;
-            }
 
             let item = filtered[idx];
             let is_selected = idx == safe_sel;
 
-            let is_connected = auth_keys.contains_key(&item.id)
-                || (config.base_url == item.base_url && config.api_key.is_some());
+            let is_connected = item.is_connected(config, auth);
 
             let check_glyph = if is_connected { "✓ " } else { "  " };
 
@@ -552,3 +547,7 @@ pub(crate) fn render_entering_key(
         Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
     );
 }
+
+#[cfg(test)]
+#[path = "connect_draw_tests.rs"]
+mod tests;

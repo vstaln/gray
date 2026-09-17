@@ -249,6 +249,7 @@ fn name_from_git_url(url: &str) -> String {
             None => path,
         },
     };
+    let after_host = after_host.trim_end_matches('/');
     let last = after_host.rsplit('/').next().unwrap_or(after_host);
     last.strip_suffix(".git").unwrap_or(last).to_string()
 }
@@ -285,7 +286,10 @@ fn write_lock(lock: &LockFile) -> anyhow::Result<()> {
     }
     let mut lock = lock.clone();
     lock.schema = 1;
-    std::fs::write(&path, serde_json::to_string_pretty(&lock)?)?;
+    use std::io::Write;
+    let mut temporary = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    temporary.write_all(serde_json::to_string_pretty(&lock)?.as_bytes())?;
+    temporary.persist(&path)?;
     Ok(())
 }
 
@@ -414,12 +418,16 @@ async fn npm_resolve(
     let integrity = match dist.get("integrity").and_then(|v| v.as_str()) {
         Some(s) if !s.is_empty() => s.to_string(),
         _ => {
-            let shasum = dist
+            if dist
                 .get("shasum")
                 .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| anyhow::anyhow!("npm package {name}@{want} has no integrity"))?;
-            format!("sha256:{shasum}")
+                .is_some_and(|s| !s.is_empty())
+            {
+                anyhow::bail!(
+                    "npm package {name}@{want} provides only legacy SHA-1; a SHA-256/512 integrity digest is required"
+                );
+            }
+            anyhow::bail!("npm package {name}@{want} has no integrity");
         }
     };
     Ok(NpmResolved {
@@ -1118,36 +1126,82 @@ async fn install_claude(
     })
 }
 
+/// Install a fully staged tree, rolling back the directory if lock recording fails.
+fn replace_archive(
+    archive: &Path,
+    name: &str,
+    record: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<PathBuf> {
+    validate_install_key(name)?;
+    anyhow::ensure!(
+        !matches!(name, "tmp" | "pi" | "lock.json" | "index-cache.json"),
+        "reserved plugin name"
+    );
+    let root = crate::plugins_dir();
+    std::fs::create_dir_all(&root)?;
+    let stage = tempfile::tempdir_in(&root)?;
+    let next = stage.path().join("next");
+    let previous = stage.path().join("previous");
+    std::fs::create_dir(&next)?;
+    let unpacked = crate::fetch::unpack_tar_gz(archive, &next);
+    let _ = std::fs::remove_file(archive);
+    unpacked?;
+    let dest = root.join(name);
+    let had_previous = dest.symlink_metadata().is_ok();
+    if had_previous {
+        std::fs::rename(&dest, &previous)?;
+    }
+    let installed = std::fs::rename(&next, &dest)
+        .map_err(anyhow::Error::from)
+        .and_then(|()| record());
+    if let Err(error) = installed {
+        let rollback = (|| -> std::io::Result<()> {
+            if dest.exists() {
+                std::fs::remove_dir_all(&dest)?;
+            }
+            if had_previous {
+                std::fs::rename(&previous, &dest)?;
+            }
+            Ok(())
+        })();
+        if let Err(rollback) = rollback {
+            let recovery = stage.keep();
+            anyhow::bail!(
+                "{error}; rollback failed: {rollback}; previous install saved at {}",
+                recovery.display()
+            );
+        }
+        return Err(error);
+    }
+    Ok(dest)
+}
+
 async fn install_index(
     client: &reqwest::Client,
     name: &str,
     opts: InstallOpts,
 ) -> anyhow::Result<Report> {
+    validate_install_key(name)?;
     let index = crate::index::fetch_index(client).await?;
     let entry = crate::index::lookup(&index, name)?;
     ensure_gray_native(&entry.ecosystem, &entry.source.type_)?;
     let archive = crate::fetch::download(client, &entry.source.url, Some(&entry.hash)).await?;
-    let dest = crate::plugins_dir().join(name);
-    if let Err(e) = crate::fetch::unpack_tar_gz(&archive, &dest) {
-        let _ = std::fs::remove_dir_all(&dest);
-        let _ = std::fs::remove_file(&archive);
-        return Err(e);
-    }
-    let _ = std::fs::remove_file(&archive);
     let scope = if entry.scope.is_empty() {
         opts.scope.clone().unwrap_or_else(|| "user".to_string())
     } else {
         entry.scope.clone()
     };
-    record_install(
-        name,
-        &entry.ecosystem,
-        &entry.version,
-        entry.hash.primary().unwrap_or_default(),
-        &entry.source.url,
-        scope,
-        opts.argv.clone(),
-    )?;
+    let dest = replace_archive(&archive, name, || {
+        record_install(
+            name,
+            &entry.ecosystem,
+            &entry.version,
+            entry.hash.primary().unwrap_or_default(),
+            &entry.source.url,
+            scope,
+            opts.argv.clone(),
+        )
+    })?;
     Ok(Report {
         name: name.to_string(),
         version: entry.version.clone(),
@@ -1171,23 +1225,19 @@ async fn install_url(
             crate::fetch::redact(url)
         );
     }
+    validate_install_key(&name)?;
     let archive = crate::fetch::download(client, url, None).await?;
-    let dest = crate::plugins_dir().join(&name);
-    if let Err(e) = crate::fetch::unpack_tar_gz(&archive, &dest) {
-        let _ = std::fs::remove_dir_all(&dest);
-        let _ = std::fs::remove_file(&archive);
-        return Err(e);
-    }
-    let _ = std::fs::remove_file(&archive);
-    record_install(
-        &name,
-        "url",
-        "0.0.0",
-        "",
-        url,
-        opts.scope.clone().unwrap_or_else(|| "user".to_string()),
-        opts.argv.clone(),
-    )?;
+    let dest = replace_archive(&archive, &name, || {
+        record_install(
+            &name,
+            "url",
+            "0.0.0",
+            "",
+            url,
+            opts.scope.clone().unwrap_or_else(|| "user".to_string()),
+            opts.argv.clone(),
+        )
+    })?;
     Ok(Report {
         name,
         version: "0.0.0".to_string(),

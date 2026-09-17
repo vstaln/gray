@@ -320,8 +320,8 @@ async fn npm_resolve_shasum_fallback() {
     let _home = use_npm_env(&base);
 
     let client = crate::fetch::client().unwrap();
-    let resolved = npm_resolve(&client, "pi-foo", None).await.unwrap();
-    assert_eq!(resolved.integrity, "sha256:abc123");
+    let error = npm_resolve(&client, "pi-foo", None).await.unwrap_err();
+    assert!(error.to_string().contains("SHA-1"));
 }
 
 #[tokio::test]
@@ -1417,4 +1417,111 @@ async fn install_claude_path_source_and_command_refusal() {
     .unwrap_err()
     .to_string();
     assert!(err.contains("not in claude marketplaces"), "miss: {err}");
+}
+
+#[test]
+fn git_names_allow_trailing_slashes() {
+    for url in [
+        "https://github.com/owner/repo/",
+        "https://github.com/owner/repo.git/",
+        "git@github.com:owner/repo.git/",
+    ] {
+        assert_eq!(name_from_git_url(url), "repo");
+    }
+}
+
+#[tokio::test]
+async fn install_git_trailing_slash_extracts_and_records() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let (repo, url) = init_git_fixture(&[("skills/a/SKILL.md", MULCH_SKILL)]);
+    let _home = use_git_env();
+    let url = format!("{url}/");
+    let report = install(parse_spec(&format!("git:{url}")), InstallOpts::default())
+        .await
+        .unwrap();
+    assert_eq!(report.name, git_fixture_key(&repo));
+    assert_eq!(
+        std::fs::read(report.path.join("a/SKILL.md")).unwrap(),
+        MULCH_SKILL.as_bytes()
+    );
+    assert_eq!(list().unwrap()[&report.name].source, url);
+}
+
+#[tokio::test]
+async fn failed_reinstall_preserves_existing_plugin() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let _home = use_git_env();
+    let url = spawn_tarball(b"not an archive".to_vec()).await;
+    let dest = crate::plugins_dir().join("pi-foo");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("keep.txt"), b"old install").unwrap();
+    let client = crate::fetch::client().unwrap();
+    assert!(
+        install_url(&client, &url, InstallOpts::default())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read(dest.join("keep.txt")).unwrap(),
+        b"old install"
+    );
+}
+
+#[test]
+fn archive_replacement_removes_stale_files_and_rolls_back_lock_failure() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let home = use_git_env();
+    let dest = crate::plugins_dir().join("demo");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("stale.txt"), b"old").unwrap();
+    let archive = home.path().join("archive.tgz");
+    std::fs::write(&archive, tiny_tgz()).unwrap();
+    assert!(replace_archive(&archive, "demo", || anyhow::bail!("lock failure")).is_err());
+    assert_eq!(std::fs::read(dest.join("stale.txt")).unwrap(), b"old");
+    std::fs::write(&archive, tiny_tgz()).unwrap();
+    replace_archive(&archive, "demo", || Ok(())).unwrap();
+    assert!(!dest.join("stale.txt").exists());
+    assert!(dest.join("package/package.json").exists());
+}
+
+#[tokio::test]
+async fn unsafe_url_names_rejected_before_download() {
+    let client = crate::fetch::client().unwrap();
+    for name in [".", ".."] {
+        let error = install_url(
+            &client,
+            &format!("http://127.0.0.1:1/{name}"),
+            InstallOpts::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("safe plugin name"), "{error}");
+    }
+}
+
+#[test]
+fn archive_rollback_preserves_backup_when_cleanup_fails() {
+    let _guard = ENV_GUARD.lock().unwrap();
+    let home = use_git_env();
+    let root = crate::plugins_dir();
+    let dest = root.join("demo");
+    std::fs::create_dir_all(&dest).unwrap();
+    std::fs::write(dest.join("keep.txt"), b"working install").unwrap();
+    let archive = home.path().join("archive.tgz");
+    std::fs::write(&archive, tiny_tgz()).unwrap();
+    let error = replace_archive(&archive, "demo", || {
+        // A concurrent replacement prevents rollback cleanup of the directory.
+        std::fs::remove_dir_all(&dest)?;
+        std::fs::write(&dest, b"concurrent file")?;
+        anyhow::bail!("record failed")
+    })
+    .unwrap_err();
+    let backups: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("previous/keep.txt"))
+        .filter(|path| path.is_file())
+        .collect();
+    assert_eq!(backups.len(), 1, "previous install was deleted: {error}");
+    assert_eq!(std::fs::read(&backups[0]).unwrap(), b"working install");
+    assert!(error.to_string().contains("saved at"), "{error}");
 }

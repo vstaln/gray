@@ -118,6 +118,8 @@ pub(crate) type TuiOpt = Option<(
 )>;
 
 pub(crate) struct SessionState {
+    /// A failed write requires a full replacement before any suffix append.
+    pub(crate) full_save_pending: bool,
     pub(crate) store: crate::session_store::JsonlSessionStore,
     pub(crate) session_id: crate::session_store::SessionId,
 }
@@ -230,12 +232,12 @@ pub(crate) fn push_provider_connected(
 /// Split a `/name argv…` line into (`/name`, argv words) for plugin
 /// slash-command routing. `None` when the line isn't a slash command.
 fn split_plugin_command(line: &str) -> Option<(String, Vec<String>)> {
-    let mut words = line.trim().strip_prefix('/')?.split_whitespace();
-    let first = words.next()?;
+    let words = shlex::split(line.trim().strip_prefix('/')?)?;
+    let (first, rest) = words.split_first()?;
     if first.is_empty() {
         return None;
     }
-    Some((format!("/{first}"), words.map(|w| w.to_string()).collect()))
+    Some((format!("/{first}"), rest.to_vec()))
 }
 
 /// Claimed plugin slash commands for `/help`, in hook order. Names drop
@@ -268,8 +270,7 @@ struct ReplRunner {
 
 #[async_trait::async_trait(?Send)]
 impl crate::cron_serve::AsyncRunner for ReplRunner {
-    async fn run(&self, prompt: String) -> anyhow::Result<String> {
-        let cwd = std::env::current_dir()?;
+    async fn run(&self, prompt: String, cwd: std::path::PathBuf) -> anyhow::Result<String> {
         let mut agent = crate::build_agent(&self.config, &cwd, None).await?;
         let ctx = gray_core::agent::ToolContext {
             cwd,
@@ -331,11 +332,11 @@ async fn with_modal<T>(
     fut: impl std::future::Future<Output = T>,
 ) -> T {
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = true;
+        shared.lock().expect("tui lock").set_modal_open(true);
     }
     let r = fut.await;
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = false;
+        shared.lock().expect("tui lock").set_modal_open(false);
     }
     restore_viewport(tui);
     r
@@ -346,11 +347,11 @@ pub(crate) fn with_modal_sync<T>(
     f: impl FnOnce() -> T,
 ) -> T {
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = true;
+        shared.lock().expect("tui lock").set_modal_open(true);
     }
     let r = f();
     if let Some(shared) = tui {
-        shared.lock().expect("tui lock").modal_open = false;
+        shared.lock().expect("tui lock").set_modal_open(false);
     }
     restore_viewport(tui);
     r
@@ -531,6 +532,7 @@ pub async fn run_repl_mode(
             ledger.clear();
         }
         session_state = Some(SessionState {
+            full_save_pending: false,
             session_id: sid.clone(),
             store,
         });
@@ -583,6 +585,7 @@ pub async fn run_repl_mode(
             }
             t
         }));
+        crate::host::register_tui(&shared);
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         let ticker_stop = stop.clone();
         let ticker_tui = shared.clone();
@@ -620,7 +623,9 @@ pub async fn run_repl_mode(
     // (new chat lines in the session's own right, never transcript).
     // No join on exit: process return terminates the thread, and an
     // in-flight fire's claim TTL (300s) lets the next ticker reclaim it.
-    if interactive {
+    // File-only cron management remains usable on Windows; automatic firing
+    // must not bypass the CLI's explicit unsupported-execution boundary.
+    if interactive && !cfg!(windows) {
         let cfg = config.clone();
         if let Ok(home) = crate::setup::gray_home()
             && let Ok(store) = crate::cron::CronStore::open(home.join("cron"))

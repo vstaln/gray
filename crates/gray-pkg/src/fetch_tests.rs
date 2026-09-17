@@ -206,3 +206,33 @@ fn tar_rejects_lying_size_and_special_entries() {
     assert!(unpack_tar_gz(&archive, &dest).is_err());
     assert!(!dest.join("link").exists());
 }
+
+#[test]
+fn url_policy_rejects_malformed_authorities() {
+    for url in ["https://", "https://[::1", "https://localhost:bad/archive"] {
+        assert!(check_url(url).is_err(), "accepted {url}");
+    }
+}
+
+#[test]
+fn url_policy_accepts_parsed_loopback_and_https() {
+    for url in [
+        "http://[::1]:9/archive",
+        "http://LOCALHOST:9/archive",
+        "https://example.com/archive",
+    ] {
+        assert!(check_url(url).is_ok(), "rejected {url}");
+    }
+}
+
+#[test]
+fn url_policy_uses_downloader_authority() {
+    for url in [
+        r"http://evil.example\@127.0.0.1/archive",
+        r"http://evil.example\@localhost/archive",
+        "http://localhost.evil.example/archive",
+        "ftp://localhost/archive",
+    ] {
+        assert!(check_url(url).is_err(), "accepted {url}");
+    }
+}

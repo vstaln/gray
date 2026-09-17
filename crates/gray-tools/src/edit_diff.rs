@@ -5,8 +5,6 @@
 //! generation. Uses a simple LCS-based line diff (no external `similar` crate
 //! needed) — swap in `similar` if it is later added to `Cargo.toml`.
 
-use std::ops::Range;
-
 // ---------------------------------------------------------------------------
 // BOM / line endings
 // ---------------------------------------------------------------------------
@@ -138,43 +136,6 @@ pub struct AppliedEditsResult {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-fn split_lines_with_endings(content: &str) -> Vec<String> {
-    // Mirrors `content.match(/[^\n]*\n|[^\n]+/g)` — each entry keeps its trailing '\n' if present.
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let bytes = content.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        if b == b'\n' {
-            lines.push(content[start..=i].to_string());
-            start = i + 1;
-        }
-    }
-    if start < content.len() {
-        lines.push(content[start..].to_string());
-    }
-    // Handle empty string -> one empty entry? TS returns [] for "".
-    // We return [] for "" to match TS (content.match returns null).
-    // Our loop above returns [] for "" already.
-    lines
-}
-
-#[derive(Debug, Clone, Copy)]
-struct LineSpan {
-    start: usize,
-    end: usize,
-}
-
-fn get_line_spans(content: &str) -> Vec<LineSpan> {
-    let mut spans = Vec::new();
-    let mut offset = 0usize;
-    for line in split_lines_with_endings(content) {
-        let end = offset + line.len();
-        spans.push(LineSpan { start: offset, end });
-        offset = end;
-    }
-    spans
-}
-
 #[derive(Debug, Clone)]
 struct MatchedEdit {
     edit_index: usize,
@@ -184,48 +145,6 @@ struct MatchedEdit {
 }
 
 type TextReplacement = MatchedEdit;
-
-fn get_replacement_line_range(
-    lines: &[LineSpan],
-    replacement: &TextReplacement,
-) -> Result<Range<usize>, String> {
-    let replacement_start = replacement.match_index;
-    let replacement_end = replacement.match_index + replacement.match_length;
-
-    let mut start_line: Option<usize> = None;
-    for (i, line) in lines.iter().enumerate() {
-        if replacement_start >= line.start && replacement_start < line.end {
-            start_line = Some(i);
-            break;
-        }
-    }
-    // Edge: replacement at EOF (content ends without newline, match at exact end)
-    // TS throws if not found; but EOF appends should be handled.
-    let start_line = match start_line {
-        Some(v) => v,
-        None => {
-            // If replacement starts exactly at end of content (empty file or append),
-            // treat as last line.
-            if !lines.is_empty()
-                && replacement_start == lines.last().unwrap().end
-                && replacement.match_length == 0
-            {
-                lines.len() - 1
-            } else {
-                return Err("Replacement range is outside the base content.".to_string());
-            }
-        }
-    };
-
-    let mut end_line = start_line;
-    while end_line < lines.len() && lines[end_line].end < replacement_end {
-        end_line += 1;
-    }
-    if end_line >= lines.len() {
-        return Err("Replacement range is outside the base content.".to_string());
-    }
-    Ok(start_line..end_line + 1)
-}
 
 fn apply_replacements(content: &str, replacements: &[TextReplacement], offset: usize) -> String {
     let mut result = content.to_string();
@@ -245,66 +164,47 @@ fn apply_replacements(content: &str, replacements: &[TextReplacement], offset: u
     result
 }
 
-fn apply_replacements_preserving_unchanged_lines(
+fn map_fuzzy_occurrences(
     original_content: &str,
     base_content: &str,
-    replacements: &[TextReplacement],
-) -> Result<String, String> {
-    let original_lines = split_lines_with_endings(original_content);
-    let base_spans = get_line_spans(base_content);
-    if original_lines.len() != base_spans.len() {
-        return Err(
-            "Cannot preserve unchanged lines because the base content has a different line count."
-                .to_string(),
-        );
-    }
-
-    // Group replacements by line range, merging overlapping groups.
-    let mut sorted = replacements.to_vec();
-    sorted.sort_by_key(|r| r.match_index);
-    let mut groups: Vec<(Range<usize>, Vec<TextReplacement>)> = Vec::new();
-    for r in sorted {
-        let range = get_replacement_line_range(&base_spans, &r)?;
-        if let Some((last_range, last_repls)) = groups.last_mut()
-            && range.start < last_range.end
-        {
-            last_range.end = last_range.end.max(range.end);
-            last_repls.push(r);
-            continue;
+    mut occurrences: Vec<Occurrence>,
+) -> Result<Vec<Occurrence>, String> {
+    // Map fuzzy byte spans back to original bytes; never rebuild an entire
+    // matched line from normalized punctuation or trimmed whitespace.
+    let mut starts = Vec::new();
+    let mut ends = Vec::new();
+    let mut original_offset = 0;
+    for line in original_content.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = body.trim_end();
+        let normalized = normalize_for_fuzzy_match(trimmed);
+        for ((offset, original), mapped) in trimmed.char_indices().zip(normalized.chars()) {
+            for _ in 0..mapped.len_utf8() {
+                starts.push(original_offset + offset);
+                ends.push(original_offset + offset + original.len_utf8());
+            }
         }
-        groups.push((range, vec![r]));
-    }
-
-    let mut result = String::new();
-    let mut original_line_idx = 0usize;
-    for (range, repls) in groups {
-        for line in &original_lines[original_line_idx..range.start] {
-            result.push_str(line);
+        if line.ends_with('\n') {
+            starts.push(original_offset + body.len());
+            ends.push(original_offset + line.len());
         }
-        let group_start = base_spans[range.start].start;
-        let group_end = base_spans[range.end - 1].end;
-        let slice = &base_content[group_start..group_end];
-        result.push_str(&apply_replacements(slice, &repls, group_start));
-        original_line_idx = range.end;
+        original_offset += line.len();
     }
-    for line in &original_lines[original_line_idx..] {
-        result.push_str(line);
+    if starts.len() != base_content.len() {
+        return Err("Cannot map fuzzy match to original bytes".into());
     }
-    Ok(result)
+    for occurrence in &mut occurrences {
+        let start = starts[occurrence.index];
+        let end = ends[occurrence.index + occurrence.length - 1];
+        occurrence.index = start;
+        occurrence.length = end - start;
+    }
+    Ok(occurrences)
 }
 
 // ---------------------------------------------------------------------------
 // Fuzzy find
 // ---------------------------------------------------------------------------
-
-fn needs_fuzzy_match(content: &str, old_text: &str) -> bool {
-    if content.contains(old_text) {
-        return false;
-    }
-    let fuzzy_content = normalize_for_fuzzy_match(content);
-    let fuzzy_old = normalize_for_fuzzy_match(old_text);
-    fuzzy_content.contains(fuzzy_old.as_str())
-}
 
 #[derive(Debug, Clone, Copy)]
 struct Occurrence {
@@ -375,26 +275,22 @@ pub fn apply_edits_to_normalized_content(
         }
     }
 
-    // Determine whether any edit requires fuzzy matching.
-    let used_fuzzy = normalized_edits
-        .iter()
-        .any(|e| needs_fuzzy_match(normalized_content, &e.old_text));
-    let replacement_base: String = if used_fuzzy {
-        normalize_for_fuzzy_match(normalized_content)
-    } else {
-        normalized_content.to_string()
-    };
-
     let mut matched: Vec<MatchedEdit> = Vec::with_capacity(normalized_edits.len());
     let mut notes: Vec<String> = Vec::new();
 
     for (i, edit) in normalized_edits.iter().enumerate() {
-        let occurrences = if used_fuzzy {
+        // Exact matching is per edit: one fuzzy sibling must not redirect
+        // another edit. Convert fuzzy spans before selection/overlap checks.
+        let mut occurrences = find_all_occurrences(normalized_content, &edit.old_text);
+        if occurrences.is_empty() {
+            let fuzzy_content = normalize_for_fuzzy_match(normalized_content);
             let fuzzy_old = normalize_for_fuzzy_match(&edit.old_text);
-            find_all_occurrences(&replacement_base, &fuzzy_old)
-        } else {
-            find_all_occurrences(&replacement_base, &edit.old_text)
-        };
+            occurrences = map_fuzzy_occurrences(
+                normalized_content,
+                &fuzzy_content,
+                find_all_occurrences(&fuzzy_content, &fuzzy_old),
+            )?;
+        }
 
         if occurrences.is_empty() {
             if normalized_edits.len() == 1 {
@@ -471,7 +367,7 @@ pub fn apply_edits_to_normalized_content(
             let mut best_line = 1;
 
             for (idx, occ) in occurrences.iter().enumerate() {
-                let occ_line = replacement_base[..occ.index].split('\n').count();
+                let occ_line = normalized_content[..occ.index].split('\n').count();
                 let diff = (occ_line as isize - target_line as isize).unsigned_abs();
                 if diff < min_diff {
                     min_diff = diff;
@@ -496,7 +392,7 @@ pub fn apply_edits_to_normalized_content(
             // Graceful handling of multiple occurrences when no disambiguation is provided:
             // default to first occurrence and emit a helpful note.
             let occ = occurrences[0];
-            let first_line = replacement_base[..occ.index].split('\n').count();
+            let first_line = normalized_content[..occ.index].split('\n').count();
             matched.push(MatchedEdit {
                 edit_index: i,
                 match_index: occ.index,
@@ -531,19 +427,7 @@ pub fn apply_edits_to_normalized_content(
     }
 
     let base_content = normalized_content.to_string();
-    let new_content = if used_fuzzy {
-        // Try preserving unchanged lines; fall back to simple replacement if line counts diverge.
-        match apply_replacements_preserving_unchanged_lines(
-            normalized_content,
-            &replacement_base,
-            &matched,
-        ) {
-            Ok(s) => s,
-            Err(_) => apply_replacements(&replacement_base, &matched, 0),
-        }
-    } else {
-        apply_replacements(&replacement_base, &matched, 0)
-    };
+    let new_content = apply_replacements(normalized_content, &matched, 0);
 
     if base_content == new_content {
         if normalized_edits.len() == 1 {

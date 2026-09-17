@@ -1887,3 +1887,114 @@ fn tool_output_image_blocks_thread_after_text_result() {
     // Plain results carry no vision blocks.
     assert_eq!(ToolOutput::ok("hi").message_blocks("c").len(), 1);
 }
+
+#[tokio::test]
+async fn eof_with_text_and_tool_pending_salvages_visible_text() {
+    // The user already saw "hello" on screen; dropping it because a tool
+    // delta was also pending rewrites history to something never shown.
+    let provider = FakeProvider::new(vec![vec![
+        StreamEvent::text_delta("hello"),
+        StreamEvent::tool_call_delta(
+            0,
+            Some("c-x".into()),
+            Some(TOOL_NAME.into()),
+            r#"{"q":"x"}"#,
+        ),
+    ]]);
+    let mut agent = Agent::new(
+        Box::new(provider),
+        Arc::new(FakeExecutor::new(ToolOutput::ok("ok"))),
+    )
+    .with_tools(vec![tool_def()]);
+    let err = agent
+        .run(Message::user("go"), ToolContext::default())
+        .await
+        .expect_err("EOF without completion must fail");
+    assert!(
+        err.to_string().contains("without completion"),
+        "got {err:?}"
+    );
+    assert!(
+        agent
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .any(|b| matches!(b, ContentBlock::Text { text } if text.contains("hello"))),
+        "visible text must survive in history"
+    );
+    assert!(
+        !agent
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .any(|b| matches!(
+                b,
+                ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. }
+            )),
+        "truncated tool call must still never land in history"
+    );
+}
+
+#[tokio::test]
+async fn reasoning_only_maxtokens_is_not_retried_as_empty() {
+    // A reasoning model that stops with finish_reason=length after producing
+    // only thinking must NOT fall into the empty-turn retry (same request,
+    // same limit, up to 3x the output cost with the reasoning dropped): the
+    // MaxTokens branch owns the turn and keeps the thinking.
+    let provider = FakeProvider::new(vec![vec![
+        StreamEvent::thinking_delta("deep reasoning..."),
+        StreamEvent::message_complete(Some(StopReason::MaxTokens), None),
+    ]]);
+    let executor = FakeExecutor::new(ToolOutput::ok("unused"));
+    let mut agent = Agent::new(Box::new(provider), Arc::new(executor));
+
+    let events = agent
+        .run(Message::user("think hard"), ToolContext::default())
+        .await
+        .unwrap();
+
+    let empty_ends = events
+        .iter()
+        .filter(|e| matches!(e, AgentEvent::TurnEnd { .. }))
+        .count();
+    assert_eq!(empty_ends, 1, "exactly one turn end: {events:?}");
+    let thinking = agent
+        .messages()
+        .last()
+        .map(|m| {
+            m.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Thinking { .. }))
+        })
+        .unwrap_or(false);
+    assert!(
+        thinking,
+        "truncated reasoning must persist: {:?}",
+        agent.messages().last()
+    );
+}
+
+#[test]
+fn image_budget_is_bounded_and_rewrites_notify_session() {
+    let mut agent = Agent::new(
+        Box::new(FakeProvider::new(vec![])),
+        Arc::new(FakeExecutor::new(ToolOutput::ok(""))),
+    );
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_count = count.clone();
+    agent = agent.with_history_rewrite_hook(Arc::new(move || {
+        hook_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let before = agent.history_revision();
+    agent.set_messages(vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::image(
+            "image/png",
+            "a".repeat(5 * 1024 * 1024),
+        )],
+    }]);
+    assert!(agent.estimate_tokens() <= 4096);
+    assert!(agent.estimate_tokens() >= 1000);
+    assert_ne!(agent.history_revision(), before);
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

@@ -2,6 +2,7 @@
 name = "gray-tools"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 gray-core = { workspace = true }
@@ -18,3 +19,7 @@ globset = { workspace = true }
 base64 = { workspace = true }
 image = { workspace = true }
 
+# Job Objects own native shell descendants; POSIX process groups cannot model
+# Windows cancellation. Keep Win32 APIs out of Unix builds.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Diagnostics_ToolHelp"] }

@@ -2,6 +2,7 @@
 name = "gray-provider"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 gray-core = { workspace = true }

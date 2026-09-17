@@ -85,11 +85,18 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         })
         .sum::<u16>()
         .saturating_add(u16::from(tui.live_tool_overflow() > 0));
-    let max_viewport_h = VIEWPORT_H;
+    let widget_budget = rows
+        .saturating_sub(box_h + status_h + queued_est + live_est + panel_est + attach_h + 2)
+        .min(12);
+    let widget_rows = tui.plugin_widget.rows(widget_budget as usize);
+    let widget_h = widget_rows.len() as u16;
+    let max_viewport_h = VIEWPORT_H
+        .saturating_add(widget_h)
+        .min(rows.max(MIN_VIEWPORT_H));
     let desired = desired_viewport_h(
         status_h,
         queued_est,
-        live_est,
+        live_est + widget_h,
         box_rows_est,
         panel_est,
         attach_h,
@@ -149,7 +156,7 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         // (status, queued, input, attachments, footer) are placed.
         let avail = area
             .height
-            .saturating_sub(status_h + queued_h + live_h + box_h + attach_h + 1);
+            .saturating_sub(status_h + queued_h + live_h + widget_h + box_h + attach_h + 1);
         let need = PANEL_ROWS as u16;
         let panel_cap = need.min(avail).max((PANEL_ROWS as u16).min(avail));
         let visible_count = if tui.matches.is_empty() {
@@ -159,7 +166,8 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         };
         let panel_h = visible_count as u16;
         let box_rows = box_h;
-        let box_y = status_y + status_h + queued_h + live_h;
+        let widget_y = status_y + status_h + queued_h + live_h;
+        let box_y = widget_y + widget_h;
         let panel_y = box_y + box_rows;
         let attach_y = panel_y + panel_h;
         let footer_y = attach_y + attach_h;
@@ -226,6 +234,15 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
                             .add_modifier(Modifier::DIM)
                             .add_modifier(Modifier::ITALIC),
                     )])),
+                    Rect::new(area.x, y, area.width, 1),
+                );
+            }
+        }
+        for (i, line) in widget_rows.iter().enumerate() {
+            let y = widget_y + i as u16;
+            if y < area.bottom() {
+                frame.render_widget(
+                    Paragraph::new(line.clone()),
                     Rect::new(area.x, y, area.width, 1),
                 );
             }
@@ -494,12 +511,22 @@ pub(crate) fn draw(tui: &mut Tui) -> anyhow::Result<()> {
         let cur_y = (box_y + 1 + ibox.cur_row as u16).min(area.y + area.height.saturating_sub(1));
         frame.set_cursor_position(Position::new(cur_x, cur_y));
     });
+    let background_result = if res.is_ok() {
+        if let Some(bg) = &mut tui.background {
+            bg.draw(&mut std::io::stdout().lock(), cols, rows)
+        } else {
+            Ok(())
+        }
+    } else {
+        Ok(())
+    };
     let ended = crossterm::execute!(
         std::io::stdout(),
         crossterm::terminal::EndSynchronizedUpdate
     );
     res?;
     ended?;
+    background_result?;
     Ok(())
 }
 

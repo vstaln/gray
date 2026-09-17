@@ -657,3 +657,55 @@ mod switch_tests {
         assert!(ag.messages()[0].text_content().contains("summarized"));
     }
 }
+
+#[test]
+fn screenshot_budget_does_not_count_base64_as_prose() {
+    let message = Message::new(
+        Role::User,
+        vec![ContentBlock::image(
+            "image/png",
+            "a".repeat(5 * 1024 * 1024),
+        )],
+    );
+    let estimate = estimate_tokens(&message);
+    assert!((1000..=4096).contains(&estimate), "estimate: {estimate}");
+}
+
+#[tokio::test]
+async fn image_then_text_turn_keeps_image_without_spurious_compaction() {
+    let mut agent = scripted_agent("answer").with_context_window(Some(128_000));
+    let image = Message::new(
+        Role::User,
+        vec![ContentBlock::image(
+            "image/png",
+            "a".repeat(5 * 1024 * 1024),
+        )],
+    );
+    agent
+        .run(image, gray_core::agent::ToolContext::default())
+        .await
+        .unwrap();
+    let revision = agent.history_revision();
+    let tokens = estimate_context_tokens(agent.messages(), None);
+    assert!(!should_compact(
+        tokens,
+        128_000,
+        &CompactionSettings {
+            reserve_tokens: 16_384
+        }
+    ));
+    agent
+        .run(
+            Message::user("describe it again"),
+            gray_core::agent::ToolContext::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(agent.history_revision(), revision);
+    assert!(agent.messages().iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Image { .. }))
+    }));
+}

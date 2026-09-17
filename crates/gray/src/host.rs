@@ -1,4 +1,4 @@
-//! REPL/`-p` side of the plugin→host channel (`host/run` + `host/say`).
+//! REPL/`-p` side of the plugin→host channel (`host/run`, `host/say`, `host/background`).
 //!
 //! Installed on every sidecar at spawn by [`crate::build_agent`] via the
 //! shared builder;
@@ -12,6 +12,34 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use gray_plugin::{HOST_RUN, HOST_SAY, HostHandler};
+
+// Weak: the host must not keep an exited composer alive.
+static TUI: Mutex<std::sync::Weak<std::sync::Mutex<crate::composer::Tui>>> =
+    Mutex::new(std::sync::Weak::new());
+
+pub(crate) fn register_tui(tui: &crate::composer::SharedTui) {
+    *TUI.lock().expect("background registration") = std::sync::Arc::downgrade(tui);
+}
+
+fn background(params: serde_json::Value) -> anyhow::Result<()> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request {
+        path: Option<PathBuf>,
+    }
+    anyhow::ensure!(
+        params.get("path").is_some(),
+        "missing background path (null clears)"
+    );
+    let request: Request = serde_json::from_value(params)?;
+    let tui = TUI
+        .lock()
+        .map_err(|_| anyhow::anyhow!("TUI unavailable"))?
+        .upgrade()
+        .ok_or_else(|| anyhow::anyhow!("background requires an interactive Gray TUI"))?;
+    let mut tui = tui.lock().map_err(|_| anyhow::anyhow!("TUI unavailable"))?;
+    tui.set_background(request.path.as_deref())
+}
 
 static SAY_QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
@@ -37,6 +65,10 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
         let fut: std::pin::Pin<Box<dyn std::future::Future<Output = serde_json::Value> + Send>> =
             Box::pin(async move {
                 match method.as_str() {
+                    "host/background" => match background(params) {
+                        Ok(()) => serde_json::json!({"ok": true}),
+                        Err(e) => serde_json::json!({"error": format!("{e:#}")}),
+                    },
                     HOST_SAY => {
                         if let Some(text) = params.get("text").and_then(|t| t.as_str())
                             && !text.trim().is_empty()
@@ -62,3 +94,7 @@ pub fn default_handler(cwd: PathBuf) -> HostHandler {
         fut
     })
 }
+
+#[path = "host_tests.rs"]
+#[cfg(test)]
+mod tests;

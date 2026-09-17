@@ -14,6 +14,8 @@ jobs:
       contents: read
       checks: write
     strategy:
+      # A macOS failure must not cancel the independent Linux evidence.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -33,6 +35,13 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
       - run: cargo clippy --workspace -- -D warnings
+      # Keep platform process tests ahead of unrelated suites, so a failure
+      # elsewhere cannot hide the macOS cancellation regression evidence.
+      - if: matrix.os == 'macos-latest'
+        name: Verify macOS timeout and complete shell library tests
+        env:
+          RUST_BACKTRACE: 1
+        run: cargo test --locked -p gray-tools --lib -- --nocapture
       - run: cargo test --workspace --quiet
       - if: matrix.os == 'ubuntu-latest'
         uses: rustsec/audit-check@v2
@@ -43,24 +52,76 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s dist/tests -v
       - name: install.sh end-to-end against a local repo (no network)
         shell: bash
         run: |
           FAKE=$RUNNER_TEMP/fakerepo; BIN=$RUNNER_TEMP/bin; mkdir -p "$FAKE" "$BIN"
           printf '#!/bin/sh\necho "gray 0.0.0-test"\n' > "$FAKE/gray"
           chmod +x "$FAKE/gray"
-          (cd "$FAKE" && tar czf gray-stable-x86_64-linux.tar.gz gray && sha256sum gray-*.tar.gz > SHA256SUMS)
+          (cd "$FAKE" && tar czf gray-stable-x86_64-linux.tar.gz gray && sha256sum gray-*.tar.gz > SHA256SUMS-stable)
           GRAY_CDN_URL="file://$FAKE" GRAY_INSTALL_DIR="$BIN" sh dist/install.sh
           "$BIN/gray" --version
 
-  windows-check:
-    # Baseline only: native Windows port is unproven (unix-only cfg sites in
-    # gray-tools/gray) and no Windows tarballs are published yet. Enforce
-    # (drop continue-on-error) once this is green + install.ps1 goes native.
-    runs-on: windows-latest
-    continue-on-error: true
+  windows-runtime:
+    # This is a runtime gate, not a Windows support announcement. The first
+    # port must prove Git Bash timeout/cancel kills descendants before we
+    # publish a native installer. Do not suppress failures with continue-on-error.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check -p gray
+      - name: Configure explicit Git for Windows shell and isolated storage
+        shell: pwsh
+        run: |
+          # Avoid System32 bash.exe (the WSL launcher). Git's usr/bin/sh.exe
+          # also supplies sleep/printf for the identical Unix/Windows fixture.
+          $shellDir = Join-Path $env:ProgramFiles 'Git\usr\bin'
+          if (-not (Test-Path (Join-Path $shellDir 'sh.exe'))) {
+            throw 'Git for Windows POSIX shell is required for native tests'
+          }
+          $shellDir >> $env:GITHUB_PATH
+          "GRAY_BASH=$(Join-Path $shellDir 'sh.exe')" >> $env:GITHUB_ENV
+          "GRAY_HOME=$(Join-Path $env:RUNNER_TEMP 'gray-test-home')" >> $env:GITHUB_ENV
+      - run: cargo check --locked -p gray
+      - name: Run complete cross-platform shell lifecycle regression file
+        run: cargo test --locked -p gray-tools --test platform_shell -- --nocapture
+      - name: Run complete shell contract with native fixture paths
+        # Run even if the new lifecycle regression fails, so both complete
+        # test files report native evidence instead of stopping at one failure.
+        if: ${{ !cancelled() }}
+        run: cargo test --locked -p gray-tools --test shell_contract -- --nocapture
+      - name: Resolve native profile without Unix HOME
+        run: cargo test --locked -p gray --test home_paths -- --nocapture
+      - name: Check explicit preview limitations and real first-request cwd
+        run: cargo test --locked -p gray --test windows_limits --test working_directory -- --nocapture
+      - name: Build native preview artifact (not a release)
+        env:
+          GRAY_CHANNEL: beta
+        run: cargo build --locked --release -p gray
+      - name: Test native installer with PowerShell 7
+        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
+      - name: Test native installer with Windows PowerShell 5.1
+        shell: powershell
+        run: ./dist/tests/install-native.ps1 -Binary (Resolve-Path target/release/gray.exe)
+      - name: Package preview ZIP and checksum
+        shell: pwsh
+        run: |
+          # CI artifacts only: never modify the production CDN or installer default.
+          New-Item -ItemType Directory -Path native-package | Out-Null
+          Copy-Item target/release/gray.exe, LICENSE, THIRD_PARTY_NOTICES.md native-package/
+          $archive = 'gray-beta-x86_64-windows.zip'
+          Compress-Archive native-package/* $archive
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archive" | Set-Content "$archive.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-preview
+          path: |
+            gray-beta-x86_64-windows.zip
+            gray-beta-x86_64-windows.zip.sha256
+            dist/install-native.ps1

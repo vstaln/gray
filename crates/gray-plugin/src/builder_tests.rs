@@ -23,8 +23,8 @@ fn build_lock() -> std::sync::MutexGuard<'static, ()> {
 #[allow(clippy::await_holding_lock)] // serializes two registry builds sharing CURRENT_LEDGER
 async fn from_plugins_adopts_one_ledger_into_registry() {
     let _guard = build_lock();
-    // Deferred T3.2 item: the registry's file_ledger must be the same
-    // state the session read/write/edit tools use.
+    // The lifecycle handle must be the same ledger the session
+    // read/write/edit tools use.
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("note.txt");
     std::fs::write(&p, "hello\n").unwrap();
@@ -35,9 +35,10 @@ async fn from_plugins_adopts_one_ledger_into_registry() {
     };
     let out = ToolExecutor::execute(&reg, &ctx, "read", json!({"path": "note.txt"})).await;
     assert!(!out.is_error, "{out:?}");
+    let led = current_file_ledger().expect("lifecycle handle tracks this build");
     assert!(
-        reg.file_ledger().get(&p).is_some(),
-        "read must record into Registry::file_ledger"
+        led.get(&p).is_some(),
+        "read must record into the tracked ledger"
     );
     // ... and the write tool honors it (no force needed after a full read).
     let out = ToolExecutor::execute(
@@ -48,8 +49,6 @@ async fn from_plugins_adopts_one_ledger_into_registry() {
     )
     .await;
     assert!(!out.is_error, "{out:?}");
-    // Lifecycle handle tracks this build's ledger.
-    assert!(current_file_ledger().is_some());
 }
 
 struct EvilReadPlugin;
@@ -89,4 +88,13 @@ fn sidecar_cannot_claim_reserved_builtin_names() {
             .any(|w| w.contains("evil") && w.contains("read")),
         "expected reservation warning, got: {warnings:?}"
     );
+}
+
+#[test]
+fn search_tools_keep_plugin_order_across_builds() {
+    let _guard = build_lock();
+    for _ in 0..32 {
+        let (registry, _) = from_plugins(&[Arc::new(ToolsSearchPlugin)]);
+        assert_eq!(registry.tool_names(), vec!["grep", "find", "ls"]);
+    }
 }

@@ -178,6 +178,16 @@ impl Agent {
             }
         }
 
+        // Capture before pre-turn compaction so its request uses this same prefix.
+        let mut system = self.system.clone();
+        if !hook_context.is_empty() {
+            if !system.is_empty() {
+                system.push_str("\n\n");
+            }
+            system.push_str(&hook_context);
+        }
+        self.turn_system = Some(system);
+
         'turn: loop {
             // Cancellation is honored between turns, never mid-stream: a
             // half-finished assistant message would leave the transcript
@@ -198,6 +208,7 @@ impl Agent {
                         &mut self.messages,
                         crate::compact::DEFAULT_KEEP_RECENT_TOOL_OBSERVATIONS,
                     );
+                    self.history_rewritten();
                 }
                 // False = nothing to gain (all tail): fall through; the provider's
                 // own overflow path remains the backstop. Success strictly shrinks
@@ -214,19 +225,18 @@ impl Agent {
                     }
                 }
             }
-            // Per-turn hook context (fetched once above) concatenates onto
-            // this turn's system prompt. Empty when no hooks replied.
-            let mut system = self.system.clone();
-            if !hook_context.is_empty() {
-                if !system.is_empty() {
-                    system.push_str("\n\n");
-                }
-                system.push_str(&hook_context);
+            let mut request_messages = self.messages.clone();
+            if request_messages
+                .last()
+                .is_some_and(|message| message.role == Role::Assistant)
+            {
+                request_messages.push(Message::user(
+                    "Continue the pending user request using the retained context and summary.",
+                ));
             }
-
             let req = ChatRequest {
-                system: (!system.is_empty()).then_some(system),
-                messages: self.messages.clone(),
+                system: (!self.system_text().is_empty()).then(|| self.system_text().to_string()),
+                messages: request_messages,
                 tools: self.tools.clone(),
             };
 
@@ -246,7 +256,7 @@ impl Agent {
                     let next_event = tokio::select! {
                         ev = stream.next() => ev,
                         _ = ctx.cancel.cancelled() => {
-                            if !text_parts.is_empty() && pending.is_empty() {
+                            if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
                                     thinking_text.clone(),
@@ -391,7 +401,7 @@ impl Agent {
                             // Mid-stream failure after deltas already reached the
                             // user's screen: salvage the partial assistant text
                             // into history so the transcript matches what was seen.
-                            if !text_parts.is_empty() && pending.is_empty() {
+                            if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
                                     thinking_text.clone(),
@@ -424,7 +434,7 @@ impl Agent {
                             // treat that as success. Text-only partial output
                             // is salvaged (marked interrupted); pending tool
                             // calls are NOT executed from a truncated stream.
-                            if !text_parts.is_empty() && pending.is_empty() {
+                            if !text_parts.is_empty() {
                                 salvage_partial_text(
                                     &mut self.messages,
                                     thinking_text.clone(),
@@ -551,7 +561,11 @@ impl Agent {
 
             // Empty turn (no text, no tool calls): retry the provider call,
             // then nudge once after tool results, else end on `(empty)`.
-            if text_is_empty && tool_uses.is_empty() {
+            // A reasoning-only response cut by the output limit is NOT an
+            // empty turn: the identical retry would hit the same limit (up to
+            // 3x the max output cost, reasoning dropped). The MaxTokens branch
+            // above owns the turn; ending here keeps the thinking (#99).
+            if text_is_empty && tool_uses.is_empty() && stop_reason != StopReason::MaxTokens {
                 self.messages.pop();
                 if empty_retries < MAX_EMPTY_RETRIES {
                     empty_retries += 1;

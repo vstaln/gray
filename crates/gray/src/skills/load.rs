@@ -47,11 +47,9 @@ fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String
     if let Some(end) = find_closing_delim(after_open) {
         let fm_str = &after_open[..end];
         let body = &after_open[end..];
-        let body = body.strip_prefix("---").unwrap_or(body);
         let body = body
-            .strip_prefix("\r\n")
-            .or_else(|| body.strip_prefix('\n'))
-            .unwrap_or(body)
+            .split_once('\n')
+            .map_or("", |(_, rest)| rest)
             .to_string();
         let fm = parse_yaml_like(fm_str);
         Ok((fm, body))
@@ -61,17 +59,12 @@ fn parse_frontmatter(content: &str) -> Result<(SkillFrontmatter, String), String
 }
 
 fn find_closing_delim(s: &str) -> Option<usize> {
-    for (idx, line) in s.lines().enumerate() {
+    let mut offset = 0;
+    for line in s.split_inclusive('\n') {
         if line.trim() == "---" {
-            // compute byte offset
-            let mut off = 0usize;
-            for (i, l) in s.lines().enumerate() {
-                if i == idx {
-                    return Some(off);
-                }
-                off += l.len() + 1; // +1 for \n (close enough)
-            }
+            return Some(offset);
         }
+        offset += line.len();
     }
     None
 }

@@ -32,6 +32,21 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+    // Plugin terminal commands do not depend on provider configuration.
+    match &cli.command {
+        Some(gray::Commands::Install {
+            cmd: gray::InstallCmd::Plugin { name },
+        }) => {
+            return gray::plugin_cli::install(&gray::plugin_cli::home()?, name).await;
+        }
+        Some(gray::Commands::External(args)) => {
+            let (name, rest) = args
+                .split_first()
+                .expect("clap external command is nonempty");
+            return gray::plugin_cli::forward(&gray::plugin_cli::home()?, name, rest);
+        }
+        _ => {}
+    }
     let mut config = Config::resolve(&cli)?;
     gray::turn_caps::init_process_start();
     gray::setup::set_user_context_window(config.context_window);
@@ -61,11 +76,29 @@ async fn main() -> anyhow::Result<()> {
             gray::Commands::Sessions { cmd } => {
                 return run_sessions(cmd).await;
             }
+            // Handled before Config::resolve so plugin commands work with no
+            // provider configured (fresh machine, venv-only install).
+            gray::Commands::Install { .. } | gray::Commands::External(_) => {
+                unreachable!("plugin CLI dispatch happens before configuration")
+            }
         }
     }
     if let Some(prompt) = cli.print.as_deref() {
-        run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
+        if cli.json {
+            gray::print::run_print_mode_json(
+                &config,
+                prompt,
+                cli.session.as_deref(),
+                cli.continue_last,
+                cli.max_requests,
+                cli.input_price,
+                cli.output_price,
+            )
             .await?;
+        } else {
+            run_print_mode_with_session(&config, prompt, cli.session.as_deref(), cli.continue_last)
+                .await?;
+        }
     } else {
         gray::update::startup_check().await;
         run_repl_mode(&mut config, cli.continue_last, cli.session.as_deref()).await?;
@@ -319,6 +352,11 @@ async fn run_sessions(cmd: gray::SessionsCmd) -> anyhow::Result<()> {
 
 async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::Result<()> {
     use gray::CronCmd;
+    if cfg!(windows) && matches!(&cmd, CronCmd::Tick | CronCmd::Serve | CronCmd::Run { .. }) {
+        anyhow::bail!(
+            "cron execution is not supported on native Windows; use a WSL execution host"
+        );
+    }
     match cmd {
         CronCmd::List => {
             let store = cron_store()?;
@@ -388,6 +426,11 @@ async fn run_cron(cmd: gray::CronCmd, config: &gray::config::Config) -> anyhow::
                 .map(|j| fmt_ts_opt(j.next_run_at))
                 .unwrap_or_else(|| "-".to_string());
             println!("added {id} next {next}");
+            if cfg!(windows) {
+                println!(
+                    "Stored only: cron execution is not supported on native Windows. Use a supported execution host."
+                );
+            }
             let stamp = store.last_tick()?;
             if let Some(warn) =
                 gray::cron_status::add_warning(stamp.as_ref(), gray::cron::now_secs())

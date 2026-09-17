@@ -96,21 +96,28 @@ impl Agent {
         if est_tokens(&next) >= est_tokens(&self.messages) {
             return Ok(None);
         }
-        self.messages = next;
+        self.set_messages(next);
         Ok(Some(summary))
     }
 }
 
 /// One message's token estimate (bytes/4 over billable text).
-fn est_token(m: &Message) -> usize {
-    m.context_text().len() / 4
+pub fn estimate_message_tokens(m: &Message) -> usize {
+    if m.content
+        .iter()
+        .any(|b| matches!(b, crate::message::ContentBlock::Image { .. }))
+    {
+        m.content.iter().map(crate::compact::block_tokens).sum()
+    } else {
+        m.context_text().len() / 4
+    }
 }
 
 /// Shared transcript estimate: the shrink comparison above uses this, as do
 /// `Agent::estimate_tokens` (agent.rs) and the compaction-v2 port
 /// (`compact::message_tokens`) — single owner, no mirrors.
 pub(crate) fn est_tokens(msgs: &[Message]) -> usize {
-    msgs.iter().map(est_token).sum()
+    msgs.iter().map(estimate_message_tokens).sum()
 }
 
 /// Tokens held back from compaction no matter what (Codex parity).

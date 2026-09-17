@@ -127,3 +127,17 @@ fn local_output_writes_atomic_md() {
         );
     }
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn script_timeout_covers_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("sleep.sh");
+    std::fs::write(&script, "#!/bin/sh\nexec sleep 1\n").unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let out =
+        run_pre_script_with_timeout(&script, dir.path(), std::time::Duration::from_millis(50))
+            .await;
+    assert!(!out.ok);
+    assert!(out.stderr_tail.contains("timed out"), "{}", out.stderr_tail);
+}

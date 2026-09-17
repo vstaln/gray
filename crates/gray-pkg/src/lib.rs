@@ -12,15 +12,7 @@ pub mod sources;
 use std::path::PathBuf;
 
 pub(crate) fn gray_home() -> PathBuf {
-    std::env::var("GRAY_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::var("HOME")
-                .map(|h| PathBuf::from(h).join(".gray"))
-                .unwrap_or_else(|_| PathBuf::from(".gray"))
-        })
+    gray_core::paths::gray_home().unwrap_or_else(|| PathBuf::from(".gray"))
 }
 
 pub(crate) fn plugins_dir() -> PathBuf {

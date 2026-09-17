@@ -6,32 +6,24 @@
 malicious or confused model output and untrusted tool/plugin results. There is no container or VM
 isolation — run gray in a container/VM for untrusted work.
 
-## Destructive-command guard (scope, not a sandbox)
+## Tool execution
 
-`crates/gray-tools/src/bash.rs` blocks obvious foot-guns (`rm -rf /`,
-`mkfs`, fork bombs, `git reset --hard`) after an allow-prompt. Matching is
-prefix/token-based: pipes, `&&` chains, `$(...)`, `eval`, `xargs rm`,
-`find -delete`, `python -c 'shutil.rmtree(...)'` and `curl … | sh` pass
-through. `GRAY_GUARD_BYPASS=1` disables it entirely.
-
-## Tool permission
-
-`GRAY_PERMISSION=ask|auto` controls guard `Prompt` verdicts (asked at the
-tool/before seam, before the tool runs). Default is `ask` in the
-interactive REPL and `auto` in `-p` print mode (no TTY to ask on).
-`Deny` verdicts always block regardless of mode.
+There is no destructive-command guard and no approval prompt. Model-generated
+commands run with your user privileges. `GRAY_GUARD_BYPASS` and
+`GRAY_PERMISSION` are not supported controls. The default tool surface is
+`bash`; optional plugins may add tools. Treat model and tool output as
+untrusted, and use a container or VM when isolation is required.
 
 ## Plugin trust
 
 Plugins are sidecar processes running with your user privileges — only
-install plugins you trust. `capabilities[]` in the manifest is advisory
-(not enforced); a `tool/before` deny from any plugin blocks the call.
+install plugins you trust. Plugin manifests are not an OS sandbox; a `tool/before` deny blocks the call.
 Audit a plugin with `gray plugin check <dir>` before installing.
 
 ## Update trust model
 
 Installs and `gray update` fetch the installer script, the tarball, and
-`SHA256SUMS` over HTTPS from one origin (`gray.alignment.id`). The sums
+`SHA256SUMS-<channel>` over HTTPS from one origin (`gray.alignment.id`). The sums
 verify integrity in transit, not publisher identity: releases are not
 signed yet. Background auto-update (`GRAY_AUTO_UPDATE=1`) runs on the
 stable channel only — beta redeploys on every push to main. Operators who
@@ -39,6 +31,7 @@ need signed updates should build from source at a reviewed tag.
 
 ## Reporting
 
-Report vulnerabilities privately via a GitHub security advisory on
-[vstaln/gray](https://github.com/vstaln/gray) (Security tab →
-Report a vulnerability). Do not open public issues for unpatched holes.
+Private vulnerability reporting is currently disabled on this repository.
+For sensitive reports, open an issue requesting a private contact channel
+without including exploit details or secrets. Do not publish unpatched
+vulnerability details in that request.
