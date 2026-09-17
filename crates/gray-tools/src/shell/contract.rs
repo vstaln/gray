@@ -1,9 +1,6 @@
 //! shell/contract.rs: shared shell types.
 //!
-//! Blocking `bash` only: budgets, exit reports, bounded views. No task
-//! registry, no background tasks, no wake events: a command runs, the tool
-//! waits (killing the process group on timeout/cancel), and the full log
-//! stays on disk for `grep`.
+//! Blocking and managed-background commands share execution budgets and views.
 
 use std::time::Duration;
 
@@ -13,6 +10,8 @@ use tokio::process::Child;
 
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 pub const MAX_TIMEOUT_SECS: u64 = 600;
+pub const MIN_YIELD_MS: u64 = 100;
+pub const MAX_YIELD_MS: u64 = 10_000;
 pub const VIEW_BUDGET_LINES: usize = 2000;
 pub const VIEW_HEAD_FRACTION: f32 = 0.25; // head 25%, tail 75%
 pub const MEM_HEAD_BYTES: usize = 6 * 1024;

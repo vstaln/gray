@@ -139,10 +139,13 @@ pub trait Tool: Send + Sync {
     /// Static definition surfaced to the model (name, description, schema).
     fn def(&self) -> crate::message::ToolDef;
 
+    /// Drain completed background notices without waiting. Called only at safe
+    /// transcript boundaries, never in the middle of tool-result placement.
+    fn drain_notifications(&self, _ctx: &ToolContext) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Executes the tool. Failures are data ([`ToolOutput::error`]), never panics.
-    /// NOTE: an earlier `is_concurrency_safe` hook was
-    /// deleted — tools run sequentially and nothing read it. If a parallel
-    /// executor lands, re-add it then (bash/edit are the unsafe ones).
     async fn execute(&self, ctx: &ToolContext, args: serde_json::Value) -> ToolOutput;
 }
 
@@ -150,6 +153,10 @@ pub trait Tool: Send + Sync {
 /// never knows what tools exist.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    fn drain_notifications(&self, _ctx: &ToolContext) -> Vec<String> {
+        Vec::new()
+    }
+
     fn execute(
         &self,
         ctx: &ToolContext,

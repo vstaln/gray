@@ -18,6 +18,12 @@ fn try_lock_tui<T>(
     }
 }
 
+/// Once read() consumes input, renderer contention must not discard it.
+/// This watcher runs on a blocking thread, so waiting here does not stall Tokio.
+fn lock_tui<T>(shared: &std::sync::Arc<std::sync::Mutex<T>>) -> std::sync::MutexGuard<'_, T> {
+    shared.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// Full watcher (prompt turns): typing queues follow-ups, clipboard paste, popups.
 pub(crate) fn spawn_key_watcher_with_typing(
     watch_cancel: Cancel,
@@ -104,9 +110,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     let Some(shared) = watcher_tui.as_ref() else {
                         continue;
                     };
-                    let Some(mut t) = try_lock_tui(shared) else {
-                        continue;
-                    };
+                    let mut t = lock_tui(shared);
                     if !t.is_task_running {
                         continue;
                     }
@@ -477,9 +481,7 @@ pub(crate) fn spawn_key_watcher_with_typing(
                     let Some(shared) = watcher_tui.as_ref() else {
                         continue;
                     };
-                    let Some(mut t) = try_lock_tui(shared) else {
-                        continue;
-                    };
+                    let mut t = lock_tui(shared);
                     if !t.is_task_running {
                         continue;
                     }

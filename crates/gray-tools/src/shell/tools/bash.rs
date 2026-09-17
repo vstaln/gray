@@ -1,14 +1,5 @@
-//! shell/tools/bash.rs — blocking-only bash.
-//!
-//! Runs `sh -c`, waits for exit, kills the process group on timeout or
-//! cancel. No background mode, no task ids, no registry: one call, one
-//! result card. `is_error` only for harness failures (spawn error, bad
-//! args); any exit status, signal death, timeout or cancel returns
-//! `ToolOutput::ok` with the verdict on the first line.
-//!
-//! Always logs (`$GRAY_HOME/shell/<session>/bash-<uuid>.log`), one
-//! middle-out view, honest header, fenced body. The full log stays on disk;
-//! the header names its path — grep it instead of rerunning.
+//! Shell execution: ordinary blocking calls and session-owned background jobs.
+//! Both modes share timeout, cancellation, redaction, bounded output and reaping.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -20,8 +11,8 @@ use serde_json::{Value, json};
 use tokio::task::JoinHandle;
 
 use crate::shell::contract::{
-    DEFAULT_TIMEOUT_SECS, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS, MEM_HEAD_BYTES, MEM_TAIL_BYTES,
-    PUMP_DRAIN_TIMEOUT, PumpSummary, VIEW_BUDGET_LINES, View,
+    DEFAULT_TIMEOUT_SECS, INLINE_BUDGET_BYTES, MAX_TIMEOUT_SECS, MAX_YIELD_MS, MEM_HEAD_BYTES,
+    MEM_TAIL_BYTES, MIN_YIELD_MS, PUMP_DRAIN_TIMEOUT, PumpSummary, VIEW_BUDGET_LINES, View,
 };
 use crate::shell::exit::exit_report;
 use crate::shell::fence::fence;
@@ -29,207 +20,268 @@ use crate::shell::kill::term_then_kill;
 use crate::shell::pump::Pump;
 use crate::shell::spawn::spawn;
 use crate::shell::view::{format_elapsed, header, middle_out, resume_hint};
-use crate::{fail, get_opt_u64, get_str};
+use crate::{fail, get_opt_bool, get_opt_u64, get_str};
 
-/// Runs a command through the shell (`sh -c`), blocking until it exits.
-pub struct BashTool;
+mod jobs;
+
+/// One registry-owned job collection. Dropping the tool cancels its jobs.
+#[derive(Default)]
+pub struct BashTool {
+    jobs: jobs::Jobs,
+}
 
 #[async_trait]
 impl Tool for BashTool {
     fn def(&self) -> ToolDef {
         ToolDef::new(
             "bash",
-            if cfg!(windows) {
-                "Run a POSIX command with Git for Windows sh -c (not PowerShell or WSL). \
-                 No terminal or stdin. Native cwd is supplied by Gray; use Git Bash path syntax in commands. \
-                 Timeout defaults to 30s, capped at 600s. Timeout/cancellation terminates the owned process tree. \
-                 Background descendants never outlive this call. Captures stdout/stderr; \
-                 non-zero exits are data, not tool errors. Read the header."
-            } else {
-                "Run a shell command via `sh -c` and capture stdout/stderr. \
-             Blocks until the command exits. Times out after `timeout` seconds \
-             (default 30, capped at 600): the process group is killed and \
-             partial output is returned. \
-             Non-zero exits are data, not tool errors — read the header."
-            },
+            "Run a shell command via sh -c. Default: wait for exit. For independent long work, \
+             use background:true to return immediately, or yield_ms to return a job ID if still \
+             running after that window. Multiple jobs can run concurrently; continue other work \
+             instead of polling. Completion notices arrive between model rounds (or on the next \
+             user turn when idle). Use action:list/status/output/cancel with job_id to manage jobs; \
+             output/status never wait. Jobs belong to this session and stop when Gray exits. \
+             timeout is the total runtime limit (default 30s, capped at 600s), NOT the yield window. \
+             Non-zero exits are data, not tool errors. Full output is logged; inline output is bounded.",
             json!({
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Shell command to run"},
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Timeout in seconds (default 30, capped at 600). On expiry the process group is killed and partial output returned."
-                    }
-                },
-                "required": ["command"]
+                    "command": {"type": "string", "description": "Shell command; required for action:run (default)"},
+                    "action": {"type": "string", "enum": ["run", "list", "status", "output", "cancel"]},
+                    "job_id": {"type": "string", "description": "Job ID returned by bash; required for status/output/cancel"},
+                    "background": {"type": "boolean", "description": "Return immediately; run independently in this session"},
+                    "timeout": {"type": "integer", "description": "Total runtime limit in seconds (default 30, clamped 1-600)"},
+                    "yield_ms": {"type": "integer", "description": "Wait at most this many milliseconds before returning a running job (clamped 100-10000); omitted means wait for exit"}
+                }
             }),
         )
     }
 
+    fn drain_notifications(&self, ctx: &ToolContext) -> Vec<String> {
+        self.jobs.notifications(ctx)
+    }
+
     async fn execute(&self, ctx: &ToolContext, args: Value) -> ToolOutput {
-        let command = match get_str(&args, "command") {
-            Ok(c) if !c.trim().is_empty() => c,
-            _ => {
-                return match get_str(&args, "command") {
-                    Ok(_) => fail(
-                        "missing required argument 'command': expected a non-empty string"
-                            .to_string(),
-                    ),
-                    Err(e) => e,
-                };
-            }
+        if !args.is_object() {
+            return fail("bash arguments must be an object".into());
+        }
+        let action = match args.get("action") {
+            None => "run",
+            Some(Value::String(s)) => s.as_str(),
+            _ => return fail("action must be a string".into()),
         };
-        // Loud rejection for the removed background family: silent ignore
-        // would fake success while dropping the model's intent.
-        if let Some(obj) = args.as_object() {
-            for k in ["background", "run_in_background", "notify_on"] {
-                if obj.contains_key(k) {
-                    return fail(format!(
-                        "bash is blocking-only: `{k}` was removed. \
-                         Long commands block until exit; for shell-native background use \
-                         `cmd > /tmp/out.log 2>&1 & echo $!`, poll with `tail`, stop with `kill`"
-                    ));
-                }
-            }
-            for k in ["task_id", "from_offset", "wait"] {
-                if obj.contains_key(k) {
-                    return fail(format!(
-                        "bash is blocking-only: `{k}` belongs to the removed shell_output tool. \
-                         The full log path is in the header — grep it instead"
-                    ));
-                }
+        if action != "run" {
+            return self.jobs.action(ctx, action, &args);
+        }
+        for key in [
+            "job_id",
+            "task_id",
+            "from_offset",
+            "wait",
+            "notify_on",
+            "run_in_background",
+        ] {
+            if args.get(key).is_some() {
+                return fail(format!(
+                    "`{key}` is not a run argument; use background:true or yield_ms, or action:status/output/cancel with job_id"
+                ));
             }
         }
-        let requested = match get_opt_u64(&args, "timeout") {
-            Ok(t) => t,
+        let command = match get_str(&args, "command") {
+            Ok(c) if !c.trim().is_empty() => c,
+            Ok(_) => return fail("command must be non-empty".into()),
             Err(e) => return e,
         };
-        let secs = requested
-            .unwrap_or(DEFAULT_TIMEOUT_SECS)
-            .clamp(1, MAX_TIMEOUT_SECS);
-
-        let session = ctx.session_id.clone().unwrap_or_else(|| "nosession".into());
-        let log_path = shell_dir()
-            .join(&session)
-            .join(format!("bash-{}.log", uuid::Uuid::new_v4().as_simple()));
+        let secs = match get_opt_u64(&args, "timeout") {
+            Ok(v) => v.unwrap_or(DEFAULT_TIMEOUT_SECS).clamp(1, MAX_TIMEOUT_SECS),
+            Err(e) => return e,
+        };
+        let background = match get_opt_bool(&args, "background") {
+            Ok(v) => v.unwrap_or(false),
+            Err(e) => return e,
+        };
+        let window = match get_opt_u64(&args, "yield_ms") {
+            Ok(v) => v.map(|ms| Duration::from_millis(ms.clamp(MIN_YIELD_MS, MAX_YIELD_MS))),
+            Err(e) => return e,
+        };
+        if ctx.cancel.is_cancelled() {
+            return fail("command not started: cancelled".into());
+        }
+        if background || window.is_some() {
+            return self
+                .jobs
+                .start(
+                    ctx,
+                    command,
+                    secs,
+                    if background {
+                        Duration::ZERO
+                    } else {
+                        window.unwrap()
+                    },
+                )
+                .await;
+        }
+        let log_path = log_path(ctx);
         let start = Instant::now();
-
         let spawned = match spawn(&command, &ctx.cwd) {
             Ok(s) => s,
             Err(e) => return fail(format!("failed to spawn `sh -c`: {e}")),
         };
         #[cfg(not(windows))]
-        let target = spawned.pgid;
-        #[cfg(windows)]
-        let target = &spawned.job;
-        let mut child = spawned.child;
-        let pump = Pump::start(child.stdout.take(), child.stderr.take(), log_path.clone());
-
-        enum Cause {
-            Exit,
-            Timeout,
-            Cancel,
-        }
-        let mut exited: Option<std::process::ExitStatus> = None;
-        let cause = tokio::select! {
-            s = child.wait() => match s {
-                Ok(st) => { exited = Some(st); Cause::Exit }
-                Err(e) => {
-                    let _ = term_then_kill(target, Duration::from_secs(2)).await;
-                    let _ = child.start_kill();
-                    abort_pump(pump).await;
-                    return fail(format!("failed to wait for command: {e}"));
-                }
-            },
-            _ = tokio::time::sleep(Duration::from_secs(secs)) => {
-                // Raced exit between the timer and now: report it, don't kill.
-                match child.try_wait() {
-                    Ok(Some(st)) => { exited = Some(st); Cause::Exit }
-                    _ => Cause::Timeout,
-                }
-            }
-            _ = ctx.cancel.cancelled() => Cause::Cancel,
-        };
-        // Unix escalates SIGTERM → SIGKILL; Windows terminates the owned job.
-        // Failed termination is a harness error, never a successful timeout.
-        let first_line: Option<String> = match cause {
-            Cause::Exit => None,
-            Cause::Timeout => {
-                // Reap while Unix escalation polls: macOS can return EPERM
-                // when only an unreaped zombie remains in the process group.
-                // try_join also stops waiting if termination fails; never hide
-                // that failure or block forever waiting for an unkillable child.
-                match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
-                    child
-                        .wait()
-                        .await
-                        .map_err(|e| format!("failed to wait for command: {e}"))
-                }) {
-                    Ok(((), st)) => exited = Some(st),
-                    Err(e) => {
-                        let _ = child.start_kill();
-                        abort_pump(pump).await;
-                        return fail(e);
-                    }
-                }
-                Some(format!("timed out after {secs}s (process group killed)"))
-            }
-            Cause::Cancel => {
-                // Reap while Unix escalation polls: macOS can return EPERM
-                // when only an unreaped zombie remains in the process group.
-                // try_join also stops waiting if termination fails; never hide
-                // that failure or block forever waiting for an unkillable child.
-                match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
-                    child
-                        .wait()
-                        .await
-                        .map_err(|e| format!("failed to wait for command: {e}"))
-                }) {
-                    Ok(((), st)) => exited = Some(st),
-                    Err(e) => {
-                        let _ = child.start_kill();
-                        abort_pump(pump).await;
-                        return fail(e);
-                    }
-                }
-                Some(format!(
-                    "cancelled by user after {}",
-                    format_elapsed(start.elapsed())
-                ))
-            }
-        };
-        // A Windows shell may exit before background descendants release the
-        // pipes. End this call's job before draining, not after a 30s pipe wait.
-        // Native Windows shell background jobs therefore never outlive a call.
-        #[cfg(windows)]
-        drop(spawned.job);
-        let status = exited.expect("every cause resolves a status");
-        let (summary, drain_truncated) = match drain_pump(pump, &log_path).await {
-            Ok(v) => v,
-            Err(e) => return fail(format!("output pump failed: {e}")),
-        };
-        let mut first = first_line;
-        if drain_truncated {
-            let note = format!(
-                "output truncated: pump drain timed out after {}s",
-                PUMP_DRAIN_TIMEOUT.as_secs()
-            );
-            first = Some(match first {
-                Some(f) => format!("{f} ({note})"),
-                None => note,
-            });
-        }
-        if summary.log_write_failed {
-            let note = "log write failed; view is memory-only";
-            first = Some(match first {
-                Some(f) => format!("{f} ({note})"),
-                None => note.to_string(),
-            });
-        }
-        finish_inline(&command, &log_path, status, &summary, start, first)
+        let guard = crate::shell::kill::GroupGuard::new(spawned.pgid);
+        run_command(
+            command,
+            log_path,
+            secs,
+            start,
+            ctx.clone(),
+            spawned,
+            #[cfg(not(windows))]
+            guard,
+        )
+        .await
     }
 }
 
+fn log_path(ctx: &ToolContext) -> PathBuf {
+    // Session IDs are host-supplied, not path components trusted from a tool call.
+    let session = ctx.session_id.as_deref().unwrap_or("nosession");
+    let safe: String = session
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    shell_dir()
+        .join(safe)
+        .join(format!("bash-{}.log", uuid::Uuid::new_v4().as_simple()))
+}
+
+async fn run_command(
+    command: String,
+    log_path: PathBuf,
+    secs: u64,
+    start: Instant,
+    ctx: ToolContext,
+    spawned: crate::shell::contract::Spawned,
+    #[cfg(not(windows))] mut guard: crate::shell::kill::GroupGuard,
+) -> ToolOutput {
+    #[cfg(not(windows))]
+    let target = spawned.pgid;
+    #[cfg(windows)]
+    let target = &spawned.job;
+    let mut child = spawned.child;
+    let pump = Pump::start(child.stdout.take(), child.stderr.take(), log_path.clone());
+    enum Cause {
+        Exit,
+        Timeout,
+        Cancel,
+    }
+    let mut exited: Option<std::process::ExitStatus> = None;
+    let cause = tokio::select! {
+        s = child.wait() => match s {
+            Ok(st) => { exited = Some(st); Cause::Exit }
+            Err(e) => {
+                let _ = term_then_kill(target, Duration::from_secs(2)).await;
+                let _ = child.start_kill();
+                abort_pump(pump).await;
+                return fail(format!("failed to wait for command: {e}"));
+            }
+        },
+        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(start + Duration::from_secs(secs))) => {
+            // Raced exit between the timer and now: report it, don't kill.
+            match child.try_wait() {
+                Ok(Some(st)) => { exited = Some(st); Cause::Exit }
+                _ => Cause::Timeout,
+            }
+        }
+        _ = ctx.cancel.cancelled() => Cause::Cancel,
+    };
+    // Unix escalates SIGTERM → SIGKILL; Windows terminates the owned job.
+    // Failed termination is a harness error, never a successful timeout.
+    let first_line: Option<String> = match cause {
+        Cause::Exit => None,
+        Cause::Timeout => {
+            // Reap while Unix escalation polls: macOS can return EPERM
+            // when only an unreaped zombie remains in the process group.
+            // try_join also stops waiting if termination fails; never hide
+            // that failure or block forever waiting for an unkillable child.
+            match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+                child
+                    .wait()
+                    .await
+                    .map_err(|e| format!("failed to wait for command: {e}"))
+            }) {
+                Ok(((), st)) => exited = Some(st),
+                Err(e) => {
+                    let _ = child.start_kill();
+                    abort_pump(pump).await;
+                    return fail(e);
+                }
+            }
+            Some(format!("timed out after {secs}s (process group killed)"))
+        }
+        Cause::Cancel => {
+            // Reap while Unix escalation polls: macOS can return EPERM
+            // when only an unreaped zombie remains in the process group.
+            // try_join also stops waiting if termination fails; never hide
+            // that failure or block forever waiting for an unkillable child.
+            match tokio::try_join!(term_then_kill(target, Duration::from_secs(2)), async {
+                child
+                    .wait()
+                    .await
+                    .map_err(|e| format!("failed to wait for command: {e}"))
+            }) {
+                Ok(((), st)) => exited = Some(st),
+                Err(e) => {
+                    let _ = child.start_kill();
+                    abort_pump(pump).await;
+                    return fail(e);
+                }
+            }
+            Some(format!(
+                "cancelled by user after {}",
+                format_elapsed(start.elapsed())
+            ))
+        }
+    };
+    // A Windows shell may exit before background descendants release the
+    // pipes. End this call's job before draining, not after a 30s pipe wait.
+    // Native Windows shell background jobs therefore never outlive a call.
+    #[cfg(windows)]
+    drop(spawned.job);
+    #[cfg(not(windows))]
+    guard.disarm();
+    let status = exited.expect("every cause resolves a status");
+    let (summary, drain_truncated) = match drain_pump(pump, &log_path).await {
+        Ok(v) => v,
+        Err(e) => return fail(format!("output pump failed: {e}")),
+    };
+    let mut first = first_line;
+    if drain_truncated {
+        let note = format!(
+            "output truncated: pump drain timed out after {}s",
+            PUMP_DRAIN_TIMEOUT.as_secs()
+        );
+        first = Some(match first {
+            Some(f) => format!("{f} ({note})"),
+            None => note,
+        });
+    }
+    if summary.log_write_failed {
+        let note = "log write failed; view is memory-only";
+        first = Some(match first {
+            Some(f) => format!("{f} ({note})"),
+            None => note.to_string(),
+        });
+    }
+    finish_inline(&command, &log_path, status, &summary, start, first)
+}
 fn gray_home() -> PathBuf {
     gray_core::paths::gray_home().unwrap_or_else(|| std::env::temp_dir().join(".gray"))
 }

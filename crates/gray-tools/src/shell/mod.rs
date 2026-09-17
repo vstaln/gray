@@ -1,4 +1,4 @@
-//! shell: blocking bash tool modules.
+//! shell: shell execution and managed background jobs.
 
 pub mod contract;
 pub mod exit;

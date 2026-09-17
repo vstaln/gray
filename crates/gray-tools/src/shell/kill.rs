@@ -120,3 +120,37 @@ pub async fn term_then_kill(job: &super::windows::Job, _grace: Duration) -> Resu
     job.terminate()
         .map_err(|e| format!("terminating shell job failed: {e}"))
 }
+
+/// Last-resort cleanup when the runtime drops a running command future.
+/// Normal completion disarms this after reaping; ordinary cancel uses TERM/KILL.
+#[cfg(not(windows))]
+pub(crate) struct GroupGuard {
+    pub(crate) pgid: i32,
+    armed: bool,
+}
+
+#[cfg(not(windows))]
+impl GroupGuard {
+    pub(crate) fn new(pgid: i32) -> Self {
+        Self { pgid, armed: true }
+    }
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if self.armed
+            && self.pgid > 1
+            && self.pgid != std::process::id() as i32
+            && self.pgid != unsafe { libc::getpgrp() }
+        {
+            unsafe {
+                signal_pid(-self.pgid, libc::SIGKILL);
+            }
+        }
+    }
+}

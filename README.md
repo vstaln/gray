@@ -1,5 +1,5 @@
 <div align="center">
-  <img alt="Gray" src="assets/logo-dark.svg" width="108" />
+  <img alt="Gray" src="assets/logo-dark.svg" width="160" height="160" />
   <h1>gray</h1>
   <p><strong>A minimal, modular AI agent harness.</strong><br/>Start small. Extend anything.</p>
   <p>
@@ -16,10 +16,6 @@
 </div>
 
 <br/>
-
-<div align="center">
-  <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="31%" />
-</div>
 
 Gray is a tiny agent core — streaming tool calls over SSE, JSONL sessions, self-managing context — that you extend only when you need to: skills, stdio plugins, cron. Any OpenAI-compatible provider works out of the box. No plugin marketplace, no roadmap promises.
 
@@ -87,6 +83,43 @@ First run drops you straight at the prompt. Configure whenever you feel like it:
 <div align="center">
   <img alt="gray building HorseTinder — session replay from gray.alignment.id" src="assets/gray-demo.gif" width="100%" />
 </div>
+
+## Small core, open world
+
+<div align="center">
+  <img alt="Dithered Blue Marble" src="assets/space/bluemarble-dither.png" width="560" />
+</div>
+
+Bring your provider, tools, and skills. Keep only what you use.
+
+## Background shell jobs
+
+The AI can start independent commands without waiting for them to finish:
+
+```json
+{"command":"cargo test", "background":true, "timeout":600}
+```
+
+Or let short commands finish normally, yielding a job ID only if still running:
+
+```json
+{"command":"cargo test", "yield_ms":1000, "timeout":600}
+```
+
+Multiple jobs run concurrently (up to 32 per tool instance). Use the same `bash`
+tool with `action: "list"`, or `action: "status"`, `"output"`, or `"cancel"` plus
+`job_id`. Status/output calls return immediately. Jobs are session-scoped;
+finished outputs remain retrievable, with a bounded history of 128 jobs.
+
+Completion notices reach the AI between model rounds. If the AI has already
+finished its turn, notices arrive on the next user turn—jobs do not hold the
+turn open or trigger an unsolicited model call. Cancellation and the total
+runtime timeout still terminate the owned process tree; quitting Gray stops
+managed jobs. Jobs are not restored after restart, but their logs remain.
+
+Without `background` or `yield_ms`, bash retains its blocking behavior. Only
+start jobs concurrently when they are independent; don't run competing writes
+or builds against the same output directory.
 
 ## Commands
 

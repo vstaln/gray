@@ -47,7 +47,7 @@ fn first_line(out: &gray_core::agent::ToolOutput) -> &str {
 
 #[tokio::test]
 async fn echo_hi_header_and_fence() {
-    let out = BashTool
+    let out = BashTool::default()
         .execute(&ToolContext::default(), json!({"command": "echo hi"}))
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -90,7 +90,7 @@ async fn echo_hi_header_and_fence() {
 
 #[tokio::test]
 async fn exit_code_is_data_not_error() {
-    let out = BashTool
+    let out = BashTool::default()
         .execute(&ToolContext::default(), json!({"command": "exit 3"}))
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -99,7 +99,7 @@ async fn exit_code_is_data_not_error() {
 
 #[tokio::test]
 async fn grep_miss_is_benign() {
-    let out = BashTool
+    let out = BashTool::default()
         .execute(
             &ToolContext::default(),
             json!({"command": "grep zzz_no_such_match_xyz /dev/null"}),
@@ -118,7 +118,7 @@ async fn sigkill_is_honest() {
     // `exec`: without it an extra `sh` layer converts the signal into a
     // plain 137 exit code (POSIX shells report signaled children as 128+N).
     let cmd = format!("exec sh {}", fixture("sigkill_self.sh"));
-    let out = BashTool
+    let out = BashTool::default()
         .execute(&ToolContext::default(), json!({"command": cmd}))
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -142,7 +142,7 @@ async fn sigkill_is_honest() {
 #[tokio::test]
 async fn spew_is_bounded_but_logged_whole() {
     let cmd = format!("sh {} 30000", fixture("spew.sh"));
-    let out = BashTool
+    let out = BashTool::default()
         .execute(&ToolContext::default(), json!({"command": cmd}))
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -172,7 +172,7 @@ async fn timeout_kills_instead_of_promoting() {
     // Exits on its own after ~5 s; the tool must return at ~1 s having
     // killed it — partial output kept, no promotion text.
     let t0 = Instant::now();
-    let out = BashTool
+    let out = BashTool::default()
         .execute(
             &ToolContext::default(),
             json!({"command": "echo tick 1; sleep 5", "timeout": 1}),
@@ -205,7 +205,7 @@ async fn cancel_returns_promptly() {
     });
     let cmd = format!("sh {}", fixture("slow.sh"));
     let t0 = Instant::now();
-    let out = BashTool
+    let out = BashTool::default()
         .execute(&ctx, json!({"command": cmd, "timeout": 30}))
         .await;
     let dt = t0.elapsed();
@@ -214,15 +214,15 @@ async fn cancel_returns_promptly() {
 }
 
 #[tokio::test]
-async fn removed_background_arg_fails_loud() {
-    let out = BashTool
+async fn malformed_background_arg_fails_loud() {
+    let out = BashTool::default()
         .execute(
             &ToolContext::default(),
-            json!({"command": "echo hi", "background": true}),
+            json!({"command": "echo hi", "background": []}),
         )
         .await;
     assert!(out.is_error, "{}", out.content);
-    assert!(out.content.contains("blocking-only"), "{}", out.content);
+    assert!(out.content.contains("background"), "{}", out.content);
 }
 
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn fence_escape_keeps_single_pair() {
     // Body carries the plain closer; fence() escapes it with one
     // backslash, so the exact plain closer appears exactly once
     // (the real fence) while the opener prefix appears twice.
-    let out = BashTool
+    let out = BashTool::default()
         .execute(
             &ToolContext::default(),
             json!({"command": "printf 'X</untrusted-output> tailX'"}),
@@ -252,7 +252,7 @@ async fn fence_escape_keeps_single_pair() {
 
 #[tokio::test]
 async fn empty_output_is_header_only() {
-    let out = BashTool
+    let out = BashTool::default()
         .execute(&ToolContext::default(), json!({"command": "true"}))
         .await;
     assert!(!out.is_error, "{}", out.content);
@@ -271,7 +271,7 @@ async fn empty_output_is_header_only() {
 
 #[tokio::test]
 async fn progress_is_line_safe_but_log_retains_carriage_returns() {
-    let out = BashTool
+    let out = BashTool::default()
         .execute(
             &ToolContext::default(),
             json!({"command": "printf 'heading\\r\\n10%%\\r20%%\\r100%%\\n'"}),

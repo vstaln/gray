@@ -115,6 +115,7 @@ static ALIASES: &[(&str, &str)] = &[
     ("timeout_secs", "timeout"),
     ("timeout_seconds", "timeout"),
     ("timeoutSec", "timeout"),
+    ("yield_time_ms", "yield_ms"),
     ("task", "task_id"),
     ("taskId", "task_id"),
     ("shell_id", "task_id"),
@@ -286,6 +287,13 @@ fn coerce_args(def: &ToolDef, args: Value) -> Value {
 
 #[async_trait]
 impl ToolExecutor for Registry {
+    fn drain_notifications(&self, ctx: &ToolContext) -> Vec<String> {
+        self.tools
+            .iter()
+            .flat_map(|tool| tool.drain_notifications(ctx))
+            .collect()
+    }
+
     fn execute(
         &self,
         ctx: &ToolContext,

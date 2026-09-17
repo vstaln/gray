@@ -32,6 +32,18 @@ fn is_blank_input(msg: &Message) -> bool {
 }
 
 impl Agent {
+    /// Append observations only with all outstanding tool results settled.
+    fn collect_background_notifications(&mut self, ctx: &ToolContext) -> bool {
+        let notices = self.executor.drain_notifications(ctx);
+        let any = !notices.is_empty();
+        for notice in notices {
+            self.messages.push(Message::user(format!(
+                "[Background task notification]\n{notice}"
+            )));
+        }
+        any
+    }
+
     /// Best-effort `turn_end` fan-out: hook failures must never fail the turn
     /// (hooks are infallible by signature, same as `tool_before`).
     async fn emit_turn_end(&self, usage: &Usage) {
@@ -196,6 +208,8 @@ impl Agent {
                 self.emit_turn_end(&billed).await;
                 return Err(CoreError::Cancelled);
             }
+
+            self.collect_background_notifications(&ctx);
 
             // Pre-turn budget, gated on real pressure: history rewrites
             // (elision, compaction) break provider prefix cache (99% hits
@@ -588,6 +602,11 @@ impl Agent {
             }
 
             if tool_uses.is_empty() {
+                // A job that finished during inference gets a follow-up now;
+                // unfinished jobs never hold this turn open.
+                if self.collect_background_notifications(&ctx) {
+                    continue 'turn;
+                }
                 let hit = if total_usage.input_tokens > 0 {
                     total_usage.cached_tokens as f64 / total_usage.input_tokens as f64 * 100.0
                 } else {
