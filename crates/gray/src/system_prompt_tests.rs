@@ -73,3 +73,34 @@ fn directory_is_quoted_without_losing_path_characters() {
         assert_eq!(serde_json::from_str::<String>(value).unwrap(), raw);
     }
 }
+
+#[test]
+fn memory_is_separate_from_verbatim_prompt_and_is_not_comment_stripped() {
+    let body = Some("You are gray.<!-- hidden -->".to_string());
+    let data = r#"{"user":"<!-- fact -->","decisions":"Use Rust."}"#;
+    let prompt = with_memory(build_system_prompt(body.clone()), Some(data));
+    assert!(prompt.starts_with("You are gray.\n\n"));
+    assert!(prompt.contains("gray memory"));
+    assert!(prompt.ends_with(data));
+    assert_eq!(
+        prompt,
+        with_memory(build_system_prompt(body.clone()), Some(data))
+    );
+    assert_eq!(
+        with_memory(build_system_prompt(body), None),
+        "You are gray."
+    );
+}
+
+#[test]
+fn memory_preserves_runtime_directory_and_stored_prompt() {
+    let cwd = std::path::Path::new("/work/project café");
+    let runtime = build_runtime_prompt(opts("Rules.<!-- private note -->"), cwd);
+    let data = r#"{"user":"Keep replies concise.","decisions":"Use Rust."}"#;
+    let combined = with_memory(runtime.clone(), Some(data));
+    assert!(combined.starts_with(&runtime));
+    assert!(combined.ends_with(data));
+    assert!(combined.contains("Working directory: \"/work/project café\""));
+    assert!(!combined.contains("private note"));
+    assert_eq!(with_memory(runtime.clone(), None), runtime);
+}

@@ -12,6 +12,9 @@ async fn main() -> anyhow::Result<()> {
     install_panic_hook();
     let _ = crossterm::terminal::disable_raw_mode();
     let cli = Cli::parse();
+    if let Some(gray::Commands::Memory(args)) = &cli.command {
+        return gray::memory::run_cli(args);
+    }
     if cli.dump_manifest {
         match gray::build_registry().await {
             Ok((_registry, manifests, fallback)) => {
@@ -54,6 +57,7 @@ async fn main() -> anyhow::Result<()> {
     gray::setup::set_user_keep_recent_tokens(config.context_keep);
     if let Some(cmd) = cli.command {
         match cmd {
+            gray::Commands::Memory(_) => unreachable!("handled before provider configuration"),
             gray::Commands::Resume {
                 session_id,
                 last,
