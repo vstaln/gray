@@ -8,6 +8,7 @@
 //! only the fallback. Never a TCP port: the filesystem (0600, inside the
 //! user's home) is the auth boundary.
 
+#[cfg(unix)]
 use std::io::{BufRead as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -15,8 +16,11 @@ use std::time::Duration;
 pub const PROTOCOL: u32 = 1;
 pub const SUPPORTED_VERBS: [&str; 2] = ["identify", "status"];
 /// sun_path is 104..108 bytes; keep margin (same margin hermes uses).
+#[cfg(unix)]
 const MAX_SOCK_PATH: usize = 100;
+#[cfg(unix)]
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -192,7 +196,7 @@ pub fn query_within(home: &Path, verb: &str, timeout: Duration) -> Option<serde_
     #[cfg(not(unix))]
     {
         let _ = (home, verb, timeout);
-        return None;
+        None
     }
     #[cfg(unix)]
     {

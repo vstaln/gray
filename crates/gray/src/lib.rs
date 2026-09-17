@@ -179,7 +179,10 @@ pub async fn build_agent(
         model: model.clone(),
         api_key: api_key.to_string(),
         base_url: config.base_url.clone(),
-        reasoning_effort: config.thinking_effort.clone(),
+        reasoning_effort: config
+            .thinking_effort
+            .as_deref()
+            .map(|effort| crate::setup::clamp_thinking_level(model, effort).to_string()),
         context_window: Some(crate::setup::context::resolve_model_context_length(model)),
         session_id: session_id.map(str::to_string),
         cwd: cwd.to_path_buf(),

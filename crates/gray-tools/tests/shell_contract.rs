@@ -28,7 +28,15 @@ fn log_path(header: &str) -> PathBuf {
     // Preserve native paths and GRAY_HOME overrides; expand only a leading
     // home abbreviation, never every tilde in an arbitrary filename.
     match raw.strip_prefix("~/") {
-        Some(rest) => PathBuf::from(std::env::var_os("HOME").expect("abbreviated HOME")).join(rest),
+        Some(rest) => {
+            // GRAY_HOME overrides HOME for logs; HOME is only the fallback
+            // for an unmodified ~/.gray abbreviation.
+            let base = match std::env::var_os("GRAY_HOME") {
+                Some(v) if !v.is_empty() => std::path::PathBuf::from(v),
+                _ => PathBuf::from(std::env::var_os("HOME").expect("abbreviated HOME")),
+            };
+            base.join(rest)
+        }
         None => PathBuf::from(raw),
     }
 }

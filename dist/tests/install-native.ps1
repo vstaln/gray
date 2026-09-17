@@ -25,6 +25,15 @@ function Expect-Failure([scriptblock]$Action, [string]$Message) {
 try {
     $pathBefore = [Environment]::GetEnvironmentVariable('Path', 'User')
     & $installer -ArchivePath $archive -Sha256 $digest -InstallDir $install -NoPath
+    # Public entry point must route native installs without invoking WSL.
+    $entry = Join-Path $PSScriptRoot '..\install.ps1'
+    & $entry -Native -ArchivePath $archive -Sha256 $digest -InstallDir $install -NoPath
+    Expect-Failure { & $entry -Native -ArchivePath $archive -Sha256 ('0' * 64) -InstallDir $install -NoPath } 'checksum mismatch'
+    Expect-Failure { & $entry -Native -Wsl } 'parameter set'
+    $isolated = Join-Path $root 'entry-only'
+    [IO.Directory]::CreateDirectory($isolated) | Out-Null
+    Copy-Item -LiteralPath $entry -Destination (Join-Path $isolated 'install.ps1')
+    Expect-Failure { & (Join-Path $isolated 'install.ps1') -Native } 'Missing install-native.ps1'
     $installed = Join-Path $install 'gray.exe'
     $before = (Get-FileHash -LiteralPath $installed).Hash
     # Reinstall uses the existing-file replacement path, stable and beta alike.

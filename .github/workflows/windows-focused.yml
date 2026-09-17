@@ -1,0 +1,30 @@
+name: windows-focused
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    # Single-test diagnostic loop: iterate one Windows assertion without a
+    # full-suite roundtrip. Same env contract as the ci windows-runtime job.
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Configure explicit Git for Windows shell and isolated storage
+        shell: pwsh
+        run: |
+          $shellDir = Join-Path $env:ProgramFiles 'Git\usr\bin'
+          if (-not (Test-Path (Join-Path $shellDir 'sh.exe'))) {
+            throw 'Git for Windows POSIX shell is required for native tests'
+          }
+          $shellDir >> $env:GITHUB_PATH
+          "GRAY_BASH=$(Join-Path $shellDir 'sh.exe')" >> $env:GITHUB_ENV
+          "GRAY_HOME=$(Join-Path $env:RUNNER_TEMP 'gray-test-home')" >> $env:GITHUB_ENV
+      - name: Focused test
+        run: cargo test --locked -p gray-tools --lib -- truncated_log_has_executable_bounded_recovery --nocapture

@@ -1,7 +1,7 @@
 # Native Windows preview — not a supported release yet
 
-The draft Windows branch can build a native x64 executable and test installer.
-The public installer and README support matrix remain WSL-only until the complete
+The Windows branch builds a native x64 executable and opt-in installer.
+The default installer and supported platform matrix remain WSL-only until the complete
 release acceptance list in the preparation spec passes. Do not use this preview
 with sensitive credentials/transcripts until Windows ACL validation is complete.
 
@@ -10,15 +10,21 @@ with sensitive credentials/transcripts until Windows ACL validation is complete.
 1. Open a **successful CI run for the Windows branch** on GitHub Actions and
    download its `windows-native-preview` artifact (GitHub login may be required).
 2. Extract the artifact wrapper ZIP. It contains the payload
-   `gray-beta-x86_64-windows.zip`, its `.sha256` file, and `install-native.ps1`.
-   Locate the script inside the extracted artifact; inspect it before running.
+   `gray-beta-x86_64-windows.zip`, its `.sha256` file, and both installer scripts
+   under `dist`. Keep the scripts together and inspect them before running.
 3. On Windows 11 x64, run in PowerShell from the directory containing the payload:
 
 ```powershell
 $hash = ((Get-Content .\gray-beta-x86_64-windows.zip.sha256).Trim() -split '\s+')[0]
-# Use the actual script path from the extracted artifact.
-.\install-native.ps1 -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
+# Run from the extracted artifact root.
+.\dist\install.ps1 -Native -ArchivePath .\gray-beta-x86_64-windows.zip -Sha256 $hash
 ```
+
+`-Native` selects native installation; `-Wsl` explicitly selects the compatibility
+route. Omitting both still selects WSL. The switches cannot be combined. Native
+failures never invoke WSL or install system dependencies. Older preview artifacts
+may contain only `dist/install-native.ps1`; invoke that script directly with the
+same archive and checksum arguments (without `-Native`).
 
 The default destination is `%LOCALAPPDATA%\Programs\gray\bin`. `-InstallDir`
 overrides `GRAY_INSTALL_DIR`. `-NoPath` skips user PATH updates. Open a new terminal

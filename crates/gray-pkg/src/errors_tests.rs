@@ -13,7 +13,7 @@ fn use_errors_env() -> tempfile::TempDir {
 
 #[test]
 fn record_list_round_trip() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let _home = use_errors_env();
     record("index", "demo", "boom".to_string());
     let entries = list();
@@ -25,7 +25,7 @@ fn record_list_round_trip() {
 
 #[test]
 fn cap_evicts_oldest() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let _home = use_errors_env();
     for i in 0..105 {
         record("s", &format!("item-{i}"), format!("m{i}"));
@@ -39,7 +39,7 @@ fn cap_evicts_oldest() {
 
 #[test]
 fn clear_empties_registry() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let _home = use_errors_env();
     record("s", "i", "m".to_string());
     assert_eq!(list().len(), 1);
@@ -49,7 +49,7 @@ fn clear_empties_registry() {
 
 #[test]
 fn corrupt_file_returns_empty_and_heals_on_record() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let _home = use_errors_env();
     std::fs::create_dir_all(crate::gray_home()).unwrap();
     std::fs::write(crate::gray_home().join("errors.json"), "{not json").unwrap();

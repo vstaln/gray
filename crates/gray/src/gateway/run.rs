@@ -9,7 +9,9 @@
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::gateway::{pid, socket, state};
+#[cfg(unix)]
+use crate::gateway::socket;
+use crate::gateway::{pid, state};
 
 /// How long an in-flight cron fire may keep running after a stop signal.
 /// Bounded: the claim TTL (300s) releases whatever we abandon.

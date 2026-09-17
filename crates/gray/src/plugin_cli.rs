@@ -413,6 +413,7 @@ pub(crate) async fn capture(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
     #[cfg(unix)]
     #[tokio::test]

@@ -85,7 +85,7 @@ fn marketplace_specs_parse_and_reject() {
 
 #[test]
 fn claude_marketplaces_env_override() {
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     // SAFETY: serialized by ENV_GUARD.
     unsafe {
         std::env::remove_var(CLAUDE_MARKETPLACES_ENV);
@@ -116,7 +116,7 @@ async fn git_source_checks_out_stale_pin() {
     // Upstream moved past the catalog pin: resolve must check out the
     // pinned commit (not fail), fully offline over file://.
     // SAFETY: serialized by ENV_GUARD (process-global env).
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     let home = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("GRAY_HOME", home.path());
@@ -168,7 +168,7 @@ async fn git_source_checks_out_stale_pin() {
 async fn status_never_hard_fails() {
     // Closed loopback port: every source reports false, none panics.
     // SAFETY: serialized by ENV_GUARD (process-global env).
-    let _guard = crate::ops::tests::ENV_GUARD.lock().unwrap();
+    let _guard = crate::ops::tests::env_guard();
     unsafe {
         std::env::set_var(CLAUDE_MARKETPLACES_ENV, "127.0.0.1:9/none");
         std::env::set_var(CLAWHUB_BASE_ENV, "http://127.0.0.1:9");

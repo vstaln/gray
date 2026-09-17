@@ -435,6 +435,7 @@ pub fn fetch_live_provider_models(base_url: &str, api_key: Option<&str>) -> Vec<
                                 }
                             }
                             if !models.is_empty() {
+                                cache_provider_model_ids(&base, &models);
                                 save_models_cache_to_disk();
                                 return models;
                             }
@@ -477,16 +478,46 @@ pub fn get_cached_model_context(model_id: &str) -> Option<usize> {
     None
 }
 
-/// Ids in the in-memory model context cache (completion source for `/model`;
-/// no I/O, safe per keystroke; empty until models are fetched/cached).
-pub fn cached_model_ids() -> Vec<String> {
-    if let Ok(g) = model_context_cache().read() {
-        let mut ids: Vec<String> = g.keys().cloned().collect();
-        ids.sort();
-        ids
-    } else {
-        Vec::new()
+/// Model discovery is connection-scoped, unlike the global context/pricing cache.
+#[derive(Default)]
+struct ProviderModels {
+    active: String,
+    ids: std::collections::HashMap<String, Vec<String>>,
+}
+
+static PROVIDER_MODELS: std::sync::OnceLock<std::sync::RwLock<ProviderModels>> =
+    std::sync::OnceLock::new();
+
+fn provider_models_cell() -> &'static std::sync::RwLock<ProviderModels> {
+    PROVIDER_MODELS.get_or_init(|| std::sync::RwLock::new(ProviderModels::default()))
+}
+
+/// Called at startup and after connecting, never by background fetches.
+/// A late response from the previous connection must not change completion scope.
+pub fn set_active_model_provider(base_url: &str) {
+    if let Ok(mut cache) = provider_models_cell().write() {
+        cache.active = base_url.trim_end_matches('/').to_string();
     }
+}
+
+pub(crate) fn cache_provider_model_ids(base_url: &str, models: &[(String, String)]) {
+    if let Ok(mut cache) = provider_models_cell().write() {
+        let mut ids: Vec<String> = models.iter().map(|(id, _)| id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        cache
+            .ids
+            .insert(base_url.trim_end_matches('/').to_string(), ids);
+    }
+}
+
+/// Only ids advertised by the active endpoint; no I/O per keystroke.
+pub fn cached_model_ids() -> Vec<String> {
+    provider_models_cell()
+        .read()
+        .ok()
+        .and_then(|cache| cache.ids.get(&cache.active).cloned())
+        .unwrap_or_default()
 }
 
 /// Gap-fill insert: leaves an existing entry (e.g. provider-fetched) alone.

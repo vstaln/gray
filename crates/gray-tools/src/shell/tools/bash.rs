@@ -326,8 +326,13 @@ fn finish_inline(
         out.push_str(&fence(&view.body));
     }
     if let Some((start, end)) = view.omitted_range {
-        // Absolute, shell-quoted path: never expand the display-only ~/ shorthand.
-        let path = log_path.to_string_lossy().replace('\'', "'\"'\"'");
+        // Absolute, shell-quoted path: never expand the display-only ~/
+        // shorthand. Git Bash consumes the command string, so the path must
+        // use forward slashes; backslashes are shell escapes there.
+        let path = log_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .replace('\'', "'\"'\"'");
         let command = if small_log_on_disk(log_path, summary) {
             // middle_out offsets are sanitized bytes. Recover by line instead,
             // including the last shown line in case it was cut mid-line.

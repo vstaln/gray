@@ -121,3 +121,14 @@ fn live_tool_viewport_height_counts_live_rows() {
         VIEWPORT_H
     );
 }
+
+#[test]
+fn live_card_has_one_left_padding_cell() {
+    use ratatui::widgets::Widget;
+    let area = Rect::new(0, 0, 30, 1);
+    let mut buffer = ratatui::buffer::Buffer::empty(area);
+    live_tool_row(Line::from("⬡ Running cargo test")).render(area, &mut buffer);
+    assert_eq!(buffer[(0, 0)].symbol(), " ");
+    assert_eq!(buffer[(1, 0)].symbol(), "⬡");
+    assert_eq!(buffer[(0, 0)].bg, crate::theme::theme().surface_bg);
+}
